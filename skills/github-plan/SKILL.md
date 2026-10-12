@@ -4,6 +4,14 @@ description: Use when the user asks for a plan, what's next / what is next in a 
 metadata:
   short-description: Plan durable work in GitHub issues
 commands:
+  - name: github-plan-wait
+    source: repo
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "wait", "<issue>"]
+    purpose: Reports the full legacy record for a one-time review; explicit --waiting-for/--ends-when or --clear with --evidence records structured authority.
+  - name: github-plan-wait-inventory
+    source: repo
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "wait", "--all"]
+    purpose: Reads every open issue and full discussion and reports missing or malformed wait records without clearing them.
   - name: github-plan-claim
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
@@ -247,6 +255,17 @@ active issue labels and continuing background jobs do not lift a hold.
    for refusal, partial recovery, or release. Continue only on confirmed success;
    preserve competing or uncertain ownership for the Director to decide. Keep
    Current Status current through handoff or completion.
+   Claim waits come only from native blockers, labels and the structured wait
+   record. Before a legacy record's first claim, run `gh-plan.py wait <issue>`,
+   read its full evidence once and record every real wait/executing-session hold or verified
+   absence with `wait --waiting-for ... --ends-when ... --evidence ...` or
+   `wait --clear --evidence ...`. `wait --all` reports unreviewed open issues
+   without clearing them. For new plans, `create --wait-clear --wait-evidence ...`
+   or `create --waiting-for ... --ends-when ... --wait-evidence ...` records the
+   reviewed request directly. Maintain waits with `wait`, not status prose;
+   preserve all unresolved entries when replacing the whole record. Read
+   [Planning: Claim](../github/references/cli-reference.md#planning-claim)
+   for the format, authorship and existing-resolution contract.
    For an abandoned automation claim held by a closed session, a direction or
    Supervisor session uses `release-claim`, with a closed-session attestation
    and fresh activity checks. Read Planning: Claim first; age, a merged PR or

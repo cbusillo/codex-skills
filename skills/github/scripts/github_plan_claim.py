@@ -183,16 +183,7 @@ def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int |
                 continue
         except (KeyError, ValueError, TypeError):
             continue
-        # Remove the marker and only its own identity assertions. Remaining
-        # markers and unstructured ownership still go through the normal scan.
-        status = "\n".join(line for line in status.splitlines()
-                           if records(line) != [record])
-        # The released holder may be followed by more State prose; only the
-        # holder clause goes, and later sentences are still classified.
-        status = re.sub(rf"(?im)^(\s*State:\s*Active);\s*owned by {re.escape(record['worker'])}(?=\.(?:\s|$)|\s*$)",
-                        r"\1", status)
-        for field, key in (("Worker", "worker"), ("Session", "session")):
-            status = re.sub(rf"(?im)^\s*{field}:\s*{re.escape(record[key])}\.?\s*$", "", status)
+        status = "\n".join(line for line in status.splitlines() if records(line) != [record])
         return status
     return status
 
@@ -375,110 +366,6 @@ def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, di
     return found
 
 
-def released_status_lines(status: str, comments: list[dict[str, Any]]) -> dict[str, str]:
-    """Share the exact historical-field match with live-session checks."""
-    found = {}
-    all_records = [record for comment in comments for record in records(comment.get("body") or "")]
-    for source_index, record, _ in exact_released_sources(comments):
-        # A worker alias reused by another session cannot attribute the field.
-        alias_unique = all(r["session"] == record["session"] for r in all_records if r["worker"] == record["worker"])
-        for line in status.splitlines():
-            if line.rstrip(" \t") == (
-                f"Session: {record['worker']} / {record['session']}; "
-                "executing claim released in the closeout comment."
-            ):
-                found[line] = record["session"]
-                continue
-            # An explicitly historical field naming only the released session
-            # (and, optionally, its own worker) is history, e.g. odoo-docker#113.
-            field = re.fullmatch(r"\s*(?:[-*]\s+)?(?:Completed|Released|Previous|Prior|Former|Ended) session:"
-                                 r"[ \t]*(.+?)[ \t]*", line, re.IGNORECASE)
-            if not field:
-                continue
-            identity = field.group(1)
-            # context-panel#828 appends an exact source-claim explanation to
-            # its completed identity. Release proof still comes from comments;
-            # accept only this whole suffix, leaving any other prose ambiguous.
-            identity = re.sub(
-                rf"\. Claim {comments[source_index]['id']} is released in this session's handoff comment\.$",
-                "", identity,
-            )
-            if not re.search(rf"(?<![\w.-]){re.escape(record['session'])}(?![\w-])", identity):
-                continue
-            rest = re.sub(rf"(?<![\w.-]){re.escape(record['session'])}(?![\w-])", "", identity)
-            if re.search(rf"(?<![\w.-]){re.escape(record['worker'])}(?![\w-])", rest):
-                if not alias_unique:
-                    continue
-                rest = re.sub(rf"(?<![\w.-]){re.escape(record['worker'])}(?![\w-])", "", rest)
-            if not rest.strip(" \t()/,;."):
-                found[line] = record["session"]
-    return found
-
-
-def issue_identity(reference: str, repo: str) -> tuple[str, int] | None:
-    match = re.fullmatch(r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)([1-9]\d*)", reference)
-    if not match:
-        return None
-    return (match.group(1) or match.group(2) or repo).casefold(), int(match.group(3))
-
-
-def current_ownership_text(
-    status: str, comments: list[dict[str, Any]], *, repo: str | None, number: int | None,
-    issue_url: str | None = None,
-) -> str:
-    """Remove only the demonstrated historical and other-issue assertions."""
-    if repo is None or number is None:
-        return status
-    # This sentence quotes a replaced field, not a present Session field.
-    status = re.sub(
-        r'(The previous )"Session: [\w.-]+"'
-        r'( line was stale and made the next claim refuse as ambiguous ownership '
-        r'\([^\n]+\); this status replaces it\.)', r'\1previous holder\2', status,
-    )
-    released_lines = released_status_lines(status, comments)
-    status = "\n".join(line for line in status.splitlines() if line not in released_lines)
-    identities = {(repo.casefold(), number)}
-    canonical = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", issue_url or "")
-    if canonical:
-        identities.add((canonical.group(1).casefold(), int(canonical.group(2))))
-
-    def other_issue(match: re.Match[str]) -> str:
-        if (match.group(1).casefold(), int(match.group(2))) in identities:
-            return match.group()
-        return match.group().replace(match.group(3), "")
-
-    status = re.sub(
-        r"(?m)^Blocked by: https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+) "
-        r"\((actively owned by [\w.-]+)\)(?=\.(?:\s|$)|\s*$)", other_issue, status,
-    )
-    # A clause whose subject is another issue names that issue's holder, e.g.
-    # launchplane#3318: "#3314 Q151 was approved today and is owned by
-    # LP-3314-D1; ...". Only a single holder ending the clause qualifies.
-    reference = r"(?:https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*|(?:[\w.-]+/[\w.-]+)?#[1-9]\d*)"
-    holder = r"[\w-]+(?:\.[\w-]+)*"
-    clause = re.compile(
-        rf"(?P<lead>(?:^|(?<=[;!?] )|(?<=\. ))(?:[-*] )?(?:[A-Z][\w ]*: )?(?:[Ii]ssue )?)"
-        rf"(?P<ref>{reference})(?=\s)(?P<body>(?:[^;!?.\n]|\.(?!\s))*?) owned by {holder}(?=[;!?]|\.(?:\s|$)|\s*$)",
-        re.MULTILINE,
-    )
-
-    def other_clause(match: re.Match[str]) -> str:
-        identity = issue_identity(match.group("ref"), repo)
-        body = match.group("body")
-        # The reference must stay the holder's only subject. Accept only the
-        # narrow shape "REF [Q151] [was approved today and] is owned by", so a
-        # second subject ("yet the repair is") stays ambiguous.
-        subject_only = re.fullmatch(
-            r"(?: [A-Z]+\d+)?"
-            r"(?: (?:is|was) (?:approved|merged|closed|landed|complete|completed|done|ready|open|released)"
-            r"(?: (?:today|now|earlier|yesterday))? and)?"
-            r" (?:is|was|remains|has been)(?: (?:now|still|actively))?", body)
-        if identity is None or identity in identities or not subject_only:
-            return match.group()
-        return match.group("lead") + match.group("ref") + body
-    return clause.sub(other_clause, status)
-
-
 def released_successor_route(
     conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], *, issue_repo: str,
 ) -> tuple[int, int] | None:
@@ -568,23 +455,6 @@ def discussion_evidence(
             owned.append(record)
         else:
             conflicts.append({"source": "current_status", "record": record})
-    ownership_status = current_ownership_text(status, comments, repo=repo, number=number, issue_url=issue_url)
-    # A matching marker or complete legacy identity accounts only for that
-    # owner's assertions; it must not hide a second holder in the same status.
-    own_claim = claim if owned or all(claim[key] in status for key in ("worker", "session", "branch")) else None
-    if owned:
-        # The helper copies these intent/history lines from its claim comment.
-        # Ignore only exact recorded lines, never an arbitrary Next action or
-        # another assertion added beside the matching marker.
-        intent_lines = {
-            line for comment in comments
-            if any(same_owner(record, claim) for record in records(comment.get("body") or ""))
-            for line in (comment.get("body") or "").splitlines()
-            if line.startswith(("Next action: ", "Wait resolution: "))
-        }
-        ownership_status = "\n".join(line for line in ownership_status.splitlines() if line not in intent_lines)
-    if has_ownership_assertion(ownership_status, own_claim=own_claim):
-        conflicts.append({"source": "current_status", "text": status, "certainty": "ambiguous"})
     released: dict[tuple[str, str], int] = {}
     legacy_released: dict[tuple[str, str], int] = {}
     released_ids: dict[tuple[int, str], int] = {}

@@ -33,6 +33,7 @@ import github_identity
 import github_client
 import github_direction_next
 import github_plan_claim
+import github_plan_wait
 import github_plan_release
 import github_agent
 from github_direction_next import (
@@ -92,6 +93,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "show": ("rest_api", "rest_core", False),
     "claim": ("composite", "rest_core", True),
     "release-claim": ("composite", "rest_core", True),
+    "wait": ("composite", "rest_core", True),
     "create": ("composite", "mixed", True),
     "update-section": ("rest_api", "rest_core", True),
     "link": ("rest_api", "rest_core", True),
@@ -2023,6 +2025,8 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
         comment_status = next((section_map(c.get("body") or "").get("Current Status", "")
                                for c in reversed(comments) if "Current Status" in section_map(c.get("body") or "")), "")
         status = "\n\n".join(part for part in (status, comment_status) if part)
+    trusted = set(github_identity.configured_bot_logins()) | {issue['repo'].split('/')[0]}
+    issue["claim_wait"] = github_plan_wait.current(issue, comments, trusted)
     return issue, status, comments, can_update
 
 
@@ -2269,54 +2273,29 @@ def claim_once(args: argparse.Namespace) -> None:
     record_kind = "issue"
     retained_waits: dict[int, str] | None = None
     previous_wait_labels: set[str] = set()
+    previous_wait = ""
+    planned_wait = ""
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
-        waiting_status = github_plan_claim.ownership_text(waiting_status, strip_quotes=False)
+        wait = waiting_issue["claim_wait"]
         status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
-        parked_status = re.sub(r"\*\*(Parked until)(:?)\*\*(:?)", r"\1\2\3", waiting_status, flags=re.I)
-        # Parse full fields before normalizing explicit absence, so a wrapped
-        # continuation cannot disappear with its first no-wait line.
-        reports = [row for row in github_direction_next.waiting_records(compact_issue(waiting_issue), waiting_status)
-                   if not github_plan_claim.no_wait_reason(row["waiting_for"], field="Waiting for")
-                   or re.search(r"(?im)^\s*(?:[-*]\s+)?Parked until:", parked_status)]
-        blocked_text = any(
-            (match := re.match(r"\s*(?:[-*]\s+)?Blocked by:\s*(.+)", line, re.I))
-            and not github_plan_claim.no_wait_reason(match.group(1), field="Blocked by")
-            for line in waiting_status.splitlines()
-        )
-        has_wait = bool(status_state in {"waiting", "blocked", "stale", "done"} or reports or blocked_text
-                        or re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked|stale|done)\b", waiting_status))
-        if has_wait:
-            if not args.wait_resolved:
-                raise ClassifiedPlanError("claim_wait_unresolved", "Verify the recorded wait or hold, then pass --wait-resolved with existing resolution evidence",
-                                          payload={"previous_current_status": waiting_status})
+        has_wait = bool(wait["state"] != "clear" or status_state in {"waiting", "blocked", "stale", "done"})
+        if has_wait and not args.wait_resolved:
+            raise ClassifiedPlanError("claim_wait_unresolved",
+                "Review the structured wait with gh-plan.py wait. For a missing legacy record, read the full "
+                "issue/discussion once and record its waits or verified absence; --wait-resolved records existing resolution evidence.",
+                payload={"structured_wait": wait, "previous_current_status": waiting_status,
+                         "review_required": wait["state"] == "review"})
         return has_wait
 
-    def hold_fields(status_to_check: str) -> str:
-        status_to_check = github_plan_claim.ownership_text(status_to_check, strip_quotes=False)
-        lines = []
-        in_hold = False
-        for line in status_to_check.splitlines():
-            if line.strip().startswith("<!-- " + github_plan_claim.MARKER):
-                in_hold = False
-                continue
-            parked = re.match(r"\s*(?:[-*]\s+)?State:\s*(?:waiting|parked|blocked)\b.*", line, re.I)
-            if parked:
-                lines.append("Parked until: " + parked.group().strip())
-            if re.match(r"\s*(?:[-*]\s+)?(?:State|Worker|Session|Branch|Next action|Last verified|Blocked by|Waiting for|Parked until):", line, re.I):
-                in_hold = bool(re.match(r"\s*(?:[-*]\s+)?(?:Blocked by|Waiting for|Parked until):", line, re.I))
-            elif not line.strip():
-                in_hold = False
-            if in_hold:
-                lines.append(line)
-        return "\n".join(lines)
-
     def check_issue_holds(checked_issue: dict[str, Any], checked_status: str) -> None:
-        expected = hold_fields(previous_status) or "Blocked by: None.\nWaiting for: Nothing."
-        observed_holds = hold_fields(checked_status) or "Blocked by: None.\nWaiting for: Nothing."
+        expected = previous_wait
+        observed_holds = github_plan_wait.marker(checked_issue["claim_wait"])
         wait_labels = set(normalize_labels(checked_issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
+        if observed_holds not in {expected, planned_wait}:
+            raise PlanError("Structured wait changed during claim readback; verify the new record before recovery")
         if handoff_id and not refresh_pr and (observed_holds != expected or wait_labels != previous_wait_labels):
             raise PlanError("Issue holds changed during retained-handoff readback; verify the new evidence before recovery")
 
@@ -2351,6 +2330,7 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Retained handoff requires a new task branch, separate from every retained PR/source branch")
         source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
         observed_waits = {}
+        released_target_sessions = set()
         for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
@@ -2371,19 +2351,25 @@ def claim_once(args: argparse.Namespace) -> None:
             competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
             if competing:
                 refuse(competing)
+            released_target_sessions.update(record["session"] for _, record, _ in
+                                             github_plan_claim.exact_released_sources(target_comments))
             if not refresh_pr or pull["number"] == target_number:
                 target_status = sections.get("Current Status", "")
+                target_wait = github_plan_wait.current(target, target_comments,
+                    set(github_identity.configured_bot_logins()) | {target_repo.split('/')[0]})
+                target["claim_wait"] = target_wait
                 if check_wait(target, target_status, target=True):
                     wait_labels = sorted(set(normalize_labels(target.get("labels"))) &
                                          {config["labels"][key] for key in ("waiting", "blocked", "stale", "done")})
-                    observed_waits[pull["number"]] = "Labels: " + ", ".join(wait_labels) + "\n" + hold_fields(target_status)
+                    observed_waits[pull["number"]] = "Labels: " + ", ".join(wait_labels) + "\n" + github_plan_wait.marker(target_wait)
         if not refresh_pr:
             if retained_waits is not None and observed_waits != retained_waits:
                 raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
             retained_waits = observed_waits
         target_inventory = github_plan_claim.local_inventory(target_repo, target_number)
         source_session = github_plan_claim.records(next(c for c in source_comments if c.get("id") == args.resume_from)["body"])[0]["session"]
-        if any(peer.get("sessionId") == source_session for peer in target_inventory["sessions"]):
+        if any(peer.get("sessionId") in released_target_sessions | {source_session}
+               and peer.get("sessionId") != claim["session"] for peer in target_inventory["sessions"]):
             refuse([{"source": "source_session", "session": source_session, "certainty": "visible_in_native_inventory"}])
         _, own_comments = github_plan_claim.discussion_evidence("", source_comments, claim)
         for checked_number, checked_repo in ((target_number, target_repo), (number, issue_repo)):
@@ -2442,7 +2428,7 @@ def claim_once(args: argparse.Namespace) -> None:
         )
 
     def check_status_peers(status_to_check: str, status_comments: list[dict[str, Any]]) -> None:
-        sessions = set(github_plan_claim.released_status_lines(status_to_check, status_comments).values())
+        sessions = {record["session"] for _, record, _ in github_plan_claim.exact_released_sources(status_comments)}
         if not sessions:
             return
         fresh_inventory = github_plan_claim.local_inventory(target_repo, number)
@@ -2570,12 +2556,15 @@ def claim_once(args: argparse.Namespace) -> None:
         if record_kind == "pr" and (refresh_pr or handoff_id):
             raise PlanError("PR-scoped claims use --resume-from for released ownership; --refresh-pr and --handoff-comment require a canonical issue")
         previous_status = status
+        previous_wait = github_plan_wait.marker(issue["claim_wait"])
         previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
         conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from, repo=issue_repo, number=number, issue_url=issue.get("html_url"))
         if conflicts:
             refuse_or_route(conflicts, comments)
         check_wait(issue, status)
+        planned_wait = previous_wait if handoff_id and not refresh_pr else github_plan_wait.marker(
+            github_plan_wait.reviewed(evidence=args.wait_resolved or issue["claim_wait"]["evidence"]))
         if owned:
             claim = {key: owned[0][key] for key in claim}
         retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
@@ -2593,7 +2582,7 @@ def claim_once(args: argparse.Namespace) -> None:
                                                        retained_repo=target_repo if handoff_id else None,
                                                        inventory_repo=target_repo,
                                                        recorded_branches=github_plan_claim.recorded_claim_branches(status, comments),
-                                                       status_sessions=set(github_plan_claim.released_status_lines(status, comments).values()))
+                                                       status_sessions={record["session"] for _, record, _ in github_plan_claim.exact_released_sources(comments)})
         if conflicts:
             refuse_or_route(conflicts, comments)
         check_pr_artifacts(status, comments)
@@ -2611,6 +2600,7 @@ def claim_once(args: argparse.Namespace) -> None:
             + (f"Agent override (Director-authorized): {override}\n\n" if override else "")
             + admission_record
             + github_plan_claim.marker(claim)
+            + "\n" + planned_wait
             + (f"\n\nConflict-only refresh: {claim['refresh_pr']}; released claim {args.resume_from}; handoff comment {handoff_id}." if refresh_pr else "")
             + (f"\n\nRetained-work handoff: released claim {args.resume_from}; handoff comment {handoff_id}. This ordinary successor claim preserves retained PRs and their product holds." if handoff_id and not refresh_pr else "")
             + wait_receipt
@@ -2639,14 +2629,14 @@ def claim_once(args: argparse.Namespace) -> None:
         if not any(github_plan_claim.same_owner(record, claim) for record in observed):
             raise PlanError("Claim was not visible on readback; do not create a worktree")
         completed.append("claim_readback")
-        holds = hold_fields(previous_status) if handoff_id and not refresh_pr else ""
         status_text = (
             f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
             f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
-            + (holds + "\n" if holds else "Blocked by: None.\nWaiting for: Nothing.\n")
+            + "Blocked by: None.\nWaiting for: See the structured wait record below.\n"
             + f"Last verified: {claim['claimed_at']}\n\n"
             + (f"Wait resolution: {args.wait_resolved}\n\n" if handoff_id and not refresh_pr and args.wait_resolved else "")
             + github_plan_claim.marker(claim)
+            + "\n" + planned_wait
             + wait_receipt
         )
         if can_update:
@@ -2675,6 +2665,7 @@ def claim_once(args: argparse.Namespace) -> None:
             refuse(conflicts)
         check_status_peers(final_status, final_comments)
         check_pr_artifacts(final_status, final_comments)
+        check_wait(final, final_status)
         check_issue_holds(final, final_status)
         check_native_blockers()
         handoff_preflight(final_comments, final_status)
@@ -2721,12 +2712,100 @@ def claim_once(args: argparse.Namespace) -> None:
           "completed_steps": completed})
 
 
+def cmd_wait(args: argparse.Namespace) -> None:
+    try:
+        wait_once(args)
+    except github_comment_core.CommentError as exc:
+        raise plan_error_from_comment(exc) from exc
+    except (ValueError, OSError) as exc:
+        raise PlanError(str(exc)) from exc
+
+
+def wait_once(args: argparse.Namespace) -> None:
+    """Review a legacy record once, or explicitly maintain a structured wait."""
+    repo = default_repo(args.repo)
+    if args.all:
+        if args.issue or args.clear or args.waiting_for or args.ends_when or args.evidence:
+            raise PlanError("--all is a read-only inventory; choose a single issue to record a review")
+        _, issues = collect_paged_rest_items(f"/repos/{repo}/issues", query={"state": "open"},
+                                            bucket="rest_core", step_prefix="wait_inventory")
+        review = []
+        checked = 0
+        trusted = set(github_identity.configured_bot_logins()) | {repo.split('/')[0]}
+        for issue in issues:
+            if "pull_request" in issue:
+                continue
+            _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{issue['number']}/comments",
+                                                  query={}, bucket="rest_core", step_prefix="wait_inventory_comments")
+            checked += 1
+            try:
+                wait = github_plan_wait.current(issue, comments, trusted)
+                reason = "No reviewed structured record" if wait["state"] == "review" else None
+            except ValueError as exc:
+                reason = str(exc)
+            if reason:
+                review.append({"repo": repo, "number": issue["number"], "url": issue.get("html_url"),
+                               "reason": reason, "next_action": f"gh-plan.py --repo {repo} wait {issue['number']}"})
+        emit({"ok": True, "repo": repo, "checked": checked, "review_required": review,
+              "writes": [], "next_action": "Review each listed record once before its next claim; no prose-only wait or owner was cleared"})
+        return
+    if not args.issue:
+        raise PlanError("Choose an issue or --all for the read-only legacy review inventory")
+    args = claim_reference(args)
+    issue, status, comments, _ = claim_snapshot(args.issue, repo)
+    current = issue["claim_wait"]
+    if not args.clear and not args.waiting_for:
+        if args.ends_when or args.evidence:
+            raise PlanError("Choose --clear or --waiting-for with --ends-when and --evidence")
+        emit({"ok": True, "review_required": current["state"] == "review", "structured_wait": current,
+              "issue": compact_issue(issue), "review_evidence": {
+                  "body": issue.get("body") or "", "comments": comments},
+              "next_action": "Read the full evidence once; record each actual person/event hold with "
+                             "--waiting-for and --ends-when, or --clear after verifying absence. "
+                             "The review also covers any prose-only current owner; preserve it as a wait until released."})
+        return
+    try:
+        wait = github_plan_wait.reviewed(evidence=args.evidence or "", waiting_for=args.waiting_for,
+                                        ends_when=args.ends_when)
+    except ValueError as exc:
+        raise PlanError(str(exc)) from exc
+    # A dedicated authored comment works for PRs and contributor issues without
+    # replacing anyone's prose. Later status edits do not erase the record.
+    actor, gh_cmd, expected_actor = comment_route()
+    kind = "pr" if "pull_request" in issue else "issue"
+    latest_issue, _, latest_comments, _ = claim_snapshot(args.issue, repo)
+    if latest_issue["claim_wait"] != current or latest_issue.get("body") != issue.get("body") or latest_comments != comments:
+        raise PlanError("Wait evidence changed before the review write; read the new record and discussion")
+    result = github_comment_core.comment(kind, issue["number"],
+        "Structured wait review\n\n" + github_plan_wait.marker(wait), repo=issue["repo"],
+        gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION, dedupe_body=True)
+    try:
+        observed, _, _, _ = claim_snapshot(args.issue, repo)
+        if observed["claim_wait"] != wait:
+            raise PlanError("Structured wait changed or was not visible on readback; preserve the newer record")
+    except (PlanError, ValueError, OSError) as exc:
+        raise PlanError(str(exc), payload={"structured_wait": wait, "comment": result,
+                        "completed_steps": ["post_wait"],
+                        "recovery": "Read the published comment and latest wait before any retry"}) from exc
+    emit({"ok": True, "actor": actor, "structured_wait": wait, "comment": result,
+          "issue": compact_issue(issue)})
+
+
 def cmd_create(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     config = load_config(repo)
     title = (args.title_flag or args.title or "").strip()
     if not title:
         raise PlanError("Issue title is required (pass as positional argument or --title)")
+    wait = None
+    if getattr(args, "wait_clear", False) or getattr(args, "waiting_for", None):
+        try:
+            wait = github_plan_wait.reviewed(evidence=args.wait_evidence or "",
+                                             waiting_for=args.waiting_for, ends_when=args.ends_when)
+        except ValueError as exc:
+            raise PlanError(str(exc)) from exc
+    elif getattr(args, "ends_when", None) or getattr(args, "wait_evidence", None):
+        raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
     completed_steps: list[str] = []
     actor, exact = find_existing_plan_issues(repo, title, completed_steps=completed_steps)
     if exact and not args.force:
@@ -2769,6 +2848,8 @@ def cmd_create(args: argparse.Namespace) -> None:
     if args.finish_line:
         body = replace_section(body, "Finish Line", args.finish_line)
     body = ensure_managed_provenance(body)
+    if wait is not None:
+        body = github_plan_wait.without_records(body) + "\n\n" + github_plan_wait.marker(wait)
     project_config = config.get("projects") or {}
     project = args.project
     if project is None and project_config.get("enabled", True):
@@ -5189,6 +5270,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Why milestone work cannot be linked into its Track graph yet")
     p.set_defaults(func=cmd_claim)
 
+    p = sub.add_parser("wait", help="Report legacy evidence or record a reviewed structured wait; never parses prose")
+    p.add_argument("issue", nargs="?")
+    p.add_argument("--all", action="store_true", help="Read every open issue/discussion and list records needing one review")
+    choice = p.add_mutually_exclusive_group()
+    choice.add_argument("--clear", action="store_true", help="Record verified absence/resolution after full review")
+    choice.add_argument("--waiting-for", action="append", help="Person, decision or external event; repeat for every wait")
+    p.add_argument("--ends-when", action="append", help="Observable ending condition; repeat in the same order as --waiting-for")
+    p.add_argument("--evidence", help="Existing decision or full-record review evidence; grants no authority")
+    p.set_defaults(func=cmd_wait)
+
     p = sub.add_parser("create", help="Create a durable plan issue")
     p.add_argument("title", nargs="?", help="Issue title (positional)")
     p.add_argument("--title", dest="title_flag", help="Issue title (flag)")
@@ -5203,6 +5294,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--focus", choices=["Now", "Next", "Waiting", "Later"], help="Explicit Project field edit; not part of routine planning")
     p.add_argument("--manager", help="Explicit Project field edit; configured managers are not copied")
     p.add_argument("--finish-line", help="Set the issue body's Finish Line only")
+    choice = p.add_mutually_exclusive_group()
+    choice.add_argument("--wait-clear", action="store_true", help="Record reviewed absence of person/event/owner holds at creation")
+    choice.add_argument("--waiting-for", action="append", help="Record every person/event hold; repeat per wait")
+    p.add_argument("--ends-when", action="append", help="Ending condition for each wait, in order")
+    p.add_argument("--wait-evidence", help="Existing decision or full-record review evidence")
     p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("update-section", help="Patch one markdown section")
@@ -5347,6 +5443,8 @@ def main() -> None:
         args.command,
         ("helper", "unknown", False),
     )
+    if args.command == "wait" and not args.clear and not args.waiting_for:
+        CURRENT_IS_WRITE = False
     try:
         args.func(args)
     except ClassifiedPlanError as exc:

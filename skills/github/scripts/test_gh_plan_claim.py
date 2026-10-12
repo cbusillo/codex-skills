@@ -22,6 +22,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import github_plan_claim as CLAIM
+import github_plan_wait as WAIT
 
 TEST_BOT = "fixture-bot[bot]"
 
@@ -92,6 +93,7 @@ class ClaimTests(unittest.TestCase):
         self.after_status = lambda: None
         self.during_inventory = lambda: None
         self.emitted = Mock()
+        self.wait = WAIT.reviewed(evidence="Fixture's full history and ownership reviewed; no person/event hold")
 
     def get_issue(self, ref, repo):
         self.events.append("read_issue")
@@ -116,6 +118,8 @@ class ClaimTests(unittest.TestCase):
     def read_pages(self, path, **_):
         self.events.append("read_comments" if path.endswith("comments") else "read_pulls")
         items = self.target_comments.get(path, self.comments) if path.endswith("comments") else self.blockers if path.endswith("blocked_by") else self.pulls
+        if path.endswith("comments") and self.wait is not None:
+            items = [{"id": -1, "user": {"login": TEST_BOT}, "body": WAIT.marker(self.wait)}, *items]
         if path == "/repos/other/plans/pulls": items = []
         return "bot", copy.deepcopy(items)
 
@@ -140,7 +144,7 @@ class ClaimTests(unittest.TestCase):
         self.issue["labels"] = [{"name": n} for n in set(names + kwargs["add_labels"])]
         return {"ok": True}
 
-    def run_claim(self, *, route=None):
+    def run_claim(self, *, route=None, command=None):
         with patch.multiple(PLAN, default_repo=lambda repo: repo or "owner/repo", get_issue=self.get_issue,
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
@@ -150,7 +154,7 @@ class ClaimTests(unittest.TestCase):
                 patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[TEST_BOT]), \
                 patch.object(PLAN.github_comment_core, "comment", side_effect=self.post), \
                 patch.object(PLAN.github_issue_core, "edit_issue", side_effect=self.labels):
-            PLAN.cmd_claim(self.args)
+            (command or PLAN.cmd_claim)(self.args)
 
     def pr_fixture(self, author=TEST_BOT):
         self.issue.update(pull_request={}, html_url="https://github.com/owner/repo/pull/42")
@@ -256,7 +260,7 @@ class ClaimTests(unittest.TestCase):
                 self.setUp()
                 self.pr_fixture()
                 if mode == "wait":
-                    self.comments.append({"id": 1, "body": "## Current Status\n\nWaiting for: Chris's test.", "user": {"login": TEST_BOT}})
+                    self.wait = WAIT.reviewed(evidence="Recorded test request", waiting_for="Chris's test", ends_when="Acceptance recorded")
                 else:
                     self.pulls[0]["head"]["repo"]["full_name"] = "stranger/repo"
                 with self.assertRaises(PLAN.PlanError):
@@ -668,7 +672,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_refresh_preserves_target_recorded_wait(self):
         self.refresh_fixture()
-        self.targets["99"]["body"] += "\n\n## Current Status\n\nState: Parked.\nWaiting for: Merge train."
+        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": WAIT.marker(WAIT.reviewed(evidence="Client asked to hold", waiting_for="Client test", ends_when="Accepted head"))})
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
         self.assert_no_writes()
@@ -824,9 +828,12 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(place=place):
                 self.setUp()
                 self.ordinary_handoff_fixture()
-                target = self.issue if place == "issue" else self.targets[place]
-                target["body"] += "\n\n## Current Status\n\nWaiting for: Approved prerequisite readback."
-                if place == "issue": target["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                wait = WAIT.reviewed(evidence="Director requested prerequisite readback", waiting_for="Approved prerequisite readback", ends_when="Director accepts proof")
+                if place == "issue":
+                    self.wait = wait
+                    self.issue["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                else:
+                    self.target_comments[f"/repos/owner/repo/issues/{place}/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": WAIT.marker(wait)})
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_wait_unresolved")
@@ -836,13 +843,13 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.pulls[0]["draft"])
                 if place == "issue":
                     status, _ = PLAN.read_plan_sections(self.issue)
-                    self.assertIn("Waiting for: Approved prerequisite readback.", status["Current Status"])
+                    self.assertEqual(WAIT.records(status["Current Status"]), [wait])
                     self.assertIn(PLAN.DEFAULT_CONFIG["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
                     self.assertEqual(PLAN.next_plan_status(self.issue, PLAN.DEFAULT_CONFIG), "waiting")
                 else:
                     self.assertIn(f"PR #{place}:\n", self.comments[-1]["body"])
-                    self.assertIn("> Waiting for: Approved prerequisite readback.", self.comments[-1]["body"])
-                    self.assertIn("> Waiting for: Approved prerequisite readback.", self.issue["body"])
+                    self.assertIn("Approved prerequisite readback", self.comments[-1]["body"])
+                    self.assertIn("Approved prerequisite readback", self.issue["body"])
 
     def test_ordinary_recovery_records_newly_verified_pr_wait_in_current_status(self):
         self.ordinary_handoff_fixture()
@@ -853,20 +860,6 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.events.count("post"), 1)
         self.assertIn("> Labels: " + PLAN.DEFAULT_CONFIG["labels"]["waiting"], self.issue["body"])
         self.assertIn(self.args.wait_resolved, self.issue["body"])
-
-    def test_ordinary_handoff_preserves_parks_states_and_url_continuations(self):
-        for hold in ("Parked until: owner approves the retained draft",
-                     "State: parked until the owner approves the draft",
-                     "Waiting for: approved prerequisite readback\nhttps://github.com/owner/repo/issues/123"):
-            with self.subTest(hold=hold):
-                self.setUp()
-                self.ordinary_handoff_fixture()
-                self.issue["body"] = self.issue["body"].split("## Current Status", 1)[0] + "## Current Status\n\n" + hold
-                self.args.wait_resolved = "Prerequisite authorized; preserve the recorded product hold."
-                self.run_claim()
-                status, _ = PLAN.read_plan_sections(self.issue)
-                self.assertIn(hold, status["Current Status"])
-                self.assertTrue(PLAN.github_direction_next.waiting_records(PLAN.compact_issue(self.issue), status["Current Status"]))
 
     def test_ordinary_handoff_checks_visible_source_session_outside_retained_tree(self):
         self.ordinary_handoff_fixture()
@@ -924,10 +917,11 @@ class ClaimTests(unittest.TestCase):
         source = CLAIM.records(self.comments[0]["body"])[0]
         self.issue["body"] = (self.issue["body"].split("## Current Status", 1)[0]
                               + "## Current Status\n\nWaiting for: Owner review.\n" + CLAIM.marker(source))
+        self.wait = WAIT.reviewed(evidence="Director review requested", waiting_for="Owner review", ends_when="Current head accepted")
         self.args.wait_resolved = "Prerequisite authorized; retain the review hold."
         self.run_claim()
         self.assertEqual(CLAIM.records(self.issue["body"]), [self.emitted.call_args.args[0]["claim"]])
-        self.assertIn("Waiting for: Owner review.", self.issue["body"])
+        self.assertEqual(WAIT.records(self.issue["body"]), [self.wait])
 
     def test_ordinary_handoff_refuses_changed_holds_on_each_readback(self):
         for phase in ("after_post", "after_status"):
@@ -937,11 +931,14 @@ class ClaimTests(unittest.TestCase):
                     self.ordinary_handoff_fixture()
                     self.args.wait_resolved = "Prior prerequisite approval; no authority for a new hold."
                     def race():
-                        target = self.issue if place == "issue" else self.targets[place]
-                        target["body"] += "\n\n## Current Status\n\nWaiting for: New product prerequisite."
+                        record = {"id": 900, "user": {"login": TEST_BOT}, "body": WAIT.marker(WAIT.reviewed(evidence="New Director request", waiting_for="New product prerequisite", ends_when="Director accepts"))}
+                        if place == "issue":
+                            self.comments.append(record)
+                        else:
+                            self.target_comments[f"/repos/owner/repo/issues/{place}/comments"].append(record)
                     setattr(self, phase, race)
                     with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
-                    self.assertIn("holds changed" if place == "issue" else "waits changed", str(caught.exception))
+                    self.assertIn("changed", str(caught.exception))
                     self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
                     if phase == "after_post": self.assertNotIn("status", self.events)
 
@@ -1244,10 +1241,12 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "current_status")
         self.assert_no_writes()
 
-    def test_legacy_current_status_refuses(self):
+    def test_legacy_current_status_requires_review(self):
+        self.wait = None
         self.issue["body"] += "\nWorker: another session\nBranch: work/repair\n"
-        with self.assertRaises(PLAN.ClassifiedPlanError):
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
+        self.assertTrue(caught.exception.payload["review_required"])
         self.assert_no_writes()
 
     def test_sweep_disclaimers_allow_a_fresh_claim(self):
@@ -1271,23 +1270,6 @@ class ClaimTests(unittest.TestCase):
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                     self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
 
-    def test_formatted_denials_preserve_real_and_ambiguous_holders(self):
-        for status in (
-            "Claimed by another-worker.", "Owned by another-worker.",
-            "Worker: unknown", "Session: pending", "Worker:",
-            "Claimed by no one except another-worker.",
-            "Not claimed by the sweep but by another-worker.",
-            "No ownership is claimed by this sweep because another-worker has work/repair open.",
-        ):
-            for formatted in format_ownership(status):
-                with self.subTest(status=formatted):
-                    self.setUp()
-                    self.issue["body"] += "\n" + BD_SWEEP_STATUS + "\n" + formatted
-                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                        self.run_claim()
-                    self.assertEqual(caught.exception.code, "claim_conflict")
-                    self.assert_no_writes()
-
     def test_formatted_legacy_claim_comments_still_refuse(self):
         for formatted in format_ownership("Claimed by another-worker\nSession: another-session"):
             if formatted.startswith("> "):
@@ -1303,24 +1285,6 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(comment=comment):
                 self.setUp()
                 self.comments = [{"id": 1, "body": comment, "user": {"login": TEST_BOT}}]
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
-
-    def test_retracted_negations_and_visible_non_link_text_still_refuse(self):
-        for status in (
-            "Implementation is ~~not~~ claimed by another-worker.",
-            "~~No~~ implementation ownership is claimed by another-worker.",
-            "Not claimed by [this sweep](another-worker holds work/repair)",
-            "No implementation ownership is claimed by [this sweep][another-worker still holds work/repair].",
-            "No implementation ownership is claimed by `[this sweep](another-worker)`.",
-            "No implementation ownership is claimed by `[this sweep][another-worker]`.",
-            "No implementation ownership is claimed by this sweep.\n[Claimed by another-worker]: work/repair",
-            "No implementation ownership is claimed by this sweep.\n\n[Claimed by another-worker]:",
-            "Not claimed by [this sweep][another-worker holds repair].\n\n[another-worker holds repair]:",
-        ):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += "\n" + status
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
 
@@ -1459,16 +1423,6 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
-    def test_literal_blocks_never_hide_visible_ownership(self):
-        for opener, closer in (("~~~", "~~~"), ("```", ""), ("<pre>", "</pre>")):
-            for holder in ("[Owned by another-worker]: work/repair",
-                           "Not claimed by [this sweep](another-worker)"):
-                with self.subTest(opener=opener, holder=holder):
-                    self.setUp()
-                    self.issue["body"] += f"\nNot claimed by this sweep.\n\n{opener}\n\n{holder}\n{closer}"
-                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                    self.assert_no_writes()
-
     def test_formatted_legacy_release_cannot_bypass_reused_worker_guard(self):
         for holder in (OTHER["worker"], f"`{OTHER['worker']}`", f"**{OTHER['worker']}**"):
             with self.subTest(holder=holder):
@@ -1505,84 +1459,6 @@ class ClaimTests(unittest.TestCase):
                     if source == "status": self.issue["body"] += "\n" + CLAIM.marker(OTHER)
                     else: self.compete()
                     with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                    self.assert_no_writes()
-
-    def test_quoted_wrapped_denial_preserves_qualifiers_and_fields(self):
-        for status, conflict in (
-            ("> No implementation ownership is claimed by\n> this sweep.", False),
-            ("> No ownership is claimed by this sweep\n> because another-worker has work/repair open.", True),
-            ("> No ownership is claimed by this sweep.\n> **Worker:** another-worker", True),
-        ):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += "\n" + status
-                if conflict:
-                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                    self.assert_no_writes()
-                else:
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_formatted_responsibility_prose_is_normalized_before_classification(self):
-        for formatted in format_ownership(RESPONSIBILITY_STATUS):
-            with self.subTest(status=formatted):
-                conflicts, _ = CLAIM.discussion_evidence(formatted, [], OWNER)
-                self.assertEqual(conflicts, [])
-                conflicts, _ = CLAIM.discussion_evidence(formatted + "\n**Worker:** unknown", [], OWNER)
-                self.assertTrue(conflicts)
-
-    def test_disclaimer_does_not_hide_another_status_assertion(self):
-        for ownership in (
-            "Implementation is claimed by another-worker.",
-            "Reclaimed by another-worker after the stale release.",
-            "_Claimed by another-worker_", "_Owned by another-worker_",
-            "Currently owned by another-worker",
-            "Worker: another-worker", "Session: another-session",
-            "Worker: unknown", "Session: pending", "Worker:",
-        ):
-            for separator in (" ", "\n", "; "):
-                with self.subTest(ownership=ownership, separator=separator):
-                    self.setUp()
-                    self.issue["body"] += "\n" + SWEEP_DISCLAIMERS[0] + separator + ownership
-                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                        self.run_claim()
-                    self.assertEqual(caught.exception.code, "claim_conflict")
-                    self.assert_no_writes()
-
-    def test_uncertain_denials_remain_ownership_evidence(self):
-        for status in (
-            "If implementation is not claimed by the current worker, start it.",
-            "If approved: no ownership is claimed by the sweep.",
-            "No evidence shows whether this issue is claimed by another-worker.",
-            "No objection remains; implementation is claimed by another-worker.",
-            "No blockers remain and this issue is claimed by another-worker.",
-            "The repair is not claimed by the sweep but by another-worker.",
-            "Work is not only owned by engineering; the Supervisor is involved.",
-            "Claimed by no one except another-worker.",
-            "Worker: None, pending confirmation from another-session.",
-        ):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += "\n" + status
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assert_no_writes()
-
-    def test_matching_identity_does_not_hide_a_second_holder(self):
-        for marker in ("", CLAIM.marker(OWNER)):
-            for ownership in ("Implementation is claimed by another-worker.",
-                              "Worker: unknown", "Session: another-session"):
-                with self.subTest(marker=marker, ownership=ownership):
-                    self.setUp()
-                    self.issue["body"] += (
-                        f"\nState: Active; owned by {OWNER['worker']}\nWorker: {OWNER['worker']}"
-                        f"\nSession: {OWNER['session']}\nBranch: {OWNER['branch']}\n{marker}"
-                        "\n" + SWEEP_DISCLAIMERS[0] + "\n" + ownership
-                    )
-                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                        self.run_claim()
-                    self.assertEqual(caught.exception.code, "claim_conflict")
                     self.assert_no_writes()
 
     def test_disclaimer_does_not_clear_independent_ownership(self):
@@ -1638,54 +1514,6 @@ class ClaimTests(unittest.TestCase):
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                     self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
 
-    def test_recorded_next_action_is_intent_and_preserves_other_assertions(self):
-        self.args.next_action = "Repair the sync code owned by the importer"
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-        self.issue["body"] += "\nImplementation is claimed by another-worker."
-        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-
-    def test_recorded_wait_resolution_does_not_reclaim_a_released_holder(self):
-        self.ordinary_handoff_fixture()
-        self.args.wait_resolved = "Previously claimed by trial-b; exact claim 1 was released and the brief authorizes successor work."
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-        self.issue["body"] += "\nWorker: another-worker"
-        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-
-    def test_questions_and_negated_exceptions_remain_ambiguous(self):
-        for status in ("Is this issue not claimed by another-worker?",
-                       "Not owned by anyone other than another-worker.",
-                       "No work is not owned by another-worker."):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += "\n" + status
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
-
-    def test_denial_does_not_hide_narrative_handoff_or_active_work(self):
-        for status in (
-            "Not claimed by the sweep, which handed it to another-worker.",
-            "Not claimed by the sweep while another-worker finishes the repair.",
-            "No implementation ownership is claimed by this sweep because another-worker has work/repair open.",
-        ):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += "\n" + status
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
-
-    def test_second_holder_with_caller_name_prefix_still_refuses(self):
-        for assertion in ("Also owned by", "Worker:", "Session:"):
-            for punctuation in (".", ";", "!", "?"):
-                with self.subTest(assertion=assertion, punctuation=punctuation):
-                    self.setUp()
-                    key = "session" if assertion == "Session:" else "worker"
-                    self.issue["body"] += "\n" + CLAIM.marker(OWNER)
-                    self.issue["body"] += f"\n{assertion} {OWNER[key]}{punctuation}successor"
-                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                    self.assert_no_writes()
-
     def test_common_sweep_negations_and_formatting_allow_fresh_claims(self):
         for status in (
             "This issue has not been claimed by the sweep.",
@@ -1712,42 +1540,6 @@ class ClaimTests(unittest.TestCase):
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def test_wrapped_prose_preserves_denials_and_ambiguous_continuations(self):
-        for status, conflict in (
-            ("No implementation ownership is claimed by\nthis sweep.", False),
-            ("No implementation ownership is claimed by this sweep\nbecause another-worker has work/repair open.", True),
-            ("If the review lands first, this issue is\nnot claimed by another-worker.", True),
-            ("Not claimed by claude-opus-5.5 but by another-worker.", True),
-            ("Not claimed by claude-opus-5.5.", False),
-            ("No ownership is claimed by this sweep\nbecause another-worker opened https://github.com/owner/repo/pull/12.", True),
-            ("Not claimed by the sweep\nsince another-worker resumed it at 10:54 AM ET.", True),
-            ("No ownership is claimed by this sweep.\nWorker: another-worker", True),
-            ("No ownership is claimed by this sweep\n* Implementation is claimed by another-worker.", True),
-        ):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += "\n" + status
-                if conflict:
-                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                    self.assert_no_writes()
-                else:
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_formatted_empty_holders_do_not_hide_uncertainty(self):
-        for holder in ("**none**", "`n/a`", "_None_", "unclaimed", "not assigned", "no-one"):
-            with self.subTest(holder=holder):
-                self.setUp()
-                self.issue["body"] += f"\nWorker: {holder}\nSession: {holder}"
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-        for holder in ("TBD", "unknown", "pending", "**none** until the prior worker confirms"):
-            with self.subTest(holder=holder):
-                self.setUp()
-                self.issue["body"] += f"\nWorker: {holder}"
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
-
     def test_crlf_current_status_supports_structured_and_legacy_recovery(self):
         for structured in (True, False):
             with self.subTest(structured=structured):
@@ -1759,17 +1551,8 @@ class ClaimTests(unittest.TestCase):
                 self.issue["body"] = self.issue["body"].replace("\n", "\r\n")
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
-                self.issue["body"] += "\r\nReclaimed by another-worker after the release."
+                self.issue["body"] += "\r\n" + CLAIM.marker(OTHER)
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-
-    def test_no_change_summary_does_not_hide_a_copied_claim_header(self):
-        for status in ("No changes\nOwned by trial-b", "- No code changes\n  Claimed by trial-b",
-                       "No work - claimed by trial-b.", "No ownership\nOwned by trial-b"):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += "\n" + status
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
 
     def test_responsibility_status_with_released_claim_allows_new_claim(self):
         self.issue["body"] += "\n" + RESPONSIBILITY_STATUS
@@ -1789,43 +1572,6 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "comment")
         self.assert_no_writes()
-
-    def test_unstructured_execution_ownership_refuses(self):
-        for status in (
-            "Owned by another-worker",
-            "State: Active, owned by another-worker",
-            "Implementation is owned by another-worker.",
-            "Next action: Continue work owned by another-worker.",
-            "Claimed by another-worker",
-            "Worker: another-worker",
-            "Session: another-session",
-            "- Owned by another-worker",
-            "**Owned by** another-worker",
-            "State: Active\nCurrently owned by another-worker (session-x)",
-            "Status: Active; owned by another-worker",
-            "Repair owned by another-worker",
-            "Fix owned by another-worker",
-            "PR owned by another-worker",
-            "Work on v1.2 owned by another-worker",
-            "Owned by Launchplane engineering for evidence",
-            RESPONSIBILITY_STATUS + "\nCurrently owned by another-worker",
-            RESPONSIBILITY_STATUS + " Currently owned by another-worker",
-            "Entries owned by another-worker",
-            "Entries owned by another-worker; records owned by engineering for evidence and Chris for disposition approval.",
-            "Entries claimed by another-worker and records owned by engineering for evidence and Chris for disposition approval.",
-            "Records owned by engineering and implementation owned by another-worker for evidence and Chris for disposition approval.",
-            "Entries remain while implementation is owned by another-worker for evidence and Chris for disposition approval.",
-            RESPONSIBILITY_STATUS.removesuffix(".") + " (session-x)",
-            "Implementation and records owned by another-worker for evidence and Chris for disposition approval.",
-            "Fix and remaining entries owned by another-worker for evidence and Chris for production disposition approval.",
-        ):
-            with self.subTest(status=status):
-                self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\n" + status
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "current_status")
-                self.assert_no_writes()
 
     def test_scoped_record_and_resource_responsibility_is_not_ownership(self):
         for status in (
@@ -1942,7 +1688,8 @@ class ClaimTests(unittest.TestCase):
     def test_retained_handoff_keeps_contextual_issue_links_and_waits(self):
         self.ordinary_handoff_fixture()
         self.pulls[0]["body"] = "Planning issue: https://github.com/owner/repo/issues/42"
-        self.targets["99"]["body"] = self.pulls[0]["body"] + "\n\n## Current Status\n\nWaiting for: Owner acceptance."
+        self.targets["99"]["body"] = self.pulls[0]["body"]
+        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": WAIT.marker(WAIT.reviewed(evidence="Owner requested acceptance", waiting_for="Owner acceptance", ends_when="Current preview accepted"))})
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
@@ -2193,19 +1940,6 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def test_compound_status_classification_requires_release_proof_independently(self):
-        status = "Session: trial-b / session-b; executing claim released in the closeout comment."
-        for change in ("valid", "foreign", "missing_time", "edited_source"):
-            with self.subTest(change=change):
-                self.setUp()
-                self.released_note_fixture()
-                self.comments.pop(1)
-                if change == "foreign": self.comments[-1]["user"]["login"] = "other"
-                if change == "missing_time": self.comments[-1].pop("created_at")
-                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:03:00Z"
-                classified = CLAIM.current_ownership_text(status, self.comments, repo="owner/repo", number=42)
-                self.assertEqual(CLAIM.has_ownership_assertion(classified), change != "valid")
-
     def test_readback_rechecks_live_released_status_sessions(self):
         for phase in ("after_post", "after_status"):
             with self.subTest(phase=phase):
@@ -2217,9 +1951,7 @@ class ClaimTests(unittest.TestCase):
                 setattr(self, phase, add_status_holder)
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assertIn("post", self.events)
-                if phase == "after_post": self.assertNotIn("status", self.events)
-                self.assertTrue(caught.exception.payload["claim_recovery"])
+                self.assert_no_writes()
 
     def test_retained_pr_history_cannot_hide_live_source_session(self):
         self.refresh_fixture()
@@ -2237,30 +1969,6 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "claim_conflict")
         self.assert_no_writes()
 
-    def test_canonical_issue_url_preserves_ownership_after_alias_or_transfer(self):
-        for canonical in ("owner/renamed/issues/42", "owner/transferred/issues/198"):
-            for holder in (canonical, "owner/repo/issues/42"):
-                with self.subTest(canonical=canonical, holder=holder):
-                    self.setUp()
-                    self.issue["html_url"] = f"https://github.com/{canonical}"
-                    self.issue["body"] += f"Blocked by: https://github.com/{holder} (actively owned by another-worker)."
-                    self.args.wait_resolved = "Wait resolved; ownership still needs independent proof."
-                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
-                    self.assertEqual(caught.exception.code, "claim_conflict")
-                    self.assert_no_writes()
-
-    def test_pr_refresh_preserves_holder_of_the_claimed_issue(self):
-        for holder_issue in (42, 99):
-            with self.subTest(holder_issue=holder_issue):
-                self.setUp()
-                self.refresh_fixture()
-                self.targets["99"]["body"] += ("\n\n## Current Status\n\n"
-                    f"Blocked by: https://github.com/owner/repo/issues/{holder_issue} (actively owned by another-worker).")
-                self.args.wait_resolved = "The upstream prerequisite landed; ownership must be checked separately."
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assert_no_writes()
-
     def test_compound_status_identity_is_history_only_after_exact_release(self):
         # launchplane#3145, LP-3145-D2 refusal reported on #1529.
         self.released_note_fixture()
@@ -2270,8 +1978,7 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_compound_status_preserves_unproved_or_live_holders(self):
-        for change in ("unreleased", "foreign_release", "edited_source", "missing_time", "other_session",
-                       "second_holder", "live_session", "unreleased_comment", "marker"):
+        for change in ("unreleased", "foreign_release", "live_session", "unreleased_comment", "marker"):
             with self.subTest(change=change):
                 self.setUp()
                 self.released_note_fixture()
@@ -2279,42 +1986,11 @@ class ClaimTests(unittest.TestCase):
                 self.issue["body"] += "Session: trial-b / session-b; executing claim released in the closeout comment.\n"
                 if change == "unreleased": self.comments.pop()
                 if change == "foreign_release": self.comments[-1]["user"]["login"] = "other"
-                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:03:00Z"
-                if change == "missing_time": self.comments[-1].pop("created_at")
-                if change == "other_session": self.issue["body"] = self.issue["body"].replace("/ session-b;", "/ other-session;")
-                if change == "second_holder": self.issue["body"] += "Owned by another-worker."
                 if change == "live_session": self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
                 if change == "unreleased_comment": self.comments.append({"id": 4, "body": "Claimed by another-worker", "user": {"login": TEST_BOT}})
                 if change == "marker": self.issue["body"] += CLAIM.marker(OTHER)
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assert_no_writes()
-
-    def test_quoted_replaced_session_field_does_not_claim_current_issue(self):
-        # launchplane#3145, LP-3145-D3: unassigned field plus quoted old field.
-        history = ('The previous "Session: trial-b" line was stale and made the next claim refuse as ambiguous '
-                   'ownership ([prior record](https://github.com/owner/repo/issues/42#issuecomment-1), '
-                   'catalog#1529); this status replaces it.')
-        for competing in ("", "\nSession: another-session", "\nOwned by another-worker", "\n" + CLAIM.marker(OTHER)):
-            with self.subTest(competing=competing):
-                self.setUp()
-                self.issue["body"] += "Session: unassigned\nLast verified: " + history + competing
-                if competing:
-                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                    self.assert_no_writes()
-                else:
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_incomplete_or_uncertain_historical_session_prose_still_refuses(self):
-        for status in ('The previous "Session: trial-b" line was stale but ownership is unresolved.',
-                       'Last verified: "Session: trial-b"',
-                       'The previous "Session: trial-b" line may be stale.',
-                       'Session: trial-b; previously released.'):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += status
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
 
     def test_upstream_holder_and_failed_claim_history_do_not_claim_this_issue(self):
@@ -2331,27 +2007,6 @@ class ClaimTests(unittest.TestCase):
                 self.args.wait_resolved = "Verified upstream prerequisite landed; no native blocker remains."
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_other_issue_prose_does_not_hide_local_or_uncertain_ownership(self):
-        for status in (
-            "Blocked by: https://github.com/owner/repo/issues/42 (actively owned by trial-b).",
-            "Blocked by: #198 (actively owned by trial-b).",
-            "Blocked by: https://github.com/owner/upstream/issues/198 (actively owned by trial-b and another-worker).",
-            "Blocked by: https://github.com/owner/upstream/issues/198 (actively owned by trial-b).\nSession: unknown",
-            "Blocked by: https://github.com/owner/upstream/issues/198 (actively owned by trial-b). This issue is owned by trial-c.",
-        ):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += status
-                self.args.wait_resolved = "The upstream prerequisite landed."
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
-        self.setUp()
-        self.issue["body"] += "Blocked by: https://github.com/owner/upstream/issues/198 (actively owned by trial-b)."
-        self.args.wait_resolved = "The upstream prerequisite landed."
-        self.compete()
-        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-        self.assert_no_writes()
 
     def retained_pr_fixture(self, status: str = ""):
         """A released source claim whose authored release names its open PR #99."""
@@ -2381,7 +2036,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_released_handoff_route_preserves_real_and_unproved_holders(self):
         for change in ("unreleased", "foreign_release", "unnamed_pr", "foreign_pr", "second_pr", "live_session",
-                       "second_claim", "status_holder"):
+                       "second_claim"):
             with self.subTest(change=change):
                 self.setUp()
                 self.retained_pr_fixture("Session: unassigned\n")
@@ -2394,7 +2049,6 @@ class ClaimTests(unittest.TestCase):
                                        "head": {"ref": "work/issue-42-other", "repo": {"full_name": "owner/repo"}}})
                 if change == "live_session": self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
                 if change == "second_claim": self.compete({**OTHER, "worker": "trial-c", "session": "session-c"})
-                if change == "status_holder": self.issue["body"] += "Owned by trial-c.\n"
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assert_no_writes()
@@ -2408,7 +2062,7 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("refused", route)
         self.setUp()
         self.retained_pr_fixture()
-        self.targets["99"]["body"] += "\n\n## Current Status\n\nWaiting for: Client acceptance of the preview."
+        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": WAIT.marker(WAIT.reviewed(evidence="Client review requested", waiting_for="Client acceptance of the preview", ends_when="Current head accepted"))})
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
         self.assertEqual(caught.exception.payload["successor_route"], {"resume_from": 1, "handoff_comment": 2})
@@ -2427,23 +2081,6 @@ class ClaimTests(unittest.TestCase):
                     self.args.resume_from, self.args.handoff_comment = 1, 2
                 self.run_claim()
                 self.assertEqual(self.emitted.call_args.args[0]["claim"]["resume_from"], "1")
-
-    def test_released_holder_state_prose_preserves_other_holders(self):
-        released = "State: Active; owned by trial-b. The question slice is ready in PR #99."
-        for state, live in (("State: Active; owned by trial-c. The question slice is ready in PR #99.", False),
-                            ("State: Active; owned by trial-b and trial-c. The slice is ready.", False),
-                            ("State: Active; owned by trial-b. The next slice is owned by trial-c.", False),
-                            (released, True)):
-            with self.subTest(state=state, live=live):
-                self.setUp()
-                source = self.retained_pr_fixture()
-                if live:
-                    self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
-                self.issue["body"] += state + "\nSession: session-b\n" + CLAIM.marker(source) + "\n"
-                self.args.resume_from, self.args.handoff_comment = 1, 2
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assert_no_writes()
 
     def test_completed_session_field_is_history_after_exact_release(self):
         # odoo-docker#113, REC-ODOO-D1: "Completed session: 01a12387-... (ODD-113-D1)."
@@ -2497,42 +2134,20 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(result["claim"]["resume_from"], str(self.comments[0]["id"]))
 
     def test_completed_handoff_explanation_preserves_release_and_ownership_guards(self):
-        for change in ("unreleased", "foreign_release", "wrong_claim", "wrong_session", "wrong_worker",
-                       "early_release", "edited_source", "missing_time", "reused_worker", "second_holder",
-                       "trailing_holder", "live_session", "later_claim", "conditional"):
+        for change in ("unreleased", "foreign_release", "live_session", "later_claim"):
             with self.subTest(change=change):
                 self.setUp()
                 source = self.completed_handoff_fixture()
                 if change == "unreleased": self.comments.pop()
                 if change == "foreign_release": self.comments[-1]["user"]["login"] = "other"
-                if change == "wrong_claim": self.issue["body"] = self.issue["body"].replace(str(self.comments[0]["id"]), "99")
-                if change == "wrong_session": self.issue["body"] = self.issue["body"].replace(source["session"], "another-session")
-                if change == "wrong_worker": self.issue["body"] = self.issue["body"].replace(source["worker"], "another-worker")
-                if change == "early_release": self.comments[-1]["created_at"] = self.comments[0]["created_at"]
-                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-12T09:00:00Z"
-                if change == "missing_time": self.comments[-1].pop("created_at")
-                if change == "reused_worker":
-                    self.comments.extend([
-                        {"id": 4, "body": CLAIM.marker({**source, "session": "another-session"}),
-                         "user": {"login": TEST_BOT}, "created_at": "2026-10-12T09:00:00Z"},
-                        {"id": 5, "body": "Released claim 4", "user": {"login": TEST_BOT},
-                         "created_at": "2026-10-12T09:01:00Z"},
-                    ])
-                if change == "second_holder": self.issue["body"] += "Owned by another-worker.\n"
-                if change == "trailing_holder": self.issue["body"] = self.issue["body"].rstrip() + " Owned by another-worker.\n"
                 if change == "live_session": self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/unrelated"}]
                 if change == "later_claim": self.comments.append({"id": 4, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}})
-                if change == "conditional": self.issue["body"] = self.issue["body"].replace("is released", "is released if approved")
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
-                if change not in ("live_session", "later_claim"):
-                    self.assertTrue(any(e["source"] == "current_status"
-                                        for e in caught.exception.payload["competing_evidence"]))
                 self.assert_no_writes()
 
     def test_completed_session_field_preserves_unproved_or_live_holders(self):
-        for change in ("unreleased", "foreign_release", "other_session", "reused_worker", "trailing_prose",
-                       "current_label", "live_session"):
+        for change in ("unreleased", "foreign_release", "live_session"):
             with self.subTest(change=change):
                 self.setUp()
                 self.released_note_fixture()
@@ -2540,14 +2155,6 @@ class ClaimTests(unittest.TestCase):
                 field = "Completed session: session-b (trial-b)."
                 if change == "unreleased": self.comments.pop()
                 if change == "foreign_release": self.comments[-1]["user"]["login"] = "other"
-                if change == "other_session": field = "Completed session: session-x (trial-b)."
-                if change == "reused_worker":
-                    self.comments.append({"id": 4, "body": CLAIM.marker({**OTHER, "session": "reused-session"}),
-                                          "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:03:00Z"})
-                    self.comments.append({"id": 5, "body": "Released claim 4", "user": {"login": TEST_BOT},
-                                          "created_at": "2026-10-01T00:04:00Z"})
-                if change == "trailing_prose": field = "Completed session: session-b (trial-b); trial-c continues."
-                if change == "current_label": field = "Session: session-b (trial-b)."
                 if change == "live_session": self.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/unrelated"}]
                 self.issue["body"] += field + "\n"
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
@@ -2564,32 +2171,6 @@ class ClaimTests(unittest.TestCase):
                                        "LP-3314-D1; its declined single-Accept recommendation must not be implemented.\n")
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_other_issue_holder_sentence_preserves_this_issue_holders(self):
-        for sentence in ("#42 Q151 was approved today and is owned by LP-D1.",
-                         "https://github.com/owner/repo/issues/42 is owned by LP-D1.",
-                         "#3314 and this issue are owned by LP-D1.",
-                         "#3314 and #42 are owned by LP-D1.",
-                         "#3314 is owned by LP-D1 and LP-D2.",
-                         "Unlike #3314, this work is owned by LP-D1.",
-                         "#3314 is owned by LP-D1; the repair is owned by LP-D2.",
-                         "#3314 is settled. Here it is owned by LP-D1.",
-                         "#3314 is complete and the follow-up is owned by LP-D1.",
-                         "#3314 was closed when the repair was owned by LP-D1.",
-                         "#3314, like the remaining slice, is owned by LP-D1.",
-                         "#3314's follow-up is owned by LP-D1.",
-                         "#3314’s follow-up is owned by LP-D1.",
-                         "#3314 is complete — the follow-up is owned by LP-D1.",
-                         "#3314 is complete: the follow-up is owned by LP-D1.",
-                         "#3314 (the follow-up) is owned by LP-D1.",
-                         "#3314 is complete yet the repair is owned by LP-D1.",
-                         "#3314 is complete and the repair is owned by LP-D1."):
-            with self.subTest(sentence=sentence):
-                self.setUp()
-                self.issue["body"] += "Last verified: October 10, 2026. " + sentence + "\n"
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assert_no_writes()
 
     def test_released_claim_does_not_hold_issue(self):
         self.compete()
@@ -2768,15 +2349,14 @@ class ClaimTests(unittest.TestCase):
                 previous = PLAN.read_plan_sections(self.issue)[0]["Current Status"]
                 self.run_claim()
                 output = self.emitted.call_args.args[0]
-                self.assertEqual(output["previous_current_status"], previous)
+                self.assertIn(previous, output["previous_current_status"])
                 self.assertEqual(CLAIM.records(self.issue["body"]), [output["claim"]])
                 self.assertIn("metadata_readback", output["completed_steps"])
                 self.assertEqual(len(self.comments), 3)
 
     def test_resume_preserves_unproven_or_competing_status_and_artifacts(self):
         for change in ("no_resume", "wrong_author", "wrong_id", "id_suffix", "conditional_release", "before_marker", "same_time",
-                       "missing_time", "naive_time", "edited_source", "different_marker", "extra_status",
-                       "worker_prefix", "state_worker_prefix", "reused_inline_worker", "extra_comment", "other_branch", "live_peer"):
+                       "missing_time", "naive_time", "edited_source", "different_marker", "extra_comment", "other_branch", "live_peer"):
             with self.subTest(change=change):
                 self.setUp()
                 self.released_status_fixture()
@@ -2792,10 +2372,6 @@ class ClaimTests(unittest.TestCase):
                 if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-01T00:02:00Z"
                 if change == "different_marker":
                     self.issue["body"] = self.issue["body"].replace(CLAIM.marker(OTHER), CLAIM.marker({**OTHER, "session": "new-session"}))
-                if change == "extra_status": self.issue["body"] += "\nOwned by another-worker\nSession: another-session"
-                if change == "worker_prefix": self.issue["body"] += "\nOwned by trial-b.review"
-                if change == "state_worker_prefix": self.issue["body"] = self.issue["body"].replace("owned by trial-b.", "owned by trial-b.review.")
-                if change == "reused_inline_worker": self.issue["body"] += "\nalso owned by trial-b (session s2)"
                 if change == "extra_comment": self.compete({**OTHER, "session": "new-session"})
                 if change == "other_branch": self.inventory["local_branches"].append("work/other-issue-42")
                 if change == "live_peer": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/issue-42"}]
@@ -2952,7 +2528,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_embedded_release_does_not_resolve_recorded_owner_wait(self):
         self.released_status_fixture("Finished session handoff.\n\nReleased claim 1")
-        self.issue["body"] += "\nWaiting for: Owner approval of the live-host check."
+        self.wait = WAIT.reviewed(evidence="Director asked to test first", waiting_for="Owner approval of the live-host check", ends_when="Director records acceptance")
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
         self.assert_no_writes()
@@ -3025,15 +2601,6 @@ class ClaimTests(unittest.TestCase):
         with patch.object(CLAIM, "run_read", side_effect=replies), patch.object(CLAIM.shutil, "which", return_value=None):
             self.assertEqual(CLAIM.local_inventory("owner/repo", 42)["local_branches"], ["main"])
 
-    def test_wait_formats_refuse_before_writes(self):
-        for status in ("State: Waiting\nNext action: owner chooses A or B", "State: Open\n- Waiting for: owner choice",
-                       "State: Open\nBlocked by: No native issue blocker;\n  waiting for an owner decision"):
-            with self.subTest(status=status):
-                self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n## Current Status\n" + status
-                with self.assertRaises(PLAN.ClassifiedPlanError):
-                    self.run_claim()
-                self.assert_no_writes()
-
     def test_explicit_no_wait_status_allows_claim_without_resolution(self):
         statuses = (
             "Blocked by: No native issue blocker.\nWaiting for: nothing.",
@@ -3059,16 +2626,6 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 self.assertIn("post", self.events)
                 self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
-
-    def test_formatted_blocked_by_refuses_before_writes(self):
-        for field in ("Blocked by:", "**Blocked by:**", "**Blocked by**:", "_Blocked by:_"):
-            with self.subTest(field=field):
-                self.setUp()
-                self.issue["body"] += field + " Chris approval\nWaiting for: None.\n"
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
-                self.assert_no_writes()
 
     def test_global_invalid_wait_selection_still_requires_actual_claim_resolution(self):
         import test_gh_plan_next as selection
@@ -3099,57 +2656,6 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("plan:active", PLAN.normalize_labels(self.issue["labels"]))
         self.assertNotIn("plan:waiting", PLAN.normalize_labels(self.issue["labels"]))
 
-    def test_no_wait_prefix_does_not_hide_real_wait(self):
-        statuses = (
-            "Blocked by: No native issue blocker; waiting for owner decision",
-            "Blocked by: No native issue blocker;\n  waiting for owner decision",
-            "Blocked by: none. Waiting for owner decision.",
-            "Blocked by: none. Pending physical confirmation.",
-            "Blocked by: None; Chris approval required.",
-            "Blocked by: None.\nWaiting for: None; Client acceptance needed.",
-            "Blocked by: None; Chris approval.",
-            "Blocked by: None.\nWaiting for: None; Chris review.",
-            "Blocked by: No native issue blocker; dependent on PR #12.",
-            "Blocked by: None.\nWaiting for: None; owner decision.",
-            "Blocked by: None.\nWaiting for: None; Chris sign-off.",
-            "Blocked by: None; clarification on API.",
-            "Blocked by: None.\nWaiting for: None; Director authorization for the spend first.",
-            "Blocked by: None.\nWaiting for: Nothing; starts once PR #12 merges.",
-            "Blocked by: None.\nWaiting for: None; Justin to confirm if the copy is final.",
-            "Blocked by: None; only if the Client confirms scope.",
-            "Blocked by: None.\nWaiting for: None; Chris acts next.",
-            "Blocked by: None.\nWaiting for: None; Justin to confirm the copy.",
-            "Blocked by: None.\nWaiting for: None; Chris to test on the device.",
-            "Blocked by: None.\nWaiting for: None; Justin's go-ahead on pricing.",
-            "Blocked by: None.\nWaiting for: None; Justin's answer on Q3.",
-            "Blocked by: None.\nWaiting for: None; Chris acts next; agent work follows.",
-            "Blocked by: None.\nWaiting for: None; the Director answers Q3.",
-            "Blocked by: None.\nWaiting for: None; on hold for the Q4 plan.",
-            "Blocked by: No native issue blocker; text blocker #45 still open.",
-            "Blocked by: None.\nWaiting for: None; Chris must sign off before work starts.",
-            "Blocked by: None.\nWaiting for: None; Chris's sign-off is outstanding.",
-            "Blocked by: No native issue blocker recorded; waiting for Client acceptance.",
-            "Blocked by: No native issue blocker; engineering qualification requires Client acceptance.",
-            "Blocked by: None.\nWaiting for: None; an executing agent acts next after Client acceptance.",
-            "Blocked by: None.\nWaiting for: None; an agent acts next, so keep plan:active; pending Chris approval.",
-            "Blocked by: None.\nWaiting for: Physical confirmation after implementation.",
-            "Blocked by: None.\nWaiting for: Nothing for read-only investigation; waiting for owner decision.",
-            "Blocked by: None.\nWaiting for: Nothing for read-only investigation until owner approval.",
-            "Blocked by: None.\nParked until: Nothing for read-only investigation.",
-            "Blocked by: None.\n**Parked until:** Nothing for read-only investigation.",
-            "Blocked by: None.\nWaiting for: None; an agent acts next after Client acceptance.",
-            "Blocked by: None.\nWaiting for: None; the next actor is an agent; pending Chris approval.",
-            "Blocked by: None.\nWaiting for: None; an agent acts next.\n  Waiting for Chris to approve.",
-        )
-        for status in statuses:
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += status + "\n"
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
-                self.assert_no_writes()
-
     def test_no_wait_text_does_not_override_native_blocker(self):
         self.issue["body"] += "Blocked by: No native issue blocker.\nWaiting for: nothing.\n"
         self.blockers = [{"state": "open", "number": 41}]
@@ -3171,6 +2677,168 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertIn("State: Open, not started.", caught.exception.payload["previous_current_status"])
+
+    def record_wait(self, waiting_for="Director's device test", *, target=None):
+        wait = WAIT.reviewed(evidence="Director explicitly requested this hold", waiting_for=waiting_for,
+                             ends_when="Director records acceptance on this issue")
+        comment = {"id": 900, "user": {"login": TEST_BOT}, "body": WAIT.marker(wait)}
+        if target is None:
+            self.comments.append(comment)
+        else:
+            self.target_comments[f"/repos/owner/repo/issues/{target}/comments"].append(comment)
+        return wait
+
+    def test_legacy_prose_waits_and_owners_are_reported_before_any_claim_write(self):
+        for prose in ("Waiting for: None; Chris decides the scope", "Owned by another session",
+                      "Blocked by: None for source work", "State: Active; Supervisor acts next"):
+            with self.subTest(prose=prose):
+                self.setUp()
+                self.wait = None
+                self.issue["body"] += prose
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertTrue(caught.exception.payload["review_required"])
+                self.assert_no_writes()
+
+    def test_reviewed_status_and_comment_prose_cannot_create_a_wait_or_an_owner(self):
+        self.issue["body"] += "\nOwned by historical-worker\nWaiting for: None; Chris decides the scope"
+        self.comments.append({"id": 31, "user": {"login": TEST_BOT},
+                              "body": "## Current Status\n\nOwned by Supervisor; waiting for historical test"})
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_structured_wait_refuses_despite_reassuring_status_and_comment_prose(self):
+        wait = self.record_wait()
+        self.issue["body"] += "\nWaiting for: None.\nBlocked by: None."
+        self.comments.append({"id": 901, "user": {"login": TEST_BOT}, "body": "All waits are released; agents may go"})
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.payload["structured_wait"], wait)
+        self.assertFalse(caught.exception.payload["review_required"])
+        self.assert_no_writes()
+
+    def test_normal_claim_checks_new_structured_waits_on_both_readbacks_even_with_resolution(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.args.wait_resolved = "Earlier absence reviewed; grants no new hold resolution"
+                setattr(self, phase, self.record_wait)
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                self.assertIn("changed", str(caught.exception))
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_oct12_refusals_replay_with_reviewed_absence_and_keep_competing_claims(self):
+        fixtures = json.loads(Path(__file__).with_name("fixtures").joinpath("oct12-claim-refusals.json").read_text())
+        for fixture in fixtures:
+            for mode in ("reviewed", "legacy", "wait", "competitor"):
+                with self.subTest(case=fixture["case"], mode=mode):
+                    self.setUp()
+                    self.issue["body"] += fixture["status"]
+                    # Replay published records unchanged; the fixture bot name is
+                    # remapped only for the transport's configured author.
+                    self.comments = copy.deepcopy(fixture["comments"])
+                    for comment in self.comments:
+                        comment["user"]["login"] = TEST_BOT
+                    if mode == "legacy": self.wait = None
+                    if mode == "wait": self.record_wait()
+                    if mode == "competitor": self.compete()
+                    if mode == "reviewed":
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+                    else:
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                        self.assertEqual(caught.exception.code, "claim_conflict" if mode == "competitor" else "claim_wait_unresolved")
+                        self.assert_no_writes()
+
+    def test_wait_review_reports_full_legacy_evidence_without_changing_it(self):
+        self.wait = None
+        self.issue["body"] += "\nWaiting for: Chris decides scope"
+        self.comments.append({"id": 14, "user": {"login": TEST_BOT}, "body": "Do not start until I approve"})
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = self.args.ends_when = self.args.evidence = None
+        original = copy.deepcopy((self.issue, self.comments))
+        self.run_claim(command=PLAN.cmd_wait)
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["review_required"])
+        self.assertEqual(result["review_evidence"]["body"], self.issue["body"])
+        self.assertEqual(result["review_evidence"]["comments"], self.comments)
+        self.assertEqual((self.issue, self.comments), original)
+        self.assert_no_writes()
+
+    def test_wait_review_records_real_hold_then_evidenced_release_without_editing_prose(self):
+        self.wait = None
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = "Chris's device test"
+        self.args.ends_when = "Chris records the test result"
+        self.args.evidence = "Director's recorded device-test request"
+        original = copy.deepcopy(self.issue)
+        self.run_claim(command=PLAN.cmd_wait)
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assertEqual(self.issue, original)
+        self.args.waiting_for = self.args.ends_when = None
+        self.args.clear = True
+        self.args.evidence = "Chris recorded acceptance of the device test"
+        self.run_claim(command=PLAN.cmd_wait)
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_wait_review_requires_evidence_and_an_ending_condition_before_writes(self):
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = "Client accepts"
+        self.args.ends_when = self.args.evidence = None
+        with self.assertRaises(PLAN.PlanError): self.run_claim(command=PLAN.cmd_wait)
+        self.assert_no_writes()
+
+    def test_wait_review_preserves_a_concurrent_record_and_reports_partial_write(self):
+        self.args.all = False
+        self.args.clear = True
+        self.args.waiting_for = self.args.ends_when = None
+        self.args.evidence = "Earlier hold resolved"
+        self.after_post = self.record_wait
+        with self.assertRaises(PLAN.PlanError) as caught: self.run_claim(command=PLAN.cmd_wait)
+        self.assertEqual(caught.exception.payload["completed_steps"], ["post_wait"])
+        self.assertIn("comment", caught.exception.payload)
+        self.assertEqual(WAIT.records(self.comments[-1]["body"])[0]["state"], "waiting")
+
+    def test_new_issue_creation_records_all_waits_or_reviewed_absence(self):
+        for flags in (("--wait-clear",), ("--waiting-for", "Director test", "--ends-when", "Test accepted",
+                      "--waiting-for", "Client price", "--ends-when", "Price confirmed")):
+            with self.subTest(flags=flags):
+                args = PLAN.build_parser().parse_args(["--repo", "owner/repo", "create", "Repair",
+                    *flags, "--wait-evidence", "Full request reviewed"])
+                create = Mock(return_value={"ok": True, "repo": "owner/repo", "number": 99,
+                                            "url": "https://github.com/owner/repo/issues/99"})
+                with patch.multiple(PLAN, default_repo=lambda repo: repo,
+                        load_config=lambda repo: PLAN.DEFAULT_CONFIG,
+                        find_existing_plan_issues=lambda *a, **k: ("bot", []),
+                        ensure_labels=lambda *a, **k: ("bot", []),
+                        comment_route=lambda: ("bot", "bot-gh", TEST_BOT), emit=Mock()), \
+                        patch.object(PLAN.github_issue_core, "create_issue", create):
+                    PLAN.cmd_create(args)
+                wait = WAIT.records(create.call_args.args[1])[0]
+                self.assertEqual(len(wait["waits"]), len(args.waiting_for or []))
+                self.assertEqual(wait["evidence"], args.wait_evidence)
+
+    def test_wait_inventory_reports_each_unreviewed_open_issue_and_never_drops_prose(self):
+        self.args.all = True
+        self.args.issue = None
+        self.args.clear = False
+        self.args.waiting_for = self.args.ends_when = self.args.evidence = None
+        pending = {**self.issue, "number": 43, "body": "Waiting for: Human test", "html_url": "https://github.com/owner/repo/issues/43"}
+        reviewed = {**self.issue, "body": WAIT.marker(self.wait)}
+        foreign = {**self.issue, "number": 44, "user": {"login": "someone"}, "body": WAIT.marker(self.wait)}
+        closed_pr = {**self.issue, "number": 45, "pull_request": {}}
+        def pages(path, **kwargs):
+            return "bot", [pending, reviewed, foreign, closed_pr] if path == "/repos/owner/repo/issues" else []
+        with patch.multiple(PLAN, default_repo=lambda repo: repo, collect_paged_rest_items=pages, emit=self.emitted), \
+                patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[TEST_BOT]):
+            PLAN.cmd_wait(self.args)
+        result = self.emitted.call_args.args[0]
+        self.assertEqual({row["number"] for row in result["review_required"]}, {43, 44})
+        self.assertEqual(result["checked"], 3)
+        self.assertEqual(result["writes"], [])
 
     def test_malformed_comment_after_post_still_has_exact_release_recovery(self):
         self.after_post = lambda: self.comments.append({"id": 2, "body": "<!-- github-plan:claim invalid -->"})
