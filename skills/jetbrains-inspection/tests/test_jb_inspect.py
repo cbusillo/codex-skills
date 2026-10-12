@@ -7735,6 +7735,9 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_disabled")
         self.assertEqual(raised.exception.payload["open_attempts"], [attempt])
+        payload = jb_inspect.apply_verdict(jb_inspect.error_payload(raised.exception))
+        self.assertEqual(payload["agent_result"]["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
         bootstrap.assert_not_called()
         wait.assert_not_called()
 

@@ -7226,6 +7226,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "implicit_eap_selection",
         "ide_not_ready_timeout",
         "ide_open_failed",
+        "ide_launch_disabled",
         "project_open_blocked",
         "already_opening_stuck",
         PROJECT_OPEN_BLOCKED_REASON,
