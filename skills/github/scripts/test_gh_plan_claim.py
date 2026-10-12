@@ -2456,6 +2456,80 @@ class ClaimTests(unittest.TestCase):
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def completed_handoff_fixture(self):
+        """Immutable #828 claim, release and refusal evidence from October 12."""
+        fixture = json.loads(Path(__file__).with_name("fixtures").joinpath(
+            "context-panel-828-released-status.json").read_text())
+        self.comments = [fixture["source"], fixture["release"]]
+        for comment in self.comments:
+            comment["user"]["login"] = TEST_BOT
+        self.issue["body"] += fixture["refusal"]["body"].split("“", 1)[1].split("”", 1)[0] + "\n"
+        return CLAIM.records(self.comments[0]["body"])[0]
+
+    def test_completed_handoff_explanation_allows_successor_claim(self):
+        for same_session in (False, True):
+            with self.subTest(same_session=same_session):
+                self.setUp()
+                source = self.completed_handoff_fixture()
+                if same_session:
+                    self.args.worker, self.args.session = source["worker"], source["session"]
+                    self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/unrelated"}]
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_completed_handoff_explanation_allows_explicit_retained_successor(self):
+        source = self.completed_handoff_fixture()
+        self.args.repo, self.args.issue = "cbusillo/context-panel", "828"
+        self.args.worker, self.args.session = source["worker"], source["session"]
+        self.args.resume_from, self.args.handoff_comment = (c["id"] for c in self.comments)
+        self.closed_pulls[831] = {
+            "number": 831, "state": "closed", "merged_at": "2026-10-12T07:48:00Z",
+            "user": {"login": TEST_BOT}, "body": "Refs #828",
+            "head": {"ref": source["branch"], "repo": {"full_name": self.args.repo}},
+            "base": {"repo": {"full_name": self.args.repo}},
+        }
+        self.targets["831"] = {**self.closed_pulls[831], "pull_request": {}}
+        self.target_comments[f"/repos/{self.args.repo}/issues/831/comments"] = []
+        self.inventory["local_branches"] = [source["branch"]]
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["claim"]["resume_from"], str(self.comments[0]["id"]))
+
+    def test_completed_handoff_explanation_preserves_release_and_ownership_guards(self):
+        for change in ("unreleased", "foreign_release", "wrong_claim", "wrong_session", "wrong_worker",
+                       "early_release", "edited_source", "missing_time", "reused_worker", "second_holder",
+                       "trailing_holder", "live_session", "later_claim", "conditional"):
+            with self.subTest(change=change):
+                self.setUp()
+                source = self.completed_handoff_fixture()
+                if change == "unreleased": self.comments.pop()
+                if change == "foreign_release": self.comments[-1]["user"]["login"] = "other"
+                if change == "wrong_claim": self.issue["body"] = self.issue["body"].replace(str(self.comments[0]["id"]), "99")
+                if change == "wrong_session": self.issue["body"] = self.issue["body"].replace(source["session"], "another-session")
+                if change == "wrong_worker": self.issue["body"] = self.issue["body"].replace(source["worker"], "another-worker")
+                if change == "early_release": self.comments[-1]["created_at"] = self.comments[0]["created_at"]
+                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-12T09:00:00Z"
+                if change == "missing_time": self.comments[-1].pop("created_at")
+                if change == "reused_worker":
+                    self.comments.extend([
+                        {"id": 4, "body": CLAIM.marker({**source, "session": "another-session"}),
+                         "user": {"login": TEST_BOT}, "created_at": "2026-10-12T09:00:00Z"},
+                        {"id": 5, "body": "Released claim 4", "user": {"login": TEST_BOT},
+                         "created_at": "2026-10-12T09:01:00Z"},
+                    ])
+                if change == "second_holder": self.issue["body"] += "Owned by another-worker.\n"
+                if change == "trailing_holder": self.issue["body"] = self.issue["body"].rstrip() + " Owned by another-worker.\n"
+                if change == "live_session": self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/unrelated"}]
+                if change == "later_claim": self.comments.append({"id": 4, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}})
+                if change == "conditional": self.issue["body"] = self.issue["body"].replace("is released", "is released if approved")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                if change not in ("live_session", "later_claim"):
+                    self.assertTrue(any(e["source"] == "current_status"
+                                        for e in caught.exception.payload["competing_evidence"]))
+                self.assert_no_writes()
+
     def test_completed_session_field_preserves_unproved_or_live_holders(self):
         for change in ("unreleased", "foreign_release", "other_session", "reused_worker", "trailing_prose",
                        "current_label", "live_session"):

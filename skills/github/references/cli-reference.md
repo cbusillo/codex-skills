@@ -756,8 +756,11 @@ requires the note and its last edit to precede the attested session end. The com
 likewise needs the matching structured claim and timestamp-proved exact-ID
 release, as does a `Completed`, `Released`, `Previous`, `Prior`, `Former` or
 `Ended session:` field naming only that released session and optionally its own
-worker; a worker token shared by another session's claim, or any other text in
-the field, keeps it ambiguous. Live source sessions are checked again on claim readback whenever that
+worker. The historical field may append `. Claim ID is released in this session's
+handoff comment.` only when ID names that same timestamp-proved released source;
+the explanation itself supplies no release proof. A worker token shared by
+another session's claim, or any other text in the field, keeps it ambiguous.
+Live source sessions are checked again on claim readback whenever that
 historical field is removed. A visible live source session still refuses, and retained artifacts
 keep their independent checks. A quoted replaced `Session:` field in the
 specific stale-field correction sentence is history; other current or uncertain
