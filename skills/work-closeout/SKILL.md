@@ -267,9 +267,9 @@ preserve that original point-in-time statement and add a follow-up; the
 never-started exception cannot apply.
 
 When writing final summaries, closeout comments, or migrated handoff content,
-follow `../references/talking-with-the-director.md`: cite point-in-time evidence,
-keep recovery-critical facts in GitHub for GitHub-backed work, and avoid
-boilerplate that does not help the next session resume.
+follow [Agent Comments](../references/talking-with-the-director.md#agent-comments)
+for comments: link point-in-time evidence and keep only otherwise unrecorded
+recovery-critical facts in GitHub for GitHub-backed work.
 
 ## Safe To Exit
 
@@ -467,7 +467,8 @@ session after the safe-to-exit answer.
 
 ## Output Format
 
-Use a compact closeout report:
+Use a compact closeout report in chat. For a GitHub comment, follow Agent
+Comments above and link the owning records instead of copying this report:
 
 - Done: what changed or was handled.
 - Remaining: concrete blockers or follow-up work, including how the next action

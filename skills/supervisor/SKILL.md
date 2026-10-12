@@ -241,8 +241,9 @@ criteria hold:
 2. A fresh Supervisor session takes over from the handoff alone, without the
    Director stepping in, including recreating its checks and the morning
    digest.
-3. The Director's open questions reach the Director in one place, one message
-   per batch, and the pilot issue holds handoffs and lessons only.
+3. The Director's open questions reach the Director in one place under the
+   [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state),
+   and the pilot issue holds handoffs and lessons only.
 
 Post each handoff on that issue, and say in it whether any lesson was new.
 
@@ -331,7 +332,10 @@ records that run.
    repository. Tell read-only checks not to claim it, so two of them on one
    issue do not clash.
 2. **Director questions live on the item's issue**, as a comment that starts
-   `Director question:`. The Director answers in chat, Discord, or on GitHub. The
+   `Director question:`. Follow the shared
+   [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
+   for deciding what reaches the Director and presenting the queue. The Director
+   answers in chat, Discord, or on GitHub. The
    Supervisor records the answer as a `Director decision:` comment on that issue,
    quoting the Director's words, saying where they were said, linking the
    question comment it answers, and points
@@ -355,9 +359,10 @@ records that run.
    open Director questions. Close finished sessions using the procedure below
    on every check, including sessions that finished their item without needing
    a relaunch.
-4. **Every check and every handoff ends with the "needs the Director" list**,
-   headed with the Director's name (the pilot's handoffs say "Needs Chris"): each question in full, with what it decides,
-   what changes on yes, and a recommendation, in one batch.
+4. **Every check and every handoff points to the Director's question queue**,
+   headed with the Director's name (the pilot's handoffs say "Needs Chris").
+   Follow the shared question queue rules above; link queued questions rather
+   than copying or asking the whole queue in one message.
 5. **Land through the merge train** with the maintained driver,
    `skills/launchplane/scripts/launchplane-train-drive.py`, one driver per
    repository train, never a hand-written loop. Where a repository lands
@@ -425,8 +430,9 @@ for products a Client runs business on.
    over any session.
 3. Read the latest handoff on the pilot issue, then every comment after it.
    Before you repeat what the Director said, read the exact words where the
-   Director said them, not a summary. Continue question numbers from the
-   highest one the run has recorded; never restart at Q1.
+   Director said them, not a summary. Allocate new question IDs through the
+   [shared question counter rules](../references/talking-with-the-director.md#decisions-holds-and-work-state);
+   keep existing IDs from the handoff.
 4. Rebuild the ledger. For each session the handoff names, read its tab
    screen or thread once. List running processes before you rely on a
    background driver or watcher the handoff says is running.
@@ -547,6 +553,10 @@ and its terminal, transcript and account readbacks before sending input.
 
 Post it on the pilot issue as one comment:
 
+Follow [Agent Comments](../references/talking-with-the-director.md#agent-comments).
+Link the ledger, item records and earlier decisions for facts already recorded;
+write out only new recovery information needed for takeover:
+
 - The sessions left running: tab title or thread id, repository, issue, brief
   limits, next step, and context size for each.
 - Background drivers and watchers, each with its exact command or helper,
@@ -554,9 +564,9 @@ Post it on the pilot issue as one comment:
   it is running. Say which ones end with this session.
 - Where the Supervisor's files are kept, and the Director's own tabs to leave
   alone.
-- Rules in force for the run.
-- Lessons, each marked new or already recorded.
-- The "needs the Director" list.
+- Links to the rules in force for the run.
+- New lessons; links to lessons already recorded.
+- The Director's question queue under the shared queue rules.
 
 ## Lessons From The Pilot
 

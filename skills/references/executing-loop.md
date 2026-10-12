@@ -62,10 +62,10 @@ to read for fit, and it needs no Director step. Do not work an issue added
 during close-out in the same `go <milestone>` run.
 If `next` finds no available milestone issue, report what is underway or waiting
 and do not claim the milestone is complete until its exit criteria are met.
-List every Director decision still open at the end of any executing-loop command in the final response,
-each as a direct question with a recommendation and the effect of each choice.
-An earlier asynchronous question or an issue update does not replace that
-handoff.
+Account for every open Director decision at the end of an executing-loop
+command under the [question queue rules](talking-with-the-director.md#decisions-holds-and-work-state).
+Link the queued questions and name who brings the next one; an earlier
+asynchronous question or issue update does not replace that handoff.
 Preserve unsafe or active worktrees and runtime checkouts under their owning
 skills rather than forcing cleanup. Preserve dirty or divergent default
 checkouts too; report when they cannot be safely fast-forwarded.
