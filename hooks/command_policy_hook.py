@@ -29,7 +29,7 @@ parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone,
 though a shell script behind one is still read.
 
 Policies match commands, not data (#671, #1014). A heredoc body is data unless
-a shell or ssh reads it; command substitutions in an unquoted-delimiter body,
+a shell, ssh or script interpreter reads it; command substitutions in an unquoted-delimiter body,
 in double-quoted arguments and in arithmetic still run and are checked, as are
 `eval` arguments, a shell's here-string and an ssh remote command. A `shell_regex` policy
 matches only where a token of a running command starts, so a quoted argument
@@ -63,6 +63,7 @@ ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
+SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift)$")
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
@@ -123,7 +124,7 @@ class ShellScript:
     """Separate what a shell line runs from the heredoc data it carries.
 
     `text` is the line with every heredoc body removed. `bodies` holds each
-    body and whether the shell expands it (an unquoted delimiter).
+    body, whether the shell expands it (an unquoted delimiter), and its command line.
     `substitutions` holds the source of each `$(...)` and backtick command
     substitution outside single quotes, including inside double quotes, where
     the lexer keeps it as one data token although it runs. With `expanding`,
@@ -135,7 +136,7 @@ class ShellScript:
     def __init__(self, shell: str, expanding: bool = False) -> None:
         self.shell = shell
         self.text_parts: list[str] = []
-        self.bodies: list[tuple[str, bool]] = []
+        self.bodies: list[tuple[str, bool, str]] = []
         self.substitutions: list[str] = []
         self.pending: list[tuple[str, bool, bool]] = []
         # Open contexts, innermost last: "(" for a subshell or `$(`, "((" for
@@ -247,6 +248,7 @@ class ShellScript:
         """Consume the body lines of each heredoc opened on the line just ended."""
         shell = self.shell
         cursor = self.index
+        header = self.text.rstrip("\n").rsplit("\n", 1)[-1]
         for delimiter, strip_tabs, expands in self.pending:
             body: list[str] = []
             while cursor < len(shell):
@@ -257,7 +259,7 @@ class ShellScript:
                 if (line.lstrip("\t") if strip_tabs else line) == delimiter:
                     break
                 body.append(line)
-            self.bodies.append(("\n".join(body), expands))
+            self.bodies.append(("\n".join(body), expands, header))
         self.pending = []
         self.index = min(cursor, len(shell))
 
@@ -278,7 +280,14 @@ def simple_commands(shell: str) -> list[list[str]]:
         unwrapped.extend(unwrap(argv))
     unwrapped.extend(nested_commands(script.substitutions))
     shell_reads_bodies = any(reads_script_from_input(argv) for argv in unwrapped)
-    for body, expands in script.bodies:
+    for body, expands, header in script.bodies:
+        # Language payloads are arguments to their interpreter, not shell
+        # commands. Preserve them for regex policies (also for a cat pipeline).
+        script_readers = [
+            argv for command in shell_commands(header) for argv in unwrap(command)
+            if SCRIPT_INTERPRETERS.fullmatch(argv[0])
+        ]
+        unwrapped.extend([*argv, body] for argv in script_readers)
         if shell_reads_bodies:
             unwrapped.extend(nested_commands([body]))
         elif expands:

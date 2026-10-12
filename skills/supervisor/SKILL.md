@@ -117,6 +117,35 @@ commands:
     purpose: Close one Supervisor-owned tab after current process and empty-input proof.
 policy:
   command_policies:
+    - id: reject-system-events-keyboard-synthesis
+      match:
+        shell_regex: '(?i)(?:\S*/)?osascript\b[\s\S]*\b(?:keystroke|key\s*(?:code|down|up))\b'
+      action: reject
+      message: &keyboard_refusal Global keyboard synthesis can type into another application or agent session even when System Events names a process. Use the browser tools' file-upload action or a page/DevTools API scoped to the exact tab for browser input; use iterm_tab.py send --verified-target for terminal input.
+      preferred: &keyboard_alternatives
+        - kind: script
+          path: scripts/iterm_tab.py
+          example_argv: ["uv", "run", "scripts/iterm_tab.py", "send", "--session-id", "<exact-iterm-id>", "--text", "<text>", "--verified-target"]
+          purpose: Send terminal input only after verifying the exact session target.
+    - id: reject-keyboard-synthesis-tools
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?(?:cliclick\b[\s\S]*(?:\s|'|")(?:t|kp|kd|ku):
+          |(?:xdotool|ydotool)\b[\s\S]*(?:\s|'|")(?:type|key|keydown|keyup)\b
+          |(?:wtype|dotool|dotoolc)\b|xte\b[\s\S]*\b(?:str|key|keydown|keyup)\b)
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-keyboard-synthesis-apis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?(?:python[\d.]*|node|osascript|swift)\b[\s\S]*(?:
+          \bpyautogui\s*\.\s*(?:write|typewrite|press|hotkey|keyDown|keyUp)\b
+          |\bpynput\s*\.\s*keyboard\b
+          |\b(?:CGEventCreateKeyboardEvent|keyboard\s*\.\s*(?:write|press|send)|robot\s*\.\s*(?:typeString|keyTap|keyToggle))\b)
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
     - id: prefer-session-helper-for-iterm-typing
       match:
         shell_regex: '(?i)\bosascript\b[^\n]*(?:write text|iTerm)'
@@ -489,6 +518,12 @@ Post it on the pilot issue as one comment:
 
 ## Lessons From The Pilot
 
+- System Events `keystroke` and `key code` go to the frontmost application,
+  even inside `tell process "Google Chrome"`. A file-picker attempt typed a
+  path and Return into the Director's iTerm direction session
+  ([#1753](https://github.com/cbusillo/codex-skills/issues/1753)). Use the
+  alternatives named by the keyboard command policies above; activating
+  a window first does not establish a safe target.
 - Start a fresh tab per task; reused old sessions caused most of the friction.
   Put Supervisor tabs in one dedicated terminal window and leave the
   Director's own sessions alone.

@@ -66,6 +66,83 @@ def linked_worktree(checkout: Path, linked: Path) -> Path:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_global_keyboard_synthesis_is_refused_without_sending_keys(self) -> None:
+        apple = 'tell application "System Events" to tell process "Google Chrome"\nkeystroke "/path/proposal.json"\nkey code 36'
+        commands = (
+            "osascript -e " + shlex.quote(apple),
+            "osascript -e 'tell application \"System Events\" to key code 36'",
+            "osascript -l JavaScript -e 'Application(\"System Events\").keyCode(36)'",
+            "osascript -e 'tell application \"System Events\" to key down command'",
+            "cliclick 't:/path/proposal.json' kp:return",
+            "cliclick kd:cmd ku:cmd",
+            "xdotool search --name Chrome windowactivate --sync type /path/proposal.json",
+            "xdotool key --window 123 Return",
+            "ydotool type /path/proposal.json",
+            "ydotool key 28:1 28:0",
+            "wtype /path/proposal.json",
+            "printf 'type path' | dotool",
+            "xte 'str /path/proposal.json' 'key Return'",
+            "uv run python -c 'import pyautogui; pyautogui.write(\"path\")'",
+            "python3 -c 'from pynput.keyboard import Controller; Controller().type(\"path\")'",
+            "python3 -c 'import keyboard; keyboard.send(\"enter\")'",
+            "node -e 'const robot = require(\"robotjs\"); robot.keyTap(\"enter\")'",
+            "swift -e 'CGEventCreateKeyboardEvent(nil, 36, true)'",
+            "osascript <<'APPLESCRIPT'\n" + apple + "\nAPPLESCRIPT",
+            "cat <<'APPLESCRIPT' | osascript\n" + apple + "\nAPPLESCRIPT",
+            "python3 - <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
+            "node <<'JS'\nconst robot = require('robotjs'); robot.typeString('path');\nJS",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                blocked = command_policy_hook.blocking_policy(command)
+                self.assertIsNotNone(blocked)
+                policy, skill, argv = blocked
+                self.assertEqual(policy["action"], "reject")
+                result = bash(command)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stderr.rstrip(), command_policy_hook.describe(policy, skill, argv))
+
+        for prefix in ("/usr/bin/", "env FOO=1 ", "sudo ", "timeout 5 "):
+            self.assertEqual(bash(prefix + commands[0]).returncode, 2)
+        for command in (
+            "bash -lc " + shlex.quote(commands[0]),
+            "true; " + commands[0],
+            "printf '%s' \"$(xdotool key Return)\"",
+            "osascript <<< " + shlex.quote(apple),
+        ):
+            self.assertEqual(bash(command).returncode, 2)
+
+        # Both entry-point formats deny before a host could execute the command.
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": commands[0]}})
+        self.assertEqual(run_hook(payload).returncode, 2)
+        decision = run_hook(payload, "--json")
+        self.assertEqual(decision.returncode, 0)
+        self.assertEqual(json.loads(decision.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_scoped_input_and_non_keyboard_commands_remain_allowed(self) -> None:
+        for command in (
+            "uv run skills/supervisor/scripts/iterm_tab.py send --session-id exact --text path --verified-target",
+            "node -e 'await page.locator(\"input[type=file]\").setInputFiles(\"/path/proposal.json\")'",
+            "node -e 'await tab.send(\"DOM.setFileInputFiles\", {files: [\"/path/proposal.json\"], nodeId: 42})'",
+            "osascript -e 'tell application \"Google Chrome\" to get URL of active tab of front window'",
+            "osascript -e 'tell application \"Google Chrome\" to execute active tab of front window javascript \"document.title\"'",
+            "osascript <<'APPLESCRIPT'\ntell application \"Finder\" to get name of startup disk\nAPPLESCRIPT",
+            "cliclick p:.",
+            "cliclick m:100,100",
+            "xdotool getactivewindow getwindowname",
+            "xdotool mousemove 100 100",
+            "ydotool mousemove 100 100",
+            "python3 -c 'import pyautogui; print(pyautogui.size())'",
+            "rg 'osascript keystroke|xdotool key|pyautogui.write' docs",
+            "printf '%s' 'osascript keystroke path'",
+            "cat <<'DOC'\nosascript -e 'keystroke path'\nxdotool key Return\nDOC",
+            "cat <<'DOC'\npyautogui.press('enter')\nDOC\npython3 -c 'print(42)'",
+            "python3 - <<'PY'\nprint('osascript keystroke path')\nPY",
+        ):
+            with self.subTest(command=command):
+                result = bash(command)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+
     def test_launchplane_data_is_allowed_but_invocations_are_blocked(self) -> None:
         for command in (
             "uv run python -c 'import json; print({\"repository\": \"launchplane\"})'",
