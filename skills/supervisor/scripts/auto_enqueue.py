@@ -218,6 +218,9 @@ def own_candidate(response, own, candidate_records=()):
     )
 
 
+import github_pr_batch
+
+
 class Live:
     def __init__(self, deadline):
         self.deadline = deadline
@@ -272,6 +275,10 @@ class Live:
                     }
                 )
         return targets
+
+    def batch(self, repo, numbers):
+        if numbers:
+            github_pr_batch.try_batch(self.reader,repo,numbers[:20])
 
     def get(self, path):
         return self.reader.get_json(path, step="enqueue_read")
@@ -593,6 +600,8 @@ def run_pass(io, args, emit, *, state=None):
                 )
             }
             candidates = []
+            if getattr(args,"batch_read",False):
+                io.batch(repo,[item["number"] for item in pulls if item["number"] in author_allowed])
             for listed in pulls:
                 if listed["number"] not in author_allowed:
                     continue
@@ -825,6 +834,7 @@ def main(argv=None):
     parser.add_argument("--interval", type=float, default=300)
     parser.add_argument("--deadline-seconds", type=float, default=1800)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--batch-read", action="store_true", help="Explicit cold/changed PR observer batch; default REST preserves idle 304 savings")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     if not args.owner or any(

@@ -41,6 +41,7 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
 import github_api
 import github_identity
 import github_read
+import github_pr_batch
 
 FAILED_RUN_CONCLUSIONS = {
     "failure",
@@ -241,6 +242,7 @@ def parse_args():
     )
     parser.add_argument("--state-file", help="Path to state JSON file")
     parser.add_argument("--once", action="store_true", help="Emit one snapshot and exit")
+    parser.add_argument("--batch-read", action="store_true", help="Explicit cold/changed observation enrichment; default REST preserves idle 304 savings")
     parser.add_argument("--watch", action="store_true", help="Continuously emit JSONL snapshots")
     parser.add_argument(
         "--retry-failed-now",
@@ -1509,6 +1511,11 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         state["started_at"] = int(time.time())
 
     reader = watcher_reader()
+    if getattr(args,"batch_read",False):
+        batch = github_pr_batch.try_batch(reader,pr["repo"],[pr["number"]])
+        if batch is not None and batch[pr["number"]]["head"]["sha"] != pr["head_sha"]:
+            reader.batch_responses.clear()
+            reader.batch_diagnostic={"used":False,"fallback_reason":"head changed after orientation"}
     authenticated_login = get_authenticated_login(reader)
     new_review_items = fetch_new_review_items(
         pr,
@@ -1527,6 +1534,8 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         reader, pr["repo"], pr["number"], head_sha=pr["head_sha"], workflow_runs=workflow_runs,
     )
     checks_diagnostic = reader.diagnostics()
+    if getattr(args,"batch_read",False):
+        checks_diagnostic["batch_read"]=reader.batch_diagnostic
     checks_summary = summarize_checks(checks, expected_head_sha=pr["head_sha"])
     checks_summary = apply_unfinished_workflow_runs(checks_summary, workflow_runs, pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])

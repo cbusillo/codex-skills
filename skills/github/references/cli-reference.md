@@ -1752,3 +1752,29 @@ GitHub's `Repository rule violations found` heading, returns
 writes no shared retry cooldown. Resolve the PR review threads before another
 merge attempt. Mixed-rule and other ambiguous HTTP405 responses retain bounded
 retry and exact-head reconciliation.
+
+### PR Observer Batches
+
+`github_pr_batch.batch_pull_requests(reader, repo, numbers)` refreshes up to
+twenty PRs through the existing reader transport and fills one-pass,
+REST-shaped metadata, reviews, comments, check runs and latest status contexts.
+The Supervisor auto-enqueue observer and PR watcher support `--batch-read` for
+explicitly cold or changing passes. The flag defaults off: unchanged polling
+keeps its authenticated conditional REST savings. There is no persisted GraphQL
+body cache or credential/actor change.
+
+Connections are paginated before any result is published. Partial errors,
+missing fields, changing heads or incomplete connections discard the entire
+batch and recover through the same reader's REST route and deadline. Paths are
+consumed once; a final metadata/labels read contacts REST. Reader identity and
+representation context cannot change while reusing a pass snapshot. GraphQL
+request and quota receipts remain in the reader diagnostics; the document's
+`rateLimit.cost` records query points.
+
+Actions runs, jobs, superseded-run selection, combined commit status, unresolved
+review threads and Client acceptance retain their existing reads and decisions.
+The batch does not make an enqueue or merge decision. The six-PR cold
+metadata/check/status slice measures eighteen REST requests versus one GraphQL
+request/point; unchanged REST revalidation still costs zero primary requests.
+Whole-observer savings include the remaining evidence reads and are measured
+separately from that slice.

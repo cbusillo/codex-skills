@@ -264,6 +264,9 @@ class GitHubReader:
         self.failed_results: list[github_api_core.ApiResult] = []
         self.degraded_reasons: list[dict[str, str]] = []
         self.last_result: Optional[github_api_core.ApiResult] = None
+        self.batch_responses: dict[str, Any] = {}
+        self.batch_identity: tuple[Any, ...] | None = None
+        self.batch_diagnostic: dict[str, Any] = {}
         self._escape_sequences_supported: Optional[bool] = None
 
     def _transport_request(
@@ -387,6 +390,10 @@ class GitHubReader:
         return result
 
     def get_json(self, path: str, *, step: str) -> Any:
+        if self.batch_identity != (self.actor,self.expected_actor,self.operation,self.gh_cmd,tuple(self.gh_prefix_args)):
+            self.batch_responses.clear()
+        if path in self.batch_responses:
+            return self.batch_responses.pop(path)
         return self.request("GET", path, step=step).body
 
     def get_text(self, path: str, *, step: str) -> str:
@@ -445,6 +452,12 @@ class GitHubReader:
     ) -> list[dict[str, Any]]:
         if limit is not None and limit <= 0:
             return []
+        if self.batch_identity != (self.actor,self.expected_actor,self.operation,self.gh_cmd,tuple(self.gh_prefix_args)):
+            self.batch_responses.clear()
+        if path in self.batch_responses and not params and not required_query_params:
+            body = self.batch_responses.pop(path)
+            items = collection_items(body, collection_key=collection_key, step=step_prefix)
+            return [item for item in items if item_filter is None or item_filter(item)][:limit]
         per_page = min(100, max(limit or 100, 1))
         base_params = {**(params or {}), "per_page": per_page}
         page = 1
