@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKED_NOTICE_AFTER = dt.timedelta(days=1)
+MAX_BLOCKING_PATHS = 20
 
 
 def git(root: Path, *args: str) -> str:
@@ -43,7 +44,9 @@ def checkout_state(root: Path) -> dict:
             paths.append(entry[3:])
             if "R" in entry[:2] or "C" in entry[:2]:
                 paths.append(next(entries))
-        return {"state": "blocked", "reason": "checkout has local changes", "head": head, "blocking_paths": paths}
+        return {"state": "blocked", "reason": "checkout has local changes", "head": head,
+                "blocking_paths": paths[:MAX_BLOCKING_PATHS],
+                "blocking_paths_omitted": max(0, len(paths) - MAX_BLOCKING_PATHS)}
     behind, ahead = map(int, git(root, "rev-list", "--left-right", "--count", "origin/main...HEAD").split())
     if ahead:
         return {"state": "blocked", "reason": "checkout has local commits or has diverged", "head": head}
@@ -63,12 +66,18 @@ def blocked_since(record: dict, now: dt.datetime) -> dt.datetime | None:
         return None
 
 
+def blocking_paths_text(state: dict) -> str:
+    paths = ", ".join(json.dumps(path) for path in state.get("blocking_paths", []))
+    omitted = state.get("blocking_paths_omitted", 0)
+    return paths + (f" (and {omitted} more paths)" if omitted else "")
+
+
 def blocked_notice(root: Path, state: dict, since: dt.datetime | None, now: dt.datetime) -> str:
     if state.get("state") != "blocked" or since is None or now - since < BLOCKED_NOTICE_AFTER:
         return ""
     hours = int((now - since).total_seconds() // 3600)
-    paths = ", ".join(json.dumps(path, ensure_ascii=True) for path in state.get("blocking_paths", []))
-    return (f"WARNING: CATALOG UPDATES BLOCKED for at least {hours} hours\n"
+    paths = blocking_paths_text(state)
+    return (f"WARNING: CATALOG UPDATES BLOCKED; first observed {hours} hours ago\n"
             f"Checkout: {root}\n"
             f"Blocker: {state['reason']}" + (f"\nBlocking paths: {paths}" if paths else "") +
             "\nInspect and preserve the local work, resolve the blocker, then run scripts/catalog_runtime.py --update.")
@@ -86,15 +95,20 @@ def status_line(root: Path) -> str:
         scheduled = installation.get("scheduled_updater", False) and bool(installation.get("updater_plist")) and Path(installation["updater_plist"]).is_file()
         state = checkout_state(root)
         receipt = root / ".local" / "catalog-update.json"
-        recorded = json.loads(receipt.read_text()) if receipt.exists() else {}
-        if not isinstance(recorded, dict):
-            raise ValueError("invalid update receipt")
+        try:
+            recorded = json.loads(receipt.read_text()) if receipt.exists() else {}
+            if not isinstance(recorded, dict):
+                raise ValueError("invalid update receipt")
+        except (OSError, ValueError):
+            if state["state"] == "current":
+                raise
+            recorded = {}
         now = dt.datetime.now(dt.timezone.utc)
         warning = blocked_notice(root, state, blocked_since(recorded, now), now)
         if warning:
             return warning
         if state.get("blocking_paths"):
-            state["reason"] += ": " + ", ".join(json.dumps(path, ensure_ascii=True) for path in state["blocking_paths"])
+            state["reason"] += ": " + blocking_paths_text(state)
         if state["state"] == "current":
             stamp = installation.get("scheduled_at")
             if receipt.exists():
