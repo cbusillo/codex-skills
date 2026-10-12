@@ -1200,7 +1200,10 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
         "Own projects: the `own-project` label only (including work in `infra`).",
         "Own projects: issues with the own-project label only (including work in `infra`).",
         "Own projects: issues with the `own-project` label in `infra`.",
+        "Own projects: work in `infra` with the `own-project` label only.",
+        "Own projects: home work in `infra` carrying the `own-project` label only.",
         "Own projects use the own-project label: personal infrastructure work.",
+        "Own projects use the own-project label: work in `infra`.",
         "Own projects: pull requests with the `own-project` label in `infra`.",
         "Own projects are pull requests marked with the own-project label.",
         "Own projects: none.",
@@ -1232,6 +1235,8 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
     assert module.own_project_patterns(lab.replace("label.", "label only.")) == ["fun", "house-tools"]
     sentences = DIRECTION + "\n## Order\n4. Own projects: `fun` and `companion*`. Mixed work uses the `own-project` label only."
     assert module.own_project_patterns(sentences) == ["companion*", "fun"]
+    counted = DIRECTION + "\n## Order\n4. Own projects: `fun`, `companion*`. This list is what the check counts. Mixed work uses the `own-project` label."
+    assert module.own_project_patterns(counted) == ["companion*", "fun"]
 
 
 def test_direction_share_wording_is_reported_without_interpreting_a_threshold() -> None:

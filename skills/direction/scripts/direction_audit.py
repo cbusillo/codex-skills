@@ -1132,11 +1132,19 @@ def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[s
         marker = (re.search(rf"(?i){token}\s+label\b|\blabel\s+{token}", listing)
                   or re.search(token, listing, re.I))
         if marker is None:
-            # The label declaration precedes the colon rather than its examples.
-            return []
+            if re.search(token, declaration.split(":", 1)[0], re.I):
+                return []
+            # Guidance after "This list" does not erase the declared list.
+            return own_project_identifiers(listing)
         # Repository identifiers before the label belong to an explicit list;
         # those after it are examples of where labeled work can live.
         prefix = listing[:marker.start()]
+        clauses = list(re.finditer(r";|\.\s", prefix))
+        clause_start = clauses[-1].end() if clauses else 0
+        label_clause = re.split(r";|\.\s", listing[clause_start:], maxsplit=1)[0]
+        if re.search(r"(?i)\bwith\b|\blabel\s+only\b", label_clause):
+            # A label restriction scopes repository examples in this clause.
+            return own_project_identifiers(prefix[:clause_start])
         if re.search(r"`[\w.*-]+`|,|;|\band\b", prefix):
             return own_project_identifiers(prefix)
         return []
