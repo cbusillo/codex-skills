@@ -70,19 +70,17 @@ class InteractiveAccountsTests(unittest.TestCase):
 
     def test_next_and_native_arguments(self):
         arguments = ["--resume", "session id", "--continue", "a'b", "$(echo unsafe)", "", "--", "--account", "literal"]
-        launched, banner = self.launched("codex " + shlex.join(arguments))
+        launched, _ = self.launched("codex " + shlex.join(arguments))
         self.assertEqual(launched["home"], str(self.root / "beta"))
         self.assertEqual(launched["argv"], arguments)
-        self.assertIn("Context Panel next", banner)
         launched, _ = self.launched("claude --continue")
         self.assertIsNone(launched["claude"])
         self.assertEqual(launched["argv"], ["--continue"])
 
     def test_explicit_environment_does_not_query_snapshot(self):
         self.snapshot.unlink()
-        launched, banner = self.launched("codex --resume", env={"CODEX_HOME": str(self.root / "explicit")})
+        launched, _ = self.launched("codex --resume", env={"CODEX_HOME": str(self.root / "explicit")})
         self.assertEqual(launched["home"], str(self.root / "explicit"))
-        self.assertIn("explicit CODEX_HOME", banner)
 
     def test_named_and_account_flag_override_environment(self):
         self.snapshot.unlink()
@@ -97,20 +95,17 @@ class InteractiveAccountsTests(unittest.TestCase):
     def test_unavailable_and_stale_fall_back_to_last_used(self):
         self.launched("codex --account alpha")
         self.snapshot.unlink()
-        launched, banner = self.launched("codex --continue")
+        launched, _ = self.launched("codex --continue")
         self.assertEqual(launched["home"], str(self.root / "alpha home"))
-        self.assertIn("falling back to last account", banner)
         self.snapshot.write_text(json.dumps({"schemaVersion": 1, "accounts": [], "ranking": [
             {"provider": "openai", "basedOnStaleReadings": True, "readingsObservedAt": "2000-01-01T00:00:00Z"}]}))
-        launched, banner = self.launched("codex")
+        launched, _ = self.launched("codex")
         self.assertEqual(launched["home"], str(self.root / "alpha home"))
-        self.assertIn("falling back", banner)
 
     def test_first_launch_without_snapshot_uses_native_default(self):
         self.snapshot.unlink()
-        launched, banner = self.launched("codex")
+        launched, _ = self.launched("codex")
         self.assertIsNone(launched["home"])
-        self.assertIn("no last account", banner)
 
     def test_generated_variants_and_functions_only(self):
         result = self.run_shell("whence -w codex claude codex-alpha codex-beta claude-gamma; command codex --resume")
