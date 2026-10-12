@@ -1126,8 +1126,9 @@ def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[s
         raise AuditError("Order own-project list is missing")
     listing = declaration.split(":", 1)[1].split("This list", 1)[0]
     if label_declaration:
-        label_mode = re.match(rf"(?i)^\s*(?:by\s+|(?:the\s+)?`?{re.escape(own_label)}`?\s+label\b|"
-                              r"(?:only|pull requests|PRs|work)\s)", listing)
+        first_clause = re.split(r";|\.\s", listing, maxsplit=1)[0]
+        label_mode = (re.search(r"(?i)\blabel(?:s|led|ed)?\s+only\b|\bonly\b[^.;]*\blabel(?:s|led|ed)?\b", first_clause)
+                      or re.match(r"(?i)^\s*(?:by|pull requests|PRs|work)\s", first_clause))
         repository_list = re.match(r"\s*`?[\w.*-]+`?\s*(?:,|\band\b)", listing)
         if label_mode and not repository_list:
             # Repository examples in a label declaration are mixed work,
