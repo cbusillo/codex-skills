@@ -50,6 +50,10 @@ jobs:
         if: steps.update.outputs.changed == 'true'
         run: |
           set -euo pipefail
+          if ! command -v zsh >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends zsh
+          fi
           ./scripts/validate-skills.sh
 
       - name: Commit and push automation branch
