@@ -3473,9 +3473,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             )
             actor = relation_actor or actor
         except PlanError as exc:
-            if isinstance(exc, ClassifiedPlanError) or exc.failure is not None:
-                raise
-            relationship_error = github_api_core.redact_string(str(exc))
+            relationship_error = next_source_error(exc)
         if truncated_relationships:
             relationship_error = (
                 f"dependency relationship reads exceeded the per-relationship limit "
@@ -3581,8 +3579,10 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def next_source_error(exc: PlanError) -> str:
-    # Preserve the existing provider/auth/quota stop policy and actor identity.
-    if isinstance(exc, ClassifiedPlanError) or (exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found"}):
+    # An App-installation refusal is unread coverage, just like a denied or
+    # missing record. Never switch actor to complete an optional selection read.
+    # Credential rejection, quota and provider failures retain their stop policy.
+    if isinstance(exc, ClassifiedPlanError) or (exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found", "identity_refused"}):
         raise exc
     return github_api_core.redact_string(str(exc))
 
@@ -3771,8 +3771,8 @@ def next_wait_context(
             try:
                 _, cache[path] = api_json("GET", path, bucket="rest_core", failed_step="next_wait_evidence")
             except PlanError as exc:
-                # Preserve the shared stop policy for auth, quota and provider
-                # failures. Only unavailable records degrade this report.
+                # Unavailable records, including App-installation refusals,
+                # degrade coverage through the same policy as other next reads.
                 detail = next_source_error(exc)
                 cache[path] = direction_audit.AuditError(detail)
         if isinstance(cache[path], direction_audit.AuditError):

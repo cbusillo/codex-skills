@@ -3075,6 +3075,23 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(caught.exception.api_result["status"], 401)
         self.assert_no_writes()
 
+    def test_identity_refused_required_blocker_read_refuses_claim_without_writes(self):
+        failure = PLAN.github_api_core.FailureDetail(
+            cause="identity_refused", message="Client App cannot read the blocker evidence",
+            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="not_started")
+        error = PLAN.PlanError(failure.message, failure=failure)
+        original = self.read_pages
+
+        def pages(path, **kwargs):
+            if path.endswith("/dependencies/blocked_by"):
+                raise error
+            return original(path, **kwargs)
+
+        with patch.object(self, "read_pages", side_effect=pages), self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.failure.cause, failure.cause)
+        self.assert_no_writes()
+
     def admit(self, kind, links=(), unlinked=None, track=None, complete=True):
         self.args.admission, self.args.admission_link, self.args.admission_unlinked = kind, list(links), unlinked
         with patch.object(CLAIM, "admission_track", return_value=(track, complete)) as walk:
