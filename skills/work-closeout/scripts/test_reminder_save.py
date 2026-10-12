@@ -41,13 +41,13 @@ class ReminderSaveTests(unittest.TestCase):
             fields = self.fields(harness)
             self.assertEqual(fields["url"], reminder_link.prepare(harness, self.directory, SESSION, None)["url"])
             lines = fields["notes"].splitlines()
-            self.assertEqual(len(lines), 3)
+            self.assertEqual(len(lines), 1 + len({ISSUE, PR}))
             self.assertIn(provider, lines[0])
             self.assertIn(SESSION, lines[0])
             self.assertEqual(lines[1:], [ISSUE, PR])
             self.assertNotIn(fields["marker"], fields["notes"])
             self.assertNotIn(fields["fallback"], fields["notes"])
-            self.assertIn("#42", fields["title"])
+            self.assertIn(ISSUE.rsplit("/", 1)[1], fields["title"])
             self.assertIn(provider, fields["title"])
 
     def test_fresh_prompt_stays_in_link_and_out_of_notes(self):
