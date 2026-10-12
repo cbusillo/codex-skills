@@ -276,6 +276,10 @@ removing a named repository whose repository read returns HTTP 404, add
 each approved name. A 404 alone, including under `--gh gh`, never establishes
 that a repository is gone. Exit 3 reports unknown entries even when confirmed removals were
 applied; check `applied` and `backup` rather than treating it as no change.
+When archive metadata is unavailable, an audit leaves the existing stamp unchanged.
+The session-start hook checks archive state only when a weekly reminder is due:
+confirmed archived repositories get no weekly reminder, while unknown reads retain
+the reminder. The daily-turn reminder still applies.
 The documented reader on the Director's own login also works here with
 `--gh gh` for private repositories. To undo cleanup, restore the backup only if no later turn or audit
 ran; otherwise reinsert just the removed audit entries, retaining newer stamps.

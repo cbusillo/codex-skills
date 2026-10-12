@@ -369,6 +369,8 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
             assert args[-2:] == ["--method", "GET"]
             path = args[1]
             calls.append(path)
+            if path == "repos/o/r":
+                return {"archived": False}
             if "labels=audit" in path:
                 return [closed] * 100 if cap == "closed_audit" else [closed]
             if "state=open" in path and cap == "milestone_events":
@@ -446,7 +448,7 @@ def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
         marker = Path(tmp) / "marker.json"
         original = b'{"turn":"earlier","audits":{"o/active":"earlier"}}\n'
         marker.write_bytes(original)
-        for archived in (True, False):
+        for archived in (True, None, False):
             def fetch(args: list[str], **_kwargs: Any) -> Any:
                 return {"archived": archived} if args[1] == "repos/o/r" else []
 
@@ -456,7 +458,7 @@ def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
                                             "gh_json": fetch}), redirect_stdout(output)):
                 module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
             result = json.loads(output.getvalue())
-            if archived:
+            if archived is not False:
                 assert result["marked"] is None and marker.read_bytes() == original
             else:
                 assert result["marked"] == str(marker)
@@ -1466,7 +1468,7 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
             with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
                   patch.dict(vars(module), {
                       "merged_direction": lambda *_args, **_kwargs: DIRECTION,
-                      "gh_json": lambda *_args, **_kwargs: [],
+                      "gh_json": lambda args, **_kwargs: {"archived": False} if args[1] == f"repos/{audited}" else [],
                       "fetch_capacity": capacity,
                   }),
                   redirect_stdout(output)):
@@ -1510,7 +1512,7 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
             return [waiting, gated, {"number": 6, "title": "both reviewers approve", "pull_request": {}}]
         if path.startswith("repos/o/site/milestones"):
             return [{"number": 2, "title": "Launch", "description": "Closes when all findings are resolved."}]
-        if path == "repos/o/site":
+        if path in {"repos/o/site", "repos/o/direction"}:
             return {"archived": False, "default_branch": "main"}
         if path == "repos/o/site/issues/5":
             return {"number": 5, "state": "closed", "pull_request": {}}

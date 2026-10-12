@@ -1841,8 +1841,8 @@ def main(argv: list[str] | None = None) -> int:
     # Incomplete capacity reads also keep the window open for a rerun.
     window_reads = {"recent_closed_audit_issues", "recent_closed_milestone_issues", "milestone_issue_events"}
     keep_window = bool(window_reads & set(truncated)) or any(item.startswith("capacity_") for item in truncated)
-    archived = result["stale_wait_report"]["repository"]["archived"] is True
-    result["marked"] = None if keep_window or archived else record_audit(repo, now, direction_text)
+    archive_unconfirmed_or_true = result["stale_wait_report"]["repository"]["archived"] is not False
+    result["marked"] = None if keep_window or archive_unconfirmed_or_true else record_audit(repo, now, direction_text)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 
