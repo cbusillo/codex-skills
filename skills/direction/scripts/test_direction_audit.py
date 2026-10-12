@@ -2390,6 +2390,32 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
     assert not report["complete"] and not report["items"]
 
 
+def test_audit_identity_refused_link_keeps_other_wait_evidence() -> None:
+    module = load()
+    rows = [issue(1, "Unread cross-owner wait", labels=("plan:waiting",),
+                  body="## Current Status\nWaiting for: outside/tools#475 to close.\n"),
+            issue(2, "Completed local prerequisite", labels=("plan:waiting",),
+                  body="## Current Status\nWaiting for: #71 to close.\n")]
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        if "/dependencies/blocked_by" in path:
+            return []
+        if path == "repos/outside/tools/issues/475":
+            # The audit's subprocess adapter receives the wrapper refusal.
+            refusal = subprocess.CompletedProcess([], 1, stdout="", stderr="identity_refused: Client App is not installed")
+            with patch.object(module.subprocess, "run", return_value=refusal):
+                return module.gh_json(args, gh="fixture-wrapper")
+        if path.endswith("/issues/71"):
+            return {"state": "closed", "state_reason": "completed"}
+        raise AssertionError(path)
+
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
+    assert not report["complete"]
+    assert [row["number"] for row in report["items"]] == [2]
+    assert report["unavailable"] and report["unavailable"][0]["number"] == 1
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

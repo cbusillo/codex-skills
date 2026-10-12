@@ -155,6 +155,25 @@ class WaitTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in report["waits"]], [1, 2])
         self.assertEqual(reader.request.call_count, 2)
 
+    def test_identity_refused_search_preserves_other_search_and_never_reads_links(self):
+        import github_api
+        import github_identity
+
+        refused = github_api._identity_failure(
+            github_identity.GitHubAppError("Client App read refused"),
+            operation="github.direction.director_waits", is_write=False,
+            actor="client-agent[bot]", expected_actor="client-agent[bot]", host=None, bucket="search")
+        reader = Mock()
+        reader.request.side_effect = [director_waits.GitHubReadError(
+            refused.failure.message, result=refused, diagnostics={}), SimpleNamespace(body={
+                "items": [issue(reason="Director to approve outside/tools#475")],
+                "total_count": 1, "incomplete_results": False})]
+        report = director_waits.collect(reader, "owner", ["Director"], NOW)
+        self.assertFalse(report["complete"])
+        self.assertEqual([row["number"] for row in report["waits"]], [1])
+        self.assertTrue(report["errors"])
+        self.assertTrue(all(call.args[1].startswith("/search/issues?") for call in reader.request.call_args_list))
+
     def test_product_wait_cannot_hide_director_decision_or_hold(self):
         for reason in ("Chris to approve", "Chris to resume"):
             mixed = issue(reason="product owner Client to accept", extra="Waiting for: " + reason)
