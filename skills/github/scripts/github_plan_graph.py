@@ -13,7 +13,7 @@ from typing import Any
 import github_read
 
 ISSUE_FIELDS = """number title body state stateReason createdAt updatedAt url
- author { login } authorAssociation repository { nameWithOwner }
+ author { __typename login } authorAssociation repository { nameWithOwner }
  milestone { number title state createdAt }
  issueDependenciesSummary { blockedBy blocking totalBlockedBy totalBlocking }
  subIssuesSummary { total completed percentCompleted }"""
@@ -23,7 +23,7 @@ CONNECTIONS = {
     "blockedBy": RELATED_FIELDS,
     "blocking": RELATED_FIELDS,
     "subIssues": RELATED_FIELDS,
-    "comments": "databaseId body createdAt updatedAt url author { login }",
+    "comments": "databaseId body createdAt updatedAt url author { __typename login }",
 }
 
 
@@ -89,6 +89,15 @@ def complete_issue(reader: github_read.GitHubReader, node: dict[str, Any], *, co
     return node
 
 
+def rest_author(author: dict[str, Any] | None) -> dict[str, str]:
+    if author is None:
+        return {}
+    login = author["login"]
+    kind = author.get("__typename")
+    return {"login": login + "[bot]" if kind == "Bot" and not login.endswith("[bot]") else login,
+            "type": "Bot" if kind == "Bot" else "User"}
+
+
 def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
     # Keep the planner's single representation and selection implementation.
     deps, sub = node["issueDependenciesSummary"], node["subIssuesSummary"]
@@ -100,7 +109,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
         "title": node["title"], "body": node["body"], "state": node["state"].lower(),
         "state_reason": node["stateReason"].lower() if node["stateReason"] else None,
         "created_at": node["createdAt"], "updated_at": node["updatedAt"], "html_url": node["url"],
-        "user": node["author"] or {}, "author_association": node["authorAssociation"],
+        "user": rest_author(node["author"]), "author_association": node["authorAssociation"],
         "labels": node["labels"], "milestone": milestone,
         "issue_dependencies_summary": {"blocked_by": deps["blockedBy"], "blocking": deps["blocking"],
             "total_blocked_by": deps["totalBlockedBy"], "total_blocking": deps["totalBlocking"]},
@@ -109,7 +118,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
             "title": n["title"], "state": n["state"].lower(), "html_url": n["url"]} for n in node[field]]
             for key, field in [("blocked_by", "blockedBy"), ("blocking", "blocking"), ("sub_issues", "subIssues")]},
         "_graph_comments": [{"id": n["databaseId"], "body": n["body"], "created_at": n["createdAt"],
-            "updated_at": n["updatedAt"], "html_url": n["url"], "user": n["author"] or {}}
+            "updated_at": n["updatedAt"], "html_url": n["url"], "user": rest_author(n["author"])}
             for n in node.get("comments", [])],
     }
 
@@ -130,7 +139,7 @@ def planning_graph(reader: github_read.GitHubReader, repo: str, *, number: int |
     for page in range(100):
         selector = f"issue(number:{number})" if number is not None else (
             f'issues(first:{page_size}, after:{json.dumps(cursor)}, states:[OPEN], '
-            f'labels:{json.dumps(labels)}, orderBy:{{field:CREATED_AT, direction:ASC}})')
+            f'labels:{json.dumps(labels)}, '+(f'filterBy:{{milestoneNumber:{json.dumps(str(milestone))}}}, ' if milestone is not None else '')+f'orderBy:{{field:CREATED_AT, direction:ASC}})')
         selection = fields if number is not None else f"totalCount nodes {{ {fields} }} pageInfo {{ hasNextPage endCursor }}"
         data = query_data(reader, f'query {{ repository(owner:{json.dumps(owner)}, name:{json.dumps(name)}) '
                           f'{{ {selector} {{ {selection} }} }} rateLimit {{ cost remaining resetAt }} }}', step=f"plan_graph_page_{page+1}")

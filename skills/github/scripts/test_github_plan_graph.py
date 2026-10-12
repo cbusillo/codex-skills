@@ -11,6 +11,7 @@ import json
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 import github_api
@@ -20,7 +21,7 @@ import github_read
 FIXTURE = Path(__file__).parent / 'fixtures/planning_graph.json'
 
 
-def load_plan():
+def load_plan() -> Any:
     spec = importlib.util.spec_from_file_location('graph_plan_test', Path(__file__).with_name('gh-plan.py'))
     plan = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(plan)
@@ -40,21 +41,21 @@ def test_recorded_graph_selection_and_request_savings():
     assert len(rows) == 20
     plan = load_plan()
     rest_calls = []
-    def collect(path, **kwargs):
+    def collect(path, **_kwargs):
         rest_calls.append(path)
         number = int(path.split('/issues/')[1].split('/')[0])
         row = next(row for row in rows if row['number'] == number)
         key = 'sub_issues' if path.endswith('/sub_issues') else path.rsplit('/', 1)[-1]
         return 'fixture-reader', row['_graph_relationships'][key]
     config = plan.load_config('owner/repo')
-    for row in rows:
-        rest = copy.deepcopy(row)
+    for plan_row in rows:
+        rest = copy.deepcopy(plan_row)
         rest.pop('_graph_relationships')
         with patch.object(plan, 'collect_paged_rest_items', side_effect=collect):
-            _, rest_rel, rest_truncated = plan.read_next_issue_relationships('owner/repo', row['number'], rest)
-        _, graph_rel, graph_truncated = plan.read_next_issue_relationships('owner/repo', row['number'], row)
+            _, rest_rel, rest_truncated = plan.read_next_issue_relationships('owner/repo', plan_row['number'], rest)
+        _, graph_rel, graph_truncated = plan.read_next_issue_relationships('owner/repo', plan_row['number'], plan_row)
         assert (graph_rel, graph_truncated) == (rest_rel, rest_truncated)
-        assert plan.evaluate_next_plan(row, config=config, focus=None, relationships=graph_rel) == plan.evaluate_next_plan(rest, config=config, focus=None, relationships=rest_rel)
+        assert plan.evaluate_next_plan(plan_row, config=config, focus=None, relationships=graph_rel) == plan.evaluate_next_plan(rest, config=config, focus=None, relationships=rest_rel)
     # Count the actual REST calls plus its inventory, compared with the batch.
     assert len(rest_calls) + 1 >= 12
     assert reader.graphql_json.call_count == 1
@@ -86,6 +87,7 @@ def test_full_discussion_and_all_connection_pagination():
     assert rows[0]['labels'] == [{'name':'plan'},{'name':'plan:active'}]
     assert [c['body'] for c in rows[0]['_graph_comments']] == ['First','Last']
     assert rows[0]['_graph_relationships']['blocked_by'][1]['state'] == 'closed'
+    rows[0]['_graph_actor']='fixture-reader'
     plan=load_plan()
     with patch.object(plan,'read_planning_graph',return_value=rows), patch.object(plan,'emit') as emit, patch.object(plan,'api_json',side_effect=AssertionError('unexpected REST')):
         plan.cmd_show(argparse.Namespace(repo='owner/repo',issue=str(node['number']),full=True,batch_read=True))
@@ -94,10 +96,10 @@ def test_full_discussion_and_all_connection_pagination():
 
 def test_partial_and_incomplete_graph_never_become_available():
     fixture = json.loads(FIXTURE.read_text())
-    for alter in [lambda body:body.update(errors=[{'message':'missing grant'}]),
-                  lambda body:body['data'].update(repository=None),
-                  lambda body:body['data']['repository']['issues']['nodes'][0]['blocking'].update(totalCount=999),
-                  lambda body:body['data']['repository']['issues']['nodes'][0].pop('labels')]:
+    for alter in [lambda document:document.update(errors=[{'message':'missing grant'}]),
+                  lambda document:document['data'].update(repository=None),
+                  lambda document:document['data']['repository']['issues']['nodes'][0]['blocking'].update(totalCount=999),
+                  lambda document:document['data']['repository']['issues']['nodes'][0].pop('labels')]:
         body=copy.deepcopy(fixture);alter(body)
         try: graph.planning_graph(reader_for(body),'owner/repo',limit=20)
         except (github_read.GitHubReadShapeError,KeyError,TypeError): pass
@@ -125,6 +127,22 @@ def test_inventory_pagination_and_changed_connection_fail_closed():
     try:graph.planning_graph(reader_for({'data':{'repository':{'issue':node}}},changed),'owner/repo',number=node['number'])
     except github_read.GitHubReadShapeError:pass
     else:raise AssertionError('changed issue accepted')
+
+
+def test_recorded_rest_show_provenance_and_fallback():
+    record = json.loads(FIXTURE.with_name('planning_show.json').read_text())
+    rows = graph.planning_graph(reader_for(record['graphql']), 'owner/repo', number=1720)
+    rows[0]['_graph_actor'] = 'fixture-reader'
+    plan = load_plan()
+    args = argparse.Namespace(repo='owner/repo', issue='1720', full=True, batch_read=True)
+    with patch.object(plan.github_identity, 'configured_bot_logins', return_value={'fixture-bot[bot]'}), patch.object(plan, 'emit') as output:
+        with patch.object(plan, 'read_planning_graph', return_value=rows):
+            plan.cmd_show(args)
+        batched = output.call_args.args[0]['issue']
+        with patch.object(plan, 'read_planning_graph', return_value=None), patch.object(plan, 'get_issue', return_value=('fixture-reader', record['rest'])), patch.object(plan, 'collect_paged_rest_items', return_value=('fixture-reader', record['comments'])):
+            plan.cmd_show(args)
+        assert output.call_args.args[0]['issue'] == batched
+        assert batched['provenance']['ownership'] == 'automation_managed'
 
 
 if __name__ == '__main__':

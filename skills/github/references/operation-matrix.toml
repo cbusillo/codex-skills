@@ -867,7 +867,7 @@ entrypoint = "github/scripts/gh-plan.py show"
 intent = "Read one planning issue and emit sections or the full body with source-ownership provenance and all discussion comments."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "GET /repos/{repo}/issues/{number}; paged GET /repos/{repo}/issues/{number}/comments in every show mode"
+endpoint_or_command = "GET /repos/{repo}/issues/{number}; paged GET /repos/{repo}/issues/{number}/comments; explicit --batch-read POST /graphql issue graph and discussion"
 quota_bucket = "mixed"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -2358,6 +2358,7 @@ degraded_behavior = "Only the owner creates/installs the App in their browser. C
 documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
 
 [api_surface_fingerprints]
+"github/scripts/github_plan_graph.py" = "d08226c18592156fb0cf39319e128dc2241b4db9573d1d346e35143979cb4c94"
 "github/scripts/ready_handoff.py" = "c954ac9933f0020900dc7cf85fe84dd51c6796dca4adda896acd9174eebff837"
 "direction/scripts/director_waits.py" = "66726295e89ba0eccbcb1ceb4fb317d3ef6e3fd70bc985f10bb258c2d742068f"
 "direction/scripts/direction_mark.py" = "c4263dc36bf8f69fda588da59f605b5b354cbfdccbebc673b4bd3c8d326cac50"
@@ -2415,4 +2416,3 @@ retained_graphql_rationale = "One query per repository page supplies aggregate c
 source_refs = ["supervisor/scripts/fleet_counts.py:fleet_counts"]
 test_refs = ["supervisor/scripts/test_fleet_counts.py:test_recorded_pages_count_issues_and_prs_separately", "supervisor/scripts/test_fleet_counts.py:test_failure_after_first_page_has_no_totals"]
 
-"github/scripts/github_plan_graph.py" = "d08226c18592156fb0cf39319e128dc2241b4db9573d1d346e35143979cb4c94"

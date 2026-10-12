@@ -1908,18 +1908,30 @@ def cmd_search(args: argparse.Namespace) -> None:
           "total_count": total_count, "incomplete_results": incomplete_results, "limit": args.limit})
 
 
+BATCH_READ_CONTEXT: dict[str, Any] = {}
+
 def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None:
+    BATCH_READ_CONTEXT.clear()
+    BATCH_READ_CONTEXT.update({"used": False, "fallback_reason": "explicit_identity_route"})
     if os.environ.get("GH_PLAN_SKIP_BOT") == "1" or os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1" or github_identity.active_auth_fallback_allowed() or github_identity.own_user_opted_in():
         return None
     reader = github_read.GitHubReader(operation=CURRENT_OPERATION, strict_actor=True,
         cache_enabled=True, cache_revalidate=True,
         deadline_at=time.time() + github_api_core.remaining_retry_timeout_seconds())
     try:
-        return github_plan_graph.planning_graph(reader, repo, **kwargs)
-    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError):
+        rows = github_plan_graph.planning_graph(reader, repo, **kwargs)
+        for row in rows:
+            row["_graph_actor"] = reader.actor
+        BATCH_READ_CONTEXT.update({"used": True, "fallback_reason": None})
+        return rows
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError, AttributeError) as error:
+        BATCH_READ_CONTEXT["fallback_reason"] = github_api_core.redact_string(str(error))
         # Discard the whole optional graph before recovering through REST.
         return None
     finally:
+        BATCH_READ_CONTEXT["diagnostics"] = reader.diagnostics()
+        BATCH_READ_CONTEXT["cost"] = sum((result.body.get("data") or {}).get("rateLimit", {}).get("cost", 0)
+            for result in reader.results if isinstance(result.body, dict) and isinstance((result.body.get("data") or {}).get("rateLimit"), dict))
         for result in reader.results:
             record_retry_fields(result)
 
@@ -1931,7 +1943,7 @@ def cmd_show(args: argparse.Namespace) -> None:
     if getattr(args, "batch_read", False):
         issue_repo, number = issue_ref(args.issue, repo)
         graph = read_planning_graph(issue_repo, number=number)
-    actor, issue = ("automation-gh", graph[0]) if graph else get_issue(args.issue, repo)
+    actor, issue = (graph[0]["_graph_actor"], graph[0]) if graph else get_issue(args.issue, repo)
     body = issue.get("body") or ""
     result = compact_issue(issue)
     if args.full:
@@ -1972,7 +1984,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         }
         for comment in comments
     ]
-    emit({"ok": True, "actor": actor, "issue": result})
+    emit({"ok": True, "actor": actor, "issue": result,
+          **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
 
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
@@ -3032,7 +3045,7 @@ def read_next_issue_relationships(
 ) -> tuple[str, dict[str, list[dict[str, Any]]], list[str]]:
     if issue is not None and "_graph_relationships" in issue:
         graph = issue["_graph_relationships"]
-        return "automation-gh", {key: [compact_relationship_issue(row, key) for row in rows[:limit]]
+        return issue.get("_graph_actor", ""), {key: [compact_relationship_issue(row, key) for row in rows[:limit]]
             for key, rows in graph.items()}, [key for key, rows in graph.items() if len(rows) > limit]
     relationships: dict[str, list[dict[str, Any]]] = {}
     truncated: list[str] = []
@@ -3281,7 +3294,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     graph = read_planning_graph(repo, labels=[config["labels"]["plan"]],
         milestone=issue_query.get("milestone"), limit=NEXT_PLAN_INVENTORY_LIMIT + 1) if getattr(args, "batch_read", False) else None
     if graph is not None:
-        page_actor, issues = "automation-gh", graph
+        page_actor, issues = BATCH_READ_CONTEXT["diagnostics"]["actor"], graph
     else:
         page_actor, issues = collect_paged_rest_items(
             f"/repos/{repo}/issues",
@@ -3409,6 +3422,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             "error": direction_error,
         },
         "focus_context": focus_context,
+        **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {}),
         "dependency_context": {
             "complete": dependency_degraded_count == 0,
             "degraded_count": dependency_degraded_count,
