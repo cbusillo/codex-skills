@@ -123,6 +123,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             "printf '%s\\n' 'tell application \"System Events\" to keystroke \"path\"' 'tell application \"System Events\" to key code 36' | osascript",
             "echo 'tell application \"System Events\" to key code 36' | sudo /usr/bin/osascript",
             "printf 'import keyboard\\nkeyboard.press_and_release(\"enter\")\\n' | python3 -",
+            "printf '%s\\n' 'tell application \"System Events\" to key code 36' | tee picker.applescript | osascript",
+            "echo 'tell application \"System Events\" to key code 36' | cat | osascript",
         )
         for command in commands:
             with self.subTest(command=command):
@@ -193,6 +195,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "printf '%s\\n' 'pyautogui.press(\"enter\")' | python3 format_notes.py",
             "echo 'keystroke path' | osascript -e 'get 42'",
             "printf -v script '%s' 'keystroke path' | osascript",
+            "printf '%s\\n' 'pyautogui.press(\"enter\")' | tee notes.txt | python3 format_notes.py",
+            "osascript -e 'tell application \"Google Chrome\" to execute tab id 42 of window id 24 javascript \"document.body.dispatchEvent(new KeyboardEvent(\\\"keydown\\\", {key: \\\"Enter\\\"}))\"'",
+            "osascript -e 'tell application \"System Events\" to get name of every process'",
             "python3 - <<'PY'\nprint('osascript keystroke path')\nPY",
         ):
             with self.subTest(command=command):

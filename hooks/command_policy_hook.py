@@ -371,7 +371,18 @@ def literal_pipeline_programs(shell: str) -> list[list[str]]:
             pipelines[-1][-1].append(token)
     programs: list[list[str]] = []
     for pipeline in pipelines:
-        if len(pipeline) != 2:
+        if len(pipeline) < 2:
+            continue
+        passthrough = True
+        for stage in pipeline[1:-1]:
+            normalized = unwrap(stage)
+            if len(normalized) != 1 or not (
+                normalized[0] in [["cat"], ["cat", "-"]]
+                or normalized[0][0] == "tee" and not {"--help", "--version"} & set(normalized[0])
+            ):
+                passthrough = False
+                break
+        if not passthrough:
             continue
         producers = unwrap(pipeline[0])
         if len(producers) != 1 or producers[0][0] not in {"echo", "printf"}:
@@ -380,7 +391,7 @@ def literal_pipeline_programs(shell: str) -> list[list[str]]:
         if producer[:2] == ["printf", "-v"]:
             continue  # This writes a shell variable, not stdout.
         payload = "\n".join(producer[1:]).replace("\\n", "\n").replace("\\t", "\t")
-        programs.extend([*reader, payload] for reader in script_readers(pipeline[1:]))
+        programs.extend([*reader, payload] for reader in script_readers(pipeline[-1:]))
     return programs
 
 

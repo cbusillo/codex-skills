@@ -119,7 +119,9 @@ policy:
   command_policies:
     - id: reject-system-events-keyboard-synthesis
       match:
-        shell_regex: '(?i)(?:\S*/)?osascript\b[\s\S]*\b(?:keystroke|key\s*(?:code|down|up))\b'
+        shell_regex: >-
+          (?ix)(?:\S*/)?osascript\b(?=[\s\S]*\bSystem\s*Events\b)[\s\S]*
+          (?:\bkeystroke(?:\s+|\s*\()|\bkey\s+(?:code|down|up)\b|\.\s*key(?:Code|Down|Up)\s*\()
       action: reject
       message: &keyboard_refusal Global keyboard synthesis can type into another application or agent session even when System Events names a process. Use the browser tools' file-upload action or a page/DevTools API scoped to the exact tab for browser input; use iterm_tab.py send --verified-target for terminal input.
       preferred: &keyboard_alternatives
