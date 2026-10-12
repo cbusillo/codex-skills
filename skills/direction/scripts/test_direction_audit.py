@@ -369,6 +369,8 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
             assert args[-2:] == ["--method", "GET"]
             path = args[1]
             calls.append(path)
+            if path == "repos/o/r":
+                return {"archived": False}
             if "labels=audit" in path:
                 return [closed] * 100 if cap == "closed_audit" else [closed]
             if "state=open" in path and cap == "milestone_events":
@@ -440,6 +442,69 @@ def test_unadopted_audit_leaves_marker_untouched() -> None:
                 assert marker.read_text() == original
 
 
+def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        original = b'{"turn":"earlier","audits":{"o/active":"earlier"}}\n'
+        marker.write_bytes(original)
+        for archived in (True, None, False):
+            def fetch(args: list[str], **_kwargs: Any) -> Any:
+                return {"archived": archived} if args[1] == "repos/o/r" else []
+
+            output = StringIO()
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
+                                            "gh_json": fetch}), redirect_stdout(output)):
+                module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
+            result = json.loads(output.getvalue())
+            if archived is not False:
+                assert result["marked"] is None and marker.read_bytes() == original
+            else:
+                assert result["marked"] == str(marker)
+                assert "o/r" in json.loads(marker.read_text())["audits"]
+
+
+def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_archive_state() -> None:
+    module = load()
+    original = {"turn": "earlier", "audits": {
+        "o/archived": "a", "o/active": "b", "o/unknown": "c", "o/malformed": "d",
+    }, "other": True}
+    responses = {
+        "repos/o/archived": {"full_name": "o/archived", "archived": True},
+        "repos/o/active": {"full_name": "o/active", "archived": False},
+        "repos/o/unknown": {"full_name": "o/unknown"},
+        "repos/o/malformed": {"full_name": "o/malformed", "archived": "false"},
+    }
+    contents_available = True
+
+    def fetch(args: list[str]) -> dict[str, Any]:
+        if args[1].endswith("/contents/DIRECTION.md"):
+            if args[1].startswith("repos/o/archived/") and not contents_available:
+                raise module.AuditError("HTTP 403")
+            return {"type": "file", "content": "direction"}
+        return responses[args[1]]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.write_text(json.dumps(original))
+        before = marker.read_bytes()
+        preview = module.prune_unadopted(marker, fetch=fetch)
+        assert preview["removed"] == ["o/archived"]
+        assert preview["removed_reasons"] == {"o/archived": "archived"}
+        assert preview["retained"] == ["o/active"]
+        assert set(preview["unknown"]) == {"o/unknown", "o/malformed"}
+        assert not preview["ok"] and not preview["applied"]
+        assert preview["backup"] is None and marker.read_bytes() == before
+        contents_available = False
+        applied = module.prune_unadopted(marker, fetch=fetch, apply=True)
+        assert Path(applied["backup"]).read_bytes() == before
+        assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
+        assert json.loads(marker.read_text()) == {
+            **original, "audits": {repo: stamp for repo, stamp in original["audits"].items() if repo != "o/archived"},
+        }
+
+
 def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
     module = load()
     original = {"turn": "earlier", "audits": {"o/adopted": "a", "o/missing": "b", "o/private": "c"}, "other": True}
@@ -451,7 +516,7 @@ def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
             if "/missing/" in endpoint:
                 raise module.AuditError("HTTP 404")
             return {"type": "file", "content": "direction"}
-        return {"full_name": endpoint.removeprefix("repos/")}
+        return {"full_name": endpoint.removeprefix("repos/"), "archived": False}
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
         marker.write_text(json.dumps(original))
@@ -489,7 +554,7 @@ def test_prune_rejects_malformed_input_and_concurrent_marker_edits() -> None:
             if args[1].endswith("/contents/DIRECTION.md"):
                 marker.write_text(changed)
                 raise module.AuditError("HTTP 404")
-            return {"full_name": "o/missing"}
+            return {"full_name": "o/missing", "archived": False}
         try:
             module.prune_unadopted(marker, fetch=fetch, apply=True)
         except module.AuditError:
@@ -542,7 +607,7 @@ def test_prune_preserves_writer_started_after_final_read() -> None:
             def fetch(args: list[str]) -> dict[str, Any]:
                 if args[1].endswith("/contents/DIRECTION.md"):
                     raise module.AuditError("HTTP 404")
-                return {"full_name": "o/missing"}
+                return {"full_name": "o/missing", "archived": False}
 
             try:
                 with patch.object(Path, "read_bytes", read):
@@ -593,7 +658,7 @@ def test_prune_does_not_confuse_repository_digits_with_http_status() -> None:
     def fetch(args: list[str]) -> dict[str, Any]:
         if args[1].endswith("/contents/DIRECTION.md"):
             raise module.AuditError(f"wrapper/go404 {args[1]} failed: HTTP 502")
-        return {"full_name": "o/app404"}
+        return {"full_name": "o/app404", "archived": False}
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
         marker.write_text('{"audits":{"o/app404":"a"}}')
@@ -620,7 +685,7 @@ def test_prune_owner_approved_missing_repos_are_exact_and_recoverable() -> None:
             raise module.AuditError("HTTP 404")
         if args[1].endswith("/contents/DIRECTION.md"):
             return {"type": "file", "content": "direction"}
-        return {"full_name": "o/adopted"}
+        return {"full_name": "o/adopted", "archived": False}
 
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
@@ -1404,7 +1469,7 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
             with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
                   patch.dict(vars(module), {
                       "merged_direction": lambda *_args, **_kwargs: DIRECTION,
-                      "gh_json": lambda *_args, **_kwargs: [],
+                      "gh_json": lambda args, **_kwargs: {"archived": False} if args[1] == f"repos/{audited}" else [],
                       "fetch_capacity": capacity,
                   }),
                   redirect_stdout(output)):
@@ -1475,7 +1540,7 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
         with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
               patch.dict(vars(module), {
                   "merged_direction": lambda *_args, **_kwargs: DIRECTION,
-                  "gh_json": lambda *_args, **_kwargs: [],
+                  "gh_json": lambda args, **_kwargs: {"archived": False} if args[1] == "repos/o/direction" else [],
                   "fetch_capacity": lambda *_args, **_kwargs: (summary(module), []),
                   "active_unadopted_report": lambda *_args, **_kwargs: report,
               }),

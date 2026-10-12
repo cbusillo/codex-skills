@@ -39,6 +39,33 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
 
 
 class ReminderTests(unittest.TestCase):
+    def test_archived_weekly_reminder_is_suppressed_without_hiding_daily_turn(self) -> None:
+        state = marker(turn=ago(days=2))
+        metadata = {"full_name": "owner/repo", "archived": True}
+        with mock.patch.object(hook, "run_reader", return_value=subprocess.CompletedProcess([], 0, json.dumps(metadata), "")):
+            repo = hook.weekly_audit_repo(state, NOW, "owner/repo")
+            text = hook.reminder(state, NOW, repo, MARKER)
+        self.assertIsNone(repo)
+        self.assertTrue(text)
+        self.assertEqual(text, hook.reminder(state, NOW, None, MARKER))
+        self.assertEqual(hook.reminder(marker(turn=NOW), NOW, repo, MARKER), "")
+
+    def test_weekly_archive_read_preserves_unknown_and_skips_fresh_audits(self) -> None:
+        for metadata in ({"full_name": "owner/repo", "archived": False},
+                         {"full_name": "owner/repo"}, {"full_name": "owner/repo", "archived": "true"},
+                         {"full_name": "owner/other", "archived": True}):
+            with mock.patch.object(hook, "run_reader", return_value=subprocess.CompletedProcess([], 0, json.dumps(metadata), "")):
+                self.assertEqual(hook.weekly_audit_repo(marker(turn=NOW), NOW, "owner/repo"), "owner/repo")
+        for response in (subprocess.CompletedProcess([], 1, "", "HTTP 404"),
+                         subprocess.CompletedProcess([], 0, "invalid JSON", "")):
+            with mock.patch.object(hook, "run_reader", return_value=response):
+                self.assertEqual(hook.weekly_audit_repo(marker(turn=NOW), NOW, "owner/repo"), "owner/repo")
+        with mock.patch.object(hook, "run_reader", side_effect=subprocess.TimeoutExpired("fixture", 1)):
+            self.assertEqual(hook.weekly_audit_repo(marker(turn=NOW), NOW, "owner/repo"), "owner/repo")
+        with mock.patch.object(hook, "run_reader", side_effect=AssertionError("unnecessary metadata read")):
+            self.assertEqual(hook.weekly_audit_repo(marker(turn=NOW, owner__repo=NOW), NOW, "owner/repo"), "owner/repo")
+            self.assertIsNone(hook.weekly_audit_repo(marker(turn=NOW), NOW, None))
+
     def test_compaction_prints_only_the_claude_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             env = {"DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
