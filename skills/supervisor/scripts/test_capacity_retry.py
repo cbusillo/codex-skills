@@ -1,0 +1,203 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Replay a sanitized recorded capacity stop with disposable queue adapters."""
+
+import copy
+import json
+import socket
+import subprocess
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+import capacity_retry
+import codex_idle_watch
+import session_record
+import status
+
+FIXTURE = Path(__file__).parent / "fixtures" / "codex-capacity-stop.jsonl"
+
+
+class CapacityTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.home = self.root / "account"
+        self.transcript = self.home / "sessions" / "fixture.jsonl"
+        self.transcript.parent.mkdir(parents=True)
+        self.records = session_record.read_jsonl(FIXTURE)
+        self.transcript.write_text(FIXTURE.read_text())
+        self.native_id = self.records[0]["payload"]["id"]
+        self.entry = {"session_id": self.native_id, "harness": "codex",
+                      "transcript": str(self.transcript), "codex_home": str(self.home),
+                      "supervisor_owned": True}
+        self.ledger = self.root / "ledger.json"
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.state_path = self.root / "capacity.json"
+        self.now = datetime.fromisoformat(self.records[-1]["timestamp"]).timestamp()
+        endpoint = self.home / "app-server-control" / "app-server-control.sock"
+        endpoint.parent.mkdir()
+        self.socket = socket.socket(socket.AF_UNIX)
+        self.socket.bind(str(endpoint))
+        self.addCleanup(self.socket.close)
+
+    def append(self, kind, **fields):
+        record = {"type": "event_msg", "timestamp": datetime.fromtimestamp(
+            self.now, timezone.utc).isoformat(), "payload": {"type": kind, **fields}}
+        with self.transcript.open("a") as stream:
+            stream.write(json.dumps(record) + "\n")
+
+    def capacity_again(self):
+        payload = copy.deepcopy(self.records[-1]["payload"])
+        kind = payload.pop("type")
+        self.append(kind, **payload)
+
+    def continue_sent(self, *_):
+        self.append("user_message", message="continue")
+        self.append("task_started")
+        self.capacity_again()
+
+    def test_recorded_terminal_error_is_visible_without_agent_text(self):
+        result = status.snapshot(self.ledger)[0]
+        self.assertEqual(result["state"], "provider_capacity")
+        self.assertTrue(result["at_turn_end"])
+        self.assertFalse(result["safe_verdict"])
+        self.assertEqual(result["last_text"], "")
+        self.assertIsNotNone(result["capacity_stop"])
+
+    def test_other_activity_and_errors_do_not_trigger_retries(self):
+        text = self.records[-1]["payload"]["error"]["message"]
+        for records in (
+            self.records[:-1] + [{"type": "event_msg", "payload": {
+                "type": "agent_message", "message": text}}],
+            self.records + [{"type": "event_msg", "payload": {"type": "task_started"}}],
+            self.records + [{"type": "event_msg", "payload": {"type": "user_message"}}],
+            self.records + [{"type": "event_msg", "payload": {"type": "turn_aborted"}}],
+            self.records[:-1] + [{"type": "event_msg", "payload": {
+                "type": "task_complete", "error": {"message": "Rate limit reached",
+                                                      "codex_error_info": "usage_limit_exceeded"}}}],
+            self.records[:-1] + [{"type": "event_msg", "payload": {
+                "type": "task_complete", "error": {"message": "Service unavailable",
+                                                      "codex_error_info": "server_overloaded"}}}],
+        ):
+            with self.subTest(records=records[-1]):
+                summary = session_record.summarize(records, "codex")
+                self.assertIsNone(summary["capacity_stop"])
+                with patch.object(capacity_retry, "queue_continue") as queue:
+                    result = capacity_retry.resume(self.entry, summary, {}, self.state_path,
+                                                   self.now + 10000)
+                queue.assert_not_called()
+                self.assertEqual(result["state"], "inactive")
+        self.assertIsNone(session_record.summarize(self.records, "claude")["capacity_stop"])
+
+    def test_backoff_three_tries_restart_and_digest_exhaustion(self):
+        for attempt, delay in enumerate(capacity_retry.BACKOFF_SECONDS):
+            with capacity_retry.locked_state(self.state_path) as state:
+                summary = session_record.session_status(self.entry)
+                with patch.object(capacity_retry, "queue_continue", side_effect=self.continue_sent) as queue:
+                    self.now += delay - 1
+                    before = capacity_retry.resume(self.entry, summary, state, self.state_path, self.now)
+                    self.assertEqual(before["attempts"], attempt)
+                    queue.assert_not_called()
+                    self.now += 1
+                    after = capacity_retry.resume(self.entry, summary, state, self.state_path, self.now)
+                    self.assertEqual(after["state"], "continue_confirmed")
+                    self.assertEqual(after["attempts"], attempt + 1)
+                    queue.assert_called_once()
+            # Reload from disk every time, as a bounded service restart does.
+            self.assertEqual(capacity_retry.load_state(self.state_path)[self.native_id]["attempts"],
+                             attempt + 1)
+        with capacity_retry.locked_state(self.state_path) as state:
+            with patch.object(capacity_retry, "queue_continue") as queue:
+                result = capacity_retry.resume(self.entry, session_record.session_status(self.entry),
+                                               state, self.state_path, self.now + 100000)
+            queue.assert_not_called()
+            self.assertEqual(result["state"], "exhausted")
+        self.assertEqual(status.snapshot(self.ledger, self.state_path)[0]["capacity_retry"], result)
+        notice = codex_idle_watch.poll(self.ledger, {}, 90, self.now + 100000,
+                                      capacity_retry.load_state(self.state_path))[0]
+        self.assertEqual(notice["capacity_retry"]["state"], "exhausted")
+
+    def test_uncertain_send_and_crash_reservation_never_replay(self):
+        for phase in ("pending", "uncertain"):
+            state = {self.native_id: {"attempts": 1, "phase": phase,
+                     "last_attempt": self.now, "target": capacity_retry.target(self.entry)}}
+            capacity_retry.save_state(self.state_path, state)
+            with patch.object(capacity_retry, "queue_continue") as queue:
+                result = capacity_retry.resume(self.entry, session_record.session_status(self.entry),
+                                               capacity_retry.load_state(self.state_path),
+                                               self.state_path, self.now + 100000)
+            queue.assert_not_called()
+            self.assertEqual(result["state"], "reconciliation_required")
+
+    def test_queue_failure_or_missing_readback_preserves_reservation(self):
+        for error in (subprocess.TimeoutExpired("queue", 10), None):
+            with self.subTest(error=error):
+                state = {}
+                with patch.object(capacity_retry, "queue_continue", side_effect=error), \
+                     patch.object(capacity_retry, "readback_continue", return_value=False):
+                    result = capacity_retry.resume(self.entry, session_record.session_status(self.entry),
+                                                   state, self.state_path, self.now + 100000)
+                self.assertEqual(result["state"], "reconciliation_required")
+                self.assertEqual(capacity_retry.load_state(self.state_path)[self.native_id]["phase"],
+                                 "uncertain")
+
+    def test_verification_refuses_other_home_identity_or_new_activity_before_send(self):
+        original = session_record.session_status(self.entry)
+        for changed in ({"codex_home": str(self.root)}, {"supervisor_owned": False},
+                        {"session_id": "readable-title"}, {"codex_home": ""}):
+            with self.subTest(changed=changed), patch.object(capacity_retry, "queue_continue") as queue:
+                with self.assertRaises((ValueError, OSError)):
+                    capacity_retry.verified_target({**self.entry, **changed}, original)
+                queue.assert_not_called()
+        self.append("user_message", message="owner work")
+        with self.assertRaises(ValueError):
+            capacity_retry.verified_target(self.entry, original)
+
+    def test_unowned_session_and_read_only_watcher_send_nothing(self):
+        self.ledger.write_text(json.dumps([{**self.entry, "supervisor_owned": False}]))
+        with patch.object(capacity_retry, "queue_continue") as queue:
+            codex_idle_watch.poll(self.ledger, {}, 90, self.now + 100000, {}, self.state_path, True)
+            self.ledger.write_text(json.dumps([self.entry]))
+            codex_idle_watch.poll(self.ledger, {}, 90, self.now + 100000, {}, self.state_path)
+        queue.assert_not_called()
+        self.assertFalse(self.state_path.exists())
+
+    def test_state_lock_and_invalid_budget_refuse(self):
+        with capacity_retry.locked_state(self.state_path):
+            with self.assertRaises(ValueError):
+                with capacity_retry.locked_state(self.state_path):
+                    self.fail("concurrent capacity watcher was allowed")
+        self.state_path.write_text(json.dumps({self.native_id: {"attempts": -1}}))
+        with self.assertRaises(ValueError):
+            capacity_retry.load_state(self.state_path)
+
+    def test_queue_uses_verified_native_target_and_home(self):
+        expected = session_record.session_status(self.entry)
+        home, endpoint = capacity_retry.verified_target(self.entry, expected)
+        with patch.object(capacity_retry.subprocess, "run") as run:
+            capacity_retry.queue_continue(self.entry, home, endpoint, expected)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--thread") + 1], self.entry["session_id"])
+        self.assertEqual(argv[argv.index("--message") + 1], "continue")
+        self.assertEqual(argv[argv.index("--remote") + 1], "unix://" + str(endpoint))
+        self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], str(home))
+
+    def test_readback_requires_new_continue_from_same_native_transcript(self):
+        size = self.transcript.stat().st_size
+        self.append("agent_message", message="continue")
+        self.assertFalse(capacity_retry.readback_continue(self.entry, size, timeout=0))
+        self.append("user_message", message="continue")
+        self.assertTrue(capacity_retry.readback_continue(self.entry, size, timeout=0))
+        self.assertFalse(capacity_retry.readback_continue({**self.entry, "session_id": "other"},
+                                                        size, timeout=0))
+
+
+if __name__ == "__main__":
+    unittest.main()

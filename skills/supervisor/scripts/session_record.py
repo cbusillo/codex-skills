@@ -187,6 +187,7 @@ def summarize(records: list[dict], harness: str) -> dict:
         "turn_end": None,
         "at_turn_end": False,
         "safe_verdict": False,
+        "capacity_stop": None,
     }
     if harness == "claude":
         records = strip_claude_exit_tail(records)
@@ -234,7 +235,7 @@ def summarize(records: list[dict], harness: str) -> dict:
                 "function_call",
                 "custom_tool_call",
             }:
-                result.update(at_turn_end=False, last_text="", turn_end=None)
+                result.update(at_turn_end=False, last_text="", turn_end=None, capacity_stop=None)
             if kind == "agent_message":
                 result.update(
                     last_text=payload.get("message", ""),
@@ -247,8 +248,19 @@ def summarize(records: list[dict], harness: str) -> dict:
                 )
             if kind in {"task_complete", "turn_aborted"}:
                 result.update(
-                    at_turn_end=True, turn_end=kind, timestamp=record.get("timestamp")
+                    at_turn_end=True, turn_end=kind, timestamp=record.get("timestamp"),
+                    capacity_stop=None,
                 )
+                error = payload.get("error")
+                if (record.get("type") == "event_msg" and kind == "task_complete"
+                        and isinstance(error, dict)
+                        and error.get("codex_error_info") == "server_overloaded"
+                        and error.get("message") ==
+                        "Selected model is at capacity. Please try a different model."):
+                    result["capacity_stop"] = {
+                        "timestamp": record.get("timestamp"),
+                        "turn_id": payload.get("turn_id"),
+                    }
     # Citation metadata may follow the verdict; retain the raw response for readers.
     verdict_text = MEMORY_CITATION_TAIL.sub("", result["last_text"])
     lines = verdict_text.rstrip().splitlines()
@@ -261,10 +273,15 @@ def summarize(records: list[dict], harness: str) -> dict:
         and outside_fences(lines)
         and result["at_turn_end"]
         and result["turn_end"] != "turn_aborted"
+        and result["capacity_stop"] is None
     )
     result["verdict_recognition"] = (
         "recognized" if result["safe_verdict"] else
         "unrecognized" if "Safe to exit:" in verdict_text else "absent"
+    )
+    result["state"] = (
+        "provider_capacity" if result["capacity_stop"] else
+        "turn_ended" if result["at_turn_end"] else "active"
     )
     return result
 

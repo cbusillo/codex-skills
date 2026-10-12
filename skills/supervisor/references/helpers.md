@@ -71,6 +71,46 @@ monitor/scheduler. A new watcher may repeat a notice. `clean: null` means a turn
 ended, not that work succeeded; an abort is also a notice. Use Claude Code's
 `notify_when_idle` when available, not another watcher.
 
+### Codex provider capacity stops
+
+`status.py` and idle notices report `state: provider_capacity` only for the
+recorded Codex `task_complete` capacity error, including a first-turn failure
+with no response text. A quote of that error, another provider error, an abort
+or new task activity is not a capacity stop.
+
+The Supervisor may enable bounded retries after landing. Add each watched
+Codex session's existing absolute `codex_home` to its ledger entry and verify
+its native UUID, transcript and `supervisor_owned: true`. The transcript must
+be inside that home's live `sessions` directory and its existing daemon socket
+must be available. No helper starts a daemon or changes login settings.
+
+```sh
+uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --capacity-state <private-capacity-state.json> --resume-capacity --deadline-seconds 1800
+uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json> --capacity-state <private-capacity-state.json>
+```
+
+Use the same retry-state path in every watcher restart, check and morning
+digest; retain it through takeover. Only one watcher may operate on it at a
+time. Without `--resume-capacity`, the watcher remains read-only. The exact
+thread nudge uses the existing `codex queue` path described under
+[launching and nudging](#launching-and-nudging), with the verified home's
+explicit Unix endpoint. It queues only `continue` after 1, 3 and 10 minutes
+of backoff, at most three attempts per native session across restarts. The
+budget never resets automatically after a successful turn or a later capacity
+error. Do not rotate/delete the state to retry an exhausted session.
+
+The attempt is durably reserved before sending; transcript readback must show
+a new `continue` user message. A crash, command failure or absent readback
+reports `capacity_retry.state: reconciliation_required` and permits no more
+automatic sends. Inspect the exact thread and queued messages before any
+manual intervention; never replay an uncertain send. A changed home or
+transcript reports `target_changed` and also stops automatic sends.
+Checks and the morning digest use the state-aware status command above and
+include every `exhausted`, `reconciliation_required` or `target_changed`
+record. `exhausted` means the session remains at capacity after using its
+three attempts; it needs Supervisor attention. These states establish no
+completion or safe-to-exit verdict.
+
 The question helper reads every comment via the maintained GitHub helper and
 returns every question, not just the newest. Successful complete reads,
 including cached reads with `not_applicable`
