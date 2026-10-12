@@ -49,6 +49,9 @@ def response(body: Any) -> github_api.ApiResult:
 def test_recorded_six_pr_checks_and_request_drop():
     fixture = json.loads(FIXTURE.read_text())
     rest = json.loads(FIXTURE.with_name("pr_batch_rest_checks.json").read_text())
+    discussions = json.loads(
+        FIXTURE.with_name("pr_batch_rest_comments.json").read_text()
+    )
     numbers = [int(key[1:]) for key in fixture["data"]["repository"]]
     observed = reader()
     with patch.object(
@@ -57,6 +60,11 @@ def test_recorded_six_pr_checks_and_request_drop():
         pulls = batch.batch_pull_requests(observed, "owner/repo", numbers)
         assert transport.call_count == 1
         for number, pull in pulls.items():
+            comment_path = f"/repos/owner/repo/issues/{number}/comments"
+            assert (
+                observed.paged_json(comment_path, step_prefix="recorded_comments")
+                == discussions[comment_path]
+            )
             assert (
                 observed.get_json(f"/repos/owner/repo/pulls/{number}", step="metadata")[
                     "head"

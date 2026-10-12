@@ -297,6 +297,62 @@ class EnqueueTests(unittest.TestCase):
         self.assertTrue(note["used"])
         self.assertEqual(note["cost"], document["data"]["rateLimit"]["cost"])
 
+    def test_real_qualification_consumes_batch_then_rechecks_rest(self):
+        from skills.github.scripts import github_pr_batch, github_read
+        root = Path(__file__).parents[2] / 'github/scripts/fixtures'
+        document = json.loads((root / 'pr_batch.json').read_text())
+        first = next(iter(document['data']['repository'].values()))
+        # A current-head handoff is scenario input; the recordings' old ready
+        # comments correctly fail after the head changes during train landing.
+        ready_comment = {'databaseId':1,'body':f"{READY}\n\nHead: {first['headRefOid']}",
+                         'createdAt':first['updatedAt'],'updatedAt':first['updatedAt'],
+                         'url':'https://github.com/owner/repo/pull/1#issuecomment-1',
+                         'author':{'__typename':'Bot','login':'fixture-bot'},
+                         'authorAssociation':'CONTRIBUTOR'}
+        first['comments']={'totalCount':1,'nodes':[ready_comment],
+                           'pageInfo':{'hasNextPage':False,'endCursor':None}}
+        checks = json.loads((root / 'pr_batch_rest_checks.json').read_text())
+        comments = json.loads((root / 'pr_batch_rest_comments.json').read_text())
+        runs = json.loads((root / 'pr_batch_workflow_runs.json').read_text())
+        comments[f"/repos/owner/repo/issues/{first['number']}/comments"]=[{
+            'id':ready_comment['databaseId'],'body':ready_comment['body'],
+            'created_at':ready_comment['createdAt'],'updated_at':ready_comment['updatedAt'],
+            'html_url':ready_comment['url'],'user':{'login':'fixture-bot[bot]','type':'Bot'}}]
+        reader = github_read.GitHubReader(gh_cmd='fake-gh', actor='fixture-reader',
+                                         expected_actor='fixture-reader', operation='github.pr.view')
+        with patch.object(reader, 'graphql_json', return_value=watch.github_api.ApiResult(ok=True,status=200,body=document)):
+            pulls = github_pr_batch.batch_pull_requests(reader,'owner/repo',[first['number']])
+        source = pulls[first['number']]
+        source.update(state='open',draft=False,mergeable=True,labels=[])
+        suite = checks[f'/repos/owner/repo/commits/{first["headRefOid"]}/check-runs']['check_runs'][0]
+        protection = {'checks':[{'context':suite['name'],'app_id':suite['app']['id']}]}
+        transport_calls=[]
+        def rest_request(_method,path,**_kwargs):
+            transport_calls.append(path)
+            endpoint=path.split('?')[0]
+            if endpoint.endswith('/actions/runs'):body=runs
+            elif endpoint.endswith('/status'):body={'state':'success'}
+            elif endpoint.endswith('/required_status_checks'):body=protection
+            elif endpoint in checks:body=checks[endpoint]
+            elif endpoint in comments:body=comments[endpoint]
+            elif endpoint.endswith('/reviews'):body=[]
+            elif endpoint.endswith(f'/pulls/{first["number"]}'):body=source
+            else:raise AssertionError(endpoint)
+            return watch.github_api.ApiResult(ok=True,status=200,body=body)
+        live=object.__new__(watch.Live)
+        live.reader=reader
+        target={**TARGET,'repo':'owner/repo','base':source['base']['ref']}
+        with patch.object(reader,'_transport_request',side_effect=rest_request):
+            path=f'/repos/owner/repo/pulls/{first["number"]}'
+            observed=live.get(path)
+            observed.update(state='open',draft=False,mergeable=True,labels=[])
+            self.assertTrue(live.qualified(target,observed,set()))
+            self.assertFalse(any(item.split('?')[0] in comments for item in transport_calls))
+            fresh=live.get(path)
+            self.assertTrue(live.qualified(target,fresh,set()))
+        self.assertTrue(any(item.split('?')[0] in comments for item in transport_calls))
+        self.assertIn(path,transport_calls)
+
     def test_custom_limit_and_dry_run(self):
         fake = Fake()
         self.args.max_batch_size = 2
