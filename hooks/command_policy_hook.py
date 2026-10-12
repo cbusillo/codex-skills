@@ -342,6 +342,11 @@ def heredoc_script_readers(header: str, delimiter: str, occurrence: int) -> list
             commands.append([])
         else:
             commands[-1].append(token)
+    return script_readers(commands)
+
+
+def script_readers(commands: list[list[str]]) -> list[list[str]]:
+    """Normalize known interpreter wrappers and check which command consumes a stdin program."""
     readers: list[list[str]] = []
     for command in commands:
         for argv in unwrap(command):
@@ -354,6 +359,31 @@ def heredoc_script_readers(header: str, delimiter: str, occurrence: int) -> list
     return readers
 
 
+def literal_pipeline_programs(shell: str) -> list[list[str]]:
+    """Expose literal echo/printf programs to the same policies as interpreter heredocs."""
+    pipelines: list[list[list[str]]] = [[[]]]
+    for token in shell_tokens(shell):
+        if token in {"|", "|&"}:
+            pipelines[-1].append([])
+        elif OPERATORS.match(token):
+            pipelines.append([[]])
+        else:
+            pipelines[-1][-1].append(token)
+    programs: list[list[str]] = []
+    for pipeline in pipelines:
+        if len(pipeline) != 2:
+            continue
+        producers = unwrap(pipeline[0])
+        if len(producers) != 1 or producers[0][0] not in {"echo", "printf"}:
+            continue
+        producer = producers[0]
+        if producer[:2] == ["printf", "-v"]:
+            continue  # This writes a shell variable, not stdout.
+        payload = "\n".join(producer[1:]).replace("\\n", "\n").replace("\\t", "\t")
+        programs.extend([*reader, payload] for reader in script_readers(pipeline[1:]))
+    return programs
+
+
 def simple_commands(shell: str) -> list[list[str]]:
     """Return the argv of each simple command a shell line runs, per the module docstring."""
     script = ShellScript(shell)
@@ -361,6 +391,7 @@ def simple_commands(shell: str) -> list[list[str]]:
     for argv in shell_commands(script.text):
         unwrapped.extend(unwrap(argv))
     unwrapped.extend(nested_commands(script.substitutions))
+    unwrapped.extend(literal_pipeline_programs(script.text))
     shell_reads_bodies = any(reads_script_from_input(argv) for argv in unwrapped)
     for body, expands, header, delimiter, occurrence in script.bodies:
         # Language payloads are arguments to their interpreter, not shell

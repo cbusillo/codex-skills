@@ -120,6 +120,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "osascript -l AppleScript <<-'APPLESCRIPT'\n\t" + apple.replace("\n", "\n\t") + "\n\tAPPLESCRIPT",
             "osascript <<EOF; cat <<EOF\ntell application \"System Events\" to key code 36\nEOF\nget 42\nEOF",
             "cat <<EOF; osascript <<EOF\nget 42\nEOF\ntell application \"System Events\" to key code 36\nEOF",
+            "printf '%s\\n' 'tell application \"System Events\" to keystroke \"path\"' 'tell application \"System Events\" to key code 36' | osascript",
+            "echo 'tell application \"System Events\" to key code 36' | sudo /usr/bin/osascript",
+            "printf 'import keyboard\\nkeyboard.press_and_release(\"enter\")\\n' | python3 -",
         )
         for command in commands:
             with self.subTest(command=command):
@@ -186,6 +189,10 @@ class CommandPolicyHookTests(unittest.TestCase):
             "python3 -I -X dev format_notes.py <<'DOC'\npyautogui.press('enter')\nDOC",
             "cat <<'DOC'; python3 - <<'PY'\npyautogui.press('enter')\nDOC\nprint(42)\nPY",
             "cat <<EOF; python3 - <<EOF\npyautogui.press('enter')\nEOF\nprint(42)\nEOF",
+            "printf '%s\\n' 'pyautogui.press(\"enter\")' | cat",
+            "printf '%s\\n' 'pyautogui.press(\"enter\")' | python3 format_notes.py",
+            "echo 'keystroke path' | osascript -e 'get 42'",
+            "printf -v script '%s' 'keystroke path' | osascript",
             "python3 - <<'PY'\nprint('osascript keystroke path')\nPY",
         ):
             with self.subTest(command=command):
