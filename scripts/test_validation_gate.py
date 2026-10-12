@@ -30,6 +30,7 @@ class ValidationGateTests(unittest.TestCase):
         shell = shutil.which("bash")
         if not shell or not supports_required_builtin(shell):
             self.skipTest("host has no supported Bash on PATH")
+        assert shell is not None
         # Simulate one missing shell while allowing any other prerequisite.
         # The fixture does not duplicate the gate's dependency inventory.
         result = subprocess.run(
@@ -67,6 +68,7 @@ source "$1"
         shell = shutil.which("bash")
         if not shell or not supports_required_builtin(shell):
             self.skipTest("host has no supported Bash on PATH")
+        assert shell is not None
         version = subprocess.check_output(
             [shell, "-c", 'printf "%s" "$BASH_VERSION"'], text=True,
         )
