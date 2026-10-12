@@ -214,12 +214,14 @@ records that run.
    share a subsystem and kind of work into one session and one PR, so they
    share context and avoid conflicting edits. Under `github-plan`, link the
    items as native sub-issues of a parent in that repository scoped to the
-   group. Reuse that parent, or nest a new one under the existing parent
-   before using `unlink` and `link` to move its items. Read back the graph with
-   `deps` and resolve failed links before claiming, preserving the Track path.
+   group. Reuse that parent, or nest a new one under the existing parent to
+   preserve the Track path.
    The executing session claims the parent and each included item with
-   `gh-plan.py claim` on the same branch before creating its worktree. On a
-   refusal, stop and release only the claims just made for that group.
+   `gh-plan.py claim` on the same branch before moving items or creating its
+   worktree. On a refusal, stop and release only the claims just made for that
+   group. After successful claims, use `unlink` and `link` for already parented
+   items; read back the graph with `deps` and resolve failed links before
+   creating the worktree.
    Keep sessions separate for different repositories, different risk or
    approval levels (such as production data, credentials, recovery or Client
    acceptance), and truly independent work where parallel wall-clock time
