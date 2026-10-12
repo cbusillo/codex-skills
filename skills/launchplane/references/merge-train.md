@@ -104,6 +104,12 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   ineligible, closed, deadline, no response, or repeated controller refusals,
   with each refusal's error code, HTTP status and trace ID. A candidate failure reports the
   failing checks and run URLs on the candidate commit.
+  Snapshots retain the response's `reason_code` and, when present, the service's
+  bounded `last_controller_result`. That canonical pass evidence includes its
+  source record, policy/time binding, observed checks, retry lineage and next
+  actor/observation; missing evidence remains null. The driver does not
+  reconstruct historical causes or use diagnostic metadata to change outcomes.
+  Launchplane owns the [last-result contract](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md).
   Driver GitHub reads use the shared conditional cache and retry deadline.
   The controller helper projects validated candidate PR numbers. While the
   controller observes a candidate containing this driver's PR, it leaves the batch PRs

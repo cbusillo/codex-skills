@@ -13,6 +13,12 @@ resources:
   - path: scripts/reminder_list.swift
     kind: script
     description: Performs read-only exact Reminders-list lookup with existing macOS access.
+  - path: scripts/reminder_save.py
+    kind: script
+    description: Shared Codex and Claude writer with short notes, visible URL verification, explicit existing-item IDs and dry runs.
+  - path: scripts/reminder_save.swift
+    kind: script
+    description: Native scheduling and visible Reminders URL attachment adapter called by the shared writer.
   - path: references/session-reminders.md
     kind: reference
     description: Read when the Director requests a native reminder to return to a session or repository.
@@ -27,6 +33,11 @@ commands:
     resource_path: scripts/repo_cleanup.py
     example_argv: ["uv", "run", "work-closeout/scripts/repo_cleanup.py", "inventory", "--repo", "/path/to/repo", "--json"]
     purpose: Reports scoped cleanup evidence without authorizing or performing deletion.
+  - name: session-reminder-save
+    source: skill
+    resource_path: scripts/reminder_save.py
+    example_argv: ["uv", "run", "scripts/reminder_save.py", "--harness", "codex", "--directory", "/absolute/repository", "--session-id", "<uuid>", "--due", "2026-10-20T09:00", "--timezone", "America/New_York"]
+    purpose: Prepares a dry run; add --apply only under existing reminder-write authority to save and verify the visible URL.
   - name: repo-cleanup-forks
     source: skill
     resource_path: scripts/repo_cleanup.py
@@ -60,9 +71,13 @@ or a generic approval sentence; write the two entries explicitly as `Love:` and
 
 When the Director requests a native reminder to resume an exact session or start a
 fresh check-in in a repository, read [native session reminders](references/session-reminders.md).
-This skill owns that workflow for Codex and Claude Code. Prepare the link and
-verify the exact private target list; save only within existing reminder-write
-authority, and preserve the terminal confirmation dialog.
+This skill owns that workflow for Codex and Claude Code. Both must use
+`scripts/reminder_save.py` for agent-created reminders; do not write one-off
+EventKit or AppleScript replacements. It uses `reminder_link.py`'s URL and verifies
+the visible attachment. Save only within existing reminder-write authority,
+keep notes to provider/session ID and issue/PR links, and preserve the terminal
+confirmation dialog. If native access is unavailable, use the writer's dry-run
+fields and the reference's visible manual workflow; report that save is pending.
 
 ## Outcome
 

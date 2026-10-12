@@ -200,6 +200,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "landing_plan_record_id",
     "landing_sha",
     "last_action",
+    "last_controller_result",
     "last_phase",
     "last_pull_request_number",
     "last_record_id",
@@ -1505,6 +1506,43 @@ def _project_merge_train_block_result(value: object) -> dict[str, object]:
     return projected
 
 
+def _project_controller_last_result(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    identifiers = {
+        "repository", "base_branch", "policy_key", "policy_sha256", "pass_started_at",
+        "observed_at", "trace_id", "action", "reason_code", "record_id",
+        "source_failed_record_id", "candidate_sha", "observed_candidate_sha", "base_sha",
+        "check_retry_of", "infrastructure_retry_of", "batch_body_retry_of", "semantic_progress_at",
+    }
+    optional_identifiers = {"candidate_batch_id", "recovery_kind"}
+    fields = identifiers | {"candidate_checks_status", "base_checks_status", "reconciliation_required", "next_actor", "next_observation"}
+    if set(source) - (fields | optional_identifiers) or fields - set(source):
+        raise LaunchplaneSafetyError("invalid_response")
+    assert_public_safe_shape(source)
+    projected: dict[str, object] = {}
+    for key in identifiers | (optional_identifiers & source.keys()):
+        item = source[key]
+        if not isinstance(item, str) or len(item) > 256:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected[key] = public_identifier(item) if item else ""
+    for key in ("candidate_checks_status", "base_checks_status"):
+        item = source[key]
+        if item not in ("not_observed", "unknown", "pending", "pass", "fail"):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected[key] = item
+    if source["next_actor"] not in ("controller", "provider", "repository_agent"):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected["next_actor"] = source["next_actor"]
+    if not isinstance(source["reconciliation_required"], bool):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected["reconciliation_required"] = source["reconciliation_required"]
+    observation = source["next_observation"]
+    if not isinstance(observation, str) or len(observation) > 256:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected["next_observation"] = public_summary_string(observation)
+    return projected
+
+
 def _project_merge_train_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
     for key in source:
@@ -1512,6 +1550,8 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
             raise _UnknownResponseField(key)
     assert_public_safe_shape(source)
     projected: dict[str, object] = {}
+    if "last_controller_result" in source:
+        projected["last_controller_result"] = _project_controller_last_result(source["last_controller_result"])
     for key in (
         "repository",
         "base_branch",
