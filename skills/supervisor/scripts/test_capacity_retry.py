@@ -77,6 +77,48 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(result["last_text"], "")
         self.assertIsNotNone(result["capacity_stop"])
 
+    def link_shared_sessions(self):
+        sessions = self.home / "sessions"
+        shared = self.root / "shared-sessions"
+        sessions.rename(shared)
+        sessions.symlink_to(shared, target_is_directory=True)
+        return shared
+
+    def test_symlinked_live_sessions_resume_with_native_home_and_socket(self):
+        shared = self.link_shared_sessions()
+        # The ledger can retain either the account path or the resolved path.
+        for transcript in (self.transcript, shared / self.transcript.name):
+            with self.subTest(transcript=transcript):
+                entry = {**self.entry, "transcript": str(transcript)}
+                expected = session_record.session_status(entry)
+                with patch.object(capacity_retry.time, "time", return_value=self.now + 100000):
+                    self.assertEqual(capacity_retry.retry_status(entry, expected, {})["state"],
+                                     "retry_due")
+                home, endpoint = capacity_retry.verified_target(entry, expected)
+                with patch.object(capacity_retry.subprocess, "run") as run:
+                    capacity_retry.queue_continue(entry, home, endpoint, expected)
+                argv = run.call_args.args[0]
+                self.assertEqual(argv[argv.index("--thread") + 1], self.native_id)
+                self.assertEqual(argv[argv.index("--remote") + 1], "unix://" + str(endpoint))
+                self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], str(self.home.resolve()))
+
+    def test_symlinked_live_sessions_still_reject_outside_transcripts_and_bad_binding(self):
+        shared = self.link_shared_sessions()
+        outside = self.root / "outside.jsonl"
+        outside.write_text(FIXTURE.read_text())
+        escape = shared / "escape.jsonl"
+        escape.symlink_to(outside)
+        expected = session_record.session_status(self.entry)
+        for changed in ({"transcript": str(outside)}, {"transcript": str(escape)},
+                        {"supervisor_owned": False}, {"session_id": "readable-title"},
+                        {"codex_home": str(self.root)}):
+            with self.subTest(changed=changed):
+                with self.assertRaises((ValueError, OSError)):
+                    capacity_retry.verified_target({**self.entry, **changed}, expected)
+        capacity_retry.codex_daemon_endpoint(self.home).unlink()
+        with self.assertRaises(OSError):
+            capacity_retry.verified_target(self.entry, expected)
+
     def test_other_activity_and_errors_do_not_trigger_retries(self):
         text = self.records[-1]["payload"]["error"]["message"]
         for records in (
