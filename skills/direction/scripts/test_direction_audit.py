@@ -1196,6 +1196,8 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
     module = load()
     for item in (
         "Own projects: by the `own-project` label only.",
+        "Own projects: by the own-project label only (including work in `infra`).",
+        "Own projects: pull requests with the `own-project` label in `infra`.",
         "Own projects are pull requests marked with the own-project label.",
         "Own projects: none.",
         "Own projects are none; all repositories are business work.",
@@ -1214,6 +1216,8 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
         assert result["own_share_basis"] == "merged_pull_requests"
     custom = DIRECTION + "\n## Order\n4. Own projects: by the `personal-work` label only."
     assert module.own_project_patterns(custom, own_label="personal-work") == []
+    mixed = DIRECTION + "\n## Order\n4. Own projects: `own-project-tools` and `fun`; mixed work uses the `own-project` label."
+    assert module.own_project_patterns(mixed) == ["fun", "own-project-tools"]
 
 
 def test_direction_share_wording_is_reported_without_interpreting_a_threshold() -> None:
@@ -1303,7 +1307,8 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
     assert not any("milestone=8" in path for path in paths)
     assert result["own_projects"] == module.own_project_patterns(OWN_DIRECTION)
     for item in ("Own projects: by the `own-project` label only.", "Own projects: none."):
-        direction = DIRECTION + "\n## Order\n4. " + item + "\n## Capacity\nAbout 5% maximum."
+        policy = "About 5% maximum."
+        direction = DIRECTION + "\n## Order\n4. " + item + "\n## Capacity\n" + policy
         def label_only(args: list[str]) -> Any:
             if "/contents/" in args[1]:
                 return {"content": base64.b64encode(direction.encode()).decode()}
@@ -1318,7 +1323,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
         assert labeled["own_projects"] == []
         assert labeled["own_share_status"] == "complete"
         assert labeled["own_share_direction"]["order"] == item
-        assert labeled["own_share_direction"]["capacity"] == "About 5% maximum."
+        assert labeled["own_share_direction"]["capacity"] == policy
     def missing_order(args: list[str]) -> Any:
         if "/contents/" in args[1]:
             return {"content": base64.b64encode(DIRECTION.encode()).decode()}
