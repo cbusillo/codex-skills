@@ -213,21 +213,24 @@ records that run.
 1. **One brief per session and repository.** Before launch, group items that
    share a subsystem and kind of work into one session and one PR, so they
    share context and avoid conflicting edits. Under `github-plan`, link the
-   items as native sub-issues of a parent. Reuse a suitable shared parent, or
-   nest the grouping parent under the existing parent before relinking items,
-   preserving the Track path. The executing session claims the parent and
-   each included item with `gh-plan.py claim` before creating its worktree.
+   items as native sub-issues of a parent in that repository scoped to the
+   group. Reuse that parent, or nest a new one under the existing parent
+   before using `unlink` and `link` to move its items. Read back the graph with
+   `deps` and resolve failed links before claiming, preserving the Track path.
+   The executing session claims the parent and each included item with
+   `gh-plan.py claim` on the same branch before creating its worktree. On a
+   refusal, stop and release only the claims just made for that group.
    Keep sessions separate for different repositories, different risk or
-   approval levels (such as production data, credentials, recovery), and truly
-   independent work where parallel wall-clock time matters.
+   approval levels (such as production data, credentials, recovery or Client
+   acceptance), and truly independent work where parallel wall-clock time
+   matters.
    The brief says what the session may do, where it stops, and where it asks.
    Never widen a brief after launch. Write it from the decision record,
    quoting the Director's words, never from a PR's wording. When a request
    names a visual thing, check which one before writing the brief. A session
-   that needs more scope gets a Director
-   question. If the
-   Director says yes, the wider scope goes in a new brief for a fresh
-   session; the running session's brief stays as it was. Every brief carries
+   that needs more scope gets a Director question. If the Director says yes,
+   the wider scope goes in a new brief for a fresh session; the running
+   session's brief stays as it was. Every brief carries
    two [approved rules](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127):
    small fixes in the same file or area that share the change's reason go in
    the same PR, while different behavior, its own risk, security, access or
