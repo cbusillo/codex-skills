@@ -2371,9 +2371,13 @@ def claim_once(args: argparse.Namespace) -> None:
             retained_waits = observed_waits
         target_inventory = github_plan_claim.local_inventory(target_repo, target_number)
         source_session = github_plan_claim.records(next(c for c in source_comments if c.get("id") == args.resume_from)["body"])[0]["session"]
-        if any(peer.get("sessionId") in released_target_sessions | {source_session}
-               and peer.get("sessionId") != claim["session"] for peer in target_inventory["sessions"]):
-            refuse([{"source": "source_session", "session": source_session, "certainty": "visible_in_native_inventory"}])
+        live_sources = [{"source": "source_session", "session": peer["sessionId"],
+                         "certainty": "visible_in_native_inventory"}
+                        for peer in target_inventory["sessions"]
+                        if peer.get("sessionId") in released_target_sessions | {source_session}
+                        and peer.get("sessionId") != claim["session"]]
+        if live_sources:
+            refuse(live_sources)
         _, own_comments = github_plan_claim.discussion_evidence("", source_comments, claim)
         for checked_number, checked_repo in ((target_number, target_repo), (number, issue_repo)):
             competing = github_plan_claim.artifact_evidence(

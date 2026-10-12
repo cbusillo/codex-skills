@@ -1967,6 +1967,8 @@ class ClaimTests(unittest.TestCase):
         self.inventory["sessions"] = [{"sessionId": "pr-session", "cwd": "/unrelated"}]
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertEqual({row["session"] for row in caught.exception.payload["competing_evidence"]},
+                         {pr_owner["session"]})
         self.assert_no_writes()
 
     def test_compound_status_identity_is_history_only_after_exact_release(self):
