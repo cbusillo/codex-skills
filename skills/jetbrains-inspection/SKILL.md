@@ -218,6 +218,12 @@ Command model:
   problems, and clean up helper-opened projects.
 - `inspect-closeout --repo "$PWD" --scope changed_files`: readiness/hand-off
   inspection; use before saying a change is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
+- `--no-ide-launch`: require a running IDE for lifecycle opening; a failed
+  fallback returns `ide_launch_disabled` without application bootstrap. Actual
+  lifecycle rejections and ambiguous requests retain their original evidence.
+  Use it with a pinned private port for disposable measurements;
+  read [lifecycle diagnostics](references/lifecycle-diagnostics.md) for discovery
+  and configuration isolation.
 - Human assessment output prints retained findings beneath each lane summary,
   including file, line, severity and description, so small sets remain readable
   from saved output after cleanup. Lane summaries report displayed/total finding
