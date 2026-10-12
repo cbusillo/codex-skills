@@ -30,19 +30,21 @@ class ValidationGateTests(unittest.TestCase):
         shell = shutil.which("bash")
         if not shell or not supports_required_builtin(shell):
             self.skipTest("host has no supported Bash on PATH")
-        with tempfile.TemporaryDirectory() as temporary:
-            bin_dir = Path(temporary)
-            dirname = shutil.which("dirname")
-            assert dirname is not None
-            (bin_dir / "dirname").symlink_to(dirname)
-            for command in ("bash", "git", "gh", "jq", "node", "uv"):
-                stub = bin_dir / command
-                stub.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
-                stub.chmod(0o755)
-            result = subprocess.run(
-                [shell, str(GATE)], env={**os.environ, "PATH": str(bin_dir)},
-                capture_output=True, text=True,
-            )
+        # Simulate one missing shell while allowing any other prerequisite.
+        # The fixture does not duplicate the gate's dependency inventory.
+        result = subprocess.run(
+            [shell, "-c", '''
+command() {
+    if [[ "$1" == -v ]]; then
+        [[ "$2" != zsh ]]
+    else
+        builtin command "$@"
+    fi
+}
+source "$1"
+''', "fixture", str(GATE)],
+            capture_output=True, text=True,
+        )
         self.assertEqual(result.returncode, 127, result.stderr)
         self.assertIn("zsh", result.stderr)
         self.assertEqual(result.stdout, "")
