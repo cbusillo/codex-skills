@@ -72,44 +72,77 @@ list, schedule, notes and URL and ask the Director before saving. An explicit re
 request supplies that authority within its stated scope. Do not automatically
 create one merely because a task is parked for several days.
 
-If this harness has no native UI controls, give the Director the prepared fields
-and the steps below; explicitly record that saving and verification await the
-Director. Do not invent UI tools or retry a hanging AppleScript writer.
+Both harnesses use the same writer. Prepare a dry run first:
 
-1. Open the exact unique target list. Search only that list's incomplete items
-   for the output marker in Notes. The marker identifies harness, canonical
-   directory and exact session (or fresh prompt). Update the one match; create
-   only if none exists. Multiple matches require resolving the duplicates before
-   saving. Completed items do not silently reactivate. Never use a title-only or
-   global search as permission to change another reminder.
-2. Set a title naming the repository and check-in purpose. Save the marker,
-   durable issue/next action, and `fallback` in Notes. Put `url` in the native URL
-   field rather than creating an application, URL handler or background service.
-3. Set an explicit first date, time and local timezone, then the requested Repeat
-   interval (for example Custom > Every 2 days). Confirm ambiguous relative dates
-   with the Director. Do not invent a recurrence. For a one-off reminder set Repeat
-   to Never.
-4. Leave the URL field and close Details, then reopen it to verify the saved
-   title, exact list, first date/time, recurrence, notes/marker and URL. Verify
-   the visible attachment too: EventKit URL readback alone does not prove that
-   Reminders saved its native URL field. Open the saved attachment (double-click
-   if a single click only selects it) and verify the
-   command and directory in iTerm2's **Run Command from URL** dialog. Keep that
-   dialog; never enable silent execution or replace confirmation with automation.
-   Resume only when the original worker has stopped; cancel the dialog during a
-   live-session link test. Actual resume acceptance needs a stopped session and
-   inspection of the resumed thread and directory.
-5. For cancellation/removal, locate the marker again within the same exact list
-   and act only on the intended incomplete reminder under existing removal
-   authority. Do not sweep completed occurrences, other lists or similarly titled
-   reminders. If a save is uncertain, read back before retrying. On partial save,
-   correct or remove only the item created by this operation; preserve preexisting
-   reminders. Record any cleanup that needs the Director's help.
+```bash
+uv run <skill-dir>/scripts/reminder_save.py --harness codex \
+  --directory /absolute/surviving/repository --session-id <uuid> \
+  --due 2026-10-20T09:00 --timezone America/New_York \
+  --link https://github.com/OWNER/REPO/issues/123
+```
 
-This implementation deliberately generates URLs and verifies destination lists;
-it leaves reminder mutation and recurrence in the native UI. AppleScript writes
-hung in the original dogfood environment. No idempotent writer or installed helper
-app is required; the scoped marker gives the visible workflow its update contract.
+Use `--harness claude` for Claude Code, or replace `--session-id` with `--prompt`
+for a separately requested fresh session. Add `--link` again for the PR. The default
+title names the repository, issue numbers (or session ID) and provider. `--title`
+can name the requested purpose. Notes contain only the provider and session ID
+(or “fresh session”), followed by issue/PR links. Keep next actions on the owning
+issue. The fallback command and machine marker are dry-run fields, not visible notes.
+
+Add `--apply` under existing write authority. `--due` is an explicit local date and
+time; `--timezone` is a named timezone. Ambiguous/nonexistent daylight-saving times
+are refused. Omit `--repeat-days` for a one-off; use `--repeat-days 2` only for a
+requested every-two-days recurrence. Other repeat patterns use the manual workflow;
+do not approximate them or invent a recurrence.
+
+The writer resolves the same private configuration as `reminder_link.py`, including
+`--list` and `--repo`. It requires exactly one writable list and existing Reminders
+and Accessibility access; it never requests permissions. Open one Reminders list
+window with the sidebar visible before applying (Settings can stay open).
+It schedules through EventKit, selects the exact list through Accessibility,
+sets the native URL field and verifies the resulting `AXLink` on that reminder.
+**EventKit's `url` property alone is not the visible URL attachment** and never counts
+as success. The writer sets it for duplicate lookup; older reminders can also be
+found by the generator's marker in Notes. It never writes ReminderKit internals or
+the Reminders database.
+
+A single existing incomplete match is reported with its ID and left untouched.
+Pass `--update-id <id>` only when changing that existing reminder is authorized.
+Missing update targets, duplicate matches, completed matches and colliding titles
+are refused. No completed item is reactivated. A `saved` receipt confirms list,
+title, schedule, alarm, recurrence, short notes and the exact visible URL. A `partial`
+receipt includes the created/updated ID and missing proof: do not claim completion
+or repeat creation. Finish that same item with its ID or, under removal authority,
+use the same target arguments with `--delete-id <id> --apply`. Deletion verifies
+absence and accepts only the intended incomplete session reminder in the exact list.
+A timeout or missing receipt is uncertain: read back before retrying.
+
+### Visible manual fallback
+
+On unsupported platforms or when existing access is unavailable, use the writer's
+dry-run fields. Report saving as pending; do not substitute an ad hoc writer. On
+macOS, open the exact unique list and check its incomplete items for the exact
+session URL (or the old marker). Update only an authorized exact match; resolve
+multiple matches first and leave completed items alone.
+
+Set the prepared title, short Notes, explicit first date/time, requested recurrence
+and native URL field. Leave the URL field and close Details, then reopen it to verify
+all fields and the visible attachment. Escape can discard the URL edit. Without
+native list verification, verify the unique destination visibly before any save;
+missing/ambiguous lists never justify a default-list fallback. When no UI tools exist,
+give the Director these fields and one paste step for the native URL.
+
+### Terminal confirmation
+
+Open the saved attachment (double-click if a single click only selects it) and verify
+the exact command and directory in iTerm2's **Run Command from URL** dialog. Keep
+that dialog; never enable silent execution or replace confirmation with automation.
+Resume only when the original worker has stopped; cancel during a live-session link
+test. Actual resume acceptance needs a stopped session and inspection of the resumed
+thread and directory. Neither a `saved` receipt nor URL readback claims that resume.
+
+For cancellation/removal, act only on the exact incomplete item under existing
+removal authority. Never sweep completed occurrences, other lists or similarly named
+reminders. Record any partial-save cleanup that needs the Director's help.
 
 ## Limits and sources
 
