@@ -67,7 +67,7 @@ def blocked_since(record: dict, now: dt.datetime) -> dt.datetime | None:
 
 
 def blocking_paths_text(state: dict) -> str:
-    paths = ", ".join(json.dumps(path) for path in state.get("blocking_paths", []))
+    paths = ", ".join(json.dumps(path, ensure_ascii=False) for path in state.get("blocking_paths", []))
     omitted = state.get("blocking_paths_omitted", 0)
     return paths + (f" (and {omitted} more paths)" if omitted else "")
 

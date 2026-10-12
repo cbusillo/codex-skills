@@ -1246,10 +1246,11 @@ class UpdateTests(unittest.TestCase):
         destination = "renamed\nnotes.txt"
         command("git", "mv", "source", destination, cwd=self.checkout)
         (self.checkout / "untracked notes.txt").write_text("Private content")
+        (self.checkout / "résumé.txt").write_text("Local content")
         result = runtime.update(self.checkout)
-        self.assertEqual(set(result["blocking_paths"]), {"source", destination, "untracked notes.txt"})
+        self.assertEqual(set(result["blocking_paths"]), {"source", destination, "untracked notes.txt", "résumé.txt"})
         line = runtime.status_line(self.checkout)
-        self.assertIn(json.dumps(destination), line)
+        self.assertIn("résumé.txt", line)
         self.assertEqual(len(line.splitlines()), 1)
         self.assertNotIn("Private content", line)
 
@@ -1273,10 +1274,16 @@ class UpdateTests(unittest.TestCase):
         state = runtime.update(self.checkout)
         self.assertEqual(len(state["blocking_paths"]), runtime.MAX_BLOCKING_PATHS)
         self.assertEqual(state["blocking_paths_omitted"], 3)
-        self.assertIn(str(state["blocking_paths_omitted"]), runtime.status_line(self.checkout))
+        paths_text = runtime.blocking_paths_text(state)
+        count_text = paths_text
+        for path in state["blocking_paths"]:
+            count_text = count_text.replace(json.dumps(path, ensure_ascii=False), "")
+        self.assertIn(str(state["blocking_paths_omitted"]), count_text)
+        self.assertIn(paths_text, runtime.status_line(self.checkout))
         state["blocked_since"] = (dt.datetime.now(dt.timezone.utc) - runtime.BLOCKED_NOTICE_AFTER).isoformat()
         (self.checkout / ".local" / "catalog-update.json").write_text(json.dumps(state))
         warning = runtime.update(self.checkout)["warning"]
+        self.assertIn(paths_text, warning)
         for path in state["blocking_paths"]:
             self.assertIn(path, warning)
         self.assertNotIn(f"file-{runtime.MAX_BLOCKING_PATHS:04}.txt", warning)
@@ -1318,7 +1325,9 @@ class UpdateTests(unittest.TestCase):
                     env["CLAUDECODE"] = "1"
                 result = subprocess.run([sys.executable, str(hook), "--catalog-root", str(self.checkout)],
                                         cwd=self.checkout, env=env, capture_output=True, text=True, check=True)
-                self.assertIn(runtime.status_line(self.checkout), result.stdout)
+                line = runtime.status_line(self.checkout)
+                self.assertTrue(line)
+                self.assertIn(line, result.stdout)
 
     def test_installed_update_refreshes_instructions_and_exposes_new_skill(self):
         source = Path(__file__).resolve().parent
