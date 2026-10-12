@@ -26,6 +26,30 @@ def supports_required_builtin(shell: str) -> bool:
 
 
 class ValidationGateTests(unittest.TestCase):
+    def test_missing_interactive_shell_refuses_before_validation(self) -> None:
+        shell = shutil.which("bash")
+        if not shell or not supports_required_builtin(shell):
+            self.skipTest("host has no supported Bash on PATH")
+        assert shell is not None
+        # Simulate one missing shell while allowing any other prerequisite.
+        # The fixture does not duplicate the gate's dependency inventory.
+        result = subprocess.run(
+            [shell, "-c", '''
+command() {
+    if [[ "$1" == -v ]]; then
+        [[ "$2" != zsh ]]
+    else
+        builtin command "$@"
+    fi
+}
+source "$1"
+''', "fixture", str(GATE)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 127, result.stderr)
+        self.assertIn("zsh", result.stderr)
+        self.assertEqual(result.stdout, "")
+
     def test_unsupported_shell_refuses_before_external_commands(self) -> None:
         shell = "/bin/bash"
         if not Path(shell).is_file() or supports_required_builtin(shell):
@@ -44,12 +68,13 @@ class ValidationGateTests(unittest.TestCase):
         shell = shutil.which("bash")
         if not shell or not supports_required_builtin(shell):
             self.skipTest("host has no supported Bash on PATH")
+        assert shell is not None
         version = subprocess.check_output(
             [shell, "-c", 'printf "%s" "$BASH_VERSION"'], text=True,
         )
         with tempfile.TemporaryDirectory() as temporary:
             bin_dir = Path(temporary)
-            for command in ("bash", "git", "gh", "jq", "node", "uv"):
+            for command in ("bash", "git", "gh", "jq", "node", "uv", "zsh"):
                 stub = bin_dir / command
                 stub.write_text(
                     '#!/bin/sh\n'
