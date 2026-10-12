@@ -14,6 +14,7 @@ import json
 import os
 import plistlib
 import shutil
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -392,6 +393,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         outputs = instruction_preview + hook_preview
     # Avoid printing private instruction text/diffs in the normal install output.
     return {"bindings": [{"path": str(path), "target": str(target), "state": "create" if (path, target) in pending else "current"} for path, target in links],
+            "interactive_shell": {"source_line": "source " + shlex.quote(str(ROOT / "skills/supervisor/scripts/interactive-accounts.zsh")),
+                                  "activation": "Source from interactive zsh; shell config is unchanged"},
             "configuration_change": configuration_change, "unmanaged_instruction_sources": unmanaged_sources,
             "chrome_mcp": chrome_outputs,
             "outputs": [{key: value for key, value in entry.items() if key != "diff" or show_diff} for entry in outputs],
