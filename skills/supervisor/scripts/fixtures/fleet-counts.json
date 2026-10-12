@@ -1,0 +1,462 @@
+[
+  {
+    "data": {
+      "repositoryOwner": {
+        "repositories": {
+          "totalCount": 43,
+          "nodes": [
+            {
+              "nameWithOwner": "fixture-owner/repository-001",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-002",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-003",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 23
+              },
+              "pullRequests": {
+                "totalCount": 1
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-004",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 77
+              },
+              "pullRequests": {
+                "totalCount": 1
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-005",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-006",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 1
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-007",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-008",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-009",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 25
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-010",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 18
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-011",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-012",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 11
+              },
+              "pullRequests": {
+                "totalCount": 1
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-013",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-014",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-015",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-016",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-017",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 16
+              },
+              "pullRequests": {
+                "totalCount": 1
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-018",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 174
+              },
+              "pullRequests": {
+                "totalCount": 6
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-019",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 20
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-020",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 8
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-021",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 22
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-022",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 1
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-023",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-024",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-025",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 4
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            }
+          ],
+          "pageInfo": {
+            "hasNextPage": true,
+            "endCursor": "Y3Vyc29yOnYyOpKrb2Rvby1kZXZraXTOSFRu0A=="
+          }
+        }
+      }
+    }
+  },
+  {
+    "data": {
+      "repositoryOwner": {
+        "repositories": {
+          "totalCount": 43,
+          "nodes": [
+            {
+              "nameWithOwner": "fixture-owner/repository-026",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 3
+              },
+              "pullRequests": {
+                "totalCount": 1
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-027",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 1
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-028",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 2
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-029",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-030",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 5
+              },
+              "pullRequests": {
+                "totalCount": 2
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-031",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 16
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-032",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 7
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-033",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 1
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-034",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-035",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 5
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-036",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-037",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-038",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 8
+              },
+              "pullRequests": {
+                "totalCount": 2
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-039",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 52
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-040",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-041",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-042",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 0
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            },
+            {
+              "nameWithOwner": "fixture-owner/repository-043",
+              "isArchived": false,
+              "issues": {
+                "totalCount": 7
+              },
+              "pullRequests": {
+                "totalCount": 0
+              }
+            }
+          ],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": "Y3Vyc29yOnYyOpKodmVyaXJlZWzOR8kPcA=="
+          }
+        }
+      }
+    }
+  }
+]

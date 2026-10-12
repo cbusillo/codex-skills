@@ -2393,3 +2393,24 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_plan_claim.py" = "da85372adcedc7367cb086b7c5207d80944815c7b49faa02424c24ebb055e35a"
 "github/scripts/github_plan_release.py" = "6e044fb754305ead4c2231db1660aa1a5134c20c89887cf3f514e4f7a5d6cab9"
 "github/scripts/github_request_usage.py" = "e79e4658e4f37c954d45aec6bb41d84bd0a582a076a924bf0057adc5c5e4eeca"
+
+[[operations]]
+id = "github.supervisor.fleet_counts"
+request_priority = "bulk"
+capabilities = ["metadata_read", "issues_read", "pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Read-only counts for owner repositories visible to the configured automation identity; no grant or identity fallback."
+entrypoint = "supervisor/scripts/fleet_counts.py"
+intent = "Supply throughput snapshots and morning digests with open issue and PR counts without per-repository search calls."
+current_transport = "gh_cli_graphql"
+selected_transport = "gh_cli_graphql"
+endpoint_or_command = "POST /graphql repositoryOwner.repositories open issue and PR totalCount, cursor-paginated"
+quota_bucket = "graphql"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "One query per repository page supplies aggregate counts without fetching issue or PR nodes; shared transport owns identity and retries. GraphQL has no conditional REST cache."
+source_refs = ["supervisor/scripts/fleet_counts.py:fleet_counts"]
+test_refs = ["supervisor/scripts/test_fleet_counts.py:test_recorded_pages_count_issues_and_prs_separately", "supervisor/scripts/test_fleet_counts.py:test_failure_after_first_page_has_no_totals"]
