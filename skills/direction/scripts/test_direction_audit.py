@@ -364,7 +364,7 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
     for cap in (None, "closed_audit", "milestone_events"):
         Clock.ticks = 0
         calls: list[str] = []
-        def fetch(args: list[str], *, gh: str) -> list[dict[str, Any]]:
+        def fetch(args: list[str], *, gh: str) -> Any:
             assert gh == "fixture-gh"
             assert args[-2:] == ["--method", "GET"]
             path = args[1]
@@ -501,7 +501,7 @@ def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_
         assert Path(applied["backup"]).read_bytes() == before
         assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
         assert json.loads(marker.read_text()) == {
-            **original, "audits": {repo: stamp for repo, stamp in original["audits"].items() if repo != "o/archived"},
+            **original, "audits": {repo: timestamp for repo, timestamp in original["audits"].items() if repo != "o/archived"},
         }
 
 
@@ -1197,6 +1197,7 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
     for item in (
         "Own projects: by the `own-project` label only.",
         "Own projects: by the own-project label only (including work in `infra`).",
+        "Own projects: the `own-project` label only (including work in `infra`).",
         "Own projects: pull requests with the `own-project` label in `infra`.",
         "Own projects are pull requests marked with the own-project label.",
         "Own projects: none.",
@@ -1216,8 +1217,11 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
         assert result["own_share_basis"] == "merged_pull_requests"
     custom = DIRECTION + "\n## Order\n4. Own projects: by the `personal-work` label only."
     assert module.own_project_patterns(custom, own_label="personal-work") == []
-    mixed = DIRECTION + "\n## Order\n4. Own projects: `own-project-tools` and `fun`; mixed work uses the `own-project` label."
-    assert module.own_project_patterns(mixed) == ["fun", "own-project-tools"]
+    for name in ("own-project-tools", "work-tools"):
+        mixed = DIRECTION + f"\n## Order\n4. Own projects: `{name}` and `fun`; mixed work uses the `own-project` label."
+        assert module.own_project_patterns(mixed) == ["fun", name]
+        plain = mixed.replace(f"`{name}`", name).replace("`fun`", "fun")
+        assert module.own_project_patterns(plain) == ["fun", name]
 
 
 def test_direction_share_wording_is_reported_without_interpreting_a_threshold() -> None:

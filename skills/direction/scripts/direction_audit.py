@@ -32,7 +32,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read
-import github_repository_scope as repository_scope
+from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
@@ -1126,7 +1126,7 @@ def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[s
         raise AuditError("Order own-project list is missing")
     listing = declaration.split(":", 1)[1].split("This list", 1)[0]
     if label_only:
-        if re.match(r"(?i)^\s*(?:by|only|work|pull requests|PRs)\b", listing):
+        if not re.match(r"\s*`?[\w.*-]+`?\s*(?:,|\band\b|[.;]|$)", listing):
             # Repository examples in a label declaration are mixed work,
             # not a repository-wide own-project list.
             return []
@@ -1141,7 +1141,7 @@ def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[s
     plain = re.sub(r"\([^)]*\)", "", listing, flags=re.S)
     plain = re.sub(r"`[^`]*`", "", plain)
     plain = re.sub(r"\band its\b[^,]*", "", plain)
-    for part in re.split(r",|\band\b", plain):
+    for part in re.split(r",|;|\band\b", plain):
         name = part.strip().rstrip(".")
         if re.fullmatch(r"[\w.-]+", name):
             names.append(name)
@@ -1367,7 +1367,7 @@ def pull_issue_refs(repo: str, pull: dict[str, Any]) -> set[tuple[str, int]]:
     """Explicit closing/Refs clauses, rather than incidental issue mentions."""
     refs = set(pull.get("_native_issue_refs") or [])
     text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
-    text = re.sub(r"\[[^\]]*\]\((https://github\.com/[\w.-]+/[\w.-]+/issues/\d+)\)", r"\1", text)
+    text = re.sub(r"\[[^]]*]\((https://github\.com/[\w.-]+/[\w.-]+/issues/\d+)\)", r"\1", text)
     for clause in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\b[ \t]*:?[ \t]*", text, re.I):
         if re.search(r"\b(?:not|never|doesn't|don't)\s*$", text[max(0, clause.start() - 20):clause.start()], re.I):
             continue
@@ -1377,7 +1377,7 @@ def pull_issue_refs(repo: str, pull: dict[str, Any]) -> set[tuple[str, int]]:
         while match := re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|([\w.-]+/[\w.-]+)?#(\d+)\b", tail):
             refs.add(((match[1] or match[3] or repo).casefold(), int(match[2] or match[4])))
             tail = tail[match.end():]
-            separator = re.match(r"(?:[ \t]*(?:,|and)[ \t]*|[ \t]*\n\s*(?:[-*]\s+)?)", tail)
+            separator = re.match(r"[ \t]*(?:,|and)[ \t]*|[ \t]*\n\s*(?:[-*]\s+)?", tail)
             if separator is None:
                 break
             tail = tail[separator.end():]
@@ -1773,7 +1773,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": "could not resolve a repository; pass --repo OWNER/REPO"}))
         return 2
 
-    owner_reader = pathlib.Path(shutil.which(args.gh) or args.gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
+    owner_reader = pathlib.Path(shutil.which(str(args.gh)) or args.gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
     fetch = lambda a: gh_json(a, gh=args.gh)  # noqa: E731
     if args.stale_waits_only:
         try:
