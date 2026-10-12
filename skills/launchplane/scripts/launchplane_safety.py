@@ -14,11 +14,12 @@ from dataclasses import dataclass
 from typing import Any
 
 
+SK_TOKEN_RE = re.compile(r"sk-[A-Za-z0-9_-]+")
 TOKEN_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9_]+"),
     re.compile(r"github_pat_[A-Za-z0-9_]+"),
     # A token starts at a boundary, not at the end of task/helpdesk/risk.
-    re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]+"),
+    re.compile(r"(?<![A-Za-z0-9])" + SK_TOKEN_RE.pattern),
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
 )
 
@@ -120,10 +121,12 @@ def is_denied_key(key: str) -> bool:
     return any(fragment in compact for fragment in DENIED_KEY_FRAGMENTS)
 
 
-def _redact_token_like(value: str) -> str:
+def _redact_token_like(value: str, *, free_text: bool = False) -> str:
     redacted = value
     for pattern in TOKEN_PATTERNS:
         redacted = pattern.sub("[redacted]", redacted)
+    if free_text:
+        redacted = SK_TOKEN_RE.sub("[redacted]", redacted)
     return redacted
 
 
@@ -286,7 +289,7 @@ def public_summary_string(value: object, *, max_length: int = 500, allow_url: bo
     if (
         not compact
         or len(compact) > max_length
-        or _redact_token_like(compact) != compact
+        or _redact_token_like(compact, free_text=True) != compact
         or any(fragment in lowered for fragment in SUMMARY_VALUE_DENYLIST)
         or (not allow_url and "http://" in lowered)
         or (not allow_url and "https://" in lowered)
@@ -341,7 +344,7 @@ def public_operator_text(
     pieces.append(compact[cursor:])
     redacted = "".join(pieces)
     redacted = FREE_TEXT_URL_RE.sub("[redacted]", redacted)
-    redacted = _redact_token_like(redacted)
+    redacted = _redact_token_like(redacted, free_text=True)
     redacted = CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", redacted)
     # A leftover marker may be prose or an unrecognized credential assignment.
     # Hide the entire field rather than risk publishing an adjacent value.

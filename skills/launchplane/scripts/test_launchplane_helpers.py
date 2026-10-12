@@ -3242,6 +3242,21 @@ def test_path_check_projection_failure_omits_unsafe_trace(trace: object) -> None
         assert trace not in json.dumps(payload)
 
 
+@pytest.mark.parametrize("lead", [r"log\n", r"log\t", "key", "abc123"])
+def test_path_check_rejects_sk_tokens_embedded_in_description(lead: str) -> None:
+    response = _path_check_response()
+    credential = "sk-proj-" + "A1" * 20
+    response["check"]["steps"][0]["description"] = lead + credential
+    status, payload, _calls = _run_product_read(
+        ["path-check", "--product", "example-product", "--path", "testing"], response
+    )
+    assert status == 1 and payload["result"] == {}
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert credential not in json.dumps(payload)
+    redacted = safety.public_operator_text(lead + credential)
+    assert credential not in redacted and "[redacted]" in redacted
+
+
 def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
     status, payload, calls = _run_product_read(
         ["path-check", "--product", "../admin", "--path", "testing"], _path_check_response()
