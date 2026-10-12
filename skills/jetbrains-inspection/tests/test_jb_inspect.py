@@ -7703,7 +7703,7 @@ class LifecycleTest(unittest.TestCase):
         jb_inspect.bootstrap_ide_app = lambda *args, **kwargs: calls.append("bootstrap")
         jb_inspect.wait_for_matching_ide_identity = lambda *args, **kwargs: calls.append("wait")
         try:
-            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True), {"ide": "IntelliJ IDEA"})
+            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, no_ide_launch=True), {"ide": "IntelliJ IDEA"})
         finally:
             jb_inspect.open_via_running_ide = original_running
             jb_inspect.bootstrap_ide_app = original_bootstrap
@@ -7713,6 +7713,52 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result[1], [{"method": "running_ide", "accepted": True, "ownership_registered": True}])
         self.assertTrue(result[2])
         self.assertEqual(calls, [("running", "running_ide")])
+
+    def test_no_ide_launch_stops_after_failed_running_open_and_preserves_attempt(self):
+        args = jb_inspect.build_parser().parse_args([
+            "inspect-closeout", "--port", "63486", "--no-ide-launch",
+        ])
+        attempt = {"method": "running_ide", "accepted": False, "reason": "unavailable"}
+
+        def running(args, context, attempts=None, method="running_ide", lease=None):
+            attempts.append(attempt)
+            return None
+
+        with (
+            patch.object(jb_inspect, "open_via_running_ide", side_effect=running),
+            patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+            patch.object(jb_inspect, "wait_for_matching_ide_identity") as wait,
+            patch.object(jb_inspect, "wait_for_lifecycle_open", return_value=None),
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.open_project_for_lifecycle(args, {"ide": "PyCharm"})
+
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_disabled")
+        self.assertEqual(raised.exception.payload["open_attempts"], [attempt])
+        payload = jb_inspect.apply_verdict(jb_inspect.error_payload(raised.exception))
+        self.assertEqual(payload["agent_result"]["bucket"], "environment_blocked")
+        self.assertFalse(payload["retry_policy"]["retry"])
+        bootstrap.assert_not_called()
+        wait.assert_not_called()
+
+    def test_no_ide_launch_releases_preparation_lease_when_no_open_was_sent(self):
+        lease = {"lease_id": "owned", "state": "preparing"}
+        with (
+            patch.object(jb_inspect, "run_repository_preparation", return_value={}),
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(jb_inspect, "discover_open_identities", return_value=[]),
+            patch.object(jb_inspect, "write_lease"),
+            patch.object(jb_inspect, "remove_lease") as remove,
+            patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(helper_args(open=True, no_ide_launch=True), {"worktree_root": "/fixture"})
+        self.assertEqual(raised.exception.payload["cleanup"], {"status": "not_needed", "reason": "open_not_attempted"})
+        remove.assert_called_once_with(lease)
+        bootstrap.assert_not_called()
 
     def test_open_project_for_lifecycle_treats_already_open_as_preexisting(self):
         attempt = {
