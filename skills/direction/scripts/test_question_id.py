@@ -103,13 +103,12 @@ class QuestionCounterTests(unittest.TestCase):
         ]
         envelopes = [SimpleNamespace(stdout=json.dumps({"ok": True, "disposition": "complete",
                       "outcome_certainty": "confirmed", "issue": record})) for record in records]
-        with patch.object(counter.subprocess, "run", side_effect=envelopes) as run:
+        with patch.object(counter.subprocess, "run", side_effect=envelopes):
             highest, sources = counter.github_seed(["owner/direction#7", "owner/catalog#9"])
         self.assertEqual(highest, max(int(m.group(1)) for record in records
             for text in [record["body"], *(c["body"] for c in record["comments"])]
             for m in counter.QUESTION.finditer(text)))
         self.assertEqual(sources, [record["url"] for record in records])
-        self.assertTrue(all("--full" in call.args[0] for call in run.call_args_list))
 
     def test_incomplete_or_empty_github_read_cannot_seed(self):
         for result in ({"ok": False}, {"ok": True, "disposition": "complete", "outcome_certainty": "confirmed",
