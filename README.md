@@ -129,7 +129,7 @@ a catalog notice for a stale or blocked checkout, a failed update, or a schedule
 check older than twelve hours. A manual pull that changes shared instructions
 also reports a stale installation until the instruction refresh runs. Startup
 notices name dirty paths. After a checkout has been observed blocked for at
-least 24 hours, the same startup notice becomes a multi-line warning naming
+least one hour, the same startup notice becomes a multi-line warning naming
 the checkout, blocking paths and time since the first recorded observation. Scheduled and manual
 updater output records that warning in its existing JSON receipt and stderr
 log too. The registered startup hook records observations in the same local
@@ -142,6 +142,8 @@ between checks cannot be inferred. Inspect and preserve the reported local work,
 blocker, then rerun `uv run scripts/catalog_runtime.py --update`.
 Session catch-up is described under [runtime binding lookup](#runtime-binding-lookup). State
 and logs live in the checkout's ignored `.local/` directory.
+Root-level tool logs (`*.log`, including `error.log`) are also ignored;
+other untracked files still block updates and are preserved.
 Run `uv run scripts/catalog_runtime.py --update` for a manual guarded update on
 macOS or Linux. To stop scheduled updates, run
 `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.codex-skills.catalog-update.plist`,
@@ -149,6 +151,45 @@ then remove that specific plist; catalog bindings remain available.
 
 See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills) for
 current Codex locations and plugin-owned alternatives.
+
+### Interactive account commands
+
+The installer ships `skills/supervisor/scripts/interactive-accounts.zsh` through
+its whole-catalog binding and reports `interactive_shell.source_line`. Add that
+line to your interactive zsh config yourself; the installer leaves shell settings
+alone. For a catalog at `~/Developer/codex-skills`:
+
+```zsh
+source ~/Developer/codex-skills/skills/supervisor/scripts/interactive-accounts.zsh
+```
+
+Typing `claude` or `codex` then follows Context Panel's use-next choice through
+[the Supervisor account reader](skills/supervisor/scripts/account_choice.py).
+Configure its existing [private account mappings](skills/supervisor/references/helpers.md#choosing-the-account)
+and snapshot command first. Functions such as `claude-work` and `codex-personal`
+are generated from those mappings when sourced; source again after adding an
+account. Names use letters, digits, underscores or hyphens. A name already
+prefixed with its harness is kept as-is.
+
+A named function wins over `--account NAME` (also `--account=NAME`), which wins
+over an inherited `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Any of those explicit
+choices bypasses automatic selection. Only the account selector is consumed;
+all native arguments, including `--resume` and `--continue`, pass through.
+Arguments after a native `--` are kept literally. Home overrides apply only to
+the launched child; they do not change the parent shell's account.
+
+Each launch prints one line on stderr. When the reader cannot provide a choice
+under its existing freshness rules, the command uses the last account this
+interactive launcher used for that provider, with the fallback on the same line.
+If there is no saved account, it announces the native default. Last-used state
+contains the account name and home override only, in
+`$XDG_CACHE_HOME/codex-skills/interactive-PROVIDER.json` (default `~/.cache`).
+No login or credential files are read or changed.
+
+These are interactive zsh functions only. The real binaries on PATH stay intact:
+`command claude`, `command codex`, noninteractive scripts, daemons, bridges and
+IDE plugins keep invoking them directly. Local behavior tests require zsh;
+the CI validation lane installs it when absent.
 
 ### Walking a new person through setup
 
