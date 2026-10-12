@@ -142,6 +142,7 @@ policy:
           (?ix)(?:\S*/)?(?:(?:python[\d.]*|node|osascript|swift)\b[\s\S]*(?:
           \bpyautogui\s*\.\s*(?:write|typewrite|press|hotkey|keyDown|keyUp)\b
           |\bpynput\s*\.\s*keyboard\b
+          |\bfrom\s+pynput\s+import\s+keyboard\b[\s\S]*\bController\b[\s\S]*\.(?:type|press|release)\b
           |\b(?:CGEventCreateKeyboardEvent|robot\s*\.\s*(?:typeString|keyTap|keyToggle))\b)
           |python[\d.]*\b[\s\S]*(?<![\w.])keyboard\s*\.\s*(?:write|press|send)\b)
       action: reject

@@ -84,6 +84,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             "xte 'str /path/proposal.json' 'key Return'",
             "uv run python -c 'import pyautogui; pyautogui.write(\"path\")'",
             "python3 -c 'from pynput.keyboard import Controller; Controller().type(\"path\")'",
+            "python3 -c 'from pynput import keyboard; controller = keyboard.Controller(); controller.type(\"path\"); controller.press(keyboard.Key.enter)'",
             "python3 -c 'import keyboard; keyboard.send(\"enter\")'",
             "node -e 'const robot = require(\"robotjs\"); robot.keyTap(\"enter\")'",
             "swift -e 'CGEventCreateKeyboardEvent(nil, 36, true)'",
@@ -142,6 +143,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "printf '%s' 'osascript keystroke path'",
             "cat <<'DOC'\nosascript -e 'keystroke path'\nxdotool key Return\nDOC",
             "cat <<'DOC'\npyautogui.press('enter')\nDOC\npython3 -c 'print(42)'",
+            "cat <<'DOC'; python3 -c 'print(42)'\npyautogui.press('enter')\nDOC",
+            "cat <<'DOC' | python3 -c 'print(42)'\npyautogui.press('enter')\nDOC",
+            "osascript -e 'get 42' <<'DOC'\nkeystroke path\nDOC",
             "python3 - <<'PY'\nprint('osascript keystroke path')\nPY",
         ):
             with self.subTest(command=command):
