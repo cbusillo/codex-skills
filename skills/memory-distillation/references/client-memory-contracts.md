@@ -1,7 +1,7 @@
 # Client memory contracts
 
 Read before discovering stores, applying an approved memory change, or verifying
-retirement. The workflow supports Codex, Codex Lab, and Claude Code; their
+retirement. The workflow supports Codex and Claude Code; their
 configured homes, consumed layers, and update capabilities must be established
 separately.
 
@@ -28,8 +28,8 @@ Inventory each distinct in-scope store:
 Resolve aliases only within scope; deduplicate by canonical identity (resolved
 path, or filesystem identity where needed), report all known names, and apply a
 change once. Do not follow an alias outside scope. Unknown ownership or denied
-access is a coverage gap, not permission to probe further. A former Every Code
-store can be historical evidence; do not make it an active client requirement.
+access is a coverage gap, not permission to probe further. Former Every Code and Codex Lab
+stores are historical evidence; do not make them active client requirements.
 
 Check all consumed layers relevant to the requested subject. An empty `MEMORY.md`
 can coexist with raw derivatives or generated skills still in use. Conversely,
@@ -136,10 +136,10 @@ For fresh-session verification:
 
 ## Small examples
 
-- **Multiple stores:** Codex uses a configured home and Lab uses a different one.
-  A second name resolves to the Lab store. Audit both if authorized, report the
+- **Multiple stores:** Codex uses a configured home and Claude Code uses a different one.
+  A second name resolves to the Claude Code store. Audit both if authorized, report the
   alias once, and do not copy their contents into a common memory directory.
-- **Narrow scope:** The request names only Lab. A Codex location is known from
+- **Narrow scope:** The request names only Claude Code. A Codex location is known from
   configuration, but its contents remain out of scope.
 - **Delayed consolidation:** An approved note retires an obsolete deployment
   claim; the registry still recommends it. Report `recorded, pending

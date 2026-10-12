@@ -1,7 +1,7 @@
 ---
 name: memory-distillation
 disable-model-invocation: true
-description: Use only when the user explicitly asks to audit, clean, prune, archive, reset, or distill Codex, Codex Lab, or Claude Code memories into skills, repo docs/issues, or local config. Never use implicitly or for ordinary repo work.
+description: Use only when the user explicitly asks to audit, clean, prune, archive, reset, or distill Codex or Claude Code memories into skills, repo docs/issues, or local config. Never use implicitly or for ordinary repo work.
 metadata:
   short-description: Audit memories into durable sources
 policy:
@@ -10,7 +10,7 @@ policy:
 
 # Memory Distillation
 
-Audit memories for Codex, Codex Lab, and Claude Code, preserve useful knowledge in maintained
+Audit memories for Codex and Claude Code, preserve useful knowledge in maintained
 sources, and verify approved retirement from the context each client reuses.
 Use this workflow only for an explicit memory audit or change request. A completed
 audit produces a supported proposal; a completed retirement requires evidence
@@ -67,7 +67,7 @@ Neither client nor a directory name makes a memory store authoritative.
   schema. Use the optional `people` skill and private people config for durable
   identity, aliases, contacts, roles, and relationship context.
 - **Historical evidence:** useful provenance, clearly non-authoritative. Every
-  Code is retired as a supported client; classify any discovered former store
+  Code and Codex Lab are retired as supported clients; classify any discovered former store
   from current evidence rather than treating its path as proof of ownership.
 - **Legacy Chronicle archives:** private historical screen-history data. This
   repository does not provide or require an active Chronicle skill. Treat every

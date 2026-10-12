@@ -24,7 +24,7 @@ resources:
     description: Benchmark configured or explicit local models with short cold/fast response probes.
   - path: scripts/local_codex_agent.py
     kind: script
-    description: Run an isolated Codex or Codex Lab agent against an explicitly selected trusted local model.
+    description: Run an isolated Codex agent against an explicitly selected trusted local model.
   - path: references/local-agent.md
     kind: reference
     description: Select and qualify current local agent execution, including host isolation and evidence limits.
@@ -231,7 +231,7 @@ destination and input scope.
 
 Use `lm_studio_chat.py` for direct local-model inference. When a task needs an
 agent to use tools, read [local agent execution](references/local-agent.md) and
-use `local_codex_agent.py` with the selected Codex or Codex Lab host and a
+use `local_codex_agent.py` with the selected Codex host and a
 verified local model. Reuse a host/model already established by the task;
 ordinary implementation choices do not require a new user question.
 

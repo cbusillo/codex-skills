@@ -352,19 +352,10 @@ class LocalCodexAgentTests(unittest.TestCase):
         self.assertIsNone(summary["configured_context_window"])
         self.assertFalse(Path(observed["env"]["CODEX_HOME"]).exists())
 
-    def test_lab_host_is_explicit_and_uses_an_isolated_lab_home(self) -> None:
-        self.write_host(version="codex-lab synthetic-test")
-        result = self.invoke(host="codex-lab")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        observed = self.observed()
-        self.assertEqual(observed["env"]["CODEX_LAB_HOME"], observed["env"]["CODEX_HOME"])
-        self.assertIn('"host": "codex-lab"', result.stderr)
-
     def test_environment_filters_auth_proxy_and_profiles_but_keeps_runtime_and_certs(self) -> None:
         environment = os.environ.copy()
         environment.update({
             "CODEX_HOME": str(self.root / "real-codex"),
-            "CODEX_LAB_HOME": str(self.root / "real-lab"),
             "CODE_HOME": str(self.root / "real-code"),
             "OPENAI_API_KEY": "synthetic-cloud-key", "CODEX_API_KEY": "synthetic-codex-key",
             "CODEX_ACCESS_TOKEN": "synthetic-access-token", "CODEX_MODEL": "cloud-model",
@@ -380,7 +371,7 @@ class LocalCodexAgentTests(unittest.TestCase):
             self.assertNotIn(key, child)
         for key in ("PATH", "SSL_CERT_FILE", "LC_TIME"):
             self.assertEqual(child[key], environment[key])
-        for key in ("HOME", "CODEX_HOME", "CODEX_LAB_HOME", "CODE_HOME", "XDG_CONFIG_HOME"):
+        for key in ("HOME", "CODEX_HOME", "CODE_HOME", "XDG_CONFIG_HOME"):
             self.assertNotEqual(child[key], environment.get(key))
         self.assertEqual(environment["CODE_HOME"], str(self.root / "real-code"))
 

@@ -11,9 +11,7 @@ read the Director's overall `DIRECTION.md` in the repository owner's
 repository agent-instruction filename; path-specific instructions use nested
 `AGENTS.md` files. Generated host-global instructions remain host-specific.
 Every Code traces, fixtures, and artifact readers describe historical behavior.
-Remaining Codex Lab bindings await the separate
-[support decision](https://github.com/cbusillo/direction/issues/21); this docs
-audit does not remove them.
+Codex Lab is retired; its traces and archives are historical evidence.
 
 Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
 file; `skills/` is the catalog that hosts load. Skills can include

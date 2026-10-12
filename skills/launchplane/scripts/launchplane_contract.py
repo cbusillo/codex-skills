@@ -31,7 +31,7 @@ _PATH_PATTERN = re.compile(
 )
 _CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _STATUS_PATTERN = re.compile(r"^[1-5][0-9]{2}$")
-_WORKFLOW_PATTERN = re.compile(r"^\.github/workflows/[a-z0-9_.-]+\.ya?ml$")
+_WORKFLOW_PATTERN = re.compile(r"^[.]github/workflows/[a-z0-9_.-]+[.]ya?ml$")
 _UNSAFE_STRING_PATTERNS = (
     re.compile(r"https?://", re.IGNORECASE),
     re.compile(r"\bLAUNCHPLANE_[A-Z0-9_]+\b"),
@@ -62,61 +62,16 @@ _OPERATION_KEYS = {
 _WORKFLOW_KEYS = {"workflow_file", "reusable_workflow_file", "route"}
 
 EXPECTED_OPERATION_CONTRACTS = {
-    "admit_ordinary_agent_job": {
+    "restart_lane_service": {
         "method": "POST",
-        "supported_surfaces": ["ordinary_agent_client"],
-        "modes": ["finite-admission"],
-        "idempotency": "body",
-        "reviewed_evidence": ["purpose_specific_readiness", "idempotent_replay"],
-    },
-    "read_ordinary_agent_job": {
-        "method": "GET",
-        "supported_surfaces": ["ordinary_agent_client"],
-        "modes": ["read"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
-    "cancel_ordinary_agent_session": {
-        "method": "POST",
-        "supported_surfaces": ["ordinary_agent_client"],
-        "modes": ["cancel"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
-    "propose_ordinary_agent_enrollment": {
-        "method": "POST",
-        "supported_surfaces": ["terminal_agent_client"],
-        "modes": ["plan"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
-    "read_proposed_ordinary_agent_enrollment": {
-        "method": "GET",
-        "supported_surfaces": ["terminal_agent_client"],
-        "modes": ["read"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
-    "propose_ordinary_agent_session": {
-        "method": "POST",
-        "supported_surfaces": ["ordinary_agent_client"],
-        "modes": ["plan"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
-    "read_ordinary_agent_session_operation": {
-        "method": "GET",
-        "supported_surfaces": ["ordinary_agent_client"],
-        "modes": ["read"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
-    "claim_ordinary_agent_credential": {
-        "method": "POST",
-        "supported_surfaces": ["private_agent_client"],
-        "modes": ["claim"],
-        "idempotency": "none",
-        "reviewed_evidence": ["receiver_bound_delivery", "private_response_custody"],
+        "supported_surfaces": ["bounded_admin_helper", "operator_ui", "service_api"],
+        "modes": ["dry-run", "apply", "reconcile"],
+        "idempotency": "apply",
+        "reviewed_evidence": [
+            "reviewed_plan_digest",
+            "current_artifact_identity",
+            "release_lane_exclusion",
+        ],
     },
     "read_agent_context": {
         "method": "GET",
@@ -240,7 +195,9 @@ LOCAL_EXTENSION_ROUTES = {
         "mode": "apply",
     },
     "privileged-policy-propose": {
-        "method": "POST", "path": "/v1/agent/privileged-operations/plans", "mode": "propose",
+        "method": "POST",
+        "path": "/v1/agent/privileged-operations/plans",
+        "mode": "propose",
     },
     "merge-train-policy-read": {
         "method": "GET",
@@ -248,10 +205,14 @@ LOCAL_EXTENSION_ROUTES = {
         "mode": "read",
     },
     "live-target-runtime-sync-dry-run": {
-        "method": "POST", "path": "/v1/live-target-runtime/apply", "mode": "dry-run",
+        "method": "POST",
+        "path": "/v1/live-target-runtime/apply",
+        "mode": "dry-run",
     },
     "live-target-runtime-sync-apply": {
-        "method": "POST", "path": "/v1/live-target-runtime/apply", "mode": "apply",
+        "method": "POST",
+        "path": "/v1/live-target-runtime/apply",
+        "mode": "apply",
     },
     "owner-review-read": {
         "method": "GET",
@@ -544,6 +505,7 @@ EXPECTED_INVARIANTS = {
         "engineering_review_advisory": True,
         "github_projection_role": "routing_and_status_only",
         "owner_acceptance_authoritative": True,
+        "temporary_hotfix_start": "director_human_session_only",
     },
     "product_lifecycle": {
         "active_automation_states": ["active"],
@@ -676,9 +638,7 @@ def _operation_map(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
         ):
             raise ContractError("invalid_response_statuses")
         idempotency = operation.get("idempotency")
-        if not isinstance(idempotency, str) or not _CODE_PATTERN.fullmatch(
-            idempotency
-        ):
+        if not isinstance(idempotency, str) or not _CODE_PATTERN.fullmatch(idempotency):
             raise ContractError("invalid_operation_idempotency")
         fingerprint = operation.get("schema_fingerprint_sha256")
         if not isinstance(fingerprint, str) or not _SHA256_PATTERN.fullmatch(
@@ -696,7 +656,9 @@ def _validate_operation_contracts(
         operation = operation_map[operation_id]
         for field, expected_value in expected.items():
             if operation.get(field) != expected_value:
-                raise ContractError(f"operation_contract_mismatch_{operation_id}_{field}")
+                raise ContractError(
+                    f"operation_contract_mismatch_{operation_id}_{field}"
+                )
 
 
 def _validate_helper_bindings(
@@ -709,8 +671,7 @@ def _validate_helper_bindings(
         if any(mode not in operation["modes"] for mode in modes):
             raise ContractError("helper_mode_mismatch")
     projected_routes = {
-        (operation["method"], operation["path"])
-        for operation in operation_map.values()
+        (operation["method"], operation["path"]) for operation in operation_map.values()
     }
     for extension in LOCAL_EXTENSION_ROUTES.values():
         route = (extension["method"], extension["path"])
@@ -732,13 +693,15 @@ def _protected_workflow_map(
     for workflow in workflows:
         if not isinstance(workflow, Mapping):
             raise ContractError("invalid_protected_workflow")
-        allowed_keys = _WORKFLOW_KEYS if "reusable_workflow_file" in workflow else {
-            "workflow_file",
-            "route",
-        }
-        _require_exact_keys(
-            workflow, allowed_keys, "invalid_protected_workflow_keys"
+        allowed_keys = (
+            _WORKFLOW_KEYS
+            if "reusable_workflow_file" in workflow
+            else {
+                "workflow_file",
+                "route",
+            }
         )
+        _require_exact_keys(workflow, allowed_keys, "invalid_protected_workflow_keys")
         workflow_file = workflow.get("workflow_file")
         route = workflow.get("route")
         if not isinstance(workflow_file, str) or not _WORKFLOW_PATTERN.fullmatch(
@@ -751,8 +714,7 @@ def _protected_workflow_map(
             raise ContractError("invalid_workflow_route")
         reusable = workflow.get("reusable_workflow_file")
         if reusable is not None and (
-            not isinstance(reusable, str)
-            or not _WORKFLOW_PATTERN.fullmatch(reusable)
+            not isinstance(reusable, str) or not _WORKFLOW_PATTERN.fullmatch(reusable)
         ):
             raise ContractError("invalid_reusable_workflow_file")
         if route not in {operation["path"] for operation in operation_map.values()}:
@@ -785,28 +747,19 @@ def _validate_operation_coverage(
         operation_id for operation_id, _modes in PROJECTED_HELPER_COMMANDS.values()
     }
     workflow_operations = {
-        expected["operation_id"]
-        for expected in EXPECTED_PROTECTED_WORKFLOWS.values()
+        expected["operation_id"] for expected in EXPECTED_PROTECTED_WORKFLOWS.values()
     }
     read_only_operations = {"read_governance_projection"}
     # Launchplane's own bounded client serves these; this skill does not wrap them.
-    producer_client_operations = {"reconcile_legacy_generic_web_preview"}
-    ordinary_operations = {
-        "admit_ordinary_agent_job",
-        "read_ordinary_agent_job",
-        "cancel_ordinary_agent_session",
-        "propose_ordinary_agent_enrollment",
-        "read_proposed_ordinary_agent_enrollment",
-        "propose_ordinary_agent_session",
-        "read_ordinary_agent_session_operation",
-        "claim_ordinary_agent_credential",
+    producer_client_operations = {
+        "reconcile_legacy_generic_web_preview",
+        "restart_lane_service",
     }
     categories = (
         helper_operations,
         workflow_operations,
         read_only_operations,
         producer_client_operations,
-        ordinary_operations,
     )
     covered: set[str] = set()
     for category in categories:
@@ -819,7 +772,9 @@ def _validate_operation_coverage(
 
 def _validate_semantic_artifact(
     artifact: Mapping[str, Any], *, verify_digest: bool
-) -> tuple[dict[str, object], dict[str, Mapping[str, Any]], dict[str, Mapping[str, Any]]]:
+) -> tuple[
+    dict[str, object], dict[str, Mapping[str, Any]], dict[str, Mapping[str, Any]]
+]:
     _require_exact_keys(artifact, _ARTIFACT_KEYS, "invalid_artifact_keys")
     if artifact.get("schema_version") != SCHEMA_VERSION:
         raise ContractError("unsupported_schema_version")

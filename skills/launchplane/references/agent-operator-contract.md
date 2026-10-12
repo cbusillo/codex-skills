@@ -6,9 +6,7 @@ by this skill. It is retrieved byte-for-byte from Launchplane's published
 Launchplane commit it came from. The artifact itself owns its identity:
 schema and normalization versions, semantic digest, source provenance and
 operations. The conformance gate below prints them. Neither provenance nor a
-matching contract grants runtime authority. Private claims are consumed only by
-the private ordinary-agent adapter, outside the generic agent-visible admin
-helper. Contract freshness does not establish deployed runtime compatibility.
+matching contract grants runtime authority. Contract freshness does not establish deployed runtime compatibility.
 
 Run the offline conformance gate from the `launchplane` skill directory with:
 
@@ -63,8 +61,7 @@ artifact later projects the same routes, forcing a deliberate migration instead
 of silently maintaining two sources of truth.
 
 Every projected operation must be covered exactly once: by a projected helper
-command, a protected workflow, the read-only governance projection, the
-ordinary-agent clients, or Launchplane's own bounded client. The validator's
+command, a protected workflow, the read-only governance projection, or Launchplane's own bounded client. The validator's
 operation coverage in `scripts/launchplane_contract.py` owns that
 classification; a newly projected operation fails the gate until it is
 assigned deliberately.

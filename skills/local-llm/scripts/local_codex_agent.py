@@ -44,7 +44,7 @@ from lm_studio_api import (
 )
 
 
-HOST_VERSION_PREFIXES = {"codex": "codex-cli ", "codex-lab": "codex-lab "}
+HOST_VERSION_PREFIXES = {"codex": "codex-cli "}
 TOKEN_KEY = "LOCAL_CODEX_AGENT_ENDPOINT_TOKEN"
 MAX_CAPTURE_BYTES = 16 * 1024 * 1024
 MAX_PROMPT_BYTES = 4 * 1024 * 1024
@@ -243,7 +243,6 @@ def isolated_environment(run_dir: Path, token: str | None = None) -> dict[str, s
     env.update({
         "HOME": str(run_dir / "home"),
         "CODEX_HOME": str(run_dir / "host"),
-        "CODEX_LAB_HOME": str(run_dir / "host"),
         "CODE_HOME": str(run_dir / "host"),
         "TMPDIR": str(run_dir / "tmp"),
         "XDG_CONFIG_HOME": str(run_dir / "config"),
