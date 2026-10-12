@@ -1259,6 +1259,42 @@ def test_controller_rejects_invalid_or_unsafe_stack_child_dispositions(child: ob
     assert not payload.get("result")
 
 
+def _controller_last_result_fixture() -> dict[str, object]:
+    return {
+        "repository": "example/repo", "base_branch": "main", "policy_key": "example-main",
+        "policy_sha256": "a" * 64, "pass_started_at": "2026-10-12T18:00:00Z",
+        "observed_at": "2026-10-12T18:00:10Z", "trace_id": "launchplane_req_example",
+        "action": "candidate_failed", "reason_code": "candidate_check_retry_used",
+        "record_id": "failed-record", "source_failed_record_id": "source-record",
+        "candidate_sha": "b" * 40, "observed_candidate_sha": "b" * 40, "base_sha": "c" * 40,
+        "candidate_checks_status": "pass", "base_checks_status": "not_observed",
+        "check_retry_of": "source-record", "infrastructure_retry_of": "", "batch_body_retry_of": "",
+        "reconciliation_required": False, "semantic_progress_at": "2026-10-12T17:00:00Z",
+        "next_actor": "repository_agent", "next_observation": "Repair the failed checks; then reobserve the lineage.",
+    }
+
+
+def test_controller_projects_bounded_last_result_without_losing_empty_evidence() -> None:
+    diagnosis = _controller_last_result_fixture()
+    response = {"status": "accepted", "trace_id": diagnosis["trace_id"], "records": {}, "result": {"controller_action": diagnosis["action"], "last_controller_result": diagnosis}}
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 0
+    assert payload["result"]["last_controller_result"] == diagnosis
+
+
+@pytest.mark.parametrize("change", [
+    {"token": "secret-value"}, {"reason_code": "ghp_" + "a" * 36},
+    {"next_observation": "x" * 257}, {"candidate_checks_status": "green"},
+    {"reconciliation_required": "false"}, {"next_actor": "needs_owner"},
+])
+def test_controller_rejects_unsafe_or_unbound_diagnostic_shapes(change: dict[str, object]) -> None:
+    diagnosis = {**_controller_last_result_fixture(), **change}
+    response = {"status": "accepted", "trace_id": "launchplane_req_example", "records": {}, "result": {"controller_action": "candidate_failed", "last_controller_result": diagnosis}}
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status != 0
+    assert not payload.get("result")
+
+
 def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> None:
     result = {
         "controller_action": "block", "mode": "blocked",

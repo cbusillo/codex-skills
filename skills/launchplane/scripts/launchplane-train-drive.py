@@ -499,11 +499,15 @@ def _queue_entry(result: dict[str, Any], number: int) -> dict[str, Any] | None:
 def _snapshot(settings: DriveSettings, state: DriveState, action: str, response: dict[str, Any] | None) -> dict[str, Any]:
     response = response or {}
     summary = response.get("summary") or {}
+    result = response.get("result") or {}
+    diagnosis = result.get("last_controller_result")
     warnings = response.get("warnings") or [{}]
     first_warning = warnings[0] if isinstance(warnings[0], dict) else {}
     return {
         "pr": {"repo": settings.repository, "number": settings.number},
         "controller_action": action,
+        "reason_code": (diagnosis.get("reason_code") if isinstance(diagnosis, dict) else result.get("reason_code")),
+        "last_controller_result": diagnosis if isinstance(diagnosis, dict) else None,
         "status": response.get("status"),
         # Rejections carry error_code in the summary; local helper failures carry it as a warning code.
         "error_code": summary.get("error_code") or first_warning.get("code"),
