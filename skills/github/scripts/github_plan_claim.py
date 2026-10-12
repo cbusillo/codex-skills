@@ -379,7 +379,7 @@ def released_status_lines(status: str, comments: list[dict[str, Any]]) -> dict[s
     """Share the exact historical-field match with live-session checks."""
     found = {}
     all_records = [record for comment in comments for record in records(comment.get("body") or "")]
-    for _, record, _ in exact_released_sources(comments):
+    for source_index, record, _ in exact_released_sources(comments):
         # A worker alias reused by another session cannot attribute the field.
         alias_unique = all(r["session"] == record["session"] for r in all_records if r["worker"] == record["worker"])
         for line in status.splitlines():
@@ -393,9 +393,19 @@ def released_status_lines(status: str, comments: list[dict[str, Any]]) -> dict[s
             # (and, optionally, its own worker) is history, e.g. odoo-docker#113.
             field = re.fullmatch(r"\s*(?:[-*]\s+)?(?:Completed|Released|Previous|Prior|Former|Ended) session:"
                                  r"[ \t]*(.+?)[ \t]*", line, re.IGNORECASE)
-            if not field or not re.search(rf"(?<![\w.-]){re.escape(record['session'])}(?![\w-])", field.group(1)):
+            if not field:
                 continue
-            rest = re.sub(rf"(?<![\w.-]){re.escape(record['session'])}(?![\w-])", "", field.group(1))
+            identity = field.group(1)
+            # context-panel#828 appends an exact source-claim explanation to
+            # its completed identity. Release proof still comes from comments;
+            # accept only this whole suffix, leaving any other prose ambiguous.
+            identity = re.sub(
+                rf"\. Claim {comments[source_index]['id']} is released in this session's handoff comment\.$",
+                "", identity,
+            )
+            if not re.search(rf"(?<![\w.-]){re.escape(record['session'])}(?![\w-])", identity):
+                continue
+            rest = re.sub(rf"(?<![\w.-]){re.escape(record['session'])}(?![\w-])", "", identity)
             if re.search(rf"(?<![\w.-]){re.escape(record['worker'])}(?![\w-])", rest):
                 if not alias_unique:
                     continue
