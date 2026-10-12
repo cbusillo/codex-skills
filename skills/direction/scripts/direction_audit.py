@@ -1125,20 +1125,21 @@ def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[s
             return []
         raise AuditError("Order own-project list is missing")
     listing = declaration.split(":", 1)[1].split("This list", 1)[0]
+    plain = re.sub(r"\([^)]*\)", "", listing, flags=re.S)
     if label_only:
-        if not re.match(r"\s*`?[\w.*-]+`?\s*(?:,|\band\b|[.;]|$)", listing):
+        if not re.match(r"\s*`?[\w.*-]+`?\s*(?:,|\band\b|[.;]|$)", plain):
             # Repository examples in a label declaration are mixed work,
             # not a repository-wide own-project list.
             return []
         # The label is not a repository, even when it is in backticks.
         listing = re.sub(rf"`{re.escape(own_label)}`|(?<![\w.*-]){re.escape(own_label)}(?![\w.*-])",
                          "", listing, flags=re.I)
+        plain = re.sub(r"\([^)]*\)", "", listing, flags=re.S)
     if no_projects:
         return []
     names = re.findall(r"`([\w.*-]+)`", listing)
     # Parentheses carry explicit identifiers and explanatory prose. Only single
     # repository identifiers in the surrounding comma/and-separated list count.
-    plain = re.sub(r"\([^)]*\)", "", listing, flags=re.S)
     plain = re.sub(r"`[^`]*`", "", plain)
     plain = re.sub(r"\band its\b[^,]*", "", plain)
     for part in re.split(r",|;|\band\b", plain):

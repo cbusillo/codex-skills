@@ -1222,6 +1222,8 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
         assert module.own_project_patterns(mixed) == ["fun", name]
         plain = mixed.replace(f"`{name}`", name).replace("`fun`", "fun")
         assert module.own_project_patterns(plain) == ["fun", name]
+    described = DIRECTION + "\n## Order\n4. Own projects: `fun` (personal app), `companion*`; mixed work uses the `own-project` label."
+    assert module.own_project_patterns(described) == ["companion*", "fun"]
 
 
 def test_direction_share_wording_is_reported_without_interpreting_a_threshold() -> None:
