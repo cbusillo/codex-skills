@@ -24,6 +24,7 @@ from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
 import github_read
+import github_plan_graph
 import github_repository_scope as repository_scope
 import github_comment as github_comment_core
 import github_issue as github_issue_core
@@ -1907,10 +1908,44 @@ def cmd_search(args: argparse.Namespace) -> None:
           "total_count": total_count, "incomplete_results": incomplete_results, "limit": args.limit})
 
 
+BATCH_READ_CONTEXT: dict[str, Any] = {}
+
+def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None:
+    BATCH_READ_CONTEXT.clear()
+    BATCH_READ_CONTEXT.update({"used": False, "fallback_reason": "explicit_identity_route"})
+    if not EXPECTED_ACTOR or not BOT_GH.exists():
+        return None
+    if os.environ.get("GH_PLAN_SKIP_BOT") == "1" or os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1" or github_identity.active_auth_fallback_allowed() or github_identity.own_user_opted_in():
+        return None
+    reader = github_read.GitHubReader(gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR, operation=CURRENT_OPERATION, strict_actor=True,
+        cache_enabled=True, cache_revalidate=True,
+        deadline_at=time.time() + github_api_core.remaining_retry_timeout_seconds())
+    try:
+        rows = github_plan_graph.planning_graph(reader, repo, **kwargs)
+        for row in rows:
+            row["_graph_actor"] = reader.actor
+        BATCH_READ_CONTEXT.update({"used": True, "fallback_reason": None})
+        return rows
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError, AttributeError) as error:
+        BATCH_READ_CONTEXT["fallback_reason"] = github_api_core.redact_string(str(error))
+        # Discard the whole optional graph before recovering through REST.
+        return None
+    finally:
+        BATCH_READ_CONTEXT["diagnostics"] = reader.diagnostics()
+        BATCH_READ_CONTEXT["cost"] = sum((result.body.get("data") or {}).get("rateLimit", {}).get("cost", 0)
+            for result in reader.results if isinstance(result.body, dict) and isinstance((result.body.get("data") or {}).get("rateLimit"), dict))
+        for result in reader.results:
+            record_retry_fields(result)
+
+
 def cmd_show(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     config = load_config(repo)
-    actor, issue = get_issue(args.issue, repo)
+    graph = None
+    if getattr(args, "batch_read", False):
+        issue_repo, number = issue_ref(args.issue, repo)
+        graph = read_planning_graph(issue_repo, number=number)
+    actor, issue = (graph[0]["_graph_actor"], graph[0]) if graph else get_issue(args.issue, repo)
     body = issue.get("body") or ""
     result = compact_issue(issue)
     if args.full:
@@ -1931,12 +1966,15 @@ def cmd_show(args: argparse.Namespace) -> None:
         sections, provenance = read_plan_sections(issue)
         result["sections"] = {name: sections.get(name, "") for name in names}
     result["provenance"] = provenance
-    _, comments = collect_paged_rest_items(
-        f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
-        query={},
-        bucket="rest_core",
-        step_prefix="list_issue_comments",
-    )
+    if graph:
+        comments = issue["_graph_comments"]
+    else:
+        _, comments = collect_paged_rest_items(
+            f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
+            query={},
+            bucket="rest_core",
+            step_prefix="list_issue_comments",
+        )
     result["comments"] = [
         {
             "id": comment.get("id"),
@@ -1948,7 +1986,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         }
         for comment in comments
     ]
-    emit({"ok": True, "actor": actor, "issue": result})
+    emit({"ok": True, "actor": actor, "issue": result,
+          **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
 
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
@@ -3006,6 +3045,10 @@ def read_next_issue_relationships(
     *,
     limit: int = NEXT_RELATIONSHIP_LIMIT,
 ) -> tuple[str, dict[str, list[dict[str, Any]]], list[str]]:
+    if issue is not None and "_graph_relationships" in issue:
+        graph = issue["_graph_relationships"]
+        return issue.get("_graph_actor", ""), {key: [compact_relationship_issue(row, key) for row in rows[:limit]]
+            for key, rows in graph.items()}, [key for key, rows in graph.items() if len(rows) > limit]
     relationships: dict[str, list[dict[str, Any]]] = {}
     truncated: list[str] = []
     actor = ""
@@ -3203,6 +3246,8 @@ def next_dependabot_work(
 def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if github_direction_next.is_direction_repository(repo):
+        if getattr(args, "batch_read", False):
+            raise PlanError("--batch-read is currently repository-local; global next retains REST")
         cmd_direction_next(args, repo)
         return
     if any(getattr(args, name, None) is not None for name in ("repo_limit", "repository_issue_limit", "comment_limit", "selection_context")):
@@ -3248,14 +3293,19 @@ def cmd_next(args: argparse.Namespace) -> None:
         milestone_scope = milestone_result["milestone"]
         issue_query["milestone"] = milestone_scope["number"]
 
-    page_actor, issues = collect_paged_rest_items(
-        f"/repos/{repo}/issues",
-        query=issue_query,
-        bucket="rest_core",
-        step_prefix="next_plan_issues",
-        limit=NEXT_PLAN_INVENTORY_LIMIT + 1,
-        issue_only=True,
-    )
+    graph = read_planning_graph(repo, labels=[config["labels"]["plan"]],
+        milestone=issue_query.get("milestone"), limit=NEXT_PLAN_INVENTORY_LIMIT + 1) if getattr(args, "batch_read", False) else None
+    if graph is not None:
+        page_actor, issues = BATCH_READ_CONTEXT["diagnostics"]["actor"], graph
+    else:
+        page_actor, issues = collect_paged_rest_items(
+            f"/repos/{repo}/issues",
+            query=issue_query,
+            bucket="rest_core",
+            step_prefix="next_plan_issues",
+            limit=NEXT_PLAN_INVENTORY_LIMIT + 1,
+            issue_only=True,
+        )
     actor = page_actor or actor
     inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
     issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
@@ -3374,6 +3424,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             "error": direction_error,
         },
         "focus_context": focus_context,
+        **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {}),
         "dependency_context": {
             "complete": dependency_degraded_count == 0,
             "degraded_count": dependency_degraded_count,
@@ -5081,6 +5132,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("show", help="Show issue sections and all comments")
+    p.add_argument("--batch-read", action="store_true", help="Explicit cold/changed GraphQL slice; REST remains the unchanged-read route")
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--sections", nargs="+")
@@ -5159,6 +5211,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_deps)
 
     p = sub.add_parser("next", help="Rank the next actionable durable plans")
+    p.add_argument("--batch-read", action="store_true", help="Explicit repository graph batch; REST remains the unchanged-read route")
     repository_scope.add_include_archived_argument(p)
     p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
