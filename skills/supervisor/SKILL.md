@@ -148,6 +148,15 @@ policy:
       action: reject
       message: *keyboard_refusal
       preferred: *keyboard_alternatives
+    - id: reject-imported-keyboard-synthesis-apis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\bfrom\s+(?:pyautogui|keyboard)\s+import\b
+          [^\n;]*\b(?P<keyop>write|typewrite|press|release|send|hotkey|keyDown|keyUp)\b
+          (?:\s+as\s+(?P<keyalias>\w+))?[\s\S]*(?<![\w.])(?(keyalias)(?P=keyalias)|(?P=keyop))\s*\(
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
     - id: prefer-session-helper-for-iterm-typing
       match:
         shell_regex: '(?i)\bosascript\b[^\n]*(?:write text|iTerm)'

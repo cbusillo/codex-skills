@@ -63,7 +63,7 @@ ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
-SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift)$")
+SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift|xdotool|xte|cliclick)$")
 SCRIPT_WRAPPERS = {"sudo", "timeout", "xargs"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
@@ -273,6 +273,51 @@ def reads_script_from_input(argv: list[str]) -> bool:
     return bool(shells) and not any(SHELL_COMMAND_FLAG.match(token) for token in argv[shells[0] + 1:])
 
 
+def reads_program_from_stdin(argv: list[str]) -> bool:
+    """Distinguish an interpreter's stdin program from data passed to inline code or a file."""
+    arguments: list[str] = []
+    cursor = 1
+    while cursor < len(argv):
+        token = argv[cursor]
+        if token.isdecimal() and cursor + 1 < len(argv) and argv[cursor + 1].startswith(("<", ">")):
+            cursor += 1  # File descriptor before a redirection.
+        elif re.fullmatch(r"[<>][<>&]*|&>>?", token):
+            cursor += 3 if token == "<<" and argv[cursor + 1:cursor + 2] == ["-"] else 2
+        else:
+            arguments.append(token)
+            cursor += 1
+    tool = argv[0]
+    if tool == "xdotool":
+        return arguments == ["-"]
+    if tool == "cliclick":
+        return arguments == ["-f", "-"]
+    if tool == "xte":
+        return not arguments
+    value_flags = {"-W", "-X", "--check-hash-based-pycs"} if tool.startswith("python") else {
+        "-l", "-s", "-r", "--require", "--input-type", "--loader", "--import", "-I", "-L", "-sdk", "-target",
+    }
+    cursor = 0
+    while cursor < len(arguments):
+        token = arguments[cursor]
+        if token == "-":
+            return True
+        if token == "--":
+            return cursor + 1 == len(arguments) or arguments[cursor + 1] == "-"
+        if token in {"-c", "-e", "-m", "-p", "--eval", "--print"} or token.startswith(("--eval=", "--print=")):
+            return False
+        if tool.startswith("python") and re.match(r"^-[bBdEiIOqRsSuvVx]*[cm]", token):
+            return False
+        if tool in {"node", "osascript"} and token.startswith(("-e", "-p")):
+            return False
+        if token in value_flags:
+            cursor += 2
+        elif token.startswith("-"):
+            cursor += 1
+        else:
+            return False  # The named script, not stdin, supplies the program.
+    return True
+
+
 def heredoc_script_readers(header: str, delimiter: str) -> list[list[str]]:
     """Find the heredoc's consumer and downstream pipe readers, never neighboring commands."""
     try:
@@ -303,11 +348,8 @@ def heredoc_script_readers(header: str, delimiter: str) -> list[list[str]]:
                 if (index != 0 and argv[0] not in SCRIPT_WRAPPERS) or not SCRIPT_INTERPRETERS.fullmatch(Path(token).name):
                     continue
                 reader = [Path(token).name, *argv[index + 1:]]
-                # Inline code and module execution consume stdin as data.
-                if any(argument in {"-c", "-e", "-m", "-p", "--eval", "--print"}
-                       or argument.startswith(("--eval=", "--print=")) for argument in reader[1:]):
-                    continue
-                readers.append(reader)
+                if reads_program_from_stdin(reader):
+                    readers.append(reader)
     return readers
 
 

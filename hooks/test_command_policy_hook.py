@@ -86,6 +86,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "python3 -c 'from pynput.keyboard import Controller; Controller().type(\"path\")'",
             "python3 -c 'from pynput import keyboard; controller = keyboard.Controller(); controller.type(\"path\"); controller.press(keyboard.Key.enter)'",
             "python3 -c 'import keyboard; keyboard.send(\"enter\")'",
+            "python3 -c 'from pyautogui import write, press; write(\"path\"); press(\"enter\")'",
+            "python3 -c 'from pyautogui import write as type_text; type_text(\"path\")'",
+            "python3 -c 'from keyboard import send; send(\"enter\")'",
             "node -e 'const robot = require(\"robotjs\"); robot.keyTap(\"enter\")'",
             "swift -e 'CGEventCreateKeyboardEvent(nil, 36, true)'",
             "osascript <<'APPLESCRIPT'\n" + apple + "\nAPPLESCRIPT",
@@ -94,6 +97,11 @@ class CommandPolicyHookTests(unittest.TestCase):
             "timeout 10 python3 - <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
             "python3 - <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
             "node <<'JS'\nconst robot = require('robotjs'); robot.typeString('path');\nJS",
+            "xdotool - <<'INPUT'\ntype path\nkey Return\nINPUT",
+            "xte <<'INPUT'\nstr path\nkey Return\nINPUT",
+            "cliclick -f - <<'INPUT'\nt:path\nkp:return\nINPUT",
+            "python3 -I -W ignore - <<'PY' 2>/dev/null\nimport pyautogui\npyautogui.press('enter')\nPY",
+            "osascript -l AppleScript <<-'APPLESCRIPT'\n\t" + apple.replace("\n", "\n\t") + "\n\tAPPLESCRIPT",
         )
         for command in commands:
             with self.subTest(command=command):
@@ -146,6 +154,13 @@ class CommandPolicyHookTests(unittest.TestCase):
             "cat <<'DOC'; python3 -c 'print(42)'\npyautogui.press('enter')\nDOC",
             "cat <<'DOC' | python3 -c 'print(42)'\npyautogui.press('enter')\nDOC",
             "osascript -e 'get 42' <<'DOC'\nkeystroke path\nDOC",
+            "python3 format_notes.py <<'DOC'\npyautogui.press('enter')\nDOC",
+            "osascript query.applescript <<'DOC'\nkeystroke path\nDOC",
+            "node format_notes.js <<'DOC'\nrobot.keyTap('enter')\nDOC",
+            "python3 -c 'from pyautogui import size; print(size())'",
+            "python3 -Ic 'print(42)' <<'DOC'\npyautogui.press('enter')\nDOC",
+            "python3 -I -X dev format_notes.py <<'DOC'\npyautogui.press('enter')\nDOC",
+            "cat <<'DOC'; python3 - <<'PY'\npyautogui.press('enter')\nDOC\nprint(42)\nPY",
             "python3 - <<'PY'\nprint('osascript keystroke path')\nPY",
         ):
             with self.subTest(command=command):
