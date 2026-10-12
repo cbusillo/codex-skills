@@ -4412,22 +4412,29 @@ def emit_http_error_payload(
 
 
 def emit_safety_error_payload(
-    *, operation: str, request: dict[str, object], exc: LaunchplaneSafetyError
+    *, operation: str, request: dict[str, object], exc: LaunchplaneSafetyError,
+    provider_payload: object = None,
 ) -> None:
     unsafe_redirect = exc.code == "unsafe_redirect"
-    emit(
-        unavailable_payload(
-            operation=operation,
-            request=request,
-            status="unavailable" if unsafe_redirect else "invalid",
-            code=exc.code if unsafe_redirect else "invalid_response",
-            message=(
-                "Launchplane redirected to an unsafe destination."
-                if unsafe_redirect
-                else "Launchplane returned an invalid response."
-            ),
-        )
+    payload = unavailable_payload(
+        operation=operation,
+        request=request,
+        status="unavailable" if unsafe_redirect else "invalid",
+        code=exc.code if unsafe_redirect else "invalid_response",
+        message=(
+            "Launchplane redirected to an unsafe destination."
+            if unsafe_redirect
+            else "Launchplane returned an invalid response."
+        ),
     )
+    if isinstance(provider_payload, dict):
+        try:
+            trace_id = public_trace_id(provider_payload.get("trace_id"))
+        except LaunchplaneSafetyError:
+            trace_id = ""
+        if trace_id:
+            payload["summary"]["trace_id"] = trace_id
+    emit(payload)
 
 
 def emit_provider_unavailable(
@@ -5300,6 +5307,7 @@ def execute_product_read(
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -5314,7 +5322,9 @@ def execute_product_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(
+            operation=operation, request=request, exc=exc, provider_payload=provider_payload
+        )
         return 1
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
         emit_read_transport_error(

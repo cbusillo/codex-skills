@@ -17,7 +17,8 @@ from typing import Any
 TOKEN_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9_]+"),
     re.compile(r"github_pat_[A-Za-z0-9_]+"),
-    re.compile(r"sk-[A-Za-z0-9_-]+"),
+    # A token starts at a boundary, not at the end of task/helpdesk/risk.
+    re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]+"),
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
 )
 

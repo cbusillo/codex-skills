@@ -3188,8 +3188,58 @@ def test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence
         status, payload, calls = _run_product_read(argv, response)
         assert status == 1 and len(calls) == 1, payload
         assert payload["status"] == "invalid" and not payload["result"], payload
+        assert payload["summary"]["trace_id"] == response["trace_id"]
         for value in ("private detail", "PRIVATE_SECRET", "abcdefghijklmnop", "private.example", "private-value"):
             assert value not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("context", ["task", "helpdesk", "risk"])
+def test_path_check_preserves_operation_ids_with_embedded_sk(context: str) -> None:
+    response = _path_check_response()
+    check = response["check"]
+    check.update(state="blocked", blocked_count=1)
+    operation_id = f"odoo-target-replacement-{context}-testing-0123456789abcdef"
+    check["steps"][1].update(
+        state="blocked", fix="wait", code="deploy_in_progress", record_ids=[operation_id]
+    )
+    status, payload, calls = _run_product_read(
+        ["path-check", "--product", check["product"], "--path", check["path"]], response
+    )
+    assert status == 0 and len(calls) == 1, payload
+    assert payload["result"] == check
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+
+
+@pytest.mark.parametrize("prefix", ["sk-", "ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_"])
+@pytest.mark.parametrize("wrapper", ["{}", "operation-{}"])
+def test_path_check_rejects_credentials_in_record_ids(prefix: str, wrapper: str) -> None:
+    response = _path_check_response()
+    credential = wrapper.format(prefix + "A1" * 20)
+    response["check"]["steps"][1]["record_ids"] = [credential]
+    status, payload, calls = _run_product_read(
+        ["path-check", "--product", "example-product", "--path", "testing"], response
+    )
+    assert status == 1 and len(calls) == 1
+    assert payload["status"] == "invalid" and payload["result"] == {}
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert credential not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("trace", [None, {}, "sk-" + "A1" * 20,
+                                   "https://private.example.invalid/trace", "trace with spaces"])
+def test_path_check_projection_failure_omits_unsafe_trace(trace: object) -> None:
+    response = _path_check_response()
+    response["trace_id"] = trace
+    response["check"]["steps"][0]["description"] = "Bearer synthetic-credential"
+    status, payload, calls = _run_product_read(
+        ["path-check", "--product", "example-product", "--path", "testing"], response
+    )
+    assert status == 1 and len(calls) == 1
+    assert payload["status"] == "invalid" and payload["result"] == {}
+    assert not payload["summary"].get("trace_id")
+    assert "synthetic-credential" not in json.dumps(payload)
+    if isinstance(trace, str):
+        assert trace not in json.dumps(payload)
 
 
 def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
@@ -5163,8 +5213,8 @@ def test_context_entrypoint_omits_unsafe_request_selectors(selector: str, value:
     assert value not in json.dumps(result["payload"])
 
 
-@pytest.mark.parametrize("prefix", ["ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_"])
-def test_shared_safety_rejects_and_redacts_github_tokens(prefix: str) -> None:
+@pytest.mark.parametrize("prefix", ["sk-", "ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_"])
+def test_shared_safety_rejects_and_redacts_tokens(prefix: str) -> None:
     synthetic_token = prefix + "A" * 40
     for validator in (safety.public_summary_string, safety.public_identifier, safety.public_trace_id):
         with pytest.raises(safety.LaunchplaneSafetyError):
