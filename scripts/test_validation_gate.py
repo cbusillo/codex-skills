@@ -26,6 +26,27 @@ def supports_required_builtin(shell: str) -> bool:
 
 
 class ValidationGateTests(unittest.TestCase):
+    def test_missing_interactive_shell_refuses_before_validation(self) -> None:
+        shell = shutil.which("bash")
+        if not shell or not supports_required_builtin(shell):
+            self.skipTest("host has no supported Bash on PATH")
+        with tempfile.TemporaryDirectory() as temporary:
+            bin_dir = Path(temporary)
+            dirname = shutil.which("dirname")
+            assert dirname is not None
+            (bin_dir / "dirname").symlink_to(dirname)
+            for command in ("bash", "git", "gh", "jq", "node", "uv"):
+                stub = bin_dir / command
+                stub.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+                stub.chmod(0o755)
+            result = subprocess.run(
+                [shell, str(GATE)], env={**os.environ, "PATH": str(bin_dir)},
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 127, result.stderr)
+        self.assertIn("zsh", result.stderr)
+        self.assertEqual(result.stdout, "")
+
     def test_unsupported_shell_refuses_before_external_commands(self) -> None:
         shell = "/bin/bash"
         if not Path(shell).is_file() or supports_required_builtin(shell):
@@ -49,7 +70,7 @@ class ValidationGateTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary:
             bin_dir = Path(temporary)
-            for command in ("bash", "git", "gh", "jq", "node", "uv"):
+            for command in ("bash", "git", "gh", "jq", "node", "uv", "zsh"):
                 stub = bin_dir / command
                 stub.write_text(
                     '#!/bin/sh\n'

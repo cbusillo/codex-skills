@@ -10,7 +10,7 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-required_commands=(bash git gh jq node uv)
+required_commands=(bash git gh jq node uv zsh)
 for required_command in "${required_commands[@]}"; do
 	if ! command -v "$required_command" >/dev/null 2>&1; then
 		printf 'error: required command is unavailable: %s\n' "$required_command" >&2
