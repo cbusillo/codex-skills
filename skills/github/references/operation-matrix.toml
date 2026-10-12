@@ -270,9 +270,9 @@ test_refs = ["github/scripts/test_github_workflow_babysit.py:WorkflowBabysitterT
 [[operations]]
 id = "github.pr.view"
 request_priority = "essential"
-capabilities = ["pull_requests_read"]
-permission_mode = "fixed"
-permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
+capabilities = ["pull_requests_read", "issues_read", "checks_read", "statuses_read"]
+permission_mode = "input_dependent"
+permission_note = "Ordinary PR metadata uses Pull requests read. Programmatic opt-in observer batches also use existing Issues, Checks and Commit statuses read grants already in the full reader profile. No grant or credential change; unavailable enrichment recovers through the same actor REST route."
 entrypoint = "github/scripts/gh-pr.py view"
 intent = "Read normalized pull request metadata for one PR."
 current_transport = "composite"

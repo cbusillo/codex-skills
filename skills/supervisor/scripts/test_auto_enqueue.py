@@ -343,15 +343,15 @@ class EnqueueTests(unittest.TestCase):
         live.reader=reader
         target={**TARGET,'repo':'owner/repo','base':source['base']['ref']}
         with patch.object(reader,'_transport_request',side_effect=rest_request):
-            path=f'/repos/owner/repo/pulls/{first["number"]}'
-            observed=live.get(path)
+            pr_path=f'/repos/owner/repo/pulls/{first["number"]}'
+            observed=live.get(pr_path)
             observed.update(state='open',draft=False,mergeable=True,labels=[])
             self.assertTrue(live.qualified(target,observed,set()))
             self.assertFalse(any(item.split('?')[0] in comments for item in transport_calls))
-            fresh=live.get(path)
+            fresh=live.get(pr_path)
             self.assertTrue(live.qualified(target,fresh,set()))
         self.assertTrue(any(item.split('?')[0] in comments for item in transport_calls))
-        self.assertIn(path,transport_calls)
+        self.assertIn(pr_path,transport_calls)
 
     def test_custom_limit_and_dry_run(self):
         fake = Fake()
