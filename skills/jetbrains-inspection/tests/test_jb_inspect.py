@@ -7720,7 +7720,7 @@ class LifecycleTest(unittest.TestCase):
         ])
         attempt = {"method": "running_ide", "accepted": False, "reason": "unavailable"}
 
-        def running(args, context, attempts, method, lease):
+        def running(args, context, attempts=None, method="running_ide", lease=None):
             attempts.append(attempt)
             return None
 
@@ -7737,6 +7737,25 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(raised.exception.payload["open_attempts"], [attempt])
         bootstrap.assert_not_called()
         wait.assert_not_called()
+
+    def test_no_ide_launch_releases_preparation_lease_when_no_open_was_sent(self):
+        lease = {"lease_id": "owned", "state": "preparing"}
+        with (
+            patch.object(jb_inspect, "run_repository_preparation", return_value={}),
+            patch.object(jb_inspect, "create_local_lease", return_value=lease),
+            patch.object(jb_inspect, "find_exact_route", return_value=None),
+            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch.object(jb_inspect, "discover_open_identities", return_value=[]),
+            patch.object(jb_inspect, "write_lease"),
+            patch.object(jb_inspect, "remove_lease") as remove,
+            patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+        ):
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.prepare_lifecycle_details(helper_args(open=True, no_ide_launch=True), {"worktree_root": "/fixture"})
+        self.assertEqual(raised.exception.payload["cleanup"], {"status": "not_needed", "reason": "open_not_attempted"})
+        remove.assert_called_once_with(lease)
+        bootstrap.assert_not_called()
 
     def test_open_project_for_lifecycle_treats_already_open_as_preexisting(self):
         attempt = {

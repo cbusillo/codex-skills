@@ -55,8 +55,9 @@ retirement once the hold ends. Use `--foreground-open` only when debugging
 IDE launch behavior.
 For disposable-instance measurements, pass `--port <private-port>` and
 `--no-ide-launch`. The latter preserves the running-instance lifecycle open
-but fails with `ide_launch_disabled` if it cannot proceed, retaining its open
-attempts instead of launching the selected app. Normal callers keep the
+but fails with `ide_launch_disabled` at application-launch fallback, retaining
+its open attempts. Actual lifecycle rejections and ambiguous requests keep their
+original evidence and ownership rules. Normal callers keep the
 existing bootstrap behavior. This option does not isolate discovery or
 configuration: launch the disposable IDE with a private registry and a port
 outside the helper's default discovery range, and set

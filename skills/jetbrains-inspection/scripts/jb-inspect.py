@@ -721,6 +721,8 @@ def ide_selection_advice(reason: str, context: Any) -> str | None:
 
 
 def hint_for_error_reason(reason: str, context: Any = None) -> str | None:
+    if reason == "ide_launch_disabled":
+        return "Make the intended IDE available on the selected port, then run a fresh assessment; application launch is disabled."
     lane_advice = ide_selection_advice(reason, context)
     if lane_advice:
         return lane_advice
@@ -5436,6 +5438,10 @@ def open_project_for_lifecycle(
     if open_attempt is not None:
         return open_method_for_outcome("running_ide", open_attempt), attempts, bool(open_attempt.get("ownership_registered"))
     if getattr(args, "no_ide_launch", False):
+        if lease is not None and project_open_was_not_requested(attempts):
+            lease["open_not_attempted"] = True
+            lease["open_request_may_have_been_accepted"] = False
+            lease["open_attempts"] = attempts
         raise InspectError(
             "The running IDE did not accept the lifecycle open; application launch is disabled.",
             3,
@@ -7644,6 +7650,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if normalized in {
         "inspection_api_unavailable",
         "ide_open_failed",
+        "ide_launch_disabled",
         "untrusted_auto_open_root",
         "project_open_blocked",
         "ide_not_ready_timeout",
