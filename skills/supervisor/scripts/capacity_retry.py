@@ -123,7 +123,7 @@ def target_coordinates(entry: dict) -> tuple[Path, Path]:
     if not home_name:
         raise ValueError("capacity resume requires the session's configured codex_home")
     transcript, home = Path(transcript_name), Path(home_name)
-    if not transcript.is_relative_to(home / "sessions"):
+    if not transcript.is_relative_to((home / "sessions").resolve()):
         raise ValueError("transcript is outside the configured home's live sessions")
     endpoint = codex_daemon_endpoint(home)
     if not stat.S_ISSOCK(endpoint.stat().st_mode):
