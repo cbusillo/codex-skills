@@ -267,7 +267,18 @@ local extensions until the vendored artifact is refreshed.
   `odoo_target_replacement_apply.execute` on the operation's product, context
   and instance. The read grant returns a structured view without the request
   or embedded result; the execute grant returns the full service record. The
-  helper projects either view. It returns the operation's id, product,
+  helper projects either view and a supplied top-level `recovery` into
+  `result.recovery` using
+  Launchplane's service-owned
+  [TestingReplacementRecoveryRead](https://github.com/cbusillo/launchplane/blob/main/control_plane/contracts/testing_replacement_recovery.py)
+  schema. Only its closed codes, nonnegative effect count and strict booleans
+  are accepted; unknown fields, missing required fields or malformed values
+  fail the read. Nullable attempt/binding agreement and effect acknowledgement
+  fields normalize omitted values to `null` (unknown). Absent or null recovery
+  remains unavailable, never eligible. `safe_to_release` must remain false:
+  this observation does not release the fence, and zero journaled effects or
+  an absent journal cannot establish absent provider effects.
+  The operation projection returns the operation's id, product,
   context, instance, status, phase, attempt, deployment record id, the
   requested artifact id, created, updated, started, heartbeat and finished
   times, `error_code`, a bounded `error_description` using the existing

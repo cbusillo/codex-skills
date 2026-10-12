@@ -4421,6 +4421,94 @@ def test_target_replacement_operation_read_refuses_bad_ids_and_unsafe_values() -
         assert not payload["result"]
 
 
+def _deployed_recovery_operation_response() -> dict[str, Any]:
+    # Captured through the maintained GET on 2026-10-12 after launchplane#3483;
+    # live identity replaced with examples, unrelated record fields omitted.
+    return json.loads(
+        (SCRIPT_DIR / "fixtures/odoo-recovery-operation-response.json").read_text()
+    )
+
+
+def test_target_replacement_operation_read_accepts_deployed_recovery() -> None:
+    response = _deployed_recovery_operation_response()
+    argv = ["target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"]]
+    status, payload, calls = _run_product_read(argv, response)
+    assert status == 0 and len(calls) == 1
+    recovery = payload["result"]["recovery"]
+    assert {key: recovery[key] for key in response["recovery"]} == response["recovery"]
+    for name in ("attempt_matches", "binding_matches", "effects_acknowledged"):
+        assert name not in response["recovery"]
+        assert recovery[name] is None
+    for name in ("status", "phase", "error_code", "error_description", "error_detail_keys"):
+        assert payload["result"]["operation"][name] == response["operation"][name]
+
+
+@pytest.mark.parametrize("agreement", [None, False, True])
+def test_target_replacement_operation_read_preserves_recovery_agreement(agreement: bool | None) -> None:
+    response = _deployed_recovery_operation_response()
+    nullable = {"attempt_matches", "binding_matches", "effects_acknowledged"}
+    response["recovery"].update({name: agreement for name in nullable})
+    response["recovery"].update(
+        status="eligible", reason="", journal="present", effect_count=2,
+        provider_effects="quiescent_observed", provider_inspected=True,
+    )
+    status, payload, _ = _run_product_read(
+        ["target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"]],
+        response,
+    )
+    assert status == 0
+    assert payload["result"]["recovery"] == response["recovery"]
+
+
+@pytest.mark.parametrize("recovery", [None, {}, [], "refused"])
+def test_target_replacement_operation_read_handles_unavailable_or_bad_recovery(recovery: object) -> None:
+    response = _deployed_recovery_operation_response()
+    response["recovery"] = recovery
+    status, payload, _ = _run_product_read(
+        ["target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"]],
+        response,
+    )
+    if recovery is None:
+        assert status == 0 and payload["result"]["recovery"] is None
+    else:
+        assert status == 1 and not payload["result"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("status", "safe"), ("reason", "recovery_new_reason"), ("reason", []),
+    ("journal", "missing"), ("provider_effects", "absent"),
+    ("effect_count", -1), ("effect_count", True), ("effect_count", 1.5),
+    ("effect_count", "0"), ("provider_inspected", 0), ("provider_inspected", None),
+    ("safe_to_release", True), ("safe_to_release", 0), ("safe_to_release", None),
+    ("attempt_matches", 1), ("binding_matches", "true"), ("effects_acknowledged", []),
+    ("authorization", {"token": "private-example"}), ("target_id", "private-target"),
+    ("reason", "Bearer planted-private-value"),
+])
+def test_target_replacement_operation_read_refuses_unsafe_recovery(field: str, value: object) -> None:
+    response = _deployed_recovery_operation_response()
+    response["recovery"][field] = value
+    status, payload, _ = _run_product_read(
+        ["target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"]],
+        response,
+    )
+    assert status == 1 and not payload["result"]
+    assert "private-example" not in json.dumps(payload)
+    assert "private-target" not in json.dumps(payload)
+    assert "planted-private-value" not in json.dumps(payload)
+
+
+def test_target_replacement_operation_read_refuses_incomplete_recovery() -> None:
+    original = _deployed_recovery_operation_response()
+    for field in original["recovery"]:
+        response = copy.deepcopy(original)
+        del response["recovery"][field]
+        status, payload, _ = _run_product_read(
+            ["target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"]],
+            response,
+        )
+        assert status == 1 and not payload["result"], field
+
+
 def _target_replacement_plan_response() -> dict[str, Any]:
     return {
         "status": "accepted",
