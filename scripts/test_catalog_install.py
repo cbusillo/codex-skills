@@ -1212,7 +1212,7 @@ class UpdateTests(unittest.TestCase):
         self.assertIn(local.name, line)
         self.assertEqual(receipt.read_bytes(), before)  # Startup remains read-only.
         second = runtime.update(self.checkout)
-        self.assertEqual(second["blocked_since"], start.isoformat())
+        self.assertEqual(dt.datetime.fromisoformat(second["blocked_since"]), start)
         self.assertIn(local.name, second["warning"])
         self.assertEqual(local.read_text(), "Preserve this")
         local.unlink()
@@ -1222,7 +1222,7 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(runtime.status_line(self.checkout), "")
         local.write_text("Another local edit")
         new = runtime.update(self.checkout)
-        self.assertNotEqual(new["blocked_since"], start.isoformat())
+        self.assertNotEqual(dt.datetime.fromisoformat(new["blocked_since"]), start)
         self.assertNotIn("warning", new)
 
     def test_notice_threshold_and_legacy_or_invalid_receipt_times(self):
@@ -1235,7 +1235,7 @@ class UpdateTests(unittest.TestCase):
         receipt = self.checkout / ".local" / "catalog-update.json"
         receipt.parent.mkdir()
         receipt.write_text(json.dumps({"state": "blocked", "checked_at": start.isoformat()}))
-        self.assertEqual(runtime.update(self.checkout)["blocked_since"], start.isoformat())
+        self.assertEqual(dt.datetime.fromisoformat(runtime.update(self.checkout)["blocked_since"]), start)
         for stamp in ("invalid", now.replace(tzinfo=None).isoformat(), (now + dt.timedelta(days=2)).isoformat()):
             with self.subTest(stamp=stamp):
                 receipt.write_text(json.dumps({"state": "blocked", "checked_at": stamp}))
@@ -1300,7 +1300,7 @@ class UpdateTests(unittest.TestCase):
         (self.checkout / "second.txt").write_text("New local")
         self.assertGreater(len(runtime.status_line(self.checkout).splitlines()), 1)
         new = runtime.update(self.checkout)
-        self.assertEqual(new["blocked_since"], state["blocked_since"])
+        self.assertEqual(dt.datetime.fromisoformat(new["blocked_since"]), dt.datetime.fromisoformat(state["blocked_since"]))
         self.assertIn("second.txt", new["warning"])
         self.advance()
         command("git", "fetch", "-q", "origin", cwd=self.checkout)
@@ -1339,7 +1339,7 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(len(first.splitlines()), 1)
         receipt = self.checkout / ".local" / "catalog-update.json"
         record = json.loads(receipt.read_text())
-        self.assertEqual(record["blocked_since"], start.isoformat())
+        self.assertEqual(dt.datetime.fromisoformat(record["blocked_since"]), start)
         self.assertNotIn("checked_at", record)
         self.assertGreater(len(runtime.status_line(self.checkout, observe=True).splitlines()), 1)
         (self.checkout / "source").write_text("one")
@@ -1347,7 +1347,30 @@ class UpdateTests(unittest.TestCase):
         self.assertNotIn("blocked_since", json.loads(receipt.read_text()))
         (self.checkout / "source").write_text("Another change")
         self.assertEqual(len(runtime.status_line(self.checkout, observe=True).splitlines()), 1)
-        self.assertNotEqual(json.loads(receipt.read_text())["blocked_since"], start.isoformat())
+        self.assertNotEqual(dt.datetime.fromisoformat(json.loads(receipt.read_text())["blocked_since"]), start)
+
+    def test_unavailable_observation_storage_does_not_hide_readable_checkout_status(self):
+        self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+        receipt = self.checkout / ".local" / "catalog-update.json"
+        before = receipt.stat()
+        self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+        self.assertEqual(receipt.stat().st_mtime_ns, before.st_mtime_ns)
+        with mock.patch.object(runtime, "observe_checkout", side_effect=OSError("read-only filesystem")):
+            self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+            (self.checkout / "source").write_text("Local change")
+            self.assertIn("source", runtime.status_line(self.checkout, observe=True))
+
+    def test_failed_checkout_observation_does_not_erase_a_known_block(self):
+        (self.checkout / "source").write_text("Local change")
+        state = runtime.update(self.checkout)
+        start = dt.datetime.now(dt.timezone.utc) - runtime.BLOCKED_NOTICE_AFTER
+        state["blocked_since"] = start.isoformat()
+        (self.checkout / ".local" / "catalog-update.json").write_text(json.dumps(state))
+        with mock.patch.object(runtime, "checkout_state", side_effect=subprocess.TimeoutExpired("git status", 60)):
+            self.assertEqual(runtime.update(self.checkout)["state"], "error")
+        recovered_read = runtime.update(self.checkout)
+        self.assertEqual(dt.datetime.fromisoformat(recovered_read["blocked_since"]), start)
+        self.assertTrue(recovered_read["warning"])
 
     def test_startup_observation_preserves_overdue_schedule_and_does_not_race_update_lock(self):
         local = self.checkout / ".local"

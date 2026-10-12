@@ -108,13 +108,15 @@ def observe_checkout(root: Path, state: dict, now: dt.datetime) -> dict:
         record = json.loads(receipt.read_text()) if receipt.exists() else {}
         if not isinstance(record, dict):
             raise ValueError("invalid update receipt")
+        previous = record.copy()
         since = blocked_since(record, now)
         record["checkout_state"] = state["state"]
         if state["state"] == "blocked":
             record["blocked_since"] = (since or now).isoformat()
         else:
             record.pop("blocked_since", None)
-        write_receipt(root, record)
+        if record != previous:
+            write_receipt(root, record)
         return record
 
 
@@ -132,7 +134,12 @@ def status_line(root: Path, *, observe: bool = False) -> str:
         receipt = root / ".local" / "catalog-update.json"
         now = dt.datetime.now(dt.timezone.utc)
         try:
-            recorded = observe_checkout(root, state, now) if observe else json.loads(receipt.read_text()) if receipt.exists() else {}
+            if observe:
+                try:
+                    observe_checkout(root, state, now)
+                except OSError:
+                    pass  # Readable status remains useful when observation storage is unavailable.
+            recorded = json.loads(receipt.read_text()) if receipt.exists() else {}
             if not isinstance(recorded, dict):
                 raise ValueError("invalid update receipt")
         except (OSError, ValueError):
@@ -181,8 +188,10 @@ def update(root: Path) -> dict:
         except BlockingIOError:
             return {"state": "blocked", "reason": "another catalog update is running"}
         failure_step = "catalog checkout check"
+        observation = None
         try:
             state = checkout_state(root)
+            observation = state["state"]
             if state["state"] != "blocked":
                 failure_step = "origin fetch"
                 git(root, "fetch", "--quiet", "origin", "main")
@@ -219,12 +228,16 @@ def update(root: Path) -> dict:
         state["checked_at"] = now.isoformat()
         state["checkout_state"] = state["state"]
         receipt = root / ".local" / "catalog-update.json"
+        try:
+            previous = json.loads(receipt.read_text())
+        except (OSError, ValueError):
+            previous = {}
+        since = blocked_since(previous, now) if isinstance(previous, dict) else None
+        if state["state"] == "error" and observation is None and since:
+            # A failed observation proves no recovery; keep the last known block.
+            state["checkout_state"] = "blocked"
+            state["blocked_since"] = since.isoformat()
         if state["state"] == "blocked":
-            try:
-                previous = json.loads(receipt.read_text())
-            except (OSError, ValueError):
-                previous = {}
-            since = blocked_since(previous, now) if isinstance(previous, dict) else None
             since = since or now
             state["blocked_since"] = since.isoformat()
             warning = blocked_notice(root, state, since, now)
