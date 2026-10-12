@@ -47,15 +47,23 @@ func descendants(_ root: AXUIElement, depth: Int = 0) -> [AXUIElement] {
 }
 func settleUI() { Thread.sleep(forTimeInterval: 0.3) }
 
-// Never type through a global keystroke or clipboard: only the identified URL element.
-func saveAttachment(_ request: Request, app: NSRunningApplication) -> Bool {
+func remindersWindow(_ app: NSRunningApplication) -> AXUIElement? {
     let root = AXUIElementCreateApplication(app.processIdentifier)
     AXUIElementSetMessagingTimeout(root, 3)
+    let windows = (attribute(root, "AXWindows") as? [AXUIElement] ?? []).filter { window in
+        descendants(window).contains {
+            text($0, "AXRole") == "AXOutline" && text($0, "AXDescription") == "Account Lists"
+        }
+    }
+    // Settings and detached reminder windows are not list windows.
+    return windows.count == 1 ? windows[0] : nil
+}
+
+// Never type through a global keystroke or clipboard: only the identified URL element.
+func saveAttachment(_ request: Request, app: NSRunningApplication) -> Bool {
     app.activate()
     settleUI()
-    let windows = attribute(root, "AXWindows") as? [AXUIElement] ?? []
-    guard windows.count == 1 else { return false }
-    let window = windows[0]
+    guard let window = remindersWindow(app) else { return false }
     let listOutlines = descendants(window).filter {
         text($0, "AXRole") == "AXOutline" && text($0, "AXDescription") == "Account Lists"
     }
@@ -181,6 +189,9 @@ do {
     }
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.reminders").first else {
         finish("manual_required", "Open Reminders before saving; no mutation")
+    }
+    guard remindersWindow(app) != nil else {
+        finish("manual_required", "Open one Reminders list window with its sidebar visible; close extra list windows before saving. No mutation")
     }
     guard let timezone = TimeZone(identifier: request.timezone),
           let url = URL(string: request.url), url.scheme == "iterm2",

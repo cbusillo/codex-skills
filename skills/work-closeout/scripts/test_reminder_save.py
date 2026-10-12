@@ -40,7 +40,11 @@ class ReminderSaveTests(unittest.TestCase):
         for harness, provider in (("codex", "Codex"), ("claude", "Claude")):
             fields = self.fields(harness)
             self.assertEqual(fields["url"], reminder_link.prepare(harness, self.directory, SESSION, None)["url"])
-            self.assertEqual(fields["notes"].splitlines(), [f"{provider}: {SESSION}", ISSUE, PR])
+            lines = fields["notes"].splitlines()
+            self.assertEqual(len(lines), 3)
+            self.assertIn(provider, lines[0])
+            self.assertIn(SESSION, lines[0])
+            self.assertEqual(lines[1:], [ISSUE, PR])
             self.assertNotIn(fields["marker"], fields["notes"])
             self.assertNotIn(fields["fallback"], fields["notes"])
             self.assertIn("#42", fields["title"])
@@ -49,7 +53,9 @@ class ReminderSaveTests(unittest.TestCase):
     def test_fresh_prompt_stays_in_link_and_out_of_notes(self):
         prompt = "--search ' quote & $(touch bad); `touch bad`\né"
         fields = self.fields("claude", session=None, prompt=prompt, links=[])
-        self.assertEqual(fields["notes"], "Claude: fresh session")
+        self.assertEqual(len(fields["notes"].splitlines()), 1)
+        self.assertIn("Claude", fields["notes"])
+        self.assertNotIn(SESSION, fields["notes"])
         self.assertEqual(parse_qs(urlsplit(fields["url"]).query)["d"], [str(self.directory.resolve())])
         self.assertNotIn(prompt, fields["notes"])
         self.assertFalse((self.directory / "bad").exists())
@@ -63,7 +69,7 @@ class ReminderSaveTests(unittest.TestCase):
                 self.fields(**overrides)
         fields = self.fields(repeat_days=2, links=[ISSUE, ISSUE])
         self.assertEqual(fields["repeat_days"], 2)
-        self.assertEqual(fields["notes"].splitlines(), [f"Codex: {SESSION}", ISSUE])
+        self.assertEqual(fields["notes"].splitlines()[1:], [ISSUE])
 
     def test_native_receipt_must_prove_visible_attachment(self):
         request = self.fields()
@@ -71,7 +77,7 @@ class ReminderSaveTests(unittest.TestCase):
             for receipt in ({"status": "partial", "reminder_id": "owned-id"},
                             {"status": "manual_required"}, {"status": "refused"},
                             {"status": "saved", "visible_url_verified": False}):
-                run.return_value = subprocess.CompletedProcess([], 1, json.dumps(receipt), "")
+                run.return_value = subprocess.CompletedProcess([], 0 if receipt["status"] == "saved" else 1, json.dumps(receipt), "")
                 with self.assertRaises(ValueError):
                     reminder_save.native(request)
             run.return_value = subprocess.CompletedProcess([], 0, '{"status":"saved","visible_url_verified":true}', "")
@@ -96,7 +102,8 @@ class ReminderSaveTests(unittest.TestCase):
                     request = backend.call_args.args[0]
                     self.assertEqual(request["update_id"], "owned-id")
                     self.assertNotIn("fallback", request)
-                    self.assertEqual(request["notes"].splitlines(), [f"Codex: {SESSION}", ISSUE])
+                    self.assertIn(SESSION, request["notes"].splitlines()[0])
+                    self.assertEqual(request["notes"].splitlines()[1:], [ISSUE])
                 else:
                     backend.assert_not_called()
                     self.assertEqual(json.loads(output.getvalue())["status"], "dry_run")

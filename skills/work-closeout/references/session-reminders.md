@@ -96,8 +96,9 @@ do not approximate them or invent a recurrence.
 
 The writer resolves the same private configuration as `reminder_link.py`, including
 `--list` and `--repo`. It requires exactly one writable list and existing Reminders
-and Accessibility access; it never requests permissions. Open Reminders before
-applying. It schedules through EventKit, selects the exact list through Accessibility,
+and Accessibility access; it never requests permissions. Open one Reminders list
+window with the sidebar visible before applying (Settings can stay open).
+It schedules through EventKit, selects the exact list through Accessibility,
 sets the native URL field and verifies the resulting `AXLink` on that reminder.
 **EventKit's `url` property alone is not the visible URL attachment** and never counts
 as success. The writer sets it for duplicate lookup; older reminders can also be
