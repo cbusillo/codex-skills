@@ -4412,22 +4412,30 @@ def emit_http_error_payload(
 
 
 def emit_safety_error_payload(
-    *, operation: str, request: dict[str, object], exc: LaunchplaneSafetyError
+    *, operation: str, request: dict[str, object], exc: LaunchplaneSafetyError,
+    provider_payload: object = None,
 ) -> None:
     unsafe_redirect = exc.code == "unsafe_redirect"
-    emit(
-        unavailable_payload(
-            operation=operation,
-            request=request,
-            status="unavailable" if unsafe_redirect else "invalid",
-            code=exc.code if unsafe_redirect else "invalid_response",
-            message=(
-                "Launchplane redirected to an unsafe destination."
-                if unsafe_redirect
-                else "Launchplane returned an invalid response."
-            ),
-        )
+    payload = unavailable_payload(
+        operation=operation,
+        request=request,
+        status="unavailable" if unsafe_redirect else "invalid",
+        code=exc.code if unsafe_redirect else "invalid_response",
+        message=(
+            "Launchplane redirected to an unsafe destination."
+            if unsafe_redirect
+            else "Launchplane returned an invalid response."
+        ),
     )
+    if isinstance(provider_payload, dict):
+        try:
+            trace_id = public_trace_id(provider_payload.get("trace_id"))
+        except LaunchplaneSafetyError:
+            trace_id = ""
+        if trace_id:
+            summary = cast(dict[str, object], payload["summary"])
+            summary["trace_id"] = trace_id
+    emit(payload)
 
 
 def emit_provider_unavailable(
@@ -4900,7 +4908,8 @@ def _project_path_check(value: object) -> dict[str, object]:
     fixes = ("none", "code", "grant", "owner_approval", "client_acceptance", "by_hand", "wait")
     if set(source) != fields:
         raise LaunchplaneSafetyError("unsafe_response_shape")
-    assert_public_safe_shape(source)
+    # Identifier fields have their own validator; keep all other fields strict.
+    assert_public_safe_shape({key: item for key, item in source.items() if key not in {"product", "steps"}})
     if source["path"] not in ("testing", "promote") or source["state"] not in states:
         raise LaunchplaneSafetyError("invalid_response")
     steps = source["steps"]
@@ -4911,6 +4920,7 @@ def _project_path_check(value: object) -> dict[str, object]:
         step = _require_dict(value)
         if set(step) != step_fields:
             raise LaunchplaneSafetyError("unsafe_response_shape")
+        assert_public_safe_shape({key: item for key, item in step.items() if key not in {"step_id", "record_ids"}})
         if step["state"] not in states or step["fix"] not in fixes:
             raise LaunchplaneSafetyError("invalid_response")
         if not isinstance(step["code"], str):
@@ -5300,6 +5310,7 @@ def execute_product_read(
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -5314,7 +5325,9 @@ def execute_product_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(
+            operation=operation, request=request, exc=exc, provider_payload=provider_payload
+        )
         return 1
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
         emit_read_transport_error(
