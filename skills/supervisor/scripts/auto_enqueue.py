@@ -27,7 +27,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
-from skills.github.scripts import github_api
+from skills.github.scripts import github_api, github_pr_batch
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import latest_ready, requires_client_acceptance
 from skills.github.scripts.github_read import (
@@ -218,9 +218,6 @@ def own_candidate(response, own, candidate_records=()):
     )
 
 
-import github_pr_batch
-
-
 class Live:
     def __init__(self, deadline):
         self.deadline = deadline
@@ -278,7 +275,8 @@ class Live:
 
     def batch(self, repo, numbers):
         if numbers:
-            github_pr_batch.try_batch(self.reader,repo,numbers[:20])
+            github_pr_batch.try_batch(self.reader, repo, numbers[:20])
+        return self.reader.batch_diagnostic
 
     def get(self, path):
         return self.reader.get_json(path, step="enqueue_read")
@@ -600,8 +598,9 @@ def run_pass(io, args, emit, *, state=None):
                 )
             }
             candidates = []
-            if getattr(args,"batch_read",False):
-                io.batch(repo,[item["number"] for item in pulls if item["number"] in author_allowed])
+            if getattr(args, "batch_read", False):
+                diagnostic = io.batch(repo, [item["number"] for item in pulls if item["number"] in author_allowed])
+                emit("batch_read", {"repository": repo, **diagnostic})
             for listed in pulls:
                 if listed["number"] not in author_allowed:
                     continue

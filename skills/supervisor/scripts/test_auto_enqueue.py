@@ -230,6 +230,68 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(handoff["prs"], fake.writes)
         self.assertIn("launchplane-train-drive.py", handoff["argv"][2])
 
+    def test_batch_read_reaches_candidate_sorting_and_final_rest_recheck(self):
+        from skills.github.scripts import github_pr_batch, github_read
+
+        fixture_path = (
+            Path(__file__).parents[2] / "github/scripts/fixtures/pr_batch.json"
+        )
+        recorded = json.loads(fixture_path.read_text())
+        node = copy.deepcopy(next(iter(recorded["data"]["repository"].values())))
+        source = pr(1)
+        node.update(
+            number=1,
+            headRefOid=SHA,
+            headRefName="work/test",
+            baseRefName="trunk",
+            state="OPEN",
+            isDraft=False,
+            merged=False,
+            mergedAt=None,
+            mergeable="MERGEABLE",
+            mergeStateStatus="CLEAN",
+            createdAt=source["created_at"],
+            changedFiles=1,
+            author={"__typename": "User", "login": "engineer"},
+            headRepository={"nameWithOwner": REPO},
+            baseRepository={"nameWithOwner": REPO},
+        )
+        node["commits"]["nodes"][0]["commit"]["oid"] = SHA
+        node["labels"] = {
+            "totalCount": 0,
+            "nodes": [],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+        document = {"data": {"repository": {"p1": node}, "rateLimit": {"cost": 1}}}
+
+        class BatchedFake(Fake):
+            def batch(inner, repo, numbers):
+                inner.reader = github_read.GitHubReader(
+                    gh_cmd="fake-gh",
+                    actor="fixture-reader",
+                    expected_actor="fixture-reader",
+                    operation="github.pr.view",
+                )
+                reply = watch.github_api.ApiResult(ok=True, status=200, body=document)
+                with patch.object(inner.reader, "graphql_json", return_value=reply):
+                    github_pr_batch.batch_pull_requests(inner.reader, repo, numbers)
+                return inner.reader.batch_diagnostic
+
+            def get(inner, path):
+                if path in inner.reader.batch_responses:
+                    return inner.reader.get_json(path, step="batch_metadata")
+                inner.final_rest_recheck = True
+                return super().get(path)
+
+        fake = BatchedFake(count=1)
+        self.args.batch_read = True
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(fake.final_rest_recheck)
+        note = next(payload for event, payload in self.events if event == "batch_read")
+        self.assertTrue(note["used"])
+        self.assertEqual(note["cost"], document["data"]["rateLimit"]["cost"])
+
     def test_custom_limit_and_dry_run(self):
         fake = Fake()
         self.args.max_batch_size = 2

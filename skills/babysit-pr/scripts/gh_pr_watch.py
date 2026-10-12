@@ -41,7 +41,8 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
 import github_api
 import github_identity
 import github_read
-import github_pr_batch
+sys.path.insert(0, str(SCRIPT_DIR.parents[2]))
+from skills.github.scripts import github_pr_batch
 
 FAILED_RUN_CONCLUSIONS = {
     "failure",
@@ -1511,7 +1512,7 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         state["started_at"] = int(time.time())
 
     reader = watcher_reader()
-    if getattr(args,"batch_read",False):
+    if getattr(args, "batch_read", False) and (fresh_state or state.get("last_seen_head_sha") != pr["head_sha"]):
         batch = github_pr_batch.try_batch(reader,pr["repo"],[pr["number"]])
         if batch is not None and batch[pr["number"]]["head"]["sha"] != pr["head_sha"]:
             reader.batch_responses.clear()
@@ -1534,7 +1535,7 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         reader, pr["repo"], pr["number"], head_sha=pr["head_sha"], workflow_runs=workflow_runs,
     )
     checks_diagnostic = reader.diagnostics()
-    if getattr(args,"batch_read",False):
+    if getattr(args, "batch_read", False):
         checks_diagnostic["batch_read"]=reader.batch_diagnostic
     checks_summary = summarize_checks(checks, expected_head_sha=pr["head_sha"])
     checks_summary = apply_unfinished_workflow_runs(checks_summary, workflow_runs, pr["head_sha"])

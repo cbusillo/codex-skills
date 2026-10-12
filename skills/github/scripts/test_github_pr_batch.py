@@ -81,7 +81,32 @@ def test_recorded_six_pr_checks_and_request_drop():
                 github_read.normalize_status(x) for x in rest[path]
             ]
         assert transport.call_count == 1
-        assert len(numbers) * 3 >= 18
+        baseline_reader = reader()
+
+        def baseline_response(_method, path, **_kwargs):
+            path = path.split("?")[0]
+            return response(
+                rest[path] if path in rest else {"number": int(path.rsplit("/", 1)[-1])}
+            )
+
+        with patch.object(
+            baseline_reader, "_transport_request", side_effect=baseline_response
+        ) as baseline_transport:
+            for baseline_number, baseline_pull in pulls.items():
+                baseline_reader.get_json(
+                    f"/repos/owner/repo/pulls/{baseline_number}",
+                    step="baseline_metadata",
+                )
+                baseline_reader.paged_json(
+                    f"/repos/owner/repo/commits/{baseline_pull['head']['sha']}/check-runs",
+                    step_prefix="baseline_checks",
+                    collection_key="check_runs",
+                )
+                baseline_reader.paged_json(
+                    f"/repos/owner/repo/commits/{baseline_pull['head']['sha']}/statuses",
+                    step_prefix="baseline_statuses",
+                )
+        assert baseline_transport.call_count >= transport.call_count * 2
         # Repeated changing pass is a new query, never an offline snapshot.
         changed = copy.deepcopy(fixture)
         changed["data"]["repository"][f"p{numbers[0]}"]["title"] = "Changed"
@@ -127,13 +152,15 @@ def test_partial_errors_head_drift_and_missing_connections_recover_to_rest():
     fixture = json.loads(FIXTURE.read_text())
     numbers = [int(key[1:]) for key in fixture["data"]["repository"]]
     for change in [
-        lambda doc: doc.update(errors=[{"message": "missing grant"}]),
-        lambda doc: doc["data"].update(repository=None),
-        lambda doc: doc["data"]["repository"][f"p{numbers[0]}"].pop("reviews"),
-        lambda doc: doc["data"]["repository"][f"p{numbers[0]}"]["comments"].update(
-            totalCount=999
+        lambda document: document.update(errors=[{"message": "missing grant"}]),
+        lambda document: document["data"].update(repository=None),
+        lambda document: document["data"]["repository"][f"p{numbers[0]}"].pop(
+            "reviews"
         ),
-        lambda doc: doc["data"]["repository"][f"p{numbers[0]}"].update(
+        lambda document: document["data"]["repository"][f"p{numbers[0]}"][
+            "comments"
+        ].update(totalCount=999),
+        lambda document: document["data"]["repository"][f"p{numbers[0]}"].update(
             headRefOid="b" * 40
         ),
     ]:
@@ -218,7 +245,9 @@ def test_reviews_and_comments_paginate_before_publication():
     ):
         batch.batch_pull_requests(observed, "owner/repo", [node["number"]])
     comments = observed.paged_json(
-        f"/repos/owner/repo/issues/{node['number']}/comments", step_prefix="comments"
+        f"/repos/owner/repo/issues/{node['number']}/comments",
+        step_prefix="comments",
+        params={"per_page": 100},
     )
     assert [item["body"] for item in comments] == ["Early", "Late"]
     assert comments[0]["user"] == {"login": "fixture-bot[bot]", "type": "Bot"}
@@ -302,6 +331,74 @@ def test_batch_keeps_actions_evidence_and_cannot_hide_missing_runs():
             workflow_runs=[],
         )
     assert result["summary"] == legacy["summary"]
+
+
+def test_context_pagination_and_statuses_remain_complete():
+    fixture = json.loads(FIXTURE.read_text())
+    node = next(iter(fixture["data"]["repository"].values()))
+    contexts = node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
+    status = {
+        "__typename": "StatusContext",
+        "id": "status-node",
+        "context": "external",
+        "state": "PENDING",
+        "description": "Fixture description",
+        "targetUrl": "https://example/check",
+        "createdAt": "2026-01-01T00:00:00Z",
+    }
+    contexts.update(
+        totalCount=2,
+        nodes=[status],
+        pageInfo={"hasNextPage": True, "endCursor": "next-context"},
+    )
+    second = dict(status, id="status-node-2", context="required", state="SUCCESS")
+    more = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "headRefOid": node["headRefOid"],
+                    "updatedAt": node["updatedAt"],
+                    "commits": {
+                        "nodes": [
+                            {
+                                "commit": {
+                                    "oid": node["headRefOid"],
+                                    "statusCheckRollup": {
+                                        "contexts": {
+                                            "totalCount": 2,
+                                            "nodes": [second],
+                                            "pageInfo": {
+                                                "hasNextPage": False,
+                                                "endCursor": None,
+                                            },
+                                        }
+                                    },
+                                }
+                            }
+                        ]
+                    },
+                }
+            },
+            "rateLimit": {"cost": 1},
+        }
+    }
+    observed = reader()
+    with patch.object(
+        observed, "_transport_request", side_effect=[response(fixture), response(more)]
+    ):
+        assert batch.try_batch(observed, "owner/repo", [node["number"]]) is not None
+    statuses = observed.paged_json(
+        f"/repos/owner/repo/commits/{node['headRefOid']}/statuses",
+        step_prefix="statuses",
+    )
+    assert [(x["context"], x["state"]) for x in statuses] == [
+        ("external", "pending"),
+        ("required", "success"),
+    ]
+    assert (
+        observed.batch_diagnostic["cost"]
+        == fixture["data"]["rateLimit"]["cost"] + more["data"]["rateLimit"]["cost"]
+    )
 
 
 if __name__ == "__main__":

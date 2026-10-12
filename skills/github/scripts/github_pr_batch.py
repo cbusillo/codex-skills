@@ -13,7 +13,7 @@ from typing import Any
 import github_api
 import github_read
 
-FIELDS = """number title body state isDraft merged mergedAt mergeCommit { oid }
+FIELDS = """databaseId number title body state isDraft createdAt merged mergedAt mergeCommit { oid }
  mergeable mergeStateStatus reviewDecision headRefOid headRefName baseRefName
  headRepository { nameWithOwner } baseRepository { nameWithOwner } author { __typename login }
  changedFiles url updatedAt"""
@@ -43,6 +43,16 @@ def query(reader, document):
         raise github_read.GitHubReadError(
             "PR batch unavailable", result=result, diagnostics=reader.diagnostics()
         )
+    rate = (
+        (result.body.get("data") or {}).get("rateLimit")
+        if isinstance(result.body, dict)
+        else None
+    )
+    cost = rate.get("cost") if isinstance(rate, dict) else None
+    previous = reader.batch_diagnostic.get("cost", 0)
+    reader.batch_diagnostic["cost"] = (
+        previous + cost if type(previous) is int and type(cost) is int else None
+    )
     if (
         not isinstance(result.body, dict)
         or result.body.get("errors")
@@ -102,6 +112,20 @@ def complete(reader, repo, node, field):
         if cursor is None:
             if len(nodes) != total:
                 raise github_read.GitHubReadShapeError("incomplete PR connection")
+            if field == "contexts":
+                identities = [
+                    (
+                        n["__typename"],
+                        n["databaseId"] if n["__typename"] == "CheckRun" else n["id"],
+                    )
+                    for n in nodes
+                ]
+            else:
+                identities = [
+                    n["name"] if field == "labels" else n["databaseId"] for n in nodes
+                ]
+            if len(set(identities)) != len(nodes):
+                raise github_read.GitHubReadShapeError("duplicate PR connection nodes")
             return nodes
         if cursor in seen:
             raise github_read.GitHubReadShapeError("PR cursor repeated")
@@ -114,7 +138,7 @@ def complete(reader, repo, node, field):
         more = query(
             reader,
             f"query {{ repository(owner:{json.dumps(owner)}, name:{json.dumps(name)}) "
-            f"{{ pullRequest(number:{node['number']}) {{ headRefOid updatedAt {select} }} }} }}",
+            f"{{ pullRequest(number:{node['number']}) {{ headRefOid updatedAt {select} }} }} rateLimit {{ cost remaining resetAt }} }}",
         )["repository"]["pullRequest"]
         if (
             more["headRefOid"] != node["headRefOid"]
@@ -134,7 +158,7 @@ def complete(reader, repo, node, field):
 
 def rest_author(author):
     if author is None:
-        return {}
+        return {"login": "ghost", "type": "User"}
     bot = author.get("__typename") == "Bot"
     login = author["login"]
     return {
@@ -154,6 +178,7 @@ def batch_pull_requests(
         or any(type(n) is not int or n < 1 for n in numbers)
     ):
         raise ValueError("PR batch requires 1..20 distinct positive PR numbers")
+    reader.batch_diagnostic = {"used": False, "cost": 0}
     owner, name = repo.split("/", 1)
     selections = " ".join(
         connection(field, text) for field, text in CONNECTIONS.items()
@@ -187,6 +212,8 @@ def batch_pull_requests(
         if not isinstance(sha, str) or len(sha) != 40:
             raise github_read.GitHubReadShapeError("PR head unavailable")
         pull = {
+            "id": node["databaseId"],
+            "created_at": node["createdAt"],
             "number": number,
             "title": node["title"],
             "body": node["body"],
@@ -288,14 +315,9 @@ def batch_pull_requests(
     # Publish atomically only after EVERY requested PR/connection is complete.
     # Snapshots never survive the pass or cross readers/actors. A consumed path
     # recontacts REST (notably the auto-enqueue final head/labels recheck).
-    reader.batch_identity = (
-        reader.actor,
-        reader.expected_actor,
-        reader.operation,
-        reader.gh_cmd,
-        tuple(reader.gh_prefix_args),
-    )
+    reader.batch_identity = reader.batch_context()
     reader.batch_responses = responses
+    reader.batch_diagnostic["used"] = True
     return pulls
 
 

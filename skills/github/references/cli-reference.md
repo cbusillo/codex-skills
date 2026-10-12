@@ -1759,7 +1759,9 @@ retry and exact-head reconciliation.
 twenty PRs through the existing reader transport and fills one-pass,
 REST-shaped metadata, reviews, comments, check runs and latest status contexts.
 The Supervisor auto-enqueue observer and PR watcher support `--batch-read` for
-explicitly cold or changing passes. The flag defaults off: unchanged polling
+explicitly cold or changing passes. The watcher batches only its first
+snapshot or a new head, then uses REST while that head remains unchanged.
+The Supervisor flag is intended for `--once` cold/changed passes. The flag defaults off: unchanged polling
 keeps its authenticated conditional REST savings. There is no persisted GraphQL
 body cache or credential/actor change.
 
