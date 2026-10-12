@@ -31,7 +31,7 @@ _PATH_PATTERN = re.compile(
 )
 _CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _STATUS_PATTERN = re.compile(r"^[1-5][0-9]{2}$")
-_WORKFLOW_PATTERN = re.compile(r"^\.github/workflows/[a-z0-9_.-]+\.ya?ml$")
+_WORKFLOW_PATTERN = re.compile(r"^[.]github/workflows/[a-z0-9_.-]+[.]ya?ml$")
 _UNSAFE_STRING_PATTERNS = (
     re.compile(r"https?://", re.IGNORECASE),
     re.compile(r"\bLAUNCHPLANE_[A-Z0-9_]+\b"),
