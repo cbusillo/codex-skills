@@ -557,7 +557,7 @@ def discussion_evidence(
     # like renewal and invalidate the release after posting the successor.
     from github_plan_release import receipts
     for release_comment, receipt in receipts(comments):
-        if "legacy_reason" in receipt["source"] and receipt["source"]["worker"] == claim["worker"]:
+        if "legacy_reason" in receipt["source"] and re.fullmatch(re.escape(receipt["source"]["worker"]), claim["worker"], re.IGNORECASE):
             conflicts.append({"source": "legacy_worker_reuse", "id": release_comment["id"],
                               "worker": claim["worker"], "next_action": "Use a fresh worker token"})
     owned = []

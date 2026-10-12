@@ -859,15 +859,16 @@ issue; it cannot release another structured claim. Partial writes preserve the
 posted records and completed steps: read them before any recovery, never switch
 identity or replay an unknown write.
 
-For a legacy source containing only `Claimed by WORKER` (plus an optional
+For a legacy issue source containing only `Claimed by WORKER` (plus an optional
 operation marker), use `--legacy --legacy-branch <verified-original-branch>
 --legacy-reason "<why no native session ID exists>"`. A source with structured
 identity, session fields, or additional ownership prose cannot use this route.
 The caller verifies which branch the source worker used from the handoff.
 The helper corroborates the supplied branch by requiring an
 automation-authored PR on that branch independently linking the canonical
-issue/PR (including a merged PR when its source branch was deleted). Never
+issue (including a merged PR when its source branch was deleted). Never
 invent a native session ID; the PR link alone does not tie a branch to a worker.
+PR-scoped claims keep the structured release path and cannot use `--legacy`.
 Post a separate exact-ID attestation for each legacy claim:
 
 ```text

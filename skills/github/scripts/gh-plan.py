@@ -2065,6 +2065,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         source = next((c for c in source_comments if c.get("id") == args.claim_comment), None)
         if source is None:
             raise PlanError("Source claim is missing from the canonical issue")
+        if legacy_options["legacy"] and "pull_request" in source_issue:
+            raise PlanError("Legacy release supports bare issue claims only; PR claims use structured release")
         source_inventory = github_plan_claim.local_inventory(source_issue["repo"], source_issue["number"])
         _, fresh_evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence_readback")
         if fresh_evidence != evidence:

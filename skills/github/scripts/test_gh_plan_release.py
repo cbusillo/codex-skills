@@ -626,15 +626,23 @@ class LegacyReleaseTests(ReleaseHarness):
                 self.f.assert_no_writes()
 
     def test_reused_legacy_worker_refuses_successor_before_posting(self):
-        _, worker = self.legacy_setup()
-        self.run_release()
-        posted = self.f.events.count('post')
-        self.f.args.worker = worker
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            with patch.object(self.f, 'read_api', side_effect=self.api): self.f.run_claim()
-        self.assertEqual(caught.exception.code, 'claim_conflict')
-        self.assertEqual(self.f.events.count('post'), posted)
-        self.assertTrue(CLAIM.released_claim_id(release.effective_comments(self.f.comments)[-1]['body']))
+        for lower in (False, True):
+            with self.subTest(lower=lower):
+                _, worker = self.legacy_setup()
+                self.run_release()
+                posted = self.f.events.count('post')
+                self.f.args.worker = worker.lower() if lower else worker
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    with patch.object(self.f, 'read_api', side_effect=self.api): self.f.run_claim()
+                self.assertEqual(caught.exception.code, 'claim_conflict')
+                self.assertEqual(self.f.events.count('post'), posted)
+                self.assertTrue(CLAIM.released_claim_id(release.effective_comments(self.f.comments)[-1]['body']))
+
+    def test_legacy_pr_claim_refuses_before_writing(self):
+        self.legacy_setup()
+        self.f.issue['pull_request'] = {'url': 'https://api.github.com/repos/owner/repo/pulls/42'}
+        with self.assertRaises(PLAN.PlanError): self.run_release()
+        self.f.assert_no_writes()
 
     def test_closed_unmerged_source_pr_still_checks_activity(self):
         for renewed in (False, True):
