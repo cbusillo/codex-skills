@@ -53,7 +53,7 @@ class FleetCountsTests(unittest.TestCase):
             self.reader.graphql_json.side_effect = [
                 ApiResult(ok=True, status=200, body=self.pages[0]),
                 ApiResult(ok=False, status=403, body=None)]
-            with patch.object(fleet_counts, "GitHubReader", return_value=self.reader), \
+            with patch.object(fleet_counts.github_read, "GitHubReader", return_value=self.reader), \
                  patch.object(fleet_counts.sys, "argv", ["fleet_counts.py", "--owner", "fixture-owner", *flags]), \
                  redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(fleet_counts.main(), exit_code)

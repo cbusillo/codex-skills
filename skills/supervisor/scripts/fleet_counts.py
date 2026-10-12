@@ -19,7 +19,7 @@ import time
 CATALOG = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CATALOG))
 sys.path.insert(0, str(CATALOG / "skills/github/scripts"))
-from skills.github.scripts.github_read import GitHubReader, GitHubReadError, automation_only_gh_prefix_args
+from skills.github.scripts import github_read
 
 QUERY = """query SupervisorFleetCounts($owner: String!, $cursor: String, $pageSize: Int!) {
   repositoryOwner(login: $owner) {
@@ -53,7 +53,7 @@ def fleet_counts(reader, owner, *, page_size=100, max_pages=100):
         result = reader.graphql_json(QUERY, {"owner": owner, "cursor": cursor,
             "pageSize": page_size}, step=f"fleet_counts_page_{page + 1}")
         if not result.ok:
-            raise GitHubReadError("fleet count read failed", result=result,
+            raise github_read.GitHubReadError("fleet count read failed", result=result,
                                   diagnostics=reader.diagnostics())
         body = result.body
         if not isinstance(body, dict) or body.get("errors"):
@@ -106,12 +106,12 @@ def main():
     if (not 1 <= args.page_size <= 100 or args.max_pages < 1
             or not math.isfinite(args.deadline_seconds) or args.deadline_seconds <= 0):
         parser.error("page size must be 1..100, with positive page bound and deadline")
-    reader = GitHubReader(operation="github.supervisor.fleet_counts", strict_actor=True,
-        gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
+    reader = github_read.GitHubReader(operation="github.supervisor.fleet_counts", strict_actor=True,
+        gh_prefix_args=github_read.automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
     sampled_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         data = fleet_counts(reader, args.owner, page_size=args.page_size, max_pages=args.max_pages)
-    except (GitHubReadError, ValueError, KeyError, TypeError) as error:
+    except (github_read.GitHubReadError, ValueError, KeyError, TypeError) as error:
         print(json.dumps({"ok": False, "owner": args.owner, "sampled_at": sampled_at,
             "error": str(error), "diagnostics": reader.diagnostics()}))
         return 0 if args.service_snapshot else 1
