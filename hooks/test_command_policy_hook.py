@@ -66,6 +66,147 @@ def linked_worktree(checkout: Path, linked: Path) -> Path:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_global_keyboard_synthesis_is_refused_without_sending_keys(self) -> None:
+        apple = 'tell application "System Events" to tell process "Google Chrome"\nkeystroke "/path/proposal.json"\nkey code 36'
+        commands = (
+            "osascript -e " + shlex.quote(apple),
+            "osascript -e 'tell application \"System Events\" to key code 36'",
+            "osascript -l JavaScript -e 'Application(\"System Events\").keyCode(36)'",
+            "osascript -e 'tell application \"System Events\" to key down command'",
+            "cliclick 't:/path/proposal.json' kp:return",
+            "cliclick kd:cmd ku:cmd",
+            "xdotool search --name Chrome windowactivate --sync type /path/proposal.json",
+            "xdotool key --window 123 Return",
+            "ydotool type /path/proposal.json",
+            "ydotool key 28:1 28:0",
+            "wtype /path/proposal.json",
+            "printf 'type path' | dotool",
+            "xte 'str /path/proposal.json' 'key Return'",
+            "uv run python -c 'import pyautogui; pyautogui.write(\"path\")'",
+            "python3 -c 'from pynput.keyboard import Controller; Controller().type(\"path\")'",
+            "python3 -c 'from pynput import keyboard; controller = keyboard.Controller(); controller.type(\"path\"); controller.press(keyboard.Key.enter)'",
+            "python3 -c 'import keyboard; keyboard.send(\"enter\")'",
+            "python3 -c 'from pyautogui import write, press; write(\"path\"); press(\"enter\")'",
+            "python3 -c 'from pyautogui import write as type_text; type_text(\"path\")'",
+            "python3 -c 'from keyboard import send; send(\"enter\")'",
+            "python3 -c 'import pyautogui as pg; pg.write(\"path\"); pg.press(\"enter\")'",
+            "python3 -c 'import keyboard as kb; kb.send(\"enter\")'",
+            "python3 -c 'import keyboard; keyboard.press_and_release(\"enter\")'",
+            "python3 -c 'import keyboard as kb; kb.press_and_release(\"enter\")'",
+            "python3 -c 'from keyboard import press_and_release; press_and_release(\"enter\")'",
+            "python3 -c 'import keyboard; keyboard.play(events)'",
+            "python3 -c 'import keyboard as kb; kb.restore_modifiers([42])'",
+            "python3 -m keyboard < events.jsonl",
+            "python3 -c 'import pyautogui; context = pyautogui.hold(\"shift\"); context.__enter__()'",
+            "python3 -c 'from pyautogui import hold; hold(\"shift\").__enter__()'",
+            "python3 -c 'from pynput.keyboard import Controller; Controller().tap(\"a\")'",
+            "python3 -c 'from pynput.keyboard import Controller; Controller().pressed(\"a\").__enter__()'",
+            "node -e 'const robot = require(\"robotjs\"); robot.keyTap(\"enter\")'",
+            "node -e 'const robotjs = require(\"robotjs\"); robotjs.typeString(\"path\"); robotjs.keyTap(\"enter\")'",
+            "node --input-type=module -e 'import robotjs from \"robotjs\"; robotjs.keyTap(\"enter\")'",
+            "node -e 'const robotjs = require(\"robotjs\"); robotjs.typeStringDelayed(\"path\", 100)'",
+            "swift -e 'CGEventCreateKeyboardEvent(nil, 36, true)'",
+            "swift -e 'import CoreGraphics; let event = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: true)!; event.post(tap: .cghidEventTap)'",
+            "osascript <<'APPLESCRIPT'\n" + apple + "\nAPPLESCRIPT",
+            "cat <<'APPLESCRIPT' | osascript\n" + apple + "\nAPPLESCRIPT",
+            "sudo /usr/bin/osascript <<'APPLESCRIPT'\n" + apple + "\nAPPLESCRIPT",
+            "timeout 10 python3 - <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
+            "python3 - <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
+            "node <<'JS'\nconst robot = require('robotjs'); robot.typeString('path');\nJS",
+            "xdotool - <<'INPUT'\ntype path\nkey Return\nINPUT",
+            "xte <<'INPUT'\nstr path\nkey Return\nINPUT",
+            "cliclick -f - <<'INPUT'\nt:path\nkp:return\nINPUT",
+            "python3 -I -W ignore - <<'PY' 2>/dev/null\nimport pyautogui\npyautogui.press('enter')\nPY",
+            "osascript -l AppleScript <<-'APPLESCRIPT'\n\t" + apple.replace("\n", "\n\t") + "\n\tAPPLESCRIPT",
+            "osascript <<EOF; cat <<EOF\ntell application \"System Events\" to key code 36\nEOF\nget 42\nEOF",
+            "cat <<EOF; osascript <<EOF\nget 42\nEOF\ntell application \"System Events\" to key code 36\nEOF",
+            "printf '%s\\n' 'tell application \"System Events\" to keystroke \"path\"' 'tell application \"System Events\" to key code 36' | osascript",
+            "echo 'tell application \"System Events\" to key code 36' | sudo /usr/bin/osascript",
+            "printf 'import keyboard\\nkeyboard.press_and_release(\"enter\")\\n' | python3 -",
+            "printf '%s\\n' 'tell application \"System Events\" to key code 36' | tee picker.applescript | osascript",
+            "echo 'tell application \"System Events\" to key code 36' | cat | osascript",
+            "python3 /dev/stdin <<'PY'\nimport pyautogui\npyautogui.write('path')\npyautogui.press('enter')\nPY",
+            "python3 /dev/fd/0 <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
+            "python3 /proc/self/fd/0 <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                blocked = command_policy_hook.blocking_policy(command)
+                self.assertIsNotNone(blocked)
+                policy, skill, argv = blocked
+                result = bash(command)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stderr.rstrip(), command_policy_hook.describe(policy, skill, argv))
+
+        for prefix in ("/usr/bin/", "env FOO=1 ", "sudo ", "timeout 5 "):
+            self.assertEqual(bash(prefix + commands[0]).returncode, 2)
+        for command in (
+            "bash -lc " + shlex.quote(commands[0]),
+            "true; " + commands[0],
+            "printf '%s' \"$(xdotool key Return)\"",
+            "osascript <<< " + shlex.quote(apple),
+        ):
+            self.assertEqual(bash(command).returncode, 2)
+
+        # Both entry-point formats deny before a host could execute the command.
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": commands[0]}})
+        self.assertEqual(run_hook(payload).returncode, 2)
+        decision = run_hook(payload, "--json")
+        self.assertEqual(decision.returncode, 0)
+        self.assertEqual(json.loads(decision.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_scoped_input_and_non_keyboard_commands_remain_allowed(self) -> None:
+        for command in (
+            "uv run skills/supervisor/scripts/iterm_tab.py send --session-id exact --text path --verified-target",
+            "node -e 'await page.locator(\"input[type=file]\").setInputFiles(\"/path/proposal.json\")'",
+            "node -e 'await tab.send(\"DOM.setFileInputFiles\", {files: [\"/path/proposal.json\"], nodeId: 42})'",
+            "node -e 'await page.keyboard.press(\"Enter\")'",
+            "node -e 'const keyboard = page.keyboard; await keyboard.press(\"Enter\")'",
+            "python3 -c 'page.keyboard.press(\"Enter\")'",
+            "python3 -c 'keyboard = page.keyboard; keyboard.press(\"Enter\")'",
+            "swift -e 'let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: .zero, mouseButton: .left)'",
+            "osascript -e 'tell application \"Google Chrome\" to get URL of active tab of front window'",
+            "osascript -e 'tell application \"Google Chrome\" to execute active tab of front window javascript \"document.title\"'",
+            "osascript <<'APPLESCRIPT'\ntell application \"Finder\" to get name of startup disk\nAPPLESCRIPT",
+            "cliclick p:.",
+            "cliclick m:100,100",
+            "xdotool getactivewindow getwindowname",
+            "xdotool mousemove 100 100",
+            "ydotool mousemove 100 100",
+            "python3 -c 'import pyautogui; print(pyautogui.size())'",
+            "rg 'osascript keystroke|xdotool key|pyautogui.write' docs",
+            "printf '%s' 'osascript keystroke path'",
+            "cat <<'DOC'\nosascript -e 'keystroke path'\nxdotool key Return\nDOC",
+            "cat <<'DOC'\npyautogui.press('enter')\nDOC\npython3 -c 'print(42)'",
+            "cat <<'DOC'; python3 -c 'print(42)'\npyautogui.press('enter')\nDOC",
+            "cat <<'DOC' | python3 -c 'print(42)'\npyautogui.press('enter')\nDOC",
+            "osascript -e 'get 42' <<'DOC'\nkeystroke path\nDOC",
+            "python3 format_notes.py <<'DOC'\npyautogui.press('enter')\nDOC",
+            "osascript query.applescript <<'DOC'\nkeystroke path\nDOC",
+            "node format_notes.js <<'DOC'\nrobot.keyTap('enter')\nDOC",
+            "python3 -c 'from pyautogui import size; print(size())'",
+            "python3 -c 'import pyautogui as pg; print(pg.size())'",
+            "python3 -c 'from pynput.keyboard import Listener; print(Listener)'",
+            "python3 -c 'from pynput.keyboard import Controller; print(Controller)'",
+            "python3 -c 'import keyboard; print(keyboard.is_pressed(\"enter\"))'",
+            "node -e 'const robotjs = require(\"robotjs\"); console.log(robotjs.getScreenSize())'",
+            "python3 -Ic 'print(42)' <<'DOC'\npyautogui.press('enter')\nDOC",
+            "python3 -I -X dev format_notes.py <<'DOC'\npyautogui.press('enter')\nDOC",
+            "cat <<'DOC'; python3 - <<'PY'\npyautogui.press('enter')\nDOC\nprint(42)\nPY",
+            "cat <<EOF; python3 - <<EOF\npyautogui.press('enter')\nEOF\nprint(42)\nEOF",
+            "printf '%s\\n' 'pyautogui.press(\"enter\")' | cat",
+            "printf '%s\\n' 'pyautogui.press(\"enter\")' | python3 format_notes.py",
+            "echo 'keystroke path' | osascript -e 'get 42'",
+            "printf -v script '%s' 'keystroke path' | osascript",
+            "printf '%s\\n' 'pyautogui.press(\"enter\")' | tee notes.txt | python3 format_notes.py",
+            "osascript -e 'tell application \"Google Chrome\" to execute tab id 42 of window id 24 javascript \"document.body.dispatchEvent(new KeyboardEvent(\\\"keydown\\\", {key: \\\"Enter\\\"}))\"'",
+            "osascript -e 'tell application \"System Events\" to get name of every process'",
+            "python3 - <<'PY'\nprint('osascript keystroke path')\nPY",
+        ):
+            with self.subTest(command=command):
+                result = bash(command)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+
     def test_launchplane_data_is_allowed_but_invocations_are_blocked(self) -> None:
         for command in (
             "uv run python -c 'import json; print({\"repository\": \"launchplane\"})'",

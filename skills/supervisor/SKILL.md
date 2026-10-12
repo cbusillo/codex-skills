@@ -117,6 +117,77 @@ commands:
     purpose: Close one Supervisor-owned tab after current process and empty-input proof.
 policy:
   command_policies:
+    - id: reject-system-events-keyboard-synthesis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?osascript\b(?=[\s\S]*\bSystem\s*Events\b)[\s\S]*
+          (?:\bkeystroke(?:\s+|\s*\()|\bkey\s+(?:code|down|up)\b|\.\s*key(?:Code|Down|Up)\s*\()
+      action: reject
+      message: &keyboard_refusal Global keyboard synthesis can type into another application or agent session even when System Events names a process. Use the browser tools' file-upload action or a page/DevTools API scoped to the exact tab for browser input; use iterm_tab.py send --verified-target for terminal input.
+      preferred: &keyboard_alternatives
+        - kind: script
+          path: scripts/iterm_tab.py
+          example_argv: ["uv", "run", "scripts/iterm_tab.py", "send", "--session-id", "<exact-iterm-id>", "--text", "<text>", "--verified-target"]
+          purpose: Send terminal input only after verifying the exact session target.
+    - id: reject-keyboard-synthesis-tools
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?(?:cliclick\b[\s\S]*(?:\s|'|")(?:t|kp|kd|ku):
+          |(?:xdotool|ydotool)\b[\s\S]*(?:\s|'|")(?:type|key|keydown|keyup)\b
+          |(?:wtype|dotool|dotoolc)\b|xte\b[\s\S]*\b(?:str|key|keydown|keyup)\b)
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-keyboard-synthesis-apis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?(?:python[\d.]*|node|osascript|swift)\b[\s\S]*(?:
+          \bpyautogui\s*\.\s*(?:write|typewrite|press|hotkey|hold|keyDown|keyUp)\b
+          |\b(?:pynput\s*\.\s*keyboard|from\s+pynput\s+import\s+keyboard)\b[\s\S]*\bController\b[\s\S]*\.(?:type|press|release|tap|touch|pressed)\b
+          |\b(?:CGEventCreateKeyboardEvent|CGEvent\s*\(\s*keyboardEventSource\s*:))
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-python-keyboard-synthesis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\bimport\s+keyboard\b[\s\S]*(?<![\w.])keyboard\s*\.\s*
+          (?:write|press|release|send|press_and_release|play|replay|stash_state|restore_state|restore_modifiers)\b
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-python-keyboard-replay-module
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\s-m\s+keyboard\b[\s\S]*(?:\s|'|")<
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-imported-keyboard-synthesis-apis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\bfrom\s+(?:pyautogui|keyboard)\s+import\b
+          [^\n;]*\b(?P<keyop>write|typewrite|press|release|send|press_and_release|play|replay|stash_state|restore_state|restore_modifiers|hotkey|hold|keyDown|keyUp)\b
+          (?:\s+as\s+(?P<keyalias>\w+))?[\s\S]*(?<![\w.])(?(keyalias)(?P=keyalias)|(?P=keyop))\s*\(
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-aliased-keyboard-synthesis-apis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\bimport\s+(?:pyautogui|keyboard)\s+as\s+(?P<keymodule>\w+)\b
+          [\s\S]*\b(?P=keymodule)\s*\.\s*(?:write|typewrite|press|release|send|press_and_release|play|replay|stash_state|restore_state|restore_modifiers|hotkey|hold|keyDown|keyUp)\b
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-robotjs-keyboard-synthesis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?node\b[\s\S]*\b(?:require\s*\(\s*["']+robotjs["']+\s*\)|from\s*["']+robotjs["']+)
+          [\s\S]*\b(?:typeString|typeStringDelayed|keyTap|keyToggle|unicodeTap)\s*\(
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
     - id: prefer-session-helper-for-iterm-typing
       match:
         shell_regex: '(?i)\bosascript\b[^\n]*(?:write text|iTerm)'
@@ -499,6 +570,12 @@ write out only new recovery information needed for takeover:
 
 ## Lessons From The Pilot
 
+- System Events `keystroke` and `key code` go to the frontmost application,
+  even inside `tell process "Google Chrome"`. A file-picker attempt typed a
+  path and Return into the Director's iTerm direction session
+  ([#1753](https://github.com/cbusillo/codex-skills/issues/1753)). Use the
+  alternatives named by the keyboard command policies above; activating
+  a window first does not establish a safe target.
 - Start a fresh tab per task; reused old sessions caused most of the friction.
   Put Supervisor tabs in one dedicated terminal window and leave the
   Director's own sessions alone.
