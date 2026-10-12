@@ -151,7 +151,7 @@ class ClaimTests(unittest.TestCase):
                             comment_route=route or (lambda: ("bot", "bot-gh", TEST_BOT)),
                             load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
                 patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
-                patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[TEST_BOT]), \
+                patch.object(PLAN.github_identity, "configured_bot_logins", return_value=[]), \
                 patch.object(PLAN.github_comment_core, "comment", side_effect=self.post), \
                 patch.object(PLAN.github_issue_core, "edit_issue", side_effect=self.labels):
             (command or PLAN.cmd_claim)(self.args)
@@ -2800,6 +2800,10 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError) as caught: self.run_claim(command=PLAN.cmd_wait)
         self.assertEqual(caught.exception.payload["completed_steps"], ["post_wait"])
         self.assertIn("comment", caught.exception.payload)
+        terminal = PLAN.github_api_core.terminal_failure(caught.exception.failure,
+            operation="github.plan.wait", payload=caught.exception.payload)
+        self.assertEqual(terminal["completed_steps"], caught.exception.payload["completed_steps"])
+        self.assertIsNone(terminal["write_outcome"])
         self.assertEqual(WAIT.records(self.comments[-1]["body"])[0]["state"], "waiting")
 
     def test_new_issue_creation_records_all_waits_or_reviewed_absence(self):

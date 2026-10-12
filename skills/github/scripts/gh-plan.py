@@ -1992,6 +1992,11 @@ def cmd_show(args: argparse.Namespace) -> None:
           **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
 
 
+def wait_authors(repo: str) -> set[str]:
+    """Use the same primary and historical automation identities as managed plans."""
+    return set(github_identity.configured_bot_logins()) | ({EXPECTED_ACTOR} if EXPECTED_ACTOR else set()) | {repo.split('/')[0]}
+
+
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
     if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
@@ -2025,8 +2030,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
         comment_status = next((section_map(c.get("body") or "").get("Current Status", "")
                                for c in reversed(comments) if "Current Status" in section_map(c.get("body") or "")), "")
         status = "\n\n".join(part for part in (status, comment_status) if part)
-    trusted = set(github_identity.configured_bot_logins()) | {issue['repo'].split('/')[0]}
-    issue["claim_wait"] = github_plan_wait.current(issue, comments, trusted)
+    issue["claim_wait"] = github_plan_wait.current(issue, comments, wait_authors(issue["repo"]))
     return issue, status, comments, can_update
 
 
@@ -2355,8 +2359,7 @@ def claim_once(args: argparse.Namespace) -> None:
                                              github_plan_claim.exact_released_sources(target_comments))
             if not refresh_pr or pull["number"] == target_number:
                 target_status = sections.get("Current Status", "")
-                target_wait = github_plan_wait.current(target, target_comments,
-                    set(github_identity.configured_bot_logins()) | {target_repo.split('/')[0]})
+                target_wait = github_plan_wait.current(target, target_comments, wait_authors(target_repo))
                 target["claim_wait"] = target_wait
                 if check_wait(target, target_status, target=True):
                     wait_labels = sorted(set(normalize_labels(target.get("labels"))) &
@@ -2731,7 +2734,7 @@ def wait_once(args: argparse.Namespace) -> None:
                                             bucket="rest_core", step_prefix="wait_inventory")
         review = []
         checked = 0
-        trusted = set(github_identity.configured_bot_logins()) | {repo.split('/')[0]}
+        trusted = wait_authors(repo)
         for issue in issues:
             if "pull_request" in issue:
                 continue
@@ -2784,7 +2787,10 @@ def wait_once(args: argparse.Namespace) -> None:
         if observed["claim_wait"] != wait:
             raise PlanError("Structured wait changed or was not visible on readback; preserve the newer record")
     except (PlanError, ValueError, OSError) as exc:
-        raise PlanError(str(exc), payload={"structured_wait": wait, "comment": result,
+        failure = github_api_core.FailureDetail(cause="wait_readback_failed", message=str(exc),
+            retryable=False, fallback_eligible=False, disposition="stop",
+            completed_steps=["post_wait"], failed_step="wait_record_readback")
+        raise PlanError(str(exc), failure=failure, payload={"structured_wait": wait, "comment": result,
                         "completed_steps": ["post_wait"],
                         "recovery": "Read the published comment and latest wait before any retry"}) from exc
     emit({"ok": True, "actor": actor, "structured_wait": wait, "comment": result,
