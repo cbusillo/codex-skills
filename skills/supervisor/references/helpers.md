@@ -149,8 +149,9 @@ unavailable in the digest. Never interpret a failed read as zero work.
 For the digest, also use `github-work-rollup` for human comments, `github` for
 Dependabot/security signals and `infra-ops` for authorized live-site checks.
 Include the run's privately recorded capacity deadlines. Post the Director's
-questions in one batch with recommendations; use only the messaging authority
-already granted for this run.
+question queue under the shared
+[queue rules](../../references/talking-with-the-director.md#decisions-holds-and-work-state);
+use only the messaging authority already granted for this run.
 
 ## Foreign-post notices
 

@@ -16,6 +16,9 @@ resources:
   - path: scripts/director_waits.py
     kind: script
     description: Lists every visible open Director wait independently of labels or posted questions, with age and stale-verification evidence.
+  - path: scripts/question_id.py
+    kind: script
+    description: Allocates unique Director question IDs from one shared locked counter, seeded from current GitHub discussions.
 commands:
   - name: direction-audit
     source: skill
@@ -32,6 +35,11 @@ commands:
     resource_path: scripts/director_waits.py
     example_argv: ["uv", "run", "scripts/director_waits.py", "--owner", "OWNER"]
     purpose: Read all visible open Director waits with age and possible staleness, without stamping a turn or audit.
+  - name: director-question-next
+    source: skill
+    resource_path: scripts/question_id.py
+    example_argv: ["uv", "run", "scripts/question_id.py", "next"]
+    purpose: Allocate a question ID under the shared talking-with-the-Director rules; initialize once with seed and current GitHub discussion references.
 ---
 
 # Direction
