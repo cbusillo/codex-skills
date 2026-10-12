@@ -2610,9 +2610,12 @@ def claim_once(args: argparse.Namespace) -> None:
             + "\n" + planned_wait
             + (f"\n\nConflict-only refresh: {claim['refresh_pr']}; released claim {args.resume_from}; handoff comment {handoff_id}." if refresh_pr else "")
             + (f"\n\nRetained-work handoff: released claim {args.resume_from}; handoff comment {handoff_id}. This ordinary successor claim preserves retained PRs and their product holds." if handoff_id and not refresh_pr else "")
-            + wait_receipt
+            + ("\n\nRetained PR waits verified for this step: " + ", ".join(
+                f"https://github.com/{target_repo}/pull/{pr}" for pr in sorted(retained_waits)
+            ) if retained_waits else "")
             + (f"\n\nWait resolution: {args.wait_resolved}" if args.wait_resolved else "")
-            + "\n\nPrevious Current Status:\n" + "\n".join("> " + line for line in previous_status.splitlines())
+            + f"\n\n[Work record](https://github.com/{issue_repo}/"
+              f"{'pull' if record_kind == 'pr' else 'issues'}/{number})"
         )
         if not comment_recorded:
             claim_comment = github_comment_core.comment(

@@ -539,6 +539,22 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(outcome, "failed")
         self.assertEqual(events[-1][1]["failing_checks"], train.failing)
 
+    def test_failed_snapshot_keeps_service_recovery_evidence(self) -> None:
+        diagnosis = {"action": "candidate_failed", "reason_code": "candidate_check_retry_used", "source_failed_record_id": "failed-record", "next_actor": "repository_agent"}
+        train = FakeTrain([_response("candidate_failed", reason_code="failed_candidate_recovery_unavailable", last_controller_result=diagnosis, candidate={"candidate_sha": "abc"})])
+        outcome, events = _drive(train)
+        snapshot = next(payload for event, payload in events if event == "snapshot")
+        self.assertEqual(outcome, "failed")
+        self.assertEqual(snapshot["reason_code"], diagnosis["reason_code"])
+        self.assertEqual(snapshot["last_controller_result"], diagnosis)
+
+    def test_old_response_does_not_invent_diagnostic_evidence(self) -> None:
+        train = FakeTrain([_response("candidate_failed", reason_code="candidate_check_retry_used")])
+        _, events = _drive(train)
+        snapshot = next(payload for event, payload in events if event == "snapshot")
+        self.assertEqual(snapshot["reason_code"], train.responses[0]["result"]["reason_code"])
+        self.assertIsNone(snapshot["last_controller_result"])
+
     def test_a_stale_candidate_without_failures_is_rebuilt(self) -> None:
         train = FakeTrain(
             [_response("candidate_failed", candidate={"candidate_sha": "abc"}), _response("plan_candidate"), _response("land_batch")],

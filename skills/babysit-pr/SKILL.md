@@ -280,8 +280,9 @@ Do nothing locally for a closed, unmerged PR.
 ## Reporting
 
 While watching, report changes and an occasional heartbeat, not every poll.
-When CI first turns green for a SHA, say so once, for example
-`CI is all green: 33/33 passed. Still on watch for review feedback and merge.` Pushes,
+When CI first turns green for a SHA, say so once and link its checks. Pushes,
 reruns, green snapshots, and readiness are progress updates. Give the final
-summary only at a stop condition: final PR SHA, CI summary, mergeability,
-fixes pushed, flaky retry cycles used, and remaining failures or review items.
+summary only at a stop condition. Follow
+[Agent Comments](../references/talking-with-the-director.md#agent-comments):
+link commits, checks and reviews; write out only remaining actions and results
+that exist nowhere else.

@@ -46,25 +46,34 @@ changes on yes.
 - When a decision belongs to the Director, ask a direct question that says what
   is being decided, your recommendation, and what each choice changes. Separate
   what the Director must do by hand from what you will do after the answer.
-- In chat, give each question a short ID: Q1, Q2, and so on within the
-  conversation. An ID never changes and is never reused: when you ask the same
+- In chat, get each new question's short ID from the
+  [shared question counter](../direction/scripts/question_id.py):
+  `uv run <direction-skill-dir>/scripts/question_id.py next`.
+  Both harnesses use one counter in the shared Code home (`CODE_HOME`, or
+  `~/.code`); never count within a session or use a provider's home for it.
+  On first setup, run `seed --seed-from OWNER/REPO#NUMBER`, repeating
+  `--seed-from` for all current question and decision discussions, including
+  reserved ranges. The helper reads their full GitHub records and seeds from
+  the highest number it finds; never seed from a number remembered in chat.
+  An ID never changes and is never reused: when you ask the same
   question again, even reworded, keep its ID. Restate the question each time
   you list it, so the Director can answer "Q2 yes" without scrolling back. On
   GitHub, the question's link is its ID.
-- Reuse decisions already made. When the Director says a discussed proposal is
-  basically approved, act within that approval instead of asking again.
-- Describe a hold by the action it stops and the condition that ends it. If
-  the Director has not named an end condition, keep that action on hold until
-  the Director explicitly lifts it; do not invent a deadline or treat silence as
-  approval. Continue independent authorized work. "Don't land yet" holds
+- Once the Director agrees to something, carry it out and land it. Wait for the Director only when they asked you to, or when a stop boundary applies. Never add a "show the Director first" step they didn't ask for. When the Director does ask you to wait, say what is waiting and what ends the wait.
+- For a wait the Director asked for, do not invent a deadline or treat silence
+  as approval. Continue independent authorized work. "Don't land yet" holds
   merging, not preparation or validation.
-- When parallel research or several agents report during one turn, hold their
-  findings and questions and send one consolidated message after they finish
-  or need the Director. Before that, give only brief "still running" notes. When
-  that message carries many decisions, offer to take them one at a time; once
-  the Director agrees, ask one question per message and act on each answer before
-  asking the next. That pacing does not replace a complete handoff: a final
-  response still lists every decision that remains open.
+- **Filter by whose decision it is, never by how many there are.** A question
+  reaches the Director only when it hits a stop boundary, is a product choice,
+  or changes something the Director already agreed. Otherwise the agent decides
+  it and records why.
+- **What is the Director's goes in a queue, one at a time.** Each item is
+  checked against the record first: its premise, and the real incidents it
+  cites. It is brought with its context and one recommendation.
+- **The Director always sees the queue length** ("1 of 4"). Never tell the
+  Director to ignore questions. "Later" keeps an item queued; nothing is
+  dropped silently. A handoff links the remaining queued questions and names
+  who brings the next one; it does not ask them all at once.
 - Before asking the Director to approve an admin path (deploy, promotion,
   recovery, onboarding, or a permission-gated workflow), walk the whole path
   read-only: each step, the identity that runs it, the permission, environment,
@@ -114,6 +123,20 @@ changes on yes.
 - Keep generated issue and PR text durable: include intent, evidence, current
   state, and the next concrete action when one remains.
 
+## Agent Comments
+
+1. **First line:** what happened, in plain words.
+2. **Then:** who acts next and on what, or "nothing needed from you."
+3. **Link, don't copy:** anything recorded elsewhere (commits, CI and checks,
+   reviews, merge state, other issues) is a link, not a restatement.
+4. **Write out only what exists nowhere else, briefly:** results of manual
+   checks, the reason for a choice, and a Director or Client decision quoted
+   exactly.
+
+Use this shape for handoff, readiness, and closeout comments too. Do not keep
+second copies in collapsed "Details" sections. Preserve required machine-readable
+markers and exact-output contracts as described under Carry Context.
+
 ## Links And Evidence
 
 - In chat, use clickable local file links for real local files:
@@ -124,15 +147,13 @@ changes on yes.
   `https://github.com/OWNER/REPO/blob/<sha>/<path>?raw=true` for readers with
   repository access, or upload an attachment; bare `raw.githubusercontent.com`
   URLs do not carry the viewer's GitHub session and can return 404.
-- Prefer point-in-time evidence for handoffs and closeout: merge commits,
-  workflow run URLs, PR numbers, issue comments, landing-plan or deploy record
-  ids, and exact dates when relative timing could become stale.
+- Link point-in-time evidence for handoffs and closeout: commits, workflow
+  runs, issue and PR comments, landing plans, and deploy records.
 - For Background Review lifecycle wording, use
   `background-review-reporting.md`. Record the target and observation time;
   never turn absence into a terminal claim. If later terminal evidence appears,
   preserve the original statement and add a follow-up.
-- Do not paste large logs or long copied source text. Link to the run, file, or
-  artifact and quote only the useful lines.
+- Link logs and source text at their owning run, file, or artifact.
 
 ## GitHub Markdown Writes
 

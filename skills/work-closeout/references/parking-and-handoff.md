@@ -77,9 +77,9 @@ use `github-plan`'s [missing-gate handoff rule](../../github-plan/SKILL.md#missi
 to record who returns the canonical links and who verifies/connects the native
 blockers. Keep the waiting record on its permitted issue surface.
 
-- If a handoff file names an active issue or PR, copy the actionable summary,
-  blockers, next action, validation state, and relevant point-in-time links to
-  that GitHub thread before relying on it.
+- If a handoff file names an active issue or PR, move only otherwise unrecorded
+  recovery information to that thread, linking existing blockers and validation
+  records under [Agent Comments](../../references/talking-with-the-director.md#agent-comments).
 - If a handoff file is intentionally committed, make sure it describes durable
   product or repo behavior, not session-only coordination.
 - Before declaring closeout complete, sweep temporary handoff files matching

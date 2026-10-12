@@ -726,6 +726,8 @@ Conflict-refresh and ordinary resolved claims record their evidenced absence
 for that step. New wait records on readback stop the claim even with earlier
 resolution evidence. Every route independently rechecks native blockers and
 real competing claims.
+The helper returns previous Current Status in the recovery result; it links
+the work record without copying that history into the claim comment.
 
 When the overall direction's Order admits the work, name the rule with
 `--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
