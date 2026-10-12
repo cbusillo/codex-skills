@@ -139,11 +139,25 @@ policy:
     - id: reject-keyboard-synthesis-apis
       match:
         shell_regex: >-
-          (?ix)(?:\S*/)?(?:(?:python[\d.]*|node|osascript|swift)\b[\s\S]*(?:
-          \bpyautogui\s*\.\s*(?:write|typewrite|press|hotkey|keyDown|keyUp)\b
-          |\b(?:pynput\s*\.\s*keyboard|from\s+pynput\s+import\s+keyboard)\b[\s\S]*\bController\b[\s\S]*\.(?:type|press|release)\b
+          (?ix)(?:\S*/)?(?:python[\d.]*|node|osascript|swift)\b[\s\S]*(?:
+          \bpyautogui\s*\.\s*(?:write|typewrite|press|hotkey|hold|keyDown|keyUp)\b
+          |\b(?:pynput\s*\.\s*keyboard|from\s+pynput\s+import\s+keyboard)\b[\s\S]*\bController\b[\s\S]*\.(?:type|press|release|tap|touch|pressed)\b
           |\b(?:CGEventCreateKeyboardEvent|CGEvent\s*\(\s*keyboardEventSource\s*:))
-          |python[\d.]*\b[\s\S]*\bimport\s+keyboard\b[\s\S]*(?<![\w.])keyboard\s*\.\s*(?:write|press|send)\b)
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-python-keyboard-synthesis
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\bimport\s+keyboard\b[\s\S]*(?<![\w.])keyboard\s*\.\s*
+          (?:write|press|release|send|press_and_release|play|replay|stash_state|restore_state|restore_modifiers)\b
+      action: reject
+      message: *keyboard_refusal
+      preferred: *keyboard_alternatives
+    - id: reject-python-keyboard-replay-module
+      match:
+        shell_regex: >-
+          (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\s-m\s+keyboard\b[\s\S]*(?:\s|'|")<
       action: reject
       message: *keyboard_refusal
       preferred: *keyboard_alternatives
@@ -151,7 +165,7 @@ policy:
       match:
         shell_regex: >-
           (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\bfrom\s+(?:pyautogui|keyboard)\s+import\b
-          [^\n;]*\b(?P<keyop>write|typewrite|press|release|send|hotkey|keyDown|keyUp)\b
+          [^\n;]*\b(?P<keyop>write|typewrite|press|release|send|press_and_release|play|replay|stash_state|restore_state|restore_modifiers|hotkey|hold|keyDown|keyUp)\b
           (?:\s+as\s+(?P<keyalias>\w+))?[\s\S]*(?<![\w.])(?(keyalias)(?P=keyalias)|(?P=keyop))\s*\(
       action: reject
       message: *keyboard_refusal
@@ -160,7 +174,7 @@ policy:
       match:
         shell_regex: >-
           (?ix)(?:\S*/)?python[\d.]*\b[\s\S]*\bimport\s+(?:pyautogui|keyboard)\s+as\s+(?P<keymodule>\w+)\b
-          [\s\S]*\b(?P=keymodule)\s*\.\s*(?:write|typewrite|press|release|send|hotkey|keyDown|keyUp)\b
+          [\s\S]*\b(?P=keymodule)\s*\.\s*(?:write|typewrite|press|release|send|press_and_release|play|replay|stash_state|restore_state|restore_modifiers|hotkey|hold|keyDown|keyUp)\b
       action: reject
       message: *keyboard_refusal
       preferred: *keyboard_alternatives
@@ -168,7 +182,7 @@ policy:
       match:
         shell_regex: >-
           (?ix)(?:\S*/)?node\b[\s\S]*\b(?:require\s*\(\s*["']+robotjs["']+\s*\)|from\s*["']+robotjs["']+)
-          [\s\S]*\b(?:typeString|keyTap|keyToggle)\s*\(
+          [\s\S]*\b(?:typeString|typeStringDelayed|keyTap|keyToggle|unicodeTap)\s*\(
       action: reject
       message: *keyboard_refusal
       preferred: *keyboard_alternatives
