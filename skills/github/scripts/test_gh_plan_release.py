@@ -555,7 +555,7 @@ class LegacyReleaseTests(ReleaseHarness):
         )
         self.f.closed_pulls[99] = {"number": 99, "state": "closed", "merged_at": "2026-10-01T23:00:00Z",
             "user": {"login": BOT}, "body": "Closes #42", "title": "Legacy task",
-            "head": {"ref": self.args.legacy_branch, "sha": "historical-head", "repo": {"full_name": "owner/repo"}},
+            "head": {"ref": self.args.legacy_branch, "sha": "legacy-source-head", "repo": {"full_name": "owner/repo"}},
             "base": {"repo": {"full_name": "owner/repo"}}}
         self.f.pulls = [self.f.closed_pulls[99]]
         self.historical_commit_date = '2026-10-01T20:00:00Z'
