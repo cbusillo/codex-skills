@@ -59,6 +59,8 @@ class CapacityTests(unittest.TestCase):
         self.append(kind, **payload)
 
     def continue_sent(self, *_):
+        reservation = capacity_retry.load_state(self.state_path)[self.native_id]
+        self.assertEqual(reservation["phase"], "pending")
         self.append("user_message", message="continue")
         self.append("task_started")
         self.capacity_again()
@@ -177,6 +179,24 @@ class CapacityTests(unittest.TestCase):
         self.state_path.write_text(json.dumps({self.native_id: {"attempts": -1}}))
         with self.assertRaises(ValueError):
             capacity_retry.load_state(self.state_path)
+
+    def test_changed_target_and_unavailable_socket_are_reported_without_sends(self):
+        state = {self.native_id: {"attempts": 1, "phase": "confirmed",
+                 "last_attempt": self.now, "target": capacity_retry.target(self.entry)}}
+        changed = {**self.entry, "codex_home": str(self.root)}
+        with patch.object(capacity_retry, "queue_continue") as queue:
+            result = capacity_retry.resume(changed, session_record.session_status(self.entry),
+                                           state, self.state_path, self.now + 100000)
+            self.assertEqual(result["state"], "target_changed")
+            (self.home / "app-server-control" / "app-server-control.sock").unlink()
+            self.now += 100000
+            result = capacity_retry.resume(self.entry, session_record.session_status(self.entry),
+                                           {}, self.state_path, self.now)
+            self.assertEqual(result["state"], "blocked")
+            self.assertEqual(status.snapshot(self.ledger, self.state_path)[0]["capacity_retry"]["state"],
+                             "blocked")
+        queue.assert_not_called()
+        self.assertFalse(self.state_path.exists())
 
     def test_queue_uses_verified_native_target_and_home(self):
         expected = session_record.session_status(self.entry)

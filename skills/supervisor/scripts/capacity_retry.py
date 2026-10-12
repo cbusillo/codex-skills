@@ -53,6 +53,11 @@ def save_state(path: Path, state: dict) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
@@ -82,6 +87,13 @@ def retry_status(entry: dict, status: dict, state: dict) -> dict:
         return {"attempts": row["attempts"], "state": "target_changed"}
     attempts = row["attempts"] if row else 0
     phase = row["phase"] if row else "waiting"
+    if (status["capacity_stop"] and attempts < len(BACKOFF_SECONDS)
+            and phase not in {"pending", "uncertain"}):
+        try:
+            target_coordinates(entry)
+        except (OSError, ValueError, TypeError):
+            return {"attempts": attempts, "state": "blocked",
+                    "reason": "Supervisor ownership, native UUID, home or daemon socket is unavailable"}
     return {"attempts": attempts, "state": (
         "reconciliation_required" if phase in {"pending", "uncertain"} else
         "exhausted" if attempts == len(BACKOFF_SECONDS) and status["capacity_stop"] else
@@ -89,7 +101,7 @@ def retry_status(entry: dict, status: dict, state: dict) -> dict:
     )}
 
 
-def verified_target(entry: dict, expected: dict) -> tuple[Path, Path]:
+def target_coordinates(entry: dict) -> tuple[Path, Path]:
     if entry.get("harness") != "codex" or entry.get("supervisor_owned") is not True:
         raise ValueError("capacity resume requires an explicitly Supervisor-owned Codex session")
     # Never let queue resolve a human-readable name or use the caller's account.
@@ -104,6 +116,11 @@ def verified_target(entry: dict, expected: dict) -> tuple[Path, Path]:
     endpoint = home / "app-server-control" / "app-server-control.sock"
     if not stat.S_ISSOCK(endpoint.stat().st_mode):
         raise ValueError("configured home's daemon socket is unavailable")
+    return home, endpoint
+
+
+def verified_target(entry: dict, expected: dict) -> tuple[Path, Path]:
+    home, endpoint = target_coordinates(entry)
     fresh = session_status(entry)
     if fresh != expected or fresh["state"] != "provider_capacity":
         raise ValueError("session changed before capacity resume")

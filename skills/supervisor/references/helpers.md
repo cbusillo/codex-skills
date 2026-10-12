@@ -106,8 +106,11 @@ automatic sends. Inspect the exact thread and queued messages before any
 manual intervention; never replay an uncertain send. A changed home or
 transcript reports `target_changed` and also stops automatic sends.
 Checks and the morning digest use the state-aware status command above and
-include every `exhausted`, `reconciliation_required` or `target_changed`
-record. `exhausted` means the session remains at capacity after using its
+include every `provider_capacity` session, even without automatic retries,
+and every `exhausted`, `blocked`, `reconciliation_required` or `target_changed`
+retry record. `blocked` names unavailable ownership/identity/home/socket
+verification, so a missing ledger field or daemon cannot look like ordinary
+backoff forever. `exhausted` means the session remains at capacity after using its
 three attempts; it needs Supervisor attention. These states establish no
 completion or safe-to-exit verdict.
 

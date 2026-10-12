@@ -17,6 +17,8 @@ from capacity_retry import locked_state, resume, retry_status
 def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
          capacity_state: dict | None = None, state_path: Path | None = None,
          resume_capacity: bool = False) -> list[dict]:
+    if resume_capacity and state_path is None:
+        raise ValueError("capacity resume requires a persistent state path")
     notices = []
     for entry in load_ledger(ledger):
         if entry["harness"] != "codex":
@@ -60,6 +62,23 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
     return notices
 
 
+def watch(args, state: dict | None) -> int:
+    deadline = time.monotonic() + args.deadline_seconds
+    seen = {}
+    while True:
+        try:
+            notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
+                           state, args.capacity_state, args.resume_capacity)
+            for notice in notices:
+                print(json.dumps(notice), flush=True)
+        except (OSError, ValueError, TypeError) as error:
+            print(json.dumps({"error": str(error)}), flush=True)
+            return 1
+        if args.once or time.monotonic() >= deadline:
+            return 0
+        time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", required=True, type=Path)
@@ -76,24 +95,14 @@ def main() -> int:
         parser.error("timings must be positive")
     if args.resume_capacity and not args.capacity_state:
         parser.error("--resume-capacity requires --capacity-state")
-    deadline = time.monotonic() + args.deadline_seconds
-    seen = {}
-    while True:
-        try:
-            if args.capacity_state:
-                with locked_state(args.capacity_state) as state:
-                    notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
-                                   state, args.capacity_state, args.resume_capacity)
-            else:
-                notices = poll(args.ledger, seen, args.idle_seconds, time.time())
-            for notice in notices:
-                print(json.dumps(notice), flush=True)
-        except (OSError, ValueError, TypeError) as error:
-            print(json.dumps({"error": str(error)}), flush=True)
-            return 1
-        if args.once or time.monotonic() >= deadline:
-            return 0
-        time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
+    try:
+        if args.capacity_state:
+            with locked_state(args.capacity_state) as state:
+                return watch(args, state)
+        return watch(args, None)
+    except (OSError, ValueError, TypeError) as error:
+        print(json.dumps({"error": str(error)}), flush=True)
+        return 1
 
 
 if __name__ == "__main__":
