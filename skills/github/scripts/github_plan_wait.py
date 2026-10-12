@@ -48,11 +48,11 @@ def validate(record: Any) -> None:
             raise ValueError("A structured wait needs its actor/event and ending condition")
 
 
-def records(text: str) -> list[dict[str, Any]]:
+def live_lines(text: str) -> list[tuple[int, str]]:
     result = []
     fence = None
     html_end = None
-    for line in text.splitlines():
+    for index, line in enumerate(text.splitlines()):
         if html_end:
             if html_end in line.casefold():
                 html_end = None
@@ -73,6 +73,13 @@ def records(text: str) -> list[dict[str, Any]]:
             continue
         if fence is not None or not line.startswith(PREFIX):
             continue
+        result.append((index, line))
+    return result
+
+
+def records(text: str) -> list[dict[str, Any]]:
+    result = []
+    for _, line in live_lines(text):
         match = re.fullmatch(re.escape(PREFIX) + r"(.*?) -->", line)
         if not match:
             raise ValueError("Malformed structured wait marker")
@@ -99,4 +106,5 @@ def current(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[
 
 
 def without_records(text: str) -> str:
-    return "\n".join(line for line in text.splitlines() if not line.startswith(PREFIX))
+    indexes = {index for index, _ in live_lines(text)}
+    return "\n".join(line for index, line in enumerate(text.splitlines()) if index not in indexes)

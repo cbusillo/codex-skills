@@ -675,9 +675,11 @@ class ClaimTests(unittest.TestCase):
 
     def test_refresh_preserves_target_recorded_wait(self):
         self.refresh_fixture()
+        previous = PLAN.section_map(self.issue["body"])["Current Status"]
         self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(evidence="Client asked to hold", waiting_for="Client test", ends_when="Accepted head"))})
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.assertEqual(caught.exception.payload["previous_current_status"], previous)
         self.assert_no_writes()
         self.args.wait_resolved = "Existing conflict-refresh authorization resolves this wait for source work only."
         self.run_claim()
@@ -844,6 +846,7 @@ class ClaimTests(unittest.TestCase):
                 self.args.wait_resolved = "Existing brief authorizes prerequisite only; keep the draft/readback hold."
                 self.run_claim()
                 self.assertTrue(self.pulls[0]["draft"])
+                self.assertEqual(len(wait_record.records(self.comments[-1]["body"])), 1)
                 if place == "issue":
                     status, _ = PLAN.read_plan_sections(self.issue)
                     self.assertEqual(wait_record.records(status["Current Status"]), [wait])
@@ -2704,6 +2707,14 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                 self.assertTrue(caught.exception.payload["review_required"])
                 self.assert_no_writes()
+
+    def test_creation_record_moves_into_current_status_without_duplicate_body_records(self):
+        self.wait = None
+        self.issue["body"] = PLAN.template_body("Repair") + "\n\n" + wait_record.marker(
+            wait_record.reviewed(evidence="Creation request reviewed; no hold"))
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(len(wait_record.records(self.issue["body"])), 1)
 
     def test_reviewed_status_and_comment_prose_cannot_create_a_wait_or_an_owner(self):
         self.issue["body"] += "\nOwned by historical-worker\nWaiting for: None; Chris decides the scope"

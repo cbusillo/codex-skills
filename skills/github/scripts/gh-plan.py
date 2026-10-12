@@ -2654,7 +2654,10 @@ def claim_once(args: argparse.Namespace) -> None:
                 _, pre_write_issue = get_issue(args.issue, repo)
                 if pre_write_issue.get("body") != issue.get("body"):
                     raise PlanError("Issue body changed before retained-handoff status write; preserve the new hold and verify before recovery")
-            body = replace_issue_plan_section(issue, "Current Status", status_text)
+            # Creation may place its record after later sections. The authored
+            # claim record replaces it; examples remain unchanged.
+            status_issue = {**issue, "body": github_plan_wait.without_records(issue.get("body") or "")}
+            body = replace_issue_plan_section(status_issue, "Current Status", status_text)
             rest_edit_issue(issue_repo, number, body=body)
             completed.append("update_current_status")
         label_map = config["labels"]

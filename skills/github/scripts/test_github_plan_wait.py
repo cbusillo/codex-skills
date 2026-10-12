@@ -31,6 +31,7 @@ class WaitRecordTests(unittest.TestCase):
                         "<details>\n" + marker + "\n</details>"):
             with self.subTest(example=example):
                 self.assertEqual(wait_record.records(example), [])
+                self.assertEqual(wait_record.without_records(example), example)
 
     def test_foreign_comment_cannot_clear_an_authorized_wait(self):
         issue = {"user": {"login": "bot"}, "body": wait_record.marker(self.hold)}
