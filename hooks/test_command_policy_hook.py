@@ -125,6 +125,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "printf 'import keyboard\\nkeyboard.press_and_release(\"enter\")\\n' | python3 -",
             "printf '%s\\n' 'tell application \"System Events\" to key code 36' | tee picker.applescript | osascript",
             "echo 'tell application \"System Events\" to key code 36' | cat | osascript",
+            "python3 /dev/stdin <<'PY'\nimport pyautogui\npyautogui.write('path')\npyautogui.press('enter')\nPY",
+            "python3 /dev/fd/0 <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
+            "python3 /proc/self/fd/0 <<'PY'\nimport pyautogui\npyautogui.press('enter')\nPY",
         )
         for command in commands:
             with self.subTest(command=command):

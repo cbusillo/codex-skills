@@ -65,6 +65,7 @@ SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"
 SHELLS = {"sh", "bash", "zsh"}
 SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift|xdotool|xte|cliclick)$")
 SCRIPT_WRAPPERS = {"sudo", "timeout", "xargs"}
+STDIN_PROGRAM_PATHS = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
@@ -289,9 +290,9 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
             cursor += 1
     tool = argv[0]
     if tool == "xdotool":
-        return arguments == ["-"]
+        return len(arguments) == 1 and arguments[0] in STDIN_PROGRAM_PATHS
     if tool == "cliclick":
-        return arguments == ["-f", "-"]
+        return len(arguments) == 2 and arguments[0] == "-f" and arguments[1] in STDIN_PROGRAM_PATHS
     if tool == "xte":
         return not arguments
     value_flags = {"-W", "-X", "--check-hash-based-pycs"} if tool.startswith("python") else {
@@ -300,10 +301,10 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
     cursor = 0
     while cursor < len(arguments):
         token = arguments[cursor]
-        if token == "-":
+        if token in STDIN_PROGRAM_PATHS:
             return True
         if token == "--":
-            return cursor + 1 == len(arguments) or arguments[cursor + 1] == "-"
+            return cursor + 1 == len(arguments) or arguments[cursor + 1] in STDIN_PROGRAM_PATHS
         if token in {"-c", "-e", "-m", "-p", "--eval", "--print"} or token.startswith(("--eval=", "--print=")):
             return False
         if tool.startswith("python") and re.match(r"^-[bBdEiIOqRsSuvVx]*[cm]", token):
