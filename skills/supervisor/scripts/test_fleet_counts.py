@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import fleet_counts
-from github_api import ApiResult
+from skills.github.scripts.github_api import ApiResult
 
 FIXTURE = Path(__file__).with_name("fixtures") / "fleet-counts.json"
 

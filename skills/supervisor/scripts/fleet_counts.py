@@ -16,8 +16,10 @@ import re
 import sys
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
-from github_read import GitHubReader, GitHubReadError, automation_only_gh_prefix_args
+CATALOG = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(CATALOG))
+sys.path.insert(0, str(CATALOG / "skills/github/scripts"))
+from skills.github.scripts.github_read import GitHubReader, GitHubReadError, automation_only_gh_prefix_args
 
 QUERY = """query SupervisorFleetCounts($owner: String!, $cursor: String, $pageSize: Int!) {
   repositoryOwner(login: $owner) {
