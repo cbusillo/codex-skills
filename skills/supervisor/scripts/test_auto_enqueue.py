@@ -230,6 +230,129 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(handoff["prs"], fake.writes)
         self.assertIn("launchplane-train-drive.py", handoff["argv"][2])
 
+    def test_batch_read_reaches_candidate_sorting_and_final_rest_recheck(self):
+        from skills.github.scripts import github_pr_batch, github_read
+
+        fixture_path = (
+            Path(__file__).parents[2] / "github/scripts/fixtures/pr_batch.json"
+        )
+        recorded = json.loads(fixture_path.read_text())
+        node = copy.deepcopy(next(iter(recorded["data"]["repository"].values())))
+        source = pr(1)
+        node.update(
+            number=1,
+            headRefOid=SHA,
+            headRefName="work/test",
+            baseRefName="trunk",
+            state="OPEN",
+            isDraft=False,
+            merged=False,
+            mergedAt=None,
+            mergeable="MERGEABLE",
+            mergeStateStatus="CLEAN",
+            createdAt=source["created_at"],
+            changedFiles=1,
+            author={"__typename": "User", "login": "engineer"},
+            headRepository={"nameWithOwner": REPO},
+            baseRepository={"nameWithOwner": REPO},
+        )
+        node["commits"]["nodes"][0]["commit"]["oid"] = SHA
+        node["labels"] = {
+            "totalCount": 0,
+            "nodes": [],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+        document = {"data": {"repository": {"p1": node}, "rateLimit": {"cost": 1}}}
+
+        class BatchedFake(Fake):
+            def __init__(self, count=1):
+                super().__init__(count=count)
+                self.reader = None
+                self.final_rest_recheck = False
+
+            def batch(self, repo, numbers):
+                self.reader = github_read.GitHubReader(
+                    gh_cmd="fake-gh",
+                    actor="fixture-reader",
+                    expected_actor="fixture-reader",
+                    operation="github.pr.view",
+                )
+                reply = watch.github_api.ApiResult(ok=True, status=200, body=document)
+                with patch.object(self.reader, "graphql_json", return_value=reply):
+                    github_pr_batch.batch_pull_requests(self.reader, repo, numbers)
+                return self.reader.batch_diagnostic
+
+            def get(self, path):
+                if self.reader is not None and path in self.reader.batch_responses:
+                    return self.reader.get_json(path, step="batch_metadata")
+                self.final_rest_recheck = True
+                return super().get(path)
+
+        fake = BatchedFake(count=1)
+        self.args.batch_read = True
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(fake.final_rest_recheck)
+        note = next(payload for event, payload in self.events if event == "batch_read")
+        self.assertTrue(note["used"])
+        self.assertEqual(note["cost"], document["data"]["rateLimit"]["cost"])
+
+    def test_real_qualification_consumes_batch_then_rechecks_rest(self):
+        from skills.github.scripts import github_pr_batch, github_read
+        root = Path(__file__).parents[2] / 'github/scripts/fixtures'
+        document = json.loads((root / 'pr_batch.json').read_text())
+        first = next(iter(document['data']['repository'].values()))
+        # A current-head handoff is scenario input; the recordings' old ready
+        # comments correctly fail after the head changes during train landing.
+        ready_comment = {'databaseId':1,'body':f"{READY}\n\nHead: {first['headRefOid']}",
+                         'createdAt':first['updatedAt'],'updatedAt':first['updatedAt'],
+                         'url':'https://github.com/owner/repo/pull/1#issuecomment-1',
+                         'author':{'__typename':'Bot','login':'fixture-bot'},
+                         'authorAssociation':'CONTRIBUTOR'}
+        first['comments']={'totalCount':1,'nodes':[ready_comment],
+                           'pageInfo':{'hasNextPage':False,'endCursor':None}}
+        checks = json.loads((root / 'pr_batch_rest_checks.json').read_text())
+        comments = json.loads((root / 'pr_batch_rest_comments.json').read_text())
+        runs = json.loads((root / 'pr_batch_workflow_runs.json').read_text())
+        comments[f"/repos/owner/repo/issues/{first['number']}/comments"]=[{
+            'id':ready_comment['databaseId'],'body':ready_comment['body'],
+            'created_at':ready_comment['createdAt'],'updated_at':ready_comment['updatedAt'],
+            'html_url':ready_comment['url'],'user':{'login':'fixture-bot[bot]','type':'Bot'}}]
+        reader = github_read.GitHubReader(gh_cmd='fake-gh', actor='fixture-reader',
+                                         expected_actor='fixture-reader', operation='github.pr.view')
+        with patch.object(reader, 'graphql_json', return_value=watch.github_api.ApiResult(ok=True,status=200,body=document)):
+            pulls = github_pr_batch.batch_pull_requests(reader,'owner/repo',[first['number']])
+        source = pulls[first['number']]
+        source.update(state='open',draft=False,mergeable=True,labels=[])
+        suite = checks[f'/repos/owner/repo/commits/{first["headRefOid"]}/check-runs']['check_runs'][0]
+        protection = {'checks':[{'context':suite['name'],'app_id':suite['app']['id']}]}
+        transport_calls=[]
+        def rest_request(_method,path,**_kwargs):
+            transport_calls.append(path)
+            endpoint=path.split('?')[0]
+            if endpoint.endswith('/actions/runs'):body=runs
+            elif endpoint.endswith('/status'):body={'state':'success'}
+            elif endpoint.endswith('/required_status_checks'):body=protection
+            elif endpoint in checks:body=checks[endpoint]
+            elif endpoint in comments:body=comments[endpoint]
+            elif endpoint.endswith('/reviews'):body=[]
+            elif endpoint.endswith(f'/pulls/{first["number"]}'):body=source
+            else:raise AssertionError(endpoint)
+            return watch.github_api.ApiResult(ok=True,status=200,body=body)
+        live=object.__new__(watch.Live)
+        live.reader=reader
+        target={**TARGET,'repo':'owner/repo','base':source['base']['ref']}
+        with patch.object(reader,'_transport_request',side_effect=rest_request):
+            pr_path=f'/repos/owner/repo/pulls/{first["number"]}'
+            observed=live.get(pr_path)
+            observed.update(state='open',draft=False,mergeable=True,labels=[])
+            self.assertTrue(live.qualified(target,observed,set()))
+            self.assertFalse(any(item.split('?')[0] in comments for item in transport_calls))
+            fresh=live.get(pr_path)
+            self.assertTrue(live.qualified(target,fresh,set()))
+        self.assertTrue(any(item.split('?')[0] in comments for item in transport_calls))
+        self.assertIn(pr_path,transport_calls)
+
     def test_custom_limit_and_dry_run(self):
         fake = Fake()
         self.args.max_batch_size = 2

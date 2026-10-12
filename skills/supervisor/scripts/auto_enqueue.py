@@ -27,7 +27,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
-from skills.github.scripts import github_api
+from skills.github.scripts import github_api, github_pr_batch
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import latest_ready, requires_client_acceptance
 from skills.github.scripts.github_read import (
@@ -272,6 +272,14 @@ class Live:
                     }
                 )
         return targets
+
+    def batch(self, repo, numbers):
+        if numbers:
+            github_pr_batch.try_batch(self.reader, repo, numbers[:20])
+        else:
+            self.reader.batch_responses.clear()
+            self.reader.batch_diagnostic={"used":False,"cost":0,"reason":"no author-allowed PRs"}
+        return self.reader.batch_diagnostic
 
     def get(self, path):
         return self.reader.get_json(path, step="enqueue_read")
@@ -593,6 +601,9 @@ def run_pass(io, args, emit, *, state=None):
                 )
             }
             candidates = []
+            if getattr(args, "batch_read", False):
+                diagnostic = io.batch(repo, [item["number"] for item in pulls if item["number"] in author_allowed])
+                emit("batch_read", {"repository": repo, **diagnostic})
             for listed in pulls:
                 if listed["number"] not in author_allowed:
                     continue
@@ -825,8 +836,11 @@ def main(argv=None):
     parser.add_argument("--interval", type=float, default=300)
     parser.add_argument("--deadline-seconds", type=float, default=1800)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--batch-read", action="store_true", help="Explicit cold/changed PR observer batch; default REST preserves idle 304 savings")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
+    if args.batch_read and not args.once:
+        parser.error("--batch-read requires --once; continuous observations retain conditional REST")
     if not args.owner or any(
         not REPO.fullmatch(repo)
         or repo.split("/")[0].casefold() != args.owner.casefold()
