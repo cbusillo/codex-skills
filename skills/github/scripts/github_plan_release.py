@@ -55,15 +55,43 @@ def stamp(value: Any) -> datetime:
     return parsed
 
 
-def source_record(source: dict[str, Any]) -> dict[str, str]:
+def source_record(source: dict[str, Any], *, legacy: bool = False,
+                  legacy_branch: str | None = None, legacy_reason: str | None = None) -> dict[str, str]:
     parsed = claim.records(source.get("body") or "")
+    if legacy:
+        # Only the old bare claim format lacks identity. Never reinterpret a
+        # structured, malformed structured, or session-bearing source as legacy.
+        text = re.sub(r"<!-- github-skill-operation:[^<>]* -->", "", source.get("body") or "").strip()
+        header = re.fullmatch(r"Claimed by ([^\s<>]+)", text)
+        if parsed or header is None:
+            raise ValueError("Legacy release requires a bare unstructured Claimed by worker comment")
+        if not legacy_branch or re.search(r"\s|[<>]", legacy_branch):
+            raise ValueError("Legacy release requires the verified original source branch")
+        if not isinstance(legacy_reason, str) or not legacy_reason.strip() or any(c in legacy_reason for c in "\n\r"):
+            raise ValueError("Legacy release requires why no native session ID exists")
+        return {"worker": header[1], "session": f"legacy-claim-{source['id']}",
+                "branch": legacy_branch, "claimed_at": source["created_at"],
+                "legacy_reason": legacy_reason}
+    if legacy_branch is not None or legacy_reason is not None:
+        raise ValueError("Legacy identity arguments require --legacy")
     if len(parsed) != 1:
         raise ValueError("Abandoned release requires one structured source claim")
     return parsed[0]
 
 
-def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutoff: datetime) -> None:
-    record = source_record(source)
+def record_from_receipt(source: dict[str, Any], record: dict[str, str]) -> dict[str, str]:
+    return source_record(source, legacy="legacy_reason" in record,
+                         legacy_branch=record.get("branch") if "legacy_reason" in record else None,
+                         legacy_reason=record.get("legacy_reason"))
+
+
+def evidence_header(source_id: int, record: dict[str, str]) -> str:
+    return f"Closed legacy claim {source_id}" if "legacy_reason" in record else f"Closed session {record['session']}"
+
+
+def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutoff: datetime,
+                   record: dict[str, str] | None = None) -> None:
+    record = record_from_receipt(source, record) if record is not None else source_record(source)
     source_at = stamp(source.get("updated_at") or source.get("created_at"))
     if max(source_at, stamp(record["claimed_at"])) >= cutoff:
         raise ValueError("Source claim changed after the cited session-ended evidence")
@@ -73,13 +101,19 @@ def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutof
         text = comment.get("body") or ""
         # Shared bot identity is not session identity. Only explicit ownership
         # activity can be attributed to this native session.
-        matching = any(r["session"] == record["session"] for r in claim.records(text))
-        matching |= bool(re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", text))
+        matching = any(r["session"] == record["session"] or
+                       ("legacy_reason" in record and r["worker"] == record["worker"])
+                       for r in claim.records(text))
+        if "legacy_reason" in record:
+            matching |= bool(re.match(rf"Claimed by:?\s+{re.escape(record['worker'])}(?:\s|$)",
+                                      claim.ownership_text(text, strip_quotes=False), re.IGNORECASE))
+        else:
+            matching |= bool(re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", text))
         if matching and stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
             raise ValueError("Source session shows ownership activity after the cited evidence")
 
 
-def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_pr=None, source_branch=None):
+def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_pr=None, source_branch=None, allow_closed_unmerged=False):
     """One retained-work guard shared by write preflight and read-only planning."""
     subject = subject_pr is not None and pull.get("number") == subject_pr
     if (not subject or (pull.get("head") or {}).get("ref") == source_branch) and stamp(head_commit["commit"]["committer"]["date"]) >= stamp(ended):
@@ -90,8 +124,15 @@ def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_
                        for side in ("head", "base"))):
             raise IssueReleaseRefusal("PR claim's work record must remain a same-repository open or closed PR")
         return
+    # A closed PR from an unrelated task can share a reused branch name.
+    # Its commit activity was checked above; it is not this claim's handoff.
+    if (allow_closed_unmerged and pull.get("state") == "closed"
+            and all(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() == repo.casefold()
+                    for side in ("head", "base"))
+            and not claim.pr_issue_reference(pull, number, repo=repo, attestation=True)):
+        return
     if ((pull.get("user") or {}).get("login") != actor
-            or pull.get("state") != "open" and not pull.get("merged_at")
+            or pull.get("state") != "open" and not pull.get("merged_at") and not (allow_closed_unmerged and pull.get("state") == "closed")
             or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold() for side in ("head", "base"))
             or not claim.pr_issue_reference(pull, number, repo=repo, attestation=True, record_kind="pr" if subject_pr is not None else "issue")):
         raise IssueReleaseRefusal("Retained PR must independently link the canonical issue and belong to the source automation identity")
@@ -102,8 +143,11 @@ def prepare_release(
     inventory: dict[str, Any], *, actor: str, role: str, releaser_session: str,
     evidence_url: str, retained_prs: list[str], related: list[dict[str, Any]],
     checked_prs: list[str] | None = None, retained_branches: set[str] | None = None,
+    legacy: bool = False, legacy_branch: str | None = None, legacy_reason: str | None = None,
 ) -> str:
-    record = source_record(source)
+    record = source_record(source, legacy=legacy, legacy_branch=legacy_branch, legacy_reason=legacy_reason)
+    if legacy and (related or retained_prs):
+        raise ValueError("Legacy releases do not support related releases or structured retained-PR handoffs")
     if not actor or (source.get("user") or {}).get("login") != actor:
         raise ValueError("Release must use the source claim's configured automation identity")
     if role not in {"supervisor", "direction"} or not releaser_session or releaser_session == record["session"]:
@@ -111,16 +155,22 @@ def prepare_release(
     if (evidence.get("user") or {}).get("login") != actor:
         raise ValueError("Session-ended evidence must be authored by the configured automation identity")
     text = evidence.get("body") or ""
-    if text.splitlines()[:1] != [f"Closed session {record['session']}"] or "Safe to exit: yes" not in text.splitlines():
+    if text.splitlines()[:1] != [evidence_header(source["id"], record)] or "Safe to exit: yes" not in text.splitlines():
         raise ValueError("Evidence must be a closed-session attestation naming the exact native session and Safe to exit: yes")
+    if legacy and (f"Worker: {record['worker']}" not in text.splitlines()
+                   or f"Source branch: {record['branch']}" not in text.splitlines()
+                   or f"Native session unavailable: {record['legacy_reason']}" not in text.splitlines()):
+        raise ValueError("Legacy attestation must verify the worker, source branch and missing native identity reason")
     ended = re.findall(r"(?m)^Ended at: (\S+)$", text)
     if len(ended) != 1:
         raise ValueError("Closed-session attestation must record the verified Ended at timestamp")
     cutoff = stamp(ended[0])
     if cutoff > stamp(evidence.get("created_at")):
         raise ValueError("Session-ended timestamp is newer than its attestation")
-    check_activity(comments, source, cutoff)
-    if any(s.get("sessionId") == record["session"] for s in inventory["sessions"]):
+    check_activity(comments, source, cutoff, record)
+    if any(s.get("sessionId") == record["session"] or
+           (legacy and any(s.get(k) == record["worker"] for k in ("sessionId", "name", "worker")))
+           for s in inventory["sessions"]):
         raise ValueError("Source session is still visible in the active native session inventory")
     retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] in {record["branch"], *(retained_branches or set())}}
     peers = [s for s in inventory["sessions"]
@@ -142,12 +192,14 @@ def prepare_release(
                "releaser_session": releaser_session, "retained_prs": retained_prs,
                "checked_prs": checked_prs or [],
                "related_ids": [c["id"] for c in related]}
+    identity = (f"legacy claim {source['id']}; native session unavailable: {record['legacy_reason']}"
+                if legacy else f"native session {record['session']}")
     return (f"Released claim {source['id']}\n\n"
-            f"Closed-session release by {role}; source worker {record['worker']}, native session {record['session']}.\n"
+            f"Closed-session release by {role}; source worker {record['worker']}, {identity}.\n"
             f"Session-ended evidence: {evidence_url}\n"
             "The caller verified the session ended; available native sessions and subsequent ownership activity were checked.\n"
             + ("Retained PR handoff: " + ", ".join(retained_prs) + "\n" if retained_prs else "")
-            + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True) + " -->")
+            + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
 
 
 def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:
@@ -167,6 +219,10 @@ def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:
                 or not isinstance(receipt["evidence_url"], str)
                 or not isinstance(receipt["checked_prs"], list)
                 or not all(isinstance(url, str) for url in receipt["checked_prs"])):
+            return None
+        if "legacy_reason" in receipt["source"] and (
+                not isinstance(receipt["source"]["legacy_reason"], str)
+                or not receipt["source"]["legacy_reason"].strip()):
             return None
         stamp(receipt["evidence_at"])
         stamp(receipt["evidence_updated_at"])
@@ -188,9 +244,14 @@ def without_release(comment: dict[str, Any]) -> dict[str, Any]:
 
 def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author: str) -> None:
     text = evidence.get("body") or ""
+    record = receipt["source"]
+    if "legacy_reason" in record and any(line not in text.splitlines() for line in (
+            f"Worker: {record['worker']}", f"Source branch: {record['branch']}",
+            f"Native session unavailable: {record['legacy_reason']}")):
+        raise ValueError("Legacy evidence no longer attests this source identity")
     ended = re.findall(r"(?m)^Ended at: (\S+)$", text)
     if ((evidence.get("user") or {}).get("login") != author
-            or text.splitlines()[:1] != [f"Closed session {receipt['source']['session']}"]
+            or text.splitlines()[:1] != [evidence_header(receipt["source_id"], receipt["source"])]
             or "Safe to exit: yes" not in text.splitlines()
             or len(ended) != 1 or stamp(ended[0]) != stamp(receipt["evidence_at"])
             or stamp(evidence.get("updated_at") or evidence.get("created_at")) != stamp(receipt["evidence_updated_at"])):
@@ -210,12 +271,12 @@ def effective_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if receipt is None:
                 raise ValueError("Invalid receipt")
             source = next((c for c in comments if c.get("id") == receipt["source_id"]), None)
-            if (source is None or source_record(source) != receipt["source"]
+            if (source is None or record_from_receipt(source, receipt["source"]) != receipt["source"]
                     or not (source.get("user") or {}).get("login")
                     or (source.get("user") or {}).get("login") != (comment.get("user") or {}).get("login")
                     or claim.released_claim_id(comment.get("body") or "") != source["id"]):
                 raise ValueError("Source no longer matches receipt")
-            check_activity(comments, source, stamp(receipt["evidence_at"]))
+            check_activity(comments, source, stamp(receipt["evidence_at"]), receipt["source"])
         except (KeyError, TypeError, ValueError):
             comment = without_release(comment)
         result.append(comment)

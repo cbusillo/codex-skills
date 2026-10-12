@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from argparse import Namespace
 from unittest.mock import patch
 import unittest
@@ -20,7 +22,7 @@ import github_plan_claim
 PLAN, CLAIM, BOT = fixtures.PLAN, fixtures.CLAIM, fixtures.TEST_BOT
 
 
-class ReleaseTests(unittest.TestCase):
+class ReleaseHarness(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.ClaimTests()
         self.f.setUp()
@@ -82,6 +84,9 @@ class ReleaseTests(unittest.TestCase):
             patch.object(github_comment, "comment", autospec=True, side_effect=self.post):
             PLAN.cmd_release_claim(self.args)
 
+
+
+class ReleaseTests(ReleaseHarness):
     def pr_setup(self):
         self.f.pr_fixture("dependabot[bot]")
         self.f.pulls[0]["head"]["sha"] = "a" * 40
@@ -507,6 +512,235 @@ class ReleaseTests(unittest.TestCase):
                 else:
                     with self.assertRaises(PLAN.PlanError): self.run_release()
                     self.f.assert_no_writes()
+
+
+class LegacyReleaseTests(ReleaseHarness):
+    def api(self, method, path, **kwargs):
+        if path.endswith('/pulls/99'):
+            return 'bot', copy.deepcopy(self.f.closed_pulls[99])
+        if path.endswith('/commits/historical-head'):
+            return 'bot', {'commit': {'committer': {'date': self.historical_commit_date}}}
+        return super().api(method, path, **kwargs)
+
+    def read_pages(self, path, **kwargs):
+        actor, items = self.original_read_pages(path, **kwargs)
+        if path.endswith('/pulls'):
+            query = kwargs.get('query') or {}
+            if query.get('head'):
+                branch = query['head'].split(':', 1)[1]
+                items = [p for p in items if p['head']['ref'] == branch]
+            if query.get('state') == 'open':
+                items = [p for p in items if p['state'] == 'open']
+        return actor, items
+
+    def legacy_setup(self, index=0):
+        self.setUp()
+        historical = json.loads(Path(__file__).with_name("fixtures").joinpath(
+            "codex-skills-828-legacy-claims.json").read_text())
+        source = historical[index]
+        self.original_read_pages = self.f.read_pages
+        self.f.read_pages = self.read_pages
+        self.f.comments = [self.comment(source["id"], source["body"], source["created_at"])]
+        self.args.claim_comment = source["id"]
+        self.args.legacy = True
+        self.args.legacy_branch = "work/go828-install-d0"
+        self.args.legacy_reason = "The original bare claim recorded no native session ID"
+        worker = source["body"].splitlines()[0].removeprefix("Claimed by ")
+        self.evidence["body"] = (
+            f"Closed legacy claim {source['id']}\nWorker: {worker}\n"
+            f"Source branch: {self.args.legacy_branch}\n"
+            f"Native session unavailable: {self.args.legacy_reason}\n"
+            "Ended at: 2026-10-02T00:00:00Z\nSafe to exit: yes\n"
+            "Supervisor verified closure from the handoff and checked all reachable hosts."
+        )
+        self.f.closed_pulls[99] = {"number": 99, "state": "closed", "merged_at": "2026-10-01T23:00:00Z",
+            "user": {"login": BOT}, "body": "Closes #42", "title": "Legacy task",
+            "head": {"ref": self.args.legacy_branch, "sha": "legacy-source-head", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}
+        self.f.pulls = [self.f.closed_pulls[99]]
+        self.historical_commit_date = '2026-10-01T20:00:00Z'
+        return historical, worker
+
+    def test_both_historical_claims_require_explicit_flag_and_release_only_exact_id(self):
+        for index in (0, 1):
+            with self.subTest(index=index):
+                historical, _ = self.legacy_setup(index)
+                self.args.legacy = False
+                with self.assertRaises(PLAN.PlanError): self.run_release()
+                self.f.assert_no_writes()
+                self.args.legacy = True
+                other = historical[1-index]
+                self.f.comments.append(self.comment(other['id'], other['body'], other['created_at']))
+                self.run_release()
+                effective = release.effective_comments(self.f.comments)
+                conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
+                self.assertEqual([c['id'] for c in conflicts], [other['id']])
+                receipt = release.receipt_for(self.f.comments[-1])
+                self.assertEqual(receipt['source']['legacy_reason'], self.args.legacy_reason)
+                # An ordinary successor needs no fabricated resume session.
+                self.f.comments.pop(-2)
+                with patch.object(self.f, "read_api", side_effect=self.api): self.f.run_claim()
+                self.assertTrue(self.f.emitted.call_args.args[0]['ok'])
+
+    def test_original_attestation_requires_replacement(self):
+        historical, _ = self.legacy_setup()
+        self.evidence['body'] = historical[2]['body']
+        with self.assertRaises(PLAN.PlanError): self.run_release()
+        self.f.assert_no_writes()
+
+    def test_legacy_cannot_reinterpret_structured_or_session_bearing_claim(self):
+        for body in (CLAIM.marker(fixtures.OTHER), "Claimed by trial-b\nSession: session-b",
+                     "Claimed by trial-b\n<!-- github-plan:claim broken -->", "> Claimed by trial-b"):
+            self.legacy_setup()
+            self.f.comments[0]['body'] = body
+            with self.assertRaises(PLAN.PlanError): self.run_release()
+            self.f.assert_no_writes()
+
+    def test_legacy_guards_refuse_before_writes(self):
+        for mode in ('branch', 'reason', 'worker', 'evidence_author', 'source_author', 'future',
+                     'unknown_end', 'unconfirmed', 'source_edit', 'renewed', 'structured_renewed',
+                     'live_peer', 'worker_visible', 'branch_activity', 'related', 'retained_pr', 'wrong_branch'):
+            with self.subTest(mode=mode):
+                _, worker = self.legacy_setup()
+                if mode == 'branch': self.args.legacy_branch = None
+                if mode == 'reason': self.args.legacy_reason = ''
+                if mode == 'worker': self.evidence['body'] = self.evidence['body'].replace(worker, 'another-worker')
+                if mode == 'evidence_author': self.evidence['user']['login'] = 'stranger'
+                if mode == 'source_author': self.f.comments[0]['user']['login'] = 'stranger'
+                if mode == 'future': self.evidence['body'] = self.evidence['body'].replace('2026-10-02T00:00:00Z', '2026-10-03T00:00:00Z')
+                if mode == 'unknown_end': self.evidence['body'] = self.evidence['body'].replace('2026-10-02T00:00:00Z', 'unknown')
+                if mode == 'unconfirmed': self.args.confirm_session_ended = False
+                if mode == 'source_edit': self.f.comments[0]['updated_at'] = '2026-10-04T00:00:00Z'
+                if mode == 'renewed': self.f.comments.append(self.comment(2, f'**Claimed by {worker}**', '2026-10-04T00:00:00Z'))
+                if mode == 'structured_renewed': self.f.comments.append(self.comment(2, CLAIM.marker({**fixtures.OTHER, 'worker': worker}), '2026-10-04T00:00:00Z'))
+                if mode == 'live_peer':
+                    self.f.inventory['worktrees'] = [{'branch': self.args.legacy_branch, 'path': '/legacy'}]
+                    self.f.inventory['sessions'] = [{'sessionId': 'peer', 'cwd': '/legacy/nested'}]
+                if mode == 'worker_visible': self.f.inventory['sessions'] = [{'sessionId': 'native-peer', 'name': worker, 'cwd': '/other'}]
+                if mode == 'branch_activity': self.source_branch_date = '2026-10-04T00:00:00Z'
+                if mode == 'related':
+                    self.f.comments.append(self.comment(2, f'Claimed by {worker}', '2026-10-01T02:00:00Z'))
+                    self.args.related_claim_comment = [2]
+                if mode == 'retained_pr': self.args.retained_pr = ['https://github.com/owner/repo/pull/99']
+                if mode == 'wrong_branch':
+                    self.evidence['body'] = self.evidence['body'].replace(self.args.legacy_branch, 'work/typo')
+                    self.args.legacy_branch = 'work/typo'
+                with self.assertRaises(PLAN.PlanError): self.run_release()
+                self.f.assert_no_writes()
+
+    def test_reused_legacy_worker_refuses_successor_before_posting(self):
+        for lower in (False, True):
+            with self.subTest(lower=lower):
+                _, worker = self.legacy_setup()
+                self.run_release()
+                posted = self.f.events.count('post')
+                self.f.args.worker = worker.lower() if lower else worker
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    with patch.object(self.f, 'read_api', side_effect=self.api): self.f.run_claim()
+                self.assertEqual(caught.exception.code, 'claim_conflict')
+                self.assertEqual(self.f.events.count('post'), posted)
+                self.assertTrue(CLAIM.released_claim_id(release.effective_comments(self.f.comments)[-1]['body']))
+
+    def test_legacy_pr_claim_refuses_before_writing(self):
+        self.legacy_setup()
+        self.f.issue['pull_request'] = {'url': 'https://api.github.com/repos/owner/repo/pulls/42'}
+        with self.assertRaises(PLAN.PlanError): self.run_release()
+        self.f.assert_no_writes()
+
+    def test_closed_unmerged_source_pr_still_checks_activity(self):
+        for renewed in (False, True):
+            with self.subTest(renewed=renewed):
+                self.legacy_setup()
+                self.f.pulls[0]['merged_at'] = None
+                if renewed: self.commit_date = '2026-10-04T00:00:00Z'
+                if renewed:
+                    with self.assertRaises(PLAN.PlanError): self.run_release()
+                    self.f.assert_no_writes()
+                else:
+                    self.run_release()
+                    self.assertTrue(self.f.emitted.call_args.args[0]['ok'])
+
+    def test_reused_branch_history_preserves_activity_and_open_work_guards(self):
+        for mode in ('closed_history', 'newer_history', 'open_unrelated'):
+            with self.subTest(mode=mode):
+                self.legacy_setup()
+                historical = copy.deepcopy(self.f.closed_pulls[99])
+                historical.update(number=100, body='Closes #999', title='Earlier unrelated task')
+                historical['head']['sha'] = 'historical-head'
+                self.f.pulls.append(historical)
+                if mode == 'newer_history': self.historical_commit_date = '2026-10-04T00:00:00Z'
+                if mode == 'open_unrelated': historical['state'] = 'open'
+                if mode == 'closed_history':
+                    self.run_release()
+                    self.assertTrue(self.f.emitted.call_args.args[0]['ok'])
+                else:
+                    with self.assertRaises(PLAN.PlanError): self.run_release()
+                    self.f.assert_no_writes()
+
+    def test_reason_with_arrow_remains_inside_parseable_receipt(self):
+        self.legacy_setup()
+        previous_reason = self.args.legacy_reason
+        self.args.legacy_reason += ' --> metadata absent'
+        self.evidence['body'] = self.evidence['body'].replace(previous_reason, self.args.legacy_reason)
+        self.run_release()
+        body = self.f.comments[-1]['body']
+        receipt_line = next(line for line in body.splitlines() if line.startswith('<!-- ' + release.RELEASE_MARKER))
+        self.assertEqual(receipt_line.count('-->'), 1)
+        self.assertEqual(release.receipt_for(self.f.comments[-1])['source']['legacy_reason'], self.args.legacy_reason)
+
+    def test_legacy_branch_proof_and_retained_activity_are_required(self):
+        for mode in ('missing_pr', 'foreign_pr', 'unlinked_pr', 'new_commit'):
+            with self.subTest(mode=mode):
+                self.legacy_setup()
+                if mode == 'missing_pr': self.f.pulls = []
+                if mode == 'foreign_pr': self.f.pulls[0]['user']['login'] = 'stranger'
+                if mode == 'unlinked_pr': self.f.pulls[0]['body'] = 'Unrelated task'
+                if mode == 'new_commit': self.commit_date = '2026-10-04T00:00:00Z'
+                with self.assertRaises(PLAN.PlanError): self.run_release()
+                self.f.assert_no_writes()
+
+    def test_legacy_receipt_invalidates_on_changed_source_or_evidence(self):
+        for mode in ('source', 'evidence', 'missing', 'renewed'):
+            self.legacy_setup()
+            self.run_release()
+            if mode == 'source': self.f.comments[0]['updated_at'] = '2026-10-04T00:00:00Z'
+            if mode == 'evidence': self.evidence['updated_at'] = '2026-10-04T00:00:00Z'
+            if mode == 'missing': self.evidence_failure = 404
+            if mode == 'renewed':
+                worker = self.f.comments[0]['body'].splitlines()[0].removeprefix('Claimed by ')
+                self.f.comments.append(self.comment(2, f'Claimed by {worker}', '2026-10-04T00:00:00Z'))
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                with patch.object(self.f, 'read_api', side_effect=self.api): self.f.run_claim()
+            self.assertEqual(caught.exception.code, "claim_conflict")
+
+    def test_legacy_post_write_race_preserves_receipt_and_reports_failure(self):
+        _, worker = self.legacy_setup()
+        self.race = lambda: self.f.comments.append(self.comment(2, f'Claimed by {worker}', '2026-10-04T00:00:00Z'))
+        with self.assertRaises(PLAN.PlanError) as caught: self.run_release()
+        self.assertIn('post_release', caught.exception.payload['completed_steps'])
+        self.assertEqual(self.f.events.count('post'), 1)
+
+    def test_malformed_legacy_receipt_cannot_poison_ownership_checks(self):
+        for reason in (1, ["missing"], {"why": "missing"}, None, ""):
+            with self.subTest(reason=reason):
+                self.legacy_setup()
+                self.run_release()
+                receipt = release.receipt_for(self.f.comments[-1])
+                receipt['source']['legacy_reason'] = reason
+                prefix = self.f.comments[-1]['body'].rsplit('<!-- ' + release.RELEASE_MARKER, 1)[0]
+                forged = self.comment(100, prefix + '<!-- ' + release.RELEASE_MARKER
+                    + json.dumps(receipt) + ' -->', '2026-10-03T00:00:00Z')
+                self.assertIsNone(release.receipt_for(forged))
+                effective = release.effective_comments([self.f.comments[0], forged])
+                conflicts, _ = CLAIM.discussion_evidence('', effective, fixtures.OWNER)
+                self.assertEqual([c['id'] for c in conflicts], [self.args.claim_comment])
+
+    def test_legacy_dry_run_does_not_write(self):
+        self.legacy_setup()
+        self.args.dry_run = True
+        self.run_release()
+        self.f.assert_no_writes()
+        self.assertEqual(CLAIM.released_claim_id(self.f.emitted.call_args.args[0]['release_body']), self.args.claim_comment)
 
 
 if __name__ == "__main__":

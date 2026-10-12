@@ -553,6 +553,13 @@ def discussion_evidence(
     from github_plan_release import effective_comments
     comments = effective_comments(comments)
     conflicts: list[dict[str, Any]] = []
+    # A legacy source has no native identity. Reusing its worker would look
+    # like renewal and invalidate the release after posting the successor.
+    from github_plan_release import receipts
+    for release_comment, receipt in receipts(comments):
+        if "legacy_reason" in receipt["source"] and re.fullmatch(re.escape(receipt["source"]["worker"]), claim["worker"], re.IGNORECASE):
+            conflicts.append({"source": "legacy_worker_reuse", "id": release_comment["id"],
+                              "worker": claim["worker"], "next_action": "Use a fresh worker token"})
     owned = []
     status = resumed_status(status, comments, resume_from)
     status_records = records(status)
