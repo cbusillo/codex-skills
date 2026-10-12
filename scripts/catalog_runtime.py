@@ -57,7 +57,7 @@ def checkout_state(root: Path) -> dict:
 
 def blocked_since(record: dict, now: dt.datetime) -> dt.datetime | None:
     """Older receipts establish only the last observed block, not its true onset."""
-    if record.get("state") != "blocked":
+    if record.get("checkout_state", record.get("state")) != "blocked":
         return None
     try:
         stamp = dt.datetime.fromisoformat(record.get("blocked_since") or record["checked_at"])
@@ -83,8 +83,43 @@ def blocked_notice(root: Path, state: dict, since: dt.datetime | None, now: dt.d
             "\nInspect and preserve the local work, resolve the blocker, then run scripts/catalog_runtime.py --update.")
 
 
-def status_line(root: Path) -> str:
-    """No network or writes at session start; task worktrees are not runtime installs."""
+def update_lock_path(root: Path) -> Path:
+    common = Path(git(root, "rev-parse", "--git-common-dir"))
+    return (common if common.is_absolute() else root / common) / "catalog-update.lock"
+
+
+def write_receipt(root: Path, record: dict) -> None:
+    receipt = root / ".local" / "catalog-update.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    staged = receipt.with_suffix(".tmp")
+    staged.write_text(json.dumps(record) + "\n")
+    staged.replace(receipt)
+
+
+def observe_checkout(root: Path, state: dict, now: dt.datetime) -> dict:
+    """Record startup observations without pretending to have checked origin."""
+    receipt = root / ".local" / "catalog-update.json"
+    with update_lock_path(root).open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # Atomic updater receipts remain readable; startup never waits or writes.
+            return json.loads(receipt.read_text()) if receipt.exists() else {}
+        record = json.loads(receipt.read_text()) if receipt.exists() else {}
+        if not isinstance(record, dict):
+            raise ValueError("invalid update receipt")
+        since = blocked_since(record, now)
+        record["checkout_state"] = state["state"]
+        if state["state"] == "blocked":
+            record["blocked_since"] = (since or now).isoformat()
+        else:
+            record.pop("blocked_since", None)
+        write_receipt(root, record)
+        return record
+
+
+def status_line(root: Path, *, observe: bool = False) -> str:
+    """No network; registered startup hooks opt into local age observations."""
     try:
         installation_path = root / ".local" / "catalog-install.json"
         if git(root, "rev-parse", "--git-dir") != git(root, "rev-parse", "--git-common-dir") and not installation_path.is_file():
@@ -95,15 +130,15 @@ def status_line(root: Path) -> str:
         scheduled = installation.get("scheduled_updater", False) and bool(installation.get("updater_plist")) and Path(installation["updater_plist"]).is_file()
         state = checkout_state(root)
         receipt = root / ".local" / "catalog-update.json"
+        now = dt.datetime.now(dt.timezone.utc)
         try:
-            recorded = json.loads(receipt.read_text()) if receipt.exists() else {}
+            recorded = observe_checkout(root, state, now) if observe else json.loads(receipt.read_text()) if receipt.exists() else {}
             if not isinstance(recorded, dict):
                 raise ValueError("invalid update receipt")
         except (OSError, ValueError):
             if state["state"] == "current":
                 raise
             recorded = {}
-        now = dt.datetime.now(dt.timezone.utc)
         warning = blocked_notice(root, state, blocked_since(recorded, now), now)
         if warning:
             return warning
@@ -112,7 +147,7 @@ def status_line(root: Path) -> str:
         if state["state"] == "current":
             stamp = installation.get("scheduled_at")
             if receipt.exists():
-                stamp = recorded["checked_at"]
+                stamp = recorded.get("checked_at", stamp)
                 if recorded.get("state") == "error":
                     step = recorded.get("failure_step", "catalog update")
                     recovery = "preview scripts/install-catalog.py --refresh-instructions, reconcile, then run scripts/catalog_runtime.py --update" if step == "instruction refresh" else "run scripts/catalog_runtime.py --update"
@@ -140,10 +175,7 @@ def status_line(root: Path) -> str:
 
 def update(root: Path) -> dict:
     """Serialize catalog updates; never switch, reset, stash, clean, or merge divergence."""
-    lock_path = Path(git(root, "rev-parse", "--git-common-dir"))
-    if not lock_path.is_absolute():
-        lock_path = root / lock_path
-    with (lock_path / "catalog-update.lock").open("a") as lock:
+    with update_lock_path(root).open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -185,6 +217,7 @@ def update(root: Path) -> dict:
             state = {"state": "error", "reason": str(error), "failure_step": failure_step}
         now = dt.datetime.now(dt.timezone.utc)
         state["checked_at"] = now.isoformat()
+        state["checkout_state"] = state["state"]
         receipt = root / ".local" / "catalog-update.json"
         if state["state"] == "blocked":
             try:
@@ -197,10 +230,7 @@ def update(root: Path) -> dict:
             warning = blocked_notice(root, state, since, now)
             if warning:
                 state["warning"] = warning
-        receipt.parent.mkdir(parents=True, exist_ok=True)
-        staged = receipt.with_suffix(".tmp")
-        staged.write_text(json.dumps(state) + "\n")
-        staged.replace(receipt)
+        write_receipt(root, state)
         return state
 
 

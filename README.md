@@ -132,7 +132,10 @@ notices name dirty paths. After a checkout has been observed blocked for at
 least 24 hours, the same startup notice becomes a multi-line warning naming
 the checkout, blocking paths and time since the first recorded observation. Scheduled and manual
 updater output records that warning in its existing JSON receipt and stderr
-log too. Path lists are capped, with an omitted count for large directories.
+log too. The registered startup hook records observations in the same local
+receipt even without a scheduled updater, without claiming an origin check or
+changing its timestamp. The standalone status reader remains read-only. Path
+lists are capped, with an omitted count for large directories.
 The first observed blocked time survives repeated blocked checks, including
 changes to the blocking paths; a successful check clears it. Recovery
 between checks cannot be inferred. Inspect and preserve the reported local work, resolve the

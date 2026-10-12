@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import fcntl
 import importlib.util
 import io
 import json
@@ -1328,6 +1329,45 @@ class UpdateTests(unittest.TestCase):
                 line = runtime.status_line(self.checkout)
                 self.assertTrue(line)
                 self.assertIn(line, result.stdout)
+
+    def test_startup_only_observations_escalate_and_clear_without_faking_updater_checks(self):
+        (self.checkout / "source").write_text("Local change")
+        start = dt.datetime.now(dt.timezone.utc) - runtime.BLOCKED_NOTICE_AFTER
+        with mock.patch.object(runtime.dt, "datetime", wraps=dt.datetime) as clock:
+            clock.now.return_value = start
+            first = runtime.status_line(self.checkout, observe=True)
+        self.assertEqual(len(first.splitlines()), 1)
+        receipt = self.checkout / ".local" / "catalog-update.json"
+        record = json.loads(receipt.read_text())
+        self.assertEqual(record["blocked_since"], start.isoformat())
+        self.assertNotIn("checked_at", record)
+        self.assertGreater(len(runtime.status_line(self.checkout, observe=True).splitlines()), 1)
+        (self.checkout / "source").write_text("one")
+        self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+        self.assertNotIn("blocked_since", json.loads(receipt.read_text()))
+        (self.checkout / "source").write_text("Another change")
+        self.assertEqual(len(runtime.status_line(self.checkout, observe=True).splitlines()), 1)
+        self.assertNotEqual(json.loads(receipt.read_text())["blocked_since"], start.isoformat())
+
+    def test_startup_observation_preserves_overdue_schedule_and_does_not_race_update_lock(self):
+        local = self.checkout / ".local"
+        local.mkdir()
+        job = self.base / "job.plist"
+        job.write_text("fixture")
+        stamp = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).isoformat()
+        (local / "catalog-install.json").write_text(json.dumps({"scheduled_updater": True, "updater_plist": str(job), "scheduled_at": stamp}))
+        self.assertIn("Catalog stale", runtime.status_line(self.checkout, observe=True))
+        receipt = local / "catalog-update.json"
+        record = {"state": "current", "checked_at": stamp}
+        receipt.write_text(json.dumps(record))
+        self.assertIn("Catalog stale", runtime.status_line(self.checkout, observe=True))
+        self.assertEqual(json.loads(receipt.read_text())["checked_at"], stamp)
+        before = receipt.read_bytes()
+        (self.checkout / "source").write_text("Local change")
+        with runtime.update_lock_path(self.checkout).open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertIn("source", runtime.status_line(self.checkout, observe=True))
+        self.assertEqual(receipt.read_bytes(), before)
 
     def test_installed_update_refreshes_instructions_and_exposes_new_skill(self):
         source = Path(__file__).resolve().parent
