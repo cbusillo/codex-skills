@@ -5137,16 +5137,58 @@ def summarize_product_secret_bindings_read(
     return payload
 
 
+def _project_target_replacement_recovery(value: object) -> dict[str, object] | None:
+    """Validate the service's TestingReplacementRecoveryRead, including exclude_none serialization."""
+    if value is None:
+        return None
+    source = _require_dict(value)
+    nullable = {"attempt_matches", "binding_matches", "effects_acknowledged"}
+    codes = {
+        "status": {"refused", "eligible"},
+        "reason": {
+            "", "recovery_scope_unsupported", "recovery_operation_not_held",
+            "recovery_execution_exclusion_unavailable", "recovery_operation_changed",
+            "recovery_authorization_changed", "recovery_journal_absent",
+            "recovery_attempt_changed", "recovery_binding_changed",
+            "recovery_dispatch_unacknowledged", "recovery_effect_unsupported",
+            "recovery_inspection_before_fence", "recovery_provider_evidence_incomplete",
+            "recovery_operation_or_binding_changed", "recovery_evidence_unavailable",
+        },
+        "journal": {"present", "absent", "unknown"},
+        "provider_effects": {"unknown", "quiescent_observed"},
+    }
+    required = {*codes, "effect_count", "provider_inspected", "safe_to_release"}
+    if not required <= source.keys() or source.keys() - required - nullable:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    for name, allowed in codes.items():
+        if not isinstance(source[name], str) or source[name] not in allowed:
+            raise LaunchplaneSafetyError("invalid_response")
+    for name in nullable:
+        if source.get(name) is not None and type(source[name]) is not bool:
+            raise LaunchplaneSafetyError("invalid_response")
+    count = source["effect_count"]
+    if type(count) is not int or count < 0:
+        raise LaunchplaneSafetyError("invalid_response")
+    if type(source["provider_inspected"]) is not bool or source["safe_to_release"] is not False:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected = {**source, **{name: source.get(name) for name in nullable}}
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def summarize_target_replacement_operation_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "operation", "result"} for key in provider_payload):
+    if any(str(key) not in {"status", "trace_id", "operation", "result", "recovery"} for key in provider_payload):
         raise LaunchplaneSafetyError("unsafe_response_shape")
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="target-replacement-operation-read", request=request
     )
-    payload["result"] = _project_target_replacement_operation(provider_payload)
+    result = _project_target_replacement_operation(provider_payload)
+    if "recovery" in provider_payload:
+        result["recovery"] = _project_target_replacement_recovery(provider_payload["recovery"])
+    payload["result"] = result
     payload["summary"] = {
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),

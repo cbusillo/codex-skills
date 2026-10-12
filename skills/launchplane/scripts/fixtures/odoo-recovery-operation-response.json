@@ -1,0 +1,26 @@
+{
+  "status": "ok",
+  "trace_id": "launchplane_req_example_recovery",
+  "operation": {
+    "status": "reconciliation_required",
+    "phase": "running",
+    "attempt": 1,
+    "error_code": "operation_reconciliation_required",
+    "error_description": "Recovery: recovery_journal_absent. Journal: absent. Provider effects: unknown. The operation fence is retained; this read changes nothing.",
+    "error_detail_keys": [],
+    "operation_id": "odoo-target-replacement-example-testing-20261011T203748Z-example",
+    "product": "example-product",
+    "context": "example",
+    "instance": "testing",
+    "free_text_omitted": true
+  },
+  "recovery": {
+    "status": "refused",
+    "reason": "recovery_journal_absent",
+    "journal": "absent",
+    "effect_count": 0,
+    "provider_effects": "unknown",
+    "provider_inspected": false,
+    "safe_to_release": false
+  }
+}

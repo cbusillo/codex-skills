@@ -1137,6 +1137,11 @@ verification.
   product `launchplane` for the operation's context and instance, or
   `odoo_target_replacement_apply.execute` on the operation's own product,
   context and instance.
+  When supplied by the service, `result.recovery` retains its closed,
+  value-free recovery classification; see the
+  [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
+  Omitted nullable agreement fields remain unknown. Journal absence or zero
+  journaled effects never proves absent provider effects or safe release.
 - `POST /v1/drivers/odoo/target-replacement-plan`: Bounded local-extension
   read (`target-replacement-plan-read --product --instance`) for what an Odoo
   target replacement on that lane would do, before any apply. The route builds
