@@ -1,6 +1,6 @@
 ---
 name: supervisor
-description: Use when the Director asks a session to supervise other agent sessions for a night or a stretch of work, or to take over from a Supervisor handoff. The Supervisor briefs one session per item and repository, runs a check about every 23 minutes, records the Director's decisions on each item's issue, routes landings through the merge train, and hands off with the list of what needs the Director. Not for doing the item's work itself (each session's executing loop), for judging the runs it launched (direction, on another model), or for watching a single PR (babysit-pr).
+description: Use when the Director asks a session to supervise other agent sessions for a night or a stretch of work, or to take over from a Supervisor handoff. The Supervisor groups related items into sessions within one repository, runs a check about every 23 minutes, records the Director's decisions on each item's issue, routes landings through the merge train, and hands off with the list of what needs the Director. Not for doing the item's work itself (each session's executing loop), for judging the runs it launched (direction, on another model), or for watching a single PR (babysit-pr).
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
@@ -210,11 +210,19 @@ records that run.
 
 ## The Pattern
 
-1. **One brief per session and repository.** The brief says what the session
-   may do, where it stops, and where it asks. Never widen a brief after
-   launch. Write it from the decision record, quoting the Director's words,
-   never from a PR's wording. When a request names a visual thing, check which
-   one before writing the brief. A session that needs more scope gets a Director
+1. **One brief per session and repository.** Before launch, group items that
+   share a subsystem and kind of work into one session and one PR, so they
+   share context and avoid conflicting edits. Link the items as native
+   sub-issues of a parent issue under `github-plan`; the executing session
+   claims that parent with `gh-plan.py claim` before creating its worktree.
+   Keep sessions separate for different repositories, different risk or
+   approval levels (production data, credentials, recovery), and truly
+   independent work where parallel wall-clock time matters.
+   The brief says what the session may do, where it stops, and where it asks.
+   Never widen a brief after launch. Write it from the decision record,
+   quoting the Director's words, never from a PR's wording. When a request
+   names a visual thing, check which one before writing the brief. A session
+   that needs more scope gets a Director
    question. If the
    Director says yes, the wider scope goes in a new brief for a fresh
    session; the running session's brief stays as it was. Every brief carries
