@@ -1514,12 +1514,13 @@ def _project_controller_last_result(value: object) -> dict[str, object]:
         "source_failed_record_id", "candidate_sha", "observed_candidate_sha", "base_sha",
         "check_retry_of", "infrastructure_retry_of", "batch_body_retry_of", "semantic_progress_at",
     }
+    optional_identifiers = {"candidate_batch_id", "recovery_kind"}
     fields = identifiers | {"candidate_checks_status", "base_checks_status", "reconciliation_required", "next_actor", "next_observation"}
-    if set(source) != fields:
+    if set(source) - (fields | optional_identifiers) or fields - set(source):
         raise LaunchplaneSafetyError("invalid_response")
     assert_public_safe_shape(source)
     projected: dict[str, object] = {}
-    for key in identifiers:
+    for key in identifiers | (optional_identifiers & source.keys()):
         item = source[key]
         if not isinstance(item, str) or len(item) > 256:
             raise LaunchplaneSafetyError("invalid_response")

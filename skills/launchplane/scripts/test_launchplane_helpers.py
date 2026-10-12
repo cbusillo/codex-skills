@@ -1266,6 +1266,7 @@ def _controller_last_result_fixture() -> dict[str, object]:
         "observed_at": "2026-10-12T18:00:10Z", "trace_id": "launchplane_req_example",
         "action": "candidate_failed", "reason_code": "candidate_check_retry_used",
         "record_id": "failed-record", "source_failed_record_id": "source-record",
+        "candidate_batch_id": "replacement-batch", "recovery_kind": "candidate_checks_recovered",
         "candidate_sha": "b" * 40, "observed_candidate_sha": "b" * 40, "base_sha": "c" * 40,
         "candidate_checks_status": "pass", "base_checks_status": "not_observed",
         "check_retry_of": "source-record", "infrastructure_retry_of": "", "batch_body_retry_of": "",
