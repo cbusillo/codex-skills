@@ -518,6 +518,8 @@ class LegacyReleaseTests(ReleaseHarness):
     def api(self, method, path, **kwargs):
         if path.endswith('/pulls/99'):
             return 'bot', copy.deepcopy(self.f.closed_pulls[99])
+        if path.endswith('/commits/historical-head'):
+            return 'bot', {'commit': {'committer': {'date': self.historical_commit_date}}}
         return super().api(method, path, **kwargs)
 
     def read_pages(self, path, **kwargs):
@@ -556,6 +558,7 @@ class LegacyReleaseTests(ReleaseHarness):
             "head": {"ref": self.args.legacy_branch, "sha": "historical-head", "repo": {"full_name": "owner/repo"}},
             "base": {"repo": {"full_name": "owner/repo"}}}
         self.f.pulls = [self.f.closed_pulls[99]]
+        self.historical_commit_date = '2026-10-01T20:00:00Z'
         return historical, worker
 
     def test_both_historical_claims_require_explicit_flag_and_release_only_exact_id(self):
@@ -657,6 +660,23 @@ class LegacyReleaseTests(ReleaseHarness):
                     self.run_release()
                     self.assertTrue(self.f.emitted.call_args.args[0]['ok'])
 
+    def test_reused_branch_history_preserves_activity_and_open_work_guards(self):
+        for mode in ('closed_history', 'newer_history', 'open_unrelated'):
+            with self.subTest(mode=mode):
+                self.legacy_setup()
+                historical = copy.deepcopy(self.f.closed_pulls[99])
+                historical.update(number=100, body='Closes #999', title='Earlier unrelated task')
+                historical['head']['sha'] = 'historical-head'
+                self.f.pulls.append(historical)
+                if mode == 'newer_history': self.historical_commit_date = '2026-10-04T00:00:00Z'
+                if mode == 'open_unrelated': historical['state'] = 'open'
+                if mode == 'closed_history':
+                    self.run_release()
+                    self.assertTrue(self.f.emitted.call_args.args[0]['ok'])
+                else:
+                    with self.assertRaises(PLAN.PlanError): self.run_release()
+                    self.f.assert_no_writes()
+
     def test_reason_with_arrow_remains_inside_parseable_receipt(self):
         self.legacy_setup()
         previous_reason = self.args.legacy_reason
@@ -707,8 +727,9 @@ class LegacyReleaseTests(ReleaseHarness):
                 self.run_release()
                 receipt = release.receipt_for(self.f.comments[-1])
                 receipt['source']['legacy_reason'] = reason
-                forged = self.comment(100, 'Released claim ' + str(self.args.claim_comment) + '\n\n<!-- '
-                    + release.RELEASE_MARKER + json.dumps(receipt) + ' -->', '2026-10-03T00:00:00Z')
+                prefix = self.f.comments[-1]['body'].rsplit('<!-- ' + release.RELEASE_MARKER, 1)[0]
+                forged = self.comment(100, prefix + '<!-- ' + release.RELEASE_MARKER
+                    + json.dumps(receipt) + ' -->', '2026-10-03T00:00:00Z')
                 self.assertIsNone(release.receipt_for(forged))
                 effective = release.effective_comments([self.f.comments[0], forged])
                 conflicts, _ = CLAIM.discussion_evidence('', effective, fixtures.OWNER)

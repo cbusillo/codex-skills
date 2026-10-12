@@ -124,6 +124,13 @@ def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_
                        for side in ("head", "base"))):
             raise IssueReleaseRefusal("PR claim's work record must remain a same-repository open or closed PR")
         return
+    # A closed PR from an unrelated task can share a reused branch name.
+    # Its commit activity was checked above; it is not this claim's handoff.
+    if (allow_closed_unmerged and pull.get("state") == "closed"
+            and all(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() == repo.casefold()
+                    for side in ("head", "base"))
+            and not claim.pr_issue_reference(pull, number, repo=repo, attestation=True)):
+        return
     if ((pull.get("user") or {}).get("login") != actor
             or pull.get("state") != "open" and not pull.get("merged_at") and not (allow_closed_unmerged and pull.get("state") == "closed")
             or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold() for side in ("head", "base"))
