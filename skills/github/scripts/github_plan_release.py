@@ -193,7 +193,7 @@ def prepare_release(
                "checked_prs": checked_prs or [],
                "related_ids": [c["id"] for c in related]}
     return (f"Released claim {source['id']}\n\n"
-            f"The {role} takes the next action on the work record; nothing needed from you.\n"
+            f"The {role} reconciles the next action on the work record.\n"
             f"[Session-ended evidence]({evidence_url})\n"
             + ("Retained PR handoff: " + ", ".join(retained_prs) + "\n" if retained_prs else "")
             + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
