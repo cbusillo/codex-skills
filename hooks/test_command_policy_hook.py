@@ -105,6 +105,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             "cliclick -f - <<'INPUT'\nt:path\nkp:return\nINPUT",
             "python3 -I -W ignore - <<'PY' 2>/dev/null\nimport pyautogui\npyautogui.press('enter')\nPY",
             "osascript -l AppleScript <<-'APPLESCRIPT'\n\t" + apple.replace("\n", "\n\t") + "\n\tAPPLESCRIPT",
+            "osascript <<EOF; cat <<EOF\ntell application \"System Events\" to key code 36\nEOF\nget 42\nEOF",
+            "cat <<EOF; osascript <<EOF\nget 42\nEOF\ntell application \"System Events\" to key code 36\nEOF",
         )
         for command in commands:
             with self.subTest(command=command):
@@ -167,6 +169,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             "python3 -Ic 'print(42)' <<'DOC'\npyautogui.press('enter')\nDOC",
             "python3 -I -X dev format_notes.py <<'DOC'\npyautogui.press('enter')\nDOC",
             "cat <<'DOC'; python3 - <<'PY'\npyautogui.press('enter')\nDOC\nprint(42)\nPY",
+            "cat <<EOF; python3 - <<EOF\npyautogui.press('enter')\nEOF\nprint(42)\nEOF",
             "python3 - <<'PY'\nprint('osascript keystroke path')\nPY",
         ):
             with self.subTest(command=command):

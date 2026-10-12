@@ -125,7 +125,7 @@ class ShellScript:
     """Separate what a shell line runs from the heredoc data it carries.
 
     `text` is the line with every heredoc body removed. `bodies` holds each
-    body, whether the shell expands it (an unquoted delimiter), its command header and delimiter.
+    body, whether the shell expands it (an unquoted delimiter), its header, delimiter and redirection occurrence.
     `substitutions` holds the source of each `$(...)` and backtick command
     substitution outside single quotes, including inside double quotes, where
     the lexer keeps it as one data token although it runs. With `expanding`,
@@ -137,7 +137,7 @@ class ShellScript:
     def __init__(self, shell: str, expanding: bool = False) -> None:
         self.shell = shell
         self.text_parts: list[str] = []
-        self.bodies: list[tuple[str, bool, str, str]] = []
+        self.bodies: list[tuple[str, bool, str, str, int]] = []
         self.substitutions: list[str] = []
         self.pending: list[tuple[str, bool, bool]] = []
         # Open contexts, innermost last: "(" for a subshell or `$(`, "((" for
@@ -250,7 +250,7 @@ class ShellScript:
         shell = self.shell
         cursor = self.index
         header = self.text
-        for delimiter, strip_tabs, expands in self.pending:
+        for position, (delimiter, strip_tabs, expands) in enumerate(self.pending):
             body: list[str] = []
             while cursor < len(shell):
                 end = shell.find("\n", cursor)
@@ -260,7 +260,8 @@ class ShellScript:
                 if (line.lstrip("\t") if strip_tabs else line) == delimiter:
                     break
                 body.append(line)
-            self.bodies.append(("\n".join(body), expands, header, delimiter))
+            occurrence = -sum(entry[0] == delimiter for entry in self.pending[position:])
+            self.bodies.append(("\n".join(body), expands, header, delimiter, occurrence))
         self.pending = []
         self.index = min(cursor, len(shell))
 
@@ -318,7 +319,7 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
     return True
 
 
-def heredoc_script_readers(header: str, delimiter: str) -> list[list[str]]:
+def heredoc_script_readers(header: str, delimiter: str, occurrence: int) -> list[list[str]]:
     """Find the heredoc's consumer and downstream pipe readers, never neighboring commands."""
     try:
         tokens = shell_tokens(header)
@@ -329,9 +330,9 @@ def heredoc_script_readers(header: str, delimiter: str) -> list[list[str]]:
         and (tokens[index + 1] in {delimiter, "-" + delimiter}
              or tokens[index + 1:index + 3] == ["-", delimiter])
     ]
-    if not markers:
+    if len(markers) < -occurrence:
         return []
-    marker = markers[-1]
+    marker = markers[occurrence]
     start = max((index + 1 for index in range(marker) if OPERATORS.match(tokens[index])), default=0)
     end = next((index for index in range(marker + 1, len(tokens))
                 if OPERATORS.match(tokens[index]) and tokens[index] not in {"|", "|&"}), len(tokens))
@@ -361,10 +362,10 @@ def simple_commands(shell: str) -> list[list[str]]:
         unwrapped.extend(unwrap(argv))
     unwrapped.extend(nested_commands(script.substitutions))
     shell_reads_bodies = any(reads_script_from_input(argv) for argv in unwrapped)
-    for body, expands, header, delimiter in script.bodies:
+    for body, expands, header, delimiter, occurrence in script.bodies:
         # Language payloads are arguments to their interpreter, not shell
         # commands. Preserve them for regex policies (also for a cat pipeline).
-        script_readers = heredoc_script_readers(header, delimiter)
+        script_readers = heredoc_script_readers(header, delimiter, occurrence)
         unwrapped.extend([*argv, body] for argv in script_readers)
         if shell_reads_bodies:
             unwrapped.extend(nested_commands([body]))
