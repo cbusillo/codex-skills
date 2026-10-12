@@ -668,16 +668,66 @@ assignment.
 Claim the exact branch that the worktree helper will create. For
 `dev-worktree <repo> <task-slug> <start>`, that is `work/<task-slug>`.
 Verify holds and recorded waits under Choose Work before invoking claim.
-For a recorded wait or parked/blocked/stale/done state, pass
+Claim preflight reads waits and holds only from native `blocked-by` links,
+status labels and the machine-readable `github-plan:wait` record. Current
+Status and ordinary comment prose are recovery evidence, never wait or executing-worker
+authority. Structured claim/release records and independent branch, PR,
+worktree and live-session checks still refuse competing work. Historical
+`Claimed by` directives remain legacy claim records under the existing guarded
+release path; arbitrary status prose does not become a legacy claim.
+
+Before the first claim of a legacy issue or PR, read its full body/discussion
+and run `gh-plan.py wait <issue>` for the one-time review report. Record every
+actual person, decision, external-event or prose-only executing-session hold:
+
+```bash
+uv run scripts/gh-plan.py wait 123 \
+  --waiting-for "Director's device test" \
+  --ends-when "Director records acceptance on this issue" \
+  --evidence "Existing test request comment URL"
+```
+
+Repeat `--waiting-for` and `--ends-when` in matching order when several holds
+remain. To record verified absence or a resolved hold, use
+`wait 123 --clear --evidence "Full issue/discussion reviewed; existing release evidence ..."`.
+These replace the whole wait record, so preserve every unresolved hold in the
+replacement. They post and read back an authored structured comment without
+replacing anyone's prose or changing labels. Keep labels current separately
+under [Status Labels](../../github-plan/SKILL.md#status-labels). Native open
+blockers remain independent and cannot be cleared by a wait record.
+
+`wait --all` reads every open issue and its complete discussion in the explicit
+repository, then lists records needing review. It performs no writes and
+never guesses that a prose-only wait ended. Missing records, malformed records
+and conflicting records remain review work before the next claim; they are
+not silently interpreted as clear. A single-record report includes the full
+legacy evidence; a repository report links each record for that review.
+
+Only records authored by the configured automation identities or the
+repository owner are authoritative. A later authorized record comment replaces
+the earlier record; ordinary prose updates and foreign comments cannot erase
+it. A creation-time body record is used until the first authorized record
+comment. Quoted, fenced and raw-HTML examples are not records.
+
+For new issues, `create --wait-clear --wait-evidence "Reviewed request; no holds"`
+records absence at creation; `create --waiting-for ... --ends-when ...
+--wait-evidence ...` records every actual hold. Without either choice, the new
+issue needs the same one-time review before its first claim. Current Status
+edits do not maintain waits: use `wait` when a hold begins or ends.
+
+For a recorded wait or parked/blocked/stale/done label, pass
 `--wait-resolved "<existing resolution evidence>"` only after verifying its
-condition or a recorded Director release. Explicit no-wait fields can include
-plain explanations, such as `No native issue blocker recorded for this source
-task` or `None; an executing agent acts next`. Explanations containing wait or
-hold words still require resolution evidence. Without that evidence the command refuses
-before writing. It records the resolution in the claim comment and returns
-the previous Current Status for recovery without copying it into the comment.
-Claim and this
-argument grant no Director decision or permission to lift a repository hold.
+condition or a recorded Director release. The same argument can record a
+legacy review's verified absence on the claim itself. It grants no permission
+to clear a Director/repository hold and must account for the full record.
+Ordinary retained-work successor claims preserve the issue and retained PR
+wait records; scoped prerequisite authority never clears those product holds.
+Conflict-refresh and ordinary resolved claims record their evidenced absence
+for that step. New wait records on readback stop the claim even with earlier
+resolution evidence. Every route independently rechecks native blockers and
+real competing claims.
+The helper returns previous Current Status in the recovery result; it links
+the work record without copying that history into the claim comment.
 
 When the overall direction's Order admits the work, name the rule with
 `--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
@@ -706,78 +756,13 @@ competing evidence. Age never expires a claim. Do not bypass a refusal by
 changing the worker, tool, or identity; ask the Director about ambiguous ownership
 and continue independent work.
 
-Unstructured Current Status ownership evidence remains fail-closed for `Owned by`,
-`Claimed by`, and worker/session fields, including informal prose and Markdown.
-Human ownership prose is normalized before classification: inline code,
-emphasis, link labels and block quotes retain their text without formatting.
-Quoted hard wraps preserve qualifiers, fields and paragraph boundaries. Claim
-markers, exact-ID release directives and recorded intent/history provenance
-continue to use their exact source forms. Legacy `Released by` keeps its exact
-prefix; its formatted holder token is normalized for legacy claims, including
-the reused-worker session check across structured and older hand-written claim
-records. Distinct sessions, or a missing/recognized placeholder identity beside
-another claim, require authored exact-comment-ID releases; repeated records of the same session
-retain the bare legacy release route. Formatted aliases do not release structured
-records by alias.
-Code-span contents remain literal, unresolved reference-link text remains
-visible, and a quoted legacy claim header in a comment does not claim the
-issue on behalf of the quoting author.
-Recognized responsibility sentences start a line with entries, records, or
-resources, optionally prefixed by `Remaining`, a two-group count, or `provider-only`.
-`After these proposals,` may precede that resource subject. They assign one actor
-for evidence and another for disposition approval; these are not worker claims.
-Other resource-prose shapes remain ambiguous and refuse conservatively.
-Explicit ownership denials such as `not claimed by`, `no implementation
-ownership is claimed by`, and an empty holder (`Claimed by no one`,
-`Worker: None`, `Session: unassigned`) do not assert an executing worker.
-Denials apply only to their own assertion; conditional, contrastive, or
-unknown-holder statements and trailing handoff/work narrative remain ambiguous.
-Single newlines inside prose do not end its ownership context; fields, claim
-headers, list items and paragraph boundaries stay separate, and dots inside identity tokens
-do not hide later qualifiers.
-Non-ownership prose such as
-`no claims` or `releases claim` never releases an existing claim: only the
-authored release forms below do that.
-Other ownership assertions in the same status, structured claims, and unreleased
-claim comments still refuse independently, including a second holder beside
-the caller's own marker or complete legacy identity.
-When its status carries the caller's matching marker, the helper recognizes
-only exact `Next action:` and `Wait resolution:` lines copied from that claim's
-comment as intent or history, rather than a new ownership assertion.
-Keep generated identity lines exact when editing an owned status; altered
-ownership or intent prose is rechecked conservatively on recovery.
-
-An explanatory note beginning `Claimed by WORKER; structured claim #ID was
-confirmed and read back.` is accounted for by that exact source's authored
-release only when author, session and timestamps agree. A reused worker across
-native sessions, an edited note after release, or another ownership assertion
-still refuses; there is no worker-alias release. A closed-session release also
-requires the note and its last edit to precede the attested session end. The compound field
-`Session: WORKER / SESSION; executing claim released in the closeout comment.`
-likewise needs the matching structured claim and timestamp-proved exact-ID
-release, as does a `Completed`, `Released`, `Previous`, `Prior`, `Former` or
-`Ended session:` field naming only that released session and optionally its own
-worker. The historical field may append `. Claim ID is released in this session's
-handoff comment.` only when ID names that same timestamp-proved released source;
-the explanation itself supplies no release proof. A worker token shared by
-another session's claim, or any other text in the field, keeps it ambiguous.
-Live source sessions are checked again on claim readback whenever that
-historical field is removed. A visible live source session still refuses, and retained artifacts
-keep their independent checks. A quoted replaced `Session:` field in the
-specific stale-field correction sentence is history; other current or uncertain
-holder prose is checked independently. A `Blocked by:` GitHub issue URL followed
-by `(actively owned by WORKER)` identifies that linked issue's holder only when
-its repository/number differs from both the requested issue and its canonical
-GitHub issue URL. Likewise, a clause whose subject is another issue's
-reference (`#N`, `OWNER/REPO#N` or its issue URL) in the narrow shape
-`REF [Q151] [was approved today and] is owned by WORKER`, with that one holder
-ending the clause, names that issue's holder, such as `#3314 Q151 was approved
-today and is owned by LP-3314-D1;`. Missing issue identity,
-same-issue ownership, any other wording before the holder (a possessive,
-punctuation, another subject) and additional holders remain ambiguous. These exclusions
-do not resolve waits, native blockers or competing comments. Retained-PR status
-ownership remains conservative during refresh; all status-history exclusions apply
-only to the issue's own status.
+Legacy `Claimed by` comment directives remain fail-closed until an authored
+exact-ID release or the supported legacy release path accounts for them.
+A formatted holder token retains its identity. Reused worker tokens across
+sessions require exact-ID release; a worker alias cannot release structured
+claims. An earlier same-worker explanatory claim note is accounted for only
+by its timestamp-proved, exact source release. See the abandoned-claim section
+below for #1737's guarded recovery. Q219 does not change that release path.
 
 An issue URL in a PR body is context alone. Title or branch ownership,
 implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, `Implements`,
