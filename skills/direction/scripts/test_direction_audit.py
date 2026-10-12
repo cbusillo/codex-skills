@@ -1199,6 +1199,8 @@ def test_label_only_and_explicit_none_are_complete_declarations() -> None:
         "Own projects: by the own-project label only (including work in `infra`).",
         "Own projects: the `own-project` label only (including work in `infra`).",
         "Own projects: issues with the own-project label only (including work in `infra`).",
+        "Own projects: issues with the `own-project` label in `infra`.",
+        "Own projects use the own-project label: personal infrastructure work.",
         "Own projects: pull requests with the `own-project` label in `infra`.",
         "Own projects are pull requests marked with the own-project label.",
         "Own projects: none.",

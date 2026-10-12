@@ -1125,20 +1125,29 @@ def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[s
             return []
         raise AuditError("Order own-project list is missing")
     listing = declaration.split(":", 1)[1].split("This list", 1)[0]
-    if label_declaration:
-        first_clause = re.split(r";|\.\s", listing, maxsplit=1)[0]
-        label_mode = (re.search(r"(?i)\blabel(?:s|led|ed)?\s+only\b|\bonly\b[^.;]*\blabel(?:s|led|ed)?\b", first_clause)
-                      or re.match(r"(?i)^\s*(?:by|pull requests|PRs|work)\s", first_clause))
-        repository_list = re.match(r"\s*`?[\w.*-]+`?\s*(?:,|\band\b)", listing)
-        if label_mode and not repository_list:
-            # Repository examples in a label declaration are mixed work,
-            # not a repository-wide own-project list.
-            return []
-        # The label is not a repository, even when it is in backticks.
-        listing = re.sub(rf"`{re.escape(own_label)}`|(?<![\w.*-]){re.escape(own_label)}(?![\w.*-])",
-                         "", listing, flags=re.I)
     if no_projects:
         return []
+    if label_declaration:
+        token = rf"(?<![\w.*-])`?{re.escape(own_label)}`?(?![\w.*-])"
+        marker = (re.search(rf"(?i){token}\s+label\b|\blabel\s+{token}", listing)
+                  or re.search(token, listing, re.I))
+        if marker is None:
+            # The label declaration precedes the colon rather than its examples.
+            return []
+        # Repository identifiers before the label belong to an explicit list;
+        # those after it are examples of where labeled work can live.
+        prefix = listing[:marker.start()]
+        if re.search(r"`[\w.*-]+`|,|;|\band\b", prefix):
+            return own_project_identifiers(prefix)
+        return []
+    names = own_project_identifiers(listing)
+    if not names:
+        raise AuditError("Order own-project list contains no repository identifiers")
+    return names
+
+
+def own_project_identifiers(listing: str) -> list[str]:
+    """Repository identifiers in a list, excluding explanatory plain prose."""
     names = re.findall(r"`([\w.*-]+)`", listing)
     # Parentheses carry explicit identifiers and explanatory prose. Only single
     # repository identifiers in the surrounding comma/and-separated list count.
@@ -1149,8 +1158,6 @@ def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[s
         name = part.strip().rstrip(".")
         if re.fullmatch(r"[\w.-]+", name):
             names.append(name)
-    if not names and not label_declaration:
-        raise AuditError("Order own-project list contains no repository identifiers")
     return sorted({name.casefold() for name in names})
 
 
