@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BLOCKED_NOTICE_AFTER = dt.timedelta(days=1)
+BLOCKED_NOTICE_AFTER = dt.timedelta(hours=1)
 MAX_BLOCKING_PATHS = 20
 
 

@@ -1209,6 +1209,56 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(runtime.update(self.checkout)["blocking_paths"], [".idea/personal.txt"])
         self.assertEqual(local.read_text(), "Preserve this")
 
+    def test_root_tool_logs_allow_fast_forward_but_other_untracked_files_block(self):
+        source = Path(__file__).resolve().parents[1] / ".gitignore"
+        (self.seed / ".gitignore").write_bytes(source.read_bytes())
+        command("git", "commit", "-qam", "catalog ignores", cwd=self.seed)
+        command("git", "push", "-q", "origin", "main", cwd=self.seed)
+        self.assertEqual(runtime.update(self.checkout)["state"], "current")
+        logs = [self.checkout / name for name in ("error.log", "tool.log")]
+        for log in logs:
+            log.write_text("Tool output")
+        self.advance()
+        self.assertEqual(runtime.update(self.checkout)["state"], "current")
+        self.assertEqual(runtime.git(self.checkout, "rev-parse", "HEAD"),
+                         runtime.git(self.seed, "rev-parse", "HEAD"))
+        for log in logs:
+            self.assertEqual(log.read_text(), "Tool output")
+        nested = self.checkout / "nested"
+        nested.mkdir()
+        for local in (self.checkout / "new_source.py", nested / "tool.log"):
+            with self.subTest(path=local.relative_to(self.checkout)):
+                local.write_text("Preserve this")
+                before = runtime.git(self.checkout, "rev-parse", "HEAD")
+                result = runtime.update(self.checkout)
+                self.assertEqual(result["state"], "blocked")
+                self.assertEqual(result["blocking_paths"], [local.relative_to(self.checkout).as_posix()])
+                self.assertEqual(runtime.git(self.checkout, "rev-parse", "HEAD"), before)
+                self.assertEqual(local.read_text(), "Preserve this")
+                local.unlink()
+
+    def test_untracked_file_escalates_at_notice_threshold_in_startup_and_updater(self):
+        local = self.checkout / "new_source.py"
+        local.write_text("Preserve this")
+        now = dt.datetime.now(dt.timezone.utc)
+        start = now - runtime.BLOCKED_NOTICE_AFTER
+        with mock.patch.object(runtime.dt, "datetime", wraps=dt.datetime) as clock:
+            clock.now.return_value = start
+            first = runtime.status_line(self.checkout, observe=True)
+            self.assertEqual(len(first.splitlines()), 1)
+            clock.now.return_value = now - dt.timedelta(seconds=1)
+            self.assertEqual(len(runtime.status_line(self.checkout, observe=True).splitlines()), 1)
+            self.assertNotIn("warning", runtime.update(self.checkout))
+            clock.now.return_value = now
+            line = runtime.status_line(self.checkout, observe=True)
+            self.assertGreater(len(line.splitlines()), 1)
+            result = runtime.update(self.checkout)
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["warning"], line)
+        self.assertIn(local.name, line)
+        self.assertEqual(dt.datetime.fromisoformat(result["blocked_since"]), start)
+        self.assertEqual(local.read_text(), "Preserve this")
+
     def test_blocked_age_survives_repeated_checks_escalates_and_resets_after_recovery(self):
         local = self.checkout / "local notes.txt"
         local.write_text("Preserve this")

@@ -285,6 +285,36 @@ def test_reconcile_blocks_dirty_runtime_without_fetching_or_mutating(tmp_path: P
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
+@pytest.mark.parametrize("untracked", [None, "new_source.py", "nested/tool.log"])
+def test_reconcile_root_logs_with_catalog_ignores_preserves_other_untracked_files(
+    tmp_path: Path, untracked: str | None,
+) -> None:
+    source = Path(__file__).resolve().parents[3] / ".gitignore"
+    fixture = build_runtime_fixture(tmp_path, extra_files={".gitignore": source})
+    logs = [fixture.runtime / name for name in ("error.log", "tool.log")]
+    for log in logs:
+        log.write_text("Tool output")
+    local = fixture.runtime / untracked if untracked else None
+    if local:
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text("Preserve this")
+
+    proc, receipt = fixture.run()
+
+    if local:
+        assert proc.returncode == 2
+        assert receipt["reason_code"] == "runtime_dirty"
+        assert receipt["fetched_sha"] is None
+        assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+        assert local.read_text() == "Preserve this"
+    else:
+        assert proc.returncode == 0
+        assert receipt["status"] == "synchronized"
+        assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+    for log in logs:
+        assert log.read_text() == "Tool output"
+
+
 def test_reconcile_blocks_assume_unchanged_runtime_file(tmp_path: Path) -> None:
     fixture = build_runtime_fixture(tmp_path)
     git(fixture.runtime, "update-index", "--assume-unchanged", ".gitignore")
