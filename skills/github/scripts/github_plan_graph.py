@@ -83,8 +83,13 @@ def query_data(
 
 
 def connection_query(name: str, cursor: str | None = None) -> str:
+    ordering = (
+        ", orderBy:{field:CREATED_AT, direction:ASC}"
+        if name in {"blockedBy", "blocking"}
+        else ""
+    )
     return (
-        f"{name}(first:100, after:{json.dumps(cursor)}) {{ totalCount "
+        f"{name}(first:100, after:{json.dumps(cursor)}{ordering}) {{ totalCount "
         f"nodes {{ {CONNECTIONS[name]} }} pageInfo {{ hasNextPage endCursor }} }}"
     )
 
@@ -132,7 +137,7 @@ def complete_issue(
 
 def rest_author(author: dict[str, Any] | None) -> dict[str, str]:
     if author is None:
-        return {}
+        return {"login": "ghost", "type": "User"}
     login = author["login"]
     kind = author.get("__typename")
     return {
