@@ -48,16 +48,19 @@ class FleetCountsTests(unittest.TestCase):
                 previous["data"]["repositoryOwner"]["repositories"]["pageInfo"]["endCursor"])
 
     def test_failure_after_first_page_has_no_totals(self):
-        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=self.pages[0]),
-            ApiResult(ok=False, status=403, body=None)]
-        with patch.object(fleet_counts, "GitHubReader", return_value=self.reader), \
-             patch.object(fleet_counts.sys, "argv", ["fleet_counts.py", "--owner", "fixture-owner"]), \
-             redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(fleet_counts.main(), 1)
-        result = json.loads(output.getvalue())
-        self.assertFalse(result["ok"])
-        self.assertNotIn("totals", result)
-        self.assertNotIn("repositories", result)
+        # Both callers preserve failure; only the persistent read-only service keeps running.
+        for flags, exit_code in (([], 1), (["--service-snapshot"], 0)):
+            self.reader.graphql_json.side_effect = [
+                ApiResult(ok=True, status=200, body=self.pages[0]),
+                ApiResult(ok=False, status=403, body=None)]
+            with patch.object(fleet_counts, "GitHubReader", return_value=self.reader), \
+                 patch.object(fleet_counts.sys, "argv", ["fleet_counts.py", "--owner", "fixture-owner", *flags]), \
+                 redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(fleet_counts.main(), exit_code)
+            result = json.loads(output.getvalue())
+            self.assertFalse(result["ok"])
+            self.assertNotIn("totals", result)
+            self.assertNotIn("repositories", result)
 
     def test_partial_graphql_errors_and_bad_repository_counts_refuse(self):
         bad_pages = []

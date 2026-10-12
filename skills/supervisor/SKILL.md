@@ -33,7 +33,7 @@ resources:
     description: Enqueue current-head ready handoffs in capped groups between candidates, respecting the Supervisor hold record.
   - path: scripts/fleet_counts.py
     kind: script
-    description: Read open issue and PR counts per visible non-archived owner repository and fleet totals with one paginated GraphQL query.
+    description: Read open issue and PR counts per visible non-archived repository in the selected account and fleet totals with one paginated GraphQL query.
   - path: scripts/oq.py
     kind: script
     description: Read all Director questions through the paged GitHub helper.

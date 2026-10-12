@@ -96,6 +96,8 @@ def main():
     parser.add_argument("--page-size", type=int, default=100)
     parser.add_argument("--max-pages", type=int, default=100)
     parser.add_argument("--deadline-seconds", type=float, default=120)
+    parser.add_argument("--service-snapshot", action="store_true",
+        help="keep the read-only service sampling after a failed snapshot; failure remains ok: false")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.owner):
         parser.error("owner must be a GitHub account login")
@@ -110,9 +112,9 @@ def main():
     except (GitHubReadError, ValueError, KeyError, TypeError) as error:
         print(json.dumps({"ok": False, "owner": args.owner, "sampled_at": sampled_at,
             "error": str(error), "diagnostics": reader.diagnostics()}))
-        return 1
+        return 0 if args.service_snapshot else 1
     print(json.dumps({"ok": True, "owner": args.owner, "sampled_at": sampled_at,
-        "coverage": "repositories visible to the configured automation identity; excludes archived",
+        "coverage": "repositories visible to the selected bulk reader identity (or main automation fallback); excludes archived",
         **data, "diagnostics": reader.diagnostics()}))
     return 0
 

@@ -87,7 +87,8 @@ per-repository REST/search count loops. The helper uses one GraphQL request per
 repository page (100 by default), under the shared automation identity, retries,
 quota admission and diagnostics. The existing helper layer retains its cache
 behavior; GraphQL counts are fresh reads, without conditional REST caching.
-Only repositories visible to that identity are counted, including forks and
+Only repositories visible to the selected bulk reader identity (or its supported
+main automation fallback) are counted, including forks and
 repositories with zero work, excluding archived repositories. Open issues and
 open PRs are separate counts. `sampled_at` records the snapshot start; pages are
 not an atomic fleet snapshot. An error exits nonzero with no totals: retain the
@@ -342,7 +343,7 @@ credential sources. A configuration has this shape, with all four entries:
       "restart_seconds": 60
     },
     "throughput": {
-      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/fleet_counts.py", "--owner", "OWNER"],
+      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/fleet_counts.py", "--owner", "OWNER", "--service-snapshot"],
       "cwd": "/runtime/catalog",
       "restart_seconds": 300
     }
@@ -356,6 +357,10 @@ train driver, one driver per repository. It does not replace Launchplane's
 controller or take over another driver. [launchplane#3419](https://github.com/cbusillo/launchplane/issues/3419)
 owns moving that scheduling into Launchplane. The throughput entry runs `fleet_counts.py`; its JSON stdout accumulates in the
 throughput log. Use only successful entries (`ok: true`) as count snapshots.
+`--service-snapshot` keeps this read-only service sampling after failed reads by
+returning zero with `ok: false` and no totals; the ordinary CLI exits nonzero.
+Shared transport still owns retries and cooldowns. Check `diagnostics.actor`
+and installation scope before interpreting these visible totals as the full fleet.
 Keep the drive command at a durable private path. Preview enqueue first under the
 existing authority described above before configuring its `--apply` command.
 

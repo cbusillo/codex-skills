@@ -258,7 +258,7 @@
           ],
           "pageInfo": {
             "hasNextPage": true,
-            "endCursor": "Y3Vyc29yOnYyOpKrb2Rvby1kZXZraXTOSFRu0A=="
+            "endCursor": "fixture-cursor-1"
           }
         }
       }
@@ -453,7 +453,7 @@
           ],
           "pageInfo": {
             "hasNextPage": false,
-            "endCursor": "Y3Vyc29yOnYyOpKodmVyaXJlZWzOR8kPcA=="
+            "endCursor": "fixture-cursor-2"
           }
         }
       }
