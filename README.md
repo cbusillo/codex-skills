@@ -127,8 +127,15 @@ preserving bindings and unrelated hooks. Bound catalog hooks receive session-ale
 updates; removing all catalog hooks opts out of that refresh. The existing session-start hook prints
 one catalog line for a stale or blocked checkout, a failed update, or a scheduled
 check older than twelve hours. A manual pull that changes shared instructions
-also reports a stale installation until the instruction refresh runs. Session
-catch-up is described under [runtime binding lookup](#runtime-binding-lookup). State
+also reports a stale installation until the instruction refresh runs. Startup
+notices name dirty paths. After a checkout has been observed blocked for at
+least 24 hours, the same startup notice becomes a multi-line warning naming
+the checkout, blocking paths and observed duration. Scheduled and manual
+updater output records that warning in its existing JSON receipt and stderr
+log too. The first observed blocked time survives repeated checks; a successful
+check clears it. Inspect and preserve the reported local work, resolve the
+blocker, then rerun `uv run scripts/catalog_runtime.py --update`.
+Session catch-up is described under [runtime binding lookup](#runtime-binding-lookup). State
 and logs live in the checkout's ignored `.local/` directory.
 Run `uv run scripts/catalog_runtime.py --update` for a manual guarded update on
 macOS or Linux. To stop scheduled updates, run

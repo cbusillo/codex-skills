@@ -1179,6 +1179,110 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(runtime.status_line(self.checkout), "")
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
 
+    def test_generated_idea_name_does_not_block_updates_but_other_local_files_do(self):
+        idea = self.checkout / ".idea"
+        idea.mkdir()
+        source = Path(__file__).resolve().parents[1] / ".idea" / ".gitignore"
+        (idea / ".gitignore").write_bytes(source.read_bytes())
+        command("git", "add", ".idea/.gitignore", cwd=self.checkout)
+        command("git", "commit", "-qm", "shared IDE ignores", cwd=self.checkout)
+        command("git", "push", "-q", "origin", "main", cwd=self.checkout)
+        (idea / ".name").write_text("Generated project name")
+        self.assertEqual(runtime.update(self.checkout)["state"], "current")
+        local = idea / "personal.txt"
+        local.write_text("Preserve this")
+        self.assertEqual(runtime.update(self.checkout)["blocking_paths"], [".idea/personal.txt"])
+        self.assertEqual(local.read_text(), "Preserve this")
+
+    def test_blocked_age_survives_repeated_checks_escalates_and_resets_after_recovery(self):
+        local = self.checkout / "local notes.txt"
+        local.write_text("Preserve this")
+        first = runtime.update(self.checkout)
+        self.assertNotIn("warning", first)
+        self.assertIn(local.name, runtime.status_line(self.checkout))
+        receipt = self.checkout / ".local" / "catalog-update.json"
+        start = dt.datetime.now(dt.timezone.utc) - runtime.BLOCKED_NOTICE_AFTER - dt.timedelta(hours=2)
+        first["blocked_since"] = start.isoformat()
+        receipt.write_text(json.dumps(first))
+        before = receipt.read_bytes()
+        line = runtime.status_line(self.checkout)
+        self.assertGreater(len(line.splitlines()), 1)
+        self.assertIn(str(self.checkout), line)
+        self.assertIn(local.name, line)
+        self.assertIn("26 hours", line)
+        self.assertEqual(receipt.read_bytes(), before)  # Startup remains read-only.
+        second = runtime.update(self.checkout)
+        self.assertEqual(second["blocked_since"], start.isoformat())
+        self.assertIn(local.name, second["warning"])
+        self.assertEqual(local.read_text(), "Preserve this")
+        local.unlink()
+        recovered = runtime.update(self.checkout)
+        self.assertNotIn("blocked_since", recovered)
+        self.assertNotIn("warning", recovered)
+        self.assertEqual(runtime.status_line(self.checkout), "")
+        local.write_text("Another local edit")
+        new = runtime.update(self.checkout)
+        self.assertNotEqual(new["blocked_since"], start.isoformat())
+        self.assertNotIn("warning", new)
+
+    def test_notice_threshold_and_legacy_or_invalid_receipt_times(self):
+        (self.checkout / "source").write_text("Local change")
+        state = runtime.checkout_state(self.checkout)
+        now = dt.datetime.now(dt.timezone.utc)
+        start = now - runtime.BLOCKED_NOTICE_AFTER
+        self.assertEqual(runtime.blocked_notice(self.checkout, state, start, now - dt.timedelta(seconds=1)), "")
+        self.assertTrue(runtime.blocked_notice(self.checkout, state, start, now))
+        receipt = self.checkout / ".local" / "catalog-update.json"
+        receipt.parent.mkdir()
+        receipt.write_text(json.dumps({"state": "blocked", "checked_at": start.isoformat()}))
+        self.assertEqual(runtime.update(self.checkout)["blocked_since"], start.isoformat())
+        for stamp in ("invalid", now.replace(tzinfo=None).isoformat(), (now + dt.timedelta(days=2)).isoformat()):
+            with self.subTest(stamp=stamp):
+                receipt.write_text(json.dumps({"state": "blocked", "checked_at": stamp}))
+                result = runtime.update(self.checkout)
+                self.assertNotIn("warning", result)
+                self.assertIsNotNone(dt.datetime.fromisoformat(result["blocked_since"]).tzinfo)
+
+    def test_blocking_paths_handle_renames_spaces_and_control_characters(self):
+        destination = "renamed\nnotes.txt"
+        command("git", "mv", "source", destination, cwd=self.checkout)
+        (self.checkout / "untracked notes.txt").write_text("Private content")
+        result = runtime.update(self.checkout)
+        self.assertEqual(set(result["blocking_paths"]), {"source", destination, "untracked notes.txt"})
+        line = runtime.status_line(self.checkout)
+        self.assertIn(json.dumps(destination), line)
+        self.assertEqual(len(line.splitlines()), 1)
+        self.assertNotIn("Private content", line)
+
+    def test_update_cli_escalates_in_existing_stderr_log_and_json_receipt(self):
+        (self.checkout / "source").write_text("Local change")
+        first = runtime.update(self.checkout)
+        first["blocked_since"] = (dt.datetime.now(dt.timezone.utc) - runtime.BLOCKED_NOTICE_AFTER).isoformat()
+        (self.checkout / ".local" / "catalog-update.json").write_text(json.dumps(first))
+        script = Path(__file__).with_name("catalog_runtime.py")
+        result = subprocess.run([sys.executable, str(script), "--catalog", str(self.checkout), "--update"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        state = json.loads(result.stdout)
+        self.assertEqual(result.stderr.strip(), state["warning"])
+        self.assertIn("source", state["warning"])
+
+    def test_long_block_notice_reaches_both_harnesses_through_existing_startup_hook(self):
+        (self.checkout / "source").write_text("Local change")
+        state = runtime.update(self.checkout)
+        state["blocked_since"] = (dt.datetime.now(dt.timezone.utc) - runtime.BLOCKED_NOTICE_AFTER).isoformat()
+        local = self.checkout / ".local"
+        (local / "catalog-update.json").write_text(json.dumps(state))
+        (local / "catalog-install.json").write_text("{}")
+        hook = Path(__file__).resolve().parents[1] / "hooks" / "direction_check_hook.py"
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                env = {"PATH": os.environ["PATH"], "DIRECTION_MARKER": str(local / "direction.json")}
+                if harness == "claude":
+                    env["CLAUDECODE"] = "1"
+                result = subprocess.run([sys.executable, str(hook), "--catalog-root", str(self.checkout)],
+                                        cwd=self.checkout, env=env, capture_output=True, text=True, check=True)
+                self.assertIn(runtime.status_line(self.checkout), result.stdout)
+
     def test_installed_update_refreshes_instructions_and_exposes_new_skill(self):
         source = Path(__file__).resolve().parent
         (self.seed / "scripts").mkdir()
