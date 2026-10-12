@@ -1752,3 +1752,22 @@ GitHub's `Repository rule violations found` heading, returns
 writes no shared retry cooldown. Resolve the PR review threads before another
 merge attempt. Mixed-rule and other ambiguous HTTP405 responses retain bounded
 retry and exact-head reconciliation.
+
+### Planning Graph Batches
+
+For an explicitly cold or changing repository workload, `gh-plan.py show N
+--full --batch-read` and `gh-plan.py next --batch-read` collect issue metadata,
+labels and native relationships in the shared bulk reader GraphQL transport.
+Full `show` also collects every comment. Every requested connection is paged;
+a partial/error response discards the entire enrichment and recovers through
+the ordinary same-actor REST route. Claims and mutation preflights are unchanged.
+Global next retains its existing REST discovery.
+
+REST remains the default and the route for unchanged observations: its
+authenticated conditional cache can cost zero primary requests, while GraphQL
+costs points on every refresh. Select batching for cold/changed passes, rather
+than replacing free idle polling. The recorded 20-issue/32-link slice uses one
+GraphQL request versus at least twelve cold REST calls; this excludes direction,
+ownership, inbound visibility and PR evidence. Response headers retain quota
+evidence; `rateLimit.cost` in the GraphQL document measures points. Request
+counts and GraphQL points are separate from whole-fleet hourly savings.
