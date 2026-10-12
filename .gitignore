@@ -46,3 +46,6 @@ node_modules/
 .swiftpm/
 /handoff*.md
 /evals/results/
+
+# Tool-generated logs at the catalog root
+/*.log
