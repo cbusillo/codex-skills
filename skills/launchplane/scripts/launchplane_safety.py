@@ -14,12 +14,14 @@ from dataclasses import dataclass
 from typing import Any
 
 
+SK_TOKEN_RE = re.compile(r"sk-[A-Za-z0-9_-]+")
 TOKEN_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9_]+"),
     re.compile(r"github_pat_[A-Za-z0-9_]+"),
-    re.compile(r"sk-[A-Za-z0-9_-]+"),
+    SK_TOKEN_RE,
     re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
 )
+IDENTIFIER_SK_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])" + SK_TOKEN_RE.pattern)
 
 DENIED_KEYS = {
     "authorization",
@@ -119,9 +121,12 @@ def is_denied_key(key: str) -> bool:
     return any(fragment in compact for fragment in DENIED_KEY_FRAGMENTS)
 
 
-def _redact_token_like(value: str) -> str:
+def _redact_token_like(value: str, *, identifier: bool = False) -> str:
     redacted = value
     for pattern in TOKEN_PATTERNS:
+        if identifier and pattern is SK_TOKEN_RE:
+            # In identifiers, task/helpdesk/risk suffixes are ordinary words.
+            pattern = IDENTIFIER_SK_TOKEN_RE
         redacted = pattern.sub("[redacted]", redacted)
     return redacted
 
@@ -248,7 +253,7 @@ def public_identifier(value: object) -> str:
     if (
         not compact
         or len(compact) > 256
-        or _redact_token_like(compact) != compact
+        or _redact_token_like(compact, identifier=True) != compact
         or not IDENTIFIER_RE.fullmatch(compact)
     ):
         raise LaunchplaneSafetyError("invalid_response")

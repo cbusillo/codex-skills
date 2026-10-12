@@ -1155,6 +1155,12 @@ record-id lists are valid when the service has no record id for a step. Lists
 are limited to 50 steps and 50 record ids per step; oversized responses fail
 instead of omitting blockers. A successful read can still describe a blocked
 or unknown path; inspect `result.state` and every step before proposing action.
+Operation record ids may include words such as `task` or `helpdesk` followed
+by a hex suffix; an embedded `sk-` at the end of a word is not a token prefix.
+Actual token prefixes at a boundary remain rejected. Free-text descriptions
+still reject tokens embedded in words or escaped log text. On a projection failure,
+the result stays empty and the response's independently validated trace id is
+retained in `summary.trace_id`; an unsafe or malformed trace is omitted.
 
 ## Output Shape
 
