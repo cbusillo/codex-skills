@@ -108,6 +108,29 @@ class ReminderSaveTests(unittest.TestCase):
                     backend.assert_not_called()
                     self.assertEqual(json.loads(output.getvalue())["status"], "dry_run")
 
+    def test_repair_requires_update_id_and_dry_run_never_writes(self):
+        argv = ["reminder_save.py", "--harness", "claude", "--directory", str(self.directory),
+                "--session-id", SESSION, "--list", "test", "--due", "2026-10-20T09:00",
+                "--timezone", "America/New_York", "--preserve-existing"]
+        with patch.object(reminder_save, "native") as backend:
+            for flags in (["--apply"], ["--apply", "--delete-id", "owned-id"]):
+                with patch.object(reminder_save.sys, "argv", argv + flags), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(reminder_save.main(), 1)
+            backend.assert_not_called()
+            output = io.StringIO()
+            with patch.object(reminder_save.sys, "argv", argv + ["--update-id", "owned-id"]), contextlib.redirect_stdout(output):
+                self.assertEqual(reminder_save.main(), 0)
+            backend.assert_not_called()
+            dry_run = json.loads(output.getvalue())
+            self.assertEqual(dry_run["update_id"], "owned-id")
+            self.assertTrue(dry_run["preserve_existing"])
+            backend.return_value = {"status": "saved", "visible_url_verified": True, "preserved_existing": True}
+            with patch.object(reminder_save.sys, "argv", argv + ["--update-id", "owned-id", "--apply"]), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(reminder_save.main(), 0)
+            request = backend.call_args.args[0]
+            self.assertEqual(request["update_id"], dry_run["update_id"])
+            self.assertTrue(request["preserve_existing"])
+
 
 if __name__ == "__main__":
     unittest.main()
