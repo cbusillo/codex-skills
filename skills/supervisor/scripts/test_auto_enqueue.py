@@ -1214,22 +1214,23 @@ class WatchLoopTests(unittest.TestCase):
         return result, live.call_count, sleeps.call_args_list, events
 
     def test_transient_reads_end_only_pass_then_fresh_pass_enqueues(self):
+        provider_detail = "provider-detail-not-for-output"
         github_error = watch.GitHubReadError(
-            "private provider detail",
+            provider_detail,
             result=watch.github_api.ApiResult(
                 ok=False, status=503, body=None,
                 failure=watch.github_api.FailureDetail(
-                    cause="network_provider_failure", message="private",
+                    cause="network_provider_failure", message=provider_detail,
                     retryable=True, fallback_eligible=False, disposition="retry",
                 ),
             ),
             diagnostics={},
         )
         for error in (
-            urllib.error.HTTPError("https://private.invalid", 503, "private", Message(), None),
-            urllib.error.URLError("private"),
-            TimeoutError("private"),
-            ConnectionResetError("private"),
+            urllib.error.HTTPError(f"https://{provider_detail}.invalid", 503, provider_detail, Message(), None),
+            urllib.error.URLError(provider_detail),
+            TimeoutError(provider_detail),
+            ConnectionResetError(provider_detail),
             github_error,
         ):
             for stage in ("initialize", "scan", "before_write"):
@@ -1257,7 +1258,7 @@ class WatchLoopTests(unittest.TestCase):
                         sum(event["event"] == "pass_failed" for event in events), 1,
                     )
                     self.assertEqual(events[-1]["payload"]["outcome"], "deadline")
-                    self.assertNotIn("private", json.dumps(events))
+                    self.assertNotIn(provider_detail, json.dumps(events))
 
     def test_retry_sleep_is_bounded_by_deadline(self):
         result, calls, sleeps, events = self.run_watch(
@@ -1405,6 +1406,7 @@ class WatchLoopTests(unittest.TestCase):
                 self.assertEqual(events[-1]["payload"]["outcome"], "error")
 
     def test_controller_read_transport_failure_recovers_without_retrying_rejections(self):
+        provider_detail = "provider-detail-not-for-output"
         adapter = object.__new__(watch.Live)
         adapter.deadline = 10_000
         request = {"repository": REPO, "base_branch": TARGET["base"], "mutate": False}
@@ -1418,7 +1420,7 @@ class WatchLoopTests(unittest.TestCase):
             with self.subTest(code=code):
                 payload = watch.operator.unavailable_payload(
                     operation="merge-train-controller-run-once", request=request,
-                    status="unavailable", code=code, message="private",
+                    status="unavailable", code=code, message=provider_detail,
                 )
                 if http_status is not None:
                     payload["summary"]["http_status"] = http_status
@@ -1426,14 +1428,14 @@ class WatchLoopTests(unittest.TestCase):
                 failed.train = adapter.train
                 healthy = Fake(count=1)
                 with patch.object(watch.subprocess, "run", return_value=subprocess.CompletedProcess(
-                    [], 1, stdout=json.dumps(payload), stderr="private",
+                    [], 1, stdout=json.dumps(payload), stderr=provider_detail,
                 )):
                     result, calls, sleeps, events = self.run_watch(Mock(side_effect=[failed, healthy]))
                 self.assertEqual(result, 0 if expected else 1)
                 self.assertEqual(calls, 2 if expected else 1)
                 self.assertEqual(len(sleeps), 2 if expected else 0)
                 self.assertEqual(healthy.writes, [1] if expected else [])
-                self.assertNotIn("private", json.dumps(events))
+                self.assertNotIn(provider_detail, json.dumps(events))
 
     def test_actual_controller_denial_projection_stops_even_with_server_status(self):
         adapter = object.__new__(watch.Live)
