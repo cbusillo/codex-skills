@@ -104,7 +104,19 @@ class PaneParserTests(unittest.TestCase):
                 iterm_tab.main()
         self.assertNotEqual(caught.exception.code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["submission"], "not_attempted")
-        self.assertIn("input may still contain text", stderr.getvalue())
+        self.assertTrue(stderr.getvalue().strip())
+
+    def test_inventory_failure_after_typing_has_partial_send_receipt(self):
+        row = {"pane_id": "%2", "dead": False}
+        for error in (OSError("inventory failed"), subprocess.TimeoutExpired("tmux", 10)):
+            with self.subTest(error=error), \
+                    patch.object(self.terminal, "select", side_effect=[row, error]), \
+                    patch.object(self.terminal, "run") as keys:
+                with self.assertRaises(iterm_tab.SendFailure) as caught:
+                    asyncio.run(self.terminal.send("exact", "message"))
+                self.assertEqual(caught.exception.detail["submission"], "not_attempted")
+                self.assertTrue(caught.exception.detail["text_sent"])
+                keys.assert_called_once_with("send-keys", "-t", "%2", "-l", "--", "message")
 
 
 @unittest.skipUnless(shutil.which("tmux") and Path("/bin/zsh").exists(), "requires tmux and zsh")

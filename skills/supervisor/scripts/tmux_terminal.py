@@ -82,7 +82,7 @@ class Terminal:
             try:
                 if self.select(identity) != row:
                     raise ValueError("terminal state changed after text")
-            except ValueError as error:
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
                 raise iterm_tab.SendFailure(identity, "not_attempted", str(error)) from error
             try:
                 self.run("send-keys", "-t", row["pane_id"], "Enter")
