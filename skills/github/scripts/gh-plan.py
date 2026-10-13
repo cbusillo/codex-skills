@@ -47,6 +47,7 @@ import github_next_queue
 import github_plan_claim
 import github_plan_wait
 import github_plan_release
+import github_plan_landing
 import github_agent
 from github_direction_next import (
     normalize_labels,
@@ -100,6 +101,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "deps": ("rest_api", "rest_core", False),
     "next": ("composite", "mixed", False),
     "close": ("composite", "mixed", True),
+    "reconcile-landing": ("composite", "mixed", True),
     "project-add": ("gh_cli_graphql", "graphql", True),
     "project-set": ("gh_cli_graphql", "graphql", True),
     "project-list": ("gh_cli_graphql", "graphql", False),
@@ -4673,6 +4675,8 @@ def cmd_close(args: argparse.Namespace) -> None:
     config = load_config(issue_repo, checkout=planning_checkout, discovery=planning_config)
     close_reason = plan_close_reason(args.reason)
     issue_actor, issue = get_issue(args.issue, repo)
+    if getattr(args, "only_closed", False) and not issue_matches_close_reason(issue, close_reason):
+        raise PlanError("Landing reconciliation only repairs already-closed issues")
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
     owner_decision: dict[str, Any] | None = None
     if close_reason == "not_planned" and not issue_matches_close_reason(issue, close_reason):
@@ -4919,6 +4923,23 @@ def cmd_close(args: argparse.Namespace) -> None:
         "planning_config": planning_config,
         "completed_steps": completed_steps,
     })
+
+
+def cmd_reconcile_landing(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    reader = github_read.GitHubReader(operation="github.plan.reconcile_landing")
+    try:
+        result = github_plan_landing.reconcile(sys.modules[__name__], reader, repo, args.pr, apply=args.apply)
+    except (ValueError, TypeError, subprocess.TimeoutExpired, OSError) as exc:
+        raise PlanError(str(exc)) from exc
+    if not result["ok"]:
+        failure = github_api_core.FailureDetail(
+            cause="planning_reconciliation_incomplete", message="Planning reconciliation needs owning-agent review",
+            retryable=False, fallback_eligible=False, disposition="stop",
+            write_outcome="unknown" if any(item.get("writes_started") for item in result["issues"]) else "not_started",
+        )
+        raise PlanError(failure.message, payload=result, failure=failure)
+    emit(result)
 
 
 def cmd_project_list(args: argparse.Namespace) -> None:
@@ -5484,6 +5505,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--owner")
     p.add_argument("--project")
     p.set_defaults(func=cmd_close)
+
+    p = sub.add_parser("reconcile-landing", help="Read back merged PR closing references and repair closed planning metadata")
+    p.add_argument("--pr", type=int, required=True)
+    p.add_argument("--apply", action="store_true", help="Repair already-closed automation-owned plans; default is read-only")
+    p.set_defaults(func=cmd_reconcile_landing)
 
     p = sub.add_parser("project-add", help="Add issue to a personal/org Project")
     p.add_argument("issue")

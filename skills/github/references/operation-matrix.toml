@@ -2379,6 +2379,7 @@ degraded_behavior = "Only the owner creates/installs the App in their browser. C
 documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
 
 [api_surface_fingerprints]
+"github/scripts/github_plan_landing.py" = "cc855dde329852a0730713588ebcafacebcf6048c7eacdcaea63a39415b18515"
 "github/scripts/github-own-user.sh" = "a8d1998edce8b9941a5eef916593ba5f9d3a9002a9312f50e0c9d8da7c058523"
 "github/scripts/github_plan_wait.py" = "70652a2e3369d4f27fac0ab2711199bcb8b68ebc4a4c39573b3fdc9639a0ae33"
 "github/scripts/github_pr_batch.py" = "a9b942befddb7993b39c941867a262ae597acb6855f47f641573f8ca7af82674"
@@ -2442,3 +2443,24 @@ source_refs = ["supervisor/scripts/fleet_counts.py:fleet_counts"]
 test_refs = ["supervisor/scripts/test_fleet_counts.py:test_recorded_pages_count_issues_and_prs_separately", "supervisor/scripts/test_fleet_counts.py:test_failure_after_first_page_has_no_totals"]
 
 
+
+[[operations]]
+id = "github.plan.reconcile_landing"
+request_priority = "essential"
+capabilities = ["pull_requests_read", "issues_read", "issues_write", "projects_write"]
+permission_mode = "input_dependent"
+permission_note = "Read-only by default. Apply delegates already-closed automation-owned plans to existing close/section helpers and their actor/relationship checks; reporter acceptance and open finish lines remain review work. Configured Projects retain their existing role."
+entrypoint = "github/scripts/gh-plan.py reconcile-landing"
+intent = "Read authoritative merged default-branch PR closing references, reconcile closed planning metadata, and read it back."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Paged GraphQL closingIssuesReferences; delegated REST issue/relationship/comment reads and existing close metadata/section operations"
+quota_bucket = "mixed"
+actor_policy = "automation_required_for_writes"
+mutation_class = "mixed"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "GraphQL GitHub closingIssuesReferences is the authoritative relationship for keyword/manual PR closing links; prose and merged prerequisites never establish completion."
+source_refs = ["github/scripts/gh-plan.py:cmd_reconcile_landing", "github/scripts/github_plan_landing.py:closing_references", "github/scripts/github_plan_landing.py:reconcile", "launchplane/scripts/launchplane-train-drive.py:_with_runtime_reconciliation"]
+test_refs = ["github/scripts/test_github_plan_landing.py:LandingTests", "launchplane/scripts/test_launchplane_train_drive.py:TrainDriveTests"]

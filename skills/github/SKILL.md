@@ -986,6 +986,12 @@ failure and never causes a merge retry.
 - **Verify and sweep**: Check Actions and relevant security and quality signals
   before closing planning state, then follow github-plan's
   [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off) reconciliation.
+  Run `uv run scripts/gh-plan.py --repo OWNER/REPO reconcile-landing --pr N --apply`
+  for closing-reference metadata when the train's planning receipt is absent
+  or incomplete; the [management reference](references/cli-reference.md#planning-management)
+  owns its readback and review-required outcomes. Reconcile remaining finish
+  lines and unblocked parents under github-plan rather than treating the
+  metadata receipt as their completion proof.
 
 ## Diagnostics And Hygiene
 

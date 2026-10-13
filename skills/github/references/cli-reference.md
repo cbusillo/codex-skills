@@ -1131,6 +1131,17 @@ competitor's record.
 
 ### Planning: Management
 
+- `reconcile-landing --pr N [--apply]`: Read a confirmed default-branch
+  landing and every page of GitHub's closing issue references. The default
+  is read-only. Apply repairs already-closed automation-owned planning issues
+  through the existing close relationship/Project/label/comment path, updates
+  Current Status, and verifies state, labels and status with fresh readback.
+  Open issues, reporter acceptance and cross-repository references are reported
+  for the owning agent to review; a merged prerequisite or `Refs` never closes
+  a parent. Unavailable reads and partial reconciliation remain failures.
+  The train driver includes separate planning receipts for every confirmed
+  landed batch member. A failed planning receipt does not undo a landing;
+  rerun this command after resolving its reported blocker.
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
   search, labels are ensured through REST, and the shared issue helper creates
   the issue with reconciliation evidence for unknown write outcomes. Supports
