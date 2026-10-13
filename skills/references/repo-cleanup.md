@@ -254,15 +254,21 @@ Backups, Trash and dependency trees have no silent pruning exception.
 Pruned or offline inventory cannot serve as final revalidation evidence.
 Use a smaller explicit scope and a new complete snapshot when a bound is reached.
 Registration discovery accepts up to 4,096 records; detailed Git evidence is
-bounded to 64 checkouts. Above 64 registrations, pass `--root` for the selected
-checkout or its output directory. The helper probes only registered checkouts
+bounded to 64 checkouts. Pass `--root` for a selected checkout or its output
+directory to bound checkout inspection and ref reachability at any repository
+size. The helper probes only registered checkouts
 that contain or lie within those roots, and refuses a selection above 64.
 The report's `repository.worktree_coverage` names the scope, inspected and
 excluded counts, and whether global checkout coverage was excluded. All
 registration metadata is still compared for changes, including omitted
 checkouts' registration locks; their contents, status and operations are
 unexamined. `complete` and `repository.coverage` describe the requested scope,
-not those omitted checkouts. Smaller repositories retain the full Git probe.
+not those omitted checkouts. Explicit-root inventories check remote coverage
+only for the selected checkouts' branches. All other local heads, tags and
+stashes retain unknown ref coverage with method `excluded_explicit_roots`;
+their names and object IDs are still enumerated and compared for changes.
+Without explicit roots, the helper retains the full Git probe and refuses
+more than 64 registered checkouts with the explicit-root continuation route.
 Revalidation and post-action verification retain the baseline's scoped mode
 even if an authorized worktree removal brings the count back to 64 or below.
 Malformed or over-limit registration lists still fail closed. Ownership,
