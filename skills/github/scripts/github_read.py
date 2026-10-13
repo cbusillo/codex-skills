@@ -275,6 +275,7 @@ class GitHubReader:
         deadline_at: Optional[float] = None, operation: Optional[str] = None,
         extra_headers: Optional[dict[str, str]] = None,
         allow_escape_sequences: bool = False,
+        conditional_cache: Optional[bool] = None,
     ) -> github_api_core.ApiResult:
         if self._identity_error is not None:
             return github_api_core._identity_failure(
@@ -298,7 +299,7 @@ class GitHubReader:
             retry_policy=retry_policy,
             deadline_at=self.deadline_at if deadline_at is None else deadline_at,
             allow_escape_sequences=allow_escape_sequences,
-            conditional_cache=not self.cache_enabled,
+            conditional_cache=not self.cache_enabled if conditional_cache is None else conditional_cache,
         )
 
     def graphql_json(
@@ -374,14 +375,17 @@ class GitHubReader:
         else:
             self.completed_steps.append(step)
 
-    def request(self, method: str, path: str, *, step: str, bucket: str = "rest_core") -> github_api_core.ApiResult:
-        cache = ConditionalResponseCache.from_reader(self) if bucket == "rest_core" and method.upper() == "GET" and self._identity_error is None else None
+    def request(self, method: str, path: str, *, step: str, bucket: str = "rest_core", fresh: bool = False) -> github_api_core.ApiResult:
+        # Fresh observations bypass both cache layers without changing identity,
+        # quota coordination, error recording or the request deadline.
+        transport_options = {"conditional_cache": False} if fresh else {}
+        cache = ConditionalResponseCache.from_reader(self) if not fresh and bucket == "rest_core" and method.upper() == "GET" and self._identity_error is None else None
         try:
-            result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step, bucket=bucket)
+            result = cache.request(self, method, path, step=step) if cache else self._transport_request(method, path, step=step, bucket=bucket, **transport_options)
         except OSError:
             # Caching is an optional read optimization. Preserve transport,
             # actor checks and shared cooldowns when cache storage is unusable.
-            result = self._transport_request(method, path, step=step, bucket=bucket)
+            result = self._transport_request(method, path, step=step, bucket=bucket, **transport_options)
             result.headers["x-codex-cache"] = "unavailable"
         self._record_result(result, method=method, path=path, step=step)
         if not result.ok:
