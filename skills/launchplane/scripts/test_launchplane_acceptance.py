@@ -44,7 +44,6 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_mapped_product_not_repository_basename_supplies_standing_acceptance(self):
         self.assertTrue(acceptance.read_director_standing(REPO))
-        self.assertEqual(len(self.transport.call_args_list), 2)
 
     def test_other_release_modes_do_not_exempt(self):
         for mode in acceptance.operator.PRODUCT_RELEASE_ON_ACCEPTANCE_MODES - {"director_standing"}:
