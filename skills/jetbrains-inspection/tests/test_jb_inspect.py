@@ -11794,9 +11794,10 @@ class HumanOutputTest(unittest.TestCase):
             "capture_incomplete_reason": "execution_not_proven",
             "capture_diagnostic": {
                 "execution_proof_block_reason": "batch_inspection_delegated_to_editor_service",
+                "batch_inspection_delegations": [{"tool": "TypeScriptUnresolvedReference", "file": "/repo/broken.ts"}],
             },
             "inspection_verdict_next_action": "Use the isolated native inspector; preserve the enabled inspection.",
-            "route": {"ide": {"inspection_execution_proof_version": 2}},
+            "route": {"ide": {"inspection_execution_proof_version": jb_inspect.NATIVE_BROAD_SCOPE_PROOF_VERSION}},
         }
 
         jb_inspect.apply_verdict(payload)
@@ -11806,6 +11807,9 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(compact["agent_result"]["bucket"], "environment_blocked")
         self.assertFalse(compact["agent_result"]["retry_policy"]["retry"])
         self.assertEqual(compact["agent_result"]["next_action"], payload["inspection_verdict_next_action"])
+        self.assertEqual(compact["agent_result"]["batch_inspection_delegations"], payload["capture_diagnostic"]["batch_inspection_delegations"])
+        self.assertEqual(compact["diagnostic"]["attribution_class"], "configuration_blocked")
+        self.assertFalse(payload.get("unattributed_unknown", False))
 
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
         payload = {

@@ -6950,9 +6950,9 @@ IDE_ROUTE_CONFIGURATION_NEXT_ACTION = (
 )
 
 
-def unproven_batch_annotators(payload: dict[str, Any]) -> list[dict[str, str]]:
+def inspection_tool_file_examples(payload: dict[str, Any], field: str) -> list[dict[str, str]]:
     diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
-    examples = diagnostic.get("execution_proof_unproven_batch_annotators")
+    examples = diagnostic.get(field)
     if not isinstance(examples, list):
         return []
     return [
@@ -6960,6 +6960,14 @@ def unproven_batch_annotators(payload: dict[str, Any]) -> list[dict[str, str]]:
         for example in examples
         if isinstance(example, dict) and isinstance(example.get("tool"), str) and isinstance(example.get("file"), str)
     ]
+
+
+def unproven_batch_annotators(payload: dict[str, Any]) -> list[dict[str, str]]:
+    return inspection_tool_file_examples(payload, "execution_proof_unproven_batch_annotators")
+
+
+def batch_inspection_delegations(payload: dict[str, Any]) -> list[dict[str, str]]:
+    return inspection_tool_file_examples(payload, "batch_inspection_delegations")
 
 
 def unproven_batch_annotator_suffix(payload: dict[str, Any]) -> str:
@@ -7214,6 +7222,11 @@ def payload_route(payload: dict[str, Any]) -> dict[str, Any]:
 
 def attribution_classification(code: str, payload: dict[str, Any]) -> str:
     normalized = normalize_reason(code)
+    diagnostic = payload.get("capture_diagnostic")
+    if normalized == "execution_not_proven" and isinstance(diagnostic, dict) and (
+        diagnostic.get("execution_proof_block_reason") == "batch_inspection_delegated_to_editor_service"
+    ):
+        return "configuration_blocked"
     if payload.get("verdict") in {"GREEN", "RED"} or normalized in {
         "clean",
         "clean_confirmed",
@@ -7499,7 +7512,8 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
         }, reason)
         diagnostic = payload.get("capture_diagnostic")
         delegated_batch_recovery = reason == "execution_not_proven" and isinstance(diagnostic, dict) and (
-            diagnostic.get("execution_proof_block_reason") == "batch_inspection_delegated_to_editor_service"
+            normalize_reason(diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason"))
+            == "batch_inspection_delegated_to_editor_service"
         )
         if (plugin_action_used and not delegated_batch_recovery) or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
             next_action = UNKNOWN_TERMINAL_ACTION
@@ -7520,6 +7534,9 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     proof_failures = payload.get("proof_failures")
     if isinstance(proof_failures, list) and proof_failures:
         agent_result["proof_failures"] = [str(failure) for failure in proof_failures]
+    delegations = batch_inspection_delegations(payload)
+    if delegations:
+        agent_result["batch_inspection_delegations"] = delegations
     inspection_proof = compact_inspection_proof(payload)
     if inspection_proof:
         agent_result["inspection_proof"] = inspection_proof

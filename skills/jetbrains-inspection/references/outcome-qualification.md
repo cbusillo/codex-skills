@@ -75,7 +75,8 @@ An enabled TypeScript unresolved-reference inspection may delegate diagnostics
 to the editor language service even after its classic visitor finishes. The
 plugin's `batch_inspection_delegated_to_editor_service` proof gap stays terminal
 `UNKNOWN/execution_not_proven`, classified as `environment_blocked`. The helper
-preserves the plugin's supported recovery and tool/file guidance: use stock
+preserves the plugin's supported recovery and structured
+`agent_result.batch_inspection_delegations` tool/file pairs: use stock
 `inspect.sh` in an isolated profile, or explicitly turn off the TypeScript
 language service in the exact project and request a fresh API inspection, while
 keeping the unresolved-reference inspection enabled. Neither route changes the
