@@ -830,8 +830,10 @@ each target repository:
   person's repository is a stop: ask your Director first, then set
   `GH_WITH_ENV_TOKEN_OWN_USER=1` on each command that writes there. Without
   it the helpers refuse and name the opt-in; a value in `local.env` does not
-  count. With it, the agent comments, commits, pushes, and opens PRs as the
-  active `gh` login, and the helpers print `acting as your own GitHub user`.
+  count. Configure the person's personal login as described under
+  [Primary App and contributor identity](references/cli-reference.md#primary-app-and-contributor-identity).
+  With the opt-in, publishing checks that the active account matches that
+  declaration, and the helpers print `acting as your own GitHub user`.
   Commits keep your git identity, and `gh-pr.py create` adds the
   AI-assistance sentence to the body unless it already says so.
   `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` refuses even with the opt-in.

@@ -148,6 +148,52 @@ else:
         self.assertEqual(self.run_git("remote", "get-url", "origin"), "git@github.com:fork-owner/project.git")
         self.assertEqual(self.identities(), ["Fixture Person", "person@example.invalid"] * 2)
 
+    def test_own_user_push_requires_declared_person_before_git_push(self) -> None:
+        git_proxy = self.root / "git-proxy"
+        git_proxy.write_text(f'''#!{sys.executable}
+import os, subprocess, sys
+from pathlib import Path
+if "push" in sys.argv[1:]:
+    Path(os.environ["PUSH_LOG"]).write_text("pushed")
+else:
+    sys.exit(subprocess.call([{str(self.git)!r}, *sys.argv[1:]]))
+''')
+        git_proxy.chmod(0o700)
+        gh = self.root / "gh"
+        gh.write_text('''#!/bin/sh
+case "$*" in
+'auth token') echo fixture-person-token ;;
+'api user --jq .login') echo "$FIXTURE_ACTIVE_LOGIN" ;;
+*) exit 42 ;;
+esac
+''')
+        gh.chmod(0o700)
+        push_log = self.root / "push.log"
+        env_file = self.root / "local.env"
+        for declaration, active, allowed in (
+            ("", "fixture-person", False),
+            ("fixture-person", "another-person", False),
+            ("fixture-person", "cellmechanic-code-bot", False),
+            ("catalog-app[bot]", "catalog-app[bot]", False),
+            ("fixture-person", "FIXTURE-PERSON", True),
+        ):
+            with self.subTest(declaration=declaration, active=active):
+                env_file.write_text(f"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN={declaration}\n")
+                result = subprocess.run(
+                    [str(SCRIPTS / "git-push-as-bot"), "--remote", "upstream", "HEAD"],
+                    cwd=self.repo, env=self.env | {
+                        "CODEX_SKILLS_ENV_FILE": str(env_file),
+                        "GH_WITH_ENV_TOKEN_OWN_USER": "1",
+                        "GIT_PUSH_AS_BOT_GIT": str(git_proxy),
+                        "GIT_PUSH_AS_BOT_GH": str(gh),
+                        "FIXTURE_ACTIVE_LOGIN": active, "PUSH_LOG": str(push_log),
+                    }, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, allowed, result.stderr)
+                self.assertEqual(push_log.exists(), allowed)
+                self.assertEqual(self.run_git("remote", "get-url", "upstream"),
+                                 "https://github.com/upstream-owner/project.git")
+                push_log.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()
