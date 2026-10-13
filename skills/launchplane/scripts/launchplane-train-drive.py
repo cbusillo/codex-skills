@@ -42,9 +42,11 @@ import calendar
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -60,6 +62,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 WRITE_ACTION = SCRIPT_DIR / "launchplane-write-action.py"
 GH_WITH_ENV_TOKEN = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
 RECONCILER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "reconcile-runtime-checkout.py"
+PLAN_HELPER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-plan.py"
 sys.path.insert(0, str(GH_WITH_ENV_TOKEN.parent))
 import github_identity
 import github_read
@@ -68,6 +71,29 @@ EXIT_CODES = {"landed": 0, "failed": 1, "needs_owner": 2, "error": 3}
 LEASE_HELD_CODE = "merge_train_controller_lease_held"
 FAILING_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 TERMINAL_READ_FAILURES = {"invalid_credentials", "permission_denied", "actor_mismatch", "unconfigured_identity"}
+
+
+def _uncertain(response: object) -> bool:
+    """Only a projected action or explicit service rejection settles an exchange."""
+    if not isinstance(response, dict):
+        return True
+    summary = response.get("summary") or {}
+    result = response.get("result")
+    if not isinstance(summary, dict) or summary.get("projection_error_code"):
+        return True
+    if response.get("status") in {"accepted", "ok"}:
+        return not (isinstance(result, dict) and isinstance(result.get("controller_action"), str)
+                    and bool(result["controller_action"]))
+    code = summary.get("error_code")
+    return not (
+        response.get("status") in {"denied", "unauthorized", "stale", "invalid_request", "invalid", "unavailable"}
+        and isinstance(code, str) and bool(code)
+        and isinstance(summary.get("http_status"), int)
+        and (400 <= summary["http_status"] < 500 or code in {
+            "github_request_failed", "github_token_not_configured", "database_storage_required"})
+        and code not in {"client_timeout", "invalid_response", "provider_unavailable", "unknown_write"}
+        and not summary.get("projection_error_code")
+    )
 
 
 @dataclass
@@ -82,8 +108,10 @@ class DriveIO:
     merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
     quota_wait: Callable[[], float] = lambda: 0.0
     # Reconciles the installed catalog after a landing; None when the repository is not this catalog.
-    reconcile: Callable[[str, str], dict[str, Any] | None] = lambda _repository, _sha: None
+    reconcile: Callable[[str, str], dict[str, Any] | None] | None = None
+    reconcile_plans: Callable[[str, list[int]], dict[str, Any]] | None = None
     finish_reads: Callable[[], None] = lambda: None
+    recover: Callable[[], dict[str, Any] | None] | None = None
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
 
@@ -124,6 +152,7 @@ class DriveState:
     own_refusal_code: str = ""
     own_refusal_streak: int = 0
     controller_evidence: list[dict[str, Any]] = field(default_factory=list)
+    recovery: dict[str, Any] | None = None
 
 
 class DriverLockError(Exception):
@@ -182,6 +211,15 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
     state = DriveState(batch={settings.number})
     emit = _with_runtime_reconciliation(settings, io, emit)
     try:
+        recovered = io.recover() if io.recover is not None else None
+        if recovered is not None:
+            if _uncertain(recovered):
+                state.recovery = recovered.get("recovery") or {"reason": "controller recovery unavailable"}
+                landing = _record_landings(settings, io, state, emit)
+                return _stop(settings, state, emit, "landed" if landing == "landed" else "error")
+            _remember_batch(recovered["result"], state)
+            state.stack_seen = recovered["result"]["controller_action"] in {"execute_stack_collapse", "admit_collapsed_root"}
+            _emit_snapshot(state, emit, _snapshot(settings, state, "controller_recovered", recovered))
         return _drive(settings, io, state, emit)
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as error:
         if isinstance(error, github_read.GitHubReadError):
@@ -199,9 +237,13 @@ def _with_runtime_reconciliation(
 ) -> Callable[[str, dict[str, Any]], None]:
     def wrapped(event: str, payload: dict[str, Any]) -> None:
         if event == "stop" and payload.get("outcome") == "landed" and payload.get("landing_sha"):
-            receipt = io.reconcile(settings.repository, payload["landing_sha"])
+            receipt = io.reconcile(settings.repository, payload["landing_sha"]) if io.reconcile is not None else None
             if receipt is not None:
                 payload["runtime_reconciliation"] = receipt
+            landed = [item["number"] for item in payload.get("prs", []) if item.get("outcome") == "landed"]
+            planning = io.reconcile_plans(settings.repository, landed) if io.reconcile_plans is not None else None
+            if planning is not None:
+                payload["planning_reconciliation"] = planning
         emit(event, payload)
 
     return wrapped
@@ -228,18 +270,25 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             return _stop(settings, state, emit, "error", reason="deadline reached", last_action=state.last_action)
 
         pass_number += 1
-        key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-{pass_number}-{int(io.now())}"
+        key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-{pass_number}-{uuid.uuid4().hex}"
         response = io.controller(settings.repository, settings.base_branch, key)
-        if response is None or response.get("status") == "no_response":
-            state.own_refusal_streak = 0
+        if _uncertain(response):
             state.candidate_active = False
-            state.helper_failures += 1
-            state.lease_held = None
-            _emit_snapshot(state, emit, _snapshot(settings, state, "helper_unavailable", response))
-            if state.helper_failures >= settings.max_helper_failures:
-                return _stop(settings, state, emit, "error", reason="merge-train helper kept failing")
-            _pause(settings, io, state)
-            continue
+            state.recovery = {"reason": "controller mutation outcome is uncertain; reconcile before retry",
+                              "request": {"repository": settings.repository, "base_branch": settings.base_branch,
+                                          "mutate": True},
+                              "idempotency_key_sha256": hashlib.sha256(key.encode()).hexdigest(),
+                              "recommendation": "Read the PR and controller state, then use --recover-controller to replay the saved request; do not start a fresh pass."}
+            if isinstance(response, dict):
+                state.recovery.update(response.get("recovery") or {})
+            _emit_snapshot(state, emit, _snapshot(settings, state, "controller_outcome_unknown", None))
+            # A PR may have landed after the reply was lost, but an open PR
+            # cannot establish the controller's candidate/admission outcome.
+            landing = _record_landings(settings, io, state, emit)
+            if landing == "landed":
+                _finish_landing(settings, io, state, emit, started)
+                return _stop(settings, state, emit, "landed")
+            return _stop(settings, state, emit, "error")
         if response.get("status") not in {"accepted", "ok"}:
             state.candidate_active = False
             snapshot = _snapshot(settings, state, "controller_refused", response)
@@ -449,12 +498,19 @@ def _finish_landing(
     io.finish_reads()
     # A stack root lands before its children are resolved; let the controller
     # finish that batch, but never start driving unrelated work.
-    if state.stack_seen:
+    if state.stack_seen and state.recovery is None:
         for finish_pass in range(settings.max_stack_finish_passes):
             if io.now() >= settings.deadline:
                 break
-            key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-finish-{finish_pass}-{int(io.now())}"
+            key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-finish-{finish_pass}-{uuid.uuid4().hex}"
             response = io.controller(settings.repository, settings.base_branch, key)
+            if _uncertain(response):
+                state.recovery = {"reason": "stack-finish mutation outcome is uncertain; reconcile before retry",
+                                  "idempotency_key_sha256": hashlib.sha256(key.encode()).hexdigest(),
+                                  "recommendation": "Use --recover-controller after reading the PR and controller state."}
+                if isinstance(response, dict):
+                    state.recovery.update(response.get("recovery") or {})
+                break
             if (response or {}).get("status") in {"accepted", "ok"}:
                 _remember_batch((response or {}).get("result") or {}, state)
             action = str(((response or {}).get("result") or {}).get("controller_action") or "")
@@ -557,6 +613,7 @@ def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[
             "prs": prs,
             "controller_evidence": state.controller_evidence,
             "actions": [f"stop_{outcome}"],
+            **({"controller_recovery": state.recovery} if state.recovery is not None else {}),
             **{key: value for key, value in detail.items() if value is not None},
         },
     )
@@ -574,7 +631,9 @@ def _run_json(command: list[str], timeout: float) -> Any | None:
         return None
 
 
-def live_io(helper_timeout: float, *, deadline_at: float | None = None, repository_context: str | None = None) -> DriveIO:
+def live_io(helper_timeout: float, *, deadline_at: float | None = None, repository_context: str | None = None,
+            recover_controller: bool = False, tracked_pr: int | None = None,
+            base_branch_context: str = "main") -> DriveIO:
     reader = github_read.GitHubReader(
         gh_cmd=str(GH_WITH_ENV_TOKEN), expected_actor=github_identity.automation_login(),
         operation="github.train.drive", cache_enabled=True, cache_coalesce_seconds=0.0, deadline_at=deadline_at,
@@ -583,23 +642,80 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         remaining = max(0.0, deadline_at - time.time()) if deadline_at is not None else helper_timeout + 60
         if remaining <= 0:
             return {"status": "no_response", "failure": "deadline_reached"}
+        root = Path.home() / ".cache" / "codex-skills" / "train-drivers"
+        name = hashlib.sha256(json.dumps([repository.casefold(), base_branch]).encode()).hexdigest()
+        journal = root / f"{name}.request.json"
+        recovering = journal.exists()
+        try:
+            if recovering:
+                saved = json.loads(journal.read_text())
+                if (saved["repository"], saved["base_branch"], saved["mutate"]) != (repository, base_branch, True):
+                    raise ValueError("request scope mismatch")
+                key = saved["idempotency_key"]
+                if not isinstance(key, str) or not key:
+                    raise ValueError("missing request key")
+            else:
+                root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                fd = os.open(journal, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "w") as handle:
+                    json.dump({"schema_version": 1, "repository": repository, "base_branch": base_branch, "mutate": True,
+                               "idempotency_key": key, "pull_request_number": tracked_pr}, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+        except (OSError, ValueError, KeyError, TypeError):
+            return {"status": "outcome_unknown", "recovery": {"reason": "saved controller request unavailable; no mutation made"}}
+        recovery = {"request": {"repository": repository, "base_branch": base_branch, "mutate": True},
+                    "idempotency_key_sha256": hashlib.sha256(key.encode()).hexdigest(),
+                    "request_file": str(journal),
+                    "reason": "controller mutation outcome requires reconciliation",
+                    "recommendation": "Rerun the same driver command with --recover-controller; retain the saved request until an accepted replay."}
         command = [
             "uv", "run", str(WRITE_ACTION), "--timeout", str(min(helper_timeout, max(0.01, remaining - 2))),
             "merge-train-controller-run-once", "--repo", repository, "--base-branch", base_branch,
             "--mutate", "--idempotency-key", key,
         ]
+        if recovering:
+            if not recover_controller:
+                return {"status": "outcome_unknown", "recovery": recovery}
+            number = saved.get("pull_request_number")
+            if not isinstance(number, int) or pull_request(repository, number) is None:
+                return {"status": "outcome_unknown", "recovery": recovery}
+            # Read-only controller evidence precedes exact-key replay. It never
+            # proves the prior request completed, so it cannot release its key.
+            observed = _run_json(command[:-3], min(helper_timeout + 60, remaining))
+            if _uncertain(observed) or observed.get("status") not in {"accepted", "ok"}:
+                return {"status": "outcome_unknown", "recovery": recovery}
+            remaining = max(0.0, deadline_at - time.time()) if deadline_at is not None else helper_timeout + 60
+            if remaining <= 0:
+                return {"status": "outcome_unknown", "recovery": recovery}
+            command[4] = str(min(helper_timeout, max(0.01, remaining - 2)))
         try:
             completed = subprocess.run(command, capture_output=True, text=True, timeout=min(helper_timeout + 60, remaining), check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
-            return {"status": "no_response", "failure": type(error).__name__}
+            return {"status": "no_response", "failure": type(error).__name__, "recovery": recovery}
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
             payload = None
         if isinstance(payload, dict):
+            if not _uncertain(payload) and (not recovering or payload.get("status") in {"accepted", "ok"}):
+                try:
+                    journal.unlink()
+                except OSError:
+                    return {"status": "outcome_unknown", "recovery": recovery}
+            else:
+                summary = payload.get("summary")
+                if isinstance(summary, dict):
+                    for field_name in ("error_code", "trace_id", "projection_error_code"):
+                        value = summary.get(field_name)
+                        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", value):
+                            recovery[field_name] = value
+                payload["recovery"] = recovery
+                if recovering:
+                    payload["status"] = "outcome_unknown"
             return payload
         # Stderr can echo local configuration, so only the exit code leaves this process.
-        return {"status": "no_response", "exit_code": completed.returncode}
+        return {"status": "no_response", "exit_code": completed.returncode, "recovery": recovery}
 
     def pull_request(repository: str, number: int) -> dict[str, Any] | None:
         try:
@@ -697,6 +813,24 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         if deadline_at is not None:
             reader.deadline_at = deadline_at + 15.0
 
+    def reconcile_plans(repository: str, numbers: list[int]) -> dict[str, Any]:
+        receipts = []
+        for number in numbers:
+            receipt = _run_json(["uv", "run", str(PLAN_HELPER), "--repo", repository,
+                                 "reconcile-landing", "--pr", str(number), "--apply"], 300)
+            receipts.append({"pr": number, "receipt": receipt if isinstance(receipt, dict) else
+                             {"ok": False, "reason": "planning_reconciliation_unavailable"}})
+        return {"ok": all(item["receipt"].get("ok") is True for item in receipts), "prs": receipts}
+
+    def recover() -> dict[str, Any] | None:
+        if repository_context:
+            # Recovery runs even when the tracked PR has already landed.
+            name = hashlib.sha256(json.dumps([repository_context.casefold(), base_branch_context]).encode()).hexdigest()
+            journal = Path.home() / ".cache" / "codex-skills" / "train-drivers" / f"{name}.request.json"
+            if journal.exists():
+                return controller(repository_context, base_branch_context, "")
+        return None
+
     return DriveIO(
         controller=controller,
         pull_request=pull_request,
@@ -705,7 +839,9 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         merged_since=merged_since,
         quota_wait=quota_wait,
         reconcile=reconcile,
+        reconcile_plans=reconcile_plans,
         finish_reads=finish_reads,
+        recover=recover,
     )
 
 
@@ -719,6 +855,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--max-wait-seconds", type=float, default=900.0,
                         help="Longest pause between controller calls while nothing changes.")
     parser.add_argument("--helper-timeout", type=float, default=180.0)
+    parser.add_argument("--recover-controller", action="store_true",
+                        help="Read controller state and replay a saved uncertain request with its original key.")
     parser.add_argument(
         "--allow-branch-update",
         action="store_true",
@@ -749,7 +887,9 @@ def main(argv: list[str]) -> int:
                                                "No Director decision is needed for local contention.")
             else:
                 outcome = drive(settings, live_io(args.helper_timeout, deadline_at=settings.deadline,
-                                                 repository_context=settings.repository), emit)
+                                                 repository_context=settings.repository,
+                                                 recover_controller=args.recover_controller, tracked_pr=args.pr,
+                                                 base_branch_context=settings.base_branch), emit)
     except DriverLockError:
         outcome = _stop(settings, DriveState(batch={settings.number}), emit, "error",
                         reason="local train-driver lock unavailable; no controller call made")

@@ -7,6 +7,9 @@ resources:
   - path: references/ui-browser.md
     kind: reference
     description: Conditional CLI command and session guidance for an installed ui-browser helper.
+  - path: references/foreground-playwright.md
+    kind: reference
+    description: Existing Playwright fallback that keeps a browser journey in one foreground process.
 ---
 
 # Browser UI Review
@@ -35,6 +38,12 @@ Every Code's controller is retired. When no suitable host browser capability is
 available and the independent `ui-browser` CLI is installed and working, read
 [ui-browser guidance](references/ui-browser.md). Keep its CLI-specific commands
 and session handling in that conditional reference.
+
+If that helper loses its page between commands and no suitable host browser
+interface is available, read [foreground Playwright](references/foreground-playwright.md)
+when Playwright and its browser are already installed. This keeps the complete
+journey in one process on either harness; it does not repair the CLI daemon or
+attach to an existing signed-in tab.
 
 ## Interaction workflow
 

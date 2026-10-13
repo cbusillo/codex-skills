@@ -159,17 +159,43 @@ class PreparePythonProjectTest(unittest.TestCase):
 
     def test_rendered_project_model_uses_sdk_and_test_root(self):
         with tempfile.TemporaryDirectory() as temporary:
-            repo = Path(temporary)
+            repo = Path(temporary).resolve()
+            test_root = repo / "tests & fixtures"
+            test_root.mkdir()
+            source = repo / "helper.py"
+            source.touch()
+            interpreter = repo / ".venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.touch()
             with patch("pathlib.Path.home", return_value=repo.parent):
-                files = prepare_python_project.render_project_files(repo, "codex-skills", ["jetbrains-inspection/tests"])
+                files = prepare_python_project.render_project_files(repo, "codex-skills", [test_root.name])
 
-        module = files[repo / ".idea" / "codex-skills.iml"]
-        self.assertIn('content url="file://$MODULE_DIR$"', module)
-        self.assertIn('isTestSource="true"', module)
-        self.assertIn('jdkType="Python SDK"', module)
-        self.assertIn("jetbrains-inspection/tests", module)
-        self.assertIn("codex-skills.iml", files[repo / ".idea" / "modules.xml"])
-        self.assertIn("project-jdk-name=", files[repo / ".idea" / "misc.xml"])
+            modules = ElementTree.fromstring(files[repo / ".idea" / "modules.xml"])
+            module_path = Path(modules.find("./component/modules/module").get("filepath").replace(
+                "$PROJECT_DIR$", str(repo),
+            ))
+            model = ElementTree.fromstring(files[module_path])
+
+            def resolve_model_url(url):
+                return Path(url.removeprefix("file://").replace(
+                    "$MODULE_DIR$", str(module_path.parent),
+                ).replace("$PROJECT_DIR$", str(repo))).resolve()
+
+            content = model.find("./component/content")
+            content_root = resolve_model_url(content.get("url"))
+            self.assertEqual(content_root, repo)
+            self.assertTrue(source.is_relative_to(content_root))
+            test_folder = content.find("sourceFolder")
+            self.assertEqual(resolve_model_url(test_folder.get("url")), test_root)
+            self.assertEqual(test_folder.get("isTestSource"), "true")
+            excluded = [resolve_model_url(folder.get("url")) for folder in content.findall("excludeFolder")]
+            self.assertTrue(any(interpreter.is_relative_to(folder) for folder in excluded))
+            self.assertTrue(all(folder.parent == repo for folder in excluded))
+
+            sdk = model.find("./component/orderEntry")
+            self.assertEqual(sdk.get("jdkType"), "Python SDK")
+            misc = ElementTree.fromstring(files[repo / ".idea" / "misc.xml"])
+            self.assertEqual(misc.find("component").get("project-jdk-name"), sdk.get("jdkName"))
 
     @staticmethod
     def sdk_table(path, entries):

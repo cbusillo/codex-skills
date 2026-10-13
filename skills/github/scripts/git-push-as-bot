@@ -204,6 +204,8 @@ if [ "$app_variable_count" -gt 0 ] || [ "$client_app" -eq 1 ]; then
 			echo "error: pushing to $repo as your own GitHub user needs an active gh login; run gh auth login" >&2
 			exit 1
 		fi
+		. "$script_dir/github-own-user.sh"
+		validate_own_user_login "$own_login" || exit 1
 		echo "notice: acting as your own GitHub user on $repo; pushing as '$own_login'" >&2
 		expected_login=$own_login
 	elif [ "$app_auth_status" -ne 0 ]; then
