@@ -898,21 +898,32 @@ def test_automatic_reconciliation_bounds_a_slow_fetch(tmp_path: Path) -> None:
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
-def test_automatic_reconciliation_finishes_a_merge_after_the_read_budget(tmp_path: Path) -> None:
+@pytest.mark.parametrize("expired_step", ["merge", "blob_read"])
+def test_automatic_reconciliation_read_budget_preserves_merge_boundary(
+    tmp_path: Path, expired_step: str,
+) -> None:
     fixture = session_fixture(tmp_path)
     reconcile = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))["reconcile_runtime_checkout"]
     actual_run = subprocess.run
     clock = [0.0]
-    def slow_merge(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        if "merge" in argv:
+    def expire_step(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if expired_step == "merge" and "merge" in argv:
             assert kwargs["timeout"] > 30
             clock[0] = 31.0
+        elif expired_step == "blob_read" and "cat-file" in argv and "blob" in argv:
+            clock[0] = 31.0
         return actual_run(argv, **kwargs)
-    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch("subprocess.run", side_effect=slow_merge), mock.patch("time.monotonic", side_effect=lambda: clock[0]):
+    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch("subprocess.run", side_effect=expire_step), mock.patch("time.monotonic", side_effect=lambda: clock[0]):
         receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=30)
-    assert receipt["status"] == "synchronized"
-    assert receipt["after_sha"] == fixture.landing_sha
-    assert git(fixture.runtime, "status", "--porcelain") == ""
+    if expired_step == "merge":
+        assert receipt["status"] == "synchronized"
+        assert receipt["after_sha"] == fixture.landing_sha
+        assert git(fixture.runtime, "status", "--porcelain") == ""
+    else:
+        assert receipt["status"] == "retryable"
+        assert receipt["reason_code"] == "runtime_catchup_timeout"
+        assert receipt["runtime_mutated"] is False
+        assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
 def test_automatic_fetch_uses_batch_mode_and_preserves_custom_ssh(tmp_path: Path) -> None:
@@ -930,23 +941,6 @@ def test_automatic_fetch_uses_batch_mode_and_preserves_custom_ssh(tmp_path: Path
         receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=5)
     assert receipt["reason_code"] == "fetch_failed"
     assert captured == ["ssh -i /existing/key -o BatchMode=yes"]
-    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
-
-
-def test_budget_expiry_during_a_read_reports_no_checkout_mutation(tmp_path: Path) -> None:
-    fixture = session_fixture(tmp_path)
-    reconcile = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))["reconcile_runtime_checkout"]
-    actual_run = subprocess.run
-    clock = [0.0]
-    def expire_read(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        if "cat-file" in argv and "blob" in argv:
-            clock[0] = 31.0
-        return actual_run(argv, **kwargs)
-    with mock.patch.dict(os.environ, {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home)}), mock.patch("subprocess.run", side_effect=expire_read), mock.patch("time.monotonic", side_effect=lambda: clock[0]):
-        receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=30)
-    assert receipt["status"] == "retryable"
-    assert receipt["reason_code"] == "runtime_catchup_timeout"
-    assert receipt["runtime_mutated"] is False
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
