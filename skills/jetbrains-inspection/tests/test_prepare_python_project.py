@@ -16,16 +16,72 @@ import zipfile
 from xml.etree import ElementTree
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import unquote
+from typing import Any, cast
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "prepare-python-project.py"
 SPEC = importlib.util.spec_from_file_location("prepare_python_project", SCRIPT_PATH)
-prepare_python_project = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None
+prepare_python_project = cast(Any, importlib.util.module_from_spec(SPEC))
 assert SPEC.loader is not None
 SPEC.loader.exec_module(prepare_python_project)
 
 
+def resolve_model_url(url: str, module_path: Path, repo: Path) -> Path:
+    module_dir = module_path.parent
+    if module_dir.name == ".idea":
+        module_dir = module_dir.parent
+    return Path(unquote(url.removeprefix("file://")).replace(
+        "$MODULE_DIR$", str(module_dir),
+    ).replace("$PROJECT_DIR$", str(repo))).resolve()
+
+
 class PreparePythonProjectTest(unittest.TestCase):
+    def test_generated_index_exclusions_preserve_tracked_and_declared_test_sources(self):
+        for candidate in prepare_python_project.GENERATED_INDEX_ROOTS:
+            if candidate == ".git":
+                continue
+            with self.subTest(candidate=candidate), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                (repo / ".gitignore").write_text(candidate + "/\n")
+                generated = repo / candidate
+                tests = generated / "tests"
+                tests.mkdir(parents=True)
+                (generated / "sample.py").write_text("value = 1\n")
+                roots = prepare_python_project.ignored_generated_roots(repo, [])
+                self.assertIn(candidate, roots)
+                for test_root in (candidate, candidate + "/tests", "./" + candidate + "/tests",
+                                  candidate + "/../" + candidate + "/tests"):
+                    self.assertNotIn(candidate, prepare_python_project.ignored_generated_roots(repo, [test_root]))
+                files = prepare_python_project.render_project_files(repo, "fixture", [], generated_roots=roots)
+                module = ElementTree.fromstring(files[repo / ".idea/fixture.iml"])
+                content = module.find("./component/content")
+                assert content is not None
+                exclusions = {resolve_model_url(entry.get("url", ""), repo / ".idea/fixture.iml", repo)
+                              for entry in content.findall("excludeFolder")}
+                self.assertTrue(all((repo / root).resolve() in exclusions for root in roots))
+                subprocess.run(["git", "-C", str(repo), "add", "--force", candidate + "/sample.py"], check=True)
+                self.assertNotIn(candidate, prepare_python_project.ignored_generated_roots(repo, []))
+
+    def test_ignored_symlink_candidates_do_not_abort_preparation_or_hide_declared_tests(self):
+        for candidate in prepare_python_project.GENERATED_INDEX_ROOTS:
+            if candidate == ".git":
+                continue
+            with self.subTest(candidate=candidate), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                repo = base / "repo"
+                shared = base / "shared"
+                repo.mkdir()
+                (shared / "tests").mkdir(parents=True)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                (repo / ".gitignore").write_text(candidate + "\n")
+                (repo / candidate).symlink_to(shared, target_is_directory=True)
+                self.assertIn(candidate, prepare_python_project.ignored_generated_roots(repo, []))
+                self.assertNotIn(candidate, prepare_python_project.ignored_generated_roots(repo, ["./" + candidate + "/tests"]))
+                self.assertTrue((shared / "tests").is_dir())
+
     @staticmethod
     def write_script(repo, name, dependencies):
         path = repo / name
@@ -123,31 +179,33 @@ class PreparePythonProjectTest(unittest.TestCase):
                 files = prepare_python_project.render_project_files(repo, "codex-skills", [test_root.name])
 
             modules = ElementTree.fromstring(files[repo / ".idea" / "modules.xml"])
-            module_path = Path(modules.find("./component/modules/module").get("filepath").replace(
-                "$PROJECT_DIR$", str(repo),
-            ))
+            module_node = modules.find("./component/modules/module")
+            assert module_node is not None
+            filepath = module_node.get("filepath")
+            assert filepath is not None
+            module_path = Path(filepath.replace("$PROJECT_DIR$", str(repo)))
             model = ElementTree.fromstring(files[module_path])
 
-            def resolve_model_url(url):
-                return Path(url.removeprefix("file://").replace(
-                    "$MODULE_DIR$", str(module_path.parent),
-                ).replace("$PROJECT_DIR$", str(repo))).resolve()
-
             content = model.find("./component/content")
-            content_root = resolve_model_url(content.get("url"))
+            assert content is not None
+            content_root = resolve_model_url(content.get("url", ""), module_path, repo)
             self.assertEqual(content_root, repo)
             self.assertTrue(source.is_relative_to(content_root))
             test_folder = content.find("sourceFolder")
-            self.assertEqual(resolve_model_url(test_folder.get("url")), test_root)
+            assert test_folder is not None
+            self.assertEqual(resolve_model_url(test_folder.get("url", ""), module_path, repo), test_root)
             self.assertEqual(test_folder.get("isTestSource"), "true")
-            excluded = [resolve_model_url(folder.get("url")) for folder in content.findall("excludeFolder")]
+            excluded = [resolve_model_url(folder.get("url", ""), module_path, repo) for folder in content.findall("excludeFolder")]
             self.assertTrue(any(interpreter.is_relative_to(folder) for folder in excluded))
             self.assertTrue(all(folder.parent == repo for folder in excluded))
 
             sdk = model.find("./component/orderEntry")
+            assert sdk is not None
             self.assertEqual(sdk.get("jdkType"), "Python SDK")
             misc = ElementTree.fromstring(files[repo / ".idea" / "misc.xml"])
-            self.assertEqual(misc.find("component").get("project-jdk-name"), sdk.get("jdkName"))
+            misc_component = misc.find("component")
+            assert misc_component is not None
+            self.assertEqual(misc_component.get("project-jdk-name"), sdk.get("jdkName"))
 
     @staticmethod
     def sdk_table(path, entries):

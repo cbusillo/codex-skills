@@ -13,6 +13,7 @@ completion, fetch results, and classify the outcome for readiness.
 from __future__ import annotations
 
 import argparse
+import errno
 import fnmatch
 import hashlib
 import http.client
@@ -11061,24 +11062,112 @@ class outcome_routing_lock:
             self.handle.close()
 
 
+LIFECYCLE_QUEUE_DIRNAME = "lifecycle-queue"
+LIFECYCLE_TICKET_GLOB = "*.ticket"
+
+
 class lifecycle_lock:
     def __init__(self, timeout_ms: int = DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS):
         self.timeout_ms = max(0, int(timeout_ms))
         self.handle = None
+        self.ticket = None
+        self.ticket_path = None
+        self.queued_at = None
+        self.waited_ms = 0
+
+    @staticmethod
+    def _try_lock(handle):
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif msvcrt is not None:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write("\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                raise OSError("Unsupported platform for lifecycle file locking")
+        except BlockingIOError:
+            return False
+        except OSError as error:
+            if error.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                return False
+            raise
+        return True
+
+    @staticmethod
+    def _unlock(handle):
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+    def _register_lock(self, gate):
+        while not self._try_lock(gate):
+            time.sleep(0.05)
+
+    def _queue_turn(self):
+        directory = lifecycle_lock_path().with_name(LIFECYCLE_QUEUE_DIRNAME)
+        directory.mkdir(parents=True, exist_ok=True)
+        registration = directory / "registration.lock"
+        self.queued_at = time.monotonic()
+        with registration.open("a+", encoding="utf-8") as gate:
+            self._register_lock(gate)
+            try:
+                tickets = list(directory.glob(LIFECYCLE_TICKET_GLOB))
+                sequence = max((int(path.stem) for path in tickets), default=0) + 1
+                self.ticket_path = directory / f"{sequence:020d}.ticket"
+                self.ticket = self.ticket_path.open("x+", encoding="utf-8")
+                if not self._try_lock(self.ticket):
+                    raise OSError("New lifecycle ticket is already locked")
+                if tickets:
+                    print(f"Inspection lifecycle queued behind {len(tickets)} caller(s).", file=sys.stderr, flush=True)
+            finally:
+                self._unlock(gate)
+        while True:
+            with registration.open("a+", encoding="utf-8") as gate:
+                self._register_lock(gate)
+                try:
+                    predecessor = next((path for path in sorted(directory.glob(LIFECYCLE_TICKET_GLOB))
+                                        if path < self.ticket_path), None)
+                    if predecessor is None:
+                        self.waited_ms = round((time.monotonic() - self.queued_at) * 1000)
+                        return
+                    with predecessor.open("r+", encoding="utf-8") as holder:
+                        abandoned = self._try_lock(holder)
+                    if abandoned:
+                        # Kernel ownership, rather than a PID or age, proves an abandoned ticket.
+                        predecessor.unlink()
+                finally:
+                    self._unlock(gate)
+            time.sleep(0.05)
+
+    def _release_ticket(self):
+        if self.ticket is not None:
+            with self.ticket_path.with_name("registration.lock").open("a+", encoding="utf-8") as gate:
+                self._register_lock(gate)
+                try:
+                    self.ticket.close()
+                    self.ticket = None
+                    self.ticket_path.unlink(missing_ok=True)
+                finally:
+                    self._unlock(gate)
 
     def __enter__(self):
         path = lifecycle_lock_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = path.open("a+", encoding="utf-8")
-        if fcntl is not None:
-            deadline = time.monotonic() + (self.timeout_ms / 1000.0)
-            while True:
-                try:
-                    fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError as error:
+        if fcntl is not None or msvcrt is not None:
+            try:
+                self._queue_turn()
+                deadline = time.monotonic() + (self.timeout_ms / 1000.0)
+                while True:
+                    if self._try_lock(self.handle):
+                        break
                     if self.timeout_ms == 0 or time.monotonic() >= deadline:
-                        self.handle.close()
                         raise InspectError(
                             "Timed out waiting for the JetBrains inspection lifecycle lock.",
                             3,
@@ -11086,17 +11175,25 @@ class lifecycle_lock:
                                 "error_reason": "lifecycle_lock_timeout",
                                 "lock_path": str(path),
                                 "timeout_ms": self.timeout_ms,
-                                "hint": "Another lifecycle inspection is running. Wait for it to finish, increase --lifecycle-lock-timeout-ms, or run lifecycle inspections sequentially.",
+                                "hint": "A caller using the older lifecycle lock is still running. Wait for it to finish or increase --lifecycle-lock-timeout-ms.",
                             },
-                        ) from error
+                        )
                     time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+            except BaseException:
+                self.handle.close()
+                self._release_ticket()
+                raise
+        else:
+            self.handle.close()
+            raise InspectError("Lifecycle serialization is unavailable on this platform.", 3)
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if fcntl is not None and self.handle is not None:
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        if self.handle is not None:
+            self._unlock(self.handle)
         if self.handle is not None:
             self.handle.close()
+        self._release_ticket()
 
 
 def now_ms() -> int:
@@ -11407,15 +11504,53 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
     return results
 
 
+def retire_helper_project_caches(identities: list[dict[str, Any]], root: Path, dry_run: bool) -> list[dict[str, Any]]:
+    results = []
+    for identity in identities:
+        if identity.get("helper_project_cache_lifecycle_version") != 1:
+            results.append({"ide": public_identity_summary(identity), "result": {
+                "status": "unsupported", "reason": "plugin_capability_unavailable", "caches": [],
+            }})
+            continue
+        params = {"worktree_path": str(root), "session_id": identity["session_id"],
+                  "dry_run": "true" if dry_run else "false"}
+        try:
+            body = http_post(identity["port"], "lifecycle/retire-project-caches", params, timeout=120.0).body
+        except InspectError as error:
+            error.payload.setdefault("completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup", results)
+            raise
+        except (OSError, http.client.HTTPException) as error:
+            raise InspectError("Project-cache transport failed; retain the worktree.", 3,
+                               {"error_reason": "inspection_api_transport_error",
+                                "completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup": results}) from error
+        entries = body.get("caches")
+        allowed_statuses = {"would_remove", "absent"} if dry_run else {"removed", "absent"}
+        if (body.get("session_id") != identity["session_id"] or body.get("status") != "ok"
+            or body.get("project_cache_lifecycle_version") != 1 or body.get("dry_run") is not dry_run
+            or not paths_same(body.get("worktree_path"), root) or not isinstance(entries, list)
+            or any(not isinstance(entry, dict) or entry.get("status") not in allowed_statuses
+                   or entry.get("reason") != "helper_owned_closed_project"
+                   or not paths_same(entry.get("worktree_path"), root)
+                   for entry in entries)):
+            raise InspectError("Project-cache retirement was not proved; retain the worktree.", 3,
+                               {"project_cache_retirement": public_payload(body), "completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup": results})
+        results.append({"ide": public_identity_summary(identity), "result": public_payload(body)})
+    return results
+
+
 def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
     preview: list[dict[str, Any]] = []
     applied: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    cache_preview: list[dict[str, Any]] = []
+    cache_cleanup: list[dict[str, Any]] = []
     with lifecycle_lock(args.lifecycle_lock_timeout_ms):
         try:
             root = retirement_worktree(Path(args.repo), args.dry_run) if args.command == "remove-worktree" else None
             identities = discover_identities(None)
             preview = unregister_helper_sdks(identities, root, True)
+            if root is not None:
+                cache_preview = retire_helper_project_caches(identities, root, True)
             if not args.dry_run:
                 if root is not None:
                     # Only IDEs with a helper-owned SDK need the mutating call; the final preview rechecks every IDE.
@@ -11465,20 +11600,29 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     common = git_common_worktree(root)
                     if common is None:
                         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
+                    cache_cleanup = retire_helper_project_caches(current, root, False)
+                    remaining_caches = retire_helper_project_caches(current, root, True)
+                    if any(entry["status"] != "absent" for item in remaining_caches for entry in item["result"]["caches"]):
+                        raise InspectError("Project caches still need retirement; retain the worktree.", 3,
+                                           {"project_cache_remaining": remaining_caches})
                     before = worktree_entries(root)
                     completed = subprocess.run(["git", "-C", str(common), "worktree", "remove", str(root)],
                                                capture_output=True, text=True)
                     if completed.returncode or root.exists():
                         finish_raced_worktree_removal(common, root, before, completed.stderr)
             return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
+                    "project_cache_preview": cache_preview, "project_cache_cleanup": cache_cleanup,
                     "sdk_preview": preview, "sdk_cleanup": applied, "sdk_apply_skipped": [item["ide"] for item in skipped],
                     "worktree_removed": root is not None and not args.dry_run,
                     "refused_preview_sdk_count": sum(entry["status"] == "refused" for item in preview for entry in item["result"]["sdks"]),
                     "preserved_unowned_sdk_count": sum(entry["reason"] == "not_helper_owned" for item in (preview if args.dry_run else applied + skipped) for entry in item["result"]["sdks"])}
         except (subprocess.CalledProcessError, OSError) as error:
             raise InspectError("Worktree retirement failed; retain the worktree and inspect the Git/filesystem error.", 3,
-                               {"sdk_preview": preview, "sdk_cleanup": applied, "error": str(error)}) from error
+                               {"sdk_preview": preview, "sdk_cleanup": applied, "project_cache_preview": cache_preview,
+                                "completed_project_cache_cleanup": cache_cleanup, "error": str(error)}) from error
         except InspectError as error:
+            error.payload.setdefault("project_cache_preview", cache_preview)
+            error.payload["completed_project_cache_cleanup"] = cache_cleanup + error.payload.get("completed_project_cache_cleanup", [])
             error.payload.update({"sdk_preview": preview, "completed_sdk_cleanup": applied + error.payload.get("completed_sdk_cleanup", [])})
             raise
 
