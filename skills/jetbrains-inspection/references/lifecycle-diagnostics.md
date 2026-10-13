@@ -168,8 +168,8 @@ when the handled project-open timeout or connection reset records explicit
 negative ownership and acceptance, no open attempts, and no route/session
 identity. Missing, legacy,
 interrupted, or transport-ambiguous evidence remains fail-closed and unresolved.
-It may also release only the local `cleanup_pending` or completed `prepared`
-lease, without closing a project, when successful discovery proves the lease-bound accepting IDE session
+It may also release only the local pending, prepared, warm, failed-cleanup or
+skipped-cleanup lease, without closing a project, when successful discovery proves the lease-bound accepting IDE session
 is absent, the recorded IDE process is definitively dead, and no live route in
 any session resolves the exact target path. App-start entries without lease or
 ownership identity are excluded from the accepted lifecycle request count.
@@ -196,9 +196,14 @@ Scoped results preserve these boundaries:
   filename/identity mismatches return nonzero without lifecycle requests or
   deletion. Their reason codes are `invalid_lease_selector`, `lease_not_found`,
   `lease_identity_ambiguous`, and `lease_identity_mismatch`.
-- A selected lease that fails the existing age/PID staleness predicate returns
+- A live helper PID always retains its lease, regardless of age; inaccessible
+  process state is treated as live. A selected lease that fails staleness returns
   nonzero with `lease_not_stale`, including in dry-run mode. A matched stale
-  dry-run lists only that lease and does not discover routes or mutate it.
+  dry-run discovers routes when needed to evaluate no-close proof and lists
+  safe local removals in `would_remove`. It never claims ownership, closes a
+  project, or deletes a lease. A live route needing a claim remains unresolved
+  until scoped apply proves ownership and settled activity. Plain output names
+  preview/apply and the predicted, removed and unresolved counts.
 - Discovery failures, unresolved ownership, route/session mismatches, and
   refused closes retain the selected lease with the existing failure evidence.
 - Only the maintained helper removes the selected lease after confirmed close
@@ -206,6 +211,15 @@ Scoped results preserve these boundaries:
   `project_not_open`, `project_preexisted`, `ownership_not_proven` (a definitive
   negative claim), or `original_ide_process_dead_no_route`. Other leases remain
   untouched. Running without a selector retains the existing global behavior.
+
+`remove-worktree` automatically reconciles only leases for its exact worktree,
+under the lifecycle lock and after primary, lock and uncommitted-work checks.
+Its preview predicts safe local removals; apply independently checks and removes
+them before SDK retirement. Unresolved or live leases retain the worktree and
+the refusal names each blocking lease ID and its scoped `--no-dry-run` command.
+An offline IDE needs no startup for the existing dead-process/no-route proof;
+ambiguous open evidence and replacement-session target routes still retain
+their leases. SDK retirement keeps its separate live-IDE proof requirement.
 
 Lifecycle inspections are serialized by a bounded local lock. If another helper
 inspection is already opening, inspecting, or cleaning up a project, wait for it
