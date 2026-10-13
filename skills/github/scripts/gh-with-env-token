@@ -959,6 +959,8 @@ act_as_own_user() {
 		echo "error: acting as your own GitHub user on $own_user_repository needs an active gh login; run gh auth login" >&2
 		return 1
 	fi
+	. "$script_dir/github-own-user.sh"
+	validate_own_user_login "$own_login" || return 1
 	echo "notice: acting as your own GitHub user on $own_user_repository; using the active gh account '$own_login'" >&2
 	if [ "$print_auth_account" -eq 1 ]; then
 		echo "gh auth status (your own GitHub user):" >&2

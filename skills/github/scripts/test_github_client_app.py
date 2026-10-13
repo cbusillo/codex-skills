@@ -127,7 +127,8 @@ class ClientAppTests(unittest.TestCase):
         with self.assertRaises(identity.ContributorRepository):
             self.auth("host/missing", write=True)
         self.assertFalse(identity.acts_as_own_user("host/missing"))
-        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1"}):
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1",
+                                      "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
             self.assertTrue(identity.acts_as_own_user("host/missing"))
         self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
 
@@ -215,7 +216,8 @@ class ClientAppTests(unittest.TestCase):
         result = self.wrapper(*args)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("GH_WITH_ENV_TOKEN_OWN_USER=1", result.stderr)
-        result = self.wrapper(*args, own_user=True)
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+            result = self.wrapper(*args, own_user=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("acting as your own GitHub user", result.stderr)
 
@@ -224,10 +226,27 @@ class ClientAppTests(unittest.TestCase):
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "different[bot]"}):
             result = self.wrapper(*args)
             self.assertNotEqual(result.returncode, 0)
+
             self.assertIn("expected 'different[bot]'", result.stderr)
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "app-2[bot]"}):
             result = self.wrapper(*args)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_own_user_actor_refusal_is_not_retried_as_network_failure(self) -> None:
+        os.environ.update({identity.OWN_USER_OPT_IN: "1",
+                           "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "another-person",
+                           "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
+        wrapper = str(Path(identity.__file__).with_name("gh-with-env-token"))
+        result = github_api.call_gh_with_retry(
+            "GET", "/user", gh_cmd=wrapper,
+            gh_prefix_args=["--write-actor-for", "host/missing"],
+            operation="github.comment.create", actor="app-1[bot]",
+            expected_actor="app-1[bot]")
+        self.assertFalse(result.ok)
+        self.assertFalse(result.failure.retryable)
+        self.assertIsNotNone(result.retry_summary)
+        self.assertEqual(result.retry_summary.attempts, 1)
 
     def test_python_request_and_comment_actor_follow_client(self) -> None:
         os.environ["GH_WITH_ENV_TOKEN_GH"] = str(self.fake_gh())
@@ -285,7 +304,8 @@ class ClientAppTests(unittest.TestCase):
         state = github_milestone._command_state("client/product", operation="github.plan.milestone_create",
             actor="app-1[bot]", expected_actor="app-1[bot]", gh_cmd=wrapper, verify_actor=True)
         self.assertEqual(state[1:3], ("app-1[bot]", "app-1[bot]"))
-        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1"}):
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1",
+                                      "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
             own = github_issue.create_issue("fixture", "fixture body", repo="upstream/missing",
                 gh_cmd=wrapper, expected_actor="app-1[bot]")
             self.assertEqual(own["actor"], "own-user")
@@ -313,7 +333,8 @@ class ClientAppTests(unittest.TestCase):
                 self.assertTrue(sections)
 
     def test_own_user_comment_keeps_prerequisite_reads_on_resolved_writer(self) -> None:
-        os.environ.update({identity.OWN_USER_OPT_IN: "1", "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+        os.environ.update({identity.OWN_USER_OPT_IN: "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user",
+                           "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
                            "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
         result = github_comment.comment("issue", 1, "fixture", repo="host/missing",
                                         expected_actor="app-1[bot]")

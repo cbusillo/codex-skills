@@ -52,18 +52,18 @@ def render_project_files(
     safe_module_name = "".join(character if character.isalnum() or character in "-_" else "-" for character in module_name)
     module_file = idea / f"{safe_module_name}.iml"
     source_folders = "\n".join(
-        f'      <sourceFolder url="file://$MODULE_DIR$/{html.escape(root)}" isTestSource="true" />'
+        f'      <sourceFolder url="file://$MODULE_DIR$/../{html.escape(root)}" isTestSource="true" />'
         for root in test_roots
     )
     module_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
-    <content url="file://$MODULE_DIR$">
-      <excludeFolder url="file://$MODULE_DIR$/.mypy_cache" />
-      <excludeFolder url="file://$MODULE_DIR$/.system" />
-      <excludeFolder url="file://$MODULE_DIR$/.local" />
-      <excludeFolder url="file://$MODULE_DIR$/.code" />
-      <excludeFolder url="file://$MODULE_DIR$/.venv" />
+    <content url="file://$MODULE_DIR$/..">
+      <excludeFolder url="file://$MODULE_DIR$/../.mypy_cache" />
+      <excludeFolder url="file://$MODULE_DIR$/../.system" />
+      <excludeFolder url="file://$MODULE_DIR$/../.local" />
+      <excludeFolder url="file://$MODULE_DIR$/../.code" />
+      <excludeFolder url="file://$MODULE_DIR$/../.venv" />
 {source_folders}
     </content>
     <orderEntry type="jdk" jdkName="{sdk_name}" jdkType="Python SDK" />
