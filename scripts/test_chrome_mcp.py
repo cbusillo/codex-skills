@@ -321,7 +321,7 @@ class ChromeTests(unittest.TestCase):
             if pidfile.exists():
                 try:
                     os.kill(int(pidfile.read_text()), signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, ValueError):
                     pass
         self.assertFalse(marker.exists(), 'helper-owned child survived the timeout')
         self.assertIsNone(unrelated.poll())
