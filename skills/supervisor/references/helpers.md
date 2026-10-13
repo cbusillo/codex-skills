@@ -313,10 +313,12 @@ reviews on Dependabot and Actions-bot PRs. Additional logins extend that default
 across the scoped repositories. Other controller holds still block.
 An unavailable Client review scope holds that PR rather than bypassing acceptance.
 Required checks are read from current branch protection and
-matched to their configured App. A Client review label, request check, or real
-Client test notes (including legacy `## Owner test notes`) additionally requires an accepted current-head decision
-read from Launchplane, even when a ready comment claims acceptance. Client prose
-is never emitted. Coordinated repositories remain held regardless of acceptance.
+matched to their configured App. The shared
+[ready-handoff acceptance rule](../../github/references/cli-reference.md#ready-handoffs)
+decides whether Client acceptance is required; when it is, the watcher reads
+the accepted current-head decision from Launchplane rather than trusting the
+ready comment. Client prose is never emitted. Coordinated repositories remain
+held regardless of acceptance.
 
 The oldest eligible PR anchors a group; additional members share at least one
 of its top-level areas. Renames count both source and destination; root files
