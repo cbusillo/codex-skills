@@ -125,6 +125,20 @@ def _drive(train: FakeTrain, **settings: Any) -> tuple[str, list[tuple[str, dict
 
 
 class TrainDriveTests(unittest.TestCase):
+    def test_landing_reconciles_every_landed_batch_member(self) -> None:
+        train = FakeTrain([], merge_after={7: 0, 8: 0})
+        events = []
+        reconciled = []
+        io = train.io()
+        io.reconcile_plans = lambda repository, numbers: reconciled.append((repository, numbers)) or {"ok": False}
+        settings = train_drive.DriveSettings(repository=REPO, number=7)
+        wrapped = train_drive._with_runtime_reconciliation(settings, io, lambda event, payload: events.append((event, payload)))
+        state = train_drive.DriveState(batch={7, 8, 10}, landed={7: "landing", 8: "landing"})
+        self.assertEqual(train_drive._stop(settings, state, wrapped, "landed"), "landed")
+        self.assertEqual(reconciled, [(REPO, [7, 8])])
+        self.assertFalse(events[-1][1]["planning_reconciliation"]["ok"])
+        self.assertEqual(events[-1][1]["outcome"], "landed")
+
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -933,6 +947,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
             io.pull_request = train.pull_request
             io.merged_since = lambda *_args: []
             io.reconcile = lambda *_args: None
+            io.reconcile_plans = lambda *_args: None
             return io
         output = StringIO()
         settled = subprocess.CompletedProcess([], 0, stdout=json.dumps(_response("idle")), stderr="")

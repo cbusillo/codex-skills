@@ -62,6 +62,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 WRITE_ACTION = SCRIPT_DIR / "launchplane-write-action.py"
 GH_WITH_ENV_TOKEN = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-with-env-token"
 RECONCILER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "reconcile-runtime-checkout.py"
+PLAN_HELPER = SCRIPT_DIR.parent.parent / "github" / "scripts" / "gh-plan.py"
 sys.path.insert(0, str(GH_WITH_ENV_TOKEN.parent))
 import github_identity
 import github_read
@@ -107,9 +108,10 @@ class DriveIO:
     merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
     quota_wait: Callable[[], float] = lambda: 0.0
     # Reconciles the installed catalog after a landing; None when the repository is not this catalog.
-    reconcile: Callable[[str, str], dict[str, Any] | None] = lambda _repository, _sha: None
+    reconcile: Callable[[str, str], dict[str, Any] | None] = field(default=lambda _repository, _sha: None)
+    reconcile_plans: Callable[[str, list[int]], dict[str, Any] | None] = field(default=lambda _repository, _prs: None)
     finish_reads: Callable[[], None] = lambda: None
-    recover: Callable[[], dict[str, Any] | None] = lambda: None
+    recover: Callable[[], dict[str, Any] | None] = field(default=lambda: None)
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
 
@@ -238,6 +240,10 @@ def _with_runtime_reconciliation(
             receipt = io.reconcile(settings.repository, payload["landing_sha"])
             if receipt is not None:
                 payload["runtime_reconciliation"] = receipt
+            landed = [item["number"] for item in payload.get("prs", []) if item.get("outcome") == "landed"]
+            planning = io.reconcile_plans(settings.repository, landed)
+            if planning is not None:
+                payload["planning_reconciliation"] = planning
         emit(event, payload)
 
     return wrapped
@@ -807,6 +813,15 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         if deadline_at is not None:
             reader.deadline_at = deadline_at + 15.0
 
+    def reconcile_plans(repository: str, numbers: list[int]) -> dict[str, Any]:
+        receipts = []
+        for number in numbers:
+            receipt = _run_json(["uv", "run", str(PLAN_HELPER), "--repo", repository,
+                                 "reconcile-landing", "--pr", str(number), "--apply"], 300)
+            receipts.append({"pr": number, "receipt": receipt if isinstance(receipt, dict) else
+                             {"ok": False, "reason": "planning_reconciliation_unavailable"}})
+        return {"ok": all(item["receipt"].get("ok") is True for item in receipts), "prs": receipts}
+
     def recover() -> dict[str, Any] | None:
         if repository_context:
             # Recovery runs even when the tracked PR has already landed.
@@ -824,6 +839,7 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         merged_since=merged_since,
         quota_wait=quota_wait,
         reconcile=reconcile,
+        reconcile_plans=reconcile_plans,
         finish_reads=finish_reads,
         recover=recover,
     )
