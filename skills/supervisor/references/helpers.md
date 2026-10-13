@@ -15,9 +15,9 @@ before launch and preserves the file argument, private values and relative
 permission-rule base. It never rewrites that file or inlines its contents.
 Use literal JSON or a readable file path; relative files resolve under the command's `cd` directory.
 Use an absolute path in place of shell-expanded settings paths.
-Relative settings files require an explicit `cd`; otherwise use an absolute path.
+Relative settings files require an absolute `cd` directory; otherwise use an absolute file path.
 Claude launches also scope `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` to the
-invocation so an inherited override cannot enable suggestions. Remove explicit
+launch so an inherited override cannot enable suggestions. Remove explicit
 assignments of that variable from command files; the launcher supplies it.
 Existing sessions may still draw dim suggestions. `read` retains the
 plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`

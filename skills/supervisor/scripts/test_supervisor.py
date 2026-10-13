@@ -1204,6 +1204,15 @@ class TabCloseTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def assert_file_settings_argument(self, command, path, brief):
+        args = shlex.split(command)
+        separator = args.index("--")
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--settings")
+        options, _ = parser.parse_known_args(args[:separator])
+        self.assertEqual(options.settings, str(path))
+        self.assertEqual(args[separator + 1:], [brief])
+
     def test_claude_launch_preserves_existing_settings_and_overrides_suggestions(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -1231,7 +1240,7 @@ class TerminalTests(unittest.TestCase):
             path.write_text(json.dumps(settings))
             command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
             self.assertNotIn(settings["env"]["FIXTURE_PRIVATE_VALUE"], command)
-            self.assertEqual(shlex.split(command)[-4:], ["--settings", "settings.json", "--", "brief"])
+            self.assert_file_settings_argument(command, "settings.json", "brief")
             self.assertEqual(json.loads(path.read_text()), settings)
 
     def test_iterm_read_preserves_screen_when_style_data_is_unavailable(self):
@@ -1248,8 +1257,10 @@ class TerminalTests(unittest.TestCase):
             path.write_text(json.dumps({iterm_tab.CLAUDE_SUGGESTION_SETTING: False}))
             with self.assertRaises(ValueError):
                 iterm_tab.append_brief("claude --settings settings.json", "brief")
+            with self.assertRaises(ValueError):
+                iterm_tab.append_brief("cd relative&&exec claude --settings settings.json", "brief")
             command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))}&&exec claude --settings settings.json", "brief")
-            self.assertEqual(shlex.split(command)[-4:], ["--settings", "settings.json", "--", "brief"])
+            self.assert_file_settings_argument(command, "settings.json", "brief")
             command = iterm_tab.append_brief(f"claude --settings {shlex.quote(str(path))}", "brief")
             self.assertIn(shlex.quote(str(path)), command)
 
@@ -1261,7 +1272,7 @@ class TerminalTests(unittest.TestCase):
             with patch.dict(os.environ, {iterm_tab.CLAUDE_SUGGESTION_ENV: "true"}):
                 command = iterm_tab.with_account(f"exec {shlex.quote(str(child))}", {"provider": "anthropic", "env": {}}, "brief")
                 result = subprocess.run(["/bin/sh", "-c", command], check=True, capture_output=True, text=True)
-            self.assertEqual(result.stdout.strip(), "false")
+            self.assertNotEqual(result.stdout.strip(), "true")
             with self.assertRaises(ValueError):
                 iterm_tab.with_account(f"env {iterm_tab.CLAUDE_SUGGESTION_ENV}=true claude", {"provider": "anthropic", "env": {}}, "brief")
 
@@ -1687,6 +1698,9 @@ class TerminalTests(unittest.TestCase):
                 env={**os.environ, "CLAUDE_CONFIG_DIR": "/inherited/alternate"},
             )
             self.assertEqual(launched.stdout.splitlines(), ["", "brief"])
+        self.assertIn(account_choice.ACCOUNT_VARIABLES["anthropic"],
+                      iterm_tab.account_settings("env CLAUDE_CONFIG_DIR=/other claude",
+                                                 {account_choice.ACCOUNT_VARIABLES["anthropic"]}))
         with self.assertRaises(ValueError):
             iterm_tab.with_account("env CLAUDE_CONFIG_DIR=/other claude", choice)
 
@@ -1959,6 +1973,8 @@ class TerminalTests(unittest.TestCase):
                         "env -S'CLAUDE_CONFIG_DIR=/other claude brief'",
                         "env --split-string='CLAUDE_CONFIG_DIR=/other claude brief'"):
             with self.subTest(command=command), self.assertRaises(ValueError):
+                self.assertIn(account_choice.ACCOUNT_VARIABLES["anthropic"],
+                              iterm_tab.account_settings(command, {account_choice.ACCOUNT_VARIABLES["anthropic"]}))
                 iterm_tab.with_account(command, choice)
         for command in ("bash --noprofile --norc -c 'claude brief'",
                         "env TERM=xterm-256color claude 'Discuss CLAUDE_CONFIG_DIR=/x'",

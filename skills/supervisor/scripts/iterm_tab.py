@@ -216,7 +216,10 @@ def claude_settings(command_text, words):
                 if not path.is_absolute():
                     if directory is None:
                         raise ValueError()
-                    path = Path(directory).expanduser() / path
+                    directory_path = Path(directory).expanduser()
+                    if not directory_path.is_absolute():
+                        raise ValueError()
+                    path = directory_path / path
                 settings = json.loads(path.read_text(encoding="utf-8"))
                 # Keep file settings in the file: inlining exposes private values
                 # and changes the base for relative permission rules.
