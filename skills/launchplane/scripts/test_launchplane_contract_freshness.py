@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import copy
 import http.client
+import io
 import json
 import os
 import subprocess
 import sys
+import runpy
+import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -288,13 +291,20 @@ def test_workflow_token_reports_without_user_lookup() -> None:
                  "title": freshness.MAINTENANCE_ISSUE_TITLE,
                  "body": freshness.MAINTENANCE_ISSUE_MARKER + "\nold evidence"}
         calls = []
+        original_body = issue["body"]
+        comment = {}
 
         def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
             calls.append((method, path, payload))
             assert "/user" not in path
             if "?" in path:
                 return [issue.copy()] if existing else []
-            if method in {"POST", "PATCH"}:
+            if method == "POST" and path.endswith("/comments"):
+                comment.update({"id": 903, "user": issue["user"], **(payload or {})})
+                return comment.copy()
+            if "/issues/comments/" in path:
+                return comment.copy()
+            if method == "POST":
                 issue.update(payload or {})
             return issue.copy()
 
@@ -302,7 +312,10 @@ def test_workflow_token_reports_without_user_lookup() -> None:
             result = freshness.report_workflow_maintenance_issue(evidence, repository="example/repo", api=api)
         assert result["issue"] == {"action": "updated" if existing else "created", "number": 702}
         assert calls[-1][:2] == ("GET", "/repos/example/repo/issues/702")
-        assert issue["body"] == freshness.maintenance_issue_body(evidence)
+        assert issue["body"] == (original_body if existing else freshness.maintenance_issue_body(evidence))
+        if existing:
+            assert comment["body"] == freshness.maintenance_issue_body(evidence)
+            assert result["comment"]["id"] == comment["id"]
 
 
 def test_workflow_reporting_refuses_wrong_context_and_foreign_issues() -> None:
@@ -340,7 +353,7 @@ def test_workflow_reporting_refuses_wrong_context_and_foreign_issues() -> None:
 def test_workflow_reporting_paginates_and_preserves_unknown_writes() -> None:
     evidence = freshness.compare_artifacts(contract_artifact(), changed_artifact())
     issue = {"number": 702, "user": {"login": "github-actions[bot]"},
-             "body": freshness.MAINTENANCE_ISSUE_MARKER}
+             "body": freshness.MAINTENANCE_ISSUE_MARKER, "state": "open"}
     calls = []
 
     def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
@@ -349,6 +362,8 @@ def test_workflow_reporting_paginates_and_preserves_unknown_writes() -> None:
             return [{"number": n, "body": "unrelated"} for n in range(100)]
         if "&page=2" in path:
             return [issue]
+        if method == "GET":
+            return issue
         raise freshness.FreshnessError("github_reporting_failed")
 
     with patch.dict(os.environ, workflow_environment(), clear=True):
@@ -358,7 +373,165 @@ def test_workflow_reporting_paginates_and_preserves_unknown_writes() -> None:
             assert exc.code == "github_reporting_failed"
         else:
             raise AssertionError("unknown write must remain failed")
-    assert [method for method, _, _ in calls] == ["GET", "GET", "PATCH"]
+    assert [method for method, _, _ in calls] == ["GET", "GET", "GET", "POST"]
+
+
+def reporting_cli(evidence: dict[str, Any], api: Any) -> tuple[int, dict[str, Any]]:
+    cli_main = runpy.run_path(str(SCRIPT_DIR / "check-agent-operator-contract-freshness.py"))["main"]
+    with tempfile.TemporaryDirectory() as directory:
+        evidence_file = Path(directory) / "evidence.json"
+        evidence_file.write_text(json.dumps(evidence), encoding="utf-8")
+        output = io.StringIO()
+        with patch.dict(os.environ, workflow_environment(), clear=True), \
+                patch.object(freshness, "_workflow_issue_api", api), \
+                patch("sys.stdout", output):
+            code = cli_main(["report", "--repository", "example/repo", "--workflow-token",
+                             "--evidence-file", str(evidence_file)])
+        return code, json.loads(output.getvalue())
+
+
+def adopted_issue() -> dict[str, Any]:
+    issue = {"number": 702, "state": "open", "user": {"login": "github-actions[bot]"},
+             "title": freshness.MAINTENANCE_ISSUE_TITLE,
+             "body": freshness.MAINTENANCE_ISSUE_MARKER + "\nOriginal drift evidence"}
+    issue["body"] = freshness.github_plan_body.wrap_contributor_plan(
+        issue, "## Current Status\n\nState: Active; contract refresh owned by another session."
+    )
+    return issue
+
+
+def test_workflow_cli_creates_and_rejects_duplicate_issues() -> None:
+    evidence = freshness.compare_artifacts(contract_artifact(), changed_artifact())
+    created = {}
+    calls = []
+
+    def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+        calls.append((method, path, payload))
+        if "?" in path:
+            return []
+        if method == "POST":
+            created.update({"number": 702, "state": "open", "user": {"login": "github-actions[bot]"},
+                            **(payload or {})})
+        return created.copy()
+
+    code, result = reporting_cli(evidence, api)
+    assert code == 0, result
+    assert result["issue"] == {"action": "created", "number": created["number"]}
+    assert created["body"] == freshness.maintenance_issue_body(evidence)
+    assert [method for method, _, _ in calls] == ["GET", "POST", "GET"]
+
+    calls.clear()
+
+    def duplicates(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+        calls.append((method, path, payload))
+        return [adopted_issue(), {**adopted_issue(), "number": 703}]
+
+    code, result = reporting_cli(evidence, duplicates)
+    assert code == 1
+    assert result["error"]["code"] == "duplicate_maintenance_issues"
+    assert [method for method, _, _ in calls] == ["GET"]
+
+
+def test_workflow_cli_preserves_adopted_issue_and_verifies_comment() -> None:
+    evidence = freshness.compare_artifacts(contract_artifact(), changed_artifact())
+    for newline in ("\n", "\r\n"):
+        issue = adopted_issue()
+        issue["body"] = issue["body"].replace("\n", newline)
+        original = copy.deepcopy(issue)
+        calls = []
+        comments = []
+
+        def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+            calls.append((method, path, payload))
+            if "?" in path:
+                return [copy.deepcopy(issue)]
+            if method == "POST" and path.endswith("/comments"):
+                comment = {"id": len(comments) + 1, "user": issue["user"], **(payload or {})}
+                comments.append(comment)
+                return copy.deepcopy(comment)
+            if "/issues/comments/" in path:
+                return copy.deepcopy(comments[int(path.rsplit("/", 1)[1]) - 1])
+            assert method == "GET", "adoption must never cause a body or title write"
+            return copy.deepcopy(issue)
+
+        for _ in range(2):
+            code, result = reporting_cli(evidence, api)
+            assert code == 0, result
+            assert result["issue"] == {"action": "updated", "number": issue["number"]}
+            assert result["comment"]["id"] == comments[-1]["id"]
+        assert issue == original
+        assert len(comments) == 2
+        assert all(c["body"] == freshness.maintenance_issue_body(evidence) for c in comments)
+        writes = [(method, path) for method, path, _ in calls if method != "GET"]
+        assert writes == [("POST", f"/repos/example/repo/issues/{issue['number']}/comments")] * 2
+        assert calls[-2][1] == f"/repos/example/repo/issues/comments/{comments[-1]['id']}"
+
+
+def test_workflow_cli_rejects_foreign_and_malformed_adoption_without_writes() -> None:
+    evidence = freshness.compare_artifacts(contract_artifact(), changed_artifact())
+    canonical = adopted_issue()
+    parser = freshness.github_plan_body
+    invalid = [
+        {**canonical, "user": {"login": "human"}},
+        {**canonical, "user": None},
+        {**canonical, "body": canonical["body"].replace(parser.PLAN_ORIGINAL_END, "")},
+        {**canonical, "body": canonical["body"] + parser.PLAN_MANAGED_START},
+        {**canonical, "body": "unowned preamble\n" + canonical["body"]},
+        {**canonical, "body": canonical["body"].replace(
+            freshness.MAINTENANCE_ISSUE_MARKER, "quoted request\n" + freshness.MAINTENANCE_ISSUE_MARKER)},
+        {**canonical, "body": parser.wrap_contributor_plan(
+            {"body": "foreign original request"}, freshness.MAINTENANCE_ISSUE_MARKER)},
+    ]
+    for issue in invalid:
+        calls = []
+
+        def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+            calls.append((method, path, payload))
+            return [issue]
+
+        code, result = reporting_cli(evidence, api)
+        assert code == 1
+        assert result["error"]["code"] == "maintenance_issue_not_workflow_owned"
+        assert [method for method, _, _ in calls] == ["GET"]
+
+
+def test_workflow_cli_preserves_unknown_comparisons_and_comment_outcomes() -> None:
+    for classification in ("unknown", "current"):
+        calls = []
+        code, result = reporting_cli({"classification": classification}, lambda *args: calls.append(args))
+        assert code == 0
+        assert result["issue"] == {"action": "none", "number": None}
+        assert not calls
+
+    evidence = freshness.compare_artifacts(contract_artifact(), changed_artifact())
+    for failure in ("write", "id", "body", "author", "read", "issue"):
+        issue = adopted_issue()
+        calls = []
+
+        def api(method: str, path: str, payload: dict[str, Any] | None) -> Any:
+            calls.append((method, path, payload))
+            if "?" in path:
+                return [issue]
+            if method == "POST":
+                if failure == "write":
+                    raise freshness.FreshnessError("github_reporting_failed")
+                return {"id": None if failure == "id" else 901}
+            if "/issues/comments/" in path:
+                if failure == "read":
+                    raise freshness.FreshnessError("github_reporting_failed")
+                return {"id": 901, "body": "stale" if failure == "body" else freshness.maintenance_issue_body(evidence),
+                        "user": {"login": "human" if failure == "author" else "github-actions[bot]"}}
+            if failure == "issue" and any(method == "POST" for method, _, _ in calls):
+                return {**issue, "state": "closed"}
+            return issue
+
+        code, result = reporting_cli(evidence, api)
+        assert code == 1
+        assert result["error"]["code"] == (
+            "github_reporting_failed" if failure in {"write", "read"} else "maintenance_issue_readback_failed"
+        )
+        assert sum(method == "POST" for method, _, _ in calls) == 1
+        assert all(method in {"GET", "POST"} for method, _, _ in calls)
 
 
 def test_workflow_api_uses_native_job_token_without_actor_probe() -> None:
@@ -372,6 +545,10 @@ def test_workflow_api_uses_native_job_token_without_actor_probe() -> None:
 
 def main() -> int:
     tests = [
+        test_workflow_cli_creates_and_rejects_duplicate_issues,
+        test_workflow_cli_preserves_adopted_issue_and_verifies_comment,
+        test_workflow_cli_rejects_foreign_and_malformed_adoption_without_writes,
+        test_workflow_cli_preserves_unknown_comparisons_and_comment_outcomes,
         test_workflow_token_reports_without_user_lookup,
         test_workflow_reporting_refuses_wrong_context_and_foreign_issues,
         test_workflow_reporting_paginates_and_preserves_unknown_writes,
