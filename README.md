@@ -1191,7 +1191,10 @@ or remove MCP entries. Avoid this preview on homes you must keep entirely
 unchanged; use isolated fixture homes instead. The installer uses Claude's
 [native MCP management commands](https://code.claude.com/docs/en/mcp#add-mcp-servers-from-json-configuration)
 to install one user-scoped `catalog-chrome` server per home, invoking
-`claude --claude-in-chrome-mcp` with the pinned `CLAUDE_CONFIG_DIR`. It never
+the absolute path of the `claude` executable selected from the installer's PATH,
+with `--claude-in-chrome-mcp` and the pinned `CLAUDE_CONFIG_DIR`. Later sessions
+can use a different PATH. If the executable moves, put its new location on PATH
+and preview/apply again; receipt-owned entries migrate automatically. It never
 uses the caller's authentication overrides: the native `env -u` launcher removes
 those variable names without reading their values. For a pinned `~/.claude`
 default account, it also unsets `CLAUDE_CONFIG_DIR`, preserving Claude's native
@@ -1202,14 +1205,24 @@ home stops the explicit catalog install before its writes. To install bindings
 and instructions while leaving Chrome enrollment unchanged, move aside
 `.local/chrome.toml` and rerun; instruction-only refresh also skips Chrome.
 The ignored `.local/chrome-install.json` records owned
-entries, so changing only `pinned_home` updates those entries on the next explicit
-install. A failed update attempts to restore the previous managed entry; a
+entries, so changing `pinned_home` or the selected executable updates those entries
+on the next explicit install. The released entry that invoked `claude` through
+PATH is a supported prior receipt; a hand-edited entry is still preserved.
+A failed update attempts to restore the previous managed entry; a
 failed restoration names the receipt to recover from. Inspect a reported
 conflict with `claude mcp get catalog-chrome`, reconcile that entry deliberately,
 and preview again. Removing a home from the list leaves its installed entry
 in place; remove it explicitly with `claude mcp remove catalog-chrome -s user`
 in that home if desired. Instruction-only scheduled refreshes preserve MCP
 configuration; they do not enroll new accounts.
+
+Updater preflight precedes Chrome health checks. Each native management call has
+a 45-second timeout and its own process group; on timeout only that group is
+terminated, including children that remain in it. A child that independently
+detaches into another session cannot be covered by that cleanup. Inspect the
+entry and preview again after a timeout: a completed add is read back rather
+than repeated. If an update was interrupted after removal, rerunning restores
+the desired entry from the private configuration; retain the receipt for recovery.
 
 After installing, start fresh sessions without `--chrome`; the user entry
 already supplies the browser tools. The Chrome server entry point is internal
