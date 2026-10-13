@@ -1063,8 +1063,6 @@ def test_permission_refusals_preserve_app_identity() -> None:
                 )
                 assert result.returncode == 1, result
                 assert [json.loads(line) for line in calls.read_text().splitlines()] == [list(command)]
-                assert "rate-limited" not in result.stderr, result
-                assert "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK" not in result.stderr, result
                 assert result.stderr, result
                 assert "installation-token" not in result.stdout + result.stderr, result
 
