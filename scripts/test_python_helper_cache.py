@@ -20,7 +20,7 @@ RUNNER = Path(__file__).with_name("run-python-helper.sh")
 
 class HelperCacheTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("uv"), "uv is required")
-    def test_copied_helpers_import_declared_dependency_without_persistent_script_environments(self):
+    def test_copied_helpers_import_declared_dependency_without_persistent_script_environments(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             cache = root / "cache"
@@ -51,14 +51,14 @@ class HelperCacheTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 data = json.loads(result.stdout)
                 self.assertEqual(data, ["dependency was imported", str(script), ["argument with spaces"], str(worktree)])
-                bucket = cache / "environments-v2"
-                entries = {x.name for x in bucket.iterdir()} if bucket.exists() else set()
+                entries = {x.parent for x in cache.rglob("pyvenv.cfg")}
+                self.assertTrue(entries, "the dependency fixture must exercise an actual cached environment")
                 if first_entries is None:
                     first_entries = entries
                 else:
                     self.assertEqual(entries, first_entries)
 
-    def test_helper_failure_is_returned_to_gate(self):
+    def test_helper_failure_is_returned_to_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             script = Path(temporary) / "failure.py"
             script.write_text('# /// script\n# dependencies = []\n# ///\nraise SystemExit(23)\n')

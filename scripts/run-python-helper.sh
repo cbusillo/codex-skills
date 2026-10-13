@@ -4,4 +4,7 @@
 set -euo pipefail
 script=${1:?Usage: run-python-helper.sh SCRIPT [ARGS...]}
 shift
-exec uv run --no-project --with-requirements "$script" python "$script" "$@"
+# Let uv enforce the script's Python requirement before selecting the shared
+# requirements environment. The catalog preflight installs its Python first.
+interpreter=$(uv python find --resolve-links --script "$script")
+exec uv run --python "$interpreter" --no-project --with-requirements "$script" python "$script" "$@"
