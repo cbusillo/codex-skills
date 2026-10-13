@@ -1422,7 +1422,7 @@ def test_controller_conflict_probe_preserves_planning_and_update_branch_evidence
 
 
 def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> None:
-    probe = {"status": "ran", "pull_request_numbers": [42, 43], "held_out": [{
+    probe: dict[str, Any] = {"status": "ran", "pull_request_numbers": [42, 43], "held_out": [{
         "pull_request_number": 43, "head_sha": "b" * 40,
         "reason": "entry_conflict", "conflicts_with": [42],
     }]}
@@ -3657,17 +3657,17 @@ def test_protected_artifacts_read_empty_invalid_and_denied() -> None:
     status, payload, _ = _run_product_read(argv, response)
     assert status == 0 and payload["result"]["entry_count"] == 0
     for change in (
-        lambda body: body["protected_artifacts"].update(entries="bad"),
-        lambda body: body["protected_artifacts"].update(warnings="bad"),
-        lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="Bearer abcdefghijklmnop"),
-        lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="user:pass@private-host/app"),
-        lambda body: body["protected_artifacts"].update(warnings=["Protected artifact user:pass@private-host/app has no manifest."]),
-        lambda body: body["protected_artifacts"]["entries"][0].update(artifact_id="user:ab/cd@registry.example/app:tag"),
-        lambda body: body["protected_artifacts"].update(warnings=["Protected artifact user:ab/cd@registry.example/app:tag has no manifest."]),
-        lambda body: body["protected_artifacts"]["entries"][0].update(image_digest="user:pass@host"),
-        lambda body: body["protected_artifacts"]["entries"][0].update(instance="user:pass@host"),
-        lambda body: body["protected_artifacts"].update(warnings=["Protected artifact 1://user:pass@host is missing."]),
-        lambda body: body.update(unexpected="private-field"),
+        lambda response: response["protected_artifacts"].update(entries="bad"),
+        lambda response: response["protected_artifacts"].update(warnings="bad"),
+        lambda response: response["protected_artifacts"]["entries"][0].update(artifact_id="Bearer abcdefghijklmnop"),
+        lambda response: response["protected_artifacts"]["entries"][0].update(artifact_id="user:pass@private-host/app"),
+        lambda response: response["protected_artifacts"].update(warnings=["Protected artifact user:pass@private-host/app has no manifest."]),
+        lambda response: response["protected_artifacts"]["entries"][0].update(artifact_id="user:ab/cd@registry.example/app:tag"),
+        lambda response: response["protected_artifacts"].update(warnings=["Protected artifact user:ab/cd@registry.example/app:tag has no manifest."]),
+        lambda response: response["protected_artifacts"]["entries"][0].update(image_digest="user:pass@host"),
+        lambda response: response["protected_artifacts"]["entries"][0].update(instance="user:pass@host"),
+        lambda response: response["protected_artifacts"].update(warnings=["Protected artifact 1://user:pass@host is missing."]),
+        lambda response: response.update(unexpected="private-field"),
     ):
         body = _protected_artifacts_response()
         change(body)
@@ -7913,7 +7913,7 @@ def _domain_inspect(operation: str, after: bool = False) -> dict[str, Any]:
 def test_compose_domain_review_apply_and_read_back() -> None:
     for operation in ("reconcile-compose-domain", "prune-compose-domain"):
         with TemporaryDirectory(dir=Path.home()) as directory:
-            private = {"context": "example", "instance": "prod", "reason": "Adjust private.example.invalid routes",
+            private: dict[str, Any] = {"context": "example", "instance": "prod", "reason": "Adjust private.example.invalid routes",
                        "domains": ["public.example.invalid"]}
             if operation == "reconcile-compose-domain":
                 private["runtime_port"] = 8069
@@ -8000,7 +8000,7 @@ def test_compose_domain_review_apply_and_read_back() -> None:
                     assert status == 2 and not posts
 
 
-def _runtime_sync_response(*, mode: str = "dry-run", changed: bool = True) -> dict[str, object]:
+def _runtime_sync_response(*, mode: str = "dry-run", changed: bool = True) -> dict[str, Any]:
     return {
         "status": "accepted", "trace_id": "launchplane_req_runtime_sync",
         "records": {"target_id": "private-provider-id"},
@@ -8054,7 +8054,7 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
             (403, "authorization_denied", "denied"),
             (400, "dokploy_target_verification_failed", "accepted_unverified"),
         ):
-            error = urllib.error.HTTPError("https://example.invalid", http_status, "Refused", {}, io.BytesIO(json.dumps({
+            error = urllib.error.HTTPError("https://example.invalid", http_status, "Refused", Message(), io.BytesIO(json.dumps({
                 "error": {"code": service_code}, "trace_id": "launchplane_req_apply_error"
             }).encode()))
             code, refused, refused_transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(), error])
@@ -8081,7 +8081,7 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(), TimeoutError()])
         assert code == 1 and result["status"] == "accepted_unverified" and transport.call_count == 2
         denied_readback = urllib.error.HTTPError(
-            "https://example.invalid", 401, "Expired", {}, io.BytesIO(json.dumps({
+            "https://example.invalid", 401, "Expired", Message(), io.BytesIO(json.dumps({
                 "error": {"code": "authorization_denied"}, "trace_id": "launchplane_req_expired"
             }).encode())
         )
@@ -8114,13 +8114,13 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
 
 def test_runtime_sync_denial_and_unsafe_output() -> None:
     argv = ["live-target-runtime-sync-dry-run", "--product", "example-site", "--context", "example-context", "--instance", "testing"]
-    error = urllib.error.HTTPError("https://example.invalid", 403, "Forbidden", {}, io.BytesIO(json.dumps({
+    error = urllib.error.HTTPError("https://example.invalid", 403, "Forbidden", Message(), io.BytesIO(json.dumps({
         "error": {"code": "authorization_denied"}, "trace_id": "launchplane_req_denied"
     }).encode()))
     code, result, transport = _run_runtime_sync(argv, [error])
     assert code == 1 and result["status"] == "denied" and transport.call_count == 1
     assert result["summary"]["trace_id"] == "launchplane_req_denied"
-    unreadable_denial = urllib.error.HTTPError("https://example.invalid", 403, "Forbidden", {}, io.BytesIO())
+    unreadable_denial = urllib.error.HTTPError("https://example.invalid", 403, "Forbidden", Message(), io.BytesIO())
     unreadable_denial.fp.read = Mock(side_effect=http.client.IncompleteRead(b"private-error", 10))
     code, result, _ = _run_runtime_sync(argv, [unreadable_denial])
     assert code == 1 and result["status"] == "denied" and "private-error" not in json.dumps(result)
@@ -8791,7 +8791,7 @@ def test_privileged_policy_proposal_saved_before_500_replays_the_same_plan() -> 
 
 
 def test_merge_policy_enrollment_projects_only_requested_repository() -> None:
-    response = {
+    response: dict[str, Any] = {
         "status": "ok", "trace_id": "launchplane_req_policy_read",
         "record": {
             "status": "active", "record_id": "fixture-policy",
@@ -8885,8 +8885,8 @@ def _monitoring_response(mode: str = "dry-run", **overrides: object) -> dict[str
     }, "result": plan}
 
 
-def _monitoring_profile(*, applied: bool = False, **check_changes: object) -> dict[str, object]:
-    profile = cast(dict[str, Any], _product_profile_response())
+def _monitoring_profile(*, applied: bool = False, **check_changes: object) -> dict[str, Any]:
+    profile = _product_profile_response()
     lane = profile["profile"]["lanes"][0]
     lane["health_url"] = "https://testing.example.invalid/private-health-path"
     lane["health_monitoring"] = {
@@ -9009,7 +9009,7 @@ def test_health_monitoring_private_check_uses_registered_key_and_redacts_it(tmp_
     argv, evidence = _monitoring_review(tmp_path, arguments, **plan)
     before = _monitoring_profile(kind="private_http", private_endpoint_key="example-private-runtime")
     after = _monitoring_profile(applied=True, kind="private_http", private_endpoint_key="example-private-runtime")
-    cast(dict[str, Any], after)["profile"]["lanes"][0]["health_monitoring"]["monitoring_intent"] = "private"
+    after["profile"]["lanes"][0]["health_monitoring"]["monitoring_intent"] = "private"
     profiles = iter([before, after])
     status, receipt, posts, _reads = _run_main(argv, post=_monitoring_response("apply", **plan), read=lambda _: next(profiles))
     assert status == 0, receipt
