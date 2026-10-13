@@ -80,7 +80,7 @@ omit sensitive spans and mark omissions rather than calling a redaction exact.
 ## Reconcile and report
 
 Order verified statements chronologically. Label a direct Director quote,
-an agent-recorded Owner decision, and an agent's interpretation separately.
+an agent-recorded Director decision, and an agent's interpretation separately.
 A later summary does not supersede a direct decision. To call a flip-flop,
 show both decisions about the same action, their dates and conditions, and
 why they conflict; distinguish changed requirements or new evidence. To call

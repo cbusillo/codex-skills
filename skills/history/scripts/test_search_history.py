@@ -158,6 +158,24 @@ class SearchHistoryTests(unittest.TestCase):
                        ".claude-accounts/one/projects", "custom/sessions", "custom/projects"):
             self.assertIn(self.root / suffix, roots)
 
+    def test_file_allowance_samples_each_provider_before_filling_first_root(self):
+        for index in range(3):
+            self.write(f"codex/{index}.jsonl", [codex("preview")])
+        self.write("claude/only.jsonl", [claude("preview")])
+        result = scan([self.root / "codex", self.root / "claude"], queries=["preview"], signals=[], max_files=2)
+        self.assertEqual({hit["provider"] for hit in result["hits"]}, {"codex", "claude"})
+        self.assertFalse(result["coverage_complete"])
+        self.assertTrue(any(item["kind"] == "file_limit" for item in result["limitations"]))
+
+    def test_legacy_messages_have_provider_and_known_bookkeeping_is_not_unknown(self):
+        self.write("legacy.jsonl", [{"timestamp": "2026-10-01T14:20:00Z",
+                                    "payload": {"msg": {"type": "user_message", "text": "preview"}}},
+                                   {"type": "event_msg", "payload": {"type": "token_count", "count": 4}},
+                                   {"type": "turn_context", "payload": {"cwd": "synthetic"}}])
+        result = self.search()
+        self.assertEqual(result["hits"][0]["provider"], "codex")
+        self.assertTrue(result["coverage_complete"])
+
     def test_cli_rejects_ambiguous_dates_and_emits_json_without_changing_source(self):
         path = self.write("source.jsonl", [codex("preview")])
         original = path.read_bytes()

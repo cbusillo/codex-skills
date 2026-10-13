@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -80,11 +81,29 @@ def eastern(timestamp: str | None) -> str | None:
     return local.strftime("%Y-%m-%d %I:%M:%S %p ET").replace(" 0", " ")
 
 
+def candidate_files(root: Path):
+    if root.is_file():
+        yield root
+        return
+    # Stable traversal within each root; one candidate per root per round keeps
+    # an older, large account from consuming every provider's search allowance.
+    def failed_walk(error: OSError):
+        raise error
+
+    for directory, directories, filenames in os.walk(root, onerror=failed_walk):
+        directories.sort()
+        for filename in sorted(filenames):
+            path = Path(directory) / filename
+            if path.suffix.lower() in {".jsonl", ".json"} and path.is_file():
+                yield path
+
+
 def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: float | None = None,
          until: float | None = None, max_files: int = 500, max_bytes: int = 5_000_000,
          max_hits: int = 200) -> dict:
     limitations: list[dict] = []
     files: dict[Path, None] = {}
+    pending = deque()
     for root in roots:
         root = root.expanduser().resolve()
         if not root.exists():
@@ -93,11 +112,11 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
         if root.is_file() and root.suffix.lower() not in {".jsonl", ".json"}:
             limitations.append({"kind": "unsupported_file", "source": str(root)})
             continue
-        paths = [root] if root.is_file() else root.rglob("*")
+        pending.append((root, iter(candidate_files(root))))
+    while pending:
+        root, paths = pending.popleft()
         try:
             for path in paths:
-                if path.suffix.lower() not in {".jsonl", ".json"} or not path.is_file():
-                    continue
                 path = path.resolve()
                 if path in files:
                     continue
@@ -105,6 +124,8 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
                     limitations.append({"kind": "file_limit", "source": str(root)})
                     break
                 files[path] = None
+                pending.append((root, paths))
+                break
         except OSError as exc:
             limitations.append({"kind": "root_io_error", "source": str(root), "error": str(exc)})
 
@@ -137,7 +158,7 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
             if "sessionId" in record:
                 session = record["sessionId"]
                 provider = "claude"
-            elif kind in {"response_item", "event_msg", "turn_context"}:
+            elif kind in {"response_item", "event_msg", "turn_context"} or isinstance(payload.get("msg"), dict):
                 provider = "codex"
             else:
                 counts["unsupported_records"] += 1
