@@ -257,10 +257,12 @@ def test_ingress_private_input_rejects_upstream_and_malformed_scope():
 def test_ingress_product_cannot_change_read_route():
     private = ingress_input()
     private["product"] = "shop/../../service"
-    code, _, get, post = invoke(INGRESS_COMMAND, private=private)
+    code, payload, get, post = invoke(INGRESS_COMMAND, private=private)
     assert code != 0
     get.assert_not_called()
     post.assert_not_called()
+    assert private["product"] not in json.dumps(payload)
+    assert payload["request"] == {}
 
 
 def test_domain_inspect_observed_identity_and_normalized_hosts():
@@ -327,6 +329,17 @@ def test_ingress_missing_scope_never_reads_or_posts():
     assert code != 0
     get.assert_not_called()
     post.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [helper.LaunchplaneSafetyError("unsafe_redirect"), ValueError("invalid_response")])
+def test_second_read_failure_never_reuses_first_trace(error):
+    first = ingress_reads()[0]
+    first["trace_id"] = "launchplane_req_profile"
+    code, payload, get, post = invoke(INGRESS_COMMAND, reads=[first, error])
+    assert code != 0 and get.call_count == 2
+    post.assert_not_called()
+    assert "launchplane_req_profile" not in json.dumps(payload)
+    assert payload["request"]["planner_request_sent"] is False
 
 
 if __name__ == "__main__":

@@ -9604,6 +9604,8 @@ def _ingress_plan_input(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("unsupported_ingress_plan_field")
     for key in ("product", "context", "instance"):
         body[key] = _plan_identifier(body.get(key), key)
+    if not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(body["product"]):
+        raise ValueError("invalid_product")
     if not isinstance(body.get("reason"), str) or not body["reason"].strip():
         raise ValueError("reason_required")
     if type(body.get("expected_host_id")) is not int or body["expected_host_id"] < 1:
@@ -9811,6 +9813,7 @@ def execute_inert_plan(args: argparse.Namespace) -> int:
     try:
         def read(path: str, query: dict[str, str]) -> dict[str, Any]:
             nonlocal provider
+            provider = None
             provider = request_launchplane_read(service_url=settings["service_url"], path=path,
                 settings=settings, query=query, timeout=args.timeout)
             if provider.get("status") != "ok":
