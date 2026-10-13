@@ -286,7 +286,7 @@ def agy_log(conversation_id: Any) -> str:
     fallback = ""
     candidates = [cli_log]
     if isinstance(conversation_id, str) and re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id):
-        candidates += sorted((base / "log").glob("cli-*.log"), reverse=True)[:10]
+        candidates += sorted((base / "log").glob("cli-*.log"), reverse=True)
     for path in candidates:
         try:
             text = path.read_text(errors="replace")
