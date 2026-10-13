@@ -84,6 +84,8 @@ class DriveIO:
     # Reconciles the installed catalog after a landing; None when the repository is not this catalog.
     reconcile: Callable[[str, str], dict[str, Any] | None] = lambda _repository, _sha: None
     finish_reads: Callable[[], None] = lambda: None
+    # Post-landing observation must never use the mutating controller.
+    observe_controller: Callable[[str, str], dict[str, Any] | None] | None = None
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
 
@@ -116,7 +118,8 @@ class DriveState:
     ineligible_streak: int = 0
     empty_candidate_failures: int = 0
     last_action: str = ""
-    stack_seen: bool = False
+    stack_plan: dict[str, Any] = field(default_factory=dict)
+    stack_finish: str = ""
     lease_held: dict[str, Any] | None = None
     candidate_active: bool = False
     unchanged_passes: int = 0
@@ -301,8 +304,11 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             and settings.number in (candidate.get("pull_request_numbers") or [])
         )
         _remember_batch(result, state)
-        if action in {"execute_stack_collapse", "admit_collapsed_root"}:
-            state.stack_seen = True
+        stack = result.get("stack_collapse_plan") or {}
+        members = {stack.get("root_pull_request_number"), *(child.get("pull_request_number")
+                   for child in stack.get("child_dispositions") or ())}
+        if stack.get("collapse_id") and settings.number in members:
+            state.stack_plan = stack
         if action != state.last_action:
             emit("snapshot", _snapshot(settings, state, action, response))
         state.last_action = action
@@ -447,21 +453,48 @@ def _finish_landing(
     started: float,
 ) -> None:
     io.finish_reads()
-    # A stack root lands before its children are resolved; let the controller
-    # finish that batch, but never start driving unrelated work.
-    if state.stack_seen:
+    # The service's own controller completes child disposition. A generic
+    # mutating pass can select unrelated work even after a matching dry run.
+    # Observe only: there is no stack-bound mutation in this helper contract.
+    if state.stack_plan:
+        state.stack_finish = "pass_limit"
         for finish_pass in range(settings.max_stack_finish_passes):
+            _record_landings(settings, io, state, emit)
+            children = state.stack_plan.get("child_dispositions") or []
+            if all(child.get("status") in {"preserved", "blocked", "stale"}
+                   or child.get("pull_request_number") in state.landed
+                   or state.dispositions.get(child.get("pull_request_number")) in {"closed", "superseded"}
+                   for child in children):
+                state.stack_finish = "complete"
+                break
             if io.now() >= settings.deadline:
+                state.stack_finish = "deadline"
                 break
-            key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-finish-{finish_pass}-{int(io.now())}"
-            response = io.controller(settings.repository, settings.base_branch, key)
-            if (response or {}).get("status") in {"accepted", "ok"}:
-                _remember_batch((response or {}).get("result") or {}, state)
-            action = str(((response or {}).get("result") or {}).get("controller_action") or "")
+            if io.observe_controller is None:
+                state.stack_finish = "observation_unavailable"
+                break
+            response = io.observe_controller(settings.repository, settings.base_branch)
+            result = (response or {}).get("result") or {}
+            stack = result.get("stack_collapse_plan") or {}
+            if (response or {}).get("status") not in {"accepted", "ok"}:
+                state.stack_finish = "observation_unavailable"
+                break
+            if (stack.get("collapse_id"), stack.get("root_pull_request_number")) != (
+                state.stack_plan.get("collapse_id"), state.stack_plan.get("root_pull_request_number")
+            ):
+                state.stack_finish = "selection_changed"
+                break
+            state.stack_plan = stack
+            # A matching stack is evidence; the dry run's whole queue is not
+            # part of this post-landing scope.
+            _remember_batch({"stack_collapse_plan": stack}, state)
+            action = str(result.get("controller_action") or "")
             emit("snapshot", _snapshot(settings, state, action or "helper_unavailable", response))
-            if action in {"batch_landed", "idle"}:
+            if stack.get("status") == "ready_for_train":
+                state.stack_finish = "complete"
                 break
-            _pause(settings, io, state)
+            if finish_pass + 1 < settings.max_stack_finish_passes:
+                _pause(settings, io, state)
     # Batch companions may be missing from projected evidence; report every
     # ready-to-merge PR that merged while this driver ran.
     for number in io.merged_since(settings.repository, started):
@@ -536,6 +569,7 @@ def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[
             "landing_sha": state.landed.get(settings.number, ""),
             "prs": prs,
             "actions": [f"stop_{outcome}"],
+            **({"stack_finish": state.stack_finish} if state.stack_finish else {}),
             **{key: value for key, value in detail.items() if value is not None},
         },
     )
@@ -558,15 +592,16 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         gh_cmd=str(GH_WITH_ENV_TOKEN), expected_actor=github_identity.automation_login(),
         operation="github.train.drive", cache_enabled=True, cache_coalesce_seconds=0.0, deadline_at=deadline_at,
     )
-    def controller(repository: str, base_branch: str, key: str) -> dict[str, Any] | None:
+    def controller_pass(repository: str, base_branch: str, key: str = "") -> dict[str, Any] | None:
         remaining = max(0.0, deadline_at - time.time()) if deadline_at is not None else helper_timeout + 60
         if remaining <= 0:
             return {"status": "no_response", "failure": "deadline_reached"}
         command = [
             "uv", "run", str(WRITE_ACTION), "--timeout", str(min(helper_timeout, max(0.01, remaining - 2))),
             "merge-train-controller-run-once", "--repo", repository, "--base-branch", base_branch,
-            "--mutate", "--idempotency-key", key,
         ]
+        if key:
+            command.extend(["--mutate", "--idempotency-key", key])
         try:
             completed = subprocess.run(command, capture_output=True, text=True, timeout=min(helper_timeout + 60, remaining), check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
@@ -677,7 +712,8 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
             reader.deadline_at = deadline_at + 15.0
 
     return DriveIO(
-        controller=controller,
+        controller=controller_pass,
+        observe_controller=lambda repository, base: controller_pass(repository, base),
         pull_request=pull_request,
         update_branch=update_branch,
         failing_checks=failing_checks,
