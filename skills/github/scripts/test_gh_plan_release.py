@@ -215,17 +215,24 @@ class ReleaseTests(ReleaseHarness):
         self.assertEqual(self.f.events.count("post"), posts)
 
     def test_released_sessions_later_claim_invalidates_release_and_blocks_successor(self):
-        self.run_release()
-        self.f.comments.append(self.comment(3,
-            f"Claimed by {fixtures.OTHER['worker']}\n\n" + CLAIM.marker(fixtures.OTHER),
-            "2026-10-04T00:00:00Z"))
-        posts = self.f.events.count("post")
-        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
-            self.successor()
-        self.assertEqual(self.f.events.count("post"), posts)
-        effective = release.effective_comments(self.f.comments)
-        conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
-        self.assertIn(self.f.comments[0]["id"], [c["id"] for c in conflicts])
+        for changes in ({}, {"branch": "work/renewed-42"}, {"worker": "renewed-worker"}):
+            with self.subTest(changes=changes):
+                self.setUp()
+                self.run_release()
+                renewed = {**fixtures.OTHER, **changes}
+                self.f.comments.append(self.comment(3,
+                    f"Claimed by {renewed['worker']}\n\n" + CLAIM.marker(renewed),
+                    "2026-10-04T00:00:00Z"))
+                with self.assertRaisesRegex(ValueError, "ownership activity"):
+                    release.check_activity(self.f.comments, self.f.comments[0],
+                                           release.stamp("2026-10-02T00:00:00Z"))
+                posts = self.f.events.count("post")
+                with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
+                    self.successor()
+                self.assertEqual(self.f.events.count("post"), posts)
+                effective = release.effective_comments(self.f.comments)
+                conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
+                self.assertIn(self.f.comments[0]["id"], [c["id"] for c in conflicts])
 
     def test_unstructured_followup_still_invalidates_structured_release(self):
         self.run_release()
