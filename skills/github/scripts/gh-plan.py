@@ -4932,6 +4932,13 @@ def cmd_reconcile_landing(args: argparse.Namespace) -> None:
         result = github_plan_landing.reconcile(sys.modules[__name__], reader, repo, args.pr, apply=args.apply)
     except (ValueError, TypeError, subprocess.TimeoutExpired, OSError) as exc:
         raise PlanError(str(exc)) from exc
+    if not result["ok"]:
+        failure = github_api_core.FailureDetail(
+            cause="planning_reconciliation_incomplete", message="Planning reconciliation needs owning-agent review",
+            retryable=False, fallback_eligible=False, disposition="stop",
+            write_outcome="unknown" if any(item.get("writes_started") for item in result["issues"]) else "not_started",
+        )
+        raise PlanError(failure.message, payload=result, failure=failure)
     emit(result)
 
 

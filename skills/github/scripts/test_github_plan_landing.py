@@ -6,8 +6,11 @@
 """Behavioral coverage for keyword-closure planning reconciliation."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import importlib.util
+import io
+import json
 import subprocess
 import sys
 import unittest
@@ -126,8 +129,21 @@ class LandingTests(unittest.TestCase):
 
     def test_readback_mismatch_is_not_success(self) -> None:
         self.labels.side_effect = lambda *_args, **_kwargs: {"actor": "fixture-bot"}
-        with self.assertRaises(ValueError):
-            self.run_landing()
+        result = self.run_landing()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["issues"][0]["writes_started"])
+        self.assertIn("close", result["issues"][0])
+
+    def test_partial_label_failure_preserves_close_recovery(self) -> None:
+        self.labels.side_effect = PLAN.github_issue_core.IssueError("offline label write failure", failure=
+            PLAN.github_api_core.FailureDetail(cause="transport_error", message="offline fixture", retryable=False,
+                                               fallback_eligible=False, disposition="stop", write_outcome="rejected"))
+        result = self.run_landing()
+        self.assertFalse(result["ok"])
+        entry = result["issues"][0]
+        self.assertTrue(entry["writes_started"])
+        self.assertTrue(entry["error"]["recovery"]["issue_closed"])
+        self.state.assert_not_called()
 
     def test_pagination_reads_all_references_before_apply(self) -> None:
         self.reader.graphql_json.side_effect = [SimpleNamespace(ok=True, body=graph(7, after="page2")),
@@ -143,6 +159,20 @@ class LandingTests(unittest.TestCase):
             PLAN.cmd_close(args)
         self.labels.assert_not_called()
         self.state.assert_not_called()
+
+    def test_cli_preserves_review_required_failure(self) -> None:
+        outcome = {"ok": False, "issues": [{"number": 7, "status": "review_reporter_acceptance"}]}
+        output = io.StringIO()
+        with patch.object(PLAN.github_plan_landing, "reconcile", return_value=outcome), \
+                patch.object(PLAN.github_read, "GitHubReader"), \
+                patch.object(sys, "argv", [str(Path(__file__).with_name("gh-plan.py")), "--repo", REPO, "reconcile-landing", "--pr", "9"]), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as stopped:
+            PLAN.main()
+        self.assertNotEqual(stopped.exception.code, 0)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["issues"], outcome["issues"])
 
 
 if __name__ == "__main__":
