@@ -234,12 +234,14 @@ alive while it waits or interrupt it explicitly. A hung live caller needs its
 supported cancellation/recovery path; queueing is not evidence of IDE health.
 
 On worktree removal, plugins advertising `helper_project_cache_lifecycle_version`
-also preview and retire cache directories recorded after an exact helper-owned
-project was verified disposed. Retirement checks active projects on EDT and
-renames the owned directory before deleting its contents off EDT. Failed
-deletions retain their quarantine identity for supported recovery. Unrecorded
-and older-plugin caches are preserved and reported; shared indexes are not
-deleted. The cache receipt is separate from SDK retirement and Git removal.
+also preview and retire directories sealed on the exact helper-owned project's
+verified disposal. Sealing runs in the same EDT close invocation; future opens
+use a fresh private directory while shared file/SDK indexes remain warm.
+Retirement runs off EDT and retains its marker until the last deletion, including
+after partial failure or IDE restart. Unsealed, unrecorded and older-plugin
+caches are preserved; shared indexes are not deleted. Cache requests have an
+explicit finite HTTP budget, and transport failures retain earlier IDE receipts.
+The cache receipt is separate from SDK retirement and Git removal.
 Outcome logging uses a cross-platform, bounded routing lock acquired before
 resolving configured log paths through `current`, followed by a bounded concrete
 JSONL lock. Deployment reconciliation must take that routing lock before the

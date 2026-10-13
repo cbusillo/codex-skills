@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,9 +12,15 @@ import sys
 import tempfile
 import time
 import unittest
+from typing import Any, cast
 
 
 HELPER = Path(__file__).resolve().parents[1] / "scripts" / "jb-inspect.py"
+SPEC = importlib.util.spec_from_file_location("queue_contract", HELPER)
+assert SPEC is not None and SPEC.loader is not None
+contract = cast(Any, importlib.util.module_from_spec(SPEC))
+sys.modules[SPEC.name] = contract
+SPEC.loader.exec_module(contract)
 WORKER = """
 import importlib.util, json, os, sys, time
 from pathlib import Path
@@ -68,7 +75,7 @@ class LifecycleQueueTests(unittest.TestCase):
 
     def wait_tickets(self, count):
         deadline = time.monotonic() + 10
-        while len(list((self.cache / 'lifecycle-queue').glob('*.ticket'))) != count:
+        while len(list((self.cache / contract.LIFECYCLE_QUEUE_DIRNAME).glob(contract.LIFECYCLE_TICKET_GLOB))) != count:
             self.assertTrue(all(process.poll() is None for process in self.processes))
             if time.monotonic() >= deadline:
                 self.fail('workers did not register their queue tickets')
@@ -93,7 +100,7 @@ class LifecycleQueueTests(unittest.TestCase):
         rows = [json.loads(line) for line in (self.cache / 'entered.jsonl').read_text().splitlines()]
         self.assertEqual([row['id'] for row in rows], [str(identity) for identity in range(20)])
         self.assertGreater(rows[-1]['wait_seconds'], 0.01)
-        self.assertFalse(list((self.cache / 'lifecycle-queue').glob('*.ticket')))
+        self.assertFalse(list((self.cache / contract.LIFECYCLE_QUEUE_DIRNAME).glob(contract.LIFECYCLE_TICKET_GLOB)))
 
     def test_twenty_callers_remain_pending_then_all_execute_after_owner_releases(self):
         owner = self.start(0)
@@ -130,7 +137,7 @@ class LifecycleQueueTests(unittest.TestCase):
         self.release(successor)
         rows = [json.loads(line)['id'] for line in (self.cache / 'entered.jsonl').read_text().splitlines()]
         self.assertEqual(rows, ['owner', 'successor'])
-        self.assertFalse(list((self.cache / 'lifecycle-queue').glob('*.ticket')))
+        self.assertFalse(list((self.cache / contract.LIFECYCLE_QUEUE_DIRNAME).glob(contract.LIFECYCLE_TICKET_GLOB)))
 
     def test_legacy_lock_remains_exclusive_and_timeout_removes_own_ticket(self):
         if os.name == 'nt':
@@ -143,7 +150,7 @@ class LifecycleQueueTests(unittest.TestCase):
             self.assertEqual(process.returncode, 3, stderr + stdout)
             self.assertEqual(json.loads(stdout)['error_reason'], 'lifecycle_lock_timeout')
             self.assertFalse((self.cache / 'entered.jsonl').exists())
-            self.assertFalse(list((self.cache / 'lifecycle-queue').glob('*.ticket')))
+            self.assertFalse(list((self.cache / contract.LIFECYCLE_QUEUE_DIRNAME).glob(contract.LIFECYCLE_TICKET_GLOB)))
 
 
 if __name__ == '__main__':

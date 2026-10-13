@@ -97,12 +97,15 @@ def render_project_files(
     return {module_file: module_xml, idea / "modules.xml": modules_xml, idea / "misc.xml": misc_xml}
 
 
+GENERATED_INDEX_ROOTS = (".git", ".gradle", "node_modules", "build", "dist", "target",
+                         ".pytest_cache", ".ruff_cache", "__pycache__")
+
+
 def ignored_generated_roots(repo: Path, test_roots: list[str]) -> list[str]:
-    candidates = (".git", ".gradle", "node_modules", "build", "dist", "target",
-                  ".pytest_cache", ".ruff_cache", "__pycache__")
+    declared = [(repo / root).resolve() for root in test_roots]
     excluded = []
-    for name in candidates:
-        if any(root == name or root.startswith(name + "/") for root in test_roots):
+    for name in GENERATED_INDEX_ROOTS:
+        if any(root.is_relative_to((repo / name).resolve()) for root in declared):
             continue
         tracked = subprocess.run(["git", "-C", str(repo), "ls-files", "--", name],
                                  capture_output=True, text=True, check=True).stdout

@@ -29,25 +29,30 @@ SPEC.loader.exec_module(prepare_python_project)
 
 class PreparePythonProjectTest(unittest.TestCase):
     def test_generated_index_exclusions_preserve_tracked_and_declared_test_sources(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            repo = Path(temporary)
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            (repo / ".gitignore").write_text("build/\ndist/\ntarget/\nnode_modules/\n")
-            for name in ("build", "dist", "target", "source"):
-                (repo / name).mkdir()
-                (repo / name / "sample.py").write_text("value = 1\n")
-            subprocess.run(["git", "-C", str(repo), "add", "--force", "target/sample.py"], check=True)
-            roots = prepare_python_project.ignored_generated_roots(repo, ["dist"])
-            self.assertIn("build", roots)
-            self.assertNotIn("dist", roots)
-            self.assertNotIn("target", roots)
-            self.assertNotIn("source", roots)
-            files = prepare_python_project.render_project_files(repo, "fixture", ["dist"], generated_roots=roots)
-            module = ElementTree.fromstring(files[repo / ".idea/fixture.iml"])
-            content = module.find("./component/content")
-            assert content is not None
-            exclusions = {entry.get("url", "") for entry in content.findall("excludeFolder")}
-            self.assertTrue(all(any(url.endswith("/" + root) for url in exclusions) for root in roots))
+        for candidate in prepare_python_project.GENERATED_INDEX_ROOTS:
+            if candidate == ".git":
+                continue
+            with self.subTest(candidate=candidate), tempfile.TemporaryDirectory() as temporary:
+                repo = Path(temporary)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                (repo / ".gitignore").write_text(candidate + "/\n")
+                generated = repo / candidate
+                tests = generated / "tests"
+                tests.mkdir(parents=True)
+                (generated / "sample.py").write_text("value = 1\n")
+                roots = prepare_python_project.ignored_generated_roots(repo, [])
+                self.assertIn(candidate, roots)
+                for test_root in (candidate, candidate + "/tests", "./" + candidate + "/tests",
+                                  candidate + "/../" + candidate + "/tests"):
+                    self.assertNotIn(candidate, prepare_python_project.ignored_generated_roots(repo, [test_root]))
+                files = prepare_python_project.render_project_files(repo, "fixture", [], generated_roots=roots)
+                module = ElementTree.fromstring(files[repo / ".idea/fixture.iml"])
+                content = module.find("./component/content")
+                assert content is not None
+                exclusions = {entry.get("url", "") for entry in content.findall("excludeFolder")}
+                self.assertTrue(all(any(url.endswith("/" + root) for url in exclusions) for root in roots))
+                subprocess.run(["git", "-C", str(repo), "add", "--force", candidate + "/sample.py"], check=True)
+                self.assertNotIn(candidate, prepare_python_project.ignored_generated_roots(repo, []))
 
     @staticmethod
     def write_script(repo, name, dependencies):

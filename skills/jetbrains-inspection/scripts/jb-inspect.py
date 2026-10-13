@@ -11050,6 +11050,10 @@ class outcome_routing_lock:
             self.handle.close()
 
 
+LIFECYCLE_QUEUE_DIRNAME = "lifecycle-queue"
+LIFECYCLE_TICKET_GLOB = "*.ticket"
+
+
 class lifecycle_lock:
     def __init__(self, timeout_ms: int = DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS):
         self.timeout_ms = max(0, int(timeout_ms))
@@ -11094,14 +11098,14 @@ class lifecycle_lock:
             time.sleep(0.05)
 
     def _queue_turn(self):
-        directory = lifecycle_lock_path().with_name("lifecycle-queue")
+        directory = lifecycle_lock_path().with_name(LIFECYCLE_QUEUE_DIRNAME)
         directory.mkdir(parents=True, exist_ok=True)
         registration = directory / "registration.lock"
         self.queued_at = time.monotonic()
         with registration.open("a+", encoding="utf-8") as gate:
             self._register_lock(gate)
             try:
-                tickets = list(directory.glob("*.ticket"))
+                tickets = list(directory.glob(LIFECYCLE_TICKET_GLOB))
                 sequence = max((int(path.stem) for path in tickets), default=0) + 1
                 self.ticket_path = directory / f"{sequence:020d}.ticket"
                 self.ticket = self.ticket_path.open("x+", encoding="utf-8")
@@ -11115,7 +11119,7 @@ class lifecycle_lock:
             with registration.open("a+", encoding="utf-8") as gate:
                 self._register_lock(gate)
                 try:
-                    predecessor = next((path for path in sorted(directory.glob("*.ticket"))
+                    predecessor = next((path for path in sorted(directory.glob(LIFECYCLE_TICKET_GLOB))
                                         if path < self.ticket_path), None)
                     if predecessor is None:
                         self.waited_ms = round((time.monotonic() - self.queued_at) * 1000)
@@ -11498,7 +11502,11 @@ def retire_helper_project_caches(identities: list[dict[str, Any]], root: Path, d
             continue
         params = {"worktree_path": str(root), "session_id": identity["session_id"],
                   "dry_run": "true" if dry_run else "false"}
-        body = http_post(identity["port"], "lifecycle/retire-project-caches", params).body
+        try:
+            body = http_post(identity["port"], "lifecycle/retire-project-caches", params, timeout=120.0).body
+        except InspectError as error:
+            error.payload.setdefault("completed_project_cache_cleanup", results)
+            raise
         entries = body.get("caches")
         allowed_statuses = {"would_remove", "absent"} if dry_run else {"removed", "absent"}
         if (body.get("session_id") != identity["session_id"] or body.get("status") != "ok"
@@ -11509,7 +11517,7 @@ def retire_helper_project_caches(identities: list[dict[str, Any]], root: Path, d
                    or not paths_same(entry.get("worktree_path"), root)
                    for entry in entries)):
             raise InspectError("Project-cache retirement was not proved; retain the worktree.", 3,
-                               {"project_cache_retirement": public_payload(body), "completed_cache_retirement": results})
+                               {"project_cache_retirement": public_payload(body), "completed_project_cache_cleanup": results})
         results.append({"ide": public_identity_summary(identity), "result": public_payload(body)})
     return results
 
@@ -11596,7 +11604,8 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
             raise InspectError("Worktree retirement failed; retain the worktree and inspect the Git/filesystem error.", 3,
                                {"sdk_preview": preview, "sdk_cleanup": applied, "error": str(error)}) from error
         except InspectError as error:
-            error.payload.update({"project_cache_preview": cache_preview, "completed_project_cache_cleanup": cache_cleanup})
+            error.payload.setdefault("project_cache_preview", cache_preview)
+            error.payload.setdefault("completed_project_cache_cleanup", cache_cleanup)
             error.payload.update({"sdk_preview": preview, "completed_sdk_cleanup": applied + error.payload.get("completed_sdk_cleanup", [])})
             raise
 
