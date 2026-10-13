@@ -1,0 +1,4 @@
+interface:
+  display_name: "History"
+  short_description: "Find past decisions and dated session patterns"
+  default_prompt: "Use $history to find when I decided this and whether I later changed it."

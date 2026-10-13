@@ -320,7 +320,9 @@ def iter_events(
         yield from events_from_record(record, path, line_no, timestamp)
 
 
-def events_from_record(record: Any, path: Path, line_no: int, timestamp: str | None) -> Iterable[Event]:
+def events_from_record(
+    record: Any, path: Path, line_no: int, timestamp: str | None, *, preserve_text: bool = False,
+) -> Iterable[Event]:
     if not isinstance(record, dict):
         return
     record_type = str(record.get("type") or "")
@@ -328,22 +330,22 @@ def events_from_record(record: Any, path: Path, line_no: int, timestamp: str | N
     if record_type == "session_meta":
         return
     if record_type in {"user", "assistant"} and "sessionId" in record and isinstance(record.get("message"), dict):
-        yield from claude_code_events(record, path, line_no, timestamp)
+        yield from claude_code_events(record, path, line_no, timestamp, preserve_text=preserve_text)
         return
     if record_type == "response_item" and isinstance(payload, dict):
         role = str(payload.get("role") or "")
         if role in {"user", "assistant"}:
             for text in strings_from_content(payload.get("content")):
-                if not is_noise(text):
+                if preserve_text or not is_noise(text):
                     yield Event(str(path), line_no, timestamp, role, "message", text)
         return
-    msg = payload.get("msg") if isinstance(payload, dict) else None
+    msg = payload if record_type == "event_msg" else payload.get("msg")
     if isinstance(msg, dict):
         msg_type = str(msg.get("type") or "")
         if msg_type in {"user_message", "assistant_message", "message"}:
             role = str(msg.get("role") or msg_type.replace("_message", ""))
-            for text in strings_from_content(msg.get("content") or msg.get("text")):
-                if not is_noise(text):
+            for text in strings_from_content(msg.get("content") or msg.get("text") or msg.get("message")):
+                if preserve_text or not is_noise(text):
                     yield Event(str(path), line_no, timestamp, role, "message", text)
         elif msg_type in {"exec_command", "exec_result", "tool_result", "function_call_output"}:
             text = text_from_mapping(msg)
@@ -356,7 +358,9 @@ def events_from_record(record: Any, path: Path, line_no: int, timestamp: str | N
             yield Event(str(path), line_no, timestamp, "tool", record_type, text)
 
 
-def claude_code_events(record: dict[str, Any], path: Path, line_no: int, timestamp: str | None) -> Iterable[Event]:
+def claude_code_events(
+    record: dict[str, Any], path: Path, line_no: int, timestamp: str | None, *, preserve_text: bool = False,
+) -> Iterable[Event]:
     """Read a Claude Code transcript message, skipping harness-injected (`isMeta`) ones."""
     if record.get("isMeta"):
         return
@@ -366,7 +370,7 @@ def claude_code_events(record: dict[str, Any], path: Path, line_no: int, timesta
     blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
     texts = strings_from_content(content if isinstance(content, str) else [b for b in blocks if b.get("type") == "text"])
     for text in texts:
-        if not is_noise(text):
+        if preserve_text or not is_noise(text):
             yield Event(str(path), line_no, timestamp, role, "message", text)
     for block in blocks:
         if block.get("type") == "tool_result":
