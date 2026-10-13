@@ -1183,6 +1183,15 @@ retrying until planning stalls.
 - The command excludes done, stale, waiting, inconsistently
   `plan:blocked`, dependency-unknown, and parent plans with open sub-issues. Each
   exclusion includes a normalized reason and dependency evidence when present.
+- Both local and global output separate observed ownership in `underway`,
+  current qualification in `verification_only`, and delivered mixed scope in
+  `scope_review`. Each row exposes `queue.next_action` and the evidence/read
+  limits. `available_candidates` can contain source work with no observed
+  conflict; it still requires Choose Work and fresh claim preflight, including
+  legacy wait review. No complete session inventory is implied. Local next
+  accepts `--comment-limit` and `--selection-context` for current repository
+  holds as well. See [Global Next](../../github-plan/references/global-next.md)
+  for availability and direction admission; that reference owns the contract.
 - Configured Project Focus and milestone state/due date are advisory ranking and
   context signals only. A closed milestone does not hide an otherwise open,
   unblocked plan. Project read failures degrade to explicit notes rather than

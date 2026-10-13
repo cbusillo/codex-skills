@@ -42,6 +42,8 @@ def load_module() -> Any:
     module.real_discover_direction_work = module.discover_direction_work
     module.real_read_next_inbound_blockers = module.read_next_inbound_blockers
     module.read_next_inbound_blockers = lambda *_a, **_kw: ("automation-gh", [], {"complete": True})
+    module.real_annotate_next_queue = module.annotate_next_queue
+    module.annotate_next_queue = lambda *_a, **_kw: {"source": "offline_fixture"}
     return module
 
 
@@ -1701,7 +1703,7 @@ def test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse() -> 
             else:
                 raise AssertionError("Unparsed direction must not become an empty graph")
         args = next_args(repo="someone/product")
-        args.selection_context = "holds.json"
+        args.repo_limit = 1
         try:
             module.cmd_next(args)
         except module.PlanError as exc:
