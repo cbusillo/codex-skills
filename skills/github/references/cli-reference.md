@@ -1202,6 +1202,15 @@ retrying until planning stalls.
 - The command excludes done, stale, waiting, inconsistently
   `plan:blocked`, dependency-unknown, and parent plans with open sub-issues. Each
   exclusion includes a normalized reason and dependency evidence when present.
+- Both local and global output separate observed ownership in `underway`,
+  current qualification in `verification_only`, and delivered mixed scope in
+  `scope_review`. Each row exposes `queue.next_action` and the evidence/read
+  limits. `available_candidates` can contain source work with no observed
+  conflict; it still requires Choose Work and fresh claim preflight, including
+  legacy wait review. No complete session inventory is implied. Local next
+  accepts `--comment-limit` and `--selection-context` for current repository
+  holds as well. See [Global Next](../../github-plan/references/global-next.md)
+  for availability and direction admission; that reference owns the contract.
 - Configured Project Focus and milestone state/due date are advisory ranking and
   context signals only. A closed milestone does not hide an otherwise open,
   unblocked plan. Project read failures degrade to explicit notes rather than
@@ -1364,16 +1373,11 @@ As with repository inventory, coverage is limited to the actor's visible data:
 a parent-endpoint 404 establishes no visible parent, not proof that an
 inaccessible parent cannot exist. Global-only options are rejected by local next.
 
-Candidates carry full bounded `discussion` snapshots and a digest. Their
-`availability=needs_review` is not a recommendation to start. Current caller
-judgments may be supplied with `--selection-context FILE`; read the
-[global selection procedure](../../github-plan/references/global-next.md) for
-the small evidence format. Known repository holds exclude all work there.
-Reviewed available work appears in `available_candidates`, occupied work in
-`underway`, and comment-only waits in `waiting`. Stale/incomplete discussion,
-partial ownership evidence, and unproven tooling eligibility cannot produce an
-available candidate. Selection context is temporary evidence, not a plan database.
-No `next` mode mutates planning state or authorizes execution.
+Candidates carry bounded `discussion` snapshots and a digest. The
+[global selection procedure](../../github-plan/references/global-next.md) owns
+availability, queue evidence, caller review and the temporary
+`--selection-context FILE` format. No `next` mode mutates planning state or
+authorizes execution.
 
 `scripts/github_direction_next.py:rank_direction_work` is the reusable ranking
 entry point for service consumers such as Launchplane. It accepts tracking
