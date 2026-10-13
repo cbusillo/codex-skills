@@ -530,7 +530,8 @@ operations, the requested host id and exact domain set. Its comparison must
 also report `requested_domains` and the same full provider domain count:
 an instance-scoped response hiding extra shared-host aliases is refused.
 No existing route binding or audit is required; this supports planning the
-missing-authority case. The service may record the dry run's own audit evidence.
+missing-authority case. The service records the dry run's own audit evidence;
+the helper retains that record id as proof metadata.
 
 Output uses the existing envelope, retaining bounded status, scope, counts,
 agreement booleans, the ingress audit record id and service trace. Domains,

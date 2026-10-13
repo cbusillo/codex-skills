@@ -37,7 +37,7 @@ def inspection():
         "tracked_target": {"context": "shop", "instance": "prod", "target_id": TARGET,
                            "target_type": "application", "domains": ["old.example.invalid"]},
         "provider_target_record": {"status": "present", **EXPECTED},
-        "provider": {"target_id": TARGET, "target_type": "application",
+        "provider": {"id": TARGET, "target_id": TARGET, "target_type": "application",
                      "domains": [{"host": host} for host in DOMAINS]},
     }}
 
@@ -120,6 +120,7 @@ def test_domain_plan_uses_fresh_identity_domains_and_contract_route():
 
 @pytest.mark.parametrize("source,field,value", [
     ("provider", "target_id", "different"), ("provider_target_record", "status", "missing"),
+    ("provider", "id", "different"), ("provider", "id", None),
     ("tracked_target", "instance", "testing"), ("provider", "domains", []),
 ])
 def test_domain_bad_inspection_never_posts(source, field, value):
@@ -260,6 +261,66 @@ def test_ingress_product_cannot_change_read_route():
     assert code != 0
     get.assert_not_called()
     post.assert_not_called()
+
+
+def test_domain_inspect_observed_identity_and_normalized_hosts():
+    observed = inspection()
+    del observed["inspect"]["provider"]["target_id"]
+    observed["inspect"]["provider"]["domains"] = [{"host": DOMAINS[0].upper() + ". "}]
+    code, _, _, post = invoke(DOMAIN_COMMAND, reads=[observed])
+    assert code == 0
+    assert post.call_args.kwargs["body"]["domains"] == DOMAINS
+
+
+@pytest.mark.parametrize("command", [DOMAIN_COMMAND, INGRESS_COMMAND])
+@pytest.mark.parametrize("error", [helper.LaunchplaneSafetyError("unsafe_redirect"), ValueError("invalid_response")])
+def test_post_failure_never_reuses_read_trace(command, error):
+    reads = ingress_reads() if command == INGRESS_COMMAND else [inspection()]
+    for read in reads:
+        read["trace_id"] = "launchplane_req_read"
+    code, payload, _, post = invoke(command, reads=reads, post_error=error)
+    assert code != 0 and post.call_count == 1
+    assert payload["request"]["planner_request_sent"] is True
+    assert "launchplane_req_read" not in json.dumps(payload)
+    if isinstance(error, helper.LaunchplaneSafetyError):
+        assert payload["status"] == "unavailable"
+        assert payload["warnings"][0]["code"] == error.code
+
+
+@pytest.mark.parametrize("cause,expected", [
+    ("lane", "plan_lane_not_unique"), ("domains", "plan_domain_scope_mismatch"),
+    ("endpoint", "plan_endpoint_not_active"),
+])
+def test_prepost_refusal_keeps_specific_code(cause, expected):
+    reads = ingress_reads()
+    if cause == "lane":
+        reads[0]["profile"]["lanes"] = []
+    elif cause == "domains":
+        reads[0]["profile"]["lanes"][0]["base_url"] = "https://foreign.example.invalid"
+    else:
+        reads[1]["record"]["status"] = "disabled"
+    code, payload, _, post = invoke(INGRESS_COMMAND, reads=reads)
+    assert code != 0
+    post.assert_not_called()
+    assert payload["summary"]["error_code"] == expected
+    assert payload["request"]["planner_request_sent"] is False
+
+
+@pytest.mark.parametrize("command", [DOMAIN_COMMAND, INGRESS_COMMAND])
+def test_standard_success_metadata_and_unknown_records(command):
+    response = ingress_response() if command == INGRESS_COMMAND else domain_response()
+    response.update(schema_version=1, replayed=False, original_trace_id="launchplane_req_original")
+    reads = ingress_reads() if command == INGRESS_COMMAND else None
+    code, _, _, _ = invoke(command, reads=reads, response=response)
+    assert code == 0
+    response["records"]["unknown"] = "PRIVATE_SENTINEL"
+    code, payload, _, _ = invoke(command, reads=ingress_reads() if command == INGRESS_COMMAND else None,
+                                response=response)
+    assert code != 0
+    assert_private_dropped(payload)
+
+
+def test_ingress_missing_scope_never_reads_or_posts():
     private = ingress_input()
     private["product"] = None
     code, _, get, post = invoke(INGRESS_COMMAND, private=private)
