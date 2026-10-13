@@ -7008,6 +7008,14 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "plugin_deployment_mismatch":
         return "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection."
     if reason == "execution_not_proven":
+        if execution_proof_reason == "batch_inspection_delegated_to_editor_service":
+            action = payload.get("inspection_verdict_next_action")
+            if isinstance(action, str) and action.strip():
+                return action.strip()
+            return (
+                "Run stock inspect.sh in an isolated profile, or turn off the TypeScript language service in the exact "
+                "project and request a fresh API inspection. Keep the unresolved-reference inspection enabled; do not retry unchanged."
+            )
         if execution_proof_reason in {"native_inspection_not_completed", "native_inspection_aborted"}:
             return "Wait for the IDE inspection run to settle, then retry once with a fresh run and include execution_proof diagnostics if it remains UNKNOWN."
         if execution_proof_reason in {"whole_project_execution_not_proven", "directory_execution_not_proven"}:
@@ -7489,7 +7497,11 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
         reason_bucket = outcome_bucket({
             "verdict": "UNKNOWN", "capture_diagnostic": payload.get("capture_diagnostic"),
         }, reason)
-        if plugin_action_used or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
+        diagnostic = payload.get("capture_diagnostic")
+        delegated_batch_recovery = reason == "execution_not_proven" and isinstance(diagnostic, dict) and (
+            diagnostic.get("execution_proof_block_reason") == "batch_inspection_delegated_to_editor_service"
+        )
+        if (plugin_action_used and not delegated_batch_recovery) or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
             next_action = UNKNOWN_TERMINAL_ACTION
             payload["verdict_next_action"] = next_action
     next_action = guidance_for_command(next_action, payload.get("command"))
@@ -7613,6 +7625,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
             "native_cpp_batch_annotator_unproven",
             "native_batch_annotator_unproven",
             "native_tool_completion_unproven",
+            "batch_inspection_delegated_to_editor_service",
         }:
             return "environment_blocked"
         return "tool_bug"

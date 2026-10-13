@@ -11786,6 +11786,27 @@ class HumanOutputTest(unittest.TestCase):
                 self.assertIn("ShellCheck on /repo/scripts/deploy.sh", payload["agent_result"]["next_action"])
                 self.assertIn("RadInspection on /repo/src/main.cpp", payload["agent_result"]["next_action"])
 
+    def test_delegated_batch_inspection_retains_supported_recovery_without_retry(self):
+        payload = {
+            "scope": "files",
+            "status": "capture_incomplete",
+            "capture_incomplete": True,
+            "capture_incomplete_reason": "execution_not_proven",
+            "capture_diagnostic": {
+                "execution_proof_block_reason": "batch_inspection_delegated_to_editor_service",
+            },
+            "inspection_verdict_next_action": "Use the isolated native inspector; preserve the enabled inspection.",
+            "route": {"ide": {"inspection_execution_proof_version": 2}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+
+        compact = jb_inspect.compact_agent_result_payload(payload, helper_exit_code=1)
+        self.assertEqual(compact["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(compact["agent_result"]["bucket"], "environment_blocked")
+        self.assertFalse(compact["agent_result"]["retry_policy"]["retry"])
+        self.assertEqual(compact["agent_result"]["next_action"], payload["inspection_verdict_next_action"])
+
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
         payload = {
             "scope": "whole_project",
