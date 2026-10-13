@@ -5731,7 +5731,7 @@ def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> N
     assert payload["failure"]["cause"] == "permission_denied", payload
     assert payload["request_id"] == "request-123", payload
     assert payload["write_outcome"] == "not_started", payload
-    assert payload["fallback_eligible"] is True, payload
+    assert payload["fallback_eligible"] is False, payload
     assert api_result["failure"]["cause"] == "permission_denied", payload
     assert api_result["failure"]["request_id"] == "request-123", payload
     assert "body" not in api_result, payload
