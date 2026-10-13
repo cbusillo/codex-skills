@@ -336,6 +336,13 @@ status/header/body evidence wins over diagnostics, and the bounded
 `GET /rate_limit` probe is used only when legacy output reports a rate limit
 without identifying its bucket.
 
+Permission refusals return `permission_denied`, require authorization, and offer
+neither automatic retry nor an authentication fallback. `gh-with-env-token`
+points to Director action or review of the App's permissions and installation.
+Personal repository creation is unavailable to installation tokens; changing
+the App's permissions cannot enable that operation. A real throttle retains
+its rate-limit classification and reset handling.
+
 For PR creation, the complete legacy `pull request create failed: GraphQL:`
 diagnostic ending in `(createPullRequest)` is a confirmed `validation_error` /
 `rejected` when it contains only blank head/base SHA, non-branch head, or
