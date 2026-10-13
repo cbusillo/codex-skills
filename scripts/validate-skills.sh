@@ -33,17 +33,17 @@ uv --version
 printf '  selected '
 uv run python --version
 
-uv run skills/github/scripts/validate-operation-matrix.py --self-test
-uv run skills/github/scripts/validate-operation-matrix.py
-uv run skills/skill-creator/scripts/validate-skill-behavior.py
-uv run skills/skill-creator/scripts/validate-command-policy-simulator.py --self-test
-uv run skills/skill-creator/scripts/validate-command-policy-simulator.py
-uv run scripts/validate-public-safety.py --self-test
-uv run scripts/validate-public-safety.py
-uv run skills/launchplane/scripts/check-agent-operator-contract.py
-uv run scripts/update_pep723_dependencies.py --check
-uv run skills/skill-creator/scripts/quick_validate.py --self-test
-uv run skills/skill-creator/scripts/validate-skill-repo.py
+scripts/run-python-helper.sh skills/github/scripts/validate-operation-matrix.py --self-test
+scripts/run-python-helper.sh skills/github/scripts/validate-operation-matrix.py
+scripts/run-python-helper.sh skills/skill-creator/scripts/validate-skill-behavior.py
+scripts/run-python-helper.sh skills/skill-creator/scripts/validate-command-policy-simulator.py --self-test
+scripts/run-python-helper.sh skills/skill-creator/scripts/validate-command-policy-simulator.py
+scripts/run-python-helper.sh scripts/validate-public-safety.py --self-test
+scripts/run-python-helper.sh scripts/validate-public-safety.py
+scripts/run-python-helper.sh skills/launchplane/scripts/check-agent-operator-contract.py
+scripts/run-python-helper.sh scripts/update_pep723_dependencies.py --check
+scripts/run-python-helper.sh skills/skill-creator/scripts/quick_validate.py --self-test
+scripts/run-python-helper.sh skills/skill-creator/scripts/validate-skill-repo.py
 
 # --version does not initialize Node's ESM loader or the manual helper's
 # builtins. Load them offline before parallel helpers compete for cold disk
@@ -94,7 +94,7 @@ if ! printf '%s\0' "${helper_tests[@]}" | xargs -0 -n 1 -P "$helper_jobs" bash -
 	log="$helper_log_dir/$(printf "%s" "$1" | tr "/" "_").log"
 	started=$SECONDS
 	case "$1" in
-	*.py) run=(uv run "$1") ;;
+	*.py) run=(scripts/run-python-helper.sh "$1") ;;
 	*) run=("$1") ;;
 	esac
 	# Each offline helper owns its retry state, including fake CLI children.
