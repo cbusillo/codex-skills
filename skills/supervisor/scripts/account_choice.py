@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROVIDERS = ("openai", "anthropic", "google")
-# The variable that puts a launched harness on an account; Google has none yet.
+# Supported variables that put a launched harness on an account. AGY uses its existing login.
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
 SNAPSHOT_TIMEOUT_SECONDS = 60
 OWN_RECEIPT = re.compile(r"^\d{8}T\d{6}Z-supervisor-[0-9a-f]{32}\.json$")
@@ -87,9 +87,15 @@ def validate_config(section):
                 f"account {name}: set exactly one of context_panel_label or context_panel_configuration_id"
             )
         launch_env = account.get("env")
+        if account["provider"] == "google":
+            if account.get("single_login") is not True or launch_env != {}:
+                raise ValueError(f"account {name}: google requires single_login = true and env = {{}}; "
+                                 "AGY has no account override")
+        elif "single_login" in account:
+            raise ValueError(f"account {name}: single_login is only supported for google")
         if (
             not isinstance(launch_env, dict)
-            or (not launch_env and account["provider"] != "anthropic")
+            or (not launch_env and account["provider"] == "openai")
             or not all(
                 isinstance(k, str) and k.isidentifier() and isinstance(v, str) and v
                 for k, v in launch_env.items()
@@ -109,6 +115,8 @@ def validate_config(section):
                 "env": dict(launch_env),
             }
         )
+    if sum(a["provider"] == "google" for a in result) > 1:
+        raise ValueError("configure only one google account; AGY has no account override")
     return {"snapshot_command": command, "accounts": result}
 
 
@@ -218,6 +226,13 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         raise ValueError(f"no configured {provider} accounts")
     if snapshot is None:
         raise ValueError(f"Context Panel snapshot unavailable ({unavailable_reason}); no account chosen")
+    if provider == "google":
+        rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
+        if len(accounts) != 1 or len(rows) != 1:
+            raise ValueError("google requires one configured account and one Context Panel row; "
+                             "AGY has no account override")
+        if name is not None:
+            raise ValueError("google account choice must follow Context Panel; --account is unsupported")
     if name is not None:
         named = [a for a in accounts if a["name"] == name]
         if len(named) != 1:
@@ -267,7 +282,8 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
 
 def decision(account, source, reason, account_id=None, remaining=None,
              configuration_errors=(), reset_prompts=()):
-    return {"name": account["name"], "provider": account["provider"], "source": source,
+    binding = {"account_binding": "existing-agy-login"} if account["provider"] == "google" else {}
+    return {**binding, "name": account["name"], "provider": account["provider"], "source": source,
             "reason": reason, "account_id": account_id, "remaining_fraction": remaining,
             "env": account["env"], "configuration_errors": list(configuration_errors),
             "reset_prompts": list(reset_prompts)}

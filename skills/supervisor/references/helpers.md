@@ -634,7 +634,7 @@ Read Context Panel's
 for ranking, stale-list eligibility, count-only receipt fields and retention.
 The launcher checks the published stale list's observation time, refuses once
 it reaches 30 minutes, and reports `nextCapacityAt` when nothing is rankable.
-Reader failure refuses; `--account <name>` is the explicit override, but still
+Reader failure refuses; for OpenAI and Anthropic, `--account <name>` is the explicit override, but still
 needs a snapshot row so its launch receipt uses the correct opaque ID.
 Configuration errors and Context Panel's plain reset prompt lines are reported
 in launch output. Never apply a reset; Chris does that.
@@ -693,7 +693,7 @@ accounts in any order:
 
 ```toml
 [accounts]
-snapshot_command = ["<path to ContextPanelAccountSnapshot>"]
+snapshot_command = ["/Applications/Context Panel.app/Contents/MacOS/Context Panel", "--account-snapshot"]
 
 [[accounts.account]]
 name = "<local nickname>"
@@ -706,7 +706,23 @@ name = "<default-profile nickname>"
 provider = "anthropic"
 context_panel_label = "<default profile label in the snapshot>"
 env = {}
+
+[[accounts.account]]
+name = "<existing AGY login nickname>"
+provider = "google"
+context_panel_label = "<Google label from the snapshot>"  # or context_panel_configuration_id
+single_login = true
+env = {}
 ```
+
+Point `snapshot_command` at the installed app executable, with its full path
+as one array element and `--account-snapshot` as the next. Invoke it directly;
+`open -a` cannot return the reader's JSON and exit status. The reader updates
+with the installed app; an old separately built `context-panel-account-snapshot`
+may omit rankings. Replace that standalone command in the private config, then
+preview each provider through `account_choice.py` before launching. Use the
+installed app's actual path if it differs from the example. See Context Panel's
+[installed-reader contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#agent-readable-account-snapshot).
 
 Private-config migration: delete the `reserve =` lines under `[accounts]`
 and in each `[[accounts.account]]`, including any per-account reserve.
@@ -725,6 +741,22 @@ The launcher unsets an inherited
 an alternate profile, not the default. The helper never reads credentials and
 never changes a
 login, including the desktop app's.
+
+Google requires the explicit `single_login = true` and `env = {}` form. Current
+`agy --help` and its [authentication docs](https://antigravity.google/docs/cli/install/)
+provide no account/home override; this row identifies the existing AGY login,
+without switching or independently verifying it. Configure exactly one Google
+row matching the existing login, and confirm that login in the launched AGY
+session. Multiple configured Google rows or multiple Google snapshot rows refuse,
+as does `--account` for Google. Google follows Context Panel's Use next or
+eligible published launch order and writes the same count-only receipts as the
+other providers. Output includes `account_binding: existing-agy-login` and empty
+`env_keys`, so it does not claim an account was pinned by an environment variable.
+If the AGY login changes, reconcile the mapping and Context Panel row before
+launching again. No credentials or login settings are read or changed by this
+selection path. The Supervisor applies private-config migrations after the
+source PR lands, then records the real launch's account and transcript on the
+owning issue.
 
 ## Finished-session shutdown stages
 
