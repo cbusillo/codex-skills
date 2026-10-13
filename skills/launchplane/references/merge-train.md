@@ -135,7 +135,18 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   Further refusals retain the failure budget until the controller makes progress.
   Other refusals retain their existing failure budget.
   At the deadline, final read-back has one fixed 15-second grace window;
-  controller mutations and stack-finish passes keep the original deadline.
+  controller mutations and stack-finish observations keep the original deadline.
+  Once the tracked root lands, the driver makes no more mutating controller
+  calls. It first reads the tracked children; a completed stack needs no
+  controller observation. For unfinished children it observes dry-run passes
+  from the service's own controller, bounded by the existing finish-pass limit
+  and deadline. Only the same collapse ID and root can supply child evidence;
+  unrelated queue selection or unavailable observation stops finishing without
+  adopting that queue. The terminal `stack_finish` records completion, changed
+  selection, unavailable observation, pass limit or deadline. Confirmed root
+  landing remains `landed`; open or unknown children remain visible in `prs`.
+  The helper contract has no stack-bound post-landing mutation, so a matching
+  dry run never authorizes a generic mutating pass that can race queue changes.
   Authentication and permission failures emit an `error` stop event.
 - **Evidence**: For stack runs, report the stack-collapse plan record id, any
   batch candidate record id, the landing-plan record id, workflow run URLs, and
