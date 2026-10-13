@@ -28,6 +28,15 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(prepare_python_project)
 
 
+def resolve_model_url(url: str, module_path: Path, repo: Path) -> Path:
+    module_dir = module_path.parent
+    if module_dir.name == ".idea":
+        module_dir = module_dir.parent
+    return Path(unquote(url.removeprefix("file://")).replace(
+        "$MODULE_DIR$", str(module_dir),
+    ).replace("$PROJECT_DIR$", str(repo))).resolve()
+
+
 class PreparePythonProjectTest(unittest.TestCase):
     def test_generated_index_exclusions_preserve_tracked_and_declared_test_sources(self):
         for candidate in prepare_python_project.GENERATED_INDEX_ROOTS:
@@ -50,8 +59,7 @@ class PreparePythonProjectTest(unittest.TestCase):
                 module = ElementTree.fromstring(files[repo / ".idea/fixture.iml"])
                 content = module.find("./component/content")
                 assert content is not None
-                exclusions = {Path(unquote(entry.get("url", "").removeprefix("file://"))
-                                   .replace("$MODULE_DIR$", str(repo)).replace("$PROJECT_DIR$", str(repo))).resolve()
+                exclusions = {resolve_model_url(entry.get("url", ""), repo / ".idea/fixture.iml", repo)
                               for entry in content.findall("excludeFolder")}
                 self.assertTrue(all((repo / root).resolve() in exclusions for root in roots))
                 subprocess.run(["git", "-C", str(repo), "add", "--force", candidate + "/sample.py"], check=True)
@@ -171,31 +179,33 @@ class PreparePythonProjectTest(unittest.TestCase):
                 files = prepare_python_project.render_project_files(repo, "codex-skills", [test_root.name])
 
             modules = ElementTree.fromstring(files[repo / ".idea" / "modules.xml"])
-            module_path = Path(modules.find("./component/modules/module").get("filepath").replace(
-                "$PROJECT_DIR$", str(repo),
-            ))
+            module_node = modules.find("./component/modules/module")
+            assert module_node is not None
+            filepath = module_node.get("filepath")
+            assert filepath is not None
+            module_path = Path(filepath.replace("$PROJECT_DIR$", str(repo)))
             model = ElementTree.fromstring(files[module_path])
 
-            def resolve_model_url(url):
-                return Path(url.removeprefix("file://").replace(
-                    "$MODULE_DIR$", str(module_path.parent),
-                ).replace("$PROJECT_DIR$", str(repo))).resolve()
-
             content = model.find("./component/content")
-            content_root = resolve_model_url(content.get("url"))
+            assert content is not None
+            content_root = resolve_model_url(content.get("url", ""), module_path, repo)
             self.assertEqual(content_root, repo)
             self.assertTrue(source.is_relative_to(content_root))
             test_folder = content.find("sourceFolder")
-            self.assertEqual(resolve_model_url(test_folder.get("url")), test_root)
+            assert test_folder is not None
+            self.assertEqual(resolve_model_url(test_folder.get("url", ""), module_path, repo), test_root)
             self.assertEqual(test_folder.get("isTestSource"), "true")
-            excluded = [resolve_model_url(folder.get("url")) for folder in content.findall("excludeFolder")]
+            excluded = [resolve_model_url(folder.get("url", ""), module_path, repo) for folder in content.findall("excludeFolder")]
             self.assertTrue(any(interpreter.is_relative_to(folder) for folder in excluded))
             self.assertTrue(all(folder.parent == repo for folder in excluded))
 
             sdk = model.find("./component/orderEntry")
+            assert sdk is not None
             self.assertEqual(sdk.get("jdkType"), "Python SDK")
             misc = ElementTree.fromstring(files[repo / ".idea" / "misc.xml"])
-            self.assertEqual(misc.find("component").get("project-jdk-name"), sdk.get("jdkName"))
+            misc_component = misc.find("component")
+            assert misc_component is not None
+            self.assertEqual(misc_component.get("project-jdk-name"), sdk.get("jdkName"))
 
     @staticmethod
     def sdk_table(path, entries):
