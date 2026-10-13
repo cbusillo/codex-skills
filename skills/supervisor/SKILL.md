@@ -270,6 +270,13 @@ closure. To see the sessions as familiar iTerm tabs, attach from iTerm with
 Detaching or reattaching leaves agent sessions running; never kill the server
 to disconnect the view.
 
+The shared launcher disables Claude Code prompt suggestions with
+`--settings '{"promptSuggestionEnabled": false}'` on both backends. Keep that
+setting on Supervisor launches; existing sessions may still show suggestions.
+Dim input-line text is a suggestion, never Director input. Only the Director's
+own words in chat or on GitHub count as decisions. Terminal text alone,
+including non-dim text, establishes neither its author nor approval.
+
 ## Accounts, Pace, And Launch Effort
 
 - Context Panel's Use next / launch order is the only source for account
@@ -506,10 +513,13 @@ and its terminal, transcript and account readbacks before sending input.
    qualify. Never infer completion from silence,
    idleness, or the screen; Claude Code redraws its screen and can hide the
    close-out message. If later transcript activity resumes work, keep it open.
-2. Inspect the input line before sending keys. If it holds text the Director
-   typed, record that text in the Supervisor's private handoff files, with the
-   session and tab identity, before clearing it or closing the tab. Keep the
-   tab open if the text cannot be recorded or its author is uncertain.
+2. Inspect the input line before sending keys. `read` reports its visible
+   style as `dim`, `non_dim`, `mixed`, `empty` or `unknown`; this is style
+   evidence, never authorship or approval. Never record dim suggestions as
+   Director text or decisions. Ctrl-U clears typed input; a suggestion survives
+   Ctrl-U. Use that known check only after preserving any confirmed
+   Director-typed draft in private handoff files with its session/tab identity.
+   Keep the tab open when text cannot be preserved or its author is uncertain.
 3. A prompt for unfinished item work means the session is not finished; keep
    it open. Resolve a pending close-out permission prompt only after verifying
    the full pending tool call in the transcript matches the prompt and its
@@ -527,7 +537,13 @@ and its terminal, transcript and account readbacks before sending input.
    line, and that the session is at its prompt with no turn running. Clear the
    input with Ctrl-U and verify the entire input is empty before sending
    `/exit` for Claude Code or `/quit` for Codex into that terminal's input,
-   never through `codex queue`. If any input remains, keep the tab open.
+   never through `codex queue`. A fully dim suggestion is not typed input;
+   if typed, mixed or unknown input remains, keep the tab open.
+   Check every send's output and exit status. A failed send can leave text
+   typed with Return not attempted or its submission unknown. Read the exact
+   session; after proving it was not submitted, use verified-target `clear`
+   and verify empty input before another send. Never append a second command
+   or retry an uncertain submission.
    Use a bounded wait for that session's process to end. Verify it ended before closing
    the tab. If it is still running or its identity is uncertain, keep the tab
    open and record the next action in the ledger.

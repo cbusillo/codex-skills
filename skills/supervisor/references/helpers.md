@@ -6,6 +6,26 @@ path. The status, question and candidate helpers are read-only. iTerm controls
 require macOS, iTerm2's Python API enabled and the session's existing authority;
 API connection failure is a stop, not a reason to change personal settings.
 
+The shared launcher passes Claude Code `--settings '{"promptSuggestionEnabled": false}'`
+before its brief on either backend, including when the command file has other
+settings. Existing sessions may still draw dim suggestions. `read` retains the
+plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
+prompt's text, line index and style (`dim`, `non_dim`, `mixed`, `empty`, or
+`unknown`). tmux reads SGR faint attributes with `capture-pane -e`; iTerm reads
+cell faint attributes. Missing prompt/style evidence is unknown. This is a
+single visible line, not a full multiline draft or idle-prompt proof; inspect
+the full screen and transcript too. `director_input_verified` is always false:
+no terminal style establishes authorship or approval. Follow the skill's
+Director-input and Ctrl-U checks before clearing or closing.
+
+A send failure after typing reports JSON on stdout, an explicit failure on
+stderr, and exits nonzero. `text_sent: true`, `input_may_contain_text: true`
+and `submission: not_attempted|unknown` preserve the partial outcome. Read
+both output and exit status; do not redirect away a refusal and send again.
+After verified non-submission, `clear --verified-target` sends Ctrl-U; read
+back empty input before another send. An unknown submission needs readback,
+not a retry.
+
 ## Private ledger
 
 Create a private JSON array from the handoff's actual session identities. Paths

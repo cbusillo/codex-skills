@@ -20,6 +20,90 @@ from pathlib import Path
 import account_choice
 
 
+class SendFailure(ValueError):
+    """Text reached the terminal; a later command must not append to it blindly."""
+
+    def __init__(self, identity, submission, reason):
+        self.detail = {"status": "send_failed", "session_id": identity,
+                       "text_sent": True, "submission": submission,
+                       "input_may_contain_text": True, "readback_required": True,
+                       "error": reason,
+                       "next_action": "Read the exact session before any next send. If unsubmitted, "
+                                      "clear with verified-target clear (Ctrl-U) and verify empty input."}
+        super().__init__("text was sent; Return " + submission + "; input may still contain text")
+
+
+def input_line(lines, styles):
+    """Report the last visible agent prompt's styling, never its author or authority."""
+    for index in range(len(lines) - 1, -1, -1):
+        match = re.match(r"^\s*[❯›>]\s?(.*)$", lines[index])
+        if not match:
+            continue
+        text = match.group(1)
+        flags = [styles[index][x] for x in range(match.start(1), len(lines[index]))
+                 if not lines[index][x].isspace()]
+        if not flags:
+            style = "empty"
+        elif None in flags:
+            style = "unknown"
+        elif all(flags):
+            style = "dim"
+        elif any(flags):
+            style = "mixed"
+        else:
+            style = "non_dim"
+        return {"line_index": index, "text": text, "style": style,
+                "director_input_verified": False}
+    return {"line_index": None, "text": None, "style": "unknown",
+            "director_input_verified": False}
+
+
+def ansi_screen(captured):
+    """Decode tmux capture-pane -e SGR faint attributes alongside plain text."""
+    lines, styles = [], []
+    faint = False
+    for raw in captured.splitlines():
+        text, flags, offset = "", [], 0
+        for match in re.finditer(r"\x1b\[([0-9;:]*)m", raw):
+            chunk = raw[offset:match.start()]
+            text += chunk
+            flags.extend([faint] * len(chunk))
+            params = match.group(1).split(";")
+            i = 0
+            while i < len(params):
+                value = params[i]
+                if value in {"38", "48", "58"} and i + 1 < len(params):
+                    # RGB components (including 2 and 22) are not intensity codes.
+                    i += 5 if params[i + 1] == "2" else 3
+                    continue
+                if value in {"", "0", "22"}:
+                    faint = False
+                elif value == "2":
+                    faint = True
+                i += 1
+            offset = match.end()
+        chunk = raw[offset:]
+        lines.append(text + chunk)
+        styles.append(flags + [faint] * len(chunk))
+    return lines, styles
+
+
+def iterm_input_line(screen):
+    lines, styles = [], []
+    for i in range(screen.number_of_lines):
+        line = screen.line(i)
+        lines.append(line.string)
+        flags, consumed, cell = [], 0, 0
+        while consumed < len(line.string):
+            value = line.string_at(cell)
+            style = line.style_at(cell)
+            flags.extend([style.faint if style is not None else None] * len(value))
+            consumed += len(value)
+            cell += 1
+        styles.append(flags)
+    return input_line(lines, styles)
+
+
 class LaunchFailure(ValueError):
     """Preserve launch identities so a partial batch is never mistaken for refusal."""
 
@@ -76,6 +160,8 @@ def append_brief(command_text, brief):
         words = words[1:]
     if not words or Path(words[0]).name not in {"codex", "claude", "agy"}:
         raise ValueError(reason)
+    if Path(words[0]).name == "claude":
+        command_text += " --settings " + shlex.quote(json.dumps({"promptSuggestionEnabled": False}))
     prompt_option = " --prompt-interactive=" if Path(words[0]).name == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 
@@ -87,7 +173,10 @@ async def send(session, text, submit=True, allow_tabs=False):
     await session.async_send_text(text, suppress_broadcast=True)
     if submit:
         await asyncio.sleep(0.4)
-        await session.async_send_text("\r", suppress_broadcast=True)
+        try:
+            await session.async_send_text("\r", suppress_broadcast=True)
+        except Exception as error:
+            raise SendFailure(session.session_id, "unknown", "Return send failed") from error
 
 
 async def wait_for_session(app, tab, timeout=10.0):
@@ -416,6 +505,7 @@ async def operate(app, args):
                 "screen": [
                     screen.line(i).string for i in range(screen.number_of_lines)
                 ],
+                "input_line": iterm_input_line(screen),
             }
         if not args.verified_target:
             raise ValueError(
@@ -526,6 +616,9 @@ def main():
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, "launch failed; inspect the reported terminals before retrying\n")
+        except SendFailure as error:
+            print(json.dumps(error.detail, indent=2))
+            parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             parser.exit(1, f"refused: {error}\n")
         return
@@ -538,6 +631,9 @@ def main():
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, "launch failed; inspect the reported tabs before retrying\n")
+        except SendFailure as error:
+            print(json.dumps(error.detail, indent=2))
+            parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             parser.exit(1, f"refused: {error}\n")
         except iterm2.rpc.RPCException:

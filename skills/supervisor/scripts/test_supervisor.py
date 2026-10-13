@@ -1131,6 +1131,42 @@ class TabCloseTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_tmux_prompt_styles_reset_mixed_and_color_components(self):
+        for captured, expected in (("❯ \x1b[2myes\x1b[0m", "dim"),
+                                   ("❯ yes", "non_dim"),
+                                   ("❯ \x1b[2myes\x1b[22m typed", "mixed"),
+                                   ("\x1b[2mstatus\x1b[0m\n❯ yes", "non_dim"),
+                                   ("❯ \x1b[38;2;2;22;0myes", "non_dim"),
+                                   ("❯ \x1b[38:2:2:22:0myes", "non_dim"),
+                                   ("❯ ", "empty"), ("no prompt", "unknown")):
+            with self.subTest(captured=captured):
+                lines, styles = iterm_tab.ansi_screen(captured)
+                result = iterm_tab.input_line(lines, styles)
+                self.assertEqual(result["style"], expected)
+                self.assertFalse(result["director_input_verified"])
+
+    def test_iterm_read_uses_cell_faint_style_and_missing_style_is_unknown(self):
+        for faint, expected in ((True, "dim"), (False, "non_dim"), (None, "unknown")):
+            text = "❯ yes"
+            line = SimpleNamespace(string=text, string_at=lambda x: text[x],
+                                   style_at=lambda x: None if faint is None else SimpleNamespace(faint=faint))
+            screen = SimpleNamespace(number_of_lines=1, line=lambda i: line)
+            terminal = SimpleNamespace(session_id="exact", async_get_screen_contents=AsyncMock(return_value=screen))
+            app = SimpleNamespace(terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])])
+            with self.subTest(faint=faint):
+                result = asyncio.run(iterm_tab.operate(app, argparse.Namespace(command="read", session_id="exact")))
+                self.assertEqual(result["screen"], [text])
+                self.assertEqual(result["input_line"]["style"], expected)
+                self.assertFalse(result["input_line"]["director_input_verified"])
+
+    def test_return_failure_reports_unknown_submission_with_typed_text(self):
+        terminal = SimpleNamespace(session_id="exact", async_send_text=AsyncMock(
+            side_effect=[None, RuntimeError("RPC failed")]))
+        with self.assertRaises(iterm_tab.SendFailure) as caught:
+            asyncio.run(iterm_tab.send(terminal, "draft"))
+        self.assertEqual(caught.exception.detail["submission"], "unknown")
+        self.assertTrue(caught.exception.detail["text_sent"])
+
     def test_brief_cannot_be_discarded_by_a_comment_or_shell_wrapper(self):
         for command in ("codex --remote unix:// # launch", "bash -c 'codex'",
                         "codex --remote unix://;", "codex --remote unix:// &&",
@@ -1169,7 +1205,12 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             child = root / "claude"
-            child.write_text('#!/bin/sh\n[ "$1" = "--" ] && shift\nprintf "%s\\n" "$#" "$1"\n')
+            child.write_text(f'#!{sys.executable}\nimport json, sys\n'
+                             'args = sys.argv[1:]\n'
+                             'settings = json.loads(args[args.index("--settings") + 1])\n'
+                             'assert settings["promptSuggestionEnabled"] is False\n'
+                             'prompt = args[args.index("--") + 1:]\n'
+                             'print(len(prompt))\nprint(prompt[0])\n')
             child.chmod(0o700)
             launch = root / "launch.txt"
             launch.write_text("cd / && exec " + shlex.quote(str(child)))
@@ -1621,7 +1662,13 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
             child = Path(folder) / "claude"
-            child.write_text('#!/bin/sh\n[ "$1" = "--" ] && shift\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
+            child.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
+                             'args = sys.argv[1:]\n'
+                             'settings = json.loads(args[args.index("--settings") + 1])\n'
+                             'assert settings["promptSuggestionEnabled"] is False\n'
+                             'print(os.getenv("CLAUDE_CONFIG_DIR"))\n'
+                             'print(os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"))\n'
+                             'print(args[args.index("--") + 1])\n')
             child.chmod(0o700)
             command.write_text("cd / && " + shlex.quote(str(child)) + "\n")
             args = account_launch_args(command)

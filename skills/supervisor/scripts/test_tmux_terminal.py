@@ -19,11 +19,92 @@ import time
 import unittest
 import uuid
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import account_choice
 import close_ttys
 import iterm_tab
 import tmux_terminal
+
+
+class PaneParserTests(unittest.TestCase):
+    def setUp(self):
+        self.terminal = tmux_terminal.Terminal("fixture")
+        self.marker = "a" * 32
+        self.dead = f"$1\t@1\t%1\texited\t/dev/ttys987\t\t1\t0\t{self.marker}\t123\n"
+        self.live = "$1\t@2\t%2\tlive\t/dev/ttys986\t456\t0\t\tlive-nonce\t123\n"
+        self.identity = "tmux:fixture:" + self.marker
+
+    def test_empty_dead_pid_does_not_block_inventory_read_or_live_send(self):
+        def run(command, *args, **kwargs):
+            if command == "list-panes":
+                return SimpleNamespace(returncode=0, stdout=self.dead + self.live)
+            return SimpleNamespace(returncode=0, stdout="❯ \x1b[2msuggestion\x1b[0m\n")
+
+        with patch.object(self.terminal, "run", side_effect=run) as calls:
+            rows = self.terminal.list()
+            self.assertIsNone(rows[0]["pid"])
+            self.assertTrue(rows[0]["dead"])
+            self.assertEqual(self.terminal.read(rows[1]["session_id"])["input_line"]["style"], "dim")
+            asyncio.run(self.terminal.send(rows[1]["session_id"], "hello", submit=False))
+            before = calls.call_count
+            with self.assertRaisesRegex(ValueError, "exited"):
+                asyncio.run(self.terminal.send(self.identity, "must not be sent"))
+            self.assertEqual(calls.call_count, before + 1)  # inventory only
+
+    def test_empty_live_pid_is_uncertain_inventory(self):
+        with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=self.live.replace("\t456\t0", "\t\t0"))):
+            with self.assertRaisesRegex(ValueError, "live.*PID"):
+                self.terminal.list()
+
+    def test_empty_dead_pid_close_still_checks_ledger_pid_tty_and_siblings(self):
+        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            ledger.write_text(json.dumps([entry]))
+            with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                    returncode=0, stdout=self.dead + self.live)) as calls, \
+                    patch.object(close_ttys, "inventory", return_value=[]):
+                self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
+                self.assertEqual(calls.call_args.args[0], "if-shell")
+            for processes in ([(789, "other-tty", "reused-pid")],
+                              [(999, "ttys987", "tty-still-live")]):
+                with self.subTest(processes=processes), \
+                        patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                            returncode=0, stdout=self.dead)), \
+                        patch.object(close_ttys, "inventory", return_value=processes):
+                    with self.assertRaisesRegex(ValueError, "remains"):
+                        self.terminal.close(self.identity, ledger)
+
+    def test_redraw_refusal_reports_typed_text_without_sending_return(self):
+        row = {"pane_id": "%2", "dead": False, "title": "before"}
+        with patch.object(self.terminal, "select", side_effect=[row, {**row, "title": "redrawn"}]), \
+                patch.object(self.terminal, "run") as keys:
+            with self.assertRaises(iterm_tab.SendFailure) as caught:
+                asyncio.run(self.terminal.send("exact", "message"))
+            self.assertTrue(caught.exception.detail["text_sent"])
+            self.assertTrue(caught.exception.detail["input_may_contain_text"])
+            self.assertEqual(caught.exception.detail["submission"], "not_attempted")
+            keys.assert_called_once_with("send-keys", "-t", "%2", "-l", "--", "message")
+
+    def test_cli_refusal_is_json_on_stdout_failure_on_stderr_and_nonzero(self):
+        from contextlib import redirect_stdout, redirect_stderr
+        from io import StringIO
+
+        stdout, stderr = StringIO(), StringIO()
+        argv = ["iterm_tab.py", "--backend", "tmux", "send", "--session-id", "exact",
+                "--text", "message", "--verified-target"]
+        with patch.object(sys, "argv", argv), \
+                patch.object(tmux_terminal.Terminal, "send", side_effect=iterm_tab.SendFailure(
+                    "exact", "not_attempted", "terminal state changed after text")), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as caught:
+                iterm_tab.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["submission"], "not_attempted")
+        self.assertIn("input may still contain text", stderr.getvalue())
 
 
 @unittest.skipUnless(shutil.which("tmux") and Path("/bin/zsh").exists(), "requires tmux and zsh")
@@ -124,6 +205,17 @@ for line in sys.stdin:
         self.assertTrue(self.terminal.close(row["session_id"], self.ledger)["readback_required"])
         self.assertFalse(any(r["session_id"] == row["session_id"] for r in self.terminal.list()))
         self.assertTrue(any(r["window_id"] == self.window for r in self.terminal.list()))
+
+    def test_read_faint_and_normal_prompt_from_real_tmux_capture(self):
+        for escape, expected in (("\\033[2m", "dim"), ("\\033[22m", "non_dim")):
+            with self.subTest(style=expected):
+                pane = self.terminal.run("new-window", "-d", "-t", self.window + ":",
+                                         "-P", "-F", "#{pane_id}",
+                                         f"printf '❯ {escape}candidate\\033[0m'; sleep 30").stdout.strip()
+                row = next(r for r in self.terminal.list() if r["pane_id"] == pane)
+                screen = self.wait_screen(row["session_id"], "candidate")
+                self.assertEqual(screen["input_line"]["style"], expected)
+                self.assertEqual(screen["input_line"]["text"], "candidate")
 
     def test_refuses_unverified_input_and_live_or_foreign_close(self):
         row = self.launch()
