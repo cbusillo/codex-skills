@@ -3626,7 +3626,6 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace) -
                         observed["inventory"] = local
                         observed["coverage"].update(local_artifacts="read", sessions=local.get("session_coverage", {}))
                     except (ValueError, OSError, subprocess.SubprocessError) as exc:
-                        observed["complete"] = False
                         observed["coverage"]["local_error"] = str(exc)
             except PlanError as exc:
                 observed["coverage"]["error"] = next_source_error(exc)

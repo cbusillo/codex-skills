@@ -32,7 +32,7 @@ def current_status(discussion: dict[str, Any], trusted: set[str]) -> str:
 
 
 def status_field(status: str, field: str) -> str:
-    match = re.search(rf"(?mi)^\s*(?:[*]{{2}})?{re.escape(field)}:(?:[*]{{2}})?\s*(.*)$", status)
+    match = re.search(rf"(?mi)^\s*(?:[-*]\s+)?(?:[*]{{2}})?{re.escape(field)}(?:[*]{{2}})?:(?:[*]{{2}})?\s*(.*)$", status)
     return match[1].strip() if match else ""
 
 
@@ -48,6 +48,8 @@ def remaining_work(status: str) -> dict[str, Any]:
     source_action = re.split(r"\b(?:do not|don't|never)\b", action, maxsplit=1, flags=re.I)[0]
     source_action = re.sub(r"\b(?:signed|matching|companion|release) (?:\w+ ){0,2}build\b", "artifact", source_action, flags=re.I)
     delivered = bool(re.search(r"\b(?:landed|merged|delivered|source landing confirmed|source engineering is complete|completed .*slices)\b", state, re.I))
+    if re.search(r"\b(?:not|never|yet to be|needs to be|must be|will be|to be|awaiting|pending)\s+(?:\w+\s+){0,2}(?:merged|landed|delivered)\b", state, re.I):
+        delivered = False
     # Work explicitly routed to a separate canonical issue is no fresh source
     # assignment on this record. It remains open, with its current action.
     if delivered and re.search(r"\b(?:canonical|separately assigned)\b", action, re.I):

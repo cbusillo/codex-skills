@@ -5,7 +5,7 @@
 """Behavioral coverage for current source work versus delivery qualification."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import github_direction_next as direction
 import github_next_queue as queue
@@ -195,6 +195,31 @@ def test_repository_inventory_bound_can_be_widened_without_losing_held_work() ->
     assert len(complete) == len(raw) and context['complete']
     assert len(limited) < len(complete) and not partial['complete']
     assert any('plan:active' in direction.normalize_labels(row['labels']) for row in complete)
+
+
+def test_optional_local_inventory_failure_keeps_remote_queue_evidence() -> None:
+    module = cli.load_module()
+    row = item()
+    def read(_path: str, **_kwargs):
+        return 'bot', []
+    with patch.multiple(module, collect_paged_rest_items=read), patch.multiple(module.pathlib.Path, is_dir=lambda *_: True), patch.multiple(module.github_plan_claim, local_inventory=Mock(side_effect=ValueError('Local Git inventory unavailable'))):
+        context = module.real_annotate_next_queue([row], cli.next_args(repo='owner/repo'))
+    assert row['queue']['state'] == 'available'
+    assert context['repositories']['owner/repo']['local_error']
+    assert row['queue']['claim_required'] and not row['queue']['ownership_complete']
+
+
+def test_status_formatting_and_prospective_delivery_do_not_hide_source_work() -> None:
+    for status in [
+        '- State: Active\n- Next action: Implement the export path.',
+        '* State: Active\n* Next action: Implement the export path.',
+        '**State**: Active\n**Next action**: Implement the export path.',
+        '**State:** Active\n**Next action:** Implement the export path.',
+    ]:
+        assert queue.remaining_work(status)['state'] == 'engineering'
+    for state in ['Active; not merged yet', 'Active; needs to be merged', 'Active; awaiting delivery', 'Active; will be delivered']:
+        status = f'State: {state}\nNext action: Verify the deployed image.'
+        assert queue.remaining_work(status)['state'] == 'review'
 
 
 def main() -> None:
