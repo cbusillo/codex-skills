@@ -7828,10 +7828,10 @@ def dokploy_compose_payload(args: argparse.Namespace) -> dict[str, object]:
     if not isinstance(healthcheck_path, str) or not healthcheck_path.startswith("/"):
         raise ValueError("healthcheck_path_required")
     domains = payload.get("domains")
-    # Stable-lane repair refuses a target without the lane's domain.
+    # Private targets need no web route. Stable-lane repair validates the
+    # product's public/private declaration against its tracked target.
     if (
         not isinstance(domains, list)
-        or not domains
         or not all(isinstance(domain, str) and domain.strip() for domain in domains)
     ):
         raise ValueError("domains_required")

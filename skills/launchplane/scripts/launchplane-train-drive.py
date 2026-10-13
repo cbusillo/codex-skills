@@ -123,6 +123,7 @@ class DriveState:
     quota_waited: bool = False
     own_refusal_code: str = ""
     own_refusal_streak: int = 0
+    controller_evidence: list[dict[str, Any]] = field(default_factory=list)
 
 
 class DriverLockError(Exception):
@@ -234,7 +235,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             state.candidate_active = False
             state.helper_failures += 1
             state.lease_held = None
-            emit("snapshot", _snapshot(settings, state, "helper_unavailable", response))
+            _emit_snapshot(state, emit, _snapshot(settings, state, "helper_unavailable", response))
             if state.helper_failures >= settings.max_helper_failures:
                 return _stop(settings, state, emit, "error", reason="merge-train helper kept failing")
             _pause(settings, io, state)
@@ -252,7 +253,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             )
             state.own_refusal_code = code if own_refusal else ""
             if state.own_refusal_streak >= settings.max_own_refusals:
-                emit("snapshot", snapshot)
+                _emit_snapshot(state, emit, snapshot)
                 landing = _record_landings(settings, io, state, emit)
                 if landing == "landed":
                     _finish_landing(settings, io, state, emit, started)
@@ -268,7 +269,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                     state.quota_waited = True
                     snapshot["controller_action"] = "github_primary_limit_wait"
                     snapshot["retry_after_seconds"] = wait
-                    emit("snapshot", snapshot)
+                    _emit_snapshot(state, emit, snapshot)
                     _pause(settings, io, state, minimum=wait)
                     continue
             if snapshot["error_code"] == LEASE_HELD_CODE:
@@ -277,12 +278,12 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                 state.lease_held = snapshot
                 # The lease holder is already advancing the train; back off like an unchanged pass.
                 state.unchanged_passes = min(state.unchanged_passes + 1, 10)
-                emit("snapshot", snapshot)
+                _emit_snapshot(state, emit, snapshot)
                 _pause(settings, io, state)
                 continue
             state.helper_failures += 1
             state.lease_held = None
-            emit("snapshot", snapshot)
+            _emit_snapshot(state, emit, snapshot)
             if state.helper_failures >= settings.max_helper_failures:
                 return _stop(settings, state, emit, "error", reason="merge-train controller kept refusing",
                              **{key: snapshot[key] for key in ("status", "error_code", "http_status", "trace_id")})
@@ -303,8 +304,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
         _remember_batch(result, state)
         if action in {"execute_stack_collapse", "admit_collapsed_root"}:
             state.stack_seen = True
-        if action != state.last_action:
-            emit("snapshot", _snapshot(settings, state, action, response))
+        _emit_snapshot(state, emit, _snapshot(settings, state, action, response), deduplicate=True)
         state.last_action = action
 
         applied_block = result.get("block_result") or {}
@@ -458,7 +458,7 @@ def _finish_landing(
             if (response or {}).get("status") in {"accepted", "ok"}:
                 _remember_batch((response or {}).get("result") or {}, state)
             action = str(((response or {}).get("result") or {}).get("controller_action") or "")
-            emit("snapshot", _snapshot(settings, state, action or "helper_unavailable", response))
+            _emit_snapshot(state, emit, _snapshot(settings, state, action or "helper_unavailable", response))
             if action in {"batch_landed", "idle"}:
                 break
             _pause(settings, io, state)
@@ -515,10 +515,30 @@ def _snapshot(settings: DriveSettings, state: DriveState, action: str, response:
         "exit_code": response.get("exit_code"),
         "failure": response.get("failure"),
         "trace_id": summary.get("trace_id"),
+        # live_io consumes the write-action helper's validated public projection,
+        # never the provider response. Keep that projection's single schema owner.
+        "records": response.get("records") or {},
+        "result": result,
         "batch": sorted(state.batch),
         "landed": sorted(state.landed),
         "actions": ["wait_for_train"],
     }
+
+
+def _emit_snapshot(
+    state: DriveState, emit: Callable[[str, dict[str, Any]], None], snapshot: dict[str, Any],
+    *, deduplicate: bool = False,
+) -> None:
+    # A new request trace alone is not progress. Evidence changes within the
+    # same phase still need a snapshot, without changing polling backoff.
+    if deduplicate and state.controller_evidence:
+        previous = state.controller_evidence[-1]
+        if {key: value for key, value in snapshot.items() if key != "trace_id"} == {
+            key: value for key, value in previous.items() if key != "trace_id"
+        }:
+            return
+    state.controller_evidence.append(snapshot)
+    emit("snapshot", snapshot)
 
 
 def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[str, Any]], None], outcome: str, **detail: Any) -> str:
@@ -535,6 +555,7 @@ def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[
             "outcome": outcome,
             "landing_sha": state.landed.get(settings.number, ""),
             "prs": prs,
+            "controller_evidence": state.controller_evidence,
             "actions": [f"stop_{outcome}"],
             **{key: value for key, value in detail.items() if value is not None},
         },

@@ -406,8 +406,9 @@ already has a provider target. The route authorizes `dokploy_target.plan` or
 authorization result, not a reason to use another path.
 
 - The private payload file holds `context`, `instance`, `target_name`,
-  `server_id`, `reason`, `healthcheck_path` (starting `/`), a non-empty
-  `domains` list, and `project_id`, `project_name` or `environment_id`.
+  `server_id`, `reason`, `healthcheck_path` (starting `/`), a `domains`
+  list (empty when no web route is requested), and `project_id`, `project_name`
+  or `environment_id`.
   Optional: `schema_version`, `project_description`, `environment_name`,
   `environment_description`, `app_name`, `description`, `source_git_ref`,
   `source_type`, `compose_path`, `custom_git_branch`, `runtime_port` and
@@ -511,7 +512,15 @@ agents is the protected `Product Onboarding Manifest (Advanced)` workflow in
 `cbusillo/launchplane` with `operation: stable-lane-repair`: dry-run first,
 then apply with the dry-run's `reviewed_plan_sha256`. Dispatch and watch it
 through the `github` skill and `github_workflow_babysit.py`; this helper has no
-command for it. It needs the provider target first, with the lane's domain.
+command for it. It needs the provider target first. Public/private lane
+requirements belong to Launchplane's
+[stable-lane repair implementation](https://github.com/cbusillo/launchplane/blob/main/control_plane/product_stable_lane_repair.py),
+which validates the stored product declaration and tracked target; do not
+fabricate a domain for a private product. Qualify the currently pinned worker
+against the requested shape before dispatch: backend support alone does not
+prove that an older protected worker accepts it. Preserve that worker's
+authorization binding; a rejected shape is a capability gap, not permission
+to repin or call a raw route.
 
 ### Production backup authority
 
