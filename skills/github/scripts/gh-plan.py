@@ -3659,8 +3659,13 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
                     groups["excluded"].append({**item, "exclusion": "reviewed_wait" if review["state"] == "waiting" else "outside_owner_direction", "review": review})
                     continue
             row = {**item, "availability": "available" if state == "available" else "needs_review"}
+            if (isinstance(complete, bool) and complete and review.get("discussion_digest") == discussion.get("digest")
+                    and review.get("state") == "available" and review.get("ownership_complete") is True
+                    and (item.get("queue") or {}).get("observed_ownership_complete") is True
+                    and (item.get("queue") or {}).get("reason") in {"current_scope_needs_review", "current_action_not_recorded"}):
+                row.update(availability="available", review=review)
             groups["candidates"].append(row)
-            if state == "available":
+            if row["availability"] == "available":
                 groups["available_candidates"].append(row)
     for field, count in (("candidates", "candidate_count"), ("available_candidates", "available_candidate_count"),
                          ("underway", "underway_count"), ("verification_only", "verification_only_count"), ("scope_review", "scope_review_count")):

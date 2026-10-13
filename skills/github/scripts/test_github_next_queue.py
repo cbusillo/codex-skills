@@ -80,6 +80,9 @@ def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> 
         ('Active; source repair landed; device acceptance remains', 'Delivery agent provides the matching signed build, records installed version/build, then owner performs device test notes.'),
         ('Active; implementation merged; installed qualification remains', 'Release engineering continues genuine Build verification, then qualifies the supported rollout.'),
         ('Active; native qualification remains', 'A separately selected worker qualifies native child-reaping behavior. Correct only a reproduced defect.'),
+        ('Active; source merged', 'Verify the latest build.'),
+        ('Active; source merged', 'Observe the next build.'),
+        ('Active; source merged', 'Test this update.'),
     ]:
         result = classify(item(action, state))
         assert result['state'] == 'verification', result
@@ -88,6 +91,7 @@ def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> 
     assert classify(mixed)['state'] == 'available'
     assert classify(item('An executing agent repairs the controller response projection.', 'Active; first source PR landed'))['state'] == 'available'
     assert classify(item('Implement a feature that verifies TLS certificates.'))['state'] == 'available'
+    assert classify(item('Verify export and fix the reproduced fault.', 'Active; earlier source merged'))['state'] == 'available'
     assert classify(item('Verify the next deployed candidate update preserves the request.'))['state'] == 'review'
     assert classify(item('Supervisor verifies deployed web drill support.'))['state'] == 'review'
     assert classify(item('Another source owner delivers the prerequisite repair with a PR, then Supervisor verifies runtime.', 'Active; original source landed but the updater fails'))['state'] == 'review'
@@ -193,6 +197,14 @@ def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing
         assert module.project_local_queue([reviewed_row], [], context)['available_candidates']
     counts = queue.coverage(rows, rows[:2], result)
     assert counts['active_inventory_count'] == 4 and counts['active_unevaluated_count'] == 2
+    ambiguous = item('Evaluate remaining export scope.')
+    ambiguous['queue'] = classify(ambiguous)
+    review = {'state': 'available', 'reason': 'Current source scope reviewed', 'evidence': ['Current thread'],
+              'ownership_complete': True, 'discussion_digest': ambiguous['discussion']['digest']}
+    context = {'issues': {'owner/repo#1': review}}
+    assert module.project_local_queue([ambiguous], [], context)['available_candidates']
+    ambiguous['queue']['observed_ownership_complete'] = False
+    assert not module.project_local_queue([ambiguous], [], context)['available_candidates']
 
 
 def test_bounded_global_coverage_counts_active_discoveries_not_yet_read() -> None:

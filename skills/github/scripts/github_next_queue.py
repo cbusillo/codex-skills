@@ -68,8 +68,12 @@ def remaining_work(status: str) -> dict[str, Any]:
     if delivered and re.search(r"\b(?:canonical|separately assigned)\b", action, re.I):
         return {**result, "state": "scope_review", "reason": "delivered_slice_has_separate_remaining_scope"}
     source_verbs = r"\b(?:implement|repair|fix|build|remove|migrate|add|develop|refactor|patch|diagnose|investigate|resolve|correct|update|extend|wire|replace|port|tune|restore)(?:s|es|ing)?\b"
+    qualification_words = r"\b(?:qualif\w*|verif\w*|observ\w*|confirm\w*|read\w*|proof|evidence|acceptance|test\w*|compares?)\b"
     def source_step(text: str) -> bool:
         for match in re.finditer(source_verbs, text, re.I):
+            prefix = text[:match.start()]
+            if re.search(qualification_words, prefix, re.I) and not re.search(r"(?:\b(?:and|or)\s+(?:\w+ly\s+)?|[.;]\s*)$", prefix, re.I):
+                continue
             if match.start() and text[match.start() - 1] in "/-":
                 continue
             before = re.findall(r"\w+", text[:match.start()].casefold())
@@ -82,7 +86,6 @@ def remaining_work(status: str) -> dict[str, Any]:
             return True
         return False
     engineering = source_step(source_action)
-    qualification_words = r"\b(?:qualif\w*|verif\w*|observ\w*|confirm\w*|read\w*|proof|evidence|acceptance|test\w*|compares?)\b"
     qualification = re.search(qualification_words, action, re.I)
     # A conditional future source step after qualification is still a
     # qualification frontier; do not suggest its implementation prematurely.
@@ -107,7 +110,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     work = remaining_work(status)
     comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
     row = {**work, "claim_required": True, "ownership_complete": False,
-           "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {})}
+           "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {}),
+           "observed_ownership_complete": ownership.get("complete") is True}
     complete = discussion.get("complete")
     if not isinstance(complete, bool) or not complete:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
