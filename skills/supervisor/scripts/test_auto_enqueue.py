@@ -1103,6 +1103,29 @@ class QualificationTests(unittest.TestCase):
         )
         self.assertTrue(self.qualified())
 
+    def test_neutral_engineering_advisory_does_not_invent_acceptance_wait(self):
+        self.pull["body"] = "## Client test notes\nNothing for the Client to test: documentation only."
+        review = {"name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"}
+        self.checks["checkRuns"].append(review)
+        acceptance = Mock(return_value=False)
+        self.io.acceptance = acceptance
+        self.assertTrue(self.qualified())
+        acceptance.assert_not_called()
+        for change in (
+            {"labels": [{"name": "owner-review"}]},
+            {"body": "## Client test notes\nTry the preview."},
+        ):
+            with self.subTest(change=change):
+                original = copy.deepcopy(self.pull)
+                self.pull.update(change)
+                self.assertFalse(self.qualified())
+                self.pull = original
+        for status, conclusion in (("in_progress", None), ("completed", "failure"), ("completed", "success")):
+            with self.subTest(status=status, conclusion=conclusion):
+                review.update(status=status, conclusion=conclusion)
+                self.assertFalse(self.qualified())
+
+
     def test_acceptance_uses_service_decision_and_exact_head(self):
         self.io.args = argparse.Namespace(
             config=None, env_config=None, url=None, timeout=10
