@@ -342,7 +342,7 @@ memory/profile/local-config candidates.
    Prefixes resembling known private roots stay conservative; approved trusted-local
    extraction can use `--trusted-originals` to retain the original signal.
    Path redaction preserves public HTTP(S) URL paths except local file/editor and
-   dev-server/tunnel file links; literal query/fragment paths and person data are
+   dev-server/tunnel file links; literal and percent-encoded query/fragment paths and person data are
    still redacted. Known local path roots are masked conservatively inside other
    URI schemes and query/fragment values; arbitrary URI paths can remain readable.
    Unquoted `/Volumes/` spans include spaces in the volume and descendant names,
@@ -351,7 +351,7 @@ memory/profile/local-config candidates.
    delimiters, shell separators/options or a following HTTP(S) URL.
    The [extractor](scripts/extract_rollout_memory.py) owns the recognized prose
    words and continuation rules.
-   Periods and conjunctions inside path components remain masked when a path
+   Periods, colons, semicolons and conjunctions inside path components remain masked when a path
    continuation is recognizable.
    That continuation is one whitespace-free word immediately followed by a slash;
    quote multiword descendants after a prose word or closing delimiter, such as
@@ -361,7 +361,16 @@ memory/profile/local-config candidates.
    the path to retain it. Unquoted whitespace under other roots remains ambiguous.
    In shell assignments, `cd` arguments and CLI options, unescaped whitespace
    separates arguments, so quote or escape space-bearing paths there.
-   Percent-encoded paths are not decoded by this redactor. Under `--redact`, diagnostic
+   Query/fragment values are decoded for inspection, including nested percent
+   encoding and plus-encoded spaces. A value containing a recognized private path
+   is masked in full; unrelated URL fields keep their original encoding. Public
+   URL paths remain readable, while a comma or pipe glued to a private absolute
+   path separates it from the public URL. Encoded paths in known local/dev-server
+   links are masked too. This is bounded extraction, not universal natural-language
+   path detection: names such as `/Volumes/Photos and go to town/private.txt` or
+   `/Volumes/Backup/Documents (old) tax archive/tax.pdf` need quoting or shell
+   escaping to distinguish their components from workflow prose.
+   Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local
    directory is not exposed. Trusted mode retains the original artifact paths.
 2. Prefer destination-filtered passes when applying memory. Review `people`,
