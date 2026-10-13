@@ -53,8 +53,8 @@ def validate_text(text, allow_tabs=False):
         raise ValueError("text must be nonempty with no terminal control characters")
 
 
-def append_brief(command_text, brief):
-    """Append a literal prompt only to a direct invocation, optionally after cd."""
+def launch_agent(command_text):
+    """Identify a direct invocation, optionally after cd, using the brief parser."""
     lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -76,7 +76,12 @@ def append_brief(command_text, brief):
         words = words[1:]
     if not words or Path(words[0]).name not in {"codex", "claude", "agy"}:
         raise ValueError(reason)
-    prompt_option = " --prompt-interactive=" if Path(words[0]).name == "agy" else " -- "
+    return Path(words[0]).name
+
+
+def append_brief(command_text, brief):
+    """Append a literal prompt only to a direct invocation, optionally after cd."""
+    prompt_option = " --prompt-interactive=" if launch_agent(command_text) == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 
 
@@ -269,12 +274,19 @@ def with_account(command_text, choice, brief=None):
         raise ValueError("account selection needs a one-line launch command")
     default_claude = choice["provider"] == "anthropic" and "CLAUDE_CONFIG_DIR" not in choice["env"]
     checked_keys = set(choice["env"]) | set(account_choice.ACCOUNT_VARIABLES.values())
+    google = choice["provider"] == "google"
+    if google:
+        if launch_agent(command_text) != "agy":
+            raise ValueError("google account selection requires a direct AGY invocation")
+        checked_keys.add("HOME")
     if default_claude:
         checked_keys.add("CLAUDE_CONFIG_DIR")
     conflicts = account_settings(command_text, checked_keys)
     if conflicts:
+        remedy = ("remove those settings to use the existing AGY login" if google else
+                  "remove those settings and use --account for an explicit override")
         raise ValueError(f"launch file already sets {', '.join(sorted(conflicts))}; "
-                         "remove those settings and use --account for an explicit override")
+                         + remedy)
     if brief is not None:
         command_text = append_brief(command_text, brief)
     settings = " ".join(
