@@ -519,6 +519,8 @@ and its terminal, transcript and account readbacks before sending input.
    Director text or decisions. Ctrl-U clears typed input; a suggestion survives
    Ctrl-U. Use that known check only after preserving any confirmed
    Director-typed draft in private handoff files with its session/tab identity.
+   Before clearing other nonempty input, preserve it privately as unverified
+   text, including dim text; that backup never counts as a Director decision.
    Keep the tab open when text cannot be preserved or its author is uncertain.
 3. A prompt for unfinished item work means the session is not finished; keep
    it open. Resolve a pending close-out permission prompt only after verifying

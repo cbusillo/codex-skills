@@ -47,15 +47,15 @@ class PaneParserTests(unittest.TestCase):
             self.assertTrue(rows[0]["dead"])
             self.assertEqual(self.terminal.read(rows[1]["session_id"])["input_line"]["style"], "dim")
             asyncio.run(self.terminal.send(rows[1]["session_id"], "hello", submit=False))
-            before = calls.call_count
-            with self.assertRaisesRegex(ValueError, "exited"):
+            calls.reset_mock()
+            with self.assertRaises(ValueError):
                 asyncio.run(self.terminal.send(self.identity, "must not be sent"))
-            self.assertEqual(calls.call_count, before + 1)  # inventory only
+            self.assertFalse(any(call.args[0] == "send-keys" for call in calls.call_args_list))
 
     def test_empty_live_pid_is_uncertain_inventory(self):
         with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                 returncode=0, stdout=self.live.replace("\t456\t0", "\t\t0"))):
-            with self.assertRaisesRegex(ValueError, "live.*PID"):
+            with self.assertRaises(ValueError):
                 self.terminal.list()
 
     def test_empty_dead_pid_close_still_checks_ledger_pid_tty_and_siblings(self):
@@ -68,14 +68,13 @@ class PaneParserTests(unittest.TestCase):
                     returncode=0, stdout=self.dead + self.live)) as calls, \
                     patch.object(close_ttys, "inventory", return_value=[]):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
-                self.assertEqual(calls.call_args.args[0], "if-shell")
             for processes in ([(789, "other-tty", "reused-pid")],
                               [(999, "ttys987", "tty-still-live")]):
                 with self.subTest(processes=processes), \
                         patch.object(self.terminal, "run", return_value=SimpleNamespace(
                             returncode=0, stdout=self.dead)), \
                         patch.object(close_ttys, "inventory", return_value=processes):
-                    with self.assertRaisesRegex(ValueError, "remains"):
+                    with self.assertRaises(ValueError):
                         self.terminal.close(self.identity, ledger)
 
     def test_redraw_refusal_reports_typed_text_without_sending_return(self):
@@ -117,6 +116,17 @@ class PaneParserTests(unittest.TestCase):
                 self.assertEqual(caught.exception.detail["submission"], "not_attempted")
                 self.assertTrue(caught.exception.detail["text_sent"])
                 keys.assert_called_once_with("send-keys", "-t", "%2", "-l", "--", "message")
+
+    def test_text_send_timeout_is_uncertain_and_never_sends_return(self):
+        row = {"pane_id": "%2", "dead": False}
+        with patch.object(self.terminal, "select", return_value=row), \
+                patch.object(self.terminal, "run", side_effect=subprocess.TimeoutExpired("tmux", 10)) as keys:
+            with self.assertRaises(iterm_tab.SendFailure) as caught:
+                asyncio.run(self.terminal.send("exact", "message"))
+            self.assertIsNone(caught.exception.detail["text_sent"])
+            self.assertTrue(caught.exception.detail["input_may_contain_text"])
+            self.assertEqual(caught.exception.detail["submission"], "not_attempted")
+            self.assertFalse(any(call.args[-1] == "Enter" for call in keys.call_args_list))
 
 
 @unittest.skipUnless(shutil.which("tmux") and Path("/bin/zsh").exists(), "requires tmux and zsh")

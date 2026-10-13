@@ -8,9 +8,12 @@ API connection failure is a stop, not a reason to change personal settings.
 
 The shared launcher passes Claude Code `--settings '{"promptSuggestionEnabled": false}'`
 before its brief on either backend, including when the command file has other
-settings. A launch-file `--settings` object/file is read before launch and
-merged with this override, preserving its other keys. Use literal JSON or a
-readable file path; relative files resolve under the command's `cd` directory.
+settings. A launch-file inline `--settings` object is merged with this override,
+preserving its other keys. For `--settings file.json`, set
+`"promptSuggestionEnabled": false` in that file first: the launcher checks it
+before launch and preserves the file argument, private values and relative
+permission-rule base. It never rewrites that file or inlines its contents.
+Use literal JSON or a readable file path; relative files resolve under the command's `cd` directory.
 Use an absolute path in place of shell-expanded settings paths. Existing
 sessions may still draw dim suggestions. `read` retains the
 plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
@@ -23,7 +26,7 @@ no terminal style establishes authorship or approval. Follow the skill's
 Director-input and Ctrl-U checks before clearing or closing.
 
 A send failure after typing reports JSON on stdout, an explicit failure on
-stderr, and exits nonzero. `text_sent: true`, `input_may_contain_text: true`
+stderr, and exits nonzero. `text_sent: true` (or `null` for uncertain text delivery), `input_may_contain_text: true`
 and `submission: not_attempted|unknown` preserve the partial outcome. Read
 both output and exit status; do not redirect away a refusal and send again.
 After verified non-submission, `clear --verified-target` sends Ctrl-U; read

@@ -21,16 +21,17 @@ import account_choice
 
 
 class SendFailure(ValueError):
-    """Text reached the terminal; a later command must not append to it blindly."""
+    """Input may have reached the terminal; never append another command blindly."""
 
-    def __init__(self, identity, submission, reason):
+    def __init__(self, identity, submission, reason, text_sent=True):
         self.detail = {"status": "send_failed", "session_id": identity,
-                       "text_sent": True, "submission": submission,
+                       "text_sent": text_sent, "submission": submission,
                        "input_may_contain_text": True, "readback_required": True,
                        "error": reason,
                        "next_action": "Read the exact session before any next send. If unsubmitted, "
                                       "clear with verified-target clear (Ctrl-U) and verify empty input."}
-        super().__init__("text was sent; Return " + submission + "; input may still contain text")
+        text_outcome = "text was sent" if text_sent else "text send outcome unknown"
+        super().__init__(text_outcome + "; Return " + submission + "; input may still contain text")
 
 
 def input_line(lines, styles):
@@ -93,13 +94,20 @@ def iterm_input_line(screen):
     for i in range(screen.number_of_lines):
         line = screen.line(i)
         lines.append(line.string)
-        flags, consumed, cell = [], 0, 0
-        while consumed < len(line.string):
-            value = line.string_at(cell)
-            style = line.style_at(cell)
-            flags.extend([style.faint if style is not None else None] * len(value))
-            consumed += len(value)
-            cell += 1
+        flags, consumed = [], 0
+        try:
+            # Wide characters can use two cells. Keep optional style data bounded.
+            for cell in range(2 * len(line.string)):
+                if consumed >= len(line.string):
+                    break
+                value = line.string_at(cell)
+                style = line.style_at(cell)
+                flags.extend([style.faint if style is not None else None] * len(value))
+                consumed += len(value)
+            if consumed != len(line.string):
+                flags = [None] * len(line.string)
+        except (AttributeError, IndexError):
+            flags = [None] * len(line.string)
         styles.append(flags)
     return input_line(lines, styles)
 
@@ -189,10 +197,16 @@ def claude_settings(command_text, words):
                 if prefix[0] == "cd" and not path.is_absolute():
                     path = Path(prefix[1]).expanduser() / path
                 settings = json.loads(path.read_text(encoding="utf-8"))
+                # Keep file settings in the file: inlining exposes private values
+                # and changes the base for relative permission rules.
+                if isinstance(settings, dict) and settings.get("promptSuggestionEnabled") is False:
+                    return None
+                raise ValueError("Set promptSuggestionEnabled to false in the supplied settings file")
             if not isinstance(settings, dict):
                 raise ValueError()
         except (ValueError, OSError):
             raise ValueError("Claude --settings must be a readable literal JSON object or file; "
+                             "file settings must set promptSuggestionEnabled to false; "
                              "use an absolute file path for shell-expanded paths") from None
     return {**settings, "promptSuggestionEnabled": False}
 
@@ -202,7 +216,9 @@ def append_brief(command_text, brief):
     words = launch_words(command_text)
     agent = Path(words[0]).name
     if agent == "claude":
-        command_text += " --settings " + shlex.quote(json.dumps(claude_settings(command_text, words)))
+        settings = claude_settings(command_text, words)
+        if settings is not None:
+            command_text += " --settings " + shlex.quote(json.dumps(settings))
     prompt_option = " --prompt-interactive=" if agent == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 

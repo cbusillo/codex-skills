@@ -76,7 +76,10 @@ class Terminal:
             raise ValueError("agent process has exited; no input was sent")
         if "\n" in text or "\t" in text:
             text = "\x1b[200~" + text + "\x1b[201~"
-        self.run("send-keys", "-t", row["pane_id"], "-l", "--", text)
+        try:
+            self.run("send-keys", "-t", row["pane_id"], "-l", "--", text)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            raise iterm_tab.SendFailure(identity, "not_attempted", "text send outcome unknown", text_sent=None) from error
         if submit:
             await asyncio.sleep(0.4)
             try:

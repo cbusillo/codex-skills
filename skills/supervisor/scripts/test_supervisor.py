@@ -1212,8 +1212,7 @@ class TerminalTests(unittest.TestCase):
             path = root / "settings.json"
             path.write_text(json.dumps(settings))
             for option in ("--settings " + shlex.quote(json.dumps(settings)),
-                           "--settings=" + shlex.quote(json.dumps(settings)),
-                           "--settings settings.json"):
+                           "--settings=" + shlex.quote(json.dumps(settings))):
                 with self.subTest(option=option):
                     command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude {option}", "brief")
                     args = shlex.split(command)
@@ -1224,6 +1223,23 @@ class TerminalTests(unittest.TestCase):
                     self.assertEqual(received["permissions"], settings["permissions"])
                     self.assertFalse(received["promptSuggestionEnabled"])
                     self.assertEqual(args[-1], "brief")
+
+            with self.assertRaises(ValueError):
+                iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
+            settings["promptSuggestionEnabled"] = False
+            settings["env"] = {"FIXTURE_PRIVATE_VALUE": "opaque-fixture-value"}
+            path.write_text(json.dumps(settings))
+            command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
+            self.assertNotIn(settings["env"]["FIXTURE_PRIVATE_VALUE"], command)
+            self.assertEqual(shlex.split(command)[-4:], ["--settings", "settings.json", "--", "brief"])
+            self.assertEqual(json.loads(path.read_text()), settings)
+
+    def test_iterm_read_preserves_screen_when_style_data_is_unavailable(self):
+        text = "❯ draft"
+        for line in (SimpleNamespace(string=text, string_at=lambda x: text[x]),
+                     SimpleNamespace(string=text, string_at=lambda x: "", style_at=lambda x: None)):
+            screen = SimpleNamespace(number_of_lines=1, line=lambda i: line)
+            self.assertEqual(iterm_tab.iterm_input_line(screen)["style"], "unknown")
 
     def test_tmux_prompt_styles_reset_mixed_and_color_components(self):
         for captured, expected in (("❯ \x1b[2myes\x1b[0m", "dim"),
