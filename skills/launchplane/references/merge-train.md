@@ -110,6 +110,15 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   actor/observation; missing evidence remains null. The driver does not
   reconstruct historical causes or use diagnostic metadata to change outcomes.
   Launchplane owns the [last-result contract](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md).
+  Snapshots also retain the write-action helper's validated public-safe
+  `records` and `result`, including candidate and landing-plan identities and
+  run links. A change to that evidence emits a snapshot even within the same
+  controller phase; a new request trace alone does not. Polling backoff still
+  follows phase changes. Every terminal receipt carries the emitted snapshots
+  in order as `controller_evidence`, so later idle, refused or unavailable
+  responses do not erase earlier plan or landing evidence. These are observed
+  controller responses; the terminal `landing_sha` and `prs` remain GitHub
+  read-back evidence, and missing controller evidence is not reconstructed.
   Driver GitHub reads use the shared conditional cache and retry deadline.
   The controller helper projects validated candidate PR numbers. While the
   controller observes a candidate containing this driver's PR, it leaves the batch PRs

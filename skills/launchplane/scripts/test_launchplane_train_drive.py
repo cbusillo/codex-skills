@@ -32,6 +32,15 @@ def _response(action: str, **result: Any) -> dict[str, Any]:
     return {"status": "accepted", "result": {"controller_action": action, **result}, "summary": {"trace_id": "t"}}
 
 
+def _project_controller(raw: dict[str, Any]) -> dict[str, Any]:
+    spec = importlib.util.spec_from_file_location("evidence_write_action", SCRIPT_DIR / "launchplane-write-action.py")
+    assert spec is not None and spec.loader is not None
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper.summarize_success(operation="merge-train-controller-run-once",
+                                    request={"repository": REPO}, provider_payload=raw)
+
+
 def _refusal(error_code: str, *, status: str = "stale", http_status: int = 409) -> dict[str, Any]:
     """The write-action helper's envelope for a controller call Launchplane rejected."""
     return {"status": status, "result": {}, "summary": {"http_status": http_status, "trace_id": "refused", "error_code": error_code}}
@@ -678,6 +687,97 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
              "carried_by": {"collapse_id": "collapse-example", "root_pull_request_number": 7,
                             "expected_head_sha": "head-8"}},
         ])
+
+    def test_cli_preserves_helper_projection_through_subprocess_and_terminal_receipt(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        raw = {
+            "status": "accepted", "trace_id": "plan-trace",
+            "records": {"merge_train_batch_candidate_record_id": "candidate-example",
+                        "merge_train_batch_landing_plan_record_id": "plan-example"},
+            "result": {
+                "controller_action": "plan_landing", "candidate_sha": "candidate-sha",
+                "workflow_run_url": "https://github.com/example/app/actions/runs/123",
+                "candidate": {"record_id": "candidate-example", "candidate_sha": "candidate-sha",
+                              "entries": [{"pull_request_number": 7}], "status": "pass",
+                              "provider_note": "discard-me"},
+                "landing_plan": {"record_id": "plan-example", "status": "ready"},
+                "dry_run_result": {"queue_order": [7], "next_action_detail": "Candidate checks passed."},
+            },
+        }
+        projected = _project_controller(raw)
+        final = _project_controller({"status": "accepted", "trace_id": "landing-trace",
+                                     "records": {"merge_train_feedback_record_id": "feedback-example"},
+                                     "result": {"controller_action": "batch_landed", "landing_sha": "sha-7"}})
+        train = FakeTrain([projected, final], merge_after={7: 2})
+        live_controller = train_drive.live_io(10).controller
+        def controller(repo: str, base: str, key: str) -> dict[str, Any]:
+            reply = train.controller(repo, base, key)
+            with patch.object(train_drive.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps(reply), "discard-me"
+            )):
+                return live_controller(repo, base, key)
+        io = train.io()
+        io.controller = controller
+        output = StringIO()
+        with patch.object(train_drive, "live_io", return_value=io), redirect_stdout(output):
+            code = train_drive.main(["--repo", REPO, "--pr", "7"])
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        snapshots = [event["payload"] for event in events if event["event"] == "snapshot"]
+        receipt = events[-1]["payload"]
+        self.assertEqual((code, receipt["outcome"]), (0, "landed"))
+        for snapshot, response in zip(snapshots, (projected, final), strict=True):
+            self.assertEqual(snapshot["records"], response["records"])
+            self.assertEqual(snapshot["result"], response["result"])
+            self.assertEqual(snapshot["trace_id"], response["summary"]["trace_id"])
+        self.assertEqual(receipt["controller_evidence"], snapshots)
+        self.assertEqual(receipt["landing_sha"], train.pull_request(REPO, 7)["merge_commit_sha"])
+        self.assertNotIn("discard-me", output.getvalue())
+
+    def test_evidence_changes_in_same_phase_emit_without_resetting_backoff(self) -> None:
+        first = _response("observe_candidate", candidate={"candidate_sha": "candidate-sha", "status": "pending"})
+        trace_only = {**first, "summary": {"trace_id": "new-trace"}}
+        changed = _response("observe_candidate", candidate={"candidate_sha": "candidate-sha", "status": "pass"})
+        changed["records"] = {"merge_train_batch_candidate_record_id": "candidate-example"}
+        train = FakeTrain([first, trace_only, changed, _response("land_batch")], merge_after={7: 4})
+        with patch.object(train_drive.github_read, "poll_delay", side_effect=lambda delay, *_args, **_kwargs: delay):
+            _, events = _drive(train)
+        snapshots = [payload for event, payload in events if event == "snapshot"]
+        self.assertEqual([payload["result"] for payload in snapshots],
+                         [response["result"] for response in (first, changed, train.responses[-1])])
+        self.assertEqual(snapshots[1]["records"], changed["records"])
+        self.assertEqual(events[-1][1]["controller_evidence"], snapshots)
+        baseline = FakeTrain([first, first, first, _response("land_batch")], merge_after={7: 4})
+        with patch.object(train_drive.github_read, "poll_delay", side_effect=lambda delay, *_args, **_kwargs: delay):
+            _drive(baseline)
+        self.assertEqual(train.sleeps, baseline.sleeps)
+
+    def test_refusal_and_deadline_receipts_keep_preceding_plan_evidence(self) -> None:
+        planned = _response("plan_landing", landing_plan={"record_id": "plan-example"})
+        planned["records"] = {"merge_train_batch_candidate_record_id": "candidate-example"}
+        refused = _refusal("merge_readiness_not_ready")
+        refused["result"] = {"structural_provenance": {"status": "recorded_rolling"}}
+        for responses, settings in (([planned, refused], {"max_helper_failures": 1}),
+                                    ([planned], {"deadline": 60})):
+            with self.subTest(settings=settings):
+                outcome, events = _drive(FakeTrain(responses), **settings)
+                receipt = events[-1][1]
+                self.assertEqual(outcome, "error")
+                self.assertEqual(receipt["controller_evidence"],
+                                 [payload for event, payload in events if event == "snapshot"])
+                self.assertEqual(receipt["controller_evidence"][0]["records"], planned["records"])
+                self.assertEqual(receipt["controller_evidence"][-1]["result"], responses[-1]["result"])
+
+    def test_stack_finish_evidence_survives_later_idle_response(self) -> None:
+        finish = _response("complete_landing", stack_collapse_plan={
+            "collapse_id": "collapse-example", "root_pull_request_number": 7,
+            "child_dispositions": [{"pull_request_number": 8, "expected_head_sha": "head-8", "status": "closed"}],
+        })
+        train = FakeTrain([_response("execute_stack_collapse"), _response("land_batch"), finish, _response("idle")], merge_after={7: 2})
+        train.closed.add(8)
+        outcome, events = _drive(train)
+        self.assertEqual(outcome, "landed")
+        self.assertEqual(events[-1][1]["controller_evidence"][-2]["result"], finish["result"])
 
     def test_closed_child_without_matching_carried_evidence_is_only_closed(self) -> None:
         for expected_head in ("", "older-head"):
