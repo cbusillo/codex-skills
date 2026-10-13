@@ -221,7 +221,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         other_pr = _refusal("github_merge_rejected")
         other_pr["summary"]["pull_request_number"] = 8
         for interruption in (_response("plan_candidate"), other_code, other_pr,
-                             _refusal(train_drive.LEASE_HELD_CODE), None):
+                             _refusal(train_drive.LEASE_HELD_CODE)):
             with self.subTest(interruption=interruption):
                 train = FakeTrain([refusal, refusal, interruption, refusal, refusal, _response("land_batch")],
                                   merge_after={7: 6})
@@ -822,10 +822,154 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual({row["number"]: row["outcome"] for row in _drive(train)[1][-1][1]["prs"]},
                          {7: "landed", 8: "superseded", 9: "open"})
 
-    def test_a_helper_that_keeps_failing_ends_in_an_error(self) -> None:
-        outcome, events = _drive(FakeTrain([None]))
+    def test_an_uncertain_exchange_stops_before_another_mutation(self) -> None:
+        train = FakeTrain([None])
+        outcome, events = _drive(train)
         self.assertEqual(outcome, "error")
-        self.assertEqual(events[-1][1]["reason"], "merge-train helper kept failing")
+        self.assertEqual(train.calls, 1)
+        self.assertIn("controller_recovery", events[-1][1])
+        self.assertEqual(events[-1][1]["controller_evidence"],
+                         [payload for event, payload in events if event == "snapshot"])
+        self.assertTrue(events[-1][1]["controller_evidence"])
+
+    def test_uncertain_shapes_never_start_a_fresh_pass(self) -> None:
+        for response in (None, [], {"status": "no_response"},
+                         {"status": "outcome_unknown"}, {"status": "accepted_unverified"},
+                         {"status": "accepted", "result": None},
+                         {"status": "accepted", "result": []},
+                         {"status": "accepted", "result": {}},
+                         {"status": "stale", "summary": {"http_status": 409, "error_code": ["bad"]}},
+                         {"status": "invalid", "summary": {"projection_error_code": "invalid_response"}},
+                         _refusal("client_timeout", status="unavailable", http_status=504),
+                         _refusal("unknown_write", status="unavailable", http_status=502)):
+            with self.subTest(response=response):
+                train = FakeTrain([response, _response("idle")])
+                outcome, events = _drive(train)
+                self.assertEqual((outcome, train.calls, train.sleeps), ("error", 1, []))
+                receipt = events[-1][1]["controller_recovery"]
+                self.assertTrue(receipt["idempotency_key_sha256"])
+                self.assertNotIn("idempotency_key", receipt)
+
+    def test_uncertain_stack_finish_cannot_send_another_mutation(self) -> None:
+        train = FakeTrain([_response("execute_stack_collapse"), None, _response("idle")], merge_after={7: 1})
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls), ("landed", 2))
+        self.assertIn("controller_recovery", events[-1][1])
+
+    def test_cli_timeout_persists_request_and_blocks_plain_restart(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        output = StringIO()
+        train = FakeTrain([])
+        io = train_drive.live_io(1, repository_context=REPO, tracked_pr=7)
+        io.pull_request = train.pull_request
+        with patch.object(train_drive, "live_io", return_value=io), patch("subprocess.run", side_effect=subprocess.TimeoutExpired("helper", 1)), redirect_stdout(output):
+            self.assertEqual(train_drive.main(["--repo", REPO, "--pr", "7"]), train_drive.EXIT_CODES["error"])
+        stop = json.loads(output.getvalue().splitlines()[-1])["payload"]
+        journal = Path(stop["controller_recovery"]["request_file"])
+        saved = json.loads(journal.read_text())
+        self.assertEqual((saved["repository"], saved["base_branch"], saved["mutate"]), (REPO, "main", True))
+        self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn(saved["idempotency_key"], output.getvalue())
+        restarted = train_drive.live_io(1, repository_context=REPO, tracked_pr=7)
+        restarted.pull_request = train.pull_request
+        with patch("subprocess.run") as run:
+            events = []
+            self.assertEqual(train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10), restarted,
+                                               lambda event, payload: events.append((event, payload))), "error")
+            run.assert_not_called()
+        restarted_receipt = events[-1][1]["controller_recovery"]
+        self.assertTrue(restarted_receipt["reason"])
+        self.assertTrue(restarted_receipt["recommendation"])
+        self.assertEqual(json.loads(journal.read_text()), saved)
+
+    def test_recovery_reads_pr_and_controller_then_replays_original_key(self) -> None:
+        original = "original-private-key"
+        unknown = subprocess.CompletedProcess([], 1, stdout="malformed", stderr="private diagnostic")
+        settled = subprocess.CompletedProcess([], 0, stdout=json.dumps(_response("idle")), stderr="")
+        with patch("subprocess.run", return_value=unknown):
+            receipt = train_drive.live_io(1, tracked_pr=7).controller(REPO, "main", original)
+        journal = Path(receipt["recovery"]["request_file"])
+        recovering = train_drive.live_io(1, recover_controller=True, repository_context=REPO)
+        # The controller's closure uses its own reader, so replace its public
+        # API reader rather than drive's injected PR read.
+        with patch.object(train_drive.github_read.GitHubReader, "get_json", return_value={"state": "open", "merged": False}) as read, patch("subprocess.run", return_value=settled) as run:
+            result = recovering.recover()
+        self.assertFalse(train_drive._uncertain(result))
+        read.assert_called_once()
+        self.assertEqual(run.call_count, 2)
+        observed, replayed = [call.args[0] for call in run.call_args_list]
+        self.assertNotIn("--mutate", observed)
+        self.assertNotIn("--idempotency-key", observed)
+        self.assertEqual(replayed[-3:], ["--mutate", "--idempotency-key", original])
+        self.assertFalse(journal.exists())
+
+    def test_recovery_denial_or_unavailable_read_keeps_pending_request(self) -> None:
+        unknown = subprocess.CompletedProcess([], 1, stdout="null", stderr="")
+        with patch("subprocess.run", return_value=unknown):
+            receipt = train_drive.live_io(1, tracked_pr=7).controller(REPO, "main", "saved-key")
+        journal = Path(receipt["recovery"]["request_file"])
+        for read_response, replay_response in ((None, None), (_response("idle"), _refusal(train_drive.LEASE_HELD_CODE)),
+                                               (_response("idle"), _refusal("authorization_denied", status="denied", http_status=403))):
+            with self.subTest(read_response=read_response, replay_response=replay_response):
+                results = [subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+                           for payload in (read_response, replay_response)]
+                with patch.object(train_drive.github_read.GitHubReader, "get_json", return_value={"state": "open"}), patch("subprocess.run", side_effect=results) as run:
+                    response = train_drive.live_io(1, recover_controller=True, repository_context=REPO).recover()
+                self.assertTrue(train_drive._uncertain(response))
+                self.assertTrue(journal.exists())
+                self.assertEqual(run.call_count, 1 if read_response is None else 2)
+
+    def test_recovery_of_a_landed_pr_replays_before_reporting_landing(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("helper", 1)):
+            receipt = train_drive.live_io(1, tracked_pr=7).controller(REPO, "main", "lost-key")
+        journal = Path(receipt["recovery"]["request_file"])
+        live_factory = train_drive.live_io
+        train = FakeTrain([], merge_after={7: 0})
+        def factory(*args, **kwargs):
+            io = live_factory(*args, **kwargs)
+            io.pull_request = train.pull_request
+            io.merged_since = lambda *_args: []
+            io.reconcile = lambda *_args: None
+            return io
+        output = StringIO()
+        settled = subprocess.CompletedProcess([], 0, stdout=json.dumps(_response("idle")), stderr="")
+        with patch.object(train_drive, "live_io", side_effect=factory), patch.object(train_drive.github_read.GitHubReader, "get_json", return_value={"state": "closed", "merged": True}), patch("subprocess.run", return_value=settled) as run, redirect_stdout(output):
+            self.assertEqual(train_drive.main(["--repo", REPO, "--pr", "7", "--recover-controller"]), 0)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0][-1], "lost-key")
+        self.assertFalse(journal.exists())
+        stop = json.loads(output.getvalue().splitlines()[-1])["payload"]
+        self.assertEqual(stop["landing_sha"], "sha-7")
+        snapshots = [row["payload"] for row in map(json.loads, output.getvalue().splitlines())
+                     if row["event"] == "snapshot"]
+        self.assertEqual(stop["controller_evidence"], snapshots)
+        self.assertEqual(stop["controller_evidence"][0]["result"], _response("idle")["result"])
+
+    def test_recovery_requires_available_pr_evidence(self) -> None:
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("helper", 1)):
+            receipt = train_drive.live_io(1, tracked_pr=7).controller(REPO, "main", "lost-key")
+        io = train_drive.live_io(1, recover_controller=True, repository_context=REPO)
+        with patch.object(train_drive.github_read.GitHubReader, "get_json", return_value=None), patch("subprocess.run") as run:
+            self.assertTrue(train_drive._uncertain(io.recover()))
+            run.assert_not_called()
+        self.assertTrue(Path(receipt["recovery"]["request_file"]).exists())
+
+    def test_known_denial_releases_its_key_but_gateway_failure_keeps_it(self) -> None:
+        denial = subprocess.CompletedProcess([], 1, stdout=json.dumps(_refusal("authorization_denied", status="denied", http_status=403)), stderr="")
+        invalid = subprocess.CompletedProcess([], 1, stdout=json.dumps(_refusal("merge_train_controller_invalid_state", status="invalid_request", http_status=400)), stderr="")
+        gateway = subprocess.CompletedProcess([], 1, stdout=json.dumps(_refusal("gateway_failure", status="unavailable", http_status=502)), stderr="")
+        with patch("subprocess.run", side_effect=[denial, invalid, gateway]) as run:
+            io = train_drive.live_io(1, tracked_pr=7)
+            self.assertFalse(train_drive._uncertain(io.controller(REPO, "main", "denied-key")))
+            self.assertFalse(train_drive._uncertain(io.controller(REPO, "main", "invalid-key")))
+            response = io.controller(REPO, "main", "gateway-key")
+        self.assertTrue(train_drive._uncertain(response))
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["denied-key", "invalid-key", "gateway-key"])
+        saved = json.loads(Path(response["recovery"]["request_file"]).read_text())
+        self.assertEqual(saved["idempotency_key"], "gateway-key")
 
     def test_a_held_controller_lease_waits_out_the_lease_and_continues(self) -> None:
         train = FakeTrain([_refusal(train_drive.LEASE_HELD_CODE), _response("land_batch")], merge_after={7: 2})

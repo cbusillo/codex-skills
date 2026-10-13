@@ -444,6 +444,94 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.writes, [])
         self.assertTrue(any(event == "skipped" and data.get("reason") == "mergeability_unknown" for event, data in self.events))
 
+    def test_lazy_mergeability_computes_before_selection_and_label_recheck(self):
+        for batched in (False, True):
+            for computed in (True, False, None):
+                with self.subTest(batched=batched, computed=computed):
+                    fake = Fake(count=1)
+                    initial = {**pr(), "mergeable": None}
+                    resolved = {**pr(), "mergeable": computed, "mergeable_state": "behind"}
+                    reader = watch.GitHubReader(
+                        gh_cmd="fake-gh", actor="fixture-reader",
+                        expected_actor="fixture-reader", operation="github.pr.view",
+                    )
+                    live = object.__new__(watch.Live)
+                    live.reader = reader
+                    live.deadline = 100
+                    live.mergeability_reads_remaining = 20
+                    path = f"/repos/{REPO}/pulls/1"
+                    if batched:
+                        reader.batch_identity = reader.batch_context()
+                        reader.batch_responses = {
+                            path: initial, f"/repos/{REPO}/issues/1/comments": [],
+                            f"/repos/{REPO}/pulls/2": pr(2),
+                        }
+                    replies = [] if batched else [initial]
+                    replies.extend([initial, resolved])
+                    requests = []
+
+                    def transport(method, endpoint, **_kwargs):
+                        self.assertEqual((method, endpoint), ("GET", path))
+                        requests.append(endpoint)
+                        body = replies.pop(0) if replies else fake.pulls[1]
+                        fake.pulls[1].update(body)
+                        return watch.github_api.ApiResult(ok=True, status=200, body=copy.deepcopy(body))
+
+                    fake.get = live.get
+                    self.events.clear()
+                    with (
+                        patch.object(reader, "_transport_request", side_effect=transport),
+                        patch.object(watch.time, "time", return_value=0),
+                        patch.object(watch.time, "sleep") as sleep,
+                    ):
+                        self.run_pass(fake)
+                    self.assertEqual(fake.writes, [1] if computed is True else [])
+                    self.assertTrue(sleep.called)
+                    self.assertTrue(all(call.args[0] > 0 for call in sleep.call_args_list))
+                    self.assertNotIn(f"/repos/{REPO}/issues/1/comments", reader.batch_responses)
+                    if batched:
+                        self.assertEqual(reader.batch_responses[f"/repos/{REPO}/pulls/2"], pr(2))
+                    self.assertFalse(replies)
+                    if computed is not True:
+                        reason = "conflicting" if computed is False else "mergeability_unknown"
+                        self.assertTrue(any(event == "skipped" and data.get("reason") == reason for event, data in self.events))
+
+    def test_lazy_mergeability_budget_and_deadline_bound_extra_reads(self):
+        live = object.__new__(watch.Live)
+        live.reader = Mock(cache_enabled=True, batch_responses={})
+        live.reader.get_json.return_value = {**pr(), "mergeable": None}
+        live.reader.request.return_value = watch.github_api.ApiResult(
+            ok=True, status=200, body={**pr(), "mergeable": None},
+        )
+        live.deadline = 100
+        live.mergeability_reads_remaining = 3
+        with (
+            patch.object(watch.time, "time", return_value=0),
+            patch.object(watch.time, "sleep") as sleep,
+        ):
+            for number in range(1, 5):
+                self.assertIsNone(live.get(f"/repos/{REPO}/pulls/{number}")["mergeable"])
+        self.assertEqual(live.reader.request.call_count, 3)
+        self.assertEqual(sleep.call_count, 3)
+        self.assertTrue(live.reader.cache_enabled)
+        live.mergeability_reads_remaining = 3
+        with patch.object(watch.time, "time", return_value=99), patch.object(watch.time, "sleep") as sleep:
+            live.get(f"/repos/{REPO}/pulls/1")
+        sleep.assert_not_called()
+        self.assertEqual(live.reader.request.call_count, 3)
+
+    def test_lazy_mergeability_read_error_restores_cache(self):
+        live = object.__new__(watch.Live)
+        live.reader = Mock(cache_enabled=True, batch_responses={})
+        live.reader.get_json.return_value = {**pr(), "mergeable": None}
+        live.reader.request.side_effect = TimeoutError("fixture timeout")
+        live.deadline = 100
+        live.mergeability_reads_remaining = 3
+        with patch.object(watch.time, "time", return_value=0), patch.object(watch.time, "sleep"):
+            with self.assertRaises(TimeoutError):
+                live.get(f"/repos/{REPO}/pulls/1")
+        self.assertTrue(live.reader.cache_enabled)
+
     def test_active_candidate_keeps_all_arrivals_unlabeled(self):
         fake = Fake()
         fake.active = True
@@ -1034,6 +1122,12 @@ class QualificationTests(unittest.TestCase):
     def test_green_required_check_is_bound_to_expected_app(self):
         self.assertTrue(self.qualified())
         self.checks["checkRuns"][0]["appId"] = 99
+        self.assertFalse(self.qualified())
+
+    def test_behind_pr_requires_current_head_ready_receipt(self):
+        self.pull["mergeable_state"] = "behind"
+        self.assertTrue(self.qualified())
+        self.pull["head"]["sha"] = "b" * 40
         self.assertFalse(self.qualified())
 
     def test_dependency_author_handoff_needs_explicit_trusted_agent(self):

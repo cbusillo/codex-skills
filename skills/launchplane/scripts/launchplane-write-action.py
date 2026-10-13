@@ -4416,17 +4416,18 @@ def summarize_http_error(
             "Launchplane controller request was rejected; inspect the trace before retrying.",
         )]
         return payload
-    payload["summary"] = {
+    summary: dict[str, object] = {
         "http_status": exc.code,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "error_code": public_code(error.get("code"), default=status),
         "recommendation": http_error_recommendation(status),
     }
+    payload["summary"] = summary
     if operation == "privileged-policy-propose" and (exc.code in {404, 409} or 500 <= exc.code < 600):
         payload["status"] = (
             "unsupported" if exc.code == 404 else "conflict" if exc.code == 409 else "outcome_unknown"
         )
-        payload["summary"]["recommendation"] = (
+        summary["recommendation"] = (
             "The deployed service has no supported proposal route. Wait for service delivery; do not switch identity or transport."
             if exc.code == 404
             else "This source event conflicts with an existing request. Restore the original envelope, or use a fresh source event only for an intentional new proposal."
@@ -4930,13 +4931,14 @@ def _summarize_product_read(
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["result"] = project(provider_payload.get(result_key))
-    payload["summary"] = {
+    summary: dict[str, object] = {
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
     }
     if recommendation is not None:
-        payload["summary"]["recommendation"] = recommendation
-    assert_public_safe_shape(payload["summary"])
+        summary["recommendation"] = recommendation
+    assert_public_safe_shape(summary)
+    payload["summary"] = summary
     return payload
 
 
@@ -5351,7 +5353,7 @@ def summarize_merge_train_policy_read(
         "source": "launchplane",
         "status": "enrolled" if targets else "not_enrolled",
         "enabled": bool(targets),
-        "targets": sorted(targets, key=lambda target: target["baseBranch"]),
+        "targets": sorted(targets, key=lambda entry: entry["baseBranch"]),
         "policy": {
             "record_id": public_identifier(record.get("record_id")),
             "updated_at": public_timestamp(record.get("updated_at")),
@@ -6370,7 +6372,7 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
     def call(mode: str) -> tuple[dict[str, object], dict[str, Any]]:
         nonlocal known_trace
         try:
-            raw = request_launchplane(
+            response = request_launchplane(
                 service_url=settings["service_url"], path=path, settings=settings,
                 body={**body, "mode": mode}, timeout=args.timeout,
                 idempotency_key=args.idempotency_key if mode == "apply" else "",
@@ -6380,13 +6382,13 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
         except ValueError:
             raise LaunchplaneSafetyError("invalid_response") from None
         if mode == "apply":
-            known_trace = public_trace_id(raw.get("trace_id"))
-        if raw.get("status") != "accepted":
+            known_trace = public_trace_id(response.get("trace_id"))
+        if response.get("status") != "accepted":
             raise LaunchplaneSafetyError("invalid_response")
-        result = _runtime_sync_result(raw.get("result"), mode=mode)
-        if result["context"] != request["context"] or result["instance"] != request["instance"]:
+        projected = _runtime_sync_result(response.get("result"), mode=mode)
+        if projected["context"] != request["context"] or projected["instance"] != request["instance"]:
             raise LaunchplaneSafetyError("invalid_response")
-        return result, raw
+        return projected, response
 
     try:
         plan, raw = call("dry-run")
@@ -7769,7 +7771,7 @@ def execute_compose_domain_apply(
             live = private["live_domains"]
             if not isinstance(live, list) or not all(isinstance(route, dict) and isinstance(route.get("host"), str) for route in live):
                 raise LaunchplaneSafetyError("invalid_response")
-            routes = cast(list[dict[str, object]], live)
+            routes = live
             routes_by_host = {
                 domain: [route for route in routes if str(route["host"]).strip().lower() == domain]
                 for domain in requested_domains
@@ -8055,10 +8057,11 @@ def execute_verified_apply(
             except LaunchplaneSafetyError:
                 emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
                 return 1
-            if _require_dict(error["summary"]).get("error_code") == "invalid_dokploy_target_setup":
+            error_summary = _require_dict(error["summary"])
+            if error_summary.get("error_code") == "invalid_dokploy_target_setup":
                 unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
                 _require_dict(unknown["summary"]).update({
-                    field: error["summary"][field] for field in ("http_status", "trace_id", "error_code")
+                    field: error_summary[field] for field in ("http_status", "trace_id", "error_code")
                 })
                 emit(unknown)
             else:

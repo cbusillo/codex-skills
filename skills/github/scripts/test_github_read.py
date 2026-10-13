@@ -182,6 +182,30 @@ def test_conditional_cache_reuses_304_body_and_scopes_query_and_identity() -> No
     assert any("If-None-Match: \"v1\"" in arg for arg in run.call_args_list[1].args[0])
 
 
+def test_fresh_read_bypasses_both_conditional_cache_layers() -> None:
+    for cache_enabled in (False, True):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "GITHUB_READ_CACHE_DIR": str(Path(directory) / "reader"),
+            "GITHUB_HTTP_CACHE_DIR": str(Path(directory) / "http"),
+        }):
+            reader = github_read.GitHubReader(
+                gh_cmd="fake-gh", expected_actor="fixture-automation",
+                operation="github.pr.watch", cache_enabled=cache_enabled,
+            )
+            initial = process(include_output({"mergeable": None}, headers={"etag": '"old"'}))
+            computed = process(include_output({"mergeable": True}, headers={"etag": '"new"'}))
+            with patch("subprocess.run", side_effect=[initial, computed, computed]) as run:
+                path = "/repos/o/r/pulls/1"
+                assert reader.get_json(path, step="initial") == {"mergeable": None}
+                for _ in range(2):
+                    assert reader.request("GET", path, step="computed", fresh=True).body == {"mergeable": True}
+                fresh_commands = [call.args[0] for call in run.call_args_list[1:]]
+                assert len(fresh_commands) == 2
+                assert all(not any("If-None-Match" in arg or "If-Modified-Since" in arg for arg in command) for command in fresh_commands)
+            assert reader.cache_enabled == cache_enabled
+            assert reader.diagnostics()["degraded"] is False
+
+
 def test_matrix_approved_reader_retries_and_reports_attempts() -> None:
     responses = [
         process(
@@ -1045,6 +1069,7 @@ def main() -> None:
         test_graphql_json_uses_bounded_shared_graphql_transport,
         test_reader_diagnostics_marks_mixed_rest_and_graphql_buckets,
         test_conditional_cache_reuses_304_body_and_scopes_query_and_identity,
+        test_fresh_read_bypasses_both_conditional_cache_layers,
         test_matrix_approved_reader_retries_and_reports_attempts,
         test_reader_aggregates_retry_summary_across_requests,
         test_reader_cli_operations_are_matrix_approved,
