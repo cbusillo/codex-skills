@@ -742,8 +742,8 @@ an alternate profile, not the default. The helper never reads credentials and
 never changes a
 login, including the desktop app's.
 
-Google requires the explicit `single_login = true` and `env = {}` form. Current
-`agy --help` and its [authentication docs](https://antigravity.google/docs/cli/install/)
+Google requires the explicit `single_login = true` and `env = {}` form. AGY 1.3.4's
+`--help` (checked October 13, 2026) and its [authentication docs](https://antigravity.google/docs/cli/install/)
 provide no account/home override; this row identifies the existing AGY login,
 without switching or independently verifying it. Configure exactly one Google
 row matching the existing login, and confirm that login in the launched AGY
@@ -752,6 +752,9 @@ as does `--account` for Google. Google follows Context Panel's Use next or
 eligible published launch order and writes the same count-only receipts as the
 other providers. Output includes `account_binding: existing-agy-login` and empty
 `env_keys`, so it does not claim an account was pinned by an environment variable.
+Google launch files must invoke `agy` directly and keep `HOME` unchanged; remove
+home/account settings from the file to use the mapped existing login. A launch
+file invoking another harness refuses before tabs or receipts.
 If the AGY login changes, reconcile the mapping and Context Panel row before
 launching again. No credentials or login settings are read or changed by this
 selection path. The Supervisor applies private-config migrations after the

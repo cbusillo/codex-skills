@@ -25,6 +25,7 @@ from pathlib import Path
 PROVIDERS = ("openai", "anthropic", "google")
 # Supported variables that put a launched harness on an account. AGY uses its existing login.
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
+GOOGLE_ACCOUNT_BINDING = "existing-agy-login"
 SNAPSHOT_TIMEOUT_SECONDS = 60
 OWN_RECEIPT = re.compile(r"^\d{8}T\d{6}Z-supervisor-[0-9a-f]{32}\.json$")
 
@@ -282,7 +283,7 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
 
 def decision(account, source, reason, account_id=None, remaining=None,
              configuration_errors=(), reset_prompts=()):
-    binding = {"account_binding": "existing-agy-login"} if account["provider"] == "google" else {}
+    binding = {"account_binding": GOOGLE_ACCOUNT_BINDING} if account["provider"] == "google" else {}
     return {**binding, "name": account["name"], "provider": account["provider"], "source": source,
             "reason": reason, "account_id": account_id, "remaining_fraction": remaining,
             "env": account["env"], "configuration_errors": list(configuration_errors),
