@@ -27,7 +27,9 @@ The screenshot path must follow the host's artifact policy.
 ```javascript
 // Task-owned .mjs script; use the existing project import if available.
 import { pathToFileURL } from 'node:url';
-const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const { chromium } = process.env.PLAYWRIGHT_MODULE
+  ? await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href)
+  : await import('playwright');
 const browser = await chromium.launch({ headless: true });
 try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });

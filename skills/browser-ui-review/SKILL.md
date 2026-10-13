@@ -7,6 +7,9 @@ resources:
   - path: references/ui-browser.md
     kind: reference
     description: Conditional CLI command and session guidance for an installed ui-browser helper.
+  - path: references/foreground-playwright.md
+    kind: reference
+    description: Existing Playwright fallback that keeps a browser journey in one foreground process.
 ---
 
 # Browser UI Review
