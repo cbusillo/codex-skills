@@ -226,10 +226,26 @@ class ClientAppTests(unittest.TestCase):
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "different[bot]"}):
             result = self.wrapper(*args)
             self.assertNotEqual(result.returncode, 0)
+
             self.assertIn("expected 'different[bot]'", result.stderr)
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "app-2[bot]"}):
             result = self.wrapper(*args)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_own_user_actor_refusal_is_not_retried_as_network_failure(self) -> None:
+        os.environ.update({identity.OWN_USER_OPT_IN: "1",
+                           "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "another-person",
+                           "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
+        wrapper = str(Path(identity.__file__).with_name("gh-with-env-token"))
+        result = github_api.call_gh_with_retry(
+            "GET", "/user", gh_cmd=wrapper,
+            gh_prefix_args=["--write-actor-for", "host/missing"],
+            operation="github.comment.create", actor="app-1[bot]",
+            expected_actor="app-1[bot]")
+        self.assertFalse(result.ok)
+        self.assertFalse(result.failure.retryable)
+        self.assertEqual(result.attempts, 1)
 
     def test_python_request_and_comment_actor_follow_client(self) -> None:
         os.environ["GH_WITH_ENV_TOKEN_GH"] = str(self.fake_gh())

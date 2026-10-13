@@ -2379,7 +2379,7 @@ degraded_behavior = "Only the owner creates/installs the App in their browser. C
 documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest"
 
 [api_surface_fingerprints]
-"github/scripts/github-own-user.sh" = "096737b3895c9c6dba2a21ef904101e188f88e09977ecad8b444e1359221cb81"
+"github/scripts/github-own-user.sh" = "a8d1998edce8b9941a5eef916593ba5f9d3a9002a9312f50e0c9d8da7c058523"
 "github/scripts/github_plan_wait.py" = "70652a2e3369d4f27fac0ab2711199bcb8b68ebc4a4c39573b3fdc9639a0ae33"
 "github/scripts/github_pr_batch.py" = "a9b942befddb7993b39c941867a262ae597acb6855f47f641573f8ca7af82674"
 "github/scripts/github_plan_graph.py" = "d08226c18592156fb0cf39319e128dc2241b4db9573d1d346e35143979cb4c94"
