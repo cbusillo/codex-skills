@@ -19,6 +19,111 @@ from pathlib import Path
 
 import account_choice
 
+CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
+CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
+
+
+class SendFailure(ValueError):
+    """Input may have reached the terminal; never append another command blindly."""
+
+    def __init__(self, identity, submission, reason, text_sent=True):
+        self.detail = {"status": "send_failed", "session_id": identity,
+                       "text_sent": text_sent, "submission": submission,
+                       "input_may_contain_text": True, "readback_required": True,
+                       "error": reason,
+                       "next_action": "Read the exact session before any next send. If unsubmitted, "
+                                      "clear with verified-target clear (Ctrl-U) and verify empty input."}
+        text_outcome = "text was sent" if text_sent else "text send outcome unknown"
+        super().__init__(text_outcome + "; Return " + submission + "; input may still contain text")
+
+
+def input_line(lines, styles):
+    """Report the last visible agent prompt's styling, never its author or authority."""
+    for index in range(len(lines) - 1, -1, -1):
+        match = re.match(r"^\s*[❯›>]\s?(.*)$", lines[index])
+        if not match:
+            continue
+        text = match.group(1)
+        flags = [styles[index][x] for x in range(match.start(1), len(lines[index]))
+                 if not lines[index][x].isspace()]
+        # Claude renders the first suggestion character as an inverse cursor.
+        if flags and flags[0] == "cursor" and len(flags) > 1 and all(f is True for f in flags[1:]):
+            flags = flags[1:]
+        if not flags:
+            style = "empty"
+        elif None in flags:
+            style = "unknown"
+        elif all(f is True for f in flags):
+            style = "dim"
+        elif any(f is True for f in flags):
+            style = "mixed"
+        else:
+            style = "non_dim"
+        return {"line_index": index, "text": text, "style": style,
+                "director_input_verified": False}
+    return {"line_index": None, "text": None, "style": "unknown",
+            "director_input_verified": False}
+
+
+def ansi_screen(captured):
+    """Decode tmux capture-pane -e SGR faint attributes alongside plain text."""
+    lines, styles = [], []
+    faint, inverse = False, False
+    for raw in captured.splitlines():
+        text, flags, offset = "", [], 0
+        for match in re.finditer(r"\x1b(?:\[([0-9;:]*)m|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))", raw):
+            chunk = raw[offset:match.start()]
+            text += chunk
+            flags.extend(["cursor" if inverse else faint] * len(chunk))
+            params = match.group(1).split(";") if match.group(1) is not None else []
+            i = 0
+            while i < len(params):
+                value = params[i]
+                if value in {"38", "48", "58"} and i + 1 < len(params):
+                    # RGB components (including 2 and 22) are not intensity codes.
+                    i += 5 if params[i + 1] == "2" else 3
+                    continue
+                if value in {"", "0", "22"}:
+                    faint = False
+                    if value in {"", "0"}:
+                        inverse = False
+                elif value == "2":
+                    faint = True
+                elif value == "7":
+                    inverse = True
+                elif value == "27":
+                    inverse = False
+                i += 1
+            offset = match.end()
+        chunk = raw[offset:]
+        lines.append(text + chunk)
+        styles.append(flags + ["cursor" if inverse else faint] * len(chunk))
+    return lines, styles
+
+
+def iterm_input_line(screen):
+    lines, styles = [], []
+    for i in range(screen.number_of_lines):
+        line = screen.line(i)
+        lines.append(line.string)
+        flags, consumed = [], 0
+        try:
+            # Wide characters can use two cells. Keep optional style data bounded.
+            for cell in range(2 * len(line.string)):
+                if consumed >= len(line.string):
+                    break
+                value = line.string_at(cell)
+                style = line.style_at(cell)
+                flag = None if style is None else "cursor" if style.inverse else style.faint
+                flags.extend([flag] * len(value))
+                consumed += len(value)
+            if consumed != len(line.string):
+                flags = [None] * len(line.string)
+        except (AttributeError, IndexError):
+            flags = [None] * len(line.string)
+        styles.append(flags)
+    return input_line(lines, styles)
+
 
 class LaunchFailure(ValueError):
     """Preserve launch identities so a partial batch is never mistaken for refusal."""
@@ -53,12 +158,13 @@ def validate_text(text, allow_tabs=False):
         raise ValueError("text must be nonempty with no terminal control characters")
 
 
-def launch_agent(command_text):
-    """Identify a direct invocation, optionally after cd, using the brief parser."""
+def launch_parts(command_text):
+    """Validate a direct agent invocation and return its executable and settings."""
     lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
     lexer.commenters = ""
     tokens = list(lexer)
+    directory = None
     reason = "brief delivery needs a direct agent invocation; use cd PATH && exec AGENT SETTINGS"
     if (not tokens or "\n" in command_text or tokens.count("&&") > 1
             or any(token.startswith("#")
@@ -66,9 +172,10 @@ def launch_agent(command_text):
         raise ValueError(reason)
     if "&&" in tokens:
         separator = tokens.index("&&")
-        directory = tokens[:separator]
-        if len(directory) != 2 or directory[0] != "cd":
+        prefix = tokens[:separator]
+        if len(prefix) != 2 or prefix[0] != "cd":
             raise ValueError(reason)
+        directory = prefix[1]
         tokens = tokens[separator + 1:]
     words = tokens
     while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
@@ -76,12 +183,67 @@ def launch_agent(command_text):
         words = words[1:]
     if not words or Path(words[0]).name not in {"codex", "claude", "agy"}:
         raise ValueError(reason)
-    return Path(words[0]).name
+    return words, directory
+
+
+def launch_words(command_text):
+    return launch_parts(command_text)[0]
+
+
+def launch_agent(command_text):
+    """Identify a direct invocation, optionally after cd, using the brief parser."""
+    return Path(launch_words(command_text)[0]).name
+
+
+def claude_settings(command_text, words):
+    """Keep the CLI's last settings object, overriding only prompt suggestions."""
+    source = None
+    for index, word in enumerate(words[1:], 1):
+        if word == "--settings":
+            if index + 1 >= len(words):
+                raise ValueError("Claude --settings requires a JSON object or file")
+            source = words[index + 1]
+        elif word.startswith("--settings="):
+            source = word.split("=", 1)[1]
+    settings = {}
+    if source is not None:
+        try:
+            if source.lstrip().startswith("{"):
+                settings = json.loads(source)
+            else:
+                path = Path(source).expanduser()
+                directory = launch_parts(command_text)[1]
+                if not path.is_absolute():
+                    if directory is None:
+                        raise ValueError()
+                    directory_path = Path(directory).expanduser()
+                    if not directory_path.is_absolute():
+                        raise ValueError()
+                    path = directory_path / path
+                settings = json.loads(path.read_text(encoding="utf-8"))
+                # Keep file settings in the file: inlining exposes private values
+                # and changes the base for relative permission rules.
+                if isinstance(settings, dict) and settings.get(CLAUDE_SUGGESTION_SETTING) is False:
+                    return None
+                raise ValueError("Set promptSuggestionEnabled to false in the supplied settings file")
+            if not isinstance(settings, dict):
+                raise ValueError()
+        except (ValueError, OSError):
+            raise ValueError("Claude --settings must be a readable literal JSON object or file; "
+                             "file settings must set promptSuggestionEnabled to false; "
+                             "use an absolute file path for shell-expanded paths") from None
+    return {**settings, CLAUDE_SUGGESTION_SETTING: False}
 
 
 def append_brief(command_text, brief):
     """Append a literal prompt only to a direct invocation, optionally after cd."""
-    prompt_option = " --prompt-interactive=" if launch_agent(command_text) == "agy" else " -- "
+    words = launch_words(command_text)
+    agent = Path(words[0]).name
+    if agent == "claude":
+        settings = claude_settings(command_text, words)
+        if settings is not None:
+            command_text += " --settings " + shlex.quote(json.dumps(settings))
+    prompt_option = " --prompt-interactive=" if agent == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 
 
@@ -89,10 +251,16 @@ async def send(session, text, submit=True, allow_tabs=False):
     validate_text(text, allow_tabs=allow_tabs)
     if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
-    await session.async_send_text(text, suppress_broadcast=True)
+    try:
+        await session.async_send_text(text, suppress_broadcast=True)
+    except Exception as error:
+        raise SendFailure(session.session_id, "not_attempted", "text send outcome unknown", text_sent=None) from error
     if submit:
         await asyncio.sleep(0.4)
-        await session.async_send_text("\r", suppress_broadcast=True)
+        try:
+            await session.async_send_text("\r", suppress_broadcast=True)
+        except Exception as error:
+            raise SendFailure(session.session_id, "unknown", "Return send failed") from error
 
 
 async def wait_for_session(app, tab, timeout=10.0):
@@ -274,6 +442,8 @@ def with_account(command_text, choice, brief=None):
         raise ValueError("account selection needs a one-line launch command")
     default_claude = choice["provider"] == "anthropic" and "CLAUDE_CONFIG_DIR" not in choice["env"]
     checked_keys = set(choice["env"]) | set(account_choice.ACCOUNT_VARIABLES.values())
+    if choice["provider"] == "anthropic":
+        checked_keys.add(CLAUDE_SUGGESTION_ENV)
     google = choice["provider"] == "google"
     if google:
         if launch_agent(command_text) != "agy":
@@ -298,6 +468,7 @@ def with_account(command_text, choice, brief=None):
     if settings:
         prefixes.append(f"export {settings}")
     if choice["provider"] == "anthropic":
+        prefixes.append(f"export {CLAUDE_SUGGESTION_ENV}=false")
         command_text = scoped_exec(command_text) or (
             "( export CLAUDE_ACCOUNT_MOVE_ENABLED=1; " + command_text + "\n)"
         )
@@ -428,6 +599,7 @@ async def operate(app, args):
                 "screen": [
                     screen.line(i).string for i in range(screen.number_of_lines)
                 ],
+                "input_line": iterm_input_line(screen),
             }
         if not args.verified_target:
             raise ValueError(
@@ -538,6 +710,9 @@ def main():
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, "launch failed; inspect the reported terminals before retrying\n")
+        except SendFailure as error:
+            print(json.dumps(error.detail, indent=2))
+            parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             parser.exit(1, f"refused: {error}\n")
         return
@@ -550,6 +725,9 @@ def main():
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, "launch failed; inspect the reported tabs before retrying\n")
+        except SendFailure as error:
+            print(json.dumps(error.detail, indent=2))
+            parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             parser.exit(1, f"refused: {error}\n")
         except iterm2.rpc.RPCException:
