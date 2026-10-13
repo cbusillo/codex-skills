@@ -127,7 +127,8 @@ class ClientAppTests(unittest.TestCase):
         with self.assertRaises(identity.ContributorRepository):
             self.auth("host/missing", write=True)
         self.assertFalse(identity.acts_as_own_user("host/missing"))
-        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1"}):
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1",
+                                      "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
             self.assertTrue(identity.acts_as_own_user("host/missing"))
         self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
 
@@ -215,7 +216,8 @@ class ClientAppTests(unittest.TestCase):
         result = self.wrapper(*args)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("GH_WITH_ENV_TOKEN_OWN_USER=1", result.stderr)
-        result = self.wrapper(*args, own_user=True)
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+            result = self.wrapper(*args, own_user=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("acting as your own GitHub user", result.stderr)
 
@@ -285,7 +287,8 @@ class ClientAppTests(unittest.TestCase):
         state = github_milestone._command_state("client/product", operation="github.plan.milestone_create",
             actor="app-1[bot]", expected_actor="app-1[bot]", gh_cmd=wrapper, verify_actor=True)
         self.assertEqual(state[1:3], ("app-1[bot]", "app-1[bot]"))
-        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1"}):
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1",
+                                      "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
             own = github_issue.create_issue("fixture", "fixture body", repo="upstream/missing",
                 gh_cmd=wrapper, expected_actor="app-1[bot]")
             self.assertEqual(own["actor"], "own-user")
@@ -313,7 +316,8 @@ class ClientAppTests(unittest.TestCase):
                 self.assertTrue(sections)
 
     def test_own_user_comment_keeps_prerequisite_reads_on_resolved_writer(self) -> None:
-        os.environ.update({identity.OWN_USER_OPT_IN: "1", "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+        os.environ.update({identity.OWN_USER_OPT_IN: "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user",
+                           "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
                            "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
         result = github_comment.comment("issue", 1, "fixture", repo="host/missing",
                                         expected_actor="app-1[bot]")

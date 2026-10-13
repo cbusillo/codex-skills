@@ -1654,7 +1654,7 @@ With no Client routing configured, existing fleet behavior is unchanged.
 
 If the Client App is not installed on the target, reads fail with the missing
 installation named. Writes retain the existing refusal and per-command own-user
-opt-in below; no token from the primary App is borrowed. Missing or partial
+opt-in below, using the declared personal account when approved; no token from the primary App is borrowed. Missing or partial
 Client configuration fails before sending a command. These settings do not
 create an App, install it, change permissions, or authorize outreach or access.
 
@@ -1682,7 +1682,7 @@ repository where the App is not installed is refused with that reason when the
 account that registered the App (`owner` in `GET /app`) owns the repository; ask the
 Director to install the App there. In any other account's repository, even one
 whose account has the App installed on other repositories, the write runs as
-the active `gh` login only when the caller sets `GH_WITH_ENV_TOKEN_OWN_USER=1`
+the declared personal `gh` login only when the caller sets `GH_WITH_ENV_TOKEN_OWN_USER=1`
 for that command, after its Director approved writing there. Without it the
 write is refused with a message naming the opt-in, and a value in `local.env`
 does not count. With it, stderr carries
@@ -1708,6 +1708,20 @@ All three take the same opt-in. `github_identity.py app-auth
 repository that moved without an installation is refused, since its current
 account is unknown under the old name. Only an operand URL names the target
 repository; a URL inside an option value such as `--body` does not.
+For own-user writes, set `GH_WITH_ENV_TOKEN_OWN_USER_LOGIN` in the fleet's
+`local.env` to the person's personal GitHub login, separate from the automation
+login. For example, `GH_WITH_ENV_TOKEN_OWN_USER_LOGIN=Mbanks89` declares Mike's
+personal account; it does not authorize a command. Use `gh auth switch --user
+Mbanks89` (or `gh auth login` if needed) to select that account. The GitHub
+command and push wrappers refuse before writing when the declaration is missing
+or the authenticated login does not match, ignoring case. An App login is not
+a personal login, and a machine-user account must never be declared as the
+person: GitHub reports machine users as ordinary User accounts, so the fleet's
+declaration supplies that distinction. Local commits keep the person's git
+identity; the wrappers check the authenticated account when publishing.
+The Client App and primary App paths do not require this declaration. See
+[Client fleets with two Apps](#client-fleets-with-two-apps) for App routing;
+Client release acceptance stays with the person's personal account.
 Reads there, and commands that name no
 repository such as GraphQL by node ID, use the configured installation.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and

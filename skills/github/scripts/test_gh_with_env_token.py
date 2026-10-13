@@ -469,7 +469,7 @@ def test_write_to_another_owners_repository_without_installation_runs_as_the_per
             "GITHUB_APP_ID=12345\n"
             "GITHUB_APP_INSTALLATION_ID=67890\n"
             "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
-            "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n",
+            "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\nGH_WITH_ENV_TOKEN_OWN_USER_LOGIN=contributor-login\n",
             encoding="utf-8",
         )
         identity = root / "identity.py"
@@ -502,6 +502,24 @@ def test_write_to_another_owners_repository_without_installation_runs_as_the_per
         assert result.stdout == "ran-with-token:active-login\n"
         assert "acting as your own GitHub user on director/catalog" in result.stderr
         assert "'contributor-login'" in result.stderr
+
+        configured = env_file.read_text()
+        for declaration in ("", "another-person", "cellmechanic-code-bot", "catalog-app[bot]"):
+            env_file.write_text(configured.replace(
+                "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN=contributor-login\n",
+                f"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN={declaration}\n"))
+            refused = run_wrapper(env_file, unused, identity, *write_args,
+                                  gh_command=fake_gh, extra_env=opt_in)
+            assert refused.returncode != 0 and not refused.stdout, refused
+            assert "acting as your own GitHub user" not in refused.stderr
+        # GitHub account names are case insensitive. Local configuration wins
+        # over an ambient declaration, just as it does for the App login.
+        env_file.write_text(configured.replace("=contributor-login", "=CONTRIBUTOR-login"))
+        allowed = run_wrapper(env_file, unused, identity, *write_args,
+                              gh_command=fake_gh, extra_env={**opt_in,
+                              "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "another-person"})
+        assert allowed.returncode == 0, allowed.stderr
+        env_file.write_text(configured)
 
         # Without the caller's opt-in, including one only in local.env, refuse
         # and name the opt-in.
@@ -581,7 +599,7 @@ def test_write_actor_probe_preserves_repository_authorization() -> None:
         env_file = root / "local.env"
         env_file.write_text(
             "GITHUB_APP_ID=12345\nGITHUB_APP_INSTALLATION_ID=67890\n"
-            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\nCODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\nCODEX_AUTOMATION_LOGIN='catalog-app[bot]'\nGH_WITH_ENV_TOKEN_OWN_USER_LOGIN=contributor-login\n"
         )
         identity = root / "identity.py"
         write(identity,
@@ -667,7 +685,7 @@ def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
         env_file = root / "local.env"
         env_file.write_text(
             "GITHUB_APP_ID=12345\nGITHUB_APP_INSTALLATION_ID=67890\n"
-            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\nCODEX_AUTOMATION_LOGIN='catalog-app[bot]'\n"
+            "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\nCODEX_AUTOMATION_LOGIN='catalog-app[bot]'\nGH_WITH_ENV_TOKEN_OWN_USER_LOGIN=contributor-login\n"
         )
         identity = root / "identity.py"
         write(identity, "import os, sys\n"
