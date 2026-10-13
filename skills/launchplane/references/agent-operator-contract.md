@@ -41,7 +41,12 @@ classifications:
   is insufficient.
 
 Provenance-only changes remain `current`. A scheduled `known-stale` result opens
-or updates one maintenance issue through the maintained GitHub issue helpers.
+one workflow-authored maintenance issue or posts refreshed evidence as a
+workflow-authored comment on the existing issue. The reporter accepts the
+original request inside the canonical GitHub planning preservation envelope,
+using the planning helper's parser, and leaves the request and managed plan
+unchanged. Malformed envelopes and foreign authors fail closed. Comment updates
+read back both the comment's author and evidence and the issue's ownership.
 The scheduled reporter uses only the job's existing GitHub Actions token and
 issue permissions, scoped to this workflow on `main`, and reads its write back.
 It does not use `/user` (unavailable to workflow installation tokens), load local
