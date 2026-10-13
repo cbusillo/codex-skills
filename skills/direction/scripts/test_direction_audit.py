@@ -364,7 +364,7 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
     for cap in (None, "closed_audit", "milestone_events"):
         Clock.ticks = 0
         calls: list[str] = []
-        def fetch(args: list[str], *, gh: str) -> list[dict[str, Any]]:
+        def fetch(args: list[str], *, gh: str) -> Any:
             assert gh == "fixture-gh"
             assert args[-2:] == ["--method", "GET"]
             path = args[1]
@@ -501,7 +501,7 @@ def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_
         assert Path(applied["backup"]).read_bytes() == before
         assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
         assert json.loads(marker.read_text()) == {
-            **original, "audits": {repo: stamp for repo, stamp in original["audits"].items() if repo != "o/archived"},
+            **original, "audits": {repo: timestamp for repo, timestamp in original["audits"].items() if repo != "o/archived"},
         }
 
 
@@ -1129,23 +1129,19 @@ def test_capacity_uses_per_pull_links_before_own_and_tooling_fallback() -> None:
     assert run(module, capacity=result)["capacity"] is result
 
 
-def test_own_share_floor_and_incomplete_reads() -> None:
+def test_own_share_is_reported_without_alarms_and_preserves_coverage() -> None:
     module = load()
-    floor = round(module.OWN_SHARE_FLOOR * 100)
-
-    def share(own: int) -> dict[str, Any]:
-        return summary(module, pulls={
+    for own in (0, 1, 5, 20, 100):
+        result = summary(module, pulls={
             "o/fun": [merged_pull(n, NOW) for n in range(own)],
             "o/stranger": [merged_pull(n, NOW) for n in range(100 - own)],
         })
-
-    assert share(floor)["own_share_floor"] == "met"
-    below = share(floor - 1)
-    assert below["own_share_floor"] == "below"
-    assert "own_share_below_floor" in kinds(run(module, capacity=below))
-    assert summary(module)["own_share_floor"] == "no_merges"
-    assert summary(module, pulls={"o/fun": [merged_pull(1, NOW)]}, incomplete=True)["own_share_floor"] == "unknown"
-    assert "own_share_below_floor" not in kinds(run(module, capacity=share(floor)))
+        assert result["own_share"] == own / 100
+        assert result["own_share_status"] == "complete"
+        assert run(module, capacity=result)["ok"]
+    assert summary(module)["own_share"] is None
+    assert summary(module)["own_share_status"] == "no_merges"
+    assert summary(module, pulls={"o/fun": [merged_pull(1, NOW)]}, incomplete=True)["own_share_status"] == "unknown"
 
 
 def test_capacity_lists_reverts_reopened_issues_and_closed_milestones_in_window() -> None:
@@ -1194,6 +1190,67 @@ def test_own_project_list_reads_identifiers_patterns_and_edits() -> None:
         except module.AuditError:
             continue
         raise AssertionError("missing list was accepted")
+
+
+def test_label_only_and_explicit_none_are_complete_declarations() -> None:
+    module = load()
+    for item in (
+        "Own projects: by the `own-project` label only.",
+        "Own projects: by the own-project label only (including work in `infra`).",
+        "Own projects: the `own-project` label only (including work in `infra`).",
+        "Own projects: issues with the own-project label only (including work in `infra`).",
+        "Own projects: issues with the `own-project` label in `infra`.",
+        "Own projects: work in `infra` with the `own-project` label only.",
+        "Own projects: home work in `infra` carrying the `own-project` label only.",
+        "Own projects use the own-project label: personal infrastructure work.",
+        "Own projects use the own-project label: work in `infra`.",
+        "Own projects: pull requests with the `own-project` label in `infra`.",
+        "Own projects are pull requests marked with the own-project label.",
+        "Own projects: none.",
+        "Own projects are none; all repositories are business work.",
+    ):
+        direction = DIRECTION + "\n## Order\n4. " + item
+        patterns = module.own_project_patterns(direction)
+        assert patterns == []
+        result = summary(module, own_projects=patterns, direction_text=direction, pulls={
+            "o/infra": [
+                {**merged_pull(1, NOW), "labels": [{"name": "own-project"}]},
+                merged_pull(2, NOW),
+            ],
+        })
+        assert result["merged_by_rank"] == {"milestone": 0, "tooling": 1, "own": 1}
+        assert result["own_share_direction"]["order"] == item
+        assert result["own_share_basis"] == "merged_pull_requests"
+    custom = DIRECTION + "\n## Order\n4. Own projects: by the `personal-work` label only."
+    assert module.own_project_patterns(custom, own_label="personal-work") == []
+    for name in ("own-project-tools", "work-tools", "work", "by"):
+        mixed = DIRECTION + f"\n## Order\n4. Own projects: `{name}` and `fun`; mixed work uses the `own-project` label."
+        assert module.own_project_patterns(mixed) == sorted(["fun", name])
+        plain = mixed.replace(f"`{name}`", name).replace("`fun`", "fun")
+        assert module.own_project_patterns(plain) == sorted(["fun", name])
+    described = DIRECTION + "\n## Order\n4. Own projects: `fun` (personal app), `companion*`; mixed work uses the `own-project` label."
+    assert module.own_project_patterns(described) == ["companion*", "fun"]
+    lab = DIRECTION + "\n## Order\n4. Own projects: the lab and the house (`house-tools`), `fun`; mixed work uses the `own-project` label."
+    assert module.own_project_patterns(lab) == ["fun", "house-tools"]
+    assert module.own_project_patterns(lab.replace("label.", "label only.")) == ["fun", "house-tools"]
+    sentences = DIRECTION + "\n## Order\n4. Own projects: `fun` and `companion*`. Mixed work uses the `own-project` label only."
+    assert module.own_project_patterns(sentences) == ["companion*", "fun"]
+    counted = DIRECTION + "\n## Order\n4. Own projects: `fun`, `companion*`. This list is what the check counts. Mixed work uses the `own-project` label."
+    assert module.own_project_patterns(counted) == ["companion*", "fun"]
+
+
+def test_direction_share_wording_is_reported_without_interpreting_a_threshold() -> None:
+    module = load()
+    for policy in (
+        "At most about 5% of merged pull requests go to own projects.",
+        "At least 30% go to own projects.",
+        "Own projects get some time every week; report without alarms.",
+    ):
+        direction = OWN_DIRECTION + "\n## Capacity\n" + policy
+        result = summary(module, direction_text=direction, pulls={"o/fun": [merged_pull(1, NOW)]})
+        assert result["own_share_direction"]["capacity"] == policy
+        assert result["own_share"] == 1
+        assert run(module, capacity=result)["ok"]
 
 
 def test_capacity_graph_includes_closed_waiting_children_blockers_and_cycles() -> None:
@@ -1268,12 +1325,30 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
     assert native_calls == [1, 2, 4]  # Explicit proven links do not need another read.
     assert not any("milestone=8" in path for path in paths)
     assert result["own_projects"] == module.own_project_patterns(OWN_DIRECTION)
+    for item in ("Own projects: by the `own-project` label only.", "Own projects: none."):
+        policy = "About 5% maximum."
+        direction = DIRECTION + "\n## Order\n4. " + item + "\n## Capacity\n" + policy
+        def label_only(args: list[str]) -> Any:
+            if "/contents/" in args[1]:
+                return {"content": base64.b64encode(direction.encode()).decode()}
+            if args[1].startswith("repos/o/fun/pulls"):
+                return [{**merged_pull(1, NOW), "labels": [{"name": "own-project"}]}, merged_pull(2, NOW),
+                        {**merged_pull(3, NOW), "labels": [{"name": "own-project"}]}]
+            return fetch(args)
+        labeled, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=label_only)
+        assert not errors
+        # Native milestone attribution still wins for pull 1.
+        assert labeled["merged_by_rank"] == {"milestone": 1, "tooling": 1, "own": 1}
+        assert labeled["own_projects"] == []
+        assert labeled["own_share_status"] == "complete"
+        assert labeled["own_share_direction"]["order"] == item
+        assert labeled["own_share_direction"]["capacity"] == policy
     def missing_order(args: list[str]) -> Any:
         if "/contents/" in args[1]:
             return {"content": base64.b64encode(DIRECTION.encode()).decode()}
         return fetch(args)
     partial, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=missing_order)
-    assert "capacity_own_projects" in errors and partial["own_share_floor"] == "unknown"
+    assert "capacity_own_projects" in errors and partial["own_share_status"] == "unknown"
     assert partial["merged_by_rank"]["milestone"] == 2
 
 
@@ -1388,7 +1463,7 @@ def test_mixed_repository_counts_labeled_or_linked_own_work_as_own() -> None:
     assert calls.count("repos/o/infra/issues/5") == 1, "each linked issue is read once"
     assert "repos/o/house-tools/issues/3" not in calls and "repos/o/infra/issues/10" not in calls
     assert truncated == ["capacity_issue_labels:o/infra#6"]
-    assert result["own_share_floor"] == "unknown"
+    assert result["own_share_status"] == "unknown"
 
 
 def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
@@ -1433,13 +1508,13 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
     assert not any(path.startswith(("repos/o/quiet/pulls", "repos/o/attic/", "repos/x/")) for path in calls)
     assert "graphql:reopened:name=quiet" in calls
     assert not any(path.startswith("repos/o/shut/") for path in calls)
-    assert result["own_share_floor"] == "below"
+    assert result["own_share_status"] == "complete"
     def missing_links(args: list[str]) -> Any:
         if args[1] == "graphql":
             raise module.AuditError("HTTP 403")
         return fetch(args)
     partial, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=missing_links)
-    assert partial["own_share_floor"] == "unknown" and "capacity_pull_links:o/live#0" in errors
+    assert partial["own_share_status"] == "unknown" and "capacity_pull_links:o/live#0" in errors
 
     def nothing_lists(args: list[str]) -> Any:
         if "/contents/" in args[1]:

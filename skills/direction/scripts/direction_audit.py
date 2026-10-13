@@ -32,7 +32,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read
-import github_repository_scope as repository_scope
+from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
@@ -61,7 +61,6 @@ STATUS_FIELD = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Waitin
 
 # The overall direction owns classification; repositories can contain mixed work.
 RANKS = ("milestone", "tooling", "own")
-OWN_SHARE_FLOOR = 0.20
 # GitHub's revert button titles the pull request `Revert "..."` and writes
 # `Reverts OWNER/REPO#N`; `git revert` writes `This reverts commit <sha>`.
 REVERT_TITLE = re.compile(r"^\s*revert\b", re.I)
@@ -277,9 +276,6 @@ def audit(
             findings.append({"kind": "gate_phrase", "number": number, "title": issue.get("title"), "phrases": phrases})
 
     findings.extend(wait_findings.values())
-    if capacity is not None:
-        if capacity["own_share_floor"] == "below":
-            findings.append({"kind": "own_share_below_floor", "own_share": capacity["own_share"], "floor": OWN_SHARE_FLOOR})
 
     order = {
         "coverage_incomplete": -1,
@@ -297,7 +293,6 @@ def audit(
         "gate_phrase": 9,
         "waiting_blocks_other_repository": 8,
         "milestone_wait_invalid": 8,
-        "own_share_below_floor": 10,
     }
     findings.sort(key=lambda item: (order.get(item["kind"], 99), str(item.get("number") or item.get("milestone") or item.get("title") or "")))
     result = {
@@ -1110,25 +1105,67 @@ def enrich_milestone_waits(
     return incomplete
 
 
-def own_project_patterns(text: str) -> list[str]:
-    """Read repository names/patterns from the own-project item in merged Order."""
+def own_project_order(text: str) -> str:
+    """The Director's own-project declaration, without interpreting its share."""
     order = github_direction_next.section_map(text).get("Order", "")
     match = re.search(r"(?ms)^\d+\.\s+(Own projects\b.*?)(?=^\d+\.\s|\Z)", order)
-    if not match or ":" not in match[1]:
+    return match[1].strip() if match else ""
+
+
+def own_project_patterns(text: str, *, own_label: str = "own-project") -> list[str]:
+    """Read repository patterns, a label-only declaration, or explicit none."""
+    declaration = own_project_order(text)
+    if not declaration:
         raise AuditError("Order own-project list is missing")
-    listing = match[1].split(":", 1)[1].split("This list", 1)[0]
+    label_declaration = bool(re.search(rf"(?i)(?<![\w.*-]){re.escape(own_label)}(?![\w.*-])", declaration) and
+                             re.search(r"(?i)\blabel(?:s|led|ed)?\b", declaration))
+    no_projects = bool(re.match(r"(?i)^Own projects\s*(?::|are)\s*none\b", declaration))
+    if ":" not in declaration:
+        if label_declaration or no_projects:
+            return []
+        raise AuditError("Order own-project list is missing")
+    listing = declaration.split(":", 1)[1].split("This list", 1)[0]
+    if no_projects:
+        return []
+    if label_declaration:
+        token = rf"(?<![\w.*-])`?{re.escape(own_label)}`?(?![\w.*-])"
+        marker = (re.search(rf"(?i){token}\s+label\b|\blabel\s+{token}", listing)
+                  or re.search(token, listing, re.I))
+        if marker is None:
+            if re.search(token, declaration.split(":", 1)[0], re.I):
+                return []
+            # Guidance after "This list" does not erase the declared list.
+            return own_project_identifiers(listing)
+        # Repository identifiers before the label belong to an explicit list;
+        # those after it are examples of where labeled work can live.
+        prefix = listing[:marker.start()]
+        clauses = list(re.finditer(r";|\.\s", prefix))
+        clause_start = clauses[-1].end() if clauses else 0
+        label_clause = re.split(r";|\.\s", listing[clause_start:], maxsplit=1)[0]
+        if re.search(r"(?i)\bwith\b|\blabel\s+only\b", label_clause):
+            # A label restriction scopes repository examples in this clause.
+            return own_project_identifiers(prefix[:clause_start])
+        if re.search(r"`[\w.*-]+`|,|;|\band\b", prefix):
+            return own_project_identifiers(prefix)
+        return []
+    names = own_project_identifiers(listing)
+    if not names:
+        raise AuditError("Order own-project list contains no repository identifiers")
+    return names
+
+
+def own_project_identifiers(listing: str) -> list[str]:
+    """Repository identifiers in a list, excluding explanatory plain prose."""
     names = re.findall(r"`([\w.*-]+)`", listing)
     # Parentheses carry explicit identifiers and explanatory prose. Only single
     # repository identifiers in the surrounding comma/and-separated list count.
     plain = re.sub(r"\([^)]*\)", "", listing, flags=re.S)
     plain = re.sub(r"`[^`]*`", "", plain)
     plain = re.sub(r"\band its\b[^,]*", "", plain)
-    for part in re.split(r",|\band\b", plain):
+    for part in re.split(r",|;|\band\b", plain):
         name = part.strip().rstrip(".")
         if re.fullmatch(r"[\w.-]+", name):
             names.append(name)
-    if not names:
-        raise AuditError("Order own-project list contains no repository identifiers")
     return sorted({name.casefold() for name in names})
 
 
@@ -1349,7 +1386,7 @@ def pull_issue_refs(repo: str, pull: dict[str, Any]) -> set[tuple[str, int]]:
     """Explicit closing/Refs clauses, rather than incidental issue mentions."""
     refs = set(pull.get("_native_issue_refs") or [])
     text = f"{pull.get('title') or ''}\n{pull.get('body') or ''}"
-    text = re.sub(r"\[[^\]]*\]\((https://github\.com/[\w.-]+/[\w.-]+/issues/\d+)\)", r"\1", text)
+    text = re.sub(r"\[[^]]*]\((https://github\.com/[\w.-]+/[\w.-]+/issues/\d+)\)", r"\1", text)
     for clause in re.finditer(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\b[ \t]*:?[ \t]*", text, re.I):
         if re.search(r"\b(?:not|never|doesn't|don't)\s*$", text[max(0, clause.start() - 20):clause.start()], re.I):
             continue
@@ -1359,7 +1396,7 @@ def pull_issue_refs(repo: str, pull: dict[str, Any]) -> set[tuple[str, int]]:
         while match := re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|([\w.-]+/[\w.-]+)?#(\d+)\b", tail):
             refs.add(((match[1] or match[3] or repo).casefold(), int(match[2] or match[4])))
             tail = tail[match.end():]
-            separator = re.match(r"(?:[ \t]*(?:,|and)[ \t]*|[ \t]*\n\s*(?:[-*]\s+)?)", tail)
+            separator = re.match(r"[ \t]*(?:,|and)[ \t]*|[ \t]*\n\s*(?:[-*]\s+)?", tail)
             if separator is None:
                 break
             tail = tail[separator.end():]
@@ -1469,6 +1506,7 @@ def capacity_summary(
     pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
     events: dict[str, list[dict[str, Any]]], since: dt.datetime, until: dt.datetime,
     incomplete: bool = False, own_label: str = "own-project", own_issues: frozenset[tuple[str, int]] | set[tuple[str, int]] = frozenset(),
+    direction_text: str = "",
 ) -> dict[str, Any]:
     """The overall direction's weekly numbers from per-repository listings.
 
@@ -1503,15 +1541,8 @@ def capacity_summary(
     total = sum(merged_by_rank.values())
     own = merged_by_rank["own"]
     own_share = round(own / total, 3) if total else None
-    if incomplete:
-        # A repository that could not be read could move the share either way.
-        floor = "unknown"
-    elif not total:
-        floor = "no_merges"
-    elif own / total >= OWN_SHARE_FLOOR:
-        floor = "met"
-    else:
-        floor = "below"
+    # Partial counts remain visible, but cannot establish a settled share.
+    share_status = "unknown" if incomplete else "complete" if total else "no_merges"
     closed = [
         {"repo": repo, "number": item.get("number"), "title": item.get("title"), "closed_at": item.get("closed_at")}
         for repo in sorted(milestones) for item in milestones[repo]
@@ -1536,7 +1567,12 @@ def capacity_summary(
         "merged_total": total,
         "merged_by_rank": merged_by_rank,
         "own_share": own_share,
-        "own_share_floor": floor,
+        "own_share_basis": "merged_pull_requests",
+        "own_share_status": share_status,
+        "own_share_direction": {
+            "order": own_project_order(direction_text),
+            "capacity": github_direction_next.section_map(direction_text).get("Capacity", "").strip(),
+        },
         "by_repository": by_repository,
         "milestones_closed": closed,
         "issues_reopened": sorted(reopened.values(), key=lambda item: (item["repo"], str(item["number"]))),
@@ -1636,8 +1672,9 @@ def fetch_capacity(
     owner = direction_repo.split("/")[0].casefold()
     truncated: list[str] = []
     text = merged_direction(direction_repo, fetch=fetch)
+    own_label = own_project_label(direction_repo)
     try:
-        own_projects = own_project_patterns(text or "")
+        own_projects = own_project_patterns(text or "", own_label=own_label)
     except AuditError:
         own_projects = []
         truncated.append("capacity_own_projects")
@@ -1652,7 +1689,6 @@ def fetch_capacity(
     pulls: dict[str, list[dict[str, Any]]] = {}
     milestones: dict[str, list[dict[str, Any]]] = {}
     events: dict[str, list[dict[str, Any]]] = {}
-    own_label = own_project_label(direction_repo)
     own_issues: set[tuple[str, int]] = set()
     linked_labels: dict[tuple[str, int], set[str] | None] = {}
 
@@ -1710,6 +1746,7 @@ def fetch_capacity(
         own_projects=own_projects, tracked_issues=tracked_issues, direction_source=source, pulls=pulls,
         milestones=milestones, events=events, since=since, until=until,
         incomplete=bool(truncated), own_label=own_label, own_issues=own_issues,
+        direction_text=text or "",
     )
     return summary, truncated
 
@@ -1755,7 +1792,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": "could not resolve a repository; pass --repo OWNER/REPO"}))
         return 2
 
-    owner_reader = pathlib.Path(shutil.which(args.gh) or args.gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
+    owner_reader = pathlib.Path(shutil.which(str(args.gh)) or args.gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
     fetch = lambda a: gh_json(a, gh=args.gh)  # noqa: E731
     if args.stale_waits_only:
         try:
