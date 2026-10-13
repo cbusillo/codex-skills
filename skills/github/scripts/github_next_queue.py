@@ -87,7 +87,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     comments = [{**comment, "user": {"login": comment.get("author")}} for comment in discussion.get("comments", [])]
     row = {**work, "claim_required": True, "ownership_complete": False,
            "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {})}
-    if discussion.get("complete") is not True:
+    complete = discussion.get("complete")
+    if not isinstance(complete, bool) or not complete:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
     # Use the claim helper's exact authored-release semantics instead of a
     # second claim parser. No synthetic owner can renew a real claim.
@@ -134,6 +135,7 @@ def coverage(inventory: list[dict[str, Any]], evaluated: list[dict[str, Any]], g
     active = {ident for ident, item in unique.items() if active_label in [label if isinstance(label, str) else label.get("name") for label in item.get("labels", [])]}
     reasons = Counter(item.get("exclusion") or (item.get("queue") or {}).get("reason") or "review_required"
                       for item in groups.get("excluded", []))
+    states = {name: len(groups.get(name, [])) for name in ("candidates", "available_candidates", "underway", "verification_only", "scope_review", "excluded")}
     return {"inventoried_issue_count": len(unique), "active_inventory_count": len(active),
             "evaluated_issue_count": len(checked), "active_evaluated_count": len(active & checked),
-            "active_unevaluated_count": len(active - checked), "excluded_by_reason": dict(sorted(reasons.items()))}
+            "active_unevaluated_count": len(active - checked), "excluded_by_reason": dict(sorted(reasons.items())), "queue_counts": states}

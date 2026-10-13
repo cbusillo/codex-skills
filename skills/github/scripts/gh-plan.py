@@ -642,6 +642,7 @@ GRAPHQL_PREFLIGHT_MINIMUM = 25
 NEXT_PROJECT_ITEM_LIMIT = 1000
 NEXT_RELATIONSHIP_LIMIT = 100
 NEXT_PLAN_INVENTORY_LIMIT = 1000
+NEXT_DEFAULT_SCAN_LIMIT = 500
 
 
 def classify_project_error(message: str) -> str:
@@ -3436,6 +3437,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
     issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
     inventory_count = len(issues)
+    inventory_issues = list(issues)
     agent = github_agent.running_agent(getattr(args, "agent", None))
     routed_issues: list[dict[str, Any]] = []
     routing_excluded: list[dict[str, Any]] = []
@@ -3568,7 +3570,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         "candidates": queue_result["candidates"][:args.limit],
         "available_candidates": queue_result["available_candidates"][:args.limit],
         "queue_context": queue_context,
-        "selection_coverage": github_next_queue.coverage(routed_issues, issues, queue_result, active_label=config["labels"]["active"]),
+        "selection_coverage": github_next_queue.coverage(inventory_issues, [*issues, *routing_excluded], queue_result, active_label=config["labels"]["active"]),
         "stale_wait_report": {key: value for key, value in wait_context.items() if key != "references"},
         "running_agent": agent,
         "notes": notes,
@@ -3687,7 +3689,7 @@ def discover_direction_work(
     hold. Return merged direction and explicit source coverage for that review.
     """
     repo_limit = getattr(args, "repo_limit", None) or 100
-    issue_limit = getattr(args, "repository_issue_limit", None) or 100
+    issue_limit = getattr(args, "repository_issue_limit", None) or NEXT_DEFAULT_SCAN_LIMIT
     app_configured = github_identity.github_app_config() is not None
     path = "/installation/repositories" if app_configured else "/user/repos"
     coverage: dict[str, Any] = {
@@ -4282,7 +4284,11 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["queue_context"] = queue_context
     ranked["own_project_context"] = own_project_context
     ranked["selection_coverage"] = github_next_queue.coverage(
-        list(seeds.values()), [seeds[key] for key in nodes if key in seeds], portfolio)
+        [*seeds.values(), *inventory], [seeds[key] for key in nodes if key in seeds], portfolio)
+    graph_active = {(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"], *ranked["verification_only"], *ranked["scope_review"]]
+                    if entry.get("via") and config["labels"]["active"] in normalize_labels(entry.get("labels"))}
+    ranked["selection_coverage"].update(active_in_evaluated_graph_count=len(graph_active),
+        active_outside_evaluated_graph_count=ranked["selection_coverage"]["active_inventory_count"] - len(graph_active))
     for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"]]:
         entry.pop("wait_evidence_complete", None)
     ranked["stale_wait_report"] = {key: value for key, value in wait_context.items() if key != "references"}
@@ -5456,10 +5462,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
     p.add_argument("--limit", type=positive_limit, default=5,
                    help="How many ranked results to return (default %(default)s); does not widen evaluation")
-    p.add_argument("--scan-limit", type=positive_limit, default=500,
+    p.add_argument("--scan-limit", type=positive_limit, default=NEXT_DEFAULT_SCAN_LIMIT,
                    help="How many issues to evaluate per scan allowance (default %(default)s); global next has separate graph and discovery allowances, each with an extra allowance for other-agent issues; discovery also reserves a held-repository allowance and evaluates marked incidents separately")
     p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default 100)")
-    p.add_argument("--repository-issue-limit", type=positive_limit, help="Global next: open issues per repository (default 100)")
+    p.add_argument("--repository-issue-limit", type=positive_limit, help=f"Global next: open issues per repository (default {NEXT_DEFAULT_SCAN_LIMIT})")
     p.add_argument("--comment-limit", type=positive_limit, help="Global next: comments per evaluated issue (default 100)")
     p.add_argument("--selection-context", help="Current owner holds and issue review evidence JSON; never a durable plan")
     p.set_defaults(func=cmd_next)
