@@ -1741,7 +1741,24 @@ the configured automation account. The push helper picks credentials the same
 way as the wrapper: a configured GitHub App first, then `CODEX_GITHUB_TOKEN`,
 `GH_TOKEN`, and `GITHUB_TOKEN`.
 
-`git-commit-as-bot <commit args>` retains its existing interface. For local
+`git-commit-as-bot <commit args>` defaults to identity selection for `origin`.
+For a fork contribution, pass `--repo UPSTREAM-OWNER/REPO` before the Git
+arguments to select the identity for the PR's target repository. This does not
+infer a target from an `upstream` remote or grant approval to write there.
+When that target requires the person's identity, the caller still needs the
+Director's approval and `GH_WITH_ENV_TOKEN_OWN_USER=1` on that command; required
+automation auth still refuses it. App-installed targets keep the bot identity
+even with the opt-in. For example, after approval:
+
+```bash
+GH_WITH_ENV_TOKEN_OWN_USER=1 scripts/git-commit-as-bot --repo upstream-owner/project -m 'Fix example'
+scripts/git-push-as-bot -u origin work/fix-example
+```
+
+The push authenticates for its actual destination (the fork), independently of
+the commit's target. An App-installed fork keeps App credentials; the upstream
+PR write needs its own per-command approval opt-in. Do not apply `--repo` to
+the push helper. For local
 integration, use `git-commit-as-bot --git-command COMMAND <args>`, where COMMAND
 is `commit`, `merge`, `pull`, `rebase`, `cherry-pick`, `revert`, or `am`.
 Run the helper from the target directory; use `cd` first when working in
