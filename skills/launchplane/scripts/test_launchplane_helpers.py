@@ -3657,17 +3657,17 @@ def test_protected_artifacts_read_empty_invalid_and_denied() -> None:
     status, payload, _ = _run_product_read(argv, response)
     assert status == 0 and payload["result"]["entry_count"] == 0
     for change in (
-        lambda response: response["protected_artifacts"].update(entries="bad"),
-        lambda response: response["protected_artifacts"].update(warnings="bad"),
-        lambda response: response["protected_artifacts"]["entries"][0].update(artifact_id="Bearer abcdefghijklmnop"),
-        lambda response: response["protected_artifacts"]["entries"][0].update(artifact_id="user:pass@private-host/app"),
-        lambda response: response["protected_artifacts"].update(warnings=["Protected artifact user:pass@private-host/app has no manifest."]),
-        lambda response: response["protected_artifacts"]["entries"][0].update(artifact_id="user:ab/cd@registry.example/app:tag"),
-        lambda response: response["protected_artifacts"].update(warnings=["Protected artifact user:ab/cd@registry.example/app:tag has no manifest."]),
-        lambda response: response["protected_artifacts"]["entries"][0].update(image_digest="user:pass@host"),
-        lambda response: response["protected_artifacts"]["entries"][0].update(instance="user:pass@host"),
-        lambda response: response["protected_artifacts"].update(warnings=["Protected artifact 1://user:pass@host is missing."]),
-        lambda response: response.update(unexpected="private-field"),
+        lambda fixture: fixture["protected_artifacts"].update(entries="bad"),
+        lambda fixture: fixture["protected_artifacts"].update(warnings="bad"),
+        lambda fixture: fixture["protected_artifacts"]["entries"][0].update(artifact_id="Bearer abcdefghijklmnop"),
+        lambda fixture: fixture["protected_artifacts"]["entries"][0].update(artifact_id="user:pass@private-host/app"),
+        lambda fixture: fixture["protected_artifacts"].update(warnings=["Protected artifact user:pass@private-host/app has no manifest."]),
+        lambda fixture: fixture["protected_artifacts"]["entries"][0].update(artifact_id="user:ab/cd@registry.example/app:tag"),
+        lambda fixture: fixture["protected_artifacts"].update(warnings=["Protected artifact user:ab/cd@registry.example/app:tag has no manifest."]),
+        lambda fixture: fixture["protected_artifacts"]["entries"][0].update(image_digest="user:pass@host"),
+        lambda fixture: fixture["protected_artifacts"]["entries"][0].update(instance="user:pass@host"),
+        lambda fixture: fixture["protected_artifacts"].update(warnings=["Protected artifact 1://user:pass@host is missing."]),
+        lambda fixture: fixture.update(unexpected="private-field"),
     ):
         body = _protected_artifacts_response()
         change(body)
