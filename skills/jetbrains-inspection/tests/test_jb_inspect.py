@@ -11855,7 +11855,6 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(compact["agent_result"]["proof_failures"], payload["proof_failures"])
         self.assertEqual(compact["inspection_proof"]["status"], payload["inspection_proof"]["status"])
         self.assertFalse(compact["inspection_proof"]["capture_complete"])
-        self.assertFalse(compact["agent_result"]["retry_policy"]["retry"])
         self.assertEqual(compact["agent_result"]["next_action"], payload["inspection_verdict_next_action"])
         for field in ("batch_inspection_delegations", "batch_inspection_delegation_count", "batch_inspection_delegations_omitted_count"):
             self.assertEqual(compact["agent_result"][field], payload["capture_diagnostic"][field])

@@ -75,7 +75,8 @@ plugin's `batch_inspection_delegated_to_editor_service` proof gap prevents compl
 coverage and GREEN. Proven findings stay RED with `execution_not_proven` in
 `proof_failures` and failed inspection proof; without proven findings, the run
 is terminal `UNKNOWN/execution_not_proven`, with bucket `environment_blocked`
-and attribution `configuration_blocked`. The helper preserves the plugin's
+and attribution `configuration_blocked`; that UNKNOWN still fails strict
+qualification after inspection starts. The helper preserves the plugin's
 supported recovery, failed coverage proof and structured
 `agent_result.batch_inspection_delegations` tool/file pairs and their total and
 omitted counts: use stock
