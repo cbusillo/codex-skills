@@ -21,6 +21,7 @@ import uuid
 from unittest.mock import patch
 
 import account_choice
+import close_ttys
 import iterm_tab
 import tmux_terminal
 
@@ -79,12 +80,20 @@ for line in sys.stdin:
 
     def ended(self, row):
         asyncio.run(self.terminal.send(row["session_id"], "/quit"))
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 10
+        last_error = None
         while time.monotonic() < deadline:
             if self.terminal.select(row["session_id"])["dead"]:
-                return
+                # tmux's dead flag alone is not the shutdown procedure's
+                # process-exit proof, especially while a Linux PTY is reaped.
+                try:
+                    self.terminal.verify_closed(row["session_id"], self.entry(row))
+                except ValueError as error:
+                    last_error = error
+                else:
+                    return
             time.sleep(0.05)
-        self.fail("agent did not exit")
+        self.fail(f"agent exit could not be verified: {last_error}")
 
     def entry(self, row):
         return {**row, "tmux_session_id": row["session_id"], "supervisor_owned": True}
@@ -169,6 +178,23 @@ for line in sys.stdin:
             result = self.terminal.close(row["session_id"], self.ledger)
         self.assertTrue(result["readback_required"])
         self.assertFalse(self.terminal.select(row["session_id"])["dead"])
+
+    def test_exit_wait_requires_process_proof_after_tmux_reports_dead(self):
+        row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+        original = close_ttys.inventory
+        reads = 0
+
+        def reaping():
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                return [(row["pid"], row["tty"].removeprefix("/dev/"), "fixture-agent")]
+            return original()
+
+        with patch.object(close_ttys, "inventory", side_effect=reaping):
+            self.ended(row)
+        self.assertGreater(reads, 1)
 
     def test_split_linked_window_and_stale_identity_are_preserved(self):
         row = self.launch()
