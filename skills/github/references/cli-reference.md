@@ -336,6 +336,13 @@ status/header/body evidence wins over diagnostics, and the bounded
 `GET /rate_limit` probe is used only when legacy output reports a rate limit
 without identifying its bucket.
 
+Permission refusals return `permission_denied`, require authorization, and offer
+neither automatic retry nor an authentication fallback. `gh-with-env-token`
+points to Director action or review of the App's permissions and installation.
+Personal repository creation is unavailable to installation tokens; changing
+the App's permissions cannot enable that operation. A real throttle retains
+its rate-limit classification and reset handling.
+
 For PR creation, the complete legacy `pull request create failed: GraphQL:`
 diagnostic ending in `(createPullRequest)` is a confirmed `validation_error` /
 `rejected` when it contains only blank head/base SHA, non-branch head, or
@@ -1142,7 +1149,17 @@ competitor's record.
   or `subissue` relationships. `related` edits a body note instead and follows
   body-ownership rules.
 - `close <issue>`: Close a durable plan with a fail-closed relationship
-  preflight and an issue-state commit point. Before any mutation, the helper
+  preflight and an issue-state commit point. Use `--planning-checkout PATH`
+  when the resolved target's checkout is outside automatic discovery. The
+  checkout's origin must match the target before any mutation. The result's
+  `planning_config` reports `discovered` metadata, `verified_defaults` from a
+  matching checkout without repository metadata, or `unavailable` when no
+  matching checkout was found. Unavailable metadata keeps workspace/catalog
+  defaults supported and reports `next_action: rerun_with_planning_checkout`;
+  it does not claim those defaults are verified target configuration. The
+  result names any workspace config used, and partial-close recovery retains
+  this evidence. Explicit `--project` and `--owner` still override defaults.
+  Before any mutation, the helper
   pages native `blocked_by` dependencies and sub-issues; `--reason completed`
   rejects open entries with compact references and `write_outcome=not_started`.
   Issues blocked by the plan do not prevent closure. `--reason not_planned`

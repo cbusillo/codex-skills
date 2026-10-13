@@ -220,16 +220,91 @@ class CleanupContracts(unittest.TestCase):
 
         return fixture_git
 
+    def many_refs(self):
+        selected = run_git(self.worktree, "rev-parse", "HEAD")
+        (self.repo / "README.md").write_text("published descendant\n")
+        run_git(self.repo, "commit", "-am", "Published descendant")
+        published = run_git(self.repo, "rev-parse", "HEAD")
+        run_git(self.repo, "push", "origin", "main")
+        (self.repo / "README.md").write_text("unpublished descendant\n")
+        run_git(self.repo, "commit", "-am", "Unpublished descendant")
+        unpublished = run_git(self.repo, "rev-parse", "HEAD")
+        local_refs = [f"refs/heads/retained-{index}" for index in range(350)]
+        subprocess.run(["git", "-C", str(self.repo), "update-ref", "--stdin"],
+                       input="".join(f"create {ref} {unpublished}\n" for ref in local_refs).encode(),
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.remote), "update-ref", "--stdin"],
+                       input="".join(f"create refs/heads/published-{index} {published}\n"
+                                     for index in range(95)).encode(), check=True, capture_output=True)
+        return selected, local_refs
+
+    def test_explicit_root_inventory_bounds_ancestry_to_selected_checkout(self):
+        selected, omitted = self.many_refs()
+        self.private_files(self.worktree / "out")
+        (self.worktree / "local.txt").write_text("local-only work\n")
+        original = cleanup_git.git
+
+        def budgeted_git(repo, *args, **kwargs):
+            if args[:2] == ("merge-base", "--is-ancestor") and args[2] != selected:
+                raise cleanup.ProbeError("unselected_ancestry_exceeds_budget")
+            return original(repo, *args, **kwargs)
+
+        with patch.object(cleanup_git, "git", budgeted_git):
+            report = self.inventory(self.worktree)
+            self.assertTrue(report["complete"], report["repository"])
+            self.assertTrue(report["git_stable"])
+            self.assertTrue(cleanup.check_manifest(report)["ok"])
+        repository = report["repository"]
+        self.assertEqual(repository["ref_coverage"]["refs/heads/work/fixture"]["state"], "covered")
+        self.assertTrue(all(repository["ref_coverage"][ref]["state"] == "unknown" for ref in omitted))
+        self.assertEqual(repository["worktree_coverage"]["inspected_count"], 1)
+        root = report["roots"][0]
+        self.assertEqual(root["entries"]["README.md"]["git"], "tracked")
+        self.assertEqual(root["entries"]["out/nested/.env.production"]["git"], "ignored")
+        self.assertEqual(root["entries"]["local.txt"]["git"], "untracked")
+        self.assertIn("protected_contents", root["holds"])
+        self.assertFalse(report["policy"]["may_delete"])
+
+    def test_scoped_revalidation_detects_change_to_unexamined_ref(self):
+        omitted = "refs/heads/retained"
+        head = run_git(self.repo, "rev-parse", "HEAD")
+        run_git(self.repo, "update-ref", omitted, head)
+        before = self.inventory(self.worktree)
+        (self.repo / "README.md").write_text("retained work\n")
+        run_git(self.repo, "commit", "-am", "Retained work")
+        run_git(self.repo, "update-ref", omitted, run_git(self.repo, "rev-parse", "HEAD"))
+        run_git(self.repo, "reset", "--hard", head)
+        result = cleanup.check_manifest(before)
+        self.assertFalse(result["ok"])
+        self.assertIn("git_postcondition_changed", result["errors"])
+
+    def test_unpublished_selected_branch_keeps_remote_coverage_hold(self):
+        (self.worktree / "README.md").write_text("unpublished selected work\n")
+        run_git(self.worktree, "commit", "-am", "Unpublished selected work")
+        report = self.inventory(self.worktree)
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["repository"]["ref_coverage"]["refs/heads/work/fixture"]["state"], "unknown")
+        self.assertIn("remote_coverage_unknown", report["roots"][0]["holds"])
+        self.assertEqual(report["roots"][0]["disposition"], "Keep")
+        self.assertFalse(report["policy"]["may_delete"])
+
+    def test_unscoped_snapshot_still_probes_unregistered_local_branches(self):
+        initial = run_git(self.repo, "rev-parse", "HEAD")
+        run_git(self.repo, "branch", "retained", initial)
+        (self.repo / "README.md").write_text("published successor\n")
+        run_git(self.repo, "commit", "-am", "Published successor")
+        run_git(self.repo, "push", "origin", "main")
+        snapshot = cleanup_git.snapshot(str(self.repo), self.key)
+        self.assertEqual(snapshot["ref_coverage"]["refs/heads/retained"]["state"], "covered")
+        self.assertEqual(len(snapshot["worktrees"]), len(cleanup_git.registrations(str(self.repo))))
+
     def test_registration_boundary_and_scoped_inventory_above_it(self):
         run_git(self.repo, "worktree", "lock", str(self.worktree), "--reason", "fixture owner")
         for count in (cleanup_git.MAX_WORKTREES, cleanup_git.MAX_WORKTREES + 1):
             with self.subTest(count=count), patch.object(cleanup_git, "git", self.registration_fixture(count)):
                 self.assertEqual(len(cleanup_git.registrations(str(self.repo))), count)
-                if count == cleanup_git.MAX_WORKTREES:
-                    snapshot = cleanup_git.snapshot(str(self.repo), self.key, roots=[str(self.worktree)])
-                    self.assertEqual(len(snapshot["worktrees"]), count)
-                    continue
-                self.private_files(self.worktree / "out")
+                if not (self.worktree / "out").exists():
+                    self.private_files(self.worktree / "out")
                 report = self.inventory(self.worktree, preserved=[str(self.worktree)])
                 self.assertTrue(report["complete"], report["repository"])
                 self.assertTrue(report["git_stable"])
@@ -477,7 +552,7 @@ class CleanupContracts(unittest.TestCase):
         self.assertFalse(result["ok"])
 
     def test_new_git_operation_and_registration_invalidate_revalidation(self):
-        before = self.inventory()
+        before = self.inventory(self.worktree)
         git_dir = Path(run_git(self.worktree, "rev-parse", "--absolute-git-dir"))
         (git_dir / "index.lock").touch()
         self.assertFalse(cleanup.check_manifest(before)["ok"])
@@ -486,7 +561,7 @@ class CleanupContracts(unittest.TestCase):
         self.assertFalse(cleanup.check_manifest(before)["ok"])
 
     def test_live_remote_coverage_does_not_trust_tracking_cache(self):
-        before = self.inventory()
+        before = self.inventory(self.repo)
         self.assertEqual(before["repository"]["ref_coverage"]["refs/heads/main"]["state"], "covered")
         moved_remote = self.base / "unavailable-remote"
         self.remote.rename(moved_remote)
