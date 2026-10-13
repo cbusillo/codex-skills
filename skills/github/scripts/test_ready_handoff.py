@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from github_read import GitHubReadShapeError
 from ready_handoff import READY, handoff_body, latest_ready
+import ready_handoff
 
 spec = importlib.util.spec_from_file_location("ready_pr", Path(__file__).with_name("gh-pr.py"))
 assert spec and spec.loader
@@ -78,6 +79,9 @@ class ReadyTests(unittest.TestCase):
         self.writer = self.writer_patch.start()
         self.addCleanup(self.reader_patch.stop)
         self.addCleanup(self.writer_patch.stop)
+        standing_patch = patch.object(ready_handoff, "director_standing_acceptance", return_value=False)
+        self.standing = standing_patch.start()
+        self.addCleanup(standing_patch.stop)
         helper.CURRENT_OPERATION = "github.pr.ready"
 
     def post(self):
@@ -178,6 +182,21 @@ class ReadyTests(unittest.TestCase):
         self.args.waiting_for_client = True
         _, comment = self.post()
         self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
+
+    def test_standing_product_notes_allow_ready_but_explicit_holds_remain(self):
+        self.reader.pr["body"] = "## Client test notes\nTry the new feature."
+        self.standing.return_value = True
+        _, comment = self.post()
+        self.standing.assert_called_once_with(REPO)
+        self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
+        self.reader.pr["head"]["sha"] = "b" * 40
+        self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
+        self.writer.reset_mock()
+        self.reader.pr["labels"] = [{"name": "owner-review"}]
+        self.refuse()
+        self.reader.pr["labels"] = []
+        self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "skipped"})
+        self.refuse()
 
     def test_nothing_to_test_uses_watcher_exemption(self):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."

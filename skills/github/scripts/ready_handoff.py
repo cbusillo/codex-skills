@@ -6,7 +6,9 @@
 """Shared merge-train handoff format and current-head selection."""
 
 import re
+import sys
 from datetime import datetime
+from pathlib import Path
 
 READY = "Ready for the merge train"
 WAITING = "Engineering ready; waiting for"
@@ -31,7 +33,15 @@ def handoff_body(head_sha: str, *, waiting_for_client: bool = False) -> str:
     return f"{first}\n\nHead: {head_sha}"
 
 
-def requires_client_acceptance(pr, check_runs):
+def director_standing_acceptance(repository):
+    """Use Launchplane's repository mapping and scoped profile, never repo config."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "launchplane/scripts"))
+    from launchplane_acceptance import read_director_standing
+
+    return read_director_standing(repository)
+
+
+def requires_client_acceptance(pr, check_runs, *, repository=""):
     """Keep the producer and watcher on the same Client-review path."""
     if any(label["name"].casefold() == "owner-review" for label in pr["labels"]):
         return True
@@ -47,7 +57,7 @@ def requires_client_acceptance(pr, check_runs):
     for heading in re.finditer(r"(?im)^## (?:Client|Owner) test notes[ \t]*\r?$", body):
         notes = re.split(r"(?m)^## ", body[heading.end():], maxsplit=1)[0].strip()
         if not re.match(r"(?i)Nothing for the (?:Client|owner) to test\b", notes):
-            return True
+            return not (repository and director_standing_acceptance(repository))
     return False
 
 

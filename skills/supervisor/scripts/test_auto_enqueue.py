@@ -20,6 +20,7 @@ from unittest.mock import Mock, patch
 
 import auto_enqueue as watch
 from skills.github.scripts.ready_handoff import READY, WAITING
+from skills.github.scripts import ready_handoff
 
 REPO = "example/tool"
 CLIENT = "example/client-product"
@@ -1059,6 +1060,9 @@ def api_result(certainty=None):
 
 class QualificationTests(unittest.TestCase):
     def setUp(self):
+        standing_patch = patch.object(ready_handoff, "director_standing_acceptance", return_value=False)
+        self.standing = standing_patch.start()
+        self.addCleanup(standing_patch.stop)
         self.io = object.__new__(watch.Live)
         self.io.reader = object()
         self.pull = pr()
@@ -1099,6 +1103,17 @@ class QualificationTests(unittest.TestCase):
 
     def qualified(self):
         return self.io.qualified(TARGET, self.pull, set(), self.agent_review_required)
+
+    def test_standing_product_notes_qualify_without_saved_client_decision(self):
+        self.pull["body"] = "## Client test notes\nTry the new feature."
+        self.standing.return_value = True
+        self.io.acceptance = Mock(return_value=False)
+        self.assertTrue(self.qualified())
+        self.standing.assert_called_once_with(REPO)
+        self.io.acceptance.assert_not_called()
+        self.pull["labels"] = [{"name": "owner-review"}]
+        self.assertFalse(self.qualified())
+        self.io.acceptance.assert_called_once()
 
     def test_cli_defaults_accept_automation_review_of_dependency_head(self):
         self.pull["user"]["login"] = "dependabot[bot]"

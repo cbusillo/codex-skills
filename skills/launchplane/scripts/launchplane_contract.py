@@ -294,6 +294,11 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-profiles/{product}",
         "mode": "read",
     },
+    "repo-product-mapping-read": {
+        "method": "GET",
+        "path": "/v1/repo-product-mapping",
+        "mode": "read",
+    },
     "path-check": {
         "method": "GET",
         "path": "/v1/products/{product}/path-check",
