@@ -134,6 +134,21 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   This is evidence about the local App; the controller can use another identity.
   Further refusals retain the failure budget until the controller makes progress.
   Other refusals retain their existing failure budget.
+  A timeout, absent/malformed reply, unverified success or unknown write stops
+  immediately with `controller_recovery`; an open PR does not settle a
+  candidate/admission mutation. Before sending a mutating request, the driver
+  saves its exact scope and key in an owner-only request file beside its local
+  train lock. The stop event names that file and the key fingerprint, never the
+  raw key. The pending file survives process exit and prevents a restarted
+  driver from starting a fresh pass, including stack-finish passes. Keep it
+  until recovery completes; deleting it discards the reconciliation barrier.
+  To recover, rerun the same driver command with `--recover-controller`.
+  It reads the saved PR and runs a read-only controller pass, then replays the
+  saved mutating request with its original key. Read-only evidence alone does
+  not clear the pending request. Only a projected accepted replay clears it;
+  an unavailable read, lease refusal or denial keeps the file and stops.
+  A verified PR landing is still reported as landed with unresolved controller
+  recovery attached, and recovery works after that PR has landed.
   At the deadline, final read-back has one fixed 15-second grace window;
   controller mutations and stack-finish passes keep the original deadline.
   Authentication and permission failures emit an `error` stop event.
