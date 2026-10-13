@@ -2632,12 +2632,22 @@ def compact_inspection_lane_result(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     compact = compact_agent_result_payload(payload, classify_run_exit(payload))
-    agent_result = compact.get("agent_result") if isinstance(compact.get("agent_result"), dict) else {}
+    agent_result = compact.get("agent_result")
+    if not isinstance(agent_result, dict):
+        agent_result = {}
     route = payload_route(payload)
-    ide_selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
-    cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
-    evidence_ids = payload.get("evidence_ids") if isinstance(payload.get("evidence_ids"), dict) else {}
-    compact_identity = compact.get("identity") if isinstance(compact.get("identity"), dict) else {}
+    ide_selection = context.get("ide_selection")
+    if not isinstance(ide_selection, dict):
+        ide_selection = {}
+    cleanup = payload.get("cleanup")
+    if not isinstance(cleanup, dict):
+        cleanup = {}
+    evidence_ids = payload.get("evidence_ids")
+    if not isinstance(evidence_ids, dict):
+        evidence_ids = {}
+    compact_identity = compact.get("identity")
+    if not isinstance(compact_identity, dict):
+        compact_identity = {}
     return public_payload(
         {
             "schema_version": INSPECTION_LANE_SCHEMA_VERSION,
@@ -2704,9 +2714,9 @@ def aggregate_repository_preparation_for_lanes(
     context: dict[str, Any],
 ) -> dict[str, Any]:
     preparations = [
-        lane.get("repository_preparation")
+        preparation
         for lane in lane_results
-        if isinstance(lane, dict) and isinstance(lane.get("repository_preparation"), dict)
+        if isinstance(lane, dict) and isinstance(preparation := lane.get("repository_preparation"), dict)
     ]
     precedence = {
         "failed": 6,
@@ -2729,7 +2739,9 @@ def aggregate_repository_preparation_for_lanes(
 
 
 def apply_multi_lane_verdict(payload: dict[str, Any]) -> dict[str, Any]:
-    lane_results = payload.get("lane_results") if isinstance(payload.get("lane_results"), list) else []
+    lane_results = payload.get("lane_results")
+    if not isinstance(lane_results, list):
+        lane_results = []
     required = [
         lane
         for lane in lane_results
@@ -2774,9 +2786,9 @@ def apply_multi_lane_verdict(payload: dict[str, Any]) -> dict[str, Any]:
             )
 
     retry_policies = [
-        lane.get("retry_policy")
+        policy
         for lane in required
-        if isinstance(lane.get("retry_policy"), dict)
+        if isinstance(policy := lane.get("retry_policy"), dict)
     ]
     retry = verdict == "UNKNOWN" and any(policy.get("retry") is True for policy in retry_policies)
     retry_policy = {
