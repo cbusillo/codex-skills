@@ -21,7 +21,7 @@ from unittest.mock import patch
 SCRIPT_DIR = Path(__file__).resolve().parent
 _SPEC = importlib.util.spec_from_file_location("train_drive", SCRIPT_DIR / "launchplane-train-drive.py")
 assert _SPEC is not None and _SPEC.loader is not None
-train_drive = importlib.util.module_from_spec(_SPEC)
+train_drive: Any = importlib.util.module_from_spec(_SPEC)
 sys.modules["train_drive"] = train_drive
 _SPEC.loader.exec_module(train_drive)
 
@@ -55,6 +55,12 @@ def _queue(*entries: tuple[int, list[str]]) -> dict[str, Any]:
     }
 
 
+def _stack(*, status: str = "waiting_for_root_checks", child_status: str = "planned",
+           collapse_id: str = "collapse-example", root: int = 7) -> dict[str, Any]:
+    return {"collapse_id": collapse_id, "root_pull_request_number": root, "status": status,
+            "child_dispositions": [{"pull_request_number": 8, "expected_head_sha": "head-8", "status": child_status}]}
+
+
 class FakeTrain:
     """A scripted controller plus GitHub pull request states."""
 
@@ -70,6 +76,8 @@ class FakeTrain:
         self.sleeps: list[float] = []
         self.reconciled: list[str] = []
         self.reconcile_receipt: dict[str, Any] | None = None
+        self.observations: list[dict[str, Any] | None] = []
+        self.observed = 0
 
     def controller(self, _repository: str, _base: str, _key: str) -> dict[str, Any] | None:
         response = self.responses[min(self.calls, len(self.responses) - 1)]
@@ -85,6 +93,11 @@ class FakeTrain:
             "head_repository": REPO,
             "head": {"sha": f"head-{number}"},
         }
+
+    def observe_controller(self, _repository: str, _base: str) -> dict[str, Any] | None:
+        response = self.observations[min(self.observed, len(self.observations) - 1)] if self.observations else None
+        self.observed += 1
+        return response
 
     def update_branch(self, _repository: str, _number: int) -> bool:
         self.updates += 1
@@ -104,6 +117,7 @@ class FakeTrain:
     def io(self) -> Any:
         return train_drive.DriveIO(
             controller=self.controller,
+            observe_controller=self.observe_controller,
             pull_request=self.pull_request,
             update_branch=self.update_branch,
             failing_checks=self.failing_checks,
@@ -122,6 +136,23 @@ def _drive(train: FakeTrain, **settings: Any) -> tuple[str, list[tuple[str, dict
         lambda event, payload: events.append((event, payload)),
     )
     return outcome, events
+
+
+def _cli(train: FakeTrain) -> tuple[int, dict[str, Any]]:
+    from contextlib import redirect_stdout
+    from io import StringIO
+    output = StringIO()
+    with patch.object(train_drive, "live_io", return_value=train.io()), redirect_stdout(output):
+        code = train_drive.main(["--repo", REPO, "--pr", "7"])
+    return code, json.loads(output.getvalue().splitlines()[-1])["payload"]
+
+
+def _write_action_helper() -> Any:
+    spec = importlib.util.spec_from_file_location("drive_write_action", SCRIPT_DIR / "launchplane-write-action.py")
+    assert spec is not None and spec.loader is not None
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
 
 
 class TrainDriveTests(unittest.TestCase):
@@ -648,13 +679,106 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         _, events = _drive(train)
         self.assertEqual({pr["number"]: pr["outcome"] for pr in events[-1][1]["prs"]}, {7: "landed", 9: "landed"})
 
-    def test_a_stack_landing_waits_for_the_controller_to_finish_the_batch(self) -> None:
+    def test_a_stack_landing_observes_the_service_finishing_children(self) -> None:
         train = FakeTrain(
-            [_response("execute_stack_collapse"), _response("land_batch"), _response("land_batch"), _response("batch_landed")],
+            [_response("execute_stack_collapse", stack_collapse_plan=_stack()), _response("land_batch")],
             merge_after={7: 2},
         )
-        outcome, _ = _drive(train)
-        self.assertEqual((outcome, train.calls), ("landed", 4))
+        train.observations = [_response("land_batch", stack_collapse_plan=_stack()),
+                              _response("batch_landed", stack_collapse_plan=_stack(status="ready_for_train", child_status="closed"))]
+        read = train.pull_request
+        def pull_request(repo: str, number: int) -> dict[str, Any]:
+            if train.observed >= 2:
+                train.closed.add(8)
+            return read(repo, number)
+        train.pull_request = pull_request
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls, train.observed), ("landed", 2, 2))
+        self.assertEqual(events[-1][1]["stack_finish"], "complete")
+        self.assertEqual(events[-1][1]["prs"][1]["outcome"], "superseded")
+
+    def test_completed_stack_makes_no_post_landing_controller_calls(self) -> None:
+        train = FakeTrain([_response("execute_stack_collapse", stack_collapse_plan=_stack()),
+                           _response("land_batch"), _response("build_candidate", **_queue((99, [])))], merge_after={7: 2})
+        train.closed.add(8)
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls, train.observed), ("landed", 2, 0))
+        self.assertEqual(events[-1][1]["stack_finish"], "complete")
+
+    def test_unrelated_dry_run_never_advances_or_adopts_the_other_queue(self) -> None:
+        for response in (_response("build_candidate", **_queue((99, []))),
+                         _response("land_batch", stack_collapse_plan=_stack(collapse_id="other")),
+                         _response("land_batch", stack_collapse_plan=_stack(root=99))):
+            with self.subTest(response=response):
+                train = FakeTrain([_response("execute_stack_collapse", stack_collapse_plan=_stack()),
+                                   _response("land_batch")], merge_after={7: 2})
+                train.observations = [response]
+                outcome, events = _drive(train)
+                self.assertEqual((outcome, train.calls, train.observed), ("landed", 2, 1))
+                self.assertEqual(events[-1][1]["stack_finish"], "selection_changed")
+                self.assertEqual({row["number"] for row in events[-1][1]["prs"]}, {7, 8})
+
+    def test_stack_observation_stays_bounded_and_keeps_root_landing(self) -> None:
+        for options, observations, reason in (({"max_stack_finish_passes": 2}, [_response("land_batch", stack_collapse_plan=_stack())], "pass_limit"),
+                                               ({"deadline": 120}, [_response("land_batch", stack_collapse_plan=_stack())], "deadline"),
+                                               ({}, [None], "observation_unavailable"),
+                                               ({}, [_refusal("permission_denied")], "observation_unavailable")):
+            with self.subTest(reason=reason):
+                train = FakeTrain([_response("execute_stack_collapse", stack_collapse_plan=_stack()),
+                                   _response("land_batch")], merge_after={7: 2})
+                train.observations = observations
+                outcome, events = _drive(train, **options)
+                self.assertEqual((outcome, train.calls), ("landed", 2))
+                self.assertEqual(events[-1][1]["landing_sha"], "sha-7")
+                self.assertEqual(events[-1][1]["stack_finish"], reason)
+                self.assertLessEqual(train.observed, options.get("max_stack_finish_passes", 5))
+
+    def test_preserved_open_child_does_not_keep_finishing(self) -> None:
+        train = FakeTrain([_response("execute_stack_collapse", stack_collapse_plan=_stack(child_status="preserved")),
+                           _response("land_batch")], merge_after={7: 2})
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls, train.observed), ("landed", 2, 0))
+        self.assertEqual(events[-1][1]["prs"][1]["outcome"], "open")
+
+    def test_live_stack_observation_is_a_dry_run_and_respects_deadline(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        helper = _write_action_helper()
+        requests: list[dict[str, Any]] = []
+        def execute_post(**kwargs: Any) -> int:
+            requests.append({"body": kwargs["body"], "key": kwargs["args"].idempotency_key})
+            helper.emit(_response("land_batch"))
+            return 0
+        def run_helper(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+            output = StringIO()
+            with patch.object(helper, "execute_post", side_effect=execute_post), redirect_stdout(output):
+                code = helper.main(command[3:])
+            return subprocess.CompletedProcess(command, code, stdout=output.getvalue(), stderr="")
+        with patch("time.time", return_value=1000), patch("subprocess.run", side_effect=run_helper) as run:
+            io = train_drive.live_io(180, deadline_at=1010)
+            io.observe_controller(REPO, "main")
+            self.assertEqual(requests[-1]["body"]["mutate"], False)
+            self.assertEqual(requests[-1]["key"], "")
+            self.assertLessEqual(run.call_args.kwargs["timeout"], 10)
+            io.controller(REPO, "main", "mutation-key")
+            self.assertEqual(requests[-1]["body"]["mutate"], True)
+            self.assertEqual(requests[-1]["key"], "mutation-key")
+        with patch("time.time", return_value=1010), patch("subprocess.run") as run:
+            io.observe_controller(REPO, "main")
+            run.assert_not_called()
+
+    def test_cli_stops_after_completed_or_unrelated_stack_without_mutating(self) -> None:
+        for complete in (True, False):
+            with self.subTest(complete=complete):
+                train = FakeTrain([_response("execute_stack_collapse", stack_collapse_plan=_stack()),
+                                   _response("land_batch"), _response("build_candidate", **_queue((99, [])))], merge_after={7: 2})
+                if complete:
+                    train.closed.add(8)
+                train.observations = [_response("build_candidate", **_queue((99, [])))]
+                code, stop = _cli(train)
+                self.assertEqual((code, stop["outcome"], train.calls), (0, "landed", 2))
+                self.assertEqual(train.observed, 0 if complete else 1)
+                self.assertNotIn(99, [row["number"] for row in stop["prs"]])
 
     def test_a_pull_request_that_stays_ineligible_needs_the_owner(self) -> None:
         outcome, events = _drive(FakeTrain([_response("idle", **_queue((7, ["missing ready-to-merge label"])))]))
@@ -669,12 +793,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(events[-1][1]["prs"], [{"number": 7, "outcome": "closed", "merge_commit_sha": ""}])
 
     def test_cli_reports_carried_children_from_the_projected_controller_response(self) -> None:
-        from contextlib import redirect_stdout
-        from io import StringIO
-        spec = importlib.util.spec_from_file_location("disposition_write_action", SCRIPT_DIR / "launchplane-write-action.py")
-        assert spec is not None and spec.loader is not None
-        helper = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(helper)
+        helper = _write_action_helper()
         raw = {
             "status": "accepted", "records": {}, "trace_id": "disposition-trace",
             "result": {
@@ -690,10 +809,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                                              request={"repository": REPO}, provider_payload=raw)
         train = FakeTrain([projected], merge_after={7: 1})
         train.closed.add(8)
-        output = StringIO()
-        with patch.object(train_drive, "live_io", return_value=train.io()), redirect_stdout(output):
-            code = train_drive.main(["--repo", REPO, "--pr", "7"])
-        receipt = json.loads(output.getvalue().splitlines()[-1])["payload"]
+        code, receipt = _cli(train)
         self.assertEqual((code, receipt["outcome"]), (0, "landed"))
         self.assertEqual(receipt["prs"], [
             {"number": 7, "outcome": "landed", "merge_commit_sha": "sha-7"},
@@ -787,11 +903,20 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
             "collapse_id": "collapse-example", "root_pull_request_number": 7,
             "child_dispositions": [{"pull_request_number": 8, "expected_head_sha": "head-8", "status": "closed"}],
         })
-        train = FakeTrain([_response("execute_stack_collapse"), _response("land_batch"), finish, _response("idle")], merge_after={7: 2})
-        train.closed.add(8)
+        train = FakeTrain([
+            _response("execute_stack_collapse", stack_collapse_plan=_stack()), _response("land_batch"),
+        ], merge_after={7: 2})
+        # The service's completion evidence can arrive before GitHub reads
+        # show the child's closure. A later idle observation must not erase it.
+        train.observations = [finish, _response("idle")]
         outcome, events = _drive(train)
         self.assertEqual(outcome, "landed")
-        self.assertEqual(events[-1][1]["controller_evidence"][-2]["result"], finish["result"])
+        receipt = events[-1][1]
+        self.assertEqual((train.calls, train.observed), (2, 2))
+        self.assertEqual(receipt["stack_finish"], "selection_changed")
+        self.assertEqual(receipt["controller_evidence"][-1]["result"], finish["result"])
+        self.assertEqual(receipt["controller_evidence"],
+                         [payload for event, payload in events if event == "snapshot"])
 
     def test_closed_child_without_matching_carried_evidence_is_only_closed(self) -> None:
         for expected_head in ("", "older-head"):
@@ -826,13 +951,21 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
 
     def test_stack_finish_discovers_closed_children_and_preserves_open_members(self) -> None:
         train = FakeTrain([
-            _response("execute_stack_collapse", **_queue((7, []), (9, []))), _response("land_batch"),
+            _response("execute_stack_collapse", **_queue((7, []), (9, [])), stack_collapse_plan=_stack()), _response("land_batch"),
+        ], merge_after={7: 2})
+        train.observations = [
             _response("batch_landed", stack_collapse_plan={
                 "collapse_id": "collapse-example", "root_pull_request_number": 7,
+                "status": "ready_for_train",
                 "child_dispositions": [{"pull_request_number": 8, "expected_head_sha": "head-8", "status": "closed"}],
             }),
-        ], merge_after={7: 2})
-        train.closed.add(8)
+        ]
+        read = train.pull_request
+        def pull_request(repo: str, number: int) -> dict[str, Any]:
+            if train.observed:
+                train.closed.add(8)
+            return read(repo, number)
+        train.pull_request = pull_request
         self.assertEqual({row["number"]: row["outcome"] for row in _drive(train)[1][-1][1]["prs"]},
                          {7: "landed", 8: "superseded", 9: "open"})
 
@@ -864,11 +997,42 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                 self.assertTrue(receipt["idempotency_key_sha256"])
                 self.assertNotIn("idempotency_key", receipt)
 
-    def test_uncertain_stack_finish_cannot_send_another_mutation(self) -> None:
-        train = FakeTrain([_response("execute_stack_collapse"), None, _response("idle")], merge_after={7: 1})
+    def test_unavailable_stack_observation_cannot_send_another_mutation(self) -> None:
+        train = FakeTrain([_response("execute_stack_collapse", stack_collapse_plan=_stack())], merge_after={7: 1})
+        train.observations = [None]
         outcome, events = _drive(train)
-        self.assertEqual((outcome, train.calls), ("landed", 2))
-        self.assertIn("controller_recovery", events[-1][1])
+        self.assertEqual((outcome, train.calls, train.observed), ("landed", 1, 1))
+        self.assertEqual(events[-1][1]["stack_finish"], "observation_unavailable")
+        self.assertNotIn("controller_recovery", events[-1][1])
+
+    def test_recovered_stack_landing_retains_read_only_child_observation(self) -> None:
+        train = FakeTrain([], merge_after={7: 0})
+        train.observations = [_response("land_batch", stack_collapse_plan=_stack())]
+        io = train.io()
+        io.recover = lambda: _response("execute_stack_collapse", stack_collapse_plan=_stack())
+        events = []
+        outcome = train_drive.drive(
+            train_drive.DriveSettings(repository=REPO, number=7, deadline=100, max_stack_finish_passes=1),
+            io, lambda event, payload: events.append((event, payload)))
+        self.assertEqual((outcome, train.calls, train.observed), ("landed", 0, 1))
+        self.assertEqual(events[-1][1]["stack_finish"], "pass_limit")
+
+    def test_live_observation_neither_creates_nor_consumes_mutation_journal(self) -> None:
+        io = train_drive.live_io(1, repository_context=REPO, tracked_pr=7)
+        root = Path.home() / ".cache" / "codex-skills" / "train-drivers"
+        root.mkdir(parents=True)
+        journal = root / "retained.request.json"
+        response = _response("wait_for_checks")
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, json.dumps(response), "")) as run:
+            self.assertEqual(io.observe_controller(REPO, "main"), response)
+            self.assertEqual(list(root.iterdir()), [])
+            journal.write_text("retained uncertain mutation")
+            self.assertEqual(io.observe_controller(REPO, "main"), response)
+            self.assertEqual(journal.read_text(), "retained uncertain mutation")
+            self.assertEqual(list(root.iterdir()), [journal])
+            for call in run.call_args_list:
+                self.assertNotIn("--mutate", call.args[0])
+                self.assertNotIn("--idempotency-key", call.args[0])
 
     def test_cli_timeout_persists_request_and_blocks_plain_restart(self) -> None:
         from contextlib import redirect_stdout
