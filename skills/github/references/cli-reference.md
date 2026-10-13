@@ -233,6 +233,10 @@ the stored body and pagination headers while preserving the fresh HTTP status,
 request ID and quota diagnostics. Changed 200s replace the entry. Authentication,
 permission and actor failures never become cached success.
 
+For lazy GitHub fields that require an unconditional observation, shared reader
+callers use `GitHubReader.request(..., fresh=True)`. It bypasses both conditional
+cache layers while retaining the same identity, quota, retry and deadline guards.
+
 The cache stores no authentication headers or tokens, uses private directory/file
 modes, expires shared-cache bodies after a day and limits entries, individual bodies
 and total cache-body storage. Existing opt-in readers retain their configured

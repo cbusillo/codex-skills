@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import time
 import urllib.parse
 from pathlib import Path
@@ -686,38 +687,73 @@ def run_git(
 ) -> subprocess.CompletedProcess[bytes]:
     env = sanitized_git_environment()
     deadline = RECONCILIATION_DEADLINE.get()
+    if deadline is not None and args and args[0] == "fetch":
+        configure_batch_ssh(repo, env)
     timeout = 120.0 if deadline is None else deadline - time.monotonic()
     if timeout <= 0:
         raise GitCommandError(args[0] if args else "git", "Reconciliation deadline expired")
-    if deadline is not None and args and args[0] == "fetch":
-        configured = run_git(repo, "config", "--get", "core.sshCommand", check=False)
-        ssh = env.get("GIT_SSH_COMMAND") or configured.stdout.decode().strip() or shlex.quote(env.get("GIT_SSH", "ssh"))
-        env["GIT_SSH_COMMAND"] = ssh + " -o BatchMode=yes"
     try:
-        proc = subprocess.run(
-            [
-                "git",
-                "--no-optional-locks",
-                "-c",
-                f"core.hooksPath={os.devnull}",
-                "-c",
-                "merge.autoStash=false",
-                "-C",
-                str(repo),
-                *args,
-            ],
-            input=input_data,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            timeout=timeout,
-            check=False,
-        )
+        # Windows run() drains PIPE readers without a deadline after killing Git.
+        # A transport child can keep those pipes open. Regular files have no
+        # reader threads or EOF wait, including when a descendant inherits them.
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            result = subprocess.run(
+                [
+                    "git",
+                    "--no-optional-locks",
+                    "-c",
+                    f"core.hooksPath={os.devnull}",
+                    "-c",
+                    "merge.autoStash=false",
+                    "-C",
+                    str(repo),
+                    *args,
+                ],
+                input=input_data,
+                stdin=subprocess.DEVNULL if input_data is None else None,
+                stdout=stdout,
+                stderr=stderr,
+                env=env,
+                timeout=timeout,
+                check=False,
+            )
+            stdout.seek(0)
+            stderr.seek(0)
+            proc = subprocess.CompletedProcess(
+                result.args, result.returncode, stdout.read(), stderr.read(),
+            )
     except subprocess.TimeoutExpired as exc:
         raise GitCommandError(args[0] if args else "git", "Git command timed out") from exc
     if check and proc.returncode != 0:
         raise GitCommandError(args[0] if args else "git", proc.stderr.decode(errors="replace"))
     return proc
+
+
+def configure_batch_ssh(repo: Path, env: dict[str, str]) -> None:
+    configured = run_git(repo, "config", "--get", "core.sshCommand", check=False)
+    command = env.get("GIT_SSH_COMMAND") or configured.stdout.decode().strip()
+    if command:
+        try:
+            executable = shlex.split(command)[0]
+        except (ValueError, IndexError):
+            # Let Git report invalid configured commands without rewriting them.
+            return
+    else:
+        executable = env.get("GIT_SSH") or "ssh"
+        command = shlex.quote(executable)
+    variant = env.get("GIT_SSH_VARIANT")
+    if not variant:
+        variant = run_git(repo, "config", "--get", "ssh.variant", check=False).stdout.decode().strip()
+    if not variant or variant == "auto":
+        # Windows executable paths can use either separator on either host.
+        name = executable.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        variant = name.removesuffix(".exe")
+    if variant in {"plink", "putty", "tortoiseplink"}:
+        env["GIT_SSH_COMMAND"] = command + " -batch"
+    elif variant == "ssh":
+        env["GIT_SSH_COMMAND"] = command + " -o BatchMode=yes"
+    # Unknown wrappers/simple clients retain Git's own detection and options.
+    # Closed stdin and the read deadline still bound unattended startup.
 
 
 def sanitized_git_environment() -> dict[str, str]:
