@@ -479,6 +479,67 @@ helper reports `outcome_unknown`, retains the safe trace/code and sends no
 automatic retry. Require admin reconciliation before retrying under **any**
 key; never recreate, replace or silently adopt the target as recovery.
 
+### Inert domain and ingress planning
+
+These commands are bounded local extensions, not projected operations in the
+vendored public artifact. Neither accepts an apply mode, confirmation, credential
+argument, provider URL or alternate identity. They use the existing configured
+local-admin transport. A plan grants no apply authority. Do not run these as part
+of source validation; use offline behavioral tests.
+
+`dokploy-target-repair-domain-authority-dry-run --context C --instance I --reason R`
+reads `dokploy-target-inspect` internally, then calls the setup route with
+`operation: repair-domain-authority`, fixed `mode: dry-run`, and service product
+`launchplane`, authorizing `dokploy_target.repair_domain_authority.plan`.
+It requires consistent tracked, provider-target and live target
+identities, derives the requested domains from the live inspection, and sends
+the expected deployed-provider projection privately. The service rechecks the
+projection and the exact live domain set. Output verifies those agreements and
+`applied: false`, retaining only scope, counts and trace. The tracked domain set
+can differ: correcting that authority is what this planner describes.
+Inspect currently omits `provider_evidence`; its empty schema default is sent
+when omitted. A nonempty current record that is not visible to inspect is
+refused by the service's projection comparison, never guessed or bypassed.
+
+`ingress-route-dry-run --payload-file <private-file>` takes an explicit local
+JSON file outside the repository (no stdin) with only `product`, `context`,
+`instance`, `expected_host_id`, `route` and nonempty `reason`. The host id must
+identify the observed existing host; never infer it from checked-in examples.
+The route requires unique lowercase DNS `domain_names` (1–100) and an existing
+`edge_endpoint_key`. Optional scalar fields mirror the observed ingress route:
+`certificate_id` (existing nonnegative integer only), `access_list_id`,
+`enabled`, `ssl_forced`, `hsts_enabled`, `hsts_subdomains`,
+`trust_forwarded_proto`, `http2_support`, `npmplus_http3_support`,
+`npmplus_noindex`, `npmplus_crowdsec_appsec`, `npmplus_proxy_request_buffering`,
+`npmplus_proxy_response_buffering`, `npmplus_upstream_compression`,
+`npmplus_fancyindex`, `npmplus_x_frame_options` and `npmplus_auth_request`.
+Other fields, upstream addresses, new certificates, advanced config and
+locations are refused. Omitted options use the service defaults; supply the
+observed options when those differ. Unsupported route shapes remain a
+capability gap, never an invitation to apply or hand-build a raw request.
+
+The service authorizes `ingress_route.plan`. Before posting, internal reads
+fetch the fresh product profile and exact active
+edge-endpoint record. Domains must equal the lane's public HTTPS hosts from its
+base URL, health URL and enabled public checks. The helper sends the endpoint
+key, leaving upstream resolution to the service, and forces
+`require_exact_expected_host_domains: true`, `allow_create: false`,
+`allow_update: false` and `allow_enable_disable: false`. The service's fresh
+provider plan must return `dry_run: true`, `status: unchanged`, only no-op
+operations, the requested host id and exact domain set. Its comparison must
+also report `requested_domains` and the same full provider domain count:
+an instance-scoped response hiding extra shared-host aliases is refused.
+No existing route binding or audit is required; this supports planning the
+missing-authority case. The service records the dry run's own audit evidence;
+the helper retains that record id as proof metadata.
+
+Output uses the existing envelope, retaining bounded status, scope, counts,
+agreement booleans, the ingress audit record id and service trace. Domains,
+host and target ids, endpoint keys, upstream configuration, certificate refs,
+provider prose and reasons are dropped. HTTP refusal preserves the service
+error code and trace with no retry or identity change. Malformed or changing
+plan evidence returns an invalid response with its validated trace.
+
 ### Compose web host routes
 
 `dokploy-target-reconcile-compose-domain-dry-run` / `-apply` and
