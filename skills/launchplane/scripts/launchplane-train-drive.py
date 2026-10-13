@@ -639,7 +639,9 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
             return {"status": "outcome_unknown", "recovery": {"reason": "saved controller request unavailable; no mutation made"}}
         recovery = {"request": {"repository": repository, "base_branch": base_branch, "mutate": True},
                     "idempotency_key_sha256": hashlib.sha256(key.encode()).hexdigest(),
-                    "request_file": str(journal)}
+                    "request_file": str(journal),
+                    "reason": "controller mutation outcome requires reconciliation",
+                    "recommendation": "Rerun the same driver command with --recover-controller; retain the saved request until an accepted replay."}
         command = [
             "uv", "run", str(WRITE_ACTION), "--timeout", str(min(helper_timeout, max(0.01, remaining - 2))),
             "merge-train-controller-run-once", "--repo", repository, "--base-branch", base_branch,

@@ -775,6 +775,9 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
             self.assertEqual(train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10), restarted,
                                                lambda event, payload: events.append((event, payload))), "error")
             run.assert_not_called()
+        restarted_receipt = events[-1][1]["controller_recovery"]
+        self.assertTrue(restarted_receipt["reason"])
+        self.assertTrue(restarted_receipt["recommendation"])
         self.assertEqual(json.loads(journal.read_text()), saved)
 
     def test_recovery_reads_pr_and_controller_then_replays_original_key(self) -> None:
