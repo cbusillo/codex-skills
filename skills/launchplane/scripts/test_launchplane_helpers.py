@@ -7111,7 +7111,9 @@ def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> No
 
         for mutate, code in (
             (lambda data: data.update(confirmation="APPLY DOKPLOY TARGET SETUP"), "unsupported_dokploy_target_field"),
-            (lambda data: data.update(domains=[]), "domains_required"),
+            (lambda data: data.update(domains="testing.example.invalid"), "domains_required"),
+            (lambda data: data.update(domains=[""]), "domains_required"),
+            (lambda data: data.update(domains=[None]), "domains_required"),
             (lambda data: data.update(healthcheck_path="health"), "healthcheck_path_required"),
             (lambda data: data.pop("project_id"), "dokploy_project_required"),
             (lambda data: data.pop("server_id"), "server_id_required"),
@@ -7125,6 +7127,63 @@ def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> No
             )
             assert (status, posts) == (2, []), code
             assert payload["warnings"][0]["code"] == code
+
+
+@pytest.mark.parametrize("domains", [[], ["testing.example.invalid"]])
+def test_compose_target_review_and_readback_cover_private_and_public_routes(domains: list[str]) -> None:
+    def response(mode: str) -> dict[str, Any]:
+        value = _compose_response(mode, "compose-private-9")
+        value["result"]["setup"]["target_record"]["domains"] = domains
+        return value
+
+    def inspect(observed_domains: list[str]) -> dict[str, Any]:
+        value = _inspect_response()
+        value["inspect"]["tracked_target"]["domains"] = observed_domains
+        return value
+
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        inputs = {**_compose_payload(), "domains": domains}
+        payload_path = _write_json(directory, "compose.json", inputs)
+        status, evidence, posts, reads = _run_main(
+            ["dokploy-target-create-compose-dry-run", "--payload-file", payload_path],
+            post=response("dry-run"),
+        )
+        assert status == 0, evidence
+        assert len(posts) == 1 and not reads
+        assert posts[0]["body"]["domains"] == domains
+        assert evidence["result"]["domain_count"] == len(domains)
+        evidence_path = _write_json(directory, "review.json", evidence)
+        apply_argv = [
+            "dokploy-target-create-compose-apply", "--payload-file", payload_path,
+            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path),
+        ]
+        status, receipt, posts, reads = _run_main(
+            apply_argv, post=response("apply"), read=inspect(domains),
+        )
+        assert status == 0, receipt
+        assert len(posts) == len(reads) == 1
+        assert posts[0]["body"]["domains"] == domains
+        assert posts[0]["idempotency_key"] == "apply-1"
+        assert receipt["result"]["read_back_matches"] is True
+        for private in ("server-private-1", "project-private-1", "compose-private-9", *domains):
+            assert private not in json.dumps(receipt)
+
+        unexpected_domains = ["unexpected.example.invalid"]
+        status, receipt, posts, reads = _run_main(
+            apply_argv, post=response("apply"), read=inspect(unexpected_domains),
+        )
+        assert status == 1 and receipt["status"] == "accepted_unverified"
+        assert receipt["result"]["read_back"]["configuration_matches_review"] is False
+        assert unexpected_domains[0] not in json.dumps(receipt)
+
+        # Adding or removing a route after review cannot reuse that evidence.
+        changed = {**inputs, "domains": [] if domains else ["testing.example.invalid"]}
+        _write_json(directory, "compose.json", changed)
+        status, receipt, posts, reads = _run_main(
+            apply_argv, post=response("apply"), read=inspect(domains),
+        )
+        assert status == 2 and not posts and not reads
+        assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
 
 COMPOSE_SOURCE = {
