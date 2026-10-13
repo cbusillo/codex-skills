@@ -43,6 +43,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GH_PLAN_HELPER = REPO_ROOT / "github" / "scripts" / "gh-plan.py"
 GH_ISSUE_HELPER = REPO_ROOT / "github" / "scripts" / "github_issue.py"
 
+# This parser is pure: importing it never loads local authentication or probes
+# an actor. The workflow keeps its job-token-only transport below.
+sys.path.insert(0, str(REPO_ROOT.parent))
+from skills.github.scripts import github_plan_body
+
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REF_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PATH_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
@@ -543,6 +548,33 @@ def report_maintenance_issue(
 
 # The workflow's installation token has issue access but no /user endpoint.
 # Keep this adapter separate from local automation authentication.
+def _workflow_maintenance_issue_owned(issue: Any) -> bool:
+    if not isinstance(issue, dict):
+        return False
+    user = issue.get("user")
+    body = issue.get("body")
+    if (
+        not isinstance(user, dict)
+        or user.get("login") != "github-actions[bot]"
+        or type(issue.get("number")) is not int
+        or issue["number"] <= 0
+        or not isinstance(body, str)
+        or body.count(MAINTENANCE_ISSUE_MARKER) != 1
+        or github_plan_body.PLAN_MANAGED_PROVENANCE_MARKER in body
+    ):
+        return False
+    try:
+        managed = github_plan_body.contributor_plan_body(issue)
+        original = github_plan_body.marked_block(
+            body, github_plan_body.PLAN_ORIGINAL_START,
+            github_plan_body.PLAN_ORIGINAL_END,
+        ) if managed is not None else None
+    except github_plan_body.PlanBodyError:
+        return False
+    request = original[2] if original is not None else body
+    return request.startswith(MAINTENANCE_ISSUE_MARKER)
+
+
 def report_workflow_maintenance_issue(
     evidence: Mapping[str, Any], *, repository: str,
     api: Callable[[str, str, dict[str, Any] | None], Any] | None = None,
@@ -574,11 +606,7 @@ def report_workflow_maintenance_issue(
                 continue
             if MAINTENANCE_ISSUE_MARKER not in str(issue.get("body") or ""):
                 continue
-            if (
-                issue.get("user", {}).get("login") != "github-actions[bot]"
-                or not str(issue.get("body") or "").startswith(MAINTENANCE_ISSUE_MARKER)
-                or type(issue.get("number")) is not int
-            ):
+            if not _workflow_maintenance_issue_owned(issue):
                 raise FreshnessError("maintenance_issue_not_workflow_owned")
             matches.append(issue)
         if len(issues) < 100:
@@ -589,9 +617,35 @@ def report_workflow_maintenance_issue(
         raise FreshnessError("duplicate_maintenance_issues")
     if matches:
         number = matches[0]["number"]
-        action = "updated"
-        call("PATCH", f"/repos/{repository}/issues/{number}",
-             {"title": MAINTENANCE_ISSUE_TITLE, "body": body})
+        current = call("GET", f"/repos/{repository}/issues/{number}", None)
+        if (
+            not _workflow_maintenance_issue_owned(current)
+            or current["number"] != number
+            or current.get("state") != "open"
+        ):
+            raise FreshnessError("maintenance_issue_not_workflow_owned")
+        # Comments belong to the workflow even after planning adoption. Never
+        # replace the issue body: its request and managed plan have other owners.
+        created = call("POST", f"/repos/{repository}/issues/{number}/comments", {"body": body})
+        comment_id = created.get("id") if isinstance(created, dict) else None
+        if type(comment_id) is not int or comment_id <= 0:
+            raise FreshnessError("maintenance_issue_readback_failed")
+        verified_comment = call("GET", f"/repos/{repository}/issues/comments/{comment_id}", None)
+        verified_issue = call("GET", f"/repos/{repository}/issues/{number}", None)
+        if (
+            not isinstance(verified_comment, dict)
+            or verified_comment.get("id") != comment_id
+            or not isinstance(verified_comment.get("user"), dict)
+            or verified_comment["user"].get("login") != "github-actions[bot]"
+            or verified_comment.get("body") != body
+            or not _workflow_maintenance_issue_owned(verified_issue)
+            or verified_issue["number"] != number
+            or verified_issue.get("state") != "open"
+        ):
+            raise FreshnessError("maintenance_issue_readback_failed")
+        return {"schema_version": EVIDENCE_SCHEMA_VERSION, "classification": "known-stale",
+                "issue": {"action": "updated", "number": number},
+                "comment": {"id": comment_id}}
     else:
         created = call("POST", f"/repos/{repository}/issues",
                        {"title": MAINTENANCE_ISSUE_TITLE, "body": body})
@@ -599,8 +653,7 @@ def report_workflow_maintenance_issue(
         action = "created"
     verified = call("GET", f"/repos/{repository}/issues/{number}", None)
     if (
-        not isinstance(verified, dict)
-        or verified.get("user", {}).get("login") != "github-actions[bot]"
+        not _workflow_maintenance_issue_owned(verified)
         or verified.get("number") != number
         or verified.get("body") != body
         or verified.get("title") != MAINTENANCE_ISSUE_TITLE
