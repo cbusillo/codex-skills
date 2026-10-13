@@ -1118,7 +1118,10 @@ def deep_merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
-def repo_config_path(repo: str | None, *, checkout: str | pathlib.Path | None = None) -> pathlib.Path | None:
+def repo_config_path(
+    repo: str | None, *, checkout: str | pathlib.Path | None = None,
+    discovery: dict[str, Any] | None = None,
+) -> pathlib.Path | None:
     candidates: list[pathlib.Path] = [pathlib.Path(checkout).expanduser()] if checkout is not None else []
     root = git_root()
     if root:
@@ -1126,23 +1129,42 @@ def repo_config_path(repo: str | None, *, checkout: str | pathlib.Path | None = 
     if repo:
         repo_name = repo.split("/", 1)[1]
         candidates.append(pathlib.Path.home() / "Developer" / repo_name)
+    verified_checkout: pathlib.Path | None = None
     for candidate in candidates:
         if not candidate.exists():
             continue
         if repo and (repo_from_git(candidate) or "").casefold() != repo.casefold():
             continue
+        verified_checkout = verified_checkout or candidate
         path = candidate / ".github/github.json"
         if path.exists():
+            if discovery is not None:
+                discovery.update({"repo": repo, "status": "discovered", "path": str(path)})
             return path
+    if discovery is not None:
+        discovery.update({
+            "repo": repo,
+            "status": "verified_defaults" if verified_checkout else "unavailable",
+            "path": None,
+        })
+        if verified_checkout is None:
+            discovery["next_action"] = "rerun_with_planning_checkout"
     return None
 
 
-def load_config(repo: str | None = None, *, checkout: str | pathlib.Path | None = None) -> dict[str, Any]:
+def load_config(
+    repo: str | None = None, *, checkout: str | pathlib.Path | None = None,
+    discovery: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     config = dict(DEFAULT_CONFIG)
     workspace_config = workspace_config_path()
     if workspace_config.exists():
         config = deep_merge(config, json.loads(workspace_config.read_text()))
-    repo_config = repo_config_path(repo, checkout=checkout) if checkout is not None else repo_config_path(repo)
+    if discovery is not None:
+        repo_config = repo_config_path(repo, checkout=checkout, discovery=discovery)
+        discovery["workspace_config"] = str(workspace_config) if workspace_config.exists() else None
+    else:
+        repo_config = repo_config_path(repo, checkout=checkout) if checkout is not None else repo_config_path(repo)
     if repo_config and repo_config.exists():
         data = json.loads(repo_config.read_text())
         if isinstance(data.get("planning"), dict):
@@ -4535,6 +4557,7 @@ def close_error_with_recovery(
     project_result: dict[str, Any],
     issue_closed: bool | None,
     metadata_state: str,
+    planning_config: dict[str, Any],
 ) -> PlanError:
     if not project_result:
         project_state = "not_configured"
@@ -4550,6 +4573,7 @@ def close_error_with_recovery(
             **exc.payload,
             "relationship_preflight": relationship_preflight,
             "project": project_result or None,
+            "planning_config": planning_config,
             "recovery": {
                 "commit_point": "issue_closed_with_requested_reason",
                 "issue": {"repo": issue_repo, "number": number},
@@ -4567,7 +4591,13 @@ def close_error_with_recovery(
 def cmd_close(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
-    config = load_config(issue_repo)
+    planning_checkout = getattr(args, "planning_checkout", None)
+    if planning_checkout:
+        checkout_path = pathlib.Path(planning_checkout).expanduser()
+        if not checkout_path.is_dir() or (repo_from_git(checkout_path) or "").casefold() != issue_repo.casefold():
+            raise PlanError("--planning-checkout must name a checkout of the resolved target repository")
+    planning_config: dict[str, Any] = {}
+    config = load_config(issue_repo, checkout=planning_checkout, discovery=planning_config)
     close_reason = plan_close_reason(args.reason)
     issue_actor, issue = get_issue(args.issue, repo)
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
@@ -4708,6 +4738,7 @@ def cmd_close(args: argparse.Namespace) -> None:
                     project_result=project_result,
                     issue_closed=observed_closed,
                     metadata_state="not_started",
+                    planning_config=planning_config,
                 ) from exc
         else:
             actor = close_result.get("actor") or actor
@@ -4743,6 +4774,7 @@ def cmd_close(args: argparse.Namespace) -> None:
                 project_result=project_result,
                 issue_closed=True,
                 metadata_state="labels_incomplete",
+                planning_config=planning_config,
             ) from exc
         actor = label_result.get("actor") or route_actor
         completed_steps.append("update_labels")
@@ -4779,6 +4811,7 @@ def cmd_close(args: argparse.Namespace) -> None:
                 project_result=project_result,
                 issue_closed=True,
                 metadata_state="comment_incomplete",
+                planning_config=planning_config,
             ) from exc
 
     public_comment = {key: value for key, value in comment_result.items() if key != "completed_steps"}
@@ -4810,6 +4843,7 @@ def cmd_close(args: argparse.Namespace) -> None:
         "comment": public_comment or None,
         "project": project_result,
         "relationship_preflight": relationship_preflight,
+        "planning_config": planning_config,
         "completed_steps": completed_steps,
     })
 
@@ -5370,6 +5404,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("close", help="Close a completed or not-planned plan safely")
     p.add_argument("issue")
+    p.add_argument("--planning-checkout", help="Target repository checkout for planning metadata outside automatic discovery")
     p.add_argument("--reason", default="completed")
     p.add_argument("--comment", dest="body")
     p.add_argument("--comment-file", dest="body_file")

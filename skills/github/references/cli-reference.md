@@ -1140,7 +1140,17 @@ competitor's record.
   or `subissue` relationships. `related` edits a body note instead and follows
   body-ownership rules.
 - `close <issue>`: Close a durable plan with a fail-closed relationship
-  preflight and an issue-state commit point. Before any mutation, the helper
+  preflight and an issue-state commit point. Use `--planning-checkout PATH`
+  when the resolved target's checkout is outside automatic discovery. The
+  checkout's origin must match the target before any mutation. The result's
+  `planning_config` reports `discovered` metadata, `verified_defaults` from a
+  matching checkout without repository metadata, or `unavailable` when no
+  matching checkout was found. Unavailable metadata keeps workspace/catalog
+  defaults supported and reports `next_action: rerun_with_planning_checkout`;
+  it does not claim those defaults are verified target configuration. The
+  result names any workspace config used, and partial-close recovery retains
+  this evidence. Explicit `--project` and `--owner` still override defaults.
+  Before any mutation, the helper
   pages native `blocked_by` dependencies and sub-issues; `--reason completed`
   rejects open entries with compact references and `write_outcome=not_started`.
   Issues blocked by the plan do not prevent closure. `--reason not_planned`
