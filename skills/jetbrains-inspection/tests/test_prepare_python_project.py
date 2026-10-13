@@ -16,6 +16,7 @@ import zipfile
 from xml.etree import ElementTree
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import unquote
 from typing import Any, cast
 
 
@@ -49,8 +50,10 @@ class PreparePythonProjectTest(unittest.TestCase):
                 module = ElementTree.fromstring(files[repo / ".idea/fixture.iml"])
                 content = module.find("./component/content")
                 assert content is not None
-                exclusions = {entry.get("url", "") for entry in content.findall("excludeFolder")}
-                self.assertTrue(all(any(url.endswith("/" + root) for url in exclusions) for root in roots))
+                exclusions = {Path(unquote(entry.get("url", "").removeprefix("file://"))
+                                   .replace("$MODULE_DIR$", str(repo)).replace("$PROJECT_DIR$", str(repo))).resolve()
+                              for entry in content.findall("excludeFolder")}
+                self.assertTrue(all((repo / root).resolve() in exclusions for root in roots))
                 subprocess.run(["git", "-C", str(repo), "add", "--force", candidate + "/sample.py"], check=True)
                 self.assertNotIn(candidate, prepare_python_project.ignored_generated_roots(repo, []))
 

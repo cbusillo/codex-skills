@@ -11507,6 +11507,10 @@ def retire_helper_project_caches(identities: list[dict[str, Any]], root: Path, d
         except InspectError as error:
             error.payload.setdefault("completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup", results)
             raise
+        except (OSError, http.client.HTTPException) as error:
+            raise InspectError("Project-cache transport failed; retain the worktree.", 3,
+                               {"error_reason": "inspection_api_transport_error",
+                                "completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup": results}) from error
         entries = body.get("caches")
         allowed_statuses = {"would_remove", "absent"} if dry_run else {"removed", "absent"}
         if (body.get("session_id") != identity["session_id"] or body.get("status") != "ok"

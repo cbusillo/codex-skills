@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+import http.client
 import importlib.util
 import io
 import json
@@ -456,6 +457,21 @@ class ProjectCacheRetirementTests(unittest.TestCase):
                     with self.assertRaises(jb_inspect.InspectError) as raised:
                         jb_inspect.command_retire_sdks(args)
                 self.assertEqual(raised.exception.payload["completed_project_cache_cleanup"], applied)
+
+    def test_raw_disconnect_and_http_protocol_failure_keep_completed_receipts(self):
+        root = Path("/fixture/worktree")
+        identities = [{"port": port, "session_id": str(port), "helper_project_cache_lifecycle_version": 1}
+                      for port in (12345, 12346)]
+        success = jb_inspect.HttpResult(200, {"status": "ok", "session_id": str(identities[0]["port"]),
+            "project_cache_lifecycle_version": 1, "dry_run": False, "worktree_path": str(root),
+            "caches": [{"status": "removed", "reason": "helper_owned_closed_project", "worktree_path": str(root)}]}, "http://fixture")
+        for failure in (http.client.RemoteDisconnected("IDE exited"), http.client.BadStatusLine("invalid response")):
+            with self.subTest(failure=type(failure).__name__), patch.object(jb_inspect, "http_post", side_effect=[success, failure]):
+                with self.assertRaises(jb_inspect.InspectError) as raised:
+                    jb_inspect.retire_helper_project_caches(identities, root, False)
+                receipts = raised.exception.payload["completed_project_cache_cleanup"]
+                self.assertEqual(receipts[0]["result"]["caches"][0]["status"], "removed")
+                self.assertEqual(receipts[0]["ide"]["session_id"], identities[0]["session_id"])
 
 
 class SdkRetirementTests(unittest.TestCase):
