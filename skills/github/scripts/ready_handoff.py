@@ -35,7 +35,13 @@ def requires_client_acceptance(pr, check_runs):
     """Keep the producer and watcher on the same Client-review path."""
     if any(label["name"].casefold() == "owner-review" for label in pr["labels"]):
         return True
-    if any(check["name"] == "launchplane/owner-review" for check in check_runs):
+    # Launchplane completes engineering-only advisory checks as neutral.
+    # Pending, accepted and rejected reviews still follow the acceptance path.
+    if any(
+        check["name"] == "launchplane/owner-review"
+        and not (check.get("status") == "completed" and check.get("conclusion") == "neutral")
+        for check in check_runs
+    ):
         return True
     body = pr.get("body") or ""
     for heading in re.finditer(r"(?im)^## (?:Client|Owner) test notes[ \t]*\r?$", body):

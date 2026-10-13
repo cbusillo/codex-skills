@@ -53,28 +53,53 @@ else
 fi
 
 if [ "$#" -eq 0 ]; then
-	echo "usage: git-commit-as-bot [--git-command commit|merge|pull|rebase|cherry-pick|revert|am] <git args...>" >&2
+	echo "usage: git-commit-as-bot [--repo OWNER/REPO] [--git-command commit|merge|pull|rebase|cherry-pick|revert|am] <git args...>" >&2
 	exit 2
 fi
 
 # Keep existing commit arguments compatible; the explicit mode supplies the
 # same identity selection for other commands that can create commits.
 git_command=commit
-if [ "$1" = "--git-command" ]; then
-	[ "$#" -ge 2 ] || { echo "error: --git-command needs a command" >&2; exit 2; }
-	git_command=$2
-	shift 2
-	case "$git_command" in
-	commit | merge | pull | rebase | cherry-pick | revert | am) ;;
-	*) echo "error: unsupported commit-creating Git command: $git_command" >&2; exit 2 ;;
+target_repository=
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--repo)
+		[ "$#" -ge 2 ] || { echo "error: --repo needs OWNER/REPO" >&2; exit 2; }
+		[ -z "$target_repository" ] || { echo "error: --repo may be supplied only once" >&2; exit 2; }
+		target_repository=$2
+		case "$target_repository" in
+		*/*) target_owner=${target_repository%%/*}; target_name=${target_repository#*/} ;;
+		*) target_owner=; target_name= ;;
+		esac
+		case "$target_owner/$target_name" in
+		/* | */ | *[!a-zA-Z0-9_./-]* | ./* | ../* | */. | */.. | */*/*)
+			echo "error: --repo requires a GitHub OWNER/REPO pair" >&2; exit 2 ;;
+		esac
+		shift 2
+		;;
+	--git-command)
+		[ "$#" -ge 2 ] || { echo "error: --git-command needs a command" >&2; exit 2; }
+		git_command=$2
+		shift 2
+		case "$git_command" in
+		commit | merge | pull | rebase | cherry-pick | revert | am) ;;
+		*) echo "error: unsupported commit-creating Git command: $git_command" >&2; exit 2 ;;
+		esac
+		;;
+	*) break ;;
 	esac
-fi
+done
+[ "$#" -gt 0 ] || { echo "error: Git arguments are required" >&2; exit 2; }
 
 # In a repository the App's registering account does not own and the GitHub
 # App is not installed on, a contributor's agent works as the person when the
 # caller opts in: the commit keeps their own git identity, as git-push-as-bot
 # and gh-with-env-token do for the push and the pull request.
-origin_repository() {
+commit_repository() {
+	if [ -n "$target_repository" ]; then
+		printf '%s\n' "$target_repository"
+		return
+	fi
 	origin_url=$("$git_bin" remote get-url origin 2>/dev/null) || return 1
 	case "$origin_url" in
 	git@github.com:*) repo=${origin_url#git@github.com:} ;;
@@ -86,7 +111,7 @@ origin_repository() {
 	printf '%s\n' "${repo%.git}"
 }
 
-if [ -n "$app_configured" ] && [ -z "$primary_app_configured" ] && repo=$(origin_repository); then
+if [ -n "$app_configured" ] && [ -z "$primary_app_configured" ] && repo=$(commit_repository); then
 	if [ -n "$python_command" ]; then
 		selected_prefix=$($python_command "$identity_helper" app-prefix --repo "$repo")
 	elif command -v uv >/dev/null 2>&1; then
@@ -98,7 +123,7 @@ if [ -n "$app_configured" ] && [ -z "$primary_app_configured" ] && repo=$(origin
 	if [ "$selected_prefix" != GITHUB_CLIENT_APP ]; then app_configured=; fi
 fi
 
-if [ -n "$app_configured" ] && repo=$(origin_repository); then
+if [ -n "$app_configured" ] && repo=$(commit_repository); then
 	identity_status=0
 	identity_error_file=$(mktemp "${TMPDIR:-/tmp}/git-commit-as-bot.XXXXXX")
 	if [ -n "$python_command" ]; then
