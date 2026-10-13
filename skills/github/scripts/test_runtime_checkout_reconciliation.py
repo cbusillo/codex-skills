@@ -965,7 +965,8 @@ def test_automatic_fetch_with_configured_ssh_client(
         "    sys.exit('configured authentication lost')\n"
         + ("if '-batch' not in args or '-o' in args:\n    sys.exit('requires PuTTY batch options')\n"
            if client.lower() != "ssh.exe" else
-           "if not any(a in {'BatchMode=yes', '-oBatchMode=yes'} for a in args) or '-batch' in args:\n    sys.exit('requires OpenSSH batch options')\n")
+           "options = [a.removeprefix('-o').lower().replace(' ', '=') for a in args]\n"
+           "if 'batchmode=yes' not in options or '-batch' in args:\n    sys.exit('requires OpenSSH batch options')\n")
         + "command = shlex.split(args[-1])\n"
         "os.execvp(command[0], command)\n"
     )
