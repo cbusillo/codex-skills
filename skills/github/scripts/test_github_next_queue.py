@@ -166,6 +166,14 @@ def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing
     assert len(observed_paths) == 2  # one ownership inventory per repo
     hold = {'repository_holds': {'owner/repo': {'reason': 'Hold', 'evidence': ['Director instruction']}}}
     assert not module.project_local_queue(rows, [], hold)['candidates']
+    reviewed_row = rows[0]
+    for state in ['waiting', 'ineligible', 'underway']:
+        review = {'state': state, 'reason': 'Caller checked current ownership/wait', 'evidence': ['Current thread'],
+                  'discussion_digest': reviewed_row['discussion']['digest']}
+        context = {'issues': {'owner/repo#1': review}}
+        assert not module.project_local_queue([reviewed_row], [], context)['available_candidates']
+        review['discussion_digest'] = 'obsolete discussion'
+        assert module.project_local_queue([reviewed_row], [], context)['available_candidates']
     counts = queue.coverage(rows, rows[:2], result)
     assert counts['active_inventory_count'] == 4 and counts['active_unevaluated_count'] == 2
 

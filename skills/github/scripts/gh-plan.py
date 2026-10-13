@@ -3637,6 +3637,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace) -
 
 def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]], context: dict[str, Any]) -> dict[str, Any]:
     groups: dict[str, Any] = {"candidates": [], "available_candidates": [], "underway": [], "verification_only": [], "scope_review": [], "excluded": list(excluded)}
+    reviews = {key.casefold(): review for key, review in context.get("issues", {}).items()}
     for item in candidates:
         hold = github_direction_next.repository_hold(context, item["repo"])
         state = (item.get("queue") or {}).get("state", "review")
@@ -3647,6 +3648,16 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
         elif state == "waiting":
             groups["excluded"].append({**item, "exclusion": "recorded_wait"})
         else:
+            review = reviews.get(f"{item['repo']}#{item['number']}".casefold(), {})
+            discussion = item.get("discussion") or {}
+            complete = discussion.get("complete")
+            if isinstance(complete, bool) and complete and review.get("discussion_digest") == discussion.get("digest"):
+                if review.get("state") == "underway":
+                    groups["underway"].append({**item, "availability": "underway", "review": review})
+                    continue
+                if review.get("state") in {"waiting", "ineligible"}:
+                    groups["excluded"].append({**item, "exclusion": "reviewed_wait" if review["state"] == "waiting" else "outside_owner_direction", "review": review})
+                    continue
             row = {**item, "availability": "available" if state == "available" else "needs_review"}
             groups["candidates"].append(row)
             if state == "available":
