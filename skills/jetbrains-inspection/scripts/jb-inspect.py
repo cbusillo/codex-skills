@@ -2661,6 +2661,9 @@ def compact_inspection_lane_result(
             "retry_policy": agent_result.get("retry_policy"),
             "blocker_stage": payload.get("failure_phase"),
             "next_action": agent_result.get("next_action"),
+            "batch_inspection_delegations": agent_result.get("batch_inspection_delegations"),
+            "batch_inspection_delegation_count": agent_result.get("batch_inspection_delegation_count"),
+            "batch_inspection_delegations_omitted_count": agent_result.get("batch_inspection_delegations_omitted_count"),
             "worktree": context.get("worktree_root"),
             "scope": "files",
             "file_count": len(selected),
@@ -6950,9 +6953,9 @@ IDE_ROUTE_CONFIGURATION_NEXT_ACTION = (
 )
 
 
-def unproven_batch_annotators(payload: dict[str, Any]) -> list[dict[str, str]]:
+def inspection_tool_file_examples(payload: dict[str, Any], field: str) -> list[dict[str, str]]:
     diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
-    examples = diagnostic.get("execution_proof_unproven_batch_annotators")
+    examples = diagnostic.get(field)
     if not isinstance(examples, list):
         return []
     return [
@@ -6960,6 +6963,14 @@ def unproven_batch_annotators(payload: dict[str, Any]) -> list[dict[str, str]]:
         for example in examples
         if isinstance(example, dict) and isinstance(example.get("tool"), str) and isinstance(example.get("file"), str)
     ]
+
+
+def unproven_batch_annotators(payload: dict[str, Any]) -> list[dict[str, str]]:
+    return inspection_tool_file_examples(payload, "execution_proof_unproven_batch_annotators")
+
+
+def batch_inspection_delegations(payload: dict[str, Any]) -> list[dict[str, str]]:
+    return inspection_tool_file_examples(payload, "batch_inspection_delegations")
 
 
 def unproven_batch_annotator_suffix(payload: dict[str, Any]) -> str:
@@ -7008,6 +7019,14 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "plugin_deployment_mismatch":
         return "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection."
     if reason == "execution_not_proven":
+        if execution_proof_reason == "batch_inspection_delegated_to_editor_service":
+            action = payload.get("inspection_verdict_next_action")
+            if isinstance(action, str) and action.strip():
+                return action.strip()
+            return (
+                "Run stock inspect.sh in an isolated profile, or turn off the TypeScript language service in the exact "
+                "project and request a fresh API inspection. Keep the unresolved-reference inspection enabled; do not retry unchanged."
+            )
         if execution_proof_reason in {"native_inspection_not_completed", "native_inspection_aborted"}:
             return "Wait for the IDE inspection run to settle, then retry once with a fresh run and include execution_proof diagnostics if it remains UNKNOWN."
         if execution_proof_reason in {"whole_project_execution_not_proven", "directory_execution_not_proven"}:
@@ -7206,6 +7225,11 @@ def payload_route(payload: dict[str, Any]) -> dict[str, Any]:
 
 def attribution_classification(code: str, payload: dict[str, Any]) -> str:
     normalized = normalize_reason(code)
+    diagnostic = payload.get("capture_diagnostic")
+    if normalized == "execution_not_proven" and isinstance(diagnostic, dict) and (
+        diagnostic.get("execution_proof_block_reason") == "batch_inspection_delegated_to_editor_service"
+    ):
+        return "configuration_blocked"
     if payload.get("verdict") in {"GREEN", "RED"} or normalized in {
         "clean",
         "clean_confirmed",
@@ -7489,7 +7513,12 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
         reason_bucket = outcome_bucket({
             "verdict": "UNKNOWN", "capture_diagnostic": payload.get("capture_diagnostic"),
         }, reason)
-        if plugin_action_used or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
+        diagnostic = payload.get("capture_diagnostic")
+        delegated_batch_recovery = reason == "execution_not_proven" and isinstance(diagnostic, dict) and (
+            normalize_reason(diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason"))
+            == "batch_inspection_delegated_to_editor_service"
+        )
+        if (plugin_action_used and not delegated_batch_recovery) or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
             next_action = UNKNOWN_TERMINAL_ACTION
             payload["verdict_next_action"] = next_action
     next_action = guidance_for_command(next_action, payload.get("command"))
@@ -7508,6 +7537,14 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     proof_failures = payload.get("proof_failures")
     if isinstance(proof_failures, list) and proof_failures:
         agent_result["proof_failures"] = [str(failure) for failure in proof_failures]
+    delegations = batch_inspection_delegations(payload)
+    if delegations:
+        agent_result["batch_inspection_delegations"] = delegations
+        diagnostic = payload["capture_diagnostic"]
+        for field in ("batch_inspection_delegation_count", "batch_inspection_delegations_omitted_count"):
+            count = diagnostic.get(field)
+            if type(count) is int and count >= 0:
+                agent_result[field] = count
     inspection_proof = compact_inspection_proof(payload)
     if inspection_proof:
         agent_result["inspection_proof"] = inspection_proof
@@ -7613,6 +7650,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
             "native_cpp_batch_annotator_unproven",
             "native_batch_annotator_unproven",
             "native_tool_completion_unproven",
+            "batch_inspection_delegated_to_editor_service",
         }:
             return "environment_blocked"
         return "tool_bug"
