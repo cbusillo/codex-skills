@@ -7,6 +7,8 @@
 import json
 import os
 import subprocess
+import signal
+import sys
 import tempfile
 import unittest
 from typing import Any
@@ -33,6 +35,10 @@ class ChromeTests(unittest.TestCase):
             for path in (self.default, self.other, self.pinned)
         }
         self.calls = []
+        self.selected_cli = '/fixture/bin/claude'
+        self.which = mock.patch('shutil.which', return_value=self.selected_cli)
+        self.which.start()
+        self.addCleanup(self.which.stop)
         self.fail_add = False
         self.fail_get = False
         self.patch = mock.patch.object(chrome, "run_mcp", side_effect=self.native)
@@ -43,8 +49,7 @@ class ChromeTests(unittest.TestCase):
         (self.catalog / ".local" / "chrome.toml").write_text(
             f'pinned_home = {json.dumps(str(pinned))}\nhomes = [{json.dumps(str(self.other))}]\n')
 
-    def native(self, command, directory, args):
-        self.assertEqual(command, "claude")
+    def native(self, _command, directory, args):
         self.calls.append((directory, args[0]))
         entries = self.servers[directory]
         status, stdout = 0, ""
@@ -84,7 +89,7 @@ class ChromeTests(unittest.TestCase):
         self.assertFalse((self.catalog / '.local' / 'chrome-install.json').exists())
         self.assertTrue(all(set(entries) == {'personal'} for entries in self.servers.values()))
         chrome.apply(plan)
-        desired = chrome.server_entry(self.pinned, 'claude')
+        desired = chrome.server_entry(self.pinned, self.selected_cli)
         for entries in self.servers.values():
             self.assertEqual(entries[chrome.SERVER], desired)
             self.assertEqual(entries['personal'], {'command': 'keep-me'})
@@ -108,7 +113,7 @@ class ChromeTests(unittest.TestCase):
         self.fail_add = True
         with self.assertRaisesRegex(ValueError, 'Could not install'):
             chrome.apply(self.prepare())
-        self.assertEqual(self.servers[self.default][chrome.SERVER], chrome.server_entry(self.pinned, 'claude'))
+        self.assertEqual(self.servers[self.default][chrome.SERVER], chrome.server_entry(self.pinned, self.selected_cli))
         self.assertEqual((self.catalog / '.local' / 'chrome-install.json').read_bytes(), receipt)
 
     def test_readback_timeout_recovers_by_inspecting_existing_entry(self):
@@ -229,6 +234,97 @@ class ChromeTests(unittest.TestCase):
         # The fixture path remains explicit rather than falling back to the host login.
         self.assertNotIn('CLAUDE_CONFIG_DIR', entry['args'])
         self.assertEqual(entry['env']['CLAUDE_CONFIG_DIR'], str(self.default))
+
+    def test_released_receipt_migrates_and_repeats_without_mutation(self):
+        old = chrome.server_entry(self.pinned, 'claude')
+        for entries in self.servers.values():
+            entries[chrome.SERVER] = old.copy()
+        receipt = self.catalog / '.local' / 'chrome-install.json'
+        receipt.write_text(json.dumps({str(path): old for path in self.servers}))
+        plan = self.prepare()
+        self.assertTrue(all(entry['state'] == 'update' for entry in plan['entries']))
+        chrome.apply(plan)
+        self.calls.clear()
+        chrome.apply(self.prepare())
+        self.assertTrue(all(action == 'get' for _, action in self.calls))
+        for entries in self.servers.values():
+            self.assertEqual(entries[chrome.SERVER], chrome.server_entry(self.pinned, self.selected_cli))
+            self.assertEqual(entries['personal'], {'command': 'keep-me'})
+
+    def test_selected_executable_survives_different_launch_path(self):
+        executable = self.root / 'selected-claude'
+        executable.write_text('#!/bin/sh\nprintf selected\n')
+        executable.chmod(0o700)
+        with mock.patch('shutil.which', return_value=str(executable)):
+            plan = self.prepare()
+        entry = plan['desired']
+        result = subprocess.run([entry['command'], *entry['args']],
+                                env={**os.environ, **entry['env'], 'PATH': '/usr/bin:/bin'},
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'selected')
+
+    def test_selected_cli_move_migrates_prior_absolute_entry(self):
+        chrome.apply(self.prepare())
+        with mock.patch('shutil.which', return_value='/replacement/bin/claude'):
+            chrome.apply(self.prepare())
+        for entries in self.servers.values():
+            self.assertEqual(entries[chrome.SERVER], chrome.server_entry(self.pinned, '/replacement/bin/claude'))
+
+    def test_invalid_receipt_and_missing_executable_preserve_entries(self):
+        receipt = self.catalog / '.local' / 'chrome-install.json'
+        invalid = chrome.server_entry(self.pinned, 'claude')
+        invalid['env']['EXTRA'] = 'personal'
+        receipt.write_text(json.dumps({str(self.default): invalid}))
+        with self.assertRaisesRegex(ValueError, 'Invalid managed'):
+            self.prepare()
+        with mock.patch('shutil.which', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'claude is required'):
+                self.prepare()
+        self.assertEqual(self.calls, [])
+        self.assertTrue(all(set(entries) == {'personal'} for entries in self.servers.values()))
+
+    def test_apply_reports_rechecked_state(self):
+        plan = self.prepare()
+        chrome.apply(self.prepare())
+        self.calls.clear()
+        results = chrome.apply(plan)
+        self.assertTrue(all(result['state'] == 'current' for result in results))
+        self.assertTrue(all(action == 'get' for _, action in self.calls))
+
+    def test_timeout_kills_owned_child_but_preserves_unrelated_process(self):
+        self.patch.stop()
+        marker = self.root / 'survived'
+        pidfile = self.root / 'child.pid'
+        command = self.root / 'fake-tree'
+        # The delayed marker proves whether the child keeps running after timeout.
+        command.write_text(f'#!{sys.executable}\nimport subprocess, time\n'
+                           f'child = subprocess.Popen([{sys.executable!r}, "-c", '
+                           f'{("import time; from pathlib import Path; time.sleep(0.6); Path(" + repr(str(marker)) + ").touch(); time.sleep(10)")!r}])\n'
+                           f'open({str(pidfile)!r}, "w").write(str(child.pid))\n'
+                           'time.sleep(10)\n')
+        command.chmod(0o700)
+        unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'])
+        def stop_unrelated():
+            if unrelated.poll() is None:
+                unrelated.kill()
+            unrelated.wait()
+        self.addCleanup(stop_unrelated)
+        try:
+            with mock.patch.object(chrome, 'MCP_TIMEOUT', 0.3, create=True):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    chrome.run_mcp(str(command), self.pinned, ['get', chrome.SERVER])
+            unrelated.wait(timeout=0.7)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            if pidfile.exists():
+                try:
+                    os.kill(int(pidfile.read_text()), signal.SIGKILL)
+                except (ProcessLookupError, ValueError):
+                    pass
+        self.assertFalse(marker.exists(), 'helper-owned child survived the timeout')
+        self.assertIsNone(unrelated.poll())
 
 
 if __name__ == '__main__':

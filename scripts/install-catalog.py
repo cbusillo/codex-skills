@@ -301,9 +301,6 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                     hook_preview = [entry]
         except (OSError, ValueError) as error:
             hook_preview = [{"path": str(config_path), "state": "skipped", "reason": str(error)}]
-    chrome_plan = None if refresh_instructions else chrome_mcp.prepare(ROOT, home, claude)
-    chrome_outputs = [{"path": str(entry["path"]), "state": entry["state"]}
-                      for entry in chrome_plan["entries"]] if chrome_plan else []
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None
     launch_changed = False
@@ -343,6 +340,11 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             loaded = subprocess.run(["launchctl", "print", f"{domain}/{LABEL}"], capture_output=True)
             if not loaded.returncode and not old:
                 raise ValueError("Existing loaded launchd job preserved; inspect it with launchctl print and unload your old job before enabling this checkout's updater")
+    # Native MCP inspection starts health-check children; validate the updater
+    # first so a rejected updater does not touch Chrome's native cache/state.
+    chrome_plan = None if refresh_instructions else chrome_mcp.prepare(ROOT, home, claude)
+    chrome_outputs = [{"path": str(entry["path"]), "state": entry["state"]}
+                      for entry in chrome_plan["entries"]] if chrome_plan else []
     if write:
         if chrome_plan:
             chrome_outputs = chrome_mcp.apply(chrome_plan)
