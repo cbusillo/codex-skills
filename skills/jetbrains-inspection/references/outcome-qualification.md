@@ -69,6 +69,20 @@ plugin names the blocking pairs in `execution_proof_unproven_batch_annotators`,
 `agent_result.unproven_batch_annotators` lists them as `{tool, file}` and the
 next action names them, so the caller can inspect the scope without those files.
 
+An enabled TypeScript unresolved-reference inspection may delegate diagnostics
+to the editor language service even after its classic visitor finishes. The
+plugin's `batch_inspection_delegated_to_editor_service` proof gap stays terminal
+`UNKNOWN/execution_not_proven`, with bucket `environment_blocked` and attribution
+`configuration_blocked`; it still fails strict qualification after inspection starts. The helper
+preserves the plugin's supported recovery and structured
+`agent_result.batch_inspection_delegations` tool/file pairs and their total and
+omitted counts: use stock
+`inspect.sh` in an isolated profile, or explicitly turn off the TypeScript
+language service in the exact project and request a fresh API inspection, while
+keeping the unresolved-reference inspection enabled. Neither route changes the
+gate or treats absent service findings as clean. The helper does not change that
+project setting or retry the unchanged run.
+
 ## Strict Outcome Qualification
 
 Use strict mode only with an explicit schema-v1 qualification file:
