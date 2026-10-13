@@ -7153,9 +7153,10 @@ def test_compose_target_review_and_readback_cover_private_and_public_routes(doma
         assert posts[0]["body"]["domains"] == domains
         assert evidence["result"]["domain_count"] == len(domains)
         evidence_path = _write_json(directory, "review.json", evidence)
+        idempotency_key = "compose-route-review"
         apply_argv = [
             "dokploy-target-create-compose-apply", "--payload-file", payload_path,
-            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path),
+            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path, idempotency_key),
         ]
         status, receipt, posts, reads = _run_main(
             apply_argv, post=response("apply"), read=inspect(domains),
@@ -7163,7 +7164,7 @@ def test_compose_target_review_and_readback_cover_private_and_public_routes(doma
         assert status == 0, receipt
         assert len(posts) == len(reads) == 1
         assert posts[0]["body"]["domains"] == domains
-        assert posts[0]["idempotency_key"] == "apply-1"
+        assert posts[0]["idempotency_key"] == idempotency_key
         assert receipt["result"]["read_back_matches"] is True
         for private in ("server-private-1", "project-private-1", "compose-private-9", *domains):
             assert private not in json.dumps(receipt)
