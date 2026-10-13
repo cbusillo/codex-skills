@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import signal
 import subprocess
 import tempfile
 import tomllib
@@ -14,6 +16,7 @@ from pathlib import Path
 
 SERVER = "catalog-chrome"  # Claude reserves its built-in server name.
 AUTH_OVERRIDES = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+MCP_TIMEOUT = 45
 
 
 def native_default(directory: Path) -> bool:
@@ -46,8 +49,33 @@ def run_mcp(command: str, directory: Path, args: list[str]):
     env = dict(os.environ, CLAUDE_CONFIG_DIR=str(directory))
     if native_default(directory):
         env.pop("CLAUDE_CONFIG_DIR", None)
-    return subprocess.run([command, "mcp", *args], env=env, capture_output=True,
-                          text=True, timeout=45)
+    # Each management call owns a fresh process group, including health-check
+    # children. Never search for or kill other sessions' Claude processes.
+    with subprocess.Popen([command, "mcp", *args], env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=MCP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise
+        return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+
+def managed_entry(entry: object) -> bool:
+    """Accept the released PATH entry and our pinned-executable renderer only."""
+    if not isinstance(entry, dict):
+        return False
+    env, args = entry.get("env"), entry.get("args")
+    if not isinstance(env, dict) or not isinstance(args, list) or len(args) < 2:
+        return False
+    pinned, command = env.get("CLAUDE_CONFIG_DIR"), args[-2]
+    return (isinstance(pinned, str) and Path(pinned).is_absolute()
+            and isinstance(command, str) and (command == "claude" or Path(command).is_absolute())
+            and entry == server_entry(Path(pinned), command))
 
 
 def matches_details(text: str, entry: dict) -> bool:
@@ -88,7 +116,12 @@ def prepare(root: Path, home: Path, claude: Path) -> dict | None:
     pinned = home_path(config["pinned_home"], home)
     directories = list(dict.fromkeys([home_path(str(claude), home), pinned,
                                      *(home_path(value, home) for value in config["homes"])]))
-    command = "claude"
+    selected = shutil.which("claude")
+    if not selected:
+        raise ValueError("claude is required to enroll Chrome; put the intended CLI on PATH and rerun")
+    # Preserve the selected launcher spelling (including a symlink); resolving
+    # its target can change multicall/launcher semantics.
+    command = str(Path(selected).absolute())
     desired = server_entry(pinned, command)
     receipt_path = root / ".local" / "chrome-install.json"
     if receipt_path.is_symlink() or (receipt_path.exists() and not receipt_path.is_file()):
@@ -106,9 +139,7 @@ def prepare(root: Path, home: Path, claude: Path) -> dict | None:
             raise ValueError(f"Chrome user config must be a regular file: {config_file}")
         old = previous.get(str(directory))
         if old is not None:
-            old_env = old.get("env") if isinstance(old, dict) else None
-            old_pin = old_env.get("CLAUDE_CONFIG_DIR") if isinstance(old_env, dict) else None
-            if not isinstance(old_pin, str) or not Path(old_pin).is_absolute() or old != server_entry(Path(old_pin), command):
+            if not managed_entry(old):
                 raise ValueError("Invalid managed Chrome MCP entry in receipt")
         entries.append({"path": directory, "state": inspect_entry(command, directory, desired, old), "previous": old})
     return {"command": command, "desired": desired, "entries": entries, "receipt_path": receipt_path,
@@ -121,6 +152,7 @@ def apply(plan: dict) -> list[dict]:
     for entry in plan["entries"]:
         directory, previous = entry["path"], entry["previous"]
         state = inspect_entry(command, directory, desired, previous)
+        entry["state"] = state
         if state == "update":
             removed = run_mcp(command, directory, ["remove", SERVER, "--scope", "user"])
             if removed.returncode:
