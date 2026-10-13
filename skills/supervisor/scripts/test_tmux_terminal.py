@@ -67,7 +67,13 @@ for line in sys.stdin:
                        account_provider="anthropic", account_config=None, account=None)
         options.update(kwargs)
         with patch.object(account_choice, "select", return_value=self.choice):
-            return self.operate("new", **options)
+            result = self.operate("new", **options)
+        for row in result if isinstance(result, list) else [result]:
+            # Linux can reuse a dead pane's PTY for another fixture immediately.
+            # Keep this fixture's device allocated through its process checks.
+            fd = os.open(row["tty"], os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+            self.addCleanup(os.close, fd)
+        return result
 
     def wait_screen(self, identity, text):
         deadline = time.monotonic() + 5

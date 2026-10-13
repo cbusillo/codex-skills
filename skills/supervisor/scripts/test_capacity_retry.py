@@ -168,7 +168,8 @@ class CapacityTests(unittest.TestCase):
             queue.assert_not_called()
             self.assertEqual(result["state"], "exhausted")
         self.assertEqual(status.snapshot(self.ledger, self.state_path)[0]["capacity_retry"], result)
-        notice = codex_idle_watch.poll(self.ledger, {}, 90, self.now + 100000,
+        # File idleness uses this disposable file's clock, not the archived trace.
+        notice = codex_idle_watch.poll(self.ledger, {}, 90, self.transcript.stat().st_mtime + 100000,
                                       capacity_retry.load_state(self.state_path))[0]
         self.assertEqual(notice["capacity_retry"]["state"], "exhausted")
 
