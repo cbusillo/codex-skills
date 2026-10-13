@@ -12,9 +12,19 @@ pass `--session "$session"` to every command. Do not rely on the shared default
 session when other agents or background tasks may use the helper. Start or
 reuse a session with `open`, keep its identity stable, and close only the
 named session created for this task when complete; preserve user-owned sessions.
+Keep the whole loop, including cleanup, in one shell invocation. A named
+session does not guarantee that its server survives the harness ending that
+invocation: the installed helper may silently start another server whose page
+is `about:blank` on the next command. Verify the expected URL and visible state
+after each snapshot; a new blank page is lost session state, not app readiness.
+Do not keep retrying waits or screenshots on it. When the daemon cannot survive
+the required interaction loop, use the entry point's host interface selection
+or [foreground Playwright](foreground-playwright.md) if already available.
 
 ```bash
-session="browser-$RANDOM"
+set -euo pipefail
+session="browser-$$-$RANDOM"
+trap 'ui-browser close --session "$session"' EXIT
 ui-browser open "https://example.com" --session "$session"
 ui-browser wait-for "text=Ready" --session "$session"
 ui-browser snapshot --session "$session"
