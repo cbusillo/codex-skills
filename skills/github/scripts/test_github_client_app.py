@@ -245,7 +245,8 @@ class ClientAppTests(unittest.TestCase):
             expected_actor="app-1[bot]")
         self.assertFalse(result.ok)
         self.assertFalse(result.failure.retryable)
-        self.assertEqual(result.attempts, 1)
+        self.assertIsNotNone(result.retry_summary)
+        self.assertEqual(result.retry_summary.attempts, 1)
 
     def test_python_request_and_comment_actor_follow_client(self) -> None:
         os.environ["GH_WITH_ENV_TOKEN_GH"] = str(self.fake_gh())
