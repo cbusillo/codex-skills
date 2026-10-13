@@ -2661,6 +2661,7 @@ def compact_inspection_lane_result(
             "retry_policy": agent_result.get("retry_policy"),
             "blocker_stage": payload.get("failure_phase"),
             "next_action": agent_result.get("next_action"),
+            "batch_inspection_delegations": agent_result.get("batch_inspection_delegations"),
             "worktree": context.get("worktree_root"),
             "scope": "files",
             "file_count": len(selected),

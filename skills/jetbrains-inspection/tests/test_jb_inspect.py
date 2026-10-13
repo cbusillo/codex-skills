@@ -11810,6 +11810,13 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(compact["agent_result"]["batch_inspection_delegations"], payload["capture_diagnostic"]["batch_inspection_delegations"])
         self.assertEqual(compact["diagnostic"]["attribution_class"], "configuration_blocked")
         self.assertFalse(payload.get("unattributed_unknown", False))
+        lane = jb_inspect.compact_inspection_lane_result(
+            jb_inspect.InspectionLane("frontend", "WebStorm", True, ("**/*.ts",), (), None),
+            0, {"worktree_root": "/repo"}, [{"file": "broken.ts", "absolute_path": "/repo/broken.ts"}], payload,
+        )
+        multi = jb_inspect.compact_multi_lane_agent_result_payload({"lane_results": [lane]}, helper_exit_code=1)
+        self.assertEqual(multi["lanes"][0]["batch_inspection_delegations"], compact["agent_result"]["batch_inspection_delegations"])
+        self.assertEqual(multi["lanes"][0]["next_action"], compact["agent_result"]["next_action"])
 
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
         payload = {
