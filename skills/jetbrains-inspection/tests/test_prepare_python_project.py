@@ -26,6 +26,26 @@ SPEC.loader.exec_module(prepare_python_project)
 
 
 class PreparePythonProjectTest(unittest.TestCase):
+    def test_generated_index_exclusions_preserve_tracked_and_declared_test_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / ".gitignore").write_text("build/\ndist/\ntarget/\nnode_modules/\n")
+            for name in ("build", "dist", "target", "source"):
+                (repo / name).mkdir()
+                (repo / name / "sample.py").write_text("value = 1\n")
+            subprocess.run(["git", "-C", str(repo), "add", "--force", "target/sample.py"], check=True)
+            roots = prepare_python_project.ignored_generated_roots(repo, ["dist"])
+            self.assertIn("build", roots)
+            self.assertNotIn("dist", roots)
+            self.assertNotIn("target", roots)
+            self.assertNotIn("source", roots)
+            files = prepare_python_project.render_project_files(repo, "fixture", ["dist"], generated_roots=roots)
+            module = ElementTree.fromstring(files[repo / ".idea/fixture.iml"])
+            content = module.find("./component/content")
+            self.assertTrue(all(any(entry.get("url").endswith('/' + root) for entry in content.findall('excludeFolder'))
+                                for root in roots))
+
     @staticmethod
     def write_script(repo, name, dependencies):
         path = repo / name

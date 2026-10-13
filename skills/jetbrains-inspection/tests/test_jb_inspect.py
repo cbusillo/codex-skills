@@ -363,6 +363,50 @@ class IdeMemoryTests(unittest.TestCase):
                     self.assertEqual(get.call_count, 2)
 
 
+class ProjectCacheRetirementTests(unittest.TestCase):
+    def test_exact_session_cache_receipt_is_required_before_git_removal(self):
+        for drift in (False, True):
+            with self.subTest(drift=drift), tempfile.TemporaryDirectory() as temporary:
+                primary = Path(temporary) / "primary"
+                root = Path(temporary) / "task"
+                subprocess.run(["git", "init", "-q", str(primary)], check=True)
+                subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
+                                "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+                subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
+                identity = {"port": 12345, "session_id": "current", "helper_project_cache_lifecycle_version": 1}
+                cache_retired = []
+                def post(_port, endpoint, params):
+                    self.assertEqual(endpoint, "lifecycle/retire-project-caches")
+                    self.assertTrue(root.exists())
+                    dry_run = params["dry_run"] == "true"
+                    status = "would_remove" if dry_run else "removed"
+                    if cache_retired:
+                        entries = []
+                    else:
+                        entries = [{"status": status, "reason": "helper_owned_closed_project", "worktree_path": str(root)}]
+                    if not dry_run:
+                        cache_retired.append(True)
+                    return jb_inspect.HttpResult(200, {
+                        "status": "ok", "session_id": "foreign" if drift else "current",
+                        "project_cache_lifecycle_version": 1, "dry_run": dry_run,
+                        "worktree_path": str(root), "caches": entries,
+                    }, "http://fixture")
+                args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+                with (patch.object(jb_inspect, "discover_identities", return_value=[identity]),
+                      patch.object(jb_inspect, "unregister_helper_sdks", return_value=[]),
+                      patch.object(jb_inspect, "http_post", side_effect=post)):
+                    if drift:
+                        with self.assertRaises(jb_inspect.InspectError):
+                            jb_inspect.command_retire_sdks(args)
+                        self.assertTrue(root.is_dir())
+                        self.assertEqual(cache_retired, [])
+                    else:
+                        result = jb_inspect.command_retire_sdks(args)
+                        self.assertTrue(result["worktree_removed"])
+                        self.assertFalse(root.exists())
+                        self.assertEqual(cache_retired, [True])
+
+
 class SdkRetirementTests(unittest.TestCase):
     @staticmethod
     def identity():
@@ -8519,6 +8563,7 @@ class LifecycleTest(unittest.TestCase):
 class AgentInspectContractTest(unittest.TestCase):
     def test_lifecycle_lock_timeout_reports_contention_without_native_inspection(self):
         output = io.StringIO()
+        try_lock = jb_inspect.lifecycle_lock._try_lock
 
         def locked_operation(_args, _context):
             with jb_inspect.lifecycle_lock(0):
@@ -8527,7 +8572,8 @@ class AgentInspectContractTest(unittest.TestCase):
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect"]),
             patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
-            patch.object(jb_inspect.fcntl, "flock", side_effect=BlockingIOError),
+            patch.object(jb_inspect.lifecycle_lock, "_try_lock", side_effect=lambda handle:
+                         False if Path(handle.name) == jb_inspect.lifecycle_lock_path() else try_lock(handle)),
             patch.object(jb_inspect, "command_run", side_effect=locked_operation),
             patch.object(jb_inspect, "log_assessment_records"),
             redirect_stdout(output),

@@ -161,3 +161,9 @@ running the configured command, and use `--force-preparation` or
 `--force-refresh-preparation` to refresh a valid receipt. Preparation is
 idempotent and may create ignored local environment state, but it must not leave
 tracked-file mutations or hidden index mutations before inspection begins.
+
+Python preparation bounds content indexing by excluding recognized ignored
+build and cache directories. A candidate containing tracked files, or a
+declared test root, stays in content. These exclusions do not remove the SDK's
+library roots or disable inspections. Their generated module model participates
+in the same preparation receipt and mutation checks as the other project files.

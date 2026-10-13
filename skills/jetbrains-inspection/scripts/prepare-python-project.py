@@ -46,6 +46,7 @@ def registered_sdk_name(venv: Path, sdk_table: Path | None) -> str | None:
 
 def render_project_files(
     repo: Path, module_name: str, test_roots: list[str], sdk_name: str | None = None,
+    generated_roots: list[str] | None = None,
 ) -> dict[Path, str]:
     idea = repo / ".idea"
     sdk_name = html.escape(sdk_name or sdk_name_for(repo / ".venv", Path.home()))
@@ -54,6 +55,10 @@ def render_project_files(
     source_folders = "\n".join(
         f'      <sourceFolder url="file://$MODULE_DIR$/{html.escape(root)}" isTestSource="true" />'
         for root in test_roots
+    )
+    extra_exclusions = "\n".join(
+        f'      <excludeFolder url="file://$MODULE_DIR$/{html.escape(root)}" />'
+        for root in (generated_roots or [])
     )
     module_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <module type="PYTHON_MODULE" version="4">
@@ -64,6 +69,7 @@ def render_project_files(
       <excludeFolder url="file://$MODULE_DIR$/.local" />
       <excludeFolder url="file://$MODULE_DIR$/.code" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+{extra_exclusions}
 {source_folders}
     </content>
     <orderEntry type="jdk" jdkName="{sdk_name}" jdkType="Python SDK" />
@@ -89,6 +95,26 @@ def render_project_files(
 </project>
 '''
     return {module_file: module_xml, idea / "modules.xml": modules_xml, idea / "misc.xml": misc_xml}
+
+
+def ignored_generated_roots(repo: Path, test_roots: list[str]) -> list[str]:
+    candidates = (".git", ".gradle", "node_modules", "build", "dist", "target",
+                  ".pytest_cache", ".ruff_cache", "__pycache__")
+    excluded = []
+    for name in candidates:
+        if any(root == name or root.startswith(name + "/") for root in test_roots):
+            continue
+        tracked = subprocess.run(["git", "-C", str(repo), "ls-files", "--", name],
+                                 capture_output=True, text=True, check=True).stdout
+        if tracked:
+            continue
+        ignored = subprocess.run(["git", "-C", str(repo), "check-ignore", "--quiet", name + "/"],
+                                 capture_output=True, text=True)
+        if ignored.returncode not in (0, 1):
+            raise RuntimeError("Cannot establish ignored generated indexing roots")
+        if name == ".git" or ignored.returncode == 0:
+            excluded.append(name)
+    return excluded
 
 
 def atomic_write(path: Path, content: str) -> None:
@@ -221,7 +247,8 @@ def main() -> int:
     if args.sync and not (repo / "pyproject.toml").is_file():
         parser.error("--sync requires pyproject.toml in the repository root")
     sdk_name = registered_sdk_name(repo / ".venv", args.sdk_table)
-    project_files = render_project_files(repo, args.module_name, args.test_root, sdk_name)
+    generated_roots = ignored_generated_roots(repo, args.test_root)
+    project_files = render_project_files(repo, args.module_name, args.test_root, sdk_name, generated_roots)
     ensure_ignored_outputs(repo, [repo / ".venv", *project_files])
     validate_existing_venv(repo / ".venv", args.python)
     if args.pep723_script:
