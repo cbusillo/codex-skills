@@ -101,13 +101,16 @@ def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutof
         text = comment.get("body") or ""
         # Shared bot identity is not session identity. Only explicit ownership
         # activity can be attributed to this native session.
-        matching = any(r["session"] == record["session"] or
+        parsed = claim.records(text)
+        matching = any(all(r[key] == record[key] for key in ("session", "worker", "branch")) or
                        ("legacy_reason" in record and r["worker"] == record["worker"])
-                       for r in claim.records(text))
+                       for r in parsed)
         if "legacy_reason" in record:
             matching |= bool(re.match(rf"Claimed by:?\s+{re.escape(record['worker'])}(?:\s|$)",
                                       claim.ownership_text(text, strip_quotes=False), re.IGNORECASE))
-        else:
+        elif not parsed:
+            # A structured successor's header repeats the worker label but
+            # its full claim identity above belongs to a different session.
             matching |= bool(re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", text))
         if matching and stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
             raise ValueError("Source session shows ownership activity after the cited evidence")
