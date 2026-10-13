@@ -1032,6 +1032,41 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
             assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
 
+def test_permission_refusals_preserve_app_identity() -> None:
+    cases = [
+        (("repo", "create", "cbusillo/fixture", "--private"), "",
+         "GraphQL: Resource not accessible by integration (createRepository)"),
+        (("api", "-X", "POST", "user/repos"),
+         json.dumps({"message": "Resource not accessible by integration"}),
+         "gh: Resource not accessible by integration (HTTP 403)"),
+        (("api", "--include", "-X", "POST", "user/repos"),
+         'HTTP/2.0 403\nContent-Type: application/json\nX-RateLimit-Remaining: 5000\n\n'
+         + json.dumps({"message": "Resource not accessible by integration"}), ""),
+    ]
+    for command, stdout, stderr in cases:
+        for fallback in ("0", "1"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                env_file, identity, _ = app_fixture(root)
+                calls = root / "calls.jsonl"
+                fake_gh = root / "gh"
+                write(fake_gh,
+                      f"#!{sys.executable}\nimport json, os, sys\n"
+                      f"with open({str(calls)!r}, 'a') as stream:\n"
+                      "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                      "assert os.environ.get('GH_TOKEN') == 'installation-token'\n"
+                      f"sys.stdout.write({stdout!r})\nsys.stderr.write({stderr!r})\nsys.exit(1)\n")
+                result = run_wrapper(
+                    env_file, SCRIPT.with_name("github_api.py"), identity, *command,
+                    gh_command=fake_gh,
+                    extra_env={"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": fallback},
+                )
+                assert result.returncode == 1, result
+                assert [json.loads(line) for line in calls.read_text().splitlines()] == [list(command)]
+                assert result.stderr, result
+                assert "installation-token" not in result.stdout + result.stderr, result
+
+
 def test_prewrite_receipt_requires_nonce_and_stops_at_launch() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -1102,6 +1137,7 @@ def main() -> None:
         test_print_auth_account_reports_verified_app_without_gh_auth_status,
         test_app_actor_probe_does_not_fabricate_other_paths_or_writes,
         test_pr_create_validation_refusal_preserves_unknown_write_controls,
+        test_permission_refusals_preserve_app_identity,
         test_prewrite_receipt_requires_nonce_and_stops_at_launch,
     ]
     for test in tests:
