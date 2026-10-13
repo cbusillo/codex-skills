@@ -137,8 +137,8 @@ def validate_text(text, allow_tabs=False):
         raise ValueError("text must be nonempty with no terminal control characters")
 
 
-def launch_agent(command_text):
-    """Identify a direct invocation, optionally after cd, using the brief parser."""
+def launch_words(command_text):
+    """Validate a direct agent invocation and return its executable and settings."""
     lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()<>")
     lexer.whitespace_split = True
     lexer.commenters = ""
