@@ -11825,6 +11825,41 @@ class HumanOutputTest(unittest.TestCase):
             self.assertEqual(compact["agent_result"][field], diagnostic[field])
             self.assertEqual(multi["lanes"][0][field], diagnostic[field])
 
+    def test_proven_findings_retain_failed_delegation_coverage_and_recovery(self):
+        finding = {"file": "/repo/broken.ts", "inspectionType": "Unused", "line": 1, "description": "unused control", "severity": "warning"}
+        payload = {
+            "scope": "files",
+            "status": "results_available",
+            "total_problems": 1,
+            "problems": [finding],
+            "capture_diagnostic": {
+                "execution_proof_established": False,
+                "execution_proof_block_reason": "batch_inspection_delegated_to_editor_service",
+                "batch_inspection_delegations": [{"tool": "TypeScriptUnresolvedReference", "file": finding["file"]}],
+                "batch_inspection_delegation_count": 1,
+                "batch_inspection_delegations_omitted_count": 0,
+            },
+            "inspection_proof": {"status": "failed", "capture_complete": False},
+            "proof_failures": ["execution_not_proven"],
+            "inspection_verdict": "RED",
+            "inspection_verdict_reason": "actionable_findings",
+            "inspection_verdict_next_action": "Fix the finding, then use the supplied classic batch recovery.",
+            "route": {"ide": {"inspection_execution_proof_version": jb_inspect.NATIVE_BROAD_SCOPE_PROOF_VERSION}},
+        }
+
+        jb_inspect.apply_verdict(payload)
+        compact = jb_inspect.compact_agent_result_payload(payload, helper_exit_code=0)
+
+        self.assertEqual(compact["agent_result"]["verdict"], "RED")
+        self.assertEqual(compact["findings"][0]["description"], finding["description"])
+        self.assertEqual(compact["agent_result"]["proof_failures"], payload["proof_failures"])
+        self.assertEqual(compact["inspection_proof"]["status"], payload["inspection_proof"]["status"])
+        self.assertFalse(compact["inspection_proof"]["capture_complete"])
+        self.assertFalse(compact["agent_result"]["retry_policy"]["retry"])
+        self.assertEqual(compact["agent_result"]["next_action"], payload["inspection_verdict_next_action"])
+        for field in ("batch_inspection_delegations", "batch_inspection_delegation_count", "batch_inspection_delegations_omitted_count"):
+            self.assertEqual(compact["agent_result"][field], payload["capture_diagnostic"][field])
+
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
         payload = {
             "scope": "whole_project",
