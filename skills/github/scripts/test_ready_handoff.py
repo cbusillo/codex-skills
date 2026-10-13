@@ -183,6 +183,31 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."
         self.post()
 
+    def test_completed_neutral_advisory_allows_docs_handoff(self):
+        self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: documentation only."
+        self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"})
+        _, comment = self.post()
+        self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
+        for change in (
+            {"labels": [{"name": "owner-review"}]},
+            {"body": "## Client test notes\nTry the preview."},
+        ):
+            with self.subTest(change=change):
+                self.writer.reset_mock()
+                original = copy.deepcopy(self.reader.pr)
+                self.reader.pr.update(change)
+                self.refuse()
+                self.reader.pr = original
+
+    def test_pending_or_rejected_review_still_blocks_no_test_notes(self):
+        self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: documentation only."
+        review = {"id": 2, "name": "launchplane/owner-review"}
+        self.reader.checks.append(review)
+        for status, conclusion in (("in_progress", None), ("completed", "failure"), ("completed", "skipped")):
+            with self.subTest(status=status, conclusion=conclusion):
+                review.update(status=status, conclusion=conclusion)
+                self.refuse()
+
     def test_ready_format_variants_keep_exact_head_requirement(self):
         for first in (READY, f"{READY}.", f"**{READY}**", f"**{READY}.**"):
             for head in (SHA, f"`{SHA}`", f"**{SHA}**"):
