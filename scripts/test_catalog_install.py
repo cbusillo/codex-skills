@@ -443,7 +443,7 @@ class InstallTests(unittest.TestCase):
         entries = {}
 
         def native(cli_command, directory, args):
-            self.assertEqual(cli_command, "claude")
+            self.assertEqual(cli_command, '/fixture/bin/claude')
             if args[0] == "add-json":
                 entries[directory] = json.loads(args[2])
                 return subprocess.CompletedProcess(args, 0, "", "")
@@ -457,7 +457,8 @@ class InstallTests(unittest.TestCase):
                 *(f"    {key}={value}" for key, value in entry['env'].items())])
             return subprocess.CompletedProcess(args, 0, text, "")
 
-        with mock.patch.object(chrome_mcp, "run_mcp", side_effect=native):
+        with mock.patch.object(chrome_mcp, "run_mcp", side_effect=native), \
+                mock.patch.object(shutil, 'which', return_value='/fixture/bin/claude'):
             preview = self.install(write=False)
             self.assertEqual(entries, {})
             self.assertEqual(len(preview["chrome_mcp"]), 2)
@@ -485,6 +486,16 @@ class InstallTests(unittest.TestCase):
         self.assertFalse((self.home / 'Library' / 'LaunchAgents' / f'{installer.LABEL}.plist').exists())
         self.assertFalse((self.claude / 'CLAUDE.md').exists())
         self.assertFalse((self.codex / 'AGENTS.md').exists())
+
+    def test_failed_updater_preflight_does_not_start_chrome_health_checks(self):
+        import chrome_mcp
+        with mock.patch.object(chrome_mcp, 'prepare') as prepare, \
+                mock.patch.object(sys, 'platform', 'darwin'), \
+                mock.patch.object(shutil, 'which', return_value='/fixture/uv'), \
+                mock.patch.object(runtime, 'checkout_state', return_value={'state': 'blocked', 'reason': 'dirty checkout'}):
+            with self.assertRaisesRegex(ValueError, 'dirty checkout'):
+                installer.install(self.home, self.codex, self.claude, write=False, updater=True)
+        prepare.assert_not_called()
 
     def test_generated_tail_with_no_private_source_is_never_guessed(self):
         path = self.codex / "AGENTS.md"
