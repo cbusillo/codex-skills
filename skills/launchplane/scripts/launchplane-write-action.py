@@ -9406,6 +9406,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         )
         _add_reviewed_apply_arguments(compose_target, apply=command.endswith("-apply"))
 
+    domain_plan = subparsers.add_parser(
+        "dokploy-target-repair-domain-authority-dry-run",
+        help="Plan domain authority from a fresh tracked-target inspection; never apply.",
+    )
+    domain_plan.add_argument("--context", required=True)
+    domain_plan.add_argument("--instance", required=True)
+    domain_plan.add_argument("--reason", required=True)
+    ingress_plan = subparsers.add_parser(
+        "ingress-route-dry-run",
+        help="Verify an existing ingress no-op from private observed route evidence; never apply.",
+    )
+    ingress_plan.add_argument("--payload-file", required=True)
+
     for command in sorted(DOKPLOY_COMPOSE_DOMAIN_COMMANDS):
         domain = subparsers.add_parser(command, help="Review or apply tracked compose web host routes.")
         domain.add_argument("--payload-file", required=True, help="Private local JSON payload file.")
@@ -9560,9 +9573,263 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return args
 
 
+INERT_PLANNER_COMMANDS = {
+    "dokploy-target-repair-domain-authority-dry-run", "ingress-route-dry-run",
+}
+INGRESS_PLAN_ROUTE_FIELDS = {
+    "domain_names", "edge_endpoint_key", "certificate_id", "ssl_forced",
+    "hsts_enabled", "hsts_subdomains", "trust_forwarded_proto", "http2_support",
+    "npmplus_http3_support", "access_list_id", "npmplus_noindex",
+    "npmplus_crowdsec_appsec", "npmplus_proxy_request_buffering",
+    "npmplus_proxy_response_buffering", "npmplus_upstream_compression",
+    "npmplus_fancyindex", "npmplus_x_frame_options", "npmplus_auth_request", "enabled",
+}
+
+
+def _plan_domains(value: object) -> list[str]:
+    if (
+        not isinstance(value, list) or not 1 <= len(value) <= 100
+        or any(not isinstance(host, str) or len(host) > 253 or not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+", host
+        ) for host in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError("invalid_plan_domains")
+    return value
+
+
+def _ingress_plan_input(args: argparse.Namespace) -> dict[str, Any]:
+    body = read_payload_file(args.payload_file)
+    if body.keys() - {"product", "context", "instance", "route", "expected_host_id", "reason"}:
+        raise ValueError("unsupported_ingress_plan_field")
+    for key in ("product", "context", "instance"):
+        body[key] = public_identifier(body.get(key))
+        if not body[key]:
+            raise ValueError("plan_scope_required")
+    if not isinstance(body.get("reason"), str) or not body["reason"].strip():
+        raise ValueError("reason_required")
+    if type(body.get("expected_host_id")) is not int or body["expected_host_id"] < 1:
+        raise ValueError("expected_host_id_required")
+    route = body.get("route")
+    if not isinstance(route, dict) or route.keys() - INGRESS_PLAN_ROUTE_FIELDS:
+        raise ValueError("unsupported_ingress_route_field")
+    _plan_domains(route.get("domain_names"))
+    if not public_identifier(route.get("edge_endpoint_key")):
+        raise ValueError("edge_endpoint_required")
+    # All route options have value-only scalar types; no arbitrary provider config.
+    for key, value in route.items():
+        if key in {"domain_names", "edge_endpoint_key"}:
+            continue
+        if key in {"certificate_id", "access_list_id"}:
+            if type(value) is not int or value < 0:
+                raise ValueError("invalid_ingress_route_option")
+        elif key == "npmplus_x_frame_options":
+            if not isinstance(value, str) or value not in {"DENY", "SAMEORIGIN", "upstream", "none"}:
+                raise ValueError("invalid_ingress_route_option")
+        elif key == "npmplus_auth_request":
+            if not isinstance(value, str) or value not in {"none", "anubis", "tinyauth", "authelia", "authentik", "authentik-send-basic-auth"}:
+                raise ValueError("invalid_ingress_route_option")
+        elif type(value) is not bool:
+            raise ValueError("invalid_ingress_route_option")
+    return body
+
+
+def _domain_authority_plan_body(
+    args: argparse.Namespace, read: Any,
+) -> dict[str, Any]:
+    observed = _require_dict(read(
+        internal_helper_path("dokploy-target-inspect"),
+        {"context": args.context, "instance": args.instance},
+    ).get("inspect"))
+    tracked = _require_dict(observed.get("tracked_target"))
+    provider = _require_dict(observed.get("provider_target_record"))
+    live = _require_dict(observed.get("provider"))
+    target_id = tracked.get("target_id")
+    target_type = tracked.get("target_type")
+    if (
+        observed.get("status") != "ok" or provider.get("status") != "present"
+        or target_type not in {"application", "compose"}
+        or not isinstance(target_id, str) or not target_id
+        or any(source.get("target_id") != target_id for source in (observed, provider, live))
+        or any(source.get("target_type") != target_type for source in (observed, live))
+        or tracked.get("context") != args.context or tracked.get("instance") != args.instance
+        or provider.get("provider_id") != "dokploy"
+        or provider.get("target_category") != target_type
+        or provider.get("provider_target_type") != target_type
+        or not isinstance(provider.get("display_name"), str) or not provider["display_name"]
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    routes = live.get("domains")
+    if not isinstance(routes, list) or not 1 <= len(routes) <= 100:
+        raise LaunchplaneSafetyError("invalid_response")
+    hosts = [_require_dict(route).get("host") for route in routes]
+    if any(not isinstance(host, str) for host in hosts):
+        raise LaunchplaneSafetyError("invalid_response")
+    domains = list(dict.fromkeys(hosts))
+    _plan_domains(domains)
+    expected = {key: provider[key] for key in (
+        "provider_id", "target_category", "target_id", "display_name", "provider_target_type",
+    )}
+    # Inspect currently omits provider_evidence; an enriched response must retain it
+    # privately. The service compares this projection to current authority again.
+    expected["provider_evidence"] = provider.get("provider_evidence", {})
+    return {
+        "product": "launchplane", "context": args.context, "instance": args.instance,
+        "operation": "repair-domain-authority", "mode": "dry-run",
+        "target_type": target_type, "target_id": target_id, "domains": domains,
+        "expected_current_provider_target": expected, "reason": args.reason,
+    }
+
+
+def _ingress_plan_body(body: dict[str, Any], read: Any) -> dict[str, Any]:
+    profile = _require_dict(read(
+        helper_command_path("product-profile-read").format(product=body["product"]), {},
+    ).get("profile"))
+    lanes = profile.get("lanes")
+    if profile.get("product") != body["product"] or not isinstance(lanes, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    matches = [lane for lane in lanes if isinstance(lane, dict)
+               and lane.get("context") == body["context"] and lane.get("instance") == body["instance"]]
+    if len(matches) != 1:
+        raise ValueError("plan_lane_not_unique")
+    lane = matches[0]
+    urls = [lane.get("base_url"), lane.get("health_url")]
+    monitoring = lane.get("health_monitoring") or {}
+    for check in _require_dict(monitoring).get("checks", []):
+        if isinstance(check, dict) and check.get("enabled") is True and check.get("kind") == "public_http":
+            urls.append(check.get("url"))
+    lane_domains = set()
+    for value in urls:
+        if not value:
+            continue
+        if not isinstance(value, str):
+            raise LaunchplaneSafetyError("invalid_response")
+        url = urllib.parse.urlsplit(value)
+        if url.scheme != "https" or not url.hostname or url.username or url.password or url.port not in {None, 443}:
+            raise ValueError("invalid_plan_lane_url")
+        lane_domains.add(url.hostname.rstrip(".").lower())
+    if set(body["route"]["domain_names"]) != lane_domains:
+        raise ValueError("plan_domain_scope_mismatch")
+    endpoint_key = body["route"]["edge_endpoint_key"]
+    endpoint = _require_dict(read(internal_helper_path("ingress-plan-edge-endpoint-read").format(
+        endpoint_key=urllib.parse.quote(endpoint_key, safe="")), {}).get("record"))
+    if endpoint.get("endpoint_key") != endpoint_key or endpoint.get("status") != "active":
+        raise ValueError("plan_endpoint_not_active")
+    return {"product": body["product"], "context": body["context"], "instance": body["instance"],
+            "ingress": {"mode": "dry-run", "route": body["route"],
+                        "expected_host_id": body["expected_host_id"],
+                        "require_exact_expected_host_domains": True,
+                        "allow_create": False, "allow_update": False, "allow_enable_disable": False,
+                        "reason": body["reason"]}}
+
+
+def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[str, object]:
+    if provider.keys() - {"status", "trace_id", "records", "result"} or provider.get("status") != "accepted":
+        raise LaunchplaneSafetyError("invalid_response")
+    result = _require_dict(provider.get("result"))
+    if "ingress" not in body:
+        if result.keys() - {"mode", "operation", "context", "instance", "applied", "route_domain_ids", "setup", "reason"}:
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        if (result.get("mode") != "dry-run" or result.get("applied") is not False
+            or result.get("operation") != body["operation"]
+            or result.get("context") != body["context"] or result.get("instance") != body["instance"]):
+            raise LaunchplaneSafetyError("invalid_response")
+        setup = _require_dict(result.get("setup"))
+        if setup.keys() - {"applied", "target_record", "target_id_record", "provider_target_record", "requested_domains", "live_provider_domains", "warnings"}:
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        if (setup.get("applied") is not False
+            or set(_plan_domains(setup.get("requested_domains"))) != set(body["domains"])
+            or set(_plan_domains(setup.get("live_provider_domains"))) != set(body["domains"])
+            or _require_dict(setup.get("target_id_record")).get("target_id") != body["target_id"]
+            or _require_dict(setup.get("target_record")).get("target_type") != body["target_type"]
+            or set(_plan_domains(_require_dict(setup.get("target_record")).get("domains"))) != set(body["domains"])
+            or any(_require_dict(setup.get("provider_target_record")).get(key) != value
+                   for key, value in body["expected_current_provider_target"].items())):
+            raise LaunchplaneSafetyError("invalid_response")
+        return {"mode": "dry-run", "applied": False, "domain_count": len(body["domains"]),
+                "exact_domains_verified": True, "target_identity_verified": True}
+    if result.keys() - {"status", "dry_run", "operations", "proxy_host"}:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if result.get("dry_run") is not True or result.get("status") != "unchanged":
+        raise LaunchplaneSafetyError("invalid_response")
+    host = _require_dict(result.get("proxy_host"))
+    ingress = body["ingress"]
+    domains = set(ingress["route"]["domain_names"])
+    records = _require_dict(provider.get("records"))
+    operations = result.get("operations")
+    if (host.get("id") != ingress["expected_host_id"]
+        or set(_plan_domains(host.get("domain_names"))) != domains
+        or records.get("ingress_provider_domain_comparison") != "requested_domains"
+        or records.get("ingress_provider_domain_count") != len(domains)
+        or not isinstance(operations, list) or not 1 <= len(operations) <= 100):
+        raise LaunchplaneSafetyError("invalid_response")
+    for operation in operations:
+        operation = _require_dict(operation)
+        if (operation.keys() - {"action", "host_id", "domain_names", "requires_apply", "change_categories"}
+            or operation.get("requires_apply") is not False or operation.get("action") != "no-op"
+            or operation.get("change_categories", []) != []
+            or operation.get("host_id") != ingress["expected_host_id"]
+            or set(_plan_domains(operation.get("domain_names"))) != domains):
+            raise LaunchplaneSafetyError("invalid_response")
+    return {"mode": "dry-run", "dry_run": True, "status": "unchanged",
+            "domain_count": len(domains), "operation_count": len(operations),
+            "exact_domains_verified": True, "requires_apply": False}
+
+
+def execute_inert_plan(args: argparse.Namespace) -> int:
+    ingress_input = _ingress_plan_input(args) if args.command == "ingress-route-dry-run" else None
+    scope = ingress_input if ingress_input is not None else vars(args)
+    request: dict[str, object] = {"mode": "dry-run", "payload_source": "private_file" if ingress_input else "service_records"}
+    for key in ("context", "instance"):
+        request[key] = public_identifier(scope[key])
+        if not request[key]:
+            raise ValueError("plan_scope_required")
+    if ingress_input is not None:
+        request["product"] = ingress_input["product"]
+    elif not args.reason.strip():
+        raise ValueError("reason_required")
+    settings = prepare_operator_settings(args=args, operation=args.command, request=request)
+    if settings is None:
+        return 2
+    provider: dict[str, Any] | None = None
+    try:
+        def read(path: str, query: dict[str, str]) -> dict[str, Any]:
+            nonlocal provider
+            provider = request_launchplane_read(service_url=settings["service_url"], path=path,
+                settings=settings, query=query, timeout=args.timeout)
+            if provider.get("status") != "ok":
+                raise LaunchplaneSafetyError("invalid_response")
+            return provider
+        body = _ingress_plan_body(ingress_input, read) if ingress_input is not None else _domain_authority_plan_body(args, read)
+        provider = request_launchplane(service_url=settings["service_url"],
+            path=helper_command_path(args.command), settings=settings, body=body,
+            timeout=args.timeout, idempotency_key="")
+        result = _project_inert_plan(provider, body)
+        payload = base_payload(status="accepted", operation=args.command, request=request)
+        payload["result"] = result
+        if ingress_input is not None:
+            records = _require_dict(provider.get("records"))
+            payload["records"] = {"ingress_route_audit_record_id": public_identifier(
+                records.get("ingress_route_audit_record_id"))}
+        payload["summary"] = {"trace_id": public_trace_id(provider.get("trace_id")),
+                              "recommendation": "Planning evidence only; this command cannot apply."}
+        emit(payload)
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=args.command, request=request, exc=exc)
+    except (LaunchplaneSafetyError, ValueError):
+        emit_safety_error_payload(operation=args.command, request=request,
+            exc=LaunchplaneSafetyError("invalid_response"), provider_payload=provider)
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+        emit_provider_unavailable(operation=args.command, request=request)
+    return 1
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        if args.command in INERT_PLANNER_COMMANDS:
+            return execute_inert_plan(args)
         if args.command == "merge-train-policy-read":
             try:
                 if args.repo:
@@ -10107,8 +10374,9 @@ def main(argv: list[str]) -> int:
                 request=request,
                 body=body,
             )
-    except ValueError as exc:
-        code = str(exc) or "invalid_request"
+    except (ValueError, LaunchplaneSafetyError) as exc:
+        code = str(exc) if isinstance(exc, ValueError) else "invalid_request"
+        code = code or "invalid_request"
         emit(
             unavailable_payload(
                 operation=getattr(args, "command", "unknown"),

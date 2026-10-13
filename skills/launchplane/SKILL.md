@@ -53,6 +53,16 @@ resources:
     kind: script
     description: Drives one labeled pull request through the merge train to a landed, failed, needs_owner, or error outcome.
 commands:
+  - name: launchplane-domain-authority-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "dokploy-target-repair-domain-authority-dry-run", "--context", "<context>", "--instance", "<instance>", "--reason", "<reason>"]
+    purpose: Plans domain authority from fresh tracked-target and live-domain evidence without applying.
+  - name: launchplane-ingress-route-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "ingress-route-dry-run", "--payload-file", "<private-file>"]
+    purpose: Verifies an exact existing ingress no-op with create, update and enable/disable disabled.
   - name: launchplane-privileged-policy-propose
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1177,6 +1187,13 @@ verification.
   before either source operation, including partial-outcome recovery.
   Add the lane record afterwards with the contract-backed stable-lane repair
   workflow.
+- `dokploy-target-repair-domain-authority-dry-run` uses that setup route with
+  `operation: repair-domain-authority` and fixed `mode: dry-run`.
+  `ingress-route-dry-run` uses the local-extension
+  `POST /v1/drivers/ingress/route-apply` with fixed `ingress.mode: dry-run`.
+  Read [inert domain and ingress planning](references/write-action-helper-contract.md#inert-domain-and-ingress-planning)
+  before either command. They use fresh service records and verify exact live
+  identity/domain evidence privately; neither command can apply.
 - `GET /v1/production-backup-authority` and
   `POST /v1/production-backup-authority/apply`: Bounded local-extension paths
   for a production lane's backup policy and targets

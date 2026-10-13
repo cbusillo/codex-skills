@@ -184,6 +184,16 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "dokploy-target-repair-domain-authority-dry-run": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "dry-run",
+    },
+    "ingress-route-dry-run": {
+        "method": "POST",
+        "path": "/v1/drivers/ingress/route-apply",
+        "mode": "dry-run",
+    },
     "health-monitoring-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/health-monitoring/apply",
@@ -467,6 +477,10 @@ LOCAL_EXTENSION_ROUTES = {
 }
 
 INTERNAL_HELPER_ROUTES = {
+    "ingress-plan-edge-endpoint-read": {
+        "method": "GET",
+        "path": "/v1/edge-endpoints/records/{endpoint_key}",
+    },
     "merge-train-policy-targets-read": {
         "method": "GET",
         "path": "/v1/work-graph/merge-train/policy-targets",
@@ -682,6 +696,12 @@ def _validate_helper_bindings(
         route = (extension["method"], extension["path"])
         if route in projected_routes:
             raise ContractError("local_extension_now_projected")
+    for command in ("dokploy-target-repair-domain-authority-dry-run", "ingress-route-dry-run"):
+        extension = LOCAL_EXTENSION_ROUTES.get(command, {})
+        if extension.get("method") != "POST" or extension.get("mode") != "dry-run":
+            raise ContractError("inert_planner_binding_mismatch")
+    if LOCAL_EXTENSION_ROUTES["dokploy-target-repair-domain-authority-dry-run"]["path"] != LOCAL_EXTENSION_ROUTES["dokploy-target-create-compose-dry-run"]["path"]:
+        raise ContractError("inert_planner_binding_mismatch")
     for internal_route in INTERNAL_HELPER_ROUTES.values():
         route = (internal_route["method"], internal_route["path"])
         if route in projected_routes:
