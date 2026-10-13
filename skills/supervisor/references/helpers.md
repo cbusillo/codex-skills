@@ -719,8 +719,8 @@ Point `snapshot_command` at the installed app executable, with its full path
 as one array element and `--account-snapshot` as the next. Invoke it directly;
 `open -a` cannot return the reader's JSON and exit status. The reader updates
 with the installed app; an old separately built `context-panel-account-snapshot`
-may omit rankings. Replace that standalone command in the private config, then
-preview each provider through `account_choice.py` before launching. Use the
+may omit rankings. The Supervisor replaces that standalone command in its private config,
+then previews each provider through `account_choice.py` before launching. Use the
 installed app's actual path if it differs from the example. See Context Panel's
 [installed-reader contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#agent-readable-account-snapshot).
 
@@ -730,8 +730,11 @@ Keep the `[accounts]` table, snapshot command and account environment mappings;
 remove obsolete comments that prescribe a fallback order.
 They are ignored by the launcher for compatibility with existing files; account
 order now only helps people read the mapping. Configure Use last and other
-capacity choices in Context Panel. Document this change for the Director;
-do not edit their private config yourself.
+capacity choices in Context Panel. The Supervisor owns this private config;
+executing agents propose the exact migration on the owning issue and the
+Supervisor applies it after source landing. Rewrite any earlier Google
+placeholder row using the explicit single-login form above; invalid rows
+refuse configuration loading for every provider.
 
 Codex accounts must set `CODEX_HOME` to the account's home. Claude Code
 accounts set `CLAUDE_CONFIG_DIR` for an alternate profile or use `env = {}`
@@ -753,7 +756,7 @@ eligible published launch order and writes the same count-only receipts as the
 other providers. Output includes `account_binding: existing-agy-login` and empty
 `env_keys`, so it does not claim an account was pinned by an environment variable.
 Google launch files must invoke `agy` directly and keep `HOME` unchanged; remove
-home/account settings from the file to use the mapped existing login. A launch
+`HOME`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` settings from the file to use the mapped existing login. A launch
 file invoking another harness refuses before tabs or receipts.
 If the AGY login changes, reconcile the mapping and Context Panel row before
 launching again. No credentials or login settings are read or changed by this
