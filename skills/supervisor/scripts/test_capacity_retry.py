@@ -7,6 +7,7 @@
 
 import copy
 import json
+import os
 import socket
 import subprocess
 import tempfile
@@ -41,6 +42,7 @@ class CapacityTests(unittest.TestCase):
         self.ledger.write_text(json.dumps([self.entry]))
         self.state_path = self.root / "capacity.json"
         self.now = datetime.fromisoformat(self.records[-1]["timestamp"]).timestamp()
+        os.utime(self.transcript, (self.now, self.now))
         endpoint = capacity_retry.codex_daemon_endpoint(self.home)
         endpoint.parent.mkdir()
         self.socket = socket.socket(socket.AF_UNIX)
@@ -56,6 +58,7 @@ class CapacityTests(unittest.TestCase):
             self.now, timezone.utc).isoformat(), "payload": {"type": kind, **fields}}
         with self.transcript.open("a") as stream:
             stream.write(json.dumps(record) + "\n")
+        os.utime(self.transcript, (self.now, self.now))
 
     def capacity_again(self):
         payload = copy.deepcopy(self.records[-1]["payload"])
