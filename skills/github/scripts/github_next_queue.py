@@ -25,9 +25,9 @@ def current_status(discussion: dict[str, Any], trusted: set[str]) -> str:
                  if str(comment.get("author") or "").casefold() in trusted)
     status = ""
     for text in texts:
-        found = re.search(r"(?ms)^##\s+Current Status\s*\n(.*?)(?=^##\s|\Z)", text)
-        if found:
-            status = re.sub(r"<!--.*?-->", "", found[1], flags=re.S).strip()
+        found = github_direction_next.section_map(text).get("Current Status")
+        if found is not None:
+            status = re.sub(r"<!--.*?-->", "", found, flags=re.S).strip()
     return status
 
 
@@ -92,19 +92,21 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     discussion = item.get("discussion") or {}
     status = current_status(discussion, trusted)
     work = remaining_work(status)
-    comments = [{**comment, "user": {"login": comment.get("author")}} for comment in discussion.get("comments", [])]
+    comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
     row = {**work, "claim_required": True, "ownership_complete": False,
            "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {})}
     complete = discussion.get("complete")
     if not isinstance(complete, bool) or not complete:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
+    if not discussion.get("author") or any(not comment.get("author") for comment in discussion.get("comments", [])):
+        return {**row, "state": "review", "reason": "discussion_authorship_unknown"}
     # Use the claim helper's exact authored-release semantics instead of a
     # second claim parser. No synthetic owner can renew a real claim.
     try:
         conflicts, _ = github_plan_claim.discussion_evidence(status, comments,
             {"worker": "", "session": "", "branch": "", "claimed_at": ""})
         wait = github_plan_wait.current(
-            {"body": discussion.get("body") or "", "user": {"login": discussion.get("author")}}, comments, trusted)
+            {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
     except (ValueError, KeyError, TypeError) as exc:
         return {**row, "state": "review", "reason": "unreadable_ownership_or_wait", "detail": str(exc)}
     branches = github_plan_claim.recorded_claim_branches(status, comments)

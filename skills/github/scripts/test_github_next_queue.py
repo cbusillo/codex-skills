@@ -45,6 +45,10 @@ def test_source_work_is_visible_without_caller_snapshot_but_requires_claim() -> 
     assert classify(row)['state'] == 'review'
     row['discussion']['complete'] = 'unknown'
     assert classify(row)['state'] == 'review'
+    row = item()
+    row['discussion']['author'] = None
+    row['discussion']['comments'] = [{'author': None, 'body': 'Historical comment'}]
+    assert classify(row)['state'] == 'review'
 
 
 def test_claim_and_linked_pr_cannot_be_advertised_as_unclaimed_work() -> None:
@@ -106,6 +110,9 @@ def test_current_waits_and_authorized_status_override_prevent_false_availability
     assert classify(row)['state'] == 'verification'
     row['discussion']['comments'][0]['author'] = 'foreign'
     assert classify(row)['state'] == 'available'
+    row = item()
+    row['discussion']['body'] += '\n## Scope\nOriginal request retained above.\n## Current Status\nState: Active; source landed\nNext action: Verify deployed export.\nWaiting for: None.'
+    assert classify(row)['state'] == 'verification'
     row = item()
     row['discussion']['body'] = row['discussion']['body'].replace('Waiting for: None.', 'Waiting for: Owner must approve the migration.')
     assert classify(row)['state'] == 'waiting'
@@ -187,6 +194,30 @@ def test_bounded_global_coverage_counts_active_discoveries_not_yet_read() -> Non
     assert counts['active_evaluated_count'] == 1
     assert counts['active_unevaluated_count'] == 1
     assert result['discovery_context']['unevaluated_count'] == 1
+
+
+def test_default_global_cli_discovers_source_without_caller_review_and_splits_delivery() -> None:
+    root = cli.global_issue('someone/direction', 1, title='Track: First', milestone=cli.milestone_data(1, 'First', created_at='2026-01-01T00:00:00Z'))
+    source = cli.global_issue('someone/product', 2, body='## Current Status\nState: Active\nNext action: Implement export.\nWaiting for: None.')
+    owned = cli.global_issue('someone/product', 3, body=source['body'])
+    delivered = cli.global_issue('someone/product', 4, body='## Current Status\nState: Active; source merged\nNext action: Verify deployed export.\nWaiting for: None.')
+    for raw in [root, source, owned, delivered]:
+        raw['user'] = {'login': 'someone'}
+    holder = {'worker': 'worker', 'session': 'native-worker', 'branch': 'work/export', 'claimed_at': '2026-10-01T00:00:00Z'}
+    comments = {(owned['repo'], owned['number']): [{'id': 1, 'user': {'login': 'bot'}, 'body': claim.marker(holder)}]}
+    edges = {(root['repo'], root['number']): cli.relationships(sub_issues=[source, owned, delivered])}
+    with cli.global_fixture([root], [source, owned, delivered], edges, comments=comments) as (module, result, _reads):
+        original_read = module.collect_paged_rest_items
+        def read(path: str, **kwargs):
+            if path.endswith('/pulls') or path.endswith('/branches'):
+                return 'bot', []
+            return original_read(path, **kwargs)
+        with patch.multiple(module, annotate_next_queue=module.real_annotate_next_queue, collect_paged_rest_items=read), patch.multiple(module.github_identity, configured_bot_logins=lambda: ('bot',)), patch.multiple(module.pathlib.Path, is_dir=lambda *_: False):
+            module.cmd_next(cli.next_args())
+    assert [row['number'] for row in result['available_candidates']] == [source['number']]
+    assert [row['number'] for row in result['underway']] == [owned['number']]
+    assert [row['number'] for row in result['verification_only']] == [delivered['number']]
+    assert result['queue_context']['claim_required']
 
 
 def test_repository_inventory_bound_can_be_widened_without_losing_held_work() -> None:
