@@ -32,10 +32,15 @@ the IDE. Older plugins and unavailable or session-mismatched memory diagnostics
 preserve the original routing/transport result; an unreachable IDE is not
 proof of memory exhaustion.
 
-A host lifecycle-lock timeout reports `UNKNOWN/lifecycle_lock_busy`, before
-any project or native inspection starts. Wait for the owning lifecycle operation
-to finish and run assessments sequentially; indexing repair does not resolve
-this contention. The helper does not automatically retry or clear the lock.
+Lifecycle callers register in a FIFO host queue before acquiring the existing
+lifecycle lock. Queue time does not consume `--lifecycle-lock-timeout-ms` or a
+native inspection deadline. A caller can be interrupted while queued without
+opening a project; another caller reaps its abandoned ticket only after the
+kernel proves its file lock is released. A queued live caller is never evicted
+by age or PID. The original lock also excludes older installed callers that do
+not register tickets. Only waiting for such a caller after reaching the queue's
+head can still report `UNKNOWN/lifecycle_lock_busy`; wait for that operation or
+increase its acquisition budget. No lock is cleared or bypassed.
 
 `open-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` create a
 local lease, serialize helper-owned IDE
@@ -221,10 +226,22 @@ An offline IDE needs no startup for the existing dead-process/no-route proof;
 ambiguous open evidence and replacement-session target routes still retain
 their leases. SDK retirement keeps its separate live-IDE proof requirement.
 
-Lifecycle inspections are serialized by a bounded local lock. If another helper
-inspection is already opening, inspecting, or cleaning up a project, wait for it
-or increase `--lifecycle-lock-timeout-ms`; do not start parallel auto-open
-inspections and expect independent IDE windows to race safely.
+Lifecycle inspections remain serialized through preparation, opening, native
+inspection, capture and cleanup. Concurrent updated callers queue; cancellation
+and the existing operation deadlines remain available after admission. FIFO
+waiting can outlast a short harness command timeout, so keep the helper process
+alive while it waits or interrupt it explicitly. A hung live caller needs its
+supported cancellation/recovery path; queueing is not evidence of IDE health.
+
+On worktree removal, plugins advertising `helper_project_cache_lifecycle_version`
+also preview and retire directories sealed on the exact helper-owned project's
+verified disposal. Sealing runs in the same EDT close invocation; future opens
+use a fresh private directory while shared file/SDK indexes remain warm.
+Retirement runs off EDT and retains its marker until the last deletion, including
+after partial failure or IDE restart. Unsealed, unrecorded and older-plugin
+caches are preserved; shared indexes are not deleted. Cache requests have an
+explicit finite HTTP budget, and transport failures retain earlier IDE receipts.
+The cache receipt is separate from SDK retirement and Git removal.
 Outcome logging uses a cross-platform, bounded routing lock acquired before
 resolving configured log paths through `current`, followed by a bounded concrete
 JSONL lock. Deployment reconciliation must take that routing lock before the
