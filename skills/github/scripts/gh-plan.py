@@ -43,6 +43,7 @@ import github_milestone as github_milestone_core
 import github_identity
 import github_client
 import github_direction_next
+import github_next_queue
 import github_plan_claim
 import github_plan_wait
 import github_plan_release
@@ -639,6 +640,7 @@ GRAPHQL_PREFLIGHT_MINIMUM = 25
 NEXT_PROJECT_ITEM_LIMIT = 1000
 NEXT_RELATIONSHIP_LIMIT = 100
 NEXT_PLAN_INVENTORY_LIMIT = 1000
+NEXT_DEFAULT_SCAN_LIMIT = 500
 
 
 def classify_project_error(message: str) -> str:
@@ -3353,7 +3355,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             raise PlanError("--batch-read is currently repository-local; global next retains REST")
         cmd_direction_next(args, repo)
         return
-    if any(getattr(args, name, None) is not None for name in ("repo_limit", "repository_issue_limit", "comment_limit", "selection_context")):
+    if any(getattr(args, name, None) is not None for name in ("repo_limit", "repository_issue_limit")):
         raise PlanError("Global discovery options require an OWNER/direction repository")
     config = load_config(repo)
     actor: str | None = None
@@ -3413,6 +3415,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
     issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
     inventory_count = len(issues)
+    inventory_issues = list(issues)
     agent = github_agent.running_agent(getattr(args, "agent", None))
     routed_issues: list[dict[str, Any]] = []
     routing_excluded: list[dict[str, Any]] = []
@@ -3510,6 +3513,9 @@ def cmd_next(args: argparse.Namespace) -> None:
     if dependency_degraded_count:
         notes.append("dependency_reads_degraded")
     dependabot = next_dependabot_work([{"repo": repo}], scan_limit=args.scan_limit, limit=args.limit)
+    selection_context = next_selection_context(args)
+    queue_context = annotate_next_queue(candidates, args)
+    queue_result = project_local_queue(candidates, excluded, selection_context)
     emit({
         "ok": True,
         "actor": actor,
@@ -3538,11 +3544,13 @@ def cmd_next(args: argparse.Namespace) -> None:
         "truncated": inventory_truncated or scan_truncated,
         "inventory_count": inventory_count,
         "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
-        "candidates": candidates[: args.limit],
-        "candidate_count": len(candidates),
+        **queue_result,
+        "candidates": queue_result["candidates"][:args.limit],
+        "available_candidates": queue_result["available_candidates"][:args.limit],
+        "queue_context": queue_context,
+        "selection_coverage": github_next_queue.coverage(inventory_issues, [*issues, *routing_excluded], queue_result, active_label=config["labels"]["active"]),
         "stale_wait_report": {key: value for key, value in wait_context.items() if key != "references"},
         "running_agent": agent,
-        "excluded": excluded,
         "notes": notes,
         **dependabot,
     })
@@ -3554,6 +3562,94 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
         return github_direction_next.validate_selection_context(json.loads(pathlib.Path(path).read_text()) if path else {})
     except (OSError, ValueError) as exc:
         raise PlanError(f"Invalid selection context: {exc}") from exc
+
+
+def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
+    """Read ownership once per repository; project every evaluated current step."""
+    bots = {login.casefold() for login in github_identity.configured_bot_logins()}
+    evidence: dict[str, dict[str, Any]] = {}
+    comment_limit = getattr(args, "comment_limit", None) or 100
+    for item in items:
+        repo = item["repo"]
+        trusted = bots | {repo.split("/")[0].casefold()}
+        if not item.get("discussion"):
+            try:
+                _, raw = get_issue(str(item["number"]), repo)
+                _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{item['number']}/comments",
+                    query={}, bucket="rest_core", step_prefix="next_queue_comments", limit=comment_limit + 1)
+                item["discussion"] = github_direction_next.discussion_snapshot(raw, comments[:comment_limit], complete=len(comments) <= comment_limit)
+            except PlanError as exc:
+                item["queue"] = {"state": "review", "reason": "incomplete_discussion", "detail": next_source_error(exc)}
+                continue
+        if repo not in evidence:
+            observed: dict[str, Any] = {"complete": False, "coverage": {"sessions": "partial; claim rechecks current sessions"}}
+            evidence[repo] = observed
+            try:
+                bound = NEXT_PLAN_INVENTORY_LIMIT
+                _, pulls = collect_paged_rest_items(f"/repos/{repo}/pulls", query={"state": "open"},
+                    bucket="rest_core", step_prefix="next_queue_pulls", limit=bound + 1)
+                _, branches = collect_paged_rest_items(f"/repos/{repo}/branches", query={},
+                    bucket="rest_core", step_prefix="next_queue_branches", limit=bound + 1)
+                observed.update(pulls=pulls[:bound], complete=len(pulls) <= bound and len(branches) <= bound,
+                    inventory={"remote_branches": [branch["name"] for branch in branches[:bound]],
+                               "local_branches": [], "worktrees": [], "sessions": []})
+                observed["coverage"].update(pull_count=min(len(pulls), bound), branch_count=min(len(branches), bound),
+                    truncated=not observed["complete"], local_artifacts="not_read")
+                # Local artifacts are supplementary evidence. Do not claim a
+                # complete peer inventory even when the native registry works.
+                target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
+                if target.is_dir():
+                    try:
+                        local = github_plan_claim.local_inventory(repo, 0, cwd=target)
+                        observed["inventory"] = local
+                        observed["coverage"].update(local_artifacts="read", sessions=local.get("session_coverage", {}))
+                    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                        observed["coverage"]["local_error"] = str(exc)
+            except PlanError as exc:
+                observed["coverage"]["error"] = next_source_error(exc)
+        item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted)
+    return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,
+            "all_active_sessions_searched": False,
+            "repositories": {repo: {"complete": value["complete"], **value["coverage"]} for repo, value in evidence.items()}}
+
+
+def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]], context: dict[str, Any]) -> dict[str, Any]:
+    groups: dict[str, Any] = {"candidates": [], "available_candidates": [], "underway": [], "verification_only": [], "scope_review": [], "excluded": list(excluded)}
+    reviews = {key.casefold(): review for key, review in context.get("issues", {}).items()}
+    for item in candidates:
+        hold = github_direction_next.repository_hold(context, item["repo"])
+        state = (item.get("queue") or {}).get("state", "review")
+        if hold:
+            groups["excluded"].append({**item, "exclusion": "repository_held", "review": hold})
+        elif state in {"underway", "verification", "scope_review"}:
+            groups[{"verification": "verification_only"}.get(state, state)].append(item)
+        elif state == "waiting":
+            groups["excluded"].append({**item, "exclusion": "recorded_wait"})
+        else:
+            review = reviews.get(f"{item['repo']}#{item['number']}".casefold(), {})
+            discussion = item.get("discussion") or {}
+            complete = discussion.get("complete")
+            if isinstance(complete, bool) and complete and review.get("discussion_digest") == discussion.get("digest"):
+                if review.get("state") == "underway":
+                    groups["underway"].append({**item, "availability": "underway", "review": review})
+                    continue
+                if review.get("state") in {"waiting", "ineligible"}:
+                    groups["excluded"].append({**item, "exclusion": "reviewed_wait" if review["state"] == "waiting" else "outside_owner_direction", "review": review})
+                    continue
+            row = {**item, "availability": "available" if state == "available" else "needs_review"}
+            if (isinstance(complete, bool) and complete and review.get("discussion_digest") == discussion.get("digest")
+                    and review.get("state") == "available" and review.get("ownership_complete") is True
+                    and (item.get("queue") or {}).get("observed_ownership_complete") is True
+                    and (item.get("queue") or {}).get("reason") in {"current_scope_needs_review", "current_action_not_recorded"}):
+                row.update(availability="available", review=review)
+            groups["candidates"].append(row)
+            if row["availability"] == "available":
+                groups["available_candidates"].append(row)
+    for field, count in (("candidates", "candidate_count"), ("available_candidates", "available_candidate_count"),
+                         ("underway", "underway_count"), ("verification_only", "verification_only_count"), ("scope_review", "scope_review_count")):
+        groups[count] = len(groups[field])
+    groups["review_required_count"] = len(groups["candidates"]) - len(groups["available_candidates"])
+    return groups
 
 
 def next_source_error(exc: PlanError) -> str:
@@ -3586,7 +3682,7 @@ def discover_direction_work(
     hold. Return merged direction and explicit source coverage for that review.
     """
     repo_limit = getattr(args, "repo_limit", None) or 100
-    issue_limit = getattr(args, "repository_issue_limit", None) or 100
+    issue_limit = getattr(args, "repository_issue_limit", None) or NEXT_DEFAULT_SCAN_LIMIT
     app_configured = github_identity.github_app_config() is not None
     path = "/installation/repositories" if app_configured else "/user/repos"
     coverage: dict[str, Any] = {
@@ -4155,6 +4251,19 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             entry[key] = evidence
     exclude_landed_candidates(ranked["candidates"], ranked["excluded"], wait_context)
     exclude_landed_candidates(discoveries, ranked["excluded"], wait_context)
+    queue_items = list({(entry["repo"].casefold(), entry["number"]): entry
+                        for entry in [*ranked["candidates"], *discoveries]}.values())
+    queue_context = annotate_next_queue(queue_items, args)
+    from skills.direction.scripts import direction_audit
+    try:
+        own_projects = direction_audit.own_project_patterns(direction_text)
+        own_project_context = {"complete": True, "source": f"{repo}:{DIRECTION_FILE}:Order", "patterns": own_projects}
+    except direction_audit.AuditError as exc:
+        own_projects = []
+        own_project_context = {"complete": False, "error": str(exc)}
+    for entry in queue_items:
+        if github_next_queue.own_project(entry["repo"], own_projects, repo.split("/")[0]):
+            entry["direction_category"] = "own_project"
     portfolio = github_direction_next.rank_portfolio_work(
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
@@ -4165,6 +4274,14 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     graph_waits = list(ranked["waiting"])
     track_next_actions = ranked.pop("track_next_actions", {})
     ranked.update(portfolio)
+    ranked["queue_context"] = queue_context
+    ranked["own_project_context"] = own_project_context
+    ranked["selection_coverage"] = github_next_queue.coverage(
+        [*seeds.values(), *inventory], [seeds[key] for key in nodes if key in seeds], portfolio)
+    graph_active = {(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"], *ranked["verification_only"], *ranked["scope_review"]]
+                    if entry.get("via") and config["labels"]["active"] in normalize_labels(entry.get("labels"))}
+    ranked["selection_coverage"].update(active_in_evaluated_graph_count=len(graph_active),
+        active_outside_evaluated_graph_count=ranked["selection_coverage"]["active_inventory_count"] - len(graph_active))
     for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"]]:
         entry.pop("wait_evidence_complete", None)
     ranked["stale_wait_report"] = {key: value for key, value in wait_context.items() if key != "references"}
@@ -5350,12 +5467,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
     p.add_argument("--limit", type=positive_limit, default=5,
                    help="How many ranked results to return (default %(default)s); does not widen evaluation")
-    p.add_argument("--scan-limit", type=positive_limit, default=50,
+    p.add_argument("--scan-limit", type=positive_limit, default=NEXT_DEFAULT_SCAN_LIMIT,
                    help="How many issues to evaluate per scan allowance (default %(default)s); global next has separate graph and discovery allowances, each with an extra allowance for other-agent issues; discovery also reserves a held-repository allowance and evaluates marked incidents separately")
     p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default 100)")
-    p.add_argument("--repository-issue-limit", type=positive_limit, help="Global next: open issues per repository (default 100)")
+    p.add_argument("--repository-issue-limit", type=positive_limit, help=f"Global next: open issues per repository (default {NEXT_DEFAULT_SCAN_LIMIT})")
     p.add_argument("--comment-limit", type=positive_limit, help="Global next: comments per evaluated issue (default 100)")
-    p.add_argument("--selection-context", help="Global next: current owner holds and issue review evidence JSON; never a durable plan")
+    p.add_argument("--selection-context", help="Current owner holds and issue review evidence JSON; never a durable plan")
     p.set_defaults(func=cmd_next)
 
     p = sub.add_parser("close", help="Close a completed or not-planned plan safely")

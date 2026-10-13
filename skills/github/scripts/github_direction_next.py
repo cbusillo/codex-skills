@@ -388,6 +388,7 @@ def discussion_snapshot(issue: dict[str, Any], comments: list[dict[str, Any]], *
         "updated_at": issue.get("updated_at"),
         "comments": [{
             "id": comment.get("id"), "author": (comment.get("user") or {}).get("login"),
+            "created_at": comment.get("created_at"),
             "updated_at": comment.get("updated_at"), "url": comment.get("html_url"),
             "body": comment.get("body") or "",
         } for comment in comments],
@@ -769,6 +770,8 @@ def rank_portfolio_work(
     candidates: list[dict[str, Any]] = []
     excluded = list(graph.get("excluded", []))
     underway: list[dict[str, Any]] = []
+    verification: list[dict[str, Any]] = []
+    scope_review: list[dict[str, Any]] = []
     seen = {f"{entry['repo']}#{entry['number']}".casefold() for entry in excluded if entry.get("exclusion") != "outside_direction_tracks"}
     work = [(entry, False) for entry in graph["candidates"]] + [(entry, True) for entry in discoveries]
     for raw, discovered in work:
@@ -790,12 +793,30 @@ def rank_portfolio_work(
             continue
         discussion = item.get("discussion") or {}
         review = reviews.get(key)
+        queue = item.get("queue") or {}
+        if queue.get("state") == "underway":
+            underway.append({**item, "availability": "underway"})
+            continue
+        if queue.get("state") == "verification":
+            verification.append(item)
+            continue
+        if queue.get("state") == "scope_review":
+            scope_review.append(item)
+            continue
+        if queue.get("state") == "waiting":
+            excluded.append({**item, "exclusion": "recorded_wait"})
+            continue
         if discovered and discussion.get("ancestry_complete") is not True:
             item["review_required"] = "complete_parent_context"
         elif not discussion.get("complete"):
             item["review_required"] = "complete_issue_discussion"
         elif review is None or review.get("discussion_digest") != discussion.get("digest"):
-            item["review_required"] = "direction_discussion_and_current_ownership"
+            category = ("milestone" if item.get("via") or item.get("client_request") else
+                        "live_incident" if is_live_breakage(item) else item.get("direction_category"))
+            if queue.get("state") == "available" and category in {"milestone", "live_incident", "own_project"}:
+                item.update(availability="available", category=category, claim_required=True)
+            else:
+                item["review_required"] = "direction_discussion_and_current_ownership"
         elif review["state"] == "underway":
             underway.append({**item, "availability": "underway", "review": review})
             continue
@@ -848,7 +869,7 @@ def rank_portfolio_work(
     seen_waits: set[tuple[str, int, str]] = set()
     # Reconstruct from each issue's own status, never a parent's text or a
     # reference used as the identity of a child. Parent exclusions stay intact.
-    entries = [*graph.get("candidates", []), *excluded, *discoveries, *underway]
+    entries = [*graph.get("candidates", []), *excluded, *discoveries, *underway, *verification, *scope_review]
     parents = [parent for entry in entries for parent in (entry.get("discussion") or {}).get("parents", [])]
     invalid_waits = {finding["url"]: finding for finding in findings}
     for entry in [*entries, *parents]:
@@ -894,11 +915,13 @@ def rank_portfolio_work(
         "available_candidates": available, "available_candidate_count": len(available),
         "review_required_count": len(candidates) - len(available),
         "underway": underway, "waiting": waiting, "unowned": unowned,
+        "underway_count": len(underway), "verification_only": verification, "verification_only_count": len(verification),
+        "scope_review": scope_review, "scope_review_count": len(scope_review),
         "recorded_waits": recorded_waits, "stale_waits": stale_waits, "excluded": excluded,
         "tooling_capacity_context": capacity,
         "findings": findings,
         "repository_holds": context.get("repository_holds", {}),
-        "ownership_context": {"source": "caller_evidence", "all_active_sessions_searched": False},
+        "ownership_context": {"source": "caller_evidence_and_observed_queue", "all_active_sessions_searched": False, "claim_required": True},
     }
 
 

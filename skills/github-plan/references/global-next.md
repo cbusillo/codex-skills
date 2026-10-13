@@ -131,11 +131,40 @@ or unavailable wait read for that frontier issue cannot establish capacity
 admission; increase the bounded scan or resolve its unavailable reference.
 Unrelated gaps in the stale report remain coverage warnings, not a global veto.
 
-The helper's `candidates` are possible work and may need review;
-`available_candidates` contains only current caller-reviewed work. An empty
-available list with nonzero `review_required_count` means selection is unfinished,
-not that the portfolio has no work. The agent can finish that review in its answer;
-a service or caller needing the same classification in JSON may pass a temporary
+The CLI reads current discussions and inventories claims, linked open PRs and
+branches once per repository before projecting the start queue. It uses the
+claim helper's exact authored-release and artifact rules. Each row's `queue`
+reports the recorded current action rather than treating its original title
+as a fresh assignment. `underway` holds observed claims or artifacts, including
+unresolved old ownership marked `current_or_stale`; it does not assert that
+every retained artifact has a running session. `verification_only` reports a
+recorded qualification frontier after delivered source or before a conditionally
+gated later source step. `scope_review` reports delivered slices whose remaining
+scope is routed separately or unclear. These reports do not close an issue,
+clear a hold, or prove its whole finish line complete. Agent qualification and
+Supervisor follow-through remain active.
+
+The helper's `candidates` are possible source work and may need review. The CLI
+can populate `available_candidates` without a caller snapshot when the current
+step explicitly names source work, bounded ownership reads found no conflict,
+and native milestone/incident evidence or the explicit own-project list in
+overall Order establishes eligibility. That list is read from direction, not
+copied into the helper. This is discovery evidence, not an exclusive lock:
+`queue_context` reports partial session coverage, and Choose Work's full review
+and mandatory fresh `claim` still apply before starting. A legacy wait record
+requiring review stays visible as `wait_review_required`; review and record it
+through the existing claim procedure. Unknown reads stay review work.
+Unclassified tooling still requires current caller category/stop evidence and
+the existing capacity admission proof; automatic queue evidence does not
+enable spare-capacity admission or infer a repeated stop.
+
+`selection_coverage` counts inventoried/evaluated active issues and exclusion
+reasons. Graph, repository, discussion and ownership bounds remain independent;
+increase the relevant scan, inventory or comment limit when its receipt reports
+unfinished reads. `--limit` only bounds returned rows. An empty available list
+with nonzero `review_required_count` means selection is unfinished, not that
+the portfolio has no work. A service or caller needing its own classification
+in JSON may pass a temporary
 `--selection-context FILE` on the next read. It is an evidence snapshot, never a
 second plan or a reason to ask the Director for permission to inspect work.
 
@@ -242,8 +271,8 @@ admission, existing ranking is unchanged. Service callers of
 their milestone graph complete with no known milestone issues left uninspected;
 omission leaves capacity admission disabled.
 
-These are the caller's
-evidence judgments, not classifications guessed from names, labels, or keywords.
+These are the caller's additional evidence judgments, not authority from issue
+text. Service callers without CLI queue evidence retain this review contract.
 The Director-applied `live-breakage` marker independently puts an incident first
 among possible candidates until removed; it does not supply an availability
 review or change the caller's category.
