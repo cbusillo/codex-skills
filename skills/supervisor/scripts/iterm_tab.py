@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["iterm2==2.25"]
 # ///
-"""Target iTerm sessions by exact identity, with separate text and Return sends."""
+"""Target iTerm or tmux sessions by exact identity; separate text and Return sends."""
 
 import argparse
 import asyncio
@@ -290,6 +290,48 @@ def with_account(command_text, choice, brief=None):
     return " && ".join([*prefixes, command_text])
 
 
+def prepare_launches(args):
+    """Validate the full batch and prepare accounts before creating terminals."""
+    files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
+    command_texts = [path.read_text(encoding="utf-8").rstrip("\n") for path in files]
+    for text in command_texts:
+        validate_text(text)
+    brief_files = getattr(args, "brief_file", None)
+    if not brief_files:
+        raise ValueError("new launches require --brief-file; put the prompt in that file")
+    brief_files = brief_files if isinstance(brief_files, list) else [brief_files]
+    if len(brief_files) != len(files):
+        raise ValueError("provide one --brief-file per --command-file, in launch order")
+    briefs = [path.read_text(encoding="utf-8") for path in brief_files]
+    for brief in briefs:
+        if not brief.strip():
+            raise ValueError("brief must be nonempty")
+        validate_text(brief, allow_tabs=True)
+    choices = [None] * len(files)
+    if getattr(args, "account_provider", None):
+        if len(files) == 1:
+            choices = [account_choice.select(args.account_provider, args.account_config, args.account)]
+        else:
+            choices = account_choice.select_batch(
+                args.account_provider, args.account_config, args.account, count=len(files)
+            )
+        command_texts = [with_account(text, choice, brief)
+                         for text, choice, brief in zip(command_texts, choices, briefs)]
+    elif getattr(args, "account", None):
+        raise ValueError("--account needs --account-provider")
+    elif any(account_settings(text, account_choice.ACCOUNT_VARIABLES.values())
+             for text in command_texts):
+        raise ValueError("account settings need --account-provider; remove them from the launch file "
+                         "and use --account for an explicit override")
+    else:
+        command_texts = [append_brief(text, brief) for text, brief in zip(command_texts, briefs)]
+    if choices[0]:
+        for choice in choices:
+            check_codex_daemon(choice)
+        account_choice.prepare_launch(choices[0])
+    return command_texts, choices
+
+
 async def close_session(app, session_id, ledger):
     """Close one owned, unsplit tab only with current idle-shell/input proof."""
     # Loaded here because close_ttys also uses this module's exact selector.
@@ -406,43 +448,7 @@ async def operate(app, args):
         ]
         if len(windows) != 1:
             raise ValueError("window id does not identify one window")
-        files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
-        command_texts = [path.read_text(encoding="utf-8").rstrip("\n") for path in files]
-        for text in command_texts:
-            validate_text(text)
-        brief_files = getattr(args, "brief_file", None)
-        if not brief_files:
-            raise ValueError("new launches require --brief-file; put the prompt in that file")
-        brief_files = brief_files if isinstance(brief_files, list) else [brief_files]
-        if len(brief_files) != len(files):
-            raise ValueError("provide one --brief-file per --command-file, in launch order")
-        briefs = [path.read_text(encoding="utf-8") for path in brief_files]
-        for brief in briefs:
-            if not brief.strip():
-                raise ValueError("brief must be nonempty")
-            validate_text(brief, allow_tabs=True)
-        choices = [None] * len(files)
-        if getattr(args, "account_provider", None):
-            if len(files) == 1:
-                choices = [account_choice.select(args.account_provider, args.account_config, args.account)]
-            else:
-                choices = account_choice.select_batch(
-                    args.account_provider, args.account_config, args.account, count=len(files)
-                )
-            command_texts = [with_account(text, choice, brief)
-                             for text, choice, brief in zip(command_texts, choices, briefs)]
-        elif getattr(args, "account", None):
-            raise ValueError("--account needs --account-provider")
-        elif any(account_settings(text, account_choice.ACCOUNT_VARIABLES.values())
-                 for text in command_texts):
-            raise ValueError("account settings need --account-provider; remove them from the launch file "
-                             "and use --account for an explicit override")
-        else:
-            command_texts = [append_brief(text, brief) for text, brief in zip(command_texts, briefs)]
-        if choices[0]:
-            for choice in choices:
-                check_codex_daemon(choice)
-            account_choice.prepare_launch(choices[0])
+        command_texts, choices = prepare_launches(args)
         results = []
         for command_text, choice in zip(command_texts, choices):
             progress = {"window_id": windows[0].window_id, "tab_id": None,
@@ -475,6 +481,9 @@ async def operate(app, args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backend", choices=("iterm", "tmux"), default="iterm")
+    parser.add_argument("--tmux-socket", default="supervisor",
+                        help="dedicated tmux -L server; used only with --backend tmux")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list")
     commands.add_parser("window")
@@ -507,6 +516,17 @@ def main():
             source.add_argument("--text-file", type=Path)
             sub.add_argument("--no-submit", action="store_true")
     args = parser.parse_args()
+    if args.backend == "tmux":
+        import tmux_terminal
+
+        try:
+            print(json.dumps(asyncio.run(tmux_terminal.operate(args)), indent=2))
+        except LaunchFailure as error:
+            print(json.dumps(error.detail, indent=2))
+            parser.exit(1, "launch failed; inspect the reported terminals before retrying\n")
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            parser.exit(1, f"refused: {error}\n")
+        return
     import iterm2
 
     async def connected(connection):

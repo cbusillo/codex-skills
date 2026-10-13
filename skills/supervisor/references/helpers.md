@@ -44,6 +44,13 @@ Status output includes the latest response and can be private; keep it
 out of public comments. Context counts may be absent and are not a reason to
 hand off. For Claude, the count includes cached input.
 
+For tmux entries, replace `iterm_session_id` with `tmux_session_id` from launch
+output and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
+and the verified harness `pid`. Keep the native `session_id` and transcript
+fields unchanged. The tmux terminal id contains a launch nonce: never replace
+it with a pane number or a title. A mixed ledger may hold both backends; use
+the matching backend when reading or closing each terminal.
+
 Status and candidates expose `verdict_recognition`: `recognized` for a valid
 completed unqualified verdict, `unrecognized` when verdict wording is present
 but does not qualify, and `absent` when it is missing. A final verdict may share
@@ -521,6 +528,89 @@ its configured home; never queue exit commands. The terminal helper suppresses
 broadcast input, uses bracketed paste for multiline messages, and sends text
 and Return separately. Verify input and prompt
 before `--verified-target`, then read back once; do not replay an uncertain send.
+
+### tmux launches
+
+Use the same helper and launch/brief files, adding global `--backend tmux`
+before its command. The default dedicated server is `tmux -L supervisor`;
+`--tmux-socket <name>` selects a separate test server. List, read, send and
+close do not start or replace a missing server. Only `window` creates a
+container. Each launch creates one background tmux window in that container,
+with no GUI connection or focus change.
+
+```sh
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux window
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id '<returned-window-id>' --command-file <launch-file> --brief-file <brief-file> --account-provider openai
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux list
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux read --session-id <returned-session-id>
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux send --session-id <returned-session-id> --text-file <message-file> --verified-target
+```
+
+The account preflight, daemon check, brief quoting, launch receipts and
+partial-batch failure records are shared with iTerm. tmux creates a staged
+process that waits for a unique start message. Its command cannot run before
+the receipt is written. It then executes the selected invocation in zsh,
+without sourcing a personal profile, and retains the pane when it ends. A
+receipt or submit failure preserves that exact terminal for inspection; never
+replay an uncertain launch. Messages use literal targeted input, bracketed
+paste for multiline text, and a separate Return. Recheck and read back as for
+iTerm; `--verified-target` still attests prompt/input inspection.
+
+When adapting a private trial launcher, retain its token checks, command and
+brief generation, account options and launch logging. Select this backend on
+every terminal call for new tmux entries, and obtain a new container id with
+`window`; never reuse an iTerm window id. Keep the legacy iTerm race-recovery
+path only for iTerm launches. Record the returned tmux coordinates in the same
+ledger and route close/read calls by each entry's backend. Never use an
+iTerm-only `list` result to infer that a tmux task is gone.
+
+To view a container, the Supervisor can open iTerm's tmux integration with the
+`view_command` returned by `window`: `tmux -L supervisor -CC attach -t <window-id>`.
+The Director sees each agent window as a native iTerm tab. Disconnecting the
+view leaves the server and sessions running. Do not use `kill-server`,
+`kill-session`, or a raw pane/window kill to disconnect or close workers.
+Existing plain iTerm sessions continue through the helper without `--backend
+tmux`; migrate by launching fresh tasks, never moving or restarting active work.
+
+For shutdown, complete the Supervisor skill's transcript, issue handoff,
+permission and input checks first. Read the exact pane, clear only verified
+input if needed, then read back that the entire agent input is empty. Send
+`/quit` for Codex or `/exit` for Claude with `send --verified-target`. Wait at
+most 60 seconds, reading `read` for `dead: true` and checking that the matched
+agent PID and all processes on its TTY have exited. Preserve a running or
+uncertain pane. Record/release native session claims under the existing
+finished-session procedure before removing the terminal.
+
+```sh
+uv run skills/supervisor/scripts/close_ttys.py --backend tmux --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux close --session-id <tmux-session-id> --ledger <private-ledger.json>
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux list
+```
+
+The preview verifies the native transcript and handoff. Terminal closure
+rechecks the owned launch nonce, container, window, server and TTY, rejects
+splits or linked windows, and proves that both the recorded PID and the pane
+process are absent. It checks twice, then asks tmux to remove only that dead
+pane, conditional on its launch nonce and dead state still matching inside
+the server. A dead pane has no input consumer; a live shell cannot qualify
+from its screen appearance. Read back disappearance once. An uncertain close
+is retained for reconciliation rather than retried.
+
+For the locked-screen acceptance proof, the Supervisor arranges a short test
+with the Director. Prepare one harmless real Codex or Claude launch with an
+exact brief asking for a response and an unqualified safe-exit verdict, and
+private command, message and ledger files. Start the bounded proof from the
+Supervisor's existing session after the Director agrees to lock the screen.
+While it stays locked: create the container and launch, verify native thread,
+transcript/account and terminal identity, read the response, send one harmless
+message at a verified empty prompt, read the reply, and perform the full
+shutdown above. Capture timestamps, launch/read/send/process-exit/close
+readbacks privately. After unlock, demonstrate the tmux view and read one
+existing iTerm session without changing it. Record the Director-observed lock
+interval and outcomes on the owning issue; real-server tests alone do not
+prove locked-screen behavior. The Supervisor runs the controls; the Director
+only locks/unlocks and confirms what they saw. Leave preexisting test servers
+and active sessions alone.
 
 ## Choosing the account
 

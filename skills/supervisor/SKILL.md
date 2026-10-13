@@ -9,7 +9,7 @@ resources:
     description: Render persistent launchd jobs without installing them, and supervise bounded commands.
   - path: scripts/iterm_tab.py
     kind: script
-    description: List, read, launch and reach exact iTerm sessions.
+    description: List, read, launch and reach exact iTerm or tmux sessions.
   - path: scripts/account_choice.py
     kind: script
     description: Follow Context Panel's ranked choices and write count-only launch receipts.
@@ -259,6 +259,16 @@ through compaction" and Keep instructions naming the brief, issue and current
 step; do not hand them off at a context percentage. Codex as
 the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
 records that run.
+
+For new Supervisor launches, use `iterm_tab.py --backend tmux` with the
+dedicated `tmux -L supervisor` server so controls work while the display sleeps
+or the screen is locked. Existing iTerm sessions keep using the default iTerm
+backend during the transition. Read [tmux launch, viewing and locked-screen
+proof](references/helpers.md#tmux-launches) before the first tmux launch or
+closure. To see the sessions as familiar iTerm tabs, attach from iTerm with
+`tmux -L supervisor -CC attach -t <window-id>` using the returned container id.
+Detaching or reattaching leaves agent sessions running; never kill the server
+to disconnect the view.
 
 ## Accounts, Pace, And Launch Effort
 
@@ -548,6 +558,9 @@ and its terminal, transcript and account readbacks before sending input.
    for the supported launch-shell setup, without changing the Director's profile.
    If a retained ended session has no TTY processes, preserve it and report the
    profile setting; do not force-close it or change the Director's setting.
+   For tmux, follow the linked backend procedure: an ended pane is retained
+   for readback and closes only after its owned ledger identity and actual
+   process exit are proved. A live shell or split window stays open.
 
 ## Handoff Shape
 

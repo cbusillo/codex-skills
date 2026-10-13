@@ -107,6 +107,8 @@ def main():
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--verified-handoff", action="store_true")
     parser.add_argument("--verified-input", action="store_true")
+    parser.add_argument("--backend", choices=("iterm", "tmux"), default="iterm")
+    parser.add_argument("--tmux-socket", default="supervisor")
     args = parser.parse_args()
     matches = [
         entry
@@ -115,6 +117,27 @@ def main():
     ]
     if len(matches) != 1:
         parser.error("session id must match one ledger entry")
+    if args.backend == "tmux":
+        import tmux_terminal
+
+        try:
+            entry = matches[0]
+            if not args.verified_handoff or not args.verified_input or not entry.get("handoff_url"):
+                raise ValueError("verify issue handoff and input before closing")
+            status = session_record.session_status(entry)
+            if not status["safe_verdict"]:
+                raise ValueError("latest transcript lacks an unqualified close-out verdict")
+            terminal = tmux_terminal.Terminal(args.tmux_socket)
+            terminal.verify_closed(entry.get("tmux_session_id"), entry)
+            if args.apply:
+                if session_record.session_status(entry) != status:
+                    raise ValueError("session activity changed; terminal kept")
+                terminal.close(entry["tmux_session_id"], args.ledger)
+            print(json.dumps({"session_id": entry["session_id"], "closed": args.apply,
+                              "dry_run": not args.apply, "readback_required": args.apply}))
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            parser.exit(1, f"refused: {error}\n")
+        return
     import iterm2
 
     async def connected(connection):

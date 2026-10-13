@@ -1,0 +1,269 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Exercise the shared launcher against a disposable real tmux server."""
+
+import argparse
+import asyncio
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import uuid
+from unittest.mock import patch
+
+import account_choice
+import iterm_tab
+import tmux_terminal
+
+
+@unittest.skipUnless(shutil.which("tmux") and Path("/bin/zsh").exists(), "requires tmux and zsh")
+class TmuxTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.socket = "supervisor-test-" + uuid.uuid4().hex
+        self.terminal = tmux_terminal.Terminal(self.socket)
+        # This is the only server these tests own; never use the live supervisor server.
+        self.addCleanup(lambda: self.terminal.run("kill-server", check=False))
+        window = self.operate("window")
+        self.window = window["window_id"]
+        self.assertEqual(shlex.split(window["view_command"])[-1], self.window)
+        self.agent = self.root / "claude"
+        self.agent.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+print("READY:" + json.dumps({"brief": sys.argv[-1], "home": os.getenv("CLAUDE_CONFIG_DIR"), "codex_home": os.getenv("CODEX_HOME"), "move": os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"), "cwd": os.getcwd()}), flush=True)
+for line in sys.stdin:
+    if line.strip() in {"/exit", "/quit"}:
+        break
+    print("MESSAGE:" + repr(line), flush=True)
+''')
+        self.agent.chmod(0o700)
+        self.command = self.root / "command"
+        self.command.write_text(f"cd {shlex.quote(str(self.root))} && exec {shlex.quote(str(self.agent))}")
+        self.brief = self.root / "brief"
+        self.brief_text = "task's literal $(touch NEVER) `touch NEVER`\nnext\tline"
+        self.brief.write_text(self.brief_text)
+        self.choice = {"provider": "anthropic", "account_id": "anthropic-ab12",
+                       "env": {"CLAUDE_CONFIG_DIR": str(self.root / "account")},
+                       "storage_root": self.root}
+        self.ledger = self.root / "ledger.json"
+
+    def operate(self, command, **kwargs):
+        return asyncio.run(tmux_terminal.operate(argparse.Namespace(
+            command=command, tmux_socket=self.socket, **kwargs)))
+
+    def launch(self, **kwargs):
+        options = dict(window_id=self.window, command_file=[self.command], brief_file=[self.brief],
+                       account_provider="anthropic", account_config=None, account=None)
+        options.update(kwargs)
+        with patch.object(account_choice, "select", return_value=self.choice):
+            return self.operate("new", **options)
+
+    def wait_screen(self, identity, text):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            result = self.terminal.read(identity)
+            if text in "\n".join(result["screen"]):
+                return result
+            time.sleep(0.05)
+        self.fail(f"did not read {text!r} from exact pane")
+
+    def ended(self, row):
+        asyncio.run(self.terminal.send(row["session_id"], "/quit"))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if self.terminal.select(row["session_id"])["dead"]:
+                return
+            time.sleep(0.05)
+        self.fail("agent did not exit")
+
+    def entry(self, row):
+        return {**row, "tmux_session_id": row["session_id"], "supervisor_owned": True}
+
+    def test_launch_message_read_exit_and_close_with_account_and_literal_brief(self):
+        row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+        # Screen wrapping is unsuitable for literal argv evidence; capture full history joined.
+        history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
+        received = json.loads(next(line.split("READY:", 1)[1] for line in history.splitlines() if "READY:" in line))
+        self.assertEqual(received["brief"], self.brief_text)
+        self.assertEqual(received["home"], self.choice["env"]["CLAUDE_CONFIG_DIR"])
+        self.assertEqual(received["move"], "1")
+        self.assertEqual(Path(received["cwd"]).resolve(), self.root.resolve())
+        self.assertFalse((self.root / "NEVER").exists())
+        self.assertEqual(len(list((self.root / "Launch Receipts").glob("*.json"))), 1)
+        self.operate("send", session_id=row["session_id"], text="hello 'quoted' $literal", text_file=None,
+                     verified_target=True, no_submit=False)
+        self.wait_screen(row["session_id"], "MESSAGE:")
+        self.ended(row)
+        self.ledger.write_text(json.dumps([self.entry(row)]))
+        self.assertTrue(self.terminal.close(row["session_id"], self.ledger)["readback_required"])
+        self.assertFalse(any(r["session_id"] == row["session_id"] for r in self.terminal.list()))
+        self.assertTrue(any(r["window_id"] == self.window for r in self.terminal.list()))
+
+    def test_refuses_unverified_input_and_live_or_foreign_close(self):
+        row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+        with self.assertRaisesRegex(ValueError, "verify"):
+            self.operate("send", session_id=row["session_id"], text="wrong", text_file=None,
+                         verified_target=False, no_submit=False)
+        self.ledger.write_text(json.dumps([self.entry(row)]))
+        with self.assertRaisesRegex(ValueError, "remains"):
+            self.terminal.close(row["session_id"], self.ledger)
+        self.ended(row)
+        entry = self.entry(row)
+        for change in ({"supervisor_owned": False}, {"tty": "different"}, {"window_id": "$999"},
+                       {"tmux_socket": "different"}, {"pid": os.getpid()}):
+            with self.subTest(change=change):
+                self.ledger.write_text(json.dumps([{**entry, **change}]))
+                with self.assertRaises(ValueError):
+                    self.terminal.close(row["session_id"], self.ledger)
+        self.assertTrue(self.terminal.select(row["session_id"])["dead"])
+
+    def test_codex_uses_shared_daemon_preflight_and_selected_home(self):
+        codex = self.root / "codex"
+        self.agent.rename(codex)
+        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote unix://")
+        self.choice = {**self.choice, "provider": "openai", "account_id": "openai-ab12",
+                       "env": {"CODEX_HOME": str(self.root / "codex-account")}}
+        before = self.terminal.list()
+        with patch.object(iterm_tab, "check_codex_daemon", side_effect=ValueError("daemon unavailable")):
+            with self.assertRaisesRegex(ValueError, "daemon"):
+                self.launch(account_provider="openai")
+        self.assertEqual(self.terminal.list(), before)
+        with patch.object(iterm_tab, "check_codex_daemon") as daemon:
+            row = self.launch(account_provider="openai")
+            daemon.assert_called_once_with(self.choice)
+        self.wait_screen(row["session_id"], "READY:")
+        history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
+        received = json.loads(next(line.split("READY:", 1)[1] for line in history.splitlines() if "READY:" in line))
+        self.assertEqual(received["codex_home"], self.choice["env"]["CODEX_HOME"])
+        self.assertEqual(received["brief"], self.brief_text)
+
+    def test_server_guard_preserves_a_pane_revived_during_close(self):
+        row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+        self.ended(row)
+        self.ledger.write_text(json.dumps([self.entry(row)]))
+        original = self.terminal.verify_closed
+        checks = 0
+
+        def revive(identity, entry):
+            nonlocal checks
+            verified = original(identity, entry)
+            checks += 1
+            if checks == 2:
+                self.terminal.run("respawn-pane", "-t", verified["pane_id"], "sleep 30")
+            return verified
+
+        with patch.object(self.terminal, "verify_closed", side_effect=revive):
+            result = self.terminal.close(row["session_id"], self.ledger)
+        self.assertTrue(result["readback_required"])
+        self.assertFalse(self.terminal.select(row["session_id"])["dead"])
+
+    def test_split_linked_window_and_stale_identity_are_preserved(self):
+        row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+        self.ended(row)
+        self.ledger.write_text(json.dumps([self.entry(row)]))
+        pane = self.terminal.select(row["session_id"])["pane_id"]
+        split = self.terminal.run("split-window", "-d", "-t", pane, "-P", "-F", "#{pane_id}").stdout.strip()
+        with self.assertRaisesRegex(ValueError, "split"):
+            self.terminal.close(row["session_id"], self.ledger)
+        self.terminal.run("kill-pane", "-t", split)
+        other = self.operate("window")["window_id"]
+        self.terminal.run("link-window", "-s", row["tab_id"], "-t", other + ":")
+        with self.assertRaises(ValueError):
+            self.terminal.close(row["session_id"], self.ledger)
+        self.terminal.run("unlink-window", "-t", other + ":1")
+        self.terminal.run("set-option", "-p", "-t", pane, "@supervisor_identity", uuid.uuid4().hex)
+        with self.assertRaisesRegex(ValueError, "exact"):
+            asyncio.run(self.terminal.send(row["session_id"], "must not arrive"))
+
+    def test_invalid_batch_refuses_before_panes_receipts_or_account_selection(self):
+        before = self.terminal.list()
+        self.brief.write_text("   ")
+        with patch.object(account_choice, "select") as select:
+            with self.assertRaisesRegex(ValueError, "brief"):
+                self.operate("new", window_id=self.window, command_file=[self.command],
+                             brief_file=[self.brief], account_provider="anthropic",
+                             account_config=None, account=None)
+            select.assert_not_called()
+        self.assertEqual(before, self.terminal.list())
+        self.assertFalse((self.root / "Launch Receipts").exists())
+
+    def test_receipt_failure_retains_exact_staged_pane_without_starting_agent(self):
+        with patch.object(account_choice, "record_launch", side_effect=OSError("storage full")):
+            with self.assertRaises(iterm_tab.LaunchFailure) as caught:
+                self.launch()
+        detail = caught.exception.detail["failed_launch"]
+        self.assertEqual(detail["submission"], "not_attempted")
+        self.assertFalse(detail["receipt_written"])
+        self.assertNotIn("READY:", "\n".join(self.terminal.read(detail["session_id"])["screen"]))
+        self.assertFalse(self.terminal.select(detail["session_id"])["dead"])
+
+    def test_batch_retains_completed_launch_and_failed_identity(self):
+        count = 0
+        original = account_choice.record_launch
+
+        def receipt(choice):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise OSError("storage full")
+            return original(choice)
+
+        with patch.object(account_choice, "select_batch", return_value=[self.choice, self.choice]), \
+                patch.object(account_choice, "record_launch", side_effect=receipt):
+            with self.assertRaises(iterm_tab.LaunchFailure) as caught:
+                self.launch(command_file=[self.command, self.command], brief_file=[self.brief, self.brief])
+        detail = caught.exception.detail
+        self.assertEqual(len(detail["launched"]), 1)
+        self.wait_screen(detail["launched"][0]["session_id"], "READY:")
+        self.assertNotEqual(detail["launched"][0]["session_id"], detail["failed_launch"]["session_id"])
+
+    def test_cli_read_and_transcript_close_preview_without_iterm_connection(self):
+        row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+        scripts = Path(__file__).parent
+        read = subprocess.run([sys.executable, str(scripts / "iterm_tab.py"), "--backend", "tmux",
+                               "--tmux-socket", self.socket, "read", "--session-id", row["session_id"]],
+                              check=True, capture_output=True, text=True, timeout=10)
+        self.assertEqual(json.loads(read.stdout)["session_id"], row["session_id"])
+        self.ended(row)
+        native = str(uuid.uuid4())
+        transcript = self.root / "transcript.jsonl"
+        records = [{"type": "session_meta", "payload": {"id": native}},
+                   {"type": "event_msg", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
+                   {"type": "event_msg", "payload": {"type": "task_complete"}}]
+        transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
+        entry = {**self.entry(row), "session_id": native, "harness": "codex",
+                 "transcript": str(transcript), "handoff_url": "https://github.com/example/repo/issues/1#issuecomment-2"}
+        self.ledger.write_text(json.dumps([entry]))
+        argv = [sys.executable, str(scripts / "close_ttys.py"), "--backend", "tmux", "--tmux-socket", self.socket,
+                "--ledger", str(self.ledger), "--session-id", native, "--verified-handoff", "--verified-input"]
+        preview = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=10)
+        self.assertTrue(json.loads(preview.stdout)["dry_run"])
+        self.assertTrue(self.terminal.select(row["session_id"])["dead"])
+        records[1]["payload"]["message"] = "still working"
+        transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
+        refused = subprocess.run([*argv, "--apply"], capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertTrue(self.terminal.select(row["session_id"])["dead"])
+        records[1]["payload"]["message"] = "Safe to exit: yes"
+        transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
+        applied = subprocess.run([*argv, "--apply"], check=True, capture_output=True, text=True, timeout=10)
+        self.assertTrue(json.loads(applied.stdout)["closed"])
+
+
+if __name__ == "__main__":
+    unittest.main()
