@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -106,7 +107,7 @@ class LandingTests(unittest.TestCase):
 
     def test_preview_and_comment_attention_do_not_mutate(self) -> None:
         self.assertTrue(self.run_landing(apply=False)["ok"])
-        with patch.object(landing.subprocess, "run", return_value=SimpleNamespace(returncode=3)):
+        with patch.object(landing.subprocess, "run", side_effect=subprocess.CalledProcessError(3, "radar")):
             self.assertFalse(self.run_landing()["ok"])
         self.labels.assert_not_called()
         self.body.assert_not_called()
