@@ -735,6 +735,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                          {"status": "accepted", "result": None},
                          {"status": "accepted", "result": []},
                          {"status": "accepted", "result": {}},
+                         {"status": "stale", "summary": {"http_status": 409, "error_code": ["bad"]}},
                          {"status": "invalid", "summary": {"projection_error_code": "invalid_response"}},
                          _refusal("client_timeout", status="unavailable", http_status=504),
                          _refusal("unknown_write", status="unavailable", http_status=502)):
@@ -848,13 +849,15 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
 
     def test_known_denial_releases_its_key_but_gateway_failure_keeps_it(self) -> None:
         denial = subprocess.CompletedProcess([], 1, stdout=json.dumps(_refusal("authorization_denied", status="denied", http_status=403)), stderr="")
+        invalid = subprocess.CompletedProcess([], 1, stdout=json.dumps(_refusal("merge_train_controller_invalid_state", status="invalid_request", http_status=400)), stderr="")
         gateway = subprocess.CompletedProcess([], 1, stdout=json.dumps(_refusal("gateway_failure", status="unavailable", http_status=502)), stderr="")
-        with patch("subprocess.run", side_effect=[denial, gateway]) as run:
+        with patch("subprocess.run", side_effect=[denial, invalid, gateway]) as run:
             io = train_drive.live_io(1, tracked_pr=7)
             self.assertFalse(train_drive._uncertain(io.controller(REPO, "main", "denied-key")))
+            self.assertFalse(train_drive._uncertain(io.controller(REPO, "main", "invalid-key")))
             response = io.controller(REPO, "main", "gateway-key")
         self.assertTrue(train_drive._uncertain(response))
-        self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["denied-key", "gateway-key"])
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["denied-key", "invalid-key", "gateway-key"])
         saved = json.loads(Path(response["recovery"]["request_file"]).read_text())
         self.assertEqual(saved["idempotency_key"], "gateway-key")
 

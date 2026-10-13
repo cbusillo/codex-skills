@@ -78,18 +78,18 @@ def _uncertain(response: object) -> bool:
         return True
     summary = response.get("summary") or {}
     result = response.get("result")
-    if not isinstance(summary, dict):
+    if not isinstance(summary, dict) or summary.get("projection_error_code"):
         return True
     if response.get("status") in {"accepted", "ok"}:
         return not (isinstance(result, dict) and isinstance(result.get("controller_action"), str)
                     and bool(result["controller_action"]))
     code = summary.get("error_code")
     return not (
-        response.get("status") in {"denied", "unauthorized", "stale", "invalid", "unavailable"}
+        response.get("status") in {"denied", "unauthorized", "stale", "invalid_request", "invalid", "unavailable"}
+        and isinstance(code, str) and bool(code)
         and isinstance(summary.get("http_status"), int)
         and (400 <= summary["http_status"] < 500 or code in {
             "github_request_failed", "github_token_not_configured", "database_storage_required"})
-        and bool(code)
         and code not in {"client_timeout", "invalid_response", "provider_unavailable", "unknown_write"}
         and not summary.get("projection_error_code")
     )
