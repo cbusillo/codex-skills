@@ -93,6 +93,7 @@ def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> 
     assert classify(item('Another source owner delivers the prerequisite repair with a PR, then Supervisor verifies runtime.', 'Active; original source landed but the updater fails'))['state'] == 'review'
     assert classify(item('An agent records scheduled-path recovery evidence after source landing.', 'Active; Source landing confirmed'))['state'] == 'verification'
     assert classify(item('Supervisor selects remaining work through canonical #7.', 'Active; original slice already delivered'))['state'] == 'scope_review'
+    assert classify(item('#7 moves shared build config into the site repos.', 'Active; original source is done'))['state'] == 'scope_review'
     # Historical delivery elsewhere in the body is not current-scope delivery.
     row = item('Implement export; then verify it.')
     row['discussion']['body'] += '\n## History\nA prerequisite merged last week.'
@@ -106,8 +107,17 @@ def test_current_waits_and_authorized_status_override_prevent_false_availability
     row['discussion']['comments'].append({'id': 2, 'author': 'foreign', 'body': wait.marker(wait.reviewed(evidence='Clear'))})
     assert classify(row)['state'] == 'waiting'
     row = item()
-    row['discussion']['comments'] = [{'author': 'owner', 'body': '## Current Status\nState: Active; implementation landed\nNext action: Verify the deployed image.\nWaiting for: None.'}]
+    row['discussion']['comments'] = [{'author': 'owner', 'created_at': '2026-10-12T00:00:00Z', 'body': '## Current Status\nState: Active; implementation landed\nNext action: Verify the deployed image.\nWaiting for: None.'}]
     assert classify(row)['state'] == 'verification'
+    row['discussion']['updated_at'] = '2026-10-13T00:00:00Z'
+    assert classify(row)['state'] == 'available'
+    row['discussion']['updated_at'] = '2026-08-21T00:00:00Z'
+    body = row['discussion']['body']
+    row['discussion']['body'] = 'Original request without managed status.'
+    row['discussion']['comments'].insert(0, {'author': 'owner', 'body': body})
+    assert classify(row)['state'] == 'verification'
+    row['discussion']['body'] = body
+    row['discussion']['comments'].pop(0)
     row['discussion']['comments'][0]['author'] = 'foreign'
     assert classify(row)['state'] == 'available'
     row = item()

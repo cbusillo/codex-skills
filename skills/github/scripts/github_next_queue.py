@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from datetime import datetime
 from collections import Counter
 from typing import Any
 
@@ -20,15 +21,25 @@ import github_direction_next
 
 
 def current_status(discussion: dict[str, Any], trusted: set[str]) -> str:
-    texts = [discussion.get("body") or ""]
-    texts.extend(comment.get("body") or "" for comment in discussion.get("comments", [])
-                 if str(comment.get("author") or "").casefold() in trusted)
-    status = ""
-    for text in texts:
-        found = github_direction_next.section_map(text).get("Current Status")
-        if found is not None:
-            status = re.sub(r"<!--.*?-->", "", found, flags=re.S).strip()
-    return status
+    def timestamp(value: Any) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
+            return parsed if parsed is not None and parsed.tzinfo is not None else None
+        except ValueError:
+            return None
+    status = github_direction_next.section_map(discussion.get("body") or "").get("Current Status")
+    has_body_status = status is not None
+    body_time = timestamp(discussion.get("updated_at"))
+    for comment in discussion.get("comments", []):
+        if str(comment.get("author") or "").casefold() not in trusted:
+            continue
+        found = github_direction_next.section_map(comment.get("body") or "").get("Current Status")
+        comment_time = timestamp(comment.get("created_at") or comment.get("updated_at"))
+        # Older status comments are historical once the issue's current body
+        # has newer evidence. Unmanaged records without status use comments.
+        if found is not None and (not has_body_status or (comment_time is not None and body_time is not None and comment_time >= body_time)):
+            status = found
+    return re.sub(r"<!--.*?-->", "", status or "", flags=re.S).strip()
 
 
 def status_field(status: str, field: str) -> str:
@@ -45,6 +56,8 @@ def remaining_work(status: str) -> dict[str, Any]:
     state = status_field(status, "State")
     action = status_field(status, "Next action")
     result = {"next_action": action, "recorded_state": state}
+    if re.match(r"(?:[\w.-]+/[\w.-]+)?#[1-9]\d*\b|https://github[.]com/[\w.-]+/[\w.-]+/issues/[1-9]\d*\b", action):
+        return {**result, "state": "scope_review", "reason": "current_action_belongs_to_linked_record"}
     source_action = re.split(r"\b(?:do not|don't|never)\b", action, maxsplit=1, flags=re.I)[0]
     source_action = re.sub(r"\b(?:signed|matching|companion|release) (?:\w+ ){0,2}build\b", "artifact", source_action, flags=re.I)
     delivered = bool(re.search(r"\b(?:landed|merged|delivered|source landing confirmed|source engineering is complete|completed .*slices)\b", state, re.I))
