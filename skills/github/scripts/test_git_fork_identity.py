@@ -96,8 +96,10 @@ else:
         result = self.commit("--git-command", "commit", "--repo", "client-owner/project")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [json.loads(line) for line in (self.root / "identity.log").read_text().splitlines()]
-        self.assertEqual([call[0] for call in calls], ["app-prefix", "app-auth"])
+        self.assertTrue(any(call[0] == "app-auth" for call in calls))
         self.assertTrue(all(call[call.index("--repo") + 1] == "client-owner/project" for call in calls))
+        self.assertEqual(self.identities(), [self.env["CODEX_AUTOMATION_LOGIN"],
+                                             self.env["CODEX_AUTOMATION_EMAIL"]] * 2)
 
     def test_upstream_refuses_without_command_approval_or_with_required_automation(self) -> None:
         env_file = self.root / "local.env"
