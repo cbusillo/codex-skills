@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit
 
 
 DEFAULT_MAX_FILES = 500
@@ -51,7 +51,7 @@ MOUNTED_PROSE_WORDS = (
 PATH_RE = re.compile(
     # Public URLs may contain the same root names as local paths. Match them
     # first so those components remain useful evidence rather than local paths.
-    r"(?P<url>(?i:https?)://[^\s<>\"'`]+)|"
+    rf"(?P<url>(?i:https?)://(?:(?![|,]/{LOCAL_PATH_ROOTS}/)[^\s<>\"'`])+)|"
     rf"(?P<quoted>[\"'`])/{LOCAL_PATH_ROOTS}/[^\n]*?(?:(?P=quoted)|(?=\n|$))|"
     # Mounted names and descendant components can contain unescaped spaces.
     # Stop at recognizable workflow clauses and shell argument boundaries;
@@ -59,7 +59,7 @@ PATH_RE = re.compile(
     r"(?P<mounted>/Volumes/(?:\\[^\n]|"
     r"(?![ \t]+(?:and|but|then)[ \t]+(?:[\w-]+[ \t]+)?(?:go|goes|is|are|keep|run|use)\b(?!/)|"
     rf"[ \t]+(?:{MOUNTED_PROSE_WORDS}\b(?!/|[ \t]+[^/\s,;:'\"`<>]*/)|&&|\|\||\||[0-9]*>|--?\w|<?(?i:https?)://)|"
-    r"[;:](?=\s|$)|[)\]](?=\s|$|[)\]]|[.!?](?=\s|$))(?![ \t]+[^/\s,;:'\"`<>]*/)|"
+    r"[;:](?=\s|$)(?![ \t]+[^/\s,;:'\"`<>]*/)|[)\]](?=\s|$|[)\]]|[.!?](?=\s|$))(?![ \t]+[^/\s,;:'\"`<>]*/)|"
     r"[.!?](?=\s|$)(?![ \t]+[^/\s,;:'\"`<>]*/))[^\n,'\"`])+)|"
     rf"/{LOCAL_PATH_ROOTS}/(?:\\ |[^\s,'\"`])+"
 )
@@ -597,13 +597,43 @@ def redact_path_match(
         local = True  # Malformed URLs do not establish a public host.
     if local:
         scheme, separator, remainder = url.partition("://")
-        redacted = redact_paths(remainder, embedded_path=True)
+        decoded = decode_url_value(remainder)
+        redacted = redact_paths(decoded, embedded_path=True)
+        if decoded != remainder:
+            redacted = "<path-redacted>" if redacted != decoded else remainder
         return scheme + separator + redacted
     query_or_fragment = re.search(r"[?#]", url)
     if query_or_fragment:
         index = query_or_fragment.start()
-        return url[:index] + redact_paths(url[index:], embedded_path=True)
+        return url[:index] + redact_url_parameters(url[index:])
     return url
+
+
+def decode_url_value(value: str) -> str:
+    # Nested encoding occurs when a URL is embedded in another URL. Each
+    # changing pass consumes escapes; unchanged input ends the loop.
+    while True:
+        decoded = unquote_plus(value)
+        if decoded == value:
+            return value
+        value = decoded
+
+
+def redact_url_parameters(tail: str) -> str:
+    result: list[str] = []
+    for field in re.split(r"([?&#])", tail):
+        key, separator, value = field.partition("=")
+        decoded_key = decode_url_value(key)
+        decoded_value = decode_url_value(value if separator else key)
+        if redact_paths(decoded_key, embedded_path=True) != decoded_key:
+            result.append("<path-redacted>")
+        elif redact_paths(decoded_value, embedded_path=True) != decoded_value:
+            # Mask the whole value: decoded spaces and clause-like names do
+            # not establish safe boundaries inside a URL parameter.
+            result.append(key + separator + "<path-redacted>")
+        else:
+            result.append(field)
+    return "".join(result)
 
 
 def redact_person_data(text: str) -> str:

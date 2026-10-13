@@ -380,6 +380,79 @@ def test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths() -> Non
             raise AssertionError(f"hyphenated prose was mistaken for a shell option: {text}")
 
 
+def test_encoded_and_glued_url_paths_are_private_across_extraction_surfaces() -> None:
+    import re
+    from urllib.parse import quote
+
+    redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=4_000)
+    trusted_args, _module = args(max_record_chars=4_000)
+    public_url = "https://example.com/Volumes/shared/docs"
+    cases: list[tuple[str, str, str]] = []
+    for path in ("/Volumes/example disk/private-report.txt", "/Users/example/private-report.txt",
+                 "/mnt/example/private-report.txt", "/home/example/private-report.txt"):
+        encoded = quote(path, safe="")
+        lower_hex = re.sub(r"%[0-9A-F]{2}", lambda match: match.group(0).lower(), encoded)
+        for value in (path.replace(" ", "%20"), encoded, lower_hex, quote(encoded, safe="")):
+            for separator in ("?path=", "#path=", "#"):
+                cases.append((public_url + separator + value, public_url, "private-report"))
+        for separator in ("|", ","):
+            cases.append((public_url + separator + path.replace(" ", "\\ "), public_url, "private-report"))
+    cases.extend((
+        (public_url + "?keep=some%20evidence&path=%2FVolumes%2FNotes+for+Tax+Year%2Fprivate-report.txt&after=yes",
+         "keep=some%20evidence", "private-report"),
+        (public_url + "?redirect=https%3A%2F%2Fexample.com%2Fview%3Fpath%3D%252FUsers%252Fexample%252Fprivate-report.txt",
+         public_url, "private-report"),
+        ("http://localhost:5173/%2FUsers%2Fexample%2Fprivate-report.txt", "http://", "private-report"),
+        ("https://vscode.dev/tunnel/workstation/%2Fmnt%2Fexample%2Fprivate-report.txt", "https://", "private-report"),
+    ))
+    for fragment, kept, private_tail in cases:
+        text = f"Remember evidence at {fragment} and keep target/debug."
+        data = json.dumps(response_item("user", text)).encode()
+        with patch.object(Path, "read_bytes", return_value=data):
+            redacted = module.extract([Path("/mnt/example/rollout.jsonl")], redact_args)
+            trusted = module.extract([Path("/mnt/example/rollout.jsonl")], trusted_args)
+        candidate = redacted[0]
+        surfaces = (candidate.text, *(event["text"] for event in candidate.context),
+                    json.dumps(list(module.prompt_batches(redacted, redact_args.batch_chars))))
+        for surface in surfaces:
+            if private_tail in surface.lower():
+                raise AssertionError(f"encoded/glued private URL path leaked: {surface}")
+            if kept not in surface:
+                raise AssertionError(f"public URL evidence was lost: {surface}")
+        if trusted[0].text != text:
+            raise AssertionError(f"trusted mode changed URL evidence: {trusted[0].text}")
+
+    for url in (public_url,
+                "https://example.com/docs,a,b|revision?search=hello+world&mode=%2520#public",
+                "https://example.com/docs?redirect=https%3A%2F%2Fexample.com%2FVolumes%2Fshared%2Fdocs",
+                "https://example.com/docs?bad=%ZZ&empty=#section"):
+        # Public URL paths, including URL-valued parameters, stay readable.
+        if module.redact_paths(url) != url:
+            raise AssertionError(f"ordinary public URL changed: {url}")
+    text = public_url + "?path=%2Fmnt%2Fexample%2Fprivate-report.txt&after=yes#heading"
+    result = module.redact_paths(text)
+    if "&after=yes#heading" not in result:
+        raise AssertionError(f"private parameter consumed unrelated URL fields: {result}")
+
+
+def test_ambiguous_mounted_names_have_supported_quoted_and_escaped_forms() -> None:
+    module = load_module()
+    for path in ("/Volumes/Photos and go to town/private-report.txt",
+                 "/Volumes/Backup/Notes for Tax Year/private-report.txt",
+                 "/Volumes/Backup/Documents (old) tax archive/private-report.txt",
+                 "/Volumes/Data/Acme: Payroll/private-report.txt",
+                 "/Volumes/Data/Acme; Payroll/private-report.txt"):
+        for fragment in ('"' + path + '"', '`' + path + '`', path.replace(" ", "\\ ")):
+            text = fragment + " on branch work/example."
+            result = module.redact_paths(text)
+            if "private-report" in result or "on branch work/example." not in result:
+                raise AssertionError(f"supported mounted form leaked or consumed prose: {result}")
+    for punctuation in (":", ";", "."):
+        text = f"/Volumes/Data/Acme{punctuation} Payroll/private-report.txt"
+        if "private-report" in module.redact_paths(text):
+            raise AssertionError(f"recognizable punctuation continuation leaked: {text}")
+
+
 def test_redact_preserves_relative_paths_without_exposing_local_urls() -> None:
     redact_args, module = args(redact=True, trusted_originals=False, max_record_chars=2_000)
     trusted_args, _module = args(max_record_chars=2_000)
@@ -763,6 +836,8 @@ def main() -> int:
     test_redact_source_metadata_is_independent_of_path_root()
     test_redact_mounted_paths_in_text_context_and_prompts()
     test_unquoted_mounted_whitespace_keeps_prose_and_masks_entire_paths()
+    test_encoded_and_glued_url_paths_are_private_across_extraction_surfaces()
+    test_ambiguous_mounted_names_have_supported_quoted_and_escaped_forms()
     test_redact_preserves_relative_paths_without_exposing_local_urls()
     test_redacted_bundle_artifact_references_are_portable()
     test_redact_mode_records_person_data_privacy_summary()
