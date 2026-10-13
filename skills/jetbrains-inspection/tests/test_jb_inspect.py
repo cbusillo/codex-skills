@@ -439,6 +439,24 @@ class ProjectCacheRetirementTests(unittest.TestCase):
                 jb_inspect.command_retire_sdks(args)
         self.assertEqual(raised.exception.payload["completed_project_cache_cleanup"], completed)
 
+    def test_verification_and_filesystem_failures_preserve_successful_cache_applies(self):
+        root = Path("/fixture/worktree")
+        applied = [{"ide": {"session_id": "first"}, "result": {"caches": [{"status": "removed"}]}}]
+        for phase in ("verification", "filesystem"):
+            with self.subTest(phase=phase):
+                verification = jb_inspect.InspectError("verification disconnected", 3,
+                    {"completed_project_cache_preview": []}) if phase == "verification" else []
+                args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+                with (patch.object(jb_inspect, "retirement_worktree", return_value=root),
+                      patch.object(jb_inspect, "git_common_worktree", return_value=root),
+                      patch.object(jb_inspect, "discover_identities", return_value=[]),
+                      patch.object(jb_inspect, "unregister_helper_sdks", return_value=[]),
+                      patch.object(jb_inspect, "retire_helper_project_caches", side_effect=[[], applied, verification]),
+                      patch.object(jb_inspect, "worktree_entries", side_effect=OSError("filesystem unavailable"))):
+                    with self.assertRaises(jb_inspect.InspectError) as raised:
+                        jb_inspect.command_retire_sdks(args)
+                self.assertEqual(raised.exception.payload["completed_project_cache_cleanup"], applied)
+
 
 class SdkRetirementTests(unittest.TestCase):
     @staticmethod

@@ -111,7 +111,8 @@ def ignored_generated_roots(repo: Path, test_roots: list[str]) -> list[str]:
                                  capture_output=True, text=True, check=True).stdout
         if tracked:
             continue
-        ignored = subprocess.run(["git", "-C", str(repo), "check-ignore", "--quiet", name + "/"],
+        probe = name if (repo / name).is_symlink() else name + "/"
+        ignored = subprocess.run(["git", "-C", str(repo), "check-ignore", "--quiet", probe],
                                  capture_output=True, text=True)
         if ignored.returncode not in (0, 1):
             raise RuntimeError("Cannot establish ignored generated indexing roots")

@@ -11505,7 +11505,7 @@ def retire_helper_project_caches(identities: list[dict[str, Any]], root: Path, d
         try:
             body = http_post(identity["port"], "lifecycle/retire-project-caches", params, timeout=120.0).body
         except InspectError as error:
-            error.payload.setdefault("completed_project_cache_cleanup", results)
+            error.payload.setdefault("completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup", results)
             raise
         entries = body.get("caches")
         allowed_statuses = {"would_remove", "absent"} if dry_run else {"removed", "absent"}
@@ -11517,7 +11517,7 @@ def retire_helper_project_caches(identities: list[dict[str, Any]], root: Path, d
                    or not paths_same(entry.get("worktree_path"), root)
                    for entry in entries)):
             raise InspectError("Project-cache retirement was not proved; retain the worktree.", 3,
-                               {"project_cache_retirement": public_payload(body), "completed_project_cache_cleanup": results})
+                               {"project_cache_retirement": public_payload(body), "completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup": results})
         results.append({"ide": public_identity_summary(identity), "result": public_payload(body)})
     return results
 
@@ -11602,10 +11602,11 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     "preserved_unowned_sdk_count": sum(entry["reason"] == "not_helper_owned" for item in (preview if args.dry_run else applied + skipped) for entry in item["result"]["sdks"])}
         except (subprocess.CalledProcessError, OSError) as error:
             raise InspectError("Worktree retirement failed; retain the worktree and inspect the Git/filesystem error.", 3,
-                               {"sdk_preview": preview, "sdk_cleanup": applied, "error": str(error)}) from error
+                               {"sdk_preview": preview, "sdk_cleanup": applied, "project_cache_preview": cache_preview,
+                                "completed_project_cache_cleanup": cache_cleanup, "error": str(error)}) from error
         except InspectError as error:
             error.payload.setdefault("project_cache_preview", cache_preview)
-            error.payload.setdefault("completed_project_cache_cleanup", cache_cleanup)
+            error.payload["completed_project_cache_cleanup"] = cache_cleanup + error.payload.get("completed_project_cache_cleanup", [])
             error.payload.update({"sdk_preview": preview, "completed_sdk_cleanup": applied + error.payload.get("completed_sdk_cleanup", [])})
             raise
 

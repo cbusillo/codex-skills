@@ -54,6 +54,23 @@ class PreparePythonProjectTest(unittest.TestCase):
                 subprocess.run(["git", "-C", str(repo), "add", "--force", candidate + "/sample.py"], check=True)
                 self.assertNotIn(candidate, prepare_python_project.ignored_generated_roots(repo, []))
 
+    def test_ignored_symlink_candidates_do_not_abort_preparation_or_hide_declared_tests(self):
+        for candidate in prepare_python_project.GENERATED_INDEX_ROOTS:
+            if candidate == ".git":
+                continue
+            with self.subTest(candidate=candidate), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                repo = base / "repo"
+                shared = base / "shared"
+                repo.mkdir()
+                (shared / "tests").mkdir(parents=True)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                (repo / ".gitignore").write_text(candidate + "\n")
+                (repo / candidate).symlink_to(shared, target_is_directory=True)
+                self.assertIn(candidate, prepare_python_project.ignored_generated_roots(repo, []))
+                self.assertNotIn(candidate, prepare_python_project.ignored_generated_roots(repo, ["./" + candidate + "/tests"]))
+                self.assertTrue((shared / "tests").is_dir())
+
     @staticmethod
     def write_script(repo, name, dependencies):
         path = repo / name
