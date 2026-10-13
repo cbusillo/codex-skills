@@ -412,8 +412,8 @@ class ProjectCacheRetirementTests(unittest.TestCase):
         root = Path("/fixture/worktree")
         first = {"port": 12345, "session_id": "first", "helper_project_cache_lifecycle_version": 1}
         second = {"port": 12346, "session_id": "second", "helper_project_cache_lifecycle_version": 1}
-        server_elapsed = jb_inspect.DEFAULT_TIMEOUT_SECONDS + 1
-        def post(port, _endpoint, params, timeout=jb_inspect.DEFAULT_TIMEOUT_SECONDS):
+        server_elapsed = 1.0
+        def post(port, _endpoint, params, timeout=0.1):
             if timeout < server_elapsed or port == second["port"]:
                 raise jb_inspect.InspectError("transport deadline", 3, {"error_reason": "inspection_api_timeout"})
             return jb_inspect.HttpResult(200, {"status": "ok", "session_id": params["session_id"],
