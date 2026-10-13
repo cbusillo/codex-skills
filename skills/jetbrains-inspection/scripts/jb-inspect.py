@@ -2662,6 +2662,8 @@ def compact_inspection_lane_result(
             "blocker_stage": payload.get("failure_phase"),
             "next_action": agent_result.get("next_action"),
             "batch_inspection_delegations": agent_result.get("batch_inspection_delegations"),
+            "batch_inspection_delegation_count": agent_result.get("batch_inspection_delegation_count"),
+            "batch_inspection_delegations_omitted_count": agent_result.get("batch_inspection_delegations_omitted_count"),
             "worktree": context.get("worktree_root"),
             "scope": "files",
             "file_count": len(selected),
@@ -7538,6 +7540,11 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
     delegations = batch_inspection_delegations(payload)
     if delegations:
         agent_result["batch_inspection_delegations"] = delegations
+        diagnostic = payload["capture_diagnostic"]
+        for field in ("batch_inspection_delegation_count", "batch_inspection_delegations_omitted_count"):
+            count = diagnostic.get(field)
+            if type(count) is int and count >= 0:
+                agent_result[field] = count
     inspection_proof = compact_inspection_proof(payload)
     if inspection_proof:
         agent_result["inspection_proof"] = inspection_proof

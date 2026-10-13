@@ -11800,6 +11800,10 @@ class HumanOutputTest(unittest.TestCase):
             "route": {"ide": {"inspection_execution_proof_version": jb_inspect.NATIVE_BROAD_SCOPE_PROOF_VERSION}},
         }
 
+        diagnostic = payload["capture_diagnostic"]
+        diagnostic["batch_inspection_delegations_omitted_count"] = 1
+        diagnostic["batch_inspection_delegation_count"] = len(diagnostic["batch_inspection_delegations"]) + diagnostic["batch_inspection_delegations_omitted_count"]
+
         jb_inspect.apply_verdict(payload)
 
         compact = jb_inspect.compact_agent_result_payload(payload, helper_exit_code=1)
@@ -11817,6 +11821,9 @@ class HumanOutputTest(unittest.TestCase):
         multi = jb_inspect.compact_multi_lane_agent_result_payload({"lane_results": [lane]}, helper_exit_code=1)
         self.assertEqual(multi["lanes"][0]["batch_inspection_delegations"], compact["agent_result"]["batch_inspection_delegations"])
         self.assertEqual(multi["lanes"][0]["next_action"], compact["agent_result"]["next_action"])
+        for field in ("batch_inspection_delegation_count", "batch_inspection_delegations_omitted_count"):
+            self.assertEqual(compact["agent_result"][field], diagnostic[field])
+            self.assertEqual(multi["lanes"][0][field], diagnostic[field])
 
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
         payload = {
