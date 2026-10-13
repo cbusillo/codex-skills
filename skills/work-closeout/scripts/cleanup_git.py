@@ -106,7 +106,7 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
     common = git_text(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
     start_registrations = registrations(root)
     selected = start_registrations
-    scoped = roots is not None and (force_scoped or len(start_registrations) > MAX_WORKTREES)
+    scoped = roots is not None and (force_scoped or bool(roots))
     if scoped:
         resolved_roots = [os.path.realpath(path) for path in roots]
         selected = [item for item in start_registrations if any(
@@ -167,7 +167,13 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
             item["coverage"] = "unavailable"
         worktrees.append(item)
     coverage = {}
+    selected_branches = {item.get("branch") for item in selected}
     for name, oid in refs.items():
+        # Enumerate and compare every ref for races, but do not walk unrelated
+        # history for an explicit-root inventory. Omitted refs are not clearance.
+        if scoped and name not in selected_branches:
+            coverage[name] = {"state": "unknown", "method": "excluded_explicit_roots", "remote_ref": None}
+            continue
         covered = next((ref for ref, tip in live_tips.items() if tip == oid), None)
         method = "exact_advertisement" if covered else "unknown"
         if not covered and name.startswith("refs/heads/"):
