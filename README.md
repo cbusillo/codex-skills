@@ -507,6 +507,14 @@ blocker or failure without preventing the session from starting. Startup guidanc
 is flushed first. A local fast-forward and its verification retain the
 reconciler's normal command bound, so the short read budget cannot interrupt them.
 Claude plugin cache copies resolve the catalog through the runtime bindings above.
+Automatic SSH fetches retain the configured command, key and saved session.
+Known OpenSSH clients use batch mode; Plink and TortoisePlink use `-batch`.
+`GIT_SSH_VARIANT` and `ssh.variant` select the options for a renamed client or
+wrapper. Unknown wrappers keep Git's own option detection, with closed stdin
+and the same read deadline. Git output is captured in temporary files so a
+transport child holding an output handle cannot extend Windows timeout cleanup
+by keeping a pipe reader blocked. This is fixture-qualified; native Windows
+Git/PuTTY execution has not been verified.
 The reconciler's provenance check
 still applies: if its source changed upstream, use the copy from a worktree at
 the reported tip. The new copy must be reconciled once after this change lands

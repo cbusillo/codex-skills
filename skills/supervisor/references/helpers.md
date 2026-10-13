@@ -290,8 +290,12 @@ The shared parser normalizes trailing periods and bold markers on both Ready
 and renewed waits, accepts a bold full head SHA, and recognizes current and
 legacy nothing-to-test markers at the start of the test-notes section without
 requiring particular punctuation.
-Conflicting or unknown-mergeability PRs are skipped before selection and
-rechecked before labeling.
+When mergeability is null, the watcher asks GitHub to compute it with up to two
+individual REST re-reads, one second apart, capped at 20 extra reads per pass
+and the watch deadline. These reads bypass conditional and batch snapshots;
+unresolved PRs wait for the next pass. Computed `behind` PRs can enter the
+controller, which refreshes them. Conflicts still skip selection, and every
+selected PR is rechecked before labeling.
 A controller disposition of `dependency update needs agent review` may enter
 qualification: a current-head Ready from a trusted agent supplies
 that review; the dependency author's own comment cannot. Name the reviewing
