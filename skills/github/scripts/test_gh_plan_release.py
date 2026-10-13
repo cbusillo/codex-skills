@@ -195,6 +195,53 @@ class ReleaseTests(ReleaseHarness):
         self.run_release()
         self.successor()
 
+    def test_successor_with_same_worker_keeps_confirmed_release_valid_on_readback(self):
+        self.run_release()
+        self.f.args.worker = fixtures.OTHER["worker"]
+
+        def date_successor():
+            self.f.comments[-1].update(created_at="2026-10-04T00:00:00Z",
+                                       updated_at="2026-10-04T00:00:00Z")
+
+        self.f.after_post = date_successor
+        self.successor()
+        result = self.f.emitted.call_args.args[0]
+        self.assertEqual(result["claim"]["worker"], fixtures.OTHER["worker"])
+        self.assertEqual(result["claim"]["session"], fixtures.OWNER["session"])
+        self.assertEqual(result["claim"]["branch"], fixtures.OWNER["branch"])
+        # Resume the same claim to exercise the next preflight as well.
+        posts = self.f.events.count("post")
+        self.successor()
+        self.assertEqual(self.f.events.count("post"), posts)
+
+    def test_released_sessions_later_claim_invalidates_release_and_blocks_successor(self):
+        for changes in ({}, {"branch": "work/renewed-42"}, {"worker": "renewed-worker"}):
+            with self.subTest(changes=changes):
+                self.setUp()
+                self.run_release()
+                renewed = {**fixtures.OTHER, **changes}
+                self.f.comments.append(self.comment(3,
+                    f"Claimed by {renewed['worker']}\n\n" + CLAIM.marker(renewed),
+                    "2026-10-04T00:00:00Z"))
+                with self.assertRaisesRegex(ValueError, "ownership activity"):
+                    release.check_activity(self.f.comments, self.f.comments[0],
+                                           release.stamp("2026-10-02T00:00:00Z"))
+                posts = self.f.events.count("post")
+                with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
+                    self.successor()
+                self.assertEqual(self.f.events.count("post"), posts)
+                effective = release.effective_comments(self.f.comments)
+                conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
+                self.assertIn(self.f.comments[0]["id"], [c["id"] for c in conflicts])
+
+    def test_unstructured_followup_still_invalidates_structured_release(self):
+        self.run_release()
+        self.f.comments.append(self.comment(3, f"Claimed by {fixtures.OTHER['worker']}",
+                                           "2026-10-04T00:00:00Z"))
+        with self.assertRaisesRegex(ValueError, "ownership activity"):
+            release.check_activity(self.f.comments, self.f.comments[0],
+                                   release.stamp("2026-10-02T00:00:00Z"))
+
     def test_release_closed_issue_without_reopening_or_enabling_new_claim(self):
         self.f.issue["state"] = "closed"
         self.run_release()
