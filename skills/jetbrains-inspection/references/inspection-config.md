@@ -64,6 +64,10 @@ uv run "$HELPER" open-worktree --repo "$PWD/<projectPath>" --ide "IntelliJ IDEA"
 
 Preparation still runs at the worktree root. The assessment flow resolves
 `projectPath` automatically, including directories without project markers.
+
+The Python generator stores its module file under `.idea` and anchors its
+content, test roots and exclusions one directory above that module file, at
+the worktree root. Generated metadata is not the source root.
 `prepare-worktree` and `prepare` are compatibility aliases for `open-worktree`
 and have the same single-project behavior.
 
