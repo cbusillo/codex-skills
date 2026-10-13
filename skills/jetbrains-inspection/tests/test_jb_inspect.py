@@ -20,7 +20,7 @@ import urllib.request
 from argparse import Namespace
 from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import ANY, MagicMock, patch
 
 
@@ -31,7 +31,8 @@ os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "jb-inspect.py"
 ATTRIBUTION_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "attribution" / "cases.json"
 SPEC = importlib.util.spec_from_file_location("jb_inspect", SCRIPT_PATH)
-jb_inspect: Any = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None
+jb_inspect = cast(Any, importlib.util.module_from_spec(SPEC))
 assert SPEC.loader is not None
 sys.modules["jb_inspect"] = jb_inspect
 SPEC.loader.exec_module(jb_inspect)

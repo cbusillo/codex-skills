@@ -16,11 +16,13 @@ import zipfile
 from xml.etree import ElementTree
 from pathlib import Path
 from unittest.mock import patch
+from typing import Any, cast
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "prepare-python-project.py"
 SPEC = importlib.util.spec_from_file_location("prepare_python_project", SCRIPT_PATH)
-prepare_python_project = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None
+prepare_python_project = cast(Any, importlib.util.module_from_spec(SPEC))
 assert SPEC.loader is not None
 SPEC.loader.exec_module(prepare_python_project)
 
@@ -43,8 +45,9 @@ class PreparePythonProjectTest(unittest.TestCase):
             files = prepare_python_project.render_project_files(repo, "fixture", ["dist"], generated_roots=roots)
             module = ElementTree.fromstring(files[repo / ".idea/fixture.iml"])
             content = module.find("./component/content")
-            self.assertTrue(all(any(entry.get("url").endswith('/' + root) for entry in content.findall('excludeFolder'))
-                                for root in roots))
+            assert content is not None
+            exclusions = {entry.get("url", "") for entry in content.findall("excludeFolder")}
+            self.assertTrue(all(any(url.endswith("/" + root) for url in exclusions) for root in roots))
 
     @staticmethod
     def write_script(repo, name, dependencies):

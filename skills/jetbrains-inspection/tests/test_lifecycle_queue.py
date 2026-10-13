@@ -3,7 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -59,8 +58,13 @@ class LifecycleQueueTests(unittest.TestCase):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         self.processes.append(process)
-        self.assertEqual(process.stdout.readline().strip(), 'attempting')
+        self.assertEqual(self.read_event(process), 'attempting')
         return process
+
+    @staticmethod
+    def read_event(process):
+        assert process.stdout is not None
+        return process.stdout.readline().strip()
 
     def wait_tickets(self, count):
         deadline = time.monotonic() + 10
@@ -77,7 +81,7 @@ class LifecycleQueueTests(unittest.TestCase):
 
     def test_twenty_callers_wait_beyond_lock_budget_and_enter_in_registration_order(self):
         owner = self.start(0)
-        self.assertEqual(owner.stdout.readline().strip(), 'entered')
+        self.assertEqual(self.read_event(owner), 'entered')
         self.wait_tickets(1)
         for identity in range(1, 20):
             self.start(identity)
@@ -93,7 +97,7 @@ class LifecycleQueueTests(unittest.TestCase):
 
     def test_twenty_callers_remain_pending_then_all_execute_after_owner_releases(self):
         owner = self.start(0)
-        self.assertEqual(owner.stdout.readline().strip(), 'entered')
+        self.assertEqual(self.read_event(owner), 'entered')
         for identity in range(1, 20):
             self.start(identity)
         time.sleep(0.05)
@@ -101,6 +105,7 @@ class LifecycleQueueTests(unittest.TestCase):
                         'healthy contention must queue, rather than terminate an assessment')
         # Allow each admitted worker to complete, independent of kernel scheduling order.
         for process in self.processes:
+            assert process.stdin is not None
             process.stdin.write('\n')
             process.stdin.flush()
         for process in self.processes:
@@ -111,7 +116,7 @@ class LifecycleQueueTests(unittest.TestCase):
 
     def test_crashed_waiter_is_reaped_without_overtaking_a_live_owner(self):
         owner = self.start('owner')
-        self.assertEqual(owner.stdout.readline().strip(), 'entered')
+        self.assertEqual(self.read_event(owner), 'entered')
         self.wait_tickets(1)
         abandoned = self.start('abandoned')
         self.wait_tickets(2)
