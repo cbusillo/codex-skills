@@ -60,7 +60,9 @@ def remaining_work(status: str) -> dict[str, Any]:
             if match.start() and text[match.start() - 1] in "/-":
                 continue
             before = re.findall(r"\w+", text[:match.start()].casefold())
-            if before and before[-1] in {"the", "a", "an", "candidate", "contract", "source", "record", "bounded", "missing", "prerequisite", "their", "its", "old", "new", "existing", "current", "installed", "version"}:
+            if before and before[-1] in {"the", "a", "an", "candidate", "contract", "source", "record", "bounded", "missing", "prerequisite", "their", "its", "old", "new", "existing", "current", "installed", "version", "genuine", "successful", "failed"}:
+                continue
+            if re.match(r"(?:correct|fix|repair)\s+only\s+(?:a\s+)?reproduced\b", text[match.start():], re.I):
                 continue
             if re.match(r"adds?\s+(?:a\s+|new\s+)*(?:occurrence|receipt|evidence|note)\b", text[match.start():], re.I):
                 continue

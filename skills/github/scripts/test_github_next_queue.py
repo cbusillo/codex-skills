@@ -74,6 +74,8 @@ def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> 
         ('Active; qualification remains the prerequisite', 'Observe qualification evidence. Once qualified, remove the old schedule.'),
         ('Active; completed reader/writer slices recorded', 'Read the next natural TLS cycle and complete diagnostic evidence.'),
         ('Active; source repair landed; device acceptance remains', 'Delivery agent provides the matching signed build, records installed version/build, then owner performs device test notes.'),
+        ('Active; implementation merged; installed qualification remains', 'Release engineering continues genuine Build verification, then qualifies the supported rollout.'),
+        ('Active; native qualification remains', 'A separately selected worker qualifies native child-reaping behavior. Correct only a reproduced defect.'),
     ]:
         result = classify(item(action, state))
         assert result['state'] == 'verification', result
