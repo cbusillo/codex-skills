@@ -108,10 +108,10 @@ class DriveIO:
     merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
     quota_wait: Callable[[], float] = lambda: 0.0
     # Reconciles the installed catalog after a landing; None when the repository is not this catalog.
-    reconcile: Callable[[str, str], dict[str, Any] | None] = field(default=lambda _repository, _sha: None)
-    reconcile_plans: Callable[[str, list[int]], dict[str, Any] | None] = field(default=lambda _repository, _prs: None)
+    reconcile: Callable[[str, str], dict[str, Any] | None] | None = None
+    reconcile_plans: Callable[[str, list[int]], dict[str, Any]] | None = None
     finish_reads: Callable[[], None] = lambda: None
-    recover: Callable[[], dict[str, Any] | None] = field(default=lambda: None)
+    recover: Callable[[], dict[str, Any] | None] | None = None
     now: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
 
@@ -211,7 +211,7 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
     state = DriveState(batch={settings.number})
     emit = _with_runtime_reconciliation(settings, io, emit)
     try:
-        recovered = io.recover()
+        recovered = io.recover() if io.recover is not None else None
         if recovered is not None:
             if _uncertain(recovered):
                 state.recovery = recovered.get("recovery") or {"reason": "controller recovery unavailable"}
@@ -237,11 +237,11 @@ def _with_runtime_reconciliation(
 ) -> Callable[[str, dict[str, Any]], None]:
     def wrapped(event: str, payload: dict[str, Any]) -> None:
         if event == "stop" and payload.get("outcome") == "landed" and payload.get("landing_sha"):
-            receipt = io.reconcile(settings.repository, payload["landing_sha"])
+            receipt = io.reconcile(settings.repository, payload["landing_sha"]) if io.reconcile is not None else None
             if receipt is not None:
                 payload["runtime_reconciliation"] = receipt
             landed = [item["number"] for item in payload.get("prs", []) if item.get("outcome") == "landed"]
-            planning = io.reconcile_plans(settings.repository, landed)
+            planning = io.reconcile_plans(settings.repository, landed) if io.reconcile_plans is not None else None
             if planning is not None:
                 payload["planning_reconciliation"] = planning
         emit(event, payload)

@@ -4927,7 +4927,7 @@ def cmd_close(args: argparse.Namespace) -> None:
 
 def cmd_reconcile_landing(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
-    reader = github_read.GitHubReader(operation="github.plan.reconcile_landing", cache_enabled=False)
+    reader = github_read.GitHubReader(operation="github.plan.reconcile_landing")
     try:
         result = github_plan_landing.reconcile(sys.modules[__name__], reader, repo, args.pr, apply=args.apply)
     except (ValueError, TypeError, subprocess.TimeoutExpired, OSError) as exc:
