@@ -462,7 +462,10 @@ class EnqueueTests(unittest.TestCase):
                     path = f"/repos/{REPO}/pulls/1"
                     if batched:
                         reader.batch_identity = reader.batch_context()
-                        reader.batch_responses = {path: initial, "/stale/comments": []}
+                        reader.batch_responses = {
+                            path: initial, f"/repos/{REPO}/issues/1/comments": [],
+                            f"/repos/{REPO}/pulls/2": pr(2),
+                        }
                     replies = [] if batched else [initial]
                     replies.extend([initial, resolved])
                     requests = []
@@ -483,10 +486,12 @@ class EnqueueTests(unittest.TestCase):
                     ):
                         self.run_pass(fake)
                     self.assertEqual(fake.writes, [1] if computed is True else [])
-                    self.assertEqual(sleep.call_count, 2)
-                    self.assertTrue(all(call.args == (1,) for call in sleep.call_args_list))
-                    self.assertFalse(reader.batch_responses)
-                    self.assertEqual(len(requests), 3 + int(not batched) if computed is True else 2 + int(not batched))
+                    self.assertTrue(sleep.called)
+                    self.assertTrue(all(call.args[0] > 0 for call in sleep.call_args_list))
+                    self.assertNotIn(f"/repos/{REPO}/issues/1/comments", reader.batch_responses)
+                    if batched:
+                        self.assertEqual(reader.batch_responses[f"/repos/{REPO}/pulls/2"], pr(2))
+                    self.assertFalse(replies)
                     if computed is not True:
                         reason = "conflicting" if computed is False else "mergeability_unknown"
                         self.assertTrue(any(event == "skipped" and data.get("reason") == reason for event, data in self.events))

@@ -289,21 +289,22 @@ class Live:
         for _ in range(2):
             if value.get("mergeable") is not None:
                 break
-            # A batch snapshot does not trigger GitHub's lazy computation.
-            # Discard its discussion/checks too: the REST read may find a new head.
-            self.reader.batch_responses.clear()
             if self.mergeability_reads_remaining <= 0 or time.time() + 1 >= self.deadline:
                 break
             time.sleep(1)
             self.mergeability_reads_remaining -= 1
+            # Discard this PR's batch evidence: REST may find a new head or hold.
+            # Preserve other PRs' snapshots and the batch request savings.
+            repo_path, number = path.rsplit("/pulls/", 1)
+            for endpoint in (
+                f"{repo_path}/issues/{number}/comments", f"{path}/reviews",
+                f"{repo_path}/commits/{value['head']['sha']}/check-runs",
+                f"{repo_path}/commits/{value['head']['sha']}/statuses",
+            ):
+                self.reader.batch_responses.pop(endpoint, None)
             # An ETag/304 may preserve the null response. Ask GitHub directly,
             # retaining the shared transport's identity, quota and deadline guards.
-            cached = self.reader.cache_enabled
-            self.reader.cache_enabled = False
-            try:
-                value = self.reader.request("GET", path, step="mergeability_read").body
-            finally:
-                self.reader.cache_enabled = cached
+            value = self.reader.request("GET", path, step="mergeability_read", fresh=True).body
         return value
 
     def pages(self, path, **params):
