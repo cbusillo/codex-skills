@@ -44,6 +44,17 @@ with a longer explicit budget. Other connection failures, HTTP refusals,
 configuration failures and invalid projections keep their distinct diagnostics.
 The helper does not retry automatically.
 
+Interrupted HTTP bodies and disconnected responses produce bounded JSON just
+like other transport failures; exception text and partial provider bodies are
+never emitted. A failed apply preflight stops before POST. Once an apply POST
+has begun, a lost response is `outcome_unknown` and requires read-back before
+any retry, retaining the original request and idempotency key. A verified
+apply whose accepted response was projected but whose read-back was interrupted
+is `accepted_unverified`, with the accepted result retained. Explicit reads and
+unavailable applies exit nonzero; optional context still exits `0` with an
+unavailable envelope. Client-review reads also fail with bounded JSON and a
+nonzero exit.
+
 ## Merge-train enrollment read
 
 `merge-train-policy-read --repo OWNER/REPO` calls the complete active-policy

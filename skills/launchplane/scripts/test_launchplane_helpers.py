@@ -9182,5 +9182,147 @@ def test_event_recovery_product_whitespace_is_normalized_before_review() -> None
     assert status == 0
     assert posts[0]["body"]["product"] == receipt["request"]["product"] == "example-product"
 
+def _interrupted_http(kind: str) -> Exception:
+    if kind == "incomplete":
+        return http.client.IncompleteRead(b"private-provider-body", 100)
+    return http.client.RemoteDisconnected("private-provider-message")
+
+
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
+@pytest.mark.parametrize("argv", [
+    ["testing-hold-read", "--product", "example-product", "--context", "example", "--instance", "testing"],
+    ["product-profile-read", "--product", "example-product"],
+    ["repository-inventory-read", "--repository-id", "123"],
+    ["production-backup-authority-read", "--product", "example-product", "--context", "example", "--instance", "prod", "--promotion-action", "example.promote"],
+    ["private-health-endpoint-read", "--product", "example-product", "--context", "example", "--instance", "testing"],
+    ["product-promotion-status-read", "--product", "example-product"],
+    ["target-replacement-plan-read", "--product", "example-product", "--instance", "testing"],
+])
+def test_interrupted_http_admin_reads_emit_bounded_json(argv: list[str], kind: str) -> None:
+    code, payload, calls = _run_read_transport(argv, response=_interrupted_http(kind))
+    assert code == 1 and payload["status"] == "unavailable"
+    assert len(calls) == 1
+    assert "private-provider" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
+@pytest.mark.parametrize("phase", ["preflight", "post", "readback"])
+def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phase: str) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
+        path = _write_json(directory, "owner-review.json", evidence)
+        argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:],
+                *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
+        fault = _interrupted_http(kind)
+        reads = iter([fault] if phase == "preflight" else [_profile_response(), fault])
+        applied = _owner_response(_owner_plan(mode="apply", applied=True))
+        code, payload, posts, gets = _run_main(
+            argv, post=fault if phase == "post" else applied, read=lambda _kwargs: next(reads),
+        )
+    assert code == 1
+    assert payload["status"] == {
+        "preflight": "unavailable", "post": "outcome_unknown", "readback": "accepted_unverified",
+    }[phase]
+    assert len(posts) == (0 if phase == "preflight" else 1)
+    assert len(gets) == (2 if phase == "readback" else 1)
+    if phase != "preflight":
+        assert "read" in payload["summary"]["recommendation"].lower()
+        assert posts[0]["idempotency_key"] == "apply-1"
+    assert "private-provider" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial"])
+@pytest.mark.parametrize("mode", ["dry-run", "apply"])
+def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence = _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan()))
+        path = _write_json(directory, "hold-review.json", evidence)
+        argv = [f"testing-hold-{mode}", "--product", "example-product", "--context", "example",
+                "--instance", "testing", "--hold", "--reason", str(_testing_hold_plan()["reason"])]
+        if mode == "apply":
+            argv += _reviewed_apply_argv(evidence["result"]["plan_sha256"], path)
+        fault = _interrupted_http(kind)
+        if kind in {"gateway", "denial"}:
+            error_body = Mock()
+            error_body.read.side_effect = _interrupted_http("incomplete")
+            fault = urllib.error.HTTPError("https://example.invalid", 502 if kind == "gateway" else 403,
+                                           "private-message", Message(), error_body)
+        code, payload, posts, _ = _run_main(argv, post=fault)
+    assert code == 1 and len(posts) == 1
+    expected = "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
+    assert payload["status"] == expected
+    if expected == "outcome_unknown":
+        assert "read" in payload["summary"]["recommendation"].lower()
+    assert "private-provider" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
+@pytest.mark.parametrize("helper", ["context", "client"])
+@pytest.mark.parametrize("http_error", [False, True])
+def test_interrupted_http_context_and_client_entrypoints(kind: str, helper: str, http_error: bool) -> None:
+    fault = _interrupted_http(kind)
+    body = Mock()
+    body.read.side_effect = fault
+    error = urllib.error.HTTPError("https://example.invalid", 502, "private-message", Message(), body)
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=None)
+    response.read.side_effect = fault
+    module = context_helper if helper == "context" else owner_review
+    transport = module if helper == "context" else owner_review.operator
+    output = io.StringIO()
+    with (
+        patch.object(module, "resolve_settings", return_value=SETTINGS),
+        patch.object(transport, "safe_urlopen", side_effect=error if http_error else None,
+                     return_value=response),
+        redirect_stdout(output),
+    ):
+        code = module.main(["--repo", "example/repo", "--pr", "42"])
+    payload = json.loads(output.getvalue())
+    assert code == (0 if helper == "context" else 1)
+    if helper == "context":
+        assert payload["status"] == "unavailable"
+    else:
+        assert payload["ok"] is False
+    assert "private-" not in output.getvalue()
+    if http_error:
+        body.read.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
+@pytest.mark.parametrize("status", [403, 502])
+def test_interrupted_http_error_body_keeps_admin_refusal_bounded(kind: str, status: int) -> None:
+    body = Mock()
+    body.read.side_effect = _interrupted_http(kind)
+    error = urllib.error.HTTPError("https://example.invalid", status, "private-message", Message(), body)
+    code, payload, _ = _run_read_transport(["product-profile-read", "--product", "example-product"], response=error)
+    assert code == 1 and payload["status"] == ("denied" if status == 403 else "unavailable")
+    assert "private-" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
+@pytest.mark.parametrize("phase", ["preflight", "post"])
+def test_interrupted_http_policy_import_preserves_failure_phase(kind: str, phase: str) -> None:
+    fault = _interrupted_http(kind)
+    output = io.StringIO()
+    with (
+        patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
+        patch.object(write_action, "request_launchplane_read", side_effect=fault if phase == "preflight" else None,
+                     return_value=_merge_train_policy_targets_payload()),
+        patch.object(write_action, "request_launchplane", side_effect=fault) as post,
+        redirect_stdout(output),
+    ):
+        code = write_action.execute_merge_train_policy_import(
+            args=argparse.Namespace(timeout=3, idempotency_key="policy-import-example"),
+            operation="merge-train-policy-import-apply", request={"mode": "apply"},
+            body=_merge_train_policy_import_payload(mode="apply", reason="Approved policy import."),
+            expected_current_policy_digest="a" * 64, expected_candidate_policy_digest="c" * 64,
+        )
+    payload = json.loads(output.getvalue())
+    assert code == 1 and payload["status"] == ("unavailable" if phase == "preflight" else "outcome_unknown")
+    assert post.call_count == (0 if phase == "preflight" else 1)
+    assert "private-provider" not in output.getvalue()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

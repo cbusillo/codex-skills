@@ -4493,7 +4493,7 @@ def emit_provider_unavailable(
 
 
 def emit_read_transport_error(
-    *, operation: str, request: dict[str, object], timeout: float, exc: OSError
+    *, operation: str, request: dict[str, object], timeout: float, exc: OSError | http.client.HTTPException
 ) -> None:
     if not (
         isinstance(exc, TimeoutError)
@@ -4909,7 +4909,7 @@ def execute_lane_config_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
@@ -5306,7 +5306,7 @@ def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
@@ -5411,7 +5411,7 @@ def execute_product_read(
             operation=operation, request=request, exc=exc, provider_payload=provider_payload
         )
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
@@ -6622,6 +6622,7 @@ def execute_post(
     )
     if settings is None:
         return 2
+    mutating = operation.endswith("-apply") or request.get("mode") == "apply" or request.get("mutate") is True
     try:
         provider_payload = request_launchplane(
             service_url=settings["service_url"],
@@ -6728,18 +6729,15 @@ def execute_post(
             emit(payload)
         return 0
     except urllib.error.HTTPError as exc:
+        if mutating and (exc.code >= 500 or exc.code == 408):
+            emit(_apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state"))
+            return 1
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
-        if (
-            isinstance(exc, http.client.HTTPException)
-            and not isinstance(exc, OSError)
-            and operation != "privileged-policy-propose"
-        ):
-            raise
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="outcome_unknown", code="proposal_transport_uncertain", message="The proposal response was interrupted; this does not prove a service outage or an unsaved plan.")
             payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
@@ -6762,6 +6760,9 @@ def execute_post(
                 ),
             }
             emit(payload)
+            return 1
+        if mutating:
+            emit(_apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state"))
             return 1
         emit_provider_unavailable(operation=operation, request=request)
         return 1
@@ -6885,7 +6886,7 @@ def execute_merge_train_policy_import(
             return 1
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
         if operation == "merge-train-policy-import-apply" and post_attempted:
             payload = base_payload(
                 status="outcome_unknown", operation=operation, request=request
@@ -6952,7 +6953,7 @@ def execute_repository_inventory_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
@@ -7976,7 +7977,7 @@ def attach_read_back(
     """Read the record back after an accepted apply; a failed read is never a success."""
     try:
         observed = read()
-    except (OSError, TimeoutError, ValueError, LaunchplaneSafetyError):
+    except (OSError, TimeoutError, http.client.HTTPException, ValueError, LaunchplaneSafetyError):
         payload["warnings"].append(
             warning(
                 "read_back_unavailable",
@@ -8094,7 +8095,7 @@ def execute_verified_apply(
             return 1
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError):
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
         if post_attempted:
             emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
             return 1
@@ -8477,7 +8478,7 @@ def execute_production_backup_authority_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
@@ -8801,7 +8802,7 @@ def execute_private_health_endpoint_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
@@ -9012,7 +9013,7 @@ def execute_product_promotion_status_read(
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(operation=operation, request=request, exc=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
