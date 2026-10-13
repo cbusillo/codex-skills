@@ -138,6 +138,14 @@ def _cli(train: FakeTrain) -> tuple[int, dict[str, Any]]:
     return code, json.loads(output.getvalue().splitlines()[-1])["payload"]
 
 
+def _write_action_helper() -> Any:
+    spec = importlib.util.spec_from_file_location("drive_write_action", SCRIPT_DIR / "launchplane-write-action.py")
+    assert spec is not None and spec.loader is not None
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
 class TrainDriveTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
@@ -710,18 +718,28 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(events[-1][1]["prs"][1]["outcome"], "open")
 
     def test_live_stack_observation_is_a_dry_run_and_respects_deadline(self) -> None:
-        with patch("time.time", return_value=1000), patch("subprocess.run", return_value=subprocess.CompletedProcess(
-            [], 0, stdout='{"status":"accepted","result":{}}', stderr=""
-        )) as run:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        helper = _write_action_helper()
+        requests: list[dict[str, Any]] = []
+        def execute_post(**kwargs: Any) -> int:
+            requests.append({"body": kwargs["body"], "key": kwargs["args"].idempotency_key})
+            helper.emit(_response("land_batch"))
+            return 0
+        def run_helper(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+            output = StringIO()
+            with patch.object(helper, "execute_post", side_effect=execute_post), redirect_stdout(output):
+                code = helper.main(command[3:])
+            return subprocess.CompletedProcess(command, code, stdout=output.getvalue(), stderr="")
+        with patch("time.time", return_value=1000), patch("subprocess.run", side_effect=run_helper) as run:
             io = train_drive.live_io(180, deadline_at=1010)
             io.observe_controller(REPO, "main")
-            command = run.call_args.args[0]
-            self.assertIn("merge-train-controller-run-once", command)
-            self.assertNotIn("--mutate", command)
-            self.assertNotIn("--idempotency-key", command)
+            self.assertEqual(requests[-1]["body"]["mutate"], False)
+            self.assertEqual(requests[-1]["key"], "")
             self.assertLessEqual(run.call_args.kwargs["timeout"], 10)
             io.controller(REPO, "main", "mutation-key")
-            self.assertIn("--mutate", run.call_args.args[0])
+            self.assertEqual(requests[-1]["body"]["mutate"], True)
+            self.assertEqual(requests[-1]["key"], "mutation-key")
         with patch("time.time", return_value=1010), patch("subprocess.run") as run:
             io.observe_controller(REPO, "main")
             run.assert_not_called()
@@ -752,10 +770,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(events[-1][1]["prs"], [{"number": 7, "outcome": "closed", "merge_commit_sha": ""}])
 
     def test_cli_reports_carried_children_from_the_projected_controller_response(self) -> None:
-        spec = importlib.util.spec_from_file_location("disposition_write_action", SCRIPT_DIR / "launchplane-write-action.py")
-        assert spec is not None and spec.loader is not None
-        helper = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(helper)
+        helper = _write_action_helper()
         raw = {
             "status": "accepted", "records": {}, "trace_id": "disposition-trace",
             "result": {
