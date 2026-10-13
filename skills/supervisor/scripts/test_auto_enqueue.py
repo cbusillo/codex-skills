@@ -7,7 +7,7 @@
 
 import argparse
 import copy
-import io
+import io as stdlib_io
 import json
 import subprocess
 import tempfile
@@ -238,7 +238,7 @@ class EnqueueTests(unittest.TestCase):
         )
         recorded = json.loads(fixture_path.read_text())
         node = copy.deepcopy(next(iter(recorded["data"]["repository"].values())))
-        source = pr(1)
+        source = pr()
         node.update(
             number=1,
             headRefOid=SHA,
@@ -288,7 +288,7 @@ class EnqueueTests(unittest.TestCase):
                 self.final_rest_recheck = True
                 return super().get(path)
 
-        fake = BatchedFake(count=1)
+        fake = BatchedFake()
         self.args.batch_read = True
         self.run_pass(fake)
         self.assertEqual(fake.writes, [1])
@@ -393,7 +393,7 @@ class EnqueueTests(unittest.TestCase):
         fake = Fake(count=1)
         fake.pulls[1]["user"]["login"] = "renovate[bot]"
         fake.ineligible[1] = [watch.DEPENDENCY_REVIEW]
-        comments = [comment(login="engineer")]
+        comments = [comment()]
         # The agent deletes its handoff between scan and write. The dependency
         # author's replacement comment cannot supply that missing agent review.
         def delete_agent_handoff(io):
@@ -1045,7 +1045,7 @@ class QualificationTests(unittest.TestCase):
                 self.comments = [comment(login=author)]
                 self.assertFalse(self.qualified())
                 self.assertFalse(self.io.qualified(TARGET, self.pull, {author}, True))
-                self.comments = [comment(login="engineer")]
+                self.comments = [comment()]
                 self.assertFalse(self.qualified())
                 self.assertTrue(self.io.qualified(TARGET, self.pull, {"engineer"}, True))
                 self.pull["head"]["sha"] = "b" * 40
@@ -1102,6 +1102,29 @@ class QualificationTests(unittest.TestCase):
             }
         )
         self.assertTrue(self.qualified())
+
+    def test_neutral_engineering_advisory_does_not_invent_acceptance_wait(self):
+        self.pull["body"] = "## Client test notes\nNothing for the Client to test: documentation only."
+        review = {"name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"}
+        self.checks["checkRuns"].append(review)
+        acceptance = Mock(return_value=False)
+        self.io.acceptance = acceptance
+        self.assertTrue(self.qualified())
+        acceptance.assert_not_called()
+        for change in (
+            {"labels": [{"name": "owner-review"}]},
+            {"body": "## Client test notes\nTry the preview."},
+        ):
+            with self.subTest(change=change):
+                original = copy.deepcopy(self.pull)
+                self.pull.update(change)
+                self.assertFalse(self.qualified())
+                self.pull = original
+        for status, conclusion in (("in_progress", None), ("completed", "failure"), ("completed", "success")):
+            with self.subTest(status=status, conclusion=conclusion):
+                review.update(status=status, conclusion=conclusion)
+                self.assertFalse(self.qualified())
+
 
     def test_acceptance_uses_service_decision_and_exact_head(self):
         self.io.args = argparse.Namespace(
@@ -1420,7 +1443,7 @@ class WatchLoopTests(unittest.TestCase):
             with self.subTest(status=status):
                 error = urllib.error.HTTPError(
                     "https://example.invalid", status, "denied", Message(),
-                    io.BytesIO(json.dumps({"error": {"code": "authorization_denied"}}).encode()),
+                    stdlib_io.BytesIO(json.dumps({"error": {"code": "authorization_denied"}}).encode()),
                 )
                 self.addCleanup(error.close)
                 payload = watch.operator.summarize_http_error(
