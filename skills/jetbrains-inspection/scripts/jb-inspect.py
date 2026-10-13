@@ -4638,7 +4638,7 @@ def defer_active_preparation_cleanup(
             "preparation_failure_stage": stage,
             "preparation_failure_reason": infer_error_reason(error, error.payload),
             "preparation_last_status": public_payload(last_status),
-            "cleanup_next_action": "Rerun inspect-closeout after indexing/scanning settles; use cleanup-helper-leases if the warm project becomes stale.",
+            "cleanup_next_action": f"Rerun inspect-closeout after indexing/scanning settles; use cleanup-helper-leases --lease-id {lease.get('lease_id')} --no-dry-run if the warm project becomes stale.",
         }
     )
     mark_lease_state(lease, "kept_warm_after_indexing_timeout")
@@ -4682,7 +4682,7 @@ def defer_failed_preparation_cleanup(
     updates: dict[str, Any] = {
         "preparation_failure_stage": stage,
         "preparation_failure_reason": failure_reason,
-        "cleanup_next_action": "Run cleanup-helper-leases after the exact IDE route is available or the helper process exits.",
+        "cleanup_next_action": f"Run cleanup-helper-leases --lease-id {lease.get('lease_id')} --no-dry-run after the exact IDE route is available or the helper process exits.",
     }
     sdk_worker_active = (
         isinstance(cleanup_result, dict)
@@ -4691,7 +4691,7 @@ def defer_failed_preparation_cleanup(
     if sdk_worker_active:
         updates["cleanup_next_action"] = (
             "The IDE is still finishing or cancelling Python SDK preparation. Keep this lease; "
-            "run cleanup-helper-leases for its exact lease ID after the worker exits. "
+            f"run cleanup-helper-leases --lease-id {lease.get('lease_id')} --no-dry-run after the worker exits. "
             "Do not repeat SDK preparation or force-close the project."
         )
     if route is not None:
@@ -6301,7 +6301,7 @@ def defer_lifecycle_cleanup(lease: dict[str, Any], result: dict[str, Any]) -> di
         "lease_id": lease.get("lease_id"),
         "project_key": lease.get("project_key"),
         "project_instance_id": lease.get("project_instance_id"),
-        "next_action": "Rerun inspect-closeout after indexing/scanning settles; use cleanup-helper-leases if the warm project becomes stale.",
+        "next_action": f"Rerun inspect-closeout after indexing/scanning settles; use cleanup-helper-leases --lease-id {lease.get('lease_id')} --no-dry-run if the warm project becomes stale.",
         "verdict_reason": result.get("verdict_reason"),
     }
 
@@ -9646,6 +9646,13 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
     status = payload.get("status")
     if status:
         print(safe_text("STATUS: {status}", {"status": status}))
+    if "stale" in payload and "removed" in payload:
+        mode = "PREVIEW" if payload.get("dry_run") else "APPLIED"
+        print(f"LEASE_CLEANUP: {mode} stale={len(payload['stale'])} "
+              f"would_remove={len(payload.get('would_remove') or [])} removed={len(payload['removed'])} "
+              f"unresolved={len(payload.get('unresolved') or [])} failed={len(payload.get('failed') or [])}")
+        if payload.get("dry_run"):
+            print("No leases changed. Apply with cleanup-helper-leases --no-dry-run; retain any unresolved leases.")
     print_outcome_summary(payload)
     verdict = payload.get("verdict")
     if verdict:
@@ -11217,9 +11224,29 @@ def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
     if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True).strip():
         raise InspectError("Preserve uncommitted work before removing this worktree.", 3)
-    if any(paths_same(lease.get("worktree_root"), root) for _, lease in read_local_leases()):
-        raise InspectError("Reconcile this worktree's IDE leases before removal.", 3)
+    reconcile_retirement_leases(root, dry_run)
     return root
+
+
+def reconcile_retirement_leases(root: Path, dry_run: bool) -> None:
+    leases = [(path, lease) for path, lease in read_local_leases()
+              if paths_same(lease.get("worktree_root"), root)]
+    if not leases:
+        return
+    result = cleanup_stale_helper_leases(argparse.Namespace(
+        max_age_ms=24 * 60 * 60 * 1000, dry_run=dry_run, worktree_root=root,
+    ))
+    released = set(result.get("would_remove" if dry_run else "removed") or [])
+    blockers = [(path, lease) for path, lease in leases if str(path) not in released]
+    if blockers:
+        ids = [str(lease.get("lease_id") or path.stem) for path, lease in blockers]
+        commands = [f"uv run {shlex.quote(str(Path(__file__).resolve()))} cleanup-helper-leases "
+                    f"--lease-id {shlex.quote(lease_id)} --no-dry-run" for lease_id in ids]
+        raise InspectError(
+            f"IDE leases block retirement: {', '.join(ids)}. After resolving ownership/activity, run: "
+            + "; ".join(commands), 3,
+            {"blocking_lease_ids": ids, "cleanup_commands": commands, "lease_cleanup": result},
+        )
 
 
 FINDER_METADATA_NAME = ".DS_Store"
@@ -11456,6 +11483,19 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
     failed: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     local_leases = read_local_leases()
+    if getattr(args, "worktree_root", None) is not None:
+        local_leases = [(path, lease) for path, lease in local_leases
+                        if paths_same(lease.get("worktree_root"), args.worktree_root)]
+        ids = [lease.get("lease_id") for _, lease in local_leases]
+        try:
+            valid = len(set(ids)) == len(ids) and all(
+                str(uuid.UUID(lease["lease_id"])) == path.stem for path, lease in local_leases
+            )
+        except (ValueError, TypeError, KeyError, AttributeError):
+            valid = False
+        if not valid:
+            return {"status": "incomplete", "dry_run": args.dry_run, "stale": [], "removed": [],
+                    "closed": [], "unresolved": [], "failed": [{"reason": "lease_identity_mismatch"}]}
     selectors = getattr(args, "lease_id", None)
     selected_id = None
     if selectors is not None:
@@ -11481,13 +11521,15 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
                 "failed": [{"status": "failed", "reason": reason, "lease_id": selected_id}],
             }
     if not local_leases:
-        return {"status": "ok", "removed": [], "stale": [], "closed": [], "failed": [], "unresolved": []}
+        return {"status": "ok", "dry_run": args.dry_run, "would_remove": [],
+                "removed": [], "stale": [], "closed": [], "failed": [], "unresolved": []}
     cutoff = now_ms() - int(args.max_age_ms)
     stale_leases: list[tuple[Path, dict[str, Any]]] = []
     for path, lease in local_leases:
         updated = int(lease.get("updated_at_ms") or lease.get("created_at_ms") or 0)
         pid = lease.get("pid")
-        is_stale = updated < cutoff or (pid and not pid_alive(int(pid)))
+        # Age is useful for legacy records without a PID; it never overrides a live helper.
+        is_stale = not pid_alive(int(pid)) if pid else updated < cutoff
         if not is_stale:
             continue
         stale.append(str(path))
@@ -11498,7 +11540,7 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
             "stale": [], "removed": [], "closed": [], "failed": [],
             "unresolved": [{"status": "skipped", "reason": "lease_not_stale", "lease_id": selected_id}],
         }
-    if args.dry_run or not stale_leases:
+    if not stale_leases:
         return {
             "status": "ok",
             "dry_run": args.dry_run,
@@ -11513,10 +11555,10 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
     if any(lease_may_own_open_project(lease) for _, lease in stale_leases):
         try:
             routes, observed_sessions = discover_routes_for_cleanup(args)
-        except InspectError as error:
+        except (InspectError, OSError) as error:
             return {
                 "status": "incomplete",
-                "dry_run": False,
+                "dry_run": args.dry_run,
                 "stale": stale,
                 "removed": [],
                 "closed": [],
@@ -11530,10 +11572,12 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
                 "unresolved": [],
             }
     for path, lease in stale_leases:
-        cleanup_result = cleanup_stale_helper_lease(lease, routes, observed_sessions)
+        cleanup_result = (cleanup_stale_helper_lease(lease, routes, observed_sessions, dry_run=True)
+                          if args.dry_run else cleanup_stale_helper_lease(lease, routes, observed_sessions))
         if cleanup_result.get("status") == "closed":
             closed.append(cleanup_result)
-            path.unlink(missing_ok=True)
+            if not args.dry_run:
+                path.unlink(missing_ok=True)
             removed.append(str(path))
         elif cleanup_result.get("status") == "failed":
             failed.append(cleanup_result)
@@ -11546,13 +11590,15 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
             "ownership_not_proven",
             "original_ide_process_dead_no_route",
         }:
-            path.unlink(missing_ok=True)
+            if not args.dry_run:
+                path.unlink(missing_ok=True)
             removed.append(str(path))
     return {
         "status": "incomplete" if failed or unresolved else "ok",
         "dry_run": args.dry_run,
         "stale": stale,
-        "removed": removed,
+        "removed": [] if args.dry_run else removed,
+        "would_remove": removed if args.dry_run else [],
         "closed": closed,
         "failed": failed,
         "unresolved": unresolved,
@@ -11591,10 +11637,13 @@ def cleanup_stale_helper_lease(
     lease: dict[str, Any],
     routes: list[dict[str, Any]],
     observed_sessions: set[str] | None = None,
+    *, dry_run: bool = False,
 ) -> dict[str, Any]:
     if lease_proves_open_not_attempted(lease):
         return {"status": "not_needed", "reason": "open_not_attempted", "lease_id": lease.get("lease_id")}
     if not lease_may_own_open_project(lease):
+        if lease.get("opened_by_helper") is not False:
+            return {"status": "skipped", "reason": "ownership_evidence_missing", "lease_id": lease.get("lease_id")}
         return {"status": "not_needed", "reason": "project_preexisted", "lease_id": lease.get("lease_id")}
     sessions = observed_sessions if observed_sessions is not None else {
         str(route.get("session_id")) for route in routes if route.get("session_id")
@@ -11616,6 +11665,10 @@ def cleanup_stale_helper_lease(
             "lease_id": lease.get("lease_id"),
             "next_action": "Retry cleanup after the original IDE session and exact route are discoverable.",
         }
+    if dry_run:
+        return {"status": "skipped", "reason": "ownership_preview_requires_apply",
+                "lease_id": lease.get("lease_id"),
+                "next_action": f"Run cleanup-helper-leases --lease-id {lease.get('lease_id')} --no-dry-run to prove ownership and settled activity."}
     try:
         ownership_proven, close_proof, claim_metadata, claimed_route = reclaim_lifecycle_claim(lease, route)
     except InspectError as error:
@@ -11645,7 +11698,7 @@ def can_release_dead_original_ide_lease(
     routes: list[dict[str, Any]],
     observed_sessions: set[str] | None,
 ) -> bool:
-    if observed_sessions is None or lease.get("state") not in {"cleanup_pending", "prepared"}:
+    if observed_sessions is None or lease.get("state") not in {"cleanup_pending", "prepared", "kept_warm_after_indexing_timeout", "cleanup_failed", "cleanup_skipped"}:
         return False
     if lease.get("opened_by_helper") is not True or lease.get("open_request_may_have_been_accepted") is True:
         return False
@@ -11788,8 +11841,10 @@ def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except OSError:
+    except ProcessLookupError:
         return False
+    except OSError:
+        return True
 
 
 def pid_definitively_dead(pid: int) -> bool:
