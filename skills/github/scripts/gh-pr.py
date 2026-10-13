@@ -544,7 +544,7 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     validate_ready_pr(current, repo=repo, number=number)
     if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
         raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
-    if not args.waiting_for_client and requires_client_acceptance(current, checks["checkRuns"]):
+    if not args.waiting_for_client and requires_client_acceptance(current, checks["checkRuns"], repository=repo):
         if not any(
             check.get("name") == "launchplane/owner-review"
             and check.get("status") == "completed"

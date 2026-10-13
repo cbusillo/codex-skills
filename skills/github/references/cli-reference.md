@@ -495,8 +495,12 @@ handoff requiring Client acceptance (review label, request check or real Client
 test notes) requires a successful current-head
 `launchplane/owner-review` check. The watcher independently verifies the saved
 Client decision before enqueueing. A completed neutral `launchplane/owner-review` advisory
-does not request acceptance on its own; review labels and real Client test
-notes still require it. Read-back and uncertain-comment recovery
+does not request acceptance on its own. Real Client test notes use Launchplane's
+repository mapping and scoped product profile: `director_standing` supplies
+standing acceptance. Unknown, unavailable or mismatched profile evidence keeps
+the Client acceptance path. An explicit review label or non-neutral review check
+still requires current-head acceptance. This read grants no release authority.
+Read-back and uncertain-comment recovery
 use the [shared retry policy](#shared-retry-policy); do not replay an unknown write.
 
 To withdraw an earlier Ready after a renewed hold, defect or change request

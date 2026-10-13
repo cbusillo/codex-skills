@@ -461,7 +461,7 @@ class Live:
                     or any(item["state"] != "success" for item in statuses)
                 ):
                     return False
-        if requires_client_acceptance(pr, checks["checkRuns"]) and not self.acceptance(repo, pr):
+        if requires_client_acceptance(pr, checks["checkRuns"], repository=repo) and not self.acceptance(repo, pr):
             return False
         return True
 

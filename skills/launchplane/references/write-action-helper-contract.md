@@ -221,6 +221,11 @@ local extensions until the vendored artifact is refreshed.
   An omitted field reads as `held`; any other value or type fails the whole
   read with `invalid_response`. A malformed or secret-looking value fails the
   whole read.
+- The shared ready-handoff acceptance reader uses the bounded local-extension
+  `repo-product-mapping-read` route internally to resolve a repository's product
+  before `product-profile-read`. The dedicated mapping read is GET-only; it is
+  not an exposed write-action CLI command. An absent or ambiguous mapping,
+  mismatched profile or unavailable read never supplies standing acceptance.
 - An odd value in an optional field (for example a status Launchplane added
   later) is dropped to `""` and listed by path in `dropped_field_paths`, with
   `dropped_field_count`; an event without a usable id or type is left out and
