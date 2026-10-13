@@ -378,6 +378,7 @@ class ProjectCacheRetirementTests(unittest.TestCase):
                 identity = {"port": 12345, "session_id": "current", "helper_project_cache_lifecycle_version": 1}
                 cache_retired = []
                 def post(_port, endpoint, params, timeout):
+                    self.assertGreater(timeout, 0)
                     self.assertEqual(endpoint, "lifecycle/retire-project-caches")
                     self.assertTrue(root.exists())
                     dry_run = params["dry_run"] == "true"
@@ -394,9 +395,9 @@ class ProjectCacheRetirementTests(unittest.TestCase):
                         "worktree_path": str(root), "caches": entries,
                     }, "http://fixture")
                 args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-                with (patch.object(jb_inspect, "discover_identities", return_value=[identity]),
-                      patch.object(jb_inspect, "unregister_helper_sdks", return_value=[]),
-                      patch.object(jb_inspect, "http_post", side_effect=post)):
+                with (patch("jb_inspect.discover_identities", return_value=[identity]),
+                      patch("jb_inspect.unregister_helper_sdks", return_value=[]),
+                      patch("jb_inspect.http_post", side_effect=post)):
                     if drift:
                         with self.assertRaises(jb_inspect.InspectError):
                             jb_inspect.command_retire_sdks(args)
@@ -419,7 +420,7 @@ class ProjectCacheRetirementTests(unittest.TestCase):
             return jb_inspect.HttpResult(200, {"status": "ok", "session_id": params["session_id"],
                 "project_cache_lifecycle_version": 1, "dry_run": False, "worktree_path": str(root),
                 "caches": [{"status": "removed", "reason": "helper_owned_closed_project", "worktree_path": str(root)}]}, "http://fixture")
-        with patch.object(jb_inspect, "http_post", side_effect=post):
+        with patch("jb_inspect.http_post", side_effect=post):
             completed = jb_inspect.retire_helper_project_caches([first], root, False)
             self.assertEqual(completed[0]["result"]["caches"][0]["status"], "removed")
             with self.assertRaises(jb_inspect.InspectError) as raised:
@@ -431,11 +432,11 @@ class ProjectCacheRetirementTests(unittest.TestCase):
         completed = [{"ide": {"session_id": "first"}, "result": {"caches": [{"status": "removed"}]}}]
         failure = jb_inspect.InspectError("later IDE disconnected", 3, {"completed_project_cache_cleanup": completed})
         args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-        with (patch.object(jb_inspect, "retirement_worktree", return_value=root),
-              patch.object(jb_inspect, "git_common_worktree", return_value=root),
-              patch.object(jb_inspect, "discover_identities", return_value=[]),
-              patch.object(jb_inspect, "unregister_helper_sdks", return_value=[]),
-              patch.object(jb_inspect, "retire_helper_project_caches", side_effect=[[], failure])):
+        with (patch("jb_inspect.retirement_worktree", return_value=root),
+              patch("jb_inspect.git_common_worktree", return_value=root),
+              patch("jb_inspect.discover_identities", return_value=[]),
+              patch("jb_inspect.unregister_helper_sdks", return_value=[]),
+              patch("jb_inspect.retire_helper_project_caches", side_effect=[[], failure])):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.command_retire_sdks(args)
         self.assertEqual(raised.exception.payload["completed_project_cache_cleanup"], completed)
@@ -448,12 +449,12 @@ class ProjectCacheRetirementTests(unittest.TestCase):
                 verification = jb_inspect.InspectError("verification disconnected", 3,
                     {"completed_project_cache_preview": []}) if phase == "verification" else []
                 args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-                with (patch.object(jb_inspect, "retirement_worktree", return_value=root),
-                      patch.object(jb_inspect, "git_common_worktree", return_value=root),
-                      patch.object(jb_inspect, "discover_identities", return_value=[]),
-                      patch.object(jb_inspect, "unregister_helper_sdks", return_value=[]),
-                      patch.object(jb_inspect, "retire_helper_project_caches", side_effect=[[], applied, verification]),
-                      patch.object(jb_inspect, "worktree_entries", side_effect=OSError("filesystem unavailable"))):
+                with (patch("jb_inspect.retirement_worktree", return_value=root),
+                      patch("jb_inspect.git_common_worktree", return_value=root),
+                      patch("jb_inspect.discover_identities", return_value=[]),
+                      patch("jb_inspect.unregister_helper_sdks", return_value=[]),
+                      patch("jb_inspect.retire_helper_project_caches", side_effect=[[], applied, verification]),
+                      patch("jb_inspect.worktree_entries", side_effect=OSError("filesystem unavailable"))):
                     with self.assertRaises(jb_inspect.InspectError) as raised:
                         jb_inspect.command_retire_sdks(args)
                 self.assertEqual(raised.exception.payload["completed_project_cache_cleanup"], applied)
@@ -466,7 +467,7 @@ class ProjectCacheRetirementTests(unittest.TestCase):
             "project_cache_lifecycle_version": 1, "dry_run": False, "worktree_path": str(root),
             "caches": [{"status": "removed", "reason": "helper_owned_closed_project", "worktree_path": str(root)}]}, "http://fixture")
         for failure in (http.client.RemoteDisconnected("IDE exited"), http.client.BadStatusLine("invalid response")):
-            with self.subTest(failure=type(failure).__name__), patch.object(jb_inspect, "http_post", side_effect=[success, failure]):
+            with self.subTest(failure=type(failure).__name__), patch("jb_inspect.http_post", side_effect=[success, failure]):
                 with self.assertRaises(jb_inspect.InspectError) as raised:
                     jb_inspect.retire_helper_project_caches(identities, root, False)
                 receipts = raised.exception.payload["completed_project_cache_cleanup"]
@@ -8639,7 +8640,7 @@ class AgentInspectContractTest(unittest.TestCase):
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect"]),
             patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
-            patch.object(jb_inspect.lifecycle_lock, "_try_lock", side_effect=lambda handle:
+            patch("jb_inspect.lifecycle_lock._try_lock", side_effect=lambda handle:
                          False if Path(handle.name) == jb_inspect.lifecycle_lock_path() else try_lock(handle)),
             patch.object(jb_inspect, "command_run", side_effect=locked_operation),
             patch.object(jb_inspect, "log_assessment_records"),
