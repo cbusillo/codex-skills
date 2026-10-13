@@ -1193,6 +1193,14 @@ retrying until planning stalls.
   and are summarized in top-level dependency context. `--limit` bounds the
   ranked candidate list while preserving evaluated exclusion evidence.
 
+An optional selection read refused because the configured App is not installed
+on a linked repository (`identity_refused`) is incomplete coverage, not a
+command failure. The unread dependency stays `unknown_dependencies`, and an
+unread wait reference stays unknown in `stale_wait_report`; independent
+candidates remain visible. The reader keeps its selected identity and never
+uses another account to fill the gap. Required claim evidence still fails
+closed; partial selection does not authorize a claim.
+
 `blocking_work_elsewhere` separately names open native cross-repository blocker
 pairs, including waiting or unmilestoned issues and non-plan blockers. These
 entries provide visibility; review recorded waits and ownership before starting
@@ -1203,7 +1211,7 @@ inventory cannot be read, it reports only `complete: false` and `error`.
 The report scans repository-wide even with `--milestone`, subject to its
 reported truncation. Each open issue with a nonzero or unknown blocking count
 consumes an inbound scan slot, including issues blocking only same-repository
-work. Permission-denied, not-found, and unclassified response errors degrade
+work. Permission-denied, not-found, App-installation refusals, and unclassified response errors degrade
 inbound coverage; other classified API failures, including quota,
 authentication, provider/network, and timeout failures, stop the command under
 the existing plan relationship policy.

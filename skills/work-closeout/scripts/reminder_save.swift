@@ -16,6 +16,34 @@ struct Request: Decodable {
     let repeat_days: Int?
     let update_id: String?
     let delete_id: String?
+    let preserve_existing: Bool?
+}
+
+// Compare preserved fields after both EventKit saving and the native URL edit.
+struct PreservedFields: Equatable {
+    let list: String
+    let title: String
+    let due: DateComponents?
+    let start: DateComponents?
+    let timezone: TimeZone?
+    let priority: Int
+    let completed: Bool
+    let completionDate: Date?
+    let alarms: [EKAlarm]
+    let recurrence: [EKRecurrenceRule]
+
+    init(_ reminder: EKReminder) {
+        list = reminder.calendar.calendarIdentifier
+        title = reminder.title
+        due = reminder.dueDateComponents
+        start = reminder.startDateComponents
+        timezone = reminder.timeZone
+        priority = reminder.priority
+        completed = reminder.isCompleted
+        completionDate = reminder.completionDate
+        alarms = (reminder.alarms ?? []).map { $0.copy() as! EKAlarm }
+        recurrence = (reminder.recurrenceRules ?? []).map { $0.copy() as! EKRecurrenceRule }
+    }
 }
 
 var itemID: String?
@@ -132,6 +160,10 @@ func saveAttachment(_ request: Request, app: NSRunningApplication) -> Bool {
 guard #available(macOS 14.0, *) else { finish("manual_required", "Native saving requires macOS 14+") }
 do {
     let request = try JSONDecoder().decode(Request.self, from: FileHandle.standardInput.readDataToEndOfFile())
+    let preserveExisting = request.preserve_existing == true
+    guard !preserveExisting || (request.update_id != nil && request.delete_id == nil) else {
+        finish("refused", "Preservation requires an explicit update ID; no mutation")
+    }
     guard EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else {
         finish("manual_required", "Existing Reminders access is required; no permission was requested")
     }
@@ -184,6 +216,10 @@ do {
     guard !reminders.contains(where: {
         !$0.isCompleted && $0.calendarItemIdentifier != reminder.calendarItemIdentifier && $0.title == request.title
     }) else { finish("refused", "Title is not unique in the target list; no UI edit") }
+    guard !preserveExisting || reminder.title == request.title else {
+        finish("refused", "Repair title must match the existing reminder; no mutation")
+    }
+    let preserved = preserveExisting ? PreservedFields(reminder) : nil
     guard AXIsProcessTrusted() else {
         finish("manual_required", "Existing Accessibility access is required to save the visible URL; no mutation")
     }
@@ -209,21 +245,23 @@ do {
         finish("refused", "Invalid due date or recurrence")
     }
     created = matches.isEmpty
-    reminder.calendar = list
-    reminder.title = request.title
     reminder.notes = request.notes
     reminder.url = url // Lookup identity only; this does not prove a visible attachment.
-    reminder.timeZone = timezone
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = timezone
-    var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: due)
-    components.calendar = calendar
-    components.timeZone = timezone
-    reminder.dueDateComponents = components
-    reminder.alarms = [EKAlarm(absoluteDate: due)]
-    reminder.recurrenceRules = request.repeat_days.map {
-        [EKRecurrenceRule(recurrenceWith: .daily, interval: $0, end: nil)]
-    } ?? []
+    if !preserveExisting {
+        reminder.calendar = list
+        reminder.title = request.title
+        reminder.timeZone = timezone
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone
+        var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: due)
+        components.calendar = calendar
+        components.timeZone = timezone
+        reminder.dueDateComponents = components
+        reminder.alarms = [EKAlarm(absoluteDate: due)]
+        reminder.recurrenceRules = request.repeat_days.map {
+            [EKRecurrenceRule(recurrenceWith: .daily, interval: $0, end: nil)]
+        } ?? []
+    }
     try store.save(reminder, commit: true)
     itemID = reminder.calendarItemIdentifier
     guard saveAttachment(request, app: app) else {
@@ -234,12 +272,19 @@ do {
           back.calendar.calendarIdentifier == list.calendarIdentifier,
           back.title == request.title, back.notes == request.notes,
           back.url?.absoluteString == request.url,
-          back.dueDateComponents?.date == due,
+          !back.isCompleted else { finish("partial", "Saved-field readback failed; do not recreate") }
+    if let preserved {
+        guard PreservedFields(back) == preserved else {
+            finish("partial", "Repair preservation readback failed; inspect this same ID before retrying")
+        }
+    } else {
+        guard back.dueDateComponents?.date == due,
           back.timeZone?.identifier == timezone.identifier,
           back.alarms?.count == 1, back.alarms?.first?.absoluteDate == due,
           (back.recurrenceRules?.first?.interval) == request.repeat_days,
           !back.isCompleted else { finish("partial", "Saved-field readback failed; do not recreate") }
-    finish("saved", "Native visible URL attachment and saved fields verified", extra: ["visible_url_verified": true])
+    }
+    finish("saved", "Native visible URL attachment and saved fields verified", extra: ["visible_url_verified": true, "preserved_existing": preserveExisting])
 } catch {
     finish(itemID == nil ? "refused" : "partial", error.localizedDescription)
 }

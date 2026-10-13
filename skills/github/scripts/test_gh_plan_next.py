@@ -3221,6 +3221,95 @@ def test_incident_descendants_preserve_staffed_capacity_admission() -> None:
 TESTS.append(test_incident_descendants_preserve_staffed_capacity_admission)
 
 
+def test_identity_refused_wait_keeps_independent_candidates() -> None:
+    root = track("someone/direction", 1, "First")
+    ready = global_issue("someone/business", 2)
+    pending = global_issue("someone/business", 10, labels=["plan:waiting"],
+                           body="## Current Status\nWaiting for: SDK recovery under outside/tools#475")
+    with global_fixture([root], [ready], {(root["repo"], 1): relationships(sub_issues=[ready])},
+                        discovered=[pending]) as (module, result, _reads):
+        base_api = module.api_json
+        refused = module.github_api_core._identity_failure(
+            module.github_identity.GitHubAppError("Client App is not installed on outside/tools"),
+            operation="github.plan.next", is_write=False, actor="client-agent[bot]",
+            expected_actor="client-agent[bot]", host=None, bucket="rest_core")
+        calls = []
+
+        def api(method: str, path: str, **kwargs: Any) -> Any:
+            calls.append((method, path))
+            if path.startswith("/repos/outside/tools/"):
+                raise module.PlanError(refused.failure.message, failure=refused.failure,
+                                       api_result=refused.as_dict())
+            return base_api(method, path, **kwargs)
+
+        with patch.object(module, "api_json", side_effect=api):
+            module.cmd_next(next_args())
+        assert 2 in [row["number"] for row in result["candidates"]]
+        assert 10 not in [row["number"] for row in result["candidates"]]
+        assert not result["stale_wait_report"]["complete"]
+        assert any(row.get("url") == "https://github.com/outside/tools/issues/475"
+                   for row in result["stale_wait_report"]["unavailable"])
+        assert result["waiting"][0]["references"][0]["state"] == "unknown"
+        assert all(method == "GET" for method, _path in calls)
+
+
+TESTS.append(test_identity_refused_wait_keeps_independent_candidates)
+
+
+def test_identity_refused_graph_node_keeps_other_milestone_candidates() -> None:
+    root = track("someone/direction", 1, "First")
+    ready = global_issue("someone/business", 2)
+    unread = global_issue("outside/tools", 475)
+    edges = {(root["repo"], 1): relationships(sub_issues=[ready, unread])}
+    with global_fixture([root], [ready], edges) as (module, result, _reads):
+        base_get = module.get_issue
+        failure = module.github_api_core.FailureDetail(
+            cause="identity_refused", message="Client App is not installed on outside/tools",
+            retryable=False, fallback_eligible=False, disposition="stop")
+
+        def get(ref: str, repo: str) -> Any:
+            if repo == unread["repo"]:
+                raise module.PlanError(failure.message, failure=failure)
+            return base_get(ref, repo)
+
+        with patch.object(module, "get_issue", side_effect=get):
+            module.cmd_next(next_args())
+        assert [row["number"] for row in result["candidates"]] == [2]
+        assert not result["graph_context"]["complete"]
+        assert any(row["repo"] == unread["repo"] and row["exclusion"] == "unknown_dependencies"
+                   for row in result["excluded"])
+
+
+def test_local_identity_refused_relationships_degrade_and_credentials_stop() -> None:
+    for cause in ("identity_refused", "invalid_credentials", "actor_mismatch"):
+        module = load_module()
+        failure = module.github_api_core.FailureDetail(
+            cause=cause, message="read refused", retryable=False, fallback_eligible=False, disposition="stop")
+        error = module.PlanError(failure.message, failure=failure)
+
+        def read(_repo: str, number: int, _issue: Any = None) -> Any:
+            if number == 1:
+                raise error
+            return "automation-gh", relationships(), []
+
+        with local_next_fixture(module, plans=[issue(1), issue(2)], read_relationships=read) as result:
+            if cause == "identity_refused":
+                module.cmd_next(next_args(repo="owner/repo"))
+                assert [row["number"] for row in result["candidates"]] == [2]
+                assert result["excluded"][0]["exclusion"] == "unknown_dependencies"
+            else:
+                try:
+                    module.cmd_next(next_args(repo="owner/repo"))
+                except module.PlanError as exc:
+                    assert exc is error
+                else:
+                    raise AssertionError("credential/actor failures must still stop selection")
+
+
+TESTS.extend([test_identity_refused_graph_node_keeps_other_milestone_candidates,
+              test_local_identity_refused_relationships_degrade_and_credentials_stop])
+
+
 def main() -> None:
     for test in TESTS:
         test()
