@@ -9648,7 +9648,7 @@ def _domain_authority_plan_body(
     target_type = tracked.get("target_type")
     if (
         observed.get("status") != "ok" or provider.get("status") != "present"
-        or target_type not in {"application", "compose"}
+        or not isinstance(target_type, str) or target_type not in {"application", "compose"}
         or not isinstance(target_id, str) or not target_id
         or any(source.get("target_id") != target_id for source in (observed, provider, live))
         or any(source.get("target_type") != target_type for source in (observed, live))
@@ -9683,7 +9683,7 @@ def _domain_authority_plan_body(
 
 def _ingress_plan_body(body: dict[str, Any], read: Any) -> dict[str, Any]:
     profile = _require_dict(read(
-        helper_command_path("product-profile-read").format(product=body["product"]), {},
+        _product_read_path("product-profile-read", product=body["product"]), {},
     ).get("profile"))
     lanes = profile.get("lanes")
     if profile.get("product") != body["product"] or not isinstance(lanes, list):
@@ -9695,7 +9695,10 @@ def _ingress_plan_body(body: dict[str, Any], read: Any) -> dict[str, Any]:
     lane = matches[0]
     urls = [lane.get("base_url"), lane.get("health_url")]
     monitoring = lane.get("health_monitoring") or {}
-    for check in _require_dict(monitoring).get("checks", []):
+    checks = _require_dict(monitoring).get("checks", [])
+    if not isinstance(checks, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    for check in checks:
         if isinstance(check, dict) and check.get("enabled") is True and check.get("kind") == "public_http":
             urls.append(check.get("url"))
     lane_domains = set()
@@ -9757,9 +9760,11 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
     domains = set(ingress["route"]["domain_names"])
     records = _require_dict(provider.get("records"))
     operations = result.get("operations")
-    if (host.get("id") != ingress["expected_host_id"]
+    if (records.keys() - {"ingress_provider", "ingress_provider_domain_comparison", "ingress_provider_domain_count", "ingress_route_audit_record_id"}
+        or type(host.get("id")) is not int or host.get("id") != ingress["expected_host_id"]
         or set(_plan_domains(host.get("domain_names"))) != domains
         or records.get("ingress_provider_domain_comparison") != "requested_domains"
+        or type(records.get("ingress_provider_domain_count")) is not int
         or records.get("ingress_provider_domain_count") != len(domains)
         or not isinstance(operations, list) or not 1 <= len(operations) <= 100):
         raise LaunchplaneSafetyError("invalid_response")

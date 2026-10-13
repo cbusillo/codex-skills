@@ -10,7 +10,6 @@ from __future__ import annotations
 import copy
 import io
 import json
-import sys
 import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -252,6 +251,15 @@ def test_ingress_private_input_rejects_upstream_and_malformed_scope():
     assert code != 0
     get.assert_not_called()
     post.assert_not_called()
+
+
+def test_ingress_product_cannot_change_read_route():
+    private = ingress_input()
+    private["product"] = "shop/../../service"
+    code, _, get, post = invoke(INGRESS_COMMAND, private=private)
+    assert code != 0
+    get.assert_not_called()
+    post.assert_not_called()
     private = ingress_input()
     private["product"] = None
     code, _, get, post = invoke(INGRESS_COMMAND, private=private)
@@ -261,4 +269,4 @@ def test_ingress_private_input_rejects_upstream_and_malformed_scope():
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, *sys.argv[1:]]))
+    raise SystemExit(pytest.main([__file__]))

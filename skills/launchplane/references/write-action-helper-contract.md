@@ -484,13 +484,14 @@ key; never recreate, replace or silently adopt the target as recovery.
 These commands are bounded local extensions, not projected operations in the
 vendored public artifact. Neither accepts an apply mode, confirmation, credential
 argument, provider URL or alternate identity. They use the existing configured
-operator transport. A plan grants no apply authority. Do not run these as part
+local-admin transport. A plan grants no apply authority. Do not run these as part
 of source validation; use offline behavioral tests.
 
 `dokploy-target-repair-domain-authority-dry-run --context C --instance I --reason R`
 reads `dokploy-target-inspect` internally, then calls the setup route with
 `operation: repair-domain-authority`, fixed `mode: dry-run`, and service product
-`launchplane`. It requires consistent tracked, provider-target and live target
+`launchplane`, authorizing `dokploy_target.repair_domain_authority.plan`.
+It requires consistent tracked, provider-target and live target
 identities, derives the requested domains from the live inspection, and sends
 the expected deployed-provider projection privately. The service rechecks the
 projection and the exact live domain set. Output verifies those agreements and
@@ -517,7 +518,8 @@ locations are refused. Omitted options use the service defaults; supply the
 observed options when those differ. Unsupported route shapes remain a
 capability gap, never an invitation to apply or hand-build a raw request.
 
-Before posting, internal reads fetch the fresh product profile and exact active
+The service authorizes `ingress_route.plan`. Before posting, internal reads
+fetch the fresh product profile and exact active
 edge-endpoint record. Domains must equal the lane's public HTTPS hosts from its
 base URL, health URL and enabled public checks. The helper sends the endpoint
 key, leaving upstream resolution to the service, and forces
