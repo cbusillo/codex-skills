@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tomlkit==0.15.1"]
+# dependencies = [
+#     "tomlkit==0.15.1",
+# ]
 # ///
 """Install and update behavior against fixture homes and real local Git remotes."""
 from __future__ import annotations

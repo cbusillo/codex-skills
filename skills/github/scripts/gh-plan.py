@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["PyYAML==6.0.3"]
+# dependencies = [
+#     "PyYAML==6.0.3",
+# ]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""
 

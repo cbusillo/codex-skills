@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tomlkit==0.15.1"]
+# dependencies = [
+#     "tomlkit==0.15.1",
+# ]
 # ///
 """Install whole-catalog bindings, preserved global instructions and existing hooks."""
 from __future__ import annotations
