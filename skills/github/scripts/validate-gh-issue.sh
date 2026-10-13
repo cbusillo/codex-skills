@@ -515,6 +515,7 @@ grep -q '^remote=git@github.com:owner/repo.git$' "$env_log"
 : >"$env_log"
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 	CODEX_AUTOMATION_LOGIN='Fixture-App[bot]' FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 \
+	GH_WITH_ENV_TOKEN_OWN_USER_LOGIN=human-user \
 	GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
 	GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
 	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
