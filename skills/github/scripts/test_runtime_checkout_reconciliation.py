@@ -944,5 +944,105 @@ def test_automatic_fetch_uses_batch_mode_and_preserves_custom_ssh(tmp_path: Path
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Executable SSH stand-ins use POSIX shebangs")
+@pytest.mark.parametrize("client", ["plink.exe", "TortoisePlink.exe", "ssh.exe"])
+@pytest.mark.parametrize("source", [
+    "GIT_SSH", "GIT_SSH_COMMAND", "core.sshCommand", "GIT_SSH_VARIANT", "ssh.variant",
+])
+def test_automatic_fetch_with_configured_ssh_client(
+    tmp_path: Path, client: str, source: str,
+) -> None:
+    fixture = session_fixture(tmp_path)
+    executable = tmp_path / "SSH clients" / (
+        "renamed-client" if source in {"GIT_SSH_VARIANT", "ssh.variant"} else client
+    )
+    executable.parent.mkdir()
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import os, shlex, sys\n"
+        "args = sys.argv[1:]\n"
+        "if '-load' not in args or args[args.index('-load') + 1] != 'saved auth':\n"
+        "    sys.exit('configured authentication lost')\n"
+        + ("if '-batch' not in args or '-o' in args:\n    sys.exit('requires PuTTY batch options')\n"
+           if client.lower() != "ssh.exe" else
+           "if 'BatchMode=yes' not in args or '-batch' in args:\n    sys.exit('requires OpenSSH batch options')\n")
+        + "command = shlex.split(args[-1])\n"
+        "os.execvp(command[0], command)\n"
+    )
+    executable.chmod(0o755)
+    # GIT_SSH is a literal executable path; the other two are shell commands.
+    command = shlex.quote(str(executable)) + " -load 'saved auth'"
+    env = os.environ.copy()
+    for key in ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_SSH_VARIANT"):
+        env.pop(key, None)
+    if source == "GIT_SSH":
+        # The literal executable gets its authentication from the saved session.
+        executable.write_text(executable.read_text().replace(
+            "args = sys.argv[1:]", "args = ['-load', 'saved auth'] + sys.argv[1:]",
+        ))
+        env[source] = str(executable)
+    elif source == "core.sshCommand":
+        git(fixture.runtime, "config", source, command)
+    elif source in {"GIT_SSH_VARIANT", "ssh.variant"}:
+        variant = client.removesuffix(".exe").lower()
+        env["GIT_SSH_COMMAND"] = command
+        git(fixture.runtime, "config", "core.sshCommand", "missing-client")
+        if source == "ssh.variant":
+            git(fixture.runtime, "config", source, variant)
+        else:
+            git(fixture.runtime, "config", "ssh.variant", "simple")
+            env[source] = variant
+    else:
+        env[source] = command
+    git(fixture.runtime, "remote", "set-url", "origin", f"ssh://fixture.invalid{fixture.remote}")
+    namespace = runpy.run_path(str(SCRIPT))
+    token = namespace["RECONCILIATION_DEADLINE"].set(time.monotonic() + 5)
+    try:
+        with mock.patch.dict(os.environ, env, clear=True):
+            namespace["run_git"](fixture.runtime, "fetch", "origin")
+    finally:
+        namespace["RECONCILIATION_DEADLINE"].reset(token)
+    assert git(fixture.runtime, "rev-parse", "origin/main") == fixture.landing_sha
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+    assert git(fixture.runtime, "status", "--porcelain") == ""
+
+
+def test_fetch_timeout_with_descendant_holding_output(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    namespace = runpy.run_path(str(SCRIPT))
+    actual_run = subprocess.run
+    child_code = "import time; time.sleep(2)"
+    parent_code = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        "time.sleep(10)"
+    )
+    def slow_transport(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if "fetch" not in argv:
+            return actual_run(argv, **kwargs)
+        # Exercise Windows run()'s post-kill, unbounded output drain on this host.
+        with subprocess.Popen([sys.executable, "-c", parent_code], **{
+            key: value for key, value in kwargs.items() if key not in {"timeout", "check", "input"}
+        }) as proc:
+            try:
+                stdout, stderr = proc.communicate(timeout=kwargs["timeout"])
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+            return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+    token = namespace["RECONCILIATION_DEADLINE"].set(time.monotonic() + 0.25)
+    started = time.monotonic()
+    try:
+        with mock.patch("subprocess.run", side_effect=slow_transport):
+            with pytest.raises(namespace["GitCommandError"]):
+                namespace["run_git"](fixture.runtime, "fetch", "origin")
+    finally:
+        namespace["RECONCILIATION_DEADLINE"].reset(token)
+    assert time.monotonic() - started < 1.5
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+    assert git(fixture.runtime, "status", "--porcelain") == ""
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
