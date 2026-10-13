@@ -49,7 +49,7 @@ class ChromeTests(unittest.TestCase):
         (self.catalog / ".local" / "chrome.toml").write_text(
             f'pinned_home = {json.dumps(str(pinned))}\nhomes = [{json.dumps(str(self.other))}]\n')
 
-    def native(self, command, directory, args):
+    def native(self, _command, directory, args):
         self.calls.append((directory, args[0]))
         entries = self.servers[directory]
         status, stdout = 0, ""
@@ -305,7 +305,11 @@ class ChromeTests(unittest.TestCase):
                            'time.sleep(10)\n')
         command.chmod(0o700)
         unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'])
-        self.addCleanup(lambda: (unrelated.kill(), unrelated.wait()) if unrelated.poll() is None else None)
+        def stop_unrelated():
+            if unrelated.poll() is None:
+                unrelated.kill()
+            unrelated.wait()
+        self.addCleanup(stop_unrelated)
         try:
             with mock.patch.object(chrome, 'MCP_TIMEOUT', 0.3, create=True):
                 with self.assertRaises(subprocess.TimeoutExpired):
