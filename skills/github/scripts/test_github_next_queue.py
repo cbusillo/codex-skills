@@ -166,6 +166,35 @@ def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing
     assert counts['active_inventory_count'] == 4 and counts['active_unevaluated_count'] == 2
 
 
+def test_bounded_global_coverage_counts_active_discoveries_not_yet_read() -> None:
+    discoveries = [cli.global_issue('someone/product', number) for number in (1, 2)]
+    with cli.global_fixture([], [], {}, discovered=discoveries) as (module, result, _reads):
+        module.cmd_next(cli.next_args(scan_limit=1))
+    counts = result['selection_coverage']
+    assert counts['active_inventory_count'] == len(discoveries)
+    assert counts['active_evaluated_count'] == 1
+    assert counts['active_unevaluated_count'] == 1
+    assert result['discovery_context']['unevaluated_count'] == 1
+
+
+def test_repository_inventory_bound_can_be_widened_without_losing_held_work() -> None:
+    module = cli.load_module()
+    raw = [cli.global_issue('someone/product', n, labels=['plan', 'plan:waiting'] if n < 3 else ['plan', 'plan:active']) for n in (1, 2, 3)]
+    def read(path: str, **kwargs):
+        if path == '/installation/repositories':
+            return 'bot', [{'full_name': 'someone/product', 'size': 1, 'open_issues_count': len(raw)}]
+        assert path == '/repos/someone/product/issues'
+        return 'bot', raw[:kwargs['limit']]
+    args = cli.next_args()
+    with patch.multiple(module, collect_paged_rest_items=read, load_direction=lambda *_: cli.DIRECTION), patch.multiple(module.github_identity, github_app_config=lambda: {}):
+        complete, context = module.real_discover_direction_work('someone/direction', args, selection_context={})
+        args.repository_issue_limit = 1
+        limited, partial = module.real_discover_direction_work('someone/direction', args, selection_context={})
+    assert len(complete) == len(raw) and context['complete']
+    assert len(limited) < len(complete) and not partial['complete']
+    assert any('plan:active' in direction.normalize_labels(row['labels']) for row in complete)
+
+
 def main() -> None:
     for name, test in sorted(globals().items()):
         if name.startswith('test_'):
