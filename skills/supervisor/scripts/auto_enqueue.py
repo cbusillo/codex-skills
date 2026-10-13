@@ -221,6 +221,7 @@ def own_candidate(response, own, candidate_records=()):
 class Live:
     def __init__(self, deadline):
         self.deadline = deadline
+        self.mergeability_reads_remaining = 20
         self.reader = GitHubReader(
             operation="github.pr.view",
             gh_prefix_args=automation_only_gh_prefix_args(),
@@ -282,7 +283,28 @@ class Live:
         return self.reader.batch_diagnostic
 
     def get(self, path):
-        return self.reader.get_json(path, step="enqueue_read")
+        value = self.reader.get_json(path, step="enqueue_read")
+        if not re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/[0-9]+", path):
+            return value
+        for _ in range(2):
+            if value.get("mergeable") is not None:
+                break
+            # A batch snapshot does not trigger GitHub's lazy computation.
+            # Discard its discussion/checks too: the REST read may find a new head.
+            self.reader.batch_responses.clear()
+            if self.mergeability_reads_remaining <= 0 or time.time() + 1 >= self.deadline:
+                break
+            time.sleep(1)
+            self.mergeability_reads_remaining -= 1
+            # An ETag/304 may preserve the null response. Ask GitHub directly,
+            # retaining the shared transport's identity, quota and deadline guards.
+            cached = self.reader.cache_enabled
+            self.reader.cache_enabled = False
+            try:
+                value = self.reader.request("GET", path, step="mergeability_read").body
+            finally:
+                self.reader.cache_enabled = cached
+        return value
 
     def pages(self, path, **params):
         return self.reader.paged_json(path, step_prefix="enqueue_read", params=params)
