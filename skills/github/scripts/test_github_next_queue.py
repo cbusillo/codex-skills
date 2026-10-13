@@ -184,6 +184,8 @@ def test_repository_inventory_bound_can_be_widened_without_losing_held_work() ->
         if path == '/installation/repositories':
             return 'bot', [{'full_name': 'someone/product', 'size': 1, 'open_issues_count': len(raw)}]
         assert path == '/repos/someone/product/issues'
+        if kwargs['query'].get('labels'):
+            return 'bot', []
         return 'bot', raw[:kwargs['limit']]
     args = cli.next_args()
     with patch.multiple(module, collect_paged_rest_items=read, load_direction=lambda *_: cli.DIRECTION), patch.multiple(module.github_identity, github_app_config=lambda: {}):
