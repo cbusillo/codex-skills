@@ -8,6 +8,8 @@
 import copy
 import unittest
 import urllib.error
+from email.message import Message
+from typing import Any
 from unittest.mock import patch
 
 import launchplane_acceptance as acceptance
@@ -20,7 +22,7 @@ class AcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.entry = {"repository": REPO, "classification": "managed_runtime", "product": PRODUCT}
         self.mapping = {"mapping": {"repositories": [self.entry]}}
-        self.profile = {"status": "ok", "trace_id": "test-trace", "profile": {
+        self.profile: dict[str, Any] = {"status": "ok", "trace_id": "test-trace", "profile": {
             "product": PRODUCT, "repository": REPO, "production_use": "live",
             "release_on_acceptance": "director_standing", "owner": {"github_login": "director"},
             "updated_at": "2026-01-01T00:00:00Z",
@@ -69,7 +71,7 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertFalse(acceptance.read_director_standing(REPO))
 
     def test_unavailable_reads_preserve_acceptance_path(self):
-        for error in (TimeoutError(), urllib.error.HTTPError("https://fixture.invalid", 403, "denied", None, None), ValueError("invalid_response")):
+        for error in (TimeoutError(), urllib.error.HTTPError("https://fixture.invalid", 403, "denied", Message(), None), ValueError("invalid_response")):
             with self.subTest(error=type(error).__name__):
                 self.transport.side_effect = error
                 self.assertFalse(acceptance.read_director_standing(REPO))

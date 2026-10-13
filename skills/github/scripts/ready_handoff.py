@@ -35,8 +35,8 @@ def handoff_body(head_sha: str, *, waiting_for_client: bool = False) -> str:
 
 def director_standing_acceptance(repository):
     """Use Launchplane's repository mapping and scoped profile, never repo config."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "launchplane/scripts"))
-    from launchplane_acceptance import read_director_standing
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from skills.launchplane.scripts.launchplane_acceptance import read_director_standing
 
     return read_director_standing(repository)
 
