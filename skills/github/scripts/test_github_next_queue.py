@@ -73,6 +73,7 @@ def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> 
         ('Active; source repair merged; physical confirmation outstanding', 'Delivery agent supplies the signed companion build; owner compares device freshness.'),
         ('Active; qualification remains the prerequisite', 'Observe qualification evidence. Once qualified, remove the old schedule.'),
         ('Active; completed reader/writer slices recorded', 'Read the next natural TLS cycle and complete diagnostic evidence.'),
+        ('Active; source repair landed; device acceptance remains', 'Delivery agent provides the matching signed build, records installed version/build, then owner performs device test notes.'),
     ]:
         result = classify(item(action, state))
         assert result['state'] == 'verification', result
@@ -83,6 +84,7 @@ def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> 
     assert classify(item('Implement a feature that verifies TLS certificates.'))['state'] == 'available'
     assert classify(item('Verify the next deployed candidate update preserves the request.'))['state'] == 'review'
     assert classify(item('Supervisor verifies deployed web drill support.'))['state'] == 'review'
+    assert classify(item('Another source owner delivers the prerequisite repair with a PR, then Supervisor verifies runtime.', 'Active; original source landed but the updater fails'))['state'] == 'review'
     assert classify(item('An agent records scheduled-path recovery evidence after source landing.', 'Active; Source landing confirmed'))['state'] == 'verification'
     assert classify(item('Supervisor selects remaining work through canonical #7.', 'Active; original slice already delivered'))['state'] == 'scope_review'
     # Historical delivery elsewhere in the body is not current-scope delivery.

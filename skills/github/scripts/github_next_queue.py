@@ -57,21 +57,25 @@ def remaining_work(status: str) -> dict[str, Any]:
     source_verbs = r"\b(?:implement|repair|fix|build|remove|migrate|add|develop|refactor|patch|diagnose|investigate|resolve|correct|update|extend|wire|replace|port|tune|restore)(?:s|es|ing)?\b"
     def source_step(text: str) -> bool:
         for match in re.finditer(source_verbs, text, re.I):
+            if match.start() and text[match.start() - 1] in "/-":
+                continue
             before = re.findall(r"\w+", text[:match.start()].casefold())
-            if before and before[-1] in {"the", "a", "an", "candidate", "contract", "source", "record", "bounded", "missing"}:
+            if before and before[-1] in {"the", "a", "an", "candidate", "contract", "source", "record", "bounded", "missing", "prerequisite", "their", "its", "old", "new", "existing", "current", "installed", "version"}:
                 continue
             if re.match(r"adds?\s+(?:a\s+|new\s+)*(?:occurrence|receipt|evidence|note)\b", text[match.start():], re.I):
                 continue
             return True
         return False
     engineering = source_step(source_action)
-    qualification = re.search(r"\b(?:qualif\w*|verif\w*|observ\w*|confirm\w*|read\w*|proof|evidence|acceptance|test\w*|compares?)\b", action, re.I)
+    qualification_words = r"\b(?:qualif\w*|verif\w*|observ\w*|confirm\w*|read\w*|proof|evidence|acceptance|test\w*|compares?)\b"
+    qualification = re.search(qualification_words, action, re.I)
     # A conditional future source step after qualification is still a
     # qualification frontier; do not suggest its implementation prematurely.
     conditional = re.search(r"\b(?:once|after|then)\b", source_action, re.I)
     first_action = source_action[:conditional.start()] if conditional else source_action
     current_engineering = source_step(first_action)
-    if qualification and not current_engineering and (delivered or re.search(r"\bqualification\b", state, re.I)):
+    qualification_frontier = re.search(qualification_words, first_action, re.I) or re.search(r"\b(?:signed .*build|releases?|deploy\w*|publication|image|rollout|install\w*)\b", first_action, re.I)
+    if qualification and qualification_frontier and not current_engineering and (delivered or re.search(r"\bqualification\b", state, re.I)):
         waiting_on = "deploy_or_release" if re.search(r"\b(?:deploy\w*|releases?|publication|signed .*build)\b", action, re.I) else "qualification"
         return {**result, "state": "verification", "reason": "recorded_remaining_step_is_qualification", "waiting_on": waiting_on}
     if delivered and not action:
