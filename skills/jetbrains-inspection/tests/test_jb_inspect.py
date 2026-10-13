@@ -14822,7 +14822,7 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         self.foreign_bytes = self.foreign_path.read_bytes()
         self.enterContext(patch.object(jb_inspect, "lease_dir", return_value=self.directory))
         self.enterContext(patch.object(jb_inspect, "now_ms", return_value=100_000_000))
-        self.enterContext(patch.object(jb_inspect, "pid_alive", return_value=True))
+        self.enterContext(patch.object(jb_inspect, "pid_alive", return_value=False))
         self.discovery = self.enterContext(patch.object(
             jb_inspect, "discover_routes_for_cleanup", return_value=([], {"session"}),
         ))
@@ -14842,12 +14842,13 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
         self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 0)
 
-    def test_scoped_dry_run_reports_only_selected_lease_without_discovery(self):
+    def test_scoped_dry_run_proves_selected_removal_without_mutation(self):
         result = self.run_cleanup(self.selected_id, dry_run=True)
         self.assertEqual(result["stale"], [str(self.selected_path)])
         self.assertEqual(result["removed"], [])
         self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 0)
-        self.discovery.assert_not_called()
+        self.discovery.assert_called_once()
+        self.assertEqual(result["would_remove"], [str(self.selected_path)])
         self.assertTrue(self.selected_path.exists())
         self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
 
@@ -14881,10 +14882,9 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         self.discovery.assert_not_called()
         self.assertTrue(self.foreign_path.exists())
 
-    def test_live_pid_with_recent_cleanup_failed_lease_is_not_forced_stale(self):
-        write_json(self.selected_path, self.lease | {"updated_at_ms": 99_999_999})
+    def test_live_pid_with_old_cleanup_failed_lease_is_not_forced_stale(self):
         for dry_run in (False, True):
-            with self.subTest(dry_run=dry_run):
+            with self.subTest(dry_run=dry_run), patch.object(jb_inspect, "pid_alive", return_value=True):
                 result = self.run_cleanup(self.selected_id, dry_run=dry_run)
                 self.assertEqual(result["unresolved"][0]["reason"], "lease_not_stale")
                 self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
@@ -14942,7 +14942,7 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
                 result = self.run_cleanup(selector, dry_run=True)
                 self.assertEqual(result["stale"], [str(self.selected_path)])
                 self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 0)
-        self.discovery.assert_not_called()
+        self.assertEqual(self.discovery.call_count, 2)
         self.assertTrue(self.selected_path.exists())
         self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
 

@@ -1106,6 +1106,12 @@ if is_write_command "$@" && [ "$write_outcome" = "unknown" ]; then
 fi
 
 case "$cause" in
+permission_denied)
+	cat "$stdout_file"
+	print_classified_message
+	echo "hint: ask the Director to perform this operation or review the GitHub App's permissions and installation; some operations, including personal repository creation, are unavailable to installation tokens" >&2
+	exit "$status"
+	;;
 graphql_primary_rate_limited | rest_primary_rate_limited | secondary_rate_limited | rate_limited_unknown_bucket)
 	if refuse_active_auth_fallback "automation gh request was rate-limited"; then
 		cat "$stdout_file"

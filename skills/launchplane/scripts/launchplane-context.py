@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -460,7 +461,7 @@ def main(argv: list[str]) -> int:
         status = "unavailable" if exc.code == "unsafe_redirect" else "invalid"
         emit(unavailable_payload(request, status=status, code=exc.code))
         return 0
-    except (OSError, TimeoutError, urllib.error.URLError):
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
         emit(unavailable_payload(request, status="unavailable", code="provider_unavailable"))
         return 0
     except (ValueError, json.JSONDecodeError):

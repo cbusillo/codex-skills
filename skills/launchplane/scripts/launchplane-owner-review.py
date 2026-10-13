@@ -6,6 +6,7 @@
 """Read one scoped Owner review, including private prose, from Launchplane."""
 
 import argparse
+import http.client
 import importlib.util
 import json
 from pathlib import Path
@@ -120,7 +121,7 @@ def main(argv=None):
             )
         )
         return 1
-    except (ValueError, OSError, TimeoutError, urllib.error.URLError):
+    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
         # Never print config, credentials, provider bodies, or exception text.
         print(json.dumps({"ok": False, "error": "owner_review_read_unavailable"}))
         return 1

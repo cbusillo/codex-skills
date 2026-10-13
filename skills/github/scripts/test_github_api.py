@@ -660,6 +660,26 @@ def test_classify_403_rest_rate_limit_via_remaining_zero() -> None:
     assert result.failure.rate_limit["remaining"] == 0
 
 
+def test_repository_creation_permission_refusals_do_not_offer_actor_fallback() -> None:
+    failures = [
+        _api.classify_legacy_failure(
+            "GraphQL: Resource not accessible by integration (createRepository)",
+            is_write=True,
+        ),
+    ]
+    for headers in ({}, {"x-ratelimit-remaining": "5000"}, {"x-ratelimit-remaining": "0"}):
+        failures.append(_api.classify_error(
+            403, headers, {"message": "Resource not accessible by integration"}, is_write=True,
+        ))
+    # A headerless non-throttling 403 also represents an authorization refusal.
+    failures.append(_api.classify_error(403, {}, {"message": "Repository creation denied"}, is_write=True))
+    for failure in failures:
+        assert failure.cause == "permission_denied", failure
+        assert failure.disposition == "requires_authorization", failure
+        assert failure.retryable is False, failure
+        assert failure.fallback_eligible is False, failure
+
+
 def test_classify_429_rest_rate_limit() -> None:
     stdout = _include_output(429, body={"message": "Too many requests"})
     result = _call("GET", "/repos/owner/repo", fake_stdout=stdout, returncode=1)
@@ -3003,6 +3023,7 @@ def main() -> None:
         test_classify_403_actor_mismatch,
         test_classify_403_permission_denied,
         test_classify_403_rest_rate_limit_via_remaining_zero,
+        test_repository_creation_permission_refusals_do_not_offer_actor_fallback,
         test_classify_429_rest_rate_limit,
         test_classify_403_secondary_throttle_via_retry_after,
         test_retry_after_on_503_remains_provider_failure,

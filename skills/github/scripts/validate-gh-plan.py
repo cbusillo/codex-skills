@@ -2147,7 +2147,7 @@ def test_close_rejects_open_cross_repo_blocker_before_any_write() -> None:
     issue = close_plan_issue()
     paths: list[str] = []
     writes: list[str] = []
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -2191,7 +2191,7 @@ def test_close_rejects_open_cross_repo_blocker_before_any_write() -> None:
 def test_close_rejects_partial_subissues_before_any_write() -> None:
     plan = load_plan_module()
     issue = close_plan_issue()
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -2229,7 +2229,7 @@ def test_close_allows_closed_relationships_and_ignores_issues_it_blocks() -> Non
     plan = load_plan_module()
     issue = close_plan_issue()
     calls: list[str] = []
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -2275,7 +2275,7 @@ def test_close_relationship_preflight_fails_closed_on_unavailable_and_ambiguous_
     for result in ("unavailable", "ambiguous"):
         plan = load_plan_module()
         issue = close_plan_issue()
-        plan.load_config = lambda _repo: {
+        plan.load_config = lambda _repo, **_: {
             "labels": {"active": "plan:active", "done": "plan:done"},
             "projects": {},
         }
@@ -2336,7 +2336,7 @@ def test_close_not_planned_retains_and_reports_open_relationships() -> None:
     plan = load_plan_module()
     issue = close_plan_issue()
     calls: list[dict[str, Any]] = []
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -2397,7 +2397,7 @@ def owner_decision_close(
     if milestone is not None:
         issue["milestone"] = {"title": milestone}
     calls: list[str] = []
-    plan.load_config = lambda _repo: {"labels": {"active": "plan:active", "done": "plan:done"}, "projects": {}}
+    plan.load_config = lambda _repo, **_: {"labels": {"active": "plan:active", "done": "plan:done"}, "projects": {}}
     plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
 
@@ -2592,7 +2592,7 @@ def test_close_known_failure_reports_project_split_and_stops_metadata() -> None:
     allow_close_relationships(plan)
     issue = close_plan_issue()
     calls: list[tuple[str, Any]] = []
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {"owner": "owner", "default_project": "Roadmap"},
         "project_fields": {"focus": "Focus"},
@@ -2666,7 +2666,7 @@ def test_close_unknown_outcome_reports_unavailable_reconciliation() -> None:
     allow_close_relationships(plan)
     issue = close_plan_issue()
     issue_reads = 0
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -2736,7 +2736,7 @@ def test_close_reconciles_unknown_success_before_metadata() -> None:
     observed = close_plan_issue(state="closed", state_reason="completed")
     issue_reads = 0
     edits: list[dict[str, Any]] = []
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -2790,7 +2790,7 @@ def test_close_post_close_label_failure_is_recoverable() -> None:
     allow_close_relationships(plan)
     issue = close_plan_issue()
     calls: list[str] = []
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -2843,7 +2843,7 @@ def test_close_already_complete_reuses_completion_comment() -> None:
         labels=["plan", "plan:done"],
     )
     comment_call: dict[str, Any] = {}
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -2897,7 +2897,7 @@ def test_close_already_complete_removes_stale_plan_state_labels() -> None:
         labels=["plan", "plan:blocked", "plan:waiting", "plan:stale", "plan:done"],
     )
     edits: list[dict[str, Any]] = []
-    plan.load_config = lambda _repo: {
+    plan.load_config = lambda _repo, **_: {
         "labels": {
             "active": "plan:active",
             "blocked": "plan:blocked",
@@ -2946,7 +2946,7 @@ def test_close_reports_stale_project_as_non_blocking_warning() -> None:
     }
     calls: list[dict[str, Any]] = []
 
-    plan.load_config = lambda repo: {
+    plan.load_config = lambda repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {"owner": "owner", "default_project": "Roadmap"},
         "project_fields": {"focus": "Focus"},
@@ -3006,7 +3006,7 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
     calls: list[dict[str, Any]] = []
     comment_call: dict[str, Any] = {}
 
-    plan.load_config = lambda repo: {
+    plan.load_config = lambda repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -3117,7 +3117,7 @@ def test_close_preserves_comment_reconciliation_after_partial_failure() -> None:
         "state": "open",
     }
     calls: list[dict[str, Any]] = []
-    plan.load_config = lambda repo: {
+    plan.load_config = lambda repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -3213,7 +3213,7 @@ def test_close_state_failure_preserves_compound_steps() -> None:
         failed_step="close_issue",
     )
 
-    plan.load_config = lambda repo: {
+    plan.load_config = lambda repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -3281,7 +3281,7 @@ def test_close_already_reconciled_skips_redundant_label_write() -> None:
         "state_reason": "not_planned",
     }
 
-    plan.load_config = lambda repo: {
+    plan.load_config = lambda repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
@@ -3313,7 +3313,7 @@ def test_close_already_reconciled_skips_redundant_label_write() -> None:
 def test_close_rejects_invalid_reason_before_remote_reads_or_writes() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
-    plan.load_config = lambda repo: {"labels": {"active": "plan:active", "done": "plan:done"}}
+    plan.load_config = lambda repo, **_: {"labels": {"active": "plan:active", "done": "plan:done"}}
     plan.get_issue = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("invalid reason must fail before issue read"))
 
     try:
@@ -3347,7 +3347,7 @@ def test_close_reports_project_auth_denied_as_non_blocking_warning() -> None:
     }
     calls: list[dict[str, Any]] = []
 
-    plan.load_config = lambda repo: {
+    plan.load_config = lambda repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {"owner": "owner", "default_project": "Roadmap"},
         "project_fields": {"focus": "Focus"},
@@ -3411,7 +3411,7 @@ def test_close_syncs_project_before_closing_issue() -> None:
     }
     calls: list[tuple[str, Any]] = []
 
-    plan.load_config = lambda repo: {
+    plan.load_config = lambda repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {"owner": "owner", "default_project": "Roadmap"},
         "project_fields": {"focus": "Focus"},
@@ -5731,7 +5731,7 @@ def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> N
     assert payload["failure"]["cause"] == "permission_denied", payload
     assert payload["request_id"] == "request-123", payload
     assert payload["write_outcome"] == "not_started", payload
-    assert payload["fallback_eligible"] is True, payload
+    assert payload["fallback_eligible"] is False, payload
     assert api_result["failure"]["cause"] == "permission_denied", payload
     assert api_result["failure"]["request_id"] == "request-123", payload
     assert "body" not in api_result, payload

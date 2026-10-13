@@ -1141,7 +1141,7 @@ def classify_error(
             cause="permission_denied",
             message=f"Permission denied: {msg}",
             retryable=False,
-            fallback_eligible=True,
+            fallback_eligible=False,
             disposition="requires_authorization",
             write_outcome=not_started,
             request_id=request_id,
@@ -1432,7 +1432,7 @@ def classify_legacy_failure(
         cause = "permission_denied"
         disposition = "requires_authorization"
         retryable = False
-        fallback_eligible = True
+        fallback_eligible = False
         write_outcome = rejected
     elif "invalid character '<'" in lowered or "unexpected character '<'" in lowered:
         cause = "network_provider_failure"
