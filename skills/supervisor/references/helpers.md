@@ -14,12 +14,18 @@ preserving its other keys. For `--settings file.json`, set
 before launch and preserves the file argument, private values and relative
 permission-rule base. It never rewrites that file or inlines its contents.
 Use literal JSON or a readable file path; relative files resolve under the command's `cd` directory.
-Use an absolute path in place of shell-expanded settings paths. Existing
-sessions may still draw dim suggestions. `read` retains the
+Use an absolute path in place of shell-expanded settings paths.
+Relative settings files require an explicit `cd`; otherwise use an absolute path.
+Claude launches also scope `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` to the
+invocation so an inherited override cannot enable suggestions. Remove explicit
+assignments of that variable from command files; the launcher supplies it.
+Existing sessions may still draw dim suggestions. `read` retains the
 plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
 prompt's text, line index and style (`dim`, `non_dim`, `mixed`, `empty`, or
 `unknown`). tmux reads SGR faint attributes with `capture-pane -e`; iTerm reads
-cell faint attributes. Missing prompt/style evidence is unknown. This is a
+cell faint attributes. A single leading inverse cursor cell followed by dim
+characters is classified as dim; other mixed styles stay mixed. Missing
+prompt/style evidence is unknown. This is a
 single visible line, not a full multiline draft or idle-prompt proof; inspect
 the full screen and transcript too. `director_input_verified` is always false:
 no terminal style establishes authorship or approval. Follow the skill's

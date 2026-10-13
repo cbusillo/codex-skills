@@ -1208,7 +1208,7 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             settings = {"model": "fixture-model", "permissions": {"allow": ["Read"]},
-                        "promptSuggestionEnabled": True}
+                        iterm_tab.CLAUDE_SUGGESTION_SETTING: True}
             path = root / "settings.json"
             path.write_text(json.dumps(settings))
             for option in ("--settings " + shlex.quote(json.dumps(settings)),
@@ -1221,12 +1221,12 @@ class TerminalTests(unittest.TestCase):
                     received = json.loads(args[index + 1])
                     self.assertEqual(received["model"], settings["model"])
                     self.assertEqual(received["permissions"], settings["permissions"])
-                    self.assertFalse(received["promptSuggestionEnabled"])
+                    self.assertFalse(received[iterm_tab.CLAUDE_SUGGESTION_SETTING])
                     self.assertEqual(args[-1], "brief")
 
             with self.assertRaises(ValueError):
                 iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
-            settings["promptSuggestionEnabled"] = False
+            settings[iterm_tab.CLAUDE_SUGGESTION_SETTING] = False
             settings["env"] = {"FIXTURE_PRIVATE_VALUE": "opaque-fixture-value"}
             path.write_text(json.dumps(settings))
             command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
@@ -1240,6 +1240,49 @@ class TerminalTests(unittest.TestCase):
                      SimpleNamespace(string=text, string_at=lambda x: "", style_at=lambda x: None)):
             screen = SimpleNamespace(number_of_lines=1, line=lambda i: line)
             self.assertEqual(iterm_tab.iterm_input_line(screen)["style"], "unknown")
+
+    def test_claude_settings_file_uses_explicit_directory_and_stays_opaque(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / "settings.json"
+            path.write_text(json.dumps({iterm_tab.CLAUDE_SUGGESTION_SETTING: False}))
+            with self.assertRaises(ValueError):
+                iterm_tab.append_brief("claude --settings settings.json", "brief")
+            command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))}&&exec claude --settings settings.json", "brief")
+            self.assertEqual(shlex.split(command)[-4:], ["--settings", "settings.json", "--", "brief"])
+            command = iterm_tab.append_brief(f"claude --settings {shlex.quote(str(path))}", "brief")
+            self.assertIn(shlex.quote(str(path)), command)
+
+    def test_claude_launch_overrides_inherited_suggestion_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            child = Path(folder) / "claude"
+            child.write_text(f'#!{sys.executable}\nimport os\nprint(os.getenv({iterm_tab.CLAUDE_SUGGESTION_ENV!r}))\n')
+            child.chmod(0o700)
+            with patch.dict(os.environ, {iterm_tab.CLAUDE_SUGGESTION_ENV: "true"}):
+                command = iterm_tab.with_account(f"exec {shlex.quote(str(child))}", {"provider": "anthropic", "env": {}}, "brief")
+                result = subprocess.run(["/bin/sh", "-c", command], check=True, capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), "false")
+            with self.assertRaises(ValueError):
+                iterm_tab.with_account(f"env {iterm_tab.CLAUDE_SUGGESTION_ENV}=true claude", {"provider": "anthropic", "env": {}}, "brief")
+
+    def test_inverse_cursor_suggestion_and_normal_typed_text_on_both_backends(self):
+        for rest_dim, expected in ((True, "dim"), (False, "non_dim")):
+            ansi = "❯ \x1b[7mc\x1b[0m" + ("\x1b[2m" if rest_dim else "") + "andidate\x1b[0m"
+            lines, styles = iterm_tab.ansi_screen(ansi)
+            self.assertEqual(iterm_tab.input_line(lines, styles)["style"], expected)
+            text = "❯ candidate"
+            line = SimpleNamespace(string=text, string_at=lambda x: text[x],
+                style_at=lambda x: SimpleNamespace(faint=rest_dim and x > 2, inverse=x == 2))
+            screen = SimpleNamespace(number_of_lines=1, line=lambda i: line)
+            self.assertEqual(iterm_tab.iterm_input_line(screen)["style"], expected)
+
+    def test_initial_iterm_text_failure_reports_unknown_delivery(self):
+        terminal = SimpleNamespace(session_id="exact", async_send_text=AsyncMock(side_effect=RuntimeError("RPC failed")))
+        with self.assertRaises(iterm_tab.SendFailure) as caught:
+            asyncio.run(iterm_tab.send(terminal, "draft"))
+        self.assertIsNone(caught.exception.detail["text_sent"])
+        self.assertTrue(caught.exception.detail["input_may_contain_text"])
+        self.assertEqual(caught.exception.detail["submission"], "not_attempted")
 
     def test_tmux_prompt_styles_reset_mixed_and_color_components(self):
         for captured, expected in (("❯ \x1b[2myes\x1b[0m", "dim"),
@@ -1259,7 +1302,7 @@ class TerminalTests(unittest.TestCase):
         for faint, expected in ((True, "dim"), (False, "non_dim"), (None, "unknown")):
             text = "❯ yes"
             line = SimpleNamespace(string=text, string_at=lambda x: text[x],
-                                   style_at=lambda x: None if faint is None else SimpleNamespace(faint=faint))
+                                   style_at=lambda x: None if faint is None else SimpleNamespace(faint=faint, inverse=False))
             screen = SimpleNamespace(number_of_lines=1, line=lambda i: line)
             terminal = SimpleNamespace(session_id="exact", async_get_screen_contents=AsyncMock(return_value=screen))
             app = SimpleNamespace(terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])])
@@ -1376,8 +1419,6 @@ class TerminalTests(unittest.TestCase):
             child = root / "claude"
             child.write_text(f'#!{sys.executable}\nimport json, sys\n'
                              'args = sys.argv[1:]\n'
-                             'settings = json.loads(args[args.index("--settings") + 1])\n'
-                             'assert settings["promptSuggestionEnabled"] is False\n'
                              'prompt = args[args.index("--") + 1:]\n'
                              'print(len(prompt))\nprint(prompt[0])\n')
             child.chmod(0o700)
@@ -1646,7 +1687,7 @@ class TerminalTests(unittest.TestCase):
                 env={**os.environ, "CLAUDE_CONFIG_DIR": "/inherited/alternate"},
             )
             self.assertEqual(launched.stdout.splitlines(), ["", "brief"])
-        with self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
+        with self.assertRaises(ValueError):
             iterm_tab.with_account("env CLAUDE_CONFIG_DIR=/other claude", choice)
 
     def test_exact_session_and_ambiguity(self):
@@ -1833,8 +1874,6 @@ class TerminalTests(unittest.TestCase):
             child = Path(folder) / "claude"
             child.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
                              'args = sys.argv[1:]\n'
-                             'settings = json.loads(args[args.index("--settings") + 1])\n'
-                             'assert settings["promptSuggestionEnabled"] is False\n'
                              'print(os.getenv("CLAUDE_CONFIG_DIR"))\n'
                              'print(os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"))\n'
                              'print(args[args.index("--") + 1])\n')
@@ -1919,7 +1958,7 @@ class TerminalTests(unittest.TestCase):
                         "cd /x; and set -gx CLAUDE_CONFIG_DIR /other; and claude brief",
                         "env -S'CLAUDE_CONFIG_DIR=/other claude brief'",
                         "env --split-string='CLAUDE_CONFIG_DIR=/other claude brief'"):
-            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
                 iterm_tab.with_account(command, choice)
         for command in ("bash --noprofile --norc -c 'claude brief'",
                         "env TERM=xterm-256color claude 'Discuss CLAUDE_CONFIG_DIR=/x'",

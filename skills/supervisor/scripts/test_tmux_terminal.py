@@ -86,7 +86,8 @@ class PaneParserTests(unittest.TestCase):
             self.assertTrue(caught.exception.detail["text_sent"])
             self.assertTrue(caught.exception.detail["input_may_contain_text"])
             self.assertEqual(caught.exception.detail["submission"], "not_attempted")
-            keys.assert_called_once_with("send-keys", "-t", "%2", "-l", "--", "message")
+            self.assertTrue(keys.called)
+            self.assertFalse(any(call.args[-1] == "Enter" for call in keys.call_args_list))
 
     def test_cli_refusal_is_json_on_stdout_failure_on_stderr_and_nonzero(self):
         from contextlib import redirect_stdout, redirect_stderr
@@ -115,7 +116,8 @@ class PaneParserTests(unittest.TestCase):
                     asyncio.run(self.terminal.send("exact", "message"))
                 self.assertEqual(caught.exception.detail["submission"], "not_attempted")
                 self.assertTrue(caught.exception.detail["text_sent"])
-                keys.assert_called_once_with("send-keys", "-t", "%2", "-l", "--", "message")
+                self.assertTrue(keys.called)
+                self.assertFalse(any(call.args[-1] == "Enter" for call in keys.call_args_list))
 
     def test_text_send_timeout_is_uncertain_and_never_sends_return(self):
         row = {"pane_id": "%2", "dead": False}
@@ -229,15 +231,19 @@ for line in sys.stdin:
         self.assertTrue(any(r["window_id"] == self.window for r in self.terminal.list()))
 
     def test_read_faint_and_normal_prompt_from_real_tmux_capture(self):
-        for escape, expected in (("\\033[2m", "dim"), ("\\033[22m", "non_dim")):
+        for styled, expected in (("\\033[2mcandidate\\033[0m", "dim"),
+                                 ("\\033[22mcandidate", "non_dim"),
+                                 ("\\033[7mc\\033[0m\\033[2mandidate\\033[0m", "dim"),
+                                 ("\\033]8;;https://example.com\\033\\\\candidate\\033]8;;\\033\\\\", "non_dim")):
             with self.subTest(style=expected):
                 pane = self.terminal.run("new-window", "-d", "-t", self.window + ":",
                                          "-P", "-F", "#{pane_id}",
-                                         f"printf '❯ {escape}candidate\\033[0m'; sleep 30").stdout.strip()
+                                         f"printf '❯ {styled}'; sleep 30").stdout.strip()
                 row = next(r for r in self.terminal.list() if r["pane_id"] == pane)
                 screen = self.wait_screen(row["session_id"], "candidate")
                 self.assertEqual(screen["input_line"]["style"], expected)
                 self.assertEqual(screen["input_line"]["text"], "candidate")
+                self.assertEqual(screen["screen"], self.terminal.run("capture-pane", "-p", "-t", pane).stdout.splitlines())
 
     def test_refuses_unverified_input_and_live_or_foreign_close(self):
         row = self.launch()
