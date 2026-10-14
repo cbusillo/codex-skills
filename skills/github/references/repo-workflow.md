@@ -336,12 +336,14 @@ accepting a release, or an outside event, keep the issue open with a recorded
 wait naming the event and its actor under github-plan's
 [wait procedure](cli-reference.md#planning-claim) and
 [Status Labels](../../github-plan/SKILL.md#status-labels).
+Name the event itself, never an agent's return to confirm it.
 Use `Refs` while that event remains outstanding. Preserve unresolved Director,
 Client, and other people's waits; a merge does not resolve them or authorize a
 release. A parent or milestone closes only when its own exit criteria hold under
 the [milestone contract](../../github-plan/references/milestones.md).
-Real remaining engineering work stays actionable with its own completing PR,
-rather than being recorded as an event wait.
+Real remaining engineering work stays actionable: a source change has its own
+completing PR, and an operational step within the task's authority is carried
+through its supported path. Neither is recorded as an event wait.
 Split old oversized issues into PR-sized deliverables when working them;
 preserve their original requests under the
 [issue ownership rules](issue-templates.md), rather than rewriting them.
@@ -601,7 +603,7 @@ feedback first when the fix will create a new SHA.
 
 ## Post-Merge Verification
 
-Merge success is not the finish line. After a PR merges, wait for relevant
+As part of landing, follow relevant
 post-merge Actions/check suites on the target/default branch when repo config
 says to or when the task affects readiness, deploy, security, or shared quality.
 

@@ -345,8 +345,9 @@ including non-dim text, establishes neither its author nor approval.
    append "then the Supervisor verifies/qualifies/reads back the deployed
    change" after routing. Follow GitHub's
    [issue closing guidance](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof):
-   record real event waits by event and actor, and real remaining engineering
-   work by its own completing PR. Preserve people's waits.
+   record real event waits by event and actor. Brief real remaining source work
+   with its own completing PR, or an authorized operational step through its
+   supported path. Preserve people's waits.
    Pass each launch's prompt through `iterm_tab.py new --brief-file`; keep the
    command file to the agent invocation and settings. The launcher validates
    every brief before launch side effects; read the launching procedure in
@@ -485,8 +486,11 @@ for products a Client runs business on.
    gaps against the full finish line. Omit records carrying `selection_exclusion`
    from implementation briefs until reconciliation. Read post-merge comments as well as
    Current Status; if they establish a new fix or acceptance step, update the status
-   and brief that verified remainder. For other flagged records, brief only a verified
-   remaining step; do not repeat the merged implementation. A merged PR alone
+   and brief that real remainder. For other flagged records, reconcile a
+   qualification-only come-back step under the
+   [issue closing guidance](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
+   instead of briefing another agent to verify completed work. Brief only real
+   remaining engineering; record event waits as waits. A merged PR alone
    never completes a split remainder or releases a person/event hold.
    Review each reported wait
    against the full issue and current evidence before correcting its status;

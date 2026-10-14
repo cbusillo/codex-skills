@@ -141,8 +141,10 @@ every retained artifact has a running session. `verification_only` reports a
 recorded qualification frontier after delivered source or before a conditionally
 gated later source step. `scope_review` reports delivered slices whose remaining
 scope is routed separately or unclear. These reports do not close an issue,
-clear a hold, or prove its whole finish line complete. Agent qualification and
-Supervisor follow-through remain active.
+clear a hold, or prove its whole finish line complete. Reconcile qualification-only
+come-back steps under GitHub's
+[issue closing guidance](../../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
+before selection; brief real remaining engineering and record event waits as waits.
 
 The helper's `candidates` are possible source work and may need review. The CLI
 can populate `available_candidates` without a caller snapshot when the current

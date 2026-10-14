@@ -46,8 +46,9 @@ Close an issue at the PR completing its work. The PR's tests and the deploy's
 existing health checks are the proof; add no per-issue deploy checks or agent
 come-back steps. If the real finish line is an event, record a wait naming
 that event and its actor. Preserve people's waits and the parent's or
-milestone's own exit criteria. Real remaining engineering work has its own
-completing PR and stays actionable within the task's authority.
+milestone's own exit criteria. Real remaining engineering stays actionable:
+source changes have their own completing PR, and operational steps are carried
+through their supported path within the task's authority.
 Before recording a split or handoff, read github-plan's
 [Status Labels](../github-plan/SKILL.md#status-labels).
 Never substitute a comment for an unmet finish line, or keep completed work
