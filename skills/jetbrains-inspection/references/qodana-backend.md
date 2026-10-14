@@ -57,17 +57,20 @@ Trial availability and dry-run refusal are permitted under
 [Q261](https://github.com/cbusillo/jetbrains-inspection-api/issues/498#issuecomment-6153109838).
 An observed trial start, issuance, activation, obtaining or purchase step stops
 the worker immediately, deletes its private state, and records a count-only
-`boundary-stop.json` in the Qodana cache. Stop work and report the boundary to
+`boundary-stop.json` under `~/.local/state/jetbrains-inspection/qodana`, outside
+the task cache and its retention. Stop work and report the boundary to
 the Director; subsequent runs refuse while that receipt exists. Do not remove
 it to continue without a recorded Director decision. A log guard is an
 observation of this run, not a guarantee or server-side licensing audit.
 
-Runs serialize under a host-wide lock and refuse admission if another Qodana
+Runs serialize under a shared user lock and refuse admission if another Qodana
 container is visible or load1 exceeds 64. The container has hard 2-CPU, 4-GiB
 memory-and-swap and 512-PID caps, host/container nice 10, and Docker logging
 turned off. It pauses above load1 64 and resumes when load falls below it;
 the wall deadline still applies while paused. Removal addresses only the
-run's unique container, including its writable layer.
+run's unique container, including its writable layer. On Linux the container
+runs with the caller's UID/GID to keep generated state removable; native Linux
+runtime qualification is separate from this Mac's measured run.
 
 `JETBRAINS_INSPECTION_CACHE_DIR` selects the existing helper cache root; on
 hosts that require external task storage, set it to the task-private directory
@@ -79,6 +82,15 @@ Only sanitized findings and safe count/hash/resource/deletion receipts survive.
 copy needed safe evidence to the owning issue/task-evidence, then remove the
 run artifact during closeout. A failed deletion reports UNKNOWN and requires
 recovery; process exit zero is not a green gate.
+
+An owner-only journal in that same fixed state directory records each run before
+license copying. After SIGKILL/crash, the next invocation holds the kernel lock
+and recovers only journaled profiles with matching ownership markers and
+containers with the exact run label and private mount. Unknown ownership or
+unavailable Docker retains the record and returns UNKNOWN. Changing task cache
+roots neither loses recovery custody nor lifts a trial stop. A forcibly killed
+helper cannot report cleanup at that instant; recovery confirms deletion on
+the next invocation. Do not force-delete unproved state.
 
 The backend returns the normal schema-v1 agent envelope with additive
 `backend: qodana`, pinned image/run/source provenance, findings by file and

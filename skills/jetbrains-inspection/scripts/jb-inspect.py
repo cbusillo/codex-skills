@@ -541,13 +541,7 @@ def main() -> int:
         if args.command == "agent":
             if args.backend == "qodana":
                 # Keep headless runs outside all desktop configuration/lifecycle paths.
-                backend_path = Path(__file__).with_name("qodana_backend.py")
-                spec = importlib.util.spec_from_file_location("jb_qodana_backend", backend_path)
-                if spec is None or spec.loader is None:
-                    raise RuntimeError("Qodana backend unavailable")
-                backend = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(backend)
-                result = backend.run(args, sys.modules[__name__])
+                result = command_qodana(args)
                 print(public_json(result))
                 return 0
             context = build_context(args)
@@ -587,6 +581,16 @@ def main() -> int:
     finally:
         _ACTIVE_CLIENT_RUN_ID = previous_client_run_id
     return 2
+
+
+def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
+    backend_path = Path(__file__).with_name("qodana_backend.py")
+    spec = importlib.util.spec_from_file_location("jb_qodana_backend", backend_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Qodana backend unavailable")
+    backend = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backend)
+    return backend.run(args, sys.modules[__name__])
 
 
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:

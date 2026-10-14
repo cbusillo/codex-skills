@@ -20,6 +20,7 @@ import signal
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -36,7 +37,7 @@ LOAD_LIMIT = 64
 FINDING_LIMIT = 25
 # An effective profile and a successful exit are not execution/completeness proof.
 PARITY_GAPS = {
-    "python": ["python_parity_unqualified", "python_clean_completeness_unproven"],
+    "python": ["python_parity_unqualified", "measured_python_DuplicatedCode_HttpUrlsUsage_gap_unqualified", "python_clean_completeness_unproven"],
     "jvm": ["jvm_module_source_roots_parity_unproven", "jvm_intended_feature_coverage_unproven"],
 }
 
@@ -96,6 +97,61 @@ def worker_lock_path():
     return Path("/tmp") / f"codex-skills-qodana-{os.getuid()}.lock"
 
 
+def state_dir():
+    # Shared across task caches and outside cache/30-day task retention.
+    return Path.home() / ".local/state/jetbrains-inspection/qodana"
+
+
+def save_run_record(private, receipt):
+    record = {"run_id": receipt["run_id"], "private": str(private),
+              "container_name": "jb-qodana-" + receipt["run_id"]}
+    (private / "owner.json").write_text(json.dumps(record))
+    path = state_dir() / (receipt["run_id"] + ".json")
+    path.write_text(json.dumps(record))
+    path.chmod(0o600)
+    return path
+
+
+def recover_runs(env):
+    """Called only under the kernel-held worker lock, so prior helpers are gone.
+
+    Recover exact journaled state after SIGKILL/crash, never by age/PID/path alone.
+    The per-run marker and container run label/mount must agree before removal.
+    """
+    count = 0
+    for path in state_dir().glob("*.json"):
+        if path.name == "boundary-stop.json":
+            continue
+        if path.is_symlink():
+            raise Blocked("qodana_recovery_ownership_unproven")
+        record = json.loads(path.read_text())
+        run_id = str(uuid.UUID(record["run_id"]))
+        private = Path(record["private"])
+        name = "jb-qodana-" + run_id
+        if path.stem != run_id or record["container_name"] != name or not private.is_absolute() or not private.name.startswith("private-") or private.is_symlink():
+            raise Blocked("qodana_recovery_ownership_unproven")
+        if private.exists():
+            marker = private / "owner.json"
+            if marker.is_symlink() or not marker.is_file() or json.loads(marker.read_text()) != record:
+                raise Blocked("qodana_recovery_ownership_unproven")
+        inspection = command(["docker", "container", "inspect", name], env=env)
+        if inspection.returncode == 0:
+            info = json.loads(inspection.stdout)[0]
+            labels = info.get("Config", {}).get("Labels", {})
+            mounts = info.get("Mounts", [])
+            if labels.get("codex-skills.qodana.run") != run_id or not any(m.get("Destination") == "/private" and m.get("Source") == str(private) for m in mounts):
+                raise Blocked("qodana_recovery_ownership_unproven")
+            if not remove_container(name, env):
+                raise Blocked("qodana_recovery_incomplete")
+        elif b"No such" not in inspection.stderr:
+            raise Blocked("qodana_recovery_unavailable")
+        if private.exists():
+            shutil.rmtree(private)
+        path.unlink()
+        count += 1
+    return count
+
+
 def profile_for(repo, name):
     candidates = list((repo / ".idea/inspectionProfiles").glob("*.xml"))
     if name:
@@ -146,12 +202,15 @@ def unpack_plugins(paths, cache):
 
 def docker_argv(name, image, private, language, uv_binary=None):
     argv = ["nice", "-n", "10", "docker", "run", "--pull", "never", "--name", name,
-            "--label", "codex-skills.qodana=local", "--log-driver", "none", "--cpus", "2",
+            "--label", "codex-skills.qodana=local", "--label", "codex-skills.qodana.run=" + name.removeprefix("jb-qodana-"),
+            "--log-driver", "none", "--cpus", "2",
             "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "512",
             "--entrypoint", "/usr/bin/nice", "-v", f"{private}:/private",
             "-v", f"{private / 'project'}:/data/project",
             "-e", "HOME=/private/home", "-e", "QODANA_CONF=/private/config", "-e", "QODANA_DATA=/private/data",
             "-e", f"{'PYCHARM' if language == 'python' else 'IDEA'}_VM_OPTIONS=/private/probe.vmoptions"]
+    if sys.platform != "darwin":
+        argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
     if language == "python":
         configured = "bootstrap" in json.loads((private / "qodana.yaml").read_text())
         argv += ["-e", "QODANA_PYTHON_PATH=" + ("/data/project/.venv/bin/python" if configured else "/usr/bin/python3")]
@@ -220,14 +279,14 @@ def collect_findings(results, selected, args):
     runs = data.get("runs")
     if data.get("version") != "2.1.0" or not isinstance(runs, list) or len(runs) != 1:
         raise Blocked("qodana_sarif_invalid")
-    run = runs[0]
-    if not isinstance(run.get("results"), list):
+    sarif_run = runs[0]
+    if not isinstance(sarif_run.get("results"), list):
         raise Blocked("qodana_sarif_invalid")
-    invocations = run.get("invocations", [])
+    invocations = sarif_run.get("invocations", [])
     if any(item.get("executionSuccessful") is False for item in invocations):
         raise Blocked("qodana_execution_failed")
     findings = []
-    for result in run["results"]:
+    for result in sarif_run["results"]:
         if result.get("suppressions") or result.get("baselineState") == "absent":
             continue
         rule = result.get("ruleId")
@@ -258,7 +317,7 @@ def collect_findings(results, selected, args):
     return findings
 
 
-def coverage_gaps(language, selected, expected, results):
+def coverage_gaps(language, selected, expected, results, odoo_project=False):
     gaps = list(PARITY_GAPS[language])
     profiles = list(results.rglob("effective.profile.xml"))
     if len(profiles) != 1:
@@ -267,7 +326,7 @@ def coverage_gaps(language, selected, expected, results):
         tools = ElementTree.parse(profiles[0]).getroot().iter("inspection_tool")
         actual = {t.get("class") for t in tools if t.get("enabled") == "true"}
         gaps.extend("effective_profile_missing:" + str(rule) for rule in sorted(expected - actual))
-    if any(Path(f).name == "__manifest__.py" for f in selected) or expected & {"OdooPy", "OdooXml"}:
+    if odoo_project or any(Path(f).name == "__manifest__.py" for f in selected) or expected & {"OdooPy", "OdooXml"}:
         gaps += ["odoo_effective_default_unproven", "odoo_model_roots_interpreter_unproven", "OdooXml_execution_unproven",
                  "odoo_optional_integrations_unqualified"]
     supported = {".py"} if language == "python" else {".java", ".kt", ".kts", ".gradle"}
@@ -372,13 +431,13 @@ def execute(argv, name, private, env, timeout, receipt):
             process.stdout.close()
 
 
-def envelope(args, host, receipt, findings, reason, gaps, artifact):
+def envelope(host, receipt, findings, reason, gaps, artifact):
     verdict = "RED" if findings and reason == "qodana_completed" else "UNKNOWN"
     action = "Fix current findings; retain the recorded coverage gaps." if verdict == "RED" else "Resolve the reported prerequisite or qualify coverage before using Qodana as a gate; the API remains the default."
     if reason == "qodana_trial_or_purchase_stop":
         action = "Stop Qodana work and report the trial/purchase boundary to the Director; do not activate or purchase."
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "qodana",
-            "status": "findings" if verdict == "RED" else "error", "helper_exit_code": 0 if verdict == "RED" else 3,
+            "status": "findings" if verdict == "RED" else "error", "helper_exit_code": host.classify_run_exit({"verdict": verdict}),
             "agent_result": {"verdict": verdict, "bucket": "findings" if verdict == "RED" else "environment_blocked",
                              "retry_policy": {"retry": False, "max_attempts": 0, "wait_ms": 0}, "terminal": True,
                              "next_action": action, "agent_report": f"{verdict}: {reason}; {len(findings)} findings; coverage remains unqualified."},
@@ -400,6 +459,8 @@ def run(args, host):
                "backend_revision": "sha256:" + digest(Path(__file__))}
     findings, gaps, reason, artifact = [], [], "qodana_prerequisite_failed", None
     private = None
+    root = None
+    journal = None
     lock = None
     env = safe_env()
     old_handlers = {}
@@ -416,12 +477,23 @@ def run(args, host):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Blocked("qodana_worker_busy") from None
+        state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
+        endpoint = checked(["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], env=env).decode().strip()
+        if not endpoint.startswith("unix://"):
+            raise Blocked("qodana_local_docker_required")
+        # Pin every subsequent command to this verified local socket, even if
+        # another task changes Docker's current context while this run executes.
+        env["DOCKER_HOST"] = endpoint
+        receipt["recovered_run_count"] = recover_runs(env)
+        if (state_dir() / "boundary-stop.json").exists():
+            raise Blocked("qodana_stop_recorded")
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("qodana_host_load_paused")
         repo = Path(host.git_root(Path(args.repo).expanduser().resolve()) or args.repo).resolve()
-        config = host.read_repo_config(repo).get("qualityGate", {}).get("inspection", {})
+        repository_config = host.read_repo_config(repo)
+        config = repository_config.get("qualityGate", {}).get("inspection", {})
         host.parse_repository_preparation(config)
-        scope = args.scope or host.first_scope(config.get("scopePreference")) or "changed_files"
+        scope = args.scope or host.first_scope(config.get("scopePreference")) or host.first_scope(repository_config.get("jetbrains", {}).get("scopePreference")) or "changed_files"
         receipt["scope"] = scope
         raw_paths = host.inspection_scope_paths(args, repo, scope)
         selected = set()
@@ -445,9 +517,6 @@ def run(args, host):
         receipt["image"] = image
         profile, expected = profile_for(repo, args.profile or config.get("profile", ""))
         receipt["profile_sha256"] = digest(profile)
-        endpoint = checked(["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], env=env).decode().strip()
-        if not endpoint.startswith("unix://"):
-            raise Blocked("qodana_local_docker_required")
         checked(["docker", "image", "inspect", image], env=env)
         active = checked(["docker", "ps", "--format", "{{.Image}}"], env=env).decode()
         if "qodana" in active.lower():
@@ -455,11 +524,10 @@ def run(args, host):
         # The shared cache root is overridable for isolated tests and host policy.
         root = host.cache_dir() / "qodana"
         root.mkdir(parents=True, exist_ok=True)
-        if (root / "boundary-stop.json").exists():
-            raise Blocked("qodana_stop_recorded")
         private = Path(tempfile.mkdtemp(prefix="private-", dir=root))
         private.chmod(0o700)
         receipt["profile_deleted"] = False
+        journal = save_run_record(private, receipt)
         for name in ("project", "config", "home", "cache", "results", "logs", "data", "bin"):
             (private / name).mkdir(mode=0o700)
         hashes = snapshot(repo, private / "project")
@@ -485,13 +553,15 @@ def run(args, host):
         copy_licenses(args.qodana_license_file, private / "config", receipt)
         name = "jb-qodana-" + receipt["run_id"]
         receipt["container_name"] = name
-        receipt["container_removed"] = False
         argv = docker_argv(name, image, private, language, uv_binary)
         if scope == "directory":
-            argv += ["--only-directory", str(Path(args.directory).relative_to(repo)) if Path(args.directory).is_absolute() else args.directory]
+            argv += ["--only-directory", host.normalize_inspection_lane_path(args.directory, repo).relative_to(repo).as_posix()]
         receipt["repo_head_sha"] = host.git_head_sha(repo)
+        receipt["container_removed"] = False
         execute(argv, name, private, env, max(1, args.timeout_ms / 1000), receipt)
-        gaps = coverage_gaps(language, selected, expected, private / "results")
+        gaps = coverage_gaps(language, selected, expected, private / "results", any(Path(f).name == "__manifest__.py" for f in hashes))
+        if config.get("lanes"):
+            gaps.append("qodana_lane_models_unqualified")
         findings = collect_findings(private / "results", selected, args)
         if any(digest(private / "project" / f) != hashes[f] for f in selected):
             raise Blocked("qodana_snapshot_inputs_changed")
@@ -505,6 +575,8 @@ def run(args, host):
         reason = "qodana_completed" if findings else "qodana_coverage_unproven"
     except Blocked as error:
         reason = str(error)
+    except host.InspectError as error:
+        reason = error.payload.get("error_reason", "qodana_scope_invalid")
     except KeyboardInterrupt:
         reason = "qodana_interrupted"
     except Exception:
@@ -515,7 +587,7 @@ def run(args, host):
         if reason == "qodana_trial_or_purchase_stop":
             receipt["boundary_event"] = True
             try:
-                (root / "boundary-stop.json").write_text(json.dumps({"run_id": receipt["run_id"], "reason": reason}))
+                (state_dir() / "boundary-stop.json").write_text(json.dumps({"run_id": receipt["run_id"], "reason": reason}))
                 receipt["boundary_recorded"] = True
             except OSError:
                 receipt["boundary_recorded"] = False
@@ -527,6 +599,11 @@ def run(args, host):
                 receipt["profile_deleted"] = False
         if not receipt["profile_deleted"] or not receipt["container_removed"]:
             reason = "qodana_cleanup_incomplete"
+        elif journal is not None:
+            try:
+                journal.unlink()
+            except OSError:
+                reason = "qodana_recovery_record_cleanup_failed"
         if lock is not None:
             lock.close()
         for sig, handler in old_handlers.items():
@@ -540,4 +617,4 @@ def run(args, host):
             artifact = {"status": "complete", "path": str(artifact_path), "sha256": digest(artifact_path), "finding_count": len(findings)}
         except OSError:
             reason = "qodana_findings_artifact_unavailable"
-    return envelope(args, host, receipt, findings, reason, gaps, artifact)
+    return envelope(host, receipt, findings, reason, gaps, artifact)
