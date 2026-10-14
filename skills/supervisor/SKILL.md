@@ -341,6 +341,13 @@ including non-dim text, establishes neither its author nor approval.
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs);
    a renewed wait follows that contract's withdrawal route, and a push needs
    a fresh `ready` call.
+   Use closing keywords for the PR completing an issue's work. Briefs must not
+   append "then the Supervisor verifies/qualifies/reads back the deployed
+   change" after routing. Follow GitHub's
+   [issue closing guidance](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof):
+   record real event waits by event and actor. Brief real remaining source work
+   with its own completing PR, or an authorized operational step through its
+   supported path. Preserve people's waits.
    Pass each launch's prompt through `iterm_tab.py new --brief-file`; keep the
    command file to the agent invocation and settings. The launcher validates
    every brief before launch side effects; read the launching procedure in
@@ -389,8 +396,10 @@ including non-dim text, establishes neither its author nor approval.
    directly.
    After landing, load `github` and complete
    [After A Merge](../github/SKILL.md#after-a-merge), including
-   [issue readback and remaining proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
-   for the work handed to you.
+   [issue closure and planning metadata](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
+   for the work handed to you. Reconcile closure in the landing flow; do not
+   create a later agent qualification step or per-issue deploy check. The PR's
+   tests and the deploy's existing health checks are the proof.
    For Q154's interim automatic routing, read the
    [auto-enqueue helper procedure](references/helpers.md#interim-auto-enqueue-watcher)
    before running it. Executing sessions still hand off; the Supervisor owns
@@ -477,8 +486,11 @@ for products a Client runs business on.
    gaps against the full finish line. Omit records carrying `selection_exclusion`
    from implementation briefs until reconciliation. Read post-merge comments as well as
    Current Status; if they establish a new fix or acceptance step, update the status
-   and brief that verified remainder. For other flagged records, brief only a verified
-   remaining step; do not repeat the merged implementation. A merged PR alone
+   and brief that real remainder. For other flagged records, reconcile a
+   qualification-only come-back step under the
+   [issue closing guidance](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
+   instead of briefing another agent to verify completed work. Brief only real
+   remaining engineering; record event waits as waits. A merged PR alone
    never completes a split remainder or releases a person/event hold.
    Review each reported wait
    against the full issue and current evidence before correcting its status;

@@ -881,7 +881,7 @@ Use PRs for all non-trivial changes.
   CI steps. Preserve existing screenshots, images, and links. Use repo-relative
   paths or GitHub links and no self-references. Follow
   [issue closing and post-merge proof](references/repo-workflow.md#issue-closing-and-post-merge-proof)
-  for closing language and later validation, and
+  for closing language and event waits, and
   [talking with the Director](../references/talking-with-the-director.md) for durable
   PR, issue, review, and closeout text.
 - **Labels**: Planning labels are only for durable planning issues. PR labels
@@ -1010,7 +1010,7 @@ failure and never causes a merge retry.
   reconciler. Never reset, stash, clean, or overwrite an unsafe checkout. The
   active task worktree stays the agent's source.
 - **Verify and sweep**: Check Actions and relevant security and quality signals
-  before closing planning state, then follow github-plan's
+  as part of landing, and follow github-plan's
   [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off) reconciliation.
   Run `uv run scripts/gh-plan.py --repo OWNER/REPO reconcile-landing --pr N --apply`
   for closing-reference metadata when the train's planning receipt is absent

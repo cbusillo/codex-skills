@@ -1224,7 +1224,10 @@ retrying until planning stalls.
 - Both local and global output separate observed ownership in `underway`,
   current qualification in `verification_only`, and delivered mixed scope in
   `scope_review`. Each row exposes `queue.next_action` and the evidence/read
-  limits. `available_candidates` can contain source work with no observed
+  limits. Reconcile qualification-only come-back steps under
+  [issue closing guidance](repo-workflow.md#issue-closing-and-post-merge-proof)
+  rather than assigning another verification session.
+  `available_candidates` can contain source work with no observed
   conflict; it still requires Choose Work and fresh claim preflight, including
   legacy wait review. No complete session inventory is implied. Local next
   accepts `--comment-limit` and `--selection-context` for current repository

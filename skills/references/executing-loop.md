@@ -39,18 +39,20 @@ for single PRs and stacks; load `launchplane` when it delegates landing to the
 train. Use `babysit-pr` for CI and review follow-through, then complete GitHub's
 [After A Merge](../github/SKILL.md#after-a-merge) procedure after confirmed landing.
 
-Size implementation issues, choose PR closing language, and place later proof
+Size implementation issues, choose PR closing language, and record event waits
 under GitHub's
 [issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
-The parent issue or milestone remains open until the result a person can see
-is real: the lane reads green, the record reads back, the feature runs.
-When the remaining steps are ordinary engineering within the task's authority,
-deploy it, switch it on, and read it back yourself. Record the next action,
-who takes it, and any Director question on the issue holding later proof.
+Close an issue at the PR completing its work. The PR's tests and the deploy's
+existing health checks are the proof; add no per-issue deploy checks or agent
+come-back steps. If the real finish line is an event, record a wait naming
+that event and its actor. Preserve people's waits and the parent's or
+milestone's own exit criteria. Real remaining engineering stays actionable:
+source changes have their own completing PR, and operational steps are carried
+through their supported path within the task's authority.
 Before recording a split or handoff, read github-plan's
 [Status Labels](../github-plan/SKILL.md#status-labels).
-Never substitute a comment for required proof, and never leave an issue open
-waiting on nobody.
+Never substitute a comment for an unmet finish line, or keep completed work
+open for an agent to return.
 
 Use [reviews by another model](model-review.md) to decide when a review is
 needed. For milestone work, honor the same authorization and direction stop

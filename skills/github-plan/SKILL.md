@@ -366,7 +366,7 @@ section updates read-only.
 Use `create` for a new plan and `update-section` for an owned section. Use body
 files or stdin for multiline content through the maintained helpers. Keep the
 finish line observable, with scope, acceptance evidence, and one next action.
-Size implementation issues and place post-merge proof under GitHub's
+Size implementation issues and record event waits under GitHub's
 [issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
 Keep Current Status concise:
 
@@ -526,7 +526,8 @@ decision comments to migrate them, or bypass a closure refusal through another t
 Choose PR closing language under GitHub's
 [issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
 After a landing, reconcile issues
-referenced by the canonical PR body and comments and every issue it unblocks,
+referenced by the canonical PR body and comments, their native parents, and
+every issue it unblocks,
 including cross-repository dependents, within
 [existing posting authority](#missing-cross-repository-gates). Check remaining
 waits against the landed evidence; update Current Status, labels and native
