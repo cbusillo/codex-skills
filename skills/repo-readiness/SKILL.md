@@ -61,9 +61,11 @@ inspection, browser, CI, deployment, or security gates.
    replacement setup command.
 
    Use the GitHub skill's [Merging](../github/SKILL.md#merging) route when
-   landing readiness matters. For a Director whose snapshot reports
-   `launchplane.mergeTrain.status: not_configured`, skip Launchplane context,
-   policy and train checks; assess the repository's own protected-branch gates.
+   landing readiness matters, including its direction and instruction precedence.
+   When that procedure selects the protected-branch route for a Director without
+   Launchplane, skip context, policy and train checks; assess the repository's
+   own protected-branch gates. Local `not_configured` alone cannot override a
+   Director-wide train requirement.
    No Launchplane failure or setup action belongs in that readiness report.
    Configured-but-unreadable enrollment remains unknown under that procedure.
 

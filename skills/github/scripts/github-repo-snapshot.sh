@@ -642,7 +642,7 @@ if [[ "$json_output" -eq 1 ]]; then
         }
       elif ($config.data.launchplane // null) == null then
         {
-          status: "not_configured",
+          status: "no_routing_metadata",
           enabled: false,
           warnings: []
         }
@@ -795,7 +795,7 @@ if [[ -n "$config_path" ]]; then
   # shellcheck disable=SC2016 # jq variables are intentionally single-quoted.
   run_or_note "launchplane metadata summary" jq -r '
     if (.launchplane // null) == null then
-      "status: not_configured"
+      "status: no_routing_metadata"
     else
       .launchplane as $lp |
       (if ($lp.context | type) == "object" then $lp.context else {} end) as $context |

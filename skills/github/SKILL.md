@@ -909,13 +909,18 @@ Use PRs for all non-trivial changes.
 
 ## Merging
 
-For a single PR or a stack, resolve the landing route from the snapshot's
+For a single PR or a stack, read the Director's overall `OWNER/direction`,
+repository and applicable global instructions, and task context first. Any
+train requirement there takes precedence over local configuration absence;
+missing host configuration then leaves routing unknown, never a direct merge.
+Resolve the landing route from the snapshot's
 `launchplane.mergeTrain` before any direct merge or branch integration:
 
-- `not_configured` means this Director has no Launchplane configuration. Use
-  the repository's own protected-branch PR merge, with the authority and fresh
-  checks below. Skip Launchplane skill, policy, context and train steps; no
-  Launchplane setup or repair is needed.
+- `not_configured` means no Launchplane configuration was found on this host.
+  With no train requirement in the sources above, the Director without
+  Launchplane uses the repository's own protected-branch PR merge, with the
+  authority and fresh checks below. Skip Launchplane skill, policy, context
+  and train steps; no Launchplane setup or repair is needed.
 - `enrolled` uses the train; `not_enrolled` is a confirmed active-policy read
   and allows the repository's protected-branch route unless instructions assign
   it to the train.
@@ -927,9 +932,6 @@ Repository metadata is only a positive configuration/routing hint, never
 enrollment authority. The snapshot's local configuration check also considers
 Launchplane environment settings and private config presence without reading
 credentials. Missing metadata or a missing URL alone does not prove absence.
-If repository instructions or task context require Launchplane, retain that
-route even when the local snapshot says `not_configured`; report the missing
-configuration as unknown routing rather than bypassing that requirement.
 
 When Launchplane's active policy, repository instructions,
 or task context assigns landing to its merge train, load

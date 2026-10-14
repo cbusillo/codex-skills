@@ -3,6 +3,7 @@
 # ///
 """Exercise the snapshot CLI offline with repository metadata fixtures."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -75,6 +76,7 @@ class SnapshotTests(unittest.TestCase):
                 cwd=root,
                 env={**env, "HOME": str(child_home), **(launchplane_env or {}),
                      "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh"),
+                     "GITHUB_REPO_SNAPSHOT_PYTHON": sys.executable,
                      "GITHUB_REPO_SNAPSHOT_CONFIGURATION_HELPER": str(configuration_helper),
                      "GITHUB_REPO_SNAPSHOT_POLICY_HELPER": str(policy_helper)},
                 capture_output=True, text=True,
@@ -224,7 +226,16 @@ class SnapshotTests(unittest.TestCase):
         route = json.loads(result.stdout)["launchplane"]["mergeTrain"]
         self.assertEqual(route["status"], "unknown")
         self.assertIsNone(route["enabled"])
-        self.assertEqual(route["reason"], "invalid_config")
+        helper = SCRIPT.parents[2] / "launchplane" / "scripts" / "launchplane-write-action.py"
+        spec = importlib.util.spec_from_file_location("policy_helper_under_test", helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "invalid.json"
+            config.write_text("invalid configuration")
+            with self.assertRaises(ValueError) as error:
+                module.load_config(str(config))
+        self.assertEqual(route["reason"], str(error.exception))
 
     def test_isolated_home_snapshot_never_takes_absent_path(self):
         result = self.snapshot({}, isolated_home=True,
