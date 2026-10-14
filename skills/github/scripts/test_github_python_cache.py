@@ -31,6 +31,7 @@ class CacheRoutingTests(unittest.TestCase):
             script.write_text('import json,os,sys; print(json.dumps([os.environ.get("UV_CACHE_DIR"),os.getcwd(),sys.argv[1:]]))\n')
             env = {**os.environ, "XDG_CONFIG_HOME": str(config.parent), "UV_PYTHON_DOWNLOADS": "never"}
             env.pop("UV_CACHE_DIR", None)
+            env.pop("HOME", None)
             for override in (None, root / "override"):
                 if override is not None:
                     env["UV_CACHE_DIR"] = str(override)

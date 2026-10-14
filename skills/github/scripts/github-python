@@ -1,8 +1,15 @@
 #!/bin/sh
 # Preserve project isolation while honoring the native user cache route.
 set -eu
-uv_user_home=${HOME:-$(cd ~ && pwd)}
-uv_config="${XDG_CONFIG_HOME:-$uv_user_home/.config}/uv/uv.toml"
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    uv_config="$XDG_CONFIG_HOME/uv/uv.toml"
+else
+    uv_user_home=${HOME:-}
+    if [ -z "$uv_user_home" ]; then
+        uv_user_home=$(uv run --no-project --no-config --no-cache --python 3.12 python -c 'from pathlib import Path; print(Path.home())')
+    fi
+    uv_config="$uv_user_home/.config/uv/uv.toml"
+fi
 if [ -f "$uv_config" ]; then
     cache_dir=$(uv --no-config --config-file "$uv_config" cache dir)
 else
