@@ -42,14 +42,17 @@ class ReminderTests(unittest.TestCase):
     def test_startup_keeps_commands_and_reference_without_the_procedure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "loop.md"
-            path.write_text("# Fixture loop\n\n```text\ngo    start work\nland  land work\n```\n\nDetailed fixture procedure.\n")
-            output = io.StringIO()
-            with mock.patch.dict(os.environ, {"CLAUDECODE": "0"}), mock.patch.object(hook, "LOOP_PATH", path), mock.patch.object(hook, "direction_root", return_value=Path.cwd()), mock.patch.object(hook, "read_marker", return_value=marker(turn=dt.datetime.now(dt.timezone.utc))), mock.patch.object(hook, "origin_repo", return_value=None), contextlib.redirect_stdout(output):
-                self.assertEqual(hook.main(), 0)
-            text = output.getvalue()
-            self.assertIn("```text\ngo    start work\nland  land work\n```", text)
-            self.assertIn(str(path), text)
-            self.assertNotIn("Detailed fixture procedure", text)
+            for fence in ("text", "console"):
+                with self.subTest(fence=fence):
+                    path.write_text(f"# Fixture loop\n\n```{fence}\ngo    start work\nland  land work\n```\n\nDetailed fixture procedure.\n")
+                    output = io.StringIO()
+                    with mock.patch.dict(os.environ, {"CLAUDECODE": "0"}), mock.patch.object(hook, "LOOP_PATH", path), mock.patch.object(hook, "direction_root", return_value=Path.cwd()), mock.patch.object(hook, "read_marker", return_value=marker(turn=dt.datetime.now(dt.timezone.utc))), mock.patch.object(hook, "origin_repo", return_value=None), contextlib.redirect_stdout(output):
+                        self.assertEqual(hook.main(), 0)
+                    text = output.getvalue()
+                    if fence == "text":
+                        self.assertIn("```text\ngo    start work\nland  land work\n```", text)
+                    self.assertIn(str(path), text)
+                    self.assertNotIn("Detailed fixture procedure", text)
 
     def test_archived_weekly_reminder_is_suppressed_without_hiding_daily_turn(self) -> None:
         state = marker(turn=ago(days=2))
@@ -264,9 +267,7 @@ An agent asks the owner before:
 
 - another fixture boundary
 
-Later procedure belongs in the full file.
-
-- a later list is not part of the opening boundaries
+A fixture acceptance boundary also lives in prose after the bullets.
 
 ## Journey
 
@@ -310,10 +311,7 @@ class OverallDirectionTests(unittest.TestCase):
 
     def test_shows_the_merged_stop_boundaries_link_and_loop(self) -> None:
         text = self.run_hook(self.reader(body=OVERALL))
-        self.assertIn("- a fixture boundary\n  with a wrapped condition", text)
-        self.assertIn("- another fixture boundary", text)
-        self.assertNotIn("Later procedure", text)
-        self.assertNotIn("- a later list", text)
+        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
         self.assertNotIn("Fixture purpose", text, "only the stop boundaries are printed, not the whole file")
         self.assertIn("https://github.com/owner/direction/", text)
         self.assertTrue(text.endswith(hook.loop_summary(hook.LOOP_PATH.read_text())))
@@ -352,7 +350,7 @@ class OverallDirectionTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", str(worktree)], check=True)
         text = self.run_hook(self.reader(error="error connecting to api.github.com"), cwd=worktree)
-        self.assertIn(hook.stop_boundary_bullets(OVERALL), text)
+        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
         self.assertIn(str(local.resolve()), text)
         self.assertNotIn("uncommitted draft", text)
         self.assertNotIn("committed proposal", text)
@@ -365,7 +363,7 @@ class OverallDirectionTests(unittest.TestCase):
         self.sibling_checkout()
         self.audit()
         text = self.run_hook(self.reader(body=OVERALL))
-        self.assertIn(hook.stop_boundary_bullets(OVERALL), text)
+        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
 
     def test_unreadable_overall_direction_is_one_line(self) -> None:
         text = self.run_hook(self.reader(error="error connecting to api.github.com"))

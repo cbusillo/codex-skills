@@ -12,7 +12,7 @@ own turn is older than a day, the hook reads the shared record, so a turn
 taken on another machine counts; when that read fails it says so instead of
 calling the turn overdue.
 With --turn, run for each Claude Code prompt, it prints a one-line skills reminder.
-At session start this hook prints the skills protocol on Claude Code and the executing loop for repositories with a
+At session start this hook prints the skills protocol on Claude Code and the executing loop's command block and reference for repositories with a
 root DIRECTION.md. In a repository without one, whose origin owner keeps an overall direction in OWNER/direction
 that has been audited on this machine or is checked out beside it, it prints that file's stop boundaries, where the file lives, and the loop.
 It reads the marker and prints one line when the last
@@ -207,24 +207,11 @@ def section(text: str, heading: str) -> str | None:
     return "\n".join(lines).strip() or None
 
 
-def stop_boundary_bullets(text: str) -> str:
-    """The opening boundary list, including wrapped lines, without later procedure."""
-    boundaries = section(text, "Stop Boundaries") or ""
-    lines: list[str] = []
-    for line in boundaries.splitlines():
-        if line.startswith(("- ", "* ", "+ ")) or (lines and line.startswith(("  ", "\t"))):
-            lines.append(line)
-        elif not line.strip():
-            continue
-        elif lines:
-            break
-    return "\n".join(lines) or "(no boundary list found; read the file in full)"
-
-
 def loop_summary(text: str) -> str:
     """Print the command block; keep the full procedure at its owning reference."""
     block = re.search(r"```text\n.*?\n```", text, re.DOTALL)
-    return (f"{block.group()}\n\nRead the [executing loop]({LOOP_PATH}) before its steps." if block else "")
+    link = f"Read the [executing loop]({LOOP_PATH}) before its steps."
+    return f"{block.group()}\n\n{link}" if block else link
 
 
 def run_reader(*args: str) -> subprocess.CompletedProcess[str]:
@@ -315,7 +302,7 @@ def overall_direction(repo: str | None, root: Path | None, marker: dict[str, obj
             )
         source = local_reason
         where = f"`git -C {local} show refs/remotes/origin/HEAD:DIRECTION.md` (on GitHub: {url})"
-    boundaries = stop_boundary_bullets(text)
+    boundaries = section(text, "Stop Boundaries") or "(the file has no Stop Boundaries section; read it in full)"
     return (
         f"Overall direction: this repository has no DIRECTION.md of its own, so {owner}'s overall direction applies. "
         f"Read {where} before acting. Its stop boundaries, from {source}:\n\n{boundaries}"

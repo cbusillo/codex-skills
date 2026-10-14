@@ -24,6 +24,7 @@
 - Validate instruction-only changes with the existing skill structure, reference,
   behavior, and command-policy validators. Do not add tests that merely duplicate
   wording or run unrelated runtime suites without an affected behavior.
+- For test changes, read the [shared test rules](instructions/global.md#tests).
 
 ## Runtime Checkout Discipline
 

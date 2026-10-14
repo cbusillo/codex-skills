@@ -620,8 +620,8 @@ when its session-start hook is registered.
 In a repository without one, when its origin repository owner's
 `OWNER/direction` repository is in the marker's audited repositories or is checked out as
 `direction` beside the repository's main checkout, it prints that overall
-direction's opening stop-boundary bullets, read from the merged default branch
-(or from that checkout's last-fetched default branch when GitHub cannot be read), with the
+direction's stop boundaries, read from the merged default branch (or from that
+checkout's last-fetched default branch when GitHub cannot be read), with the
 file's link and the executing loop. When neither can be read
 it says so in one line. Repositories under other repository owners print
 nothing extra.
@@ -729,8 +729,7 @@ See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).
 The [shared global instructions](instructions/global.md) tell agents on both
 hosts to read repository `AGENTS.md` and relevant nested files explicitly when
-the host has not already supplied them; repository guidance does not depend on
-Claude Code discovering that filename automatically.
+the host has not already supplied them.
 They name people and permissions with the shared [role words](skills/references/role-words.md):
 Director, Client, and admin.
 Existing authorization is reused within its scope; exact-action approvals and
