@@ -616,7 +616,9 @@ matching recognizes existing iTerm views; the startup command recognizes a
 gateway still attaching, so another launch does not create a second view.
 
 The first successful launch's `view` result reports `attached`, `opening`,
-`unavailable`, or `skipped`. On creation it reads iTerm's
+`pending_elsewhere`, `unavailable`, or `skipped`. A lock contender reports
+`pending_elsewhere`; this does not establish that the other opener succeeds.
+On creation it reads iTerm's
 [restore preference](https://iterm2.com/python-api/preferences.html#iterm2.preferences.PreferenceKey.OPEN_TMUX_WINDOWS_IN).
 For **tabs in the attaching window** (value 2), later agent windows appear as
 tabs there. Other values, or an unknown value, produce one warning in that
@@ -635,7 +637,12 @@ uv run skills/supervisor/scripts/iterm_tab.py --backend tmux view --window-id '<
 
 The `view_command` returned by `window` remains the manual attach command:
 `tmux -L supervisor -CC attach -t <window-id>`. Disconnecting or closing the
-view leaves the server and sessions running. Do not use `kill-server`,
+gateway leaves the server and sessions running. Use **Shell > tmux > Detach**
+to close the integrated view safely. iTerm's ordinary agent-tab/window Close
+action can kill the corresponding tmux window; it is not a detach operation.
+Opening the gateway may momentarily move focus; the helper restores the exact
+previously selected tab. Attachment can resize tmux panes, so let an agent's
+screen settle before verifying its input line. Do not use `kill-server`,
 `kill-session`, or a raw pane/window kill to disconnect or close workers.
 Existing plain iTerm sessions continue through the helper without `--backend
 tmux`; migrate by launching fresh tasks, never moving or restarting active work.

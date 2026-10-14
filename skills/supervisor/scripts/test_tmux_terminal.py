@@ -33,7 +33,8 @@ class ViewTests(unittest.TestCase):
         self.terminal = tmux_terminal.Terminal("supervisor")
         self.container = "$17"
         self.command = self.terminal.view_command(self.container)
-        self.app = SimpleNamespace(terminal_windows=[], buried_sessions=[], async_refresh=AsyncMock())
+        self.app = SimpleNamespace(terminal_windows=[], buried_sessions=[], async_refresh=AsyncMock(),
+                                   current_terminal_window=None)
         self.created = []
 
         class Profile:
@@ -77,9 +78,10 @@ class ViewTests(unittest.TestCase):
     def test_no_client_creates_gateway_and_pending_gateway_prevents_second_window(self):
         result = self.open()
         self.assertEqual(result["status"], "opening")
-        self.assertEqual(shlex.split(self.created[0]["command"])[-1], self.container)
-        self.assertEqual(shlex.split(self.created[0]["command"])[1:3], ["-L", self.terminal.socket_name])
-        self.assertIn("-CC", shlex.split(self.created[0]["command"]))
+        argv = shlex.split(self.created[0]["command"])
+        self.assertEqual(argv[argv.index("-t") + 1], self.container)
+        self.assertEqual(argv[argv.index("-L") + 1], self.terminal.socket_name)
+        self.assertIn("-CC", argv)
         self.assertTrue(self.created[0]["close_sessions_on_end"])
         self.assertNotIn("warning", result)
         self.assertEqual(self.open()["status"], "opening")
@@ -118,9 +120,15 @@ class ViewTests(unittest.TestCase):
         with patch.dict(sys.modules, {"iterm2": self.sdk}), \
                 patch.object(self.terminal, "view_lock", return_value=nullcontext(False)):
             result = asyncio.run(iterm_tab.open_tmux_view("connection", self.terminal, self.container))
-        self.assertEqual(result["status"], "opening")
+        self.assertEqual(result["status"], "pending_elsewhere")
         self.sdk.async_get_app.assert_not_called()
         self.assertFalse(self.created)
+
+    def test_window_creation_restores_the_exact_previously_selected_tab(self):
+        previous_tab = SimpleNamespace(async_select=AsyncMock())
+        self.app.current_terminal_window = SimpleNamespace(current_tab=previous_tab)
+        self.open()
+        previous_tab.async_select.assert_awaited_once()
 
     def test_gui_timeout_is_reported_without_retry_or_agent_input(self):
         with patch.object(tmux_terminal.sys, "platform", "darwin"), \
@@ -492,13 +500,18 @@ for line in sys.stdin:
             self.assertTrue(later)
 
     def test_one_view_receipt_per_batch_and_gui_failure_does_not_fail_launch(self):
-        with patch.object(tmux_terminal.Terminal, "view", return_value={"status": "unavailable"}) as view:
-            rows = self.launch(command_file=[self.command, self.command], brief_file=[self.brief, self.brief])
-        view.assert_called_once_with(self.window)
-        self.assertEqual(rows[0]["view"]["status"], "unavailable")
-        self.assertNotIn("view", rows[1])
-        for row in rows:
-            self.wait_screen(row["session_id"], "READY:")
+        for failure in ({"status": "unavailable"}, OSError("view failed")):
+            with self.subTest(failure=failure), patch.object(tmux_terminal.Terminal, "view") as view:
+                if isinstance(failure, Exception):
+                    view.side_effect = failure
+                else:
+                    view.return_value = failure
+                rows = self.launch(command_file=[self.command, self.command], brief_file=[self.brief, self.brief])
+                view.assert_called_once_with(self.window)
+                self.assertEqual(rows[0]["view"]["status"], "unavailable")
+                self.assertNotIn("view", rows[1])
+                for row in rows:
+                    self.wait_screen(row["session_id"], "READY:")
 
     def test_receipt_failure_retains_exact_staged_pane_without_starting_agent(self):
         with patch.object(account_choice, "record_launch", side_effect=OSError("storage full")):

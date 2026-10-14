@@ -675,7 +675,8 @@ async def open_tmux_view(connection, terminal, container):
     # iTerm's create-window RPC does not complete inside an API transaction.
     with terminal.view_lock(container) as acquired:
         if not acquired:
-            return {"status": "opening", "readback_required": True}
+            return {"status": "pending_elsewhere", "readback_required": True,
+                    "next_action": "Another opener holds the view lock. Inspect iTerm, then use view --window-id if needed."}
         app = await iterm2.async_get_app(connection)
         await app.async_refresh()
         clients = terminal.control_clients(container)
@@ -701,7 +702,13 @@ async def open_tmux_view(connection, terminal, container):
         # These overrides belong only to this newly created gateway. They never
         # save a profile or change preferences, and its exit leaves tmux running.
         profile.set_close_sessions_on_end(True)
-        window = await iterm2.Window.async_create(connection, profile_customizations=profile)
+        previous = app.current_terminal_window
+        previous_tab = previous.current_tab if previous else None
+        try:
+            window = await iterm2.Window.async_create(connection, profile_customizations=profile)
+        finally:
+            if previous_tab:
+                await previous_tab.async_select()
         result = {"status": "opening", "window_id": window.window_id if window else None,
                   "readback_required": True, "restore_windows_as": preference}
         if type(preference) is not int or preference != 2:
@@ -765,7 +772,9 @@ def main():
                 print(json.dumps(await open_tmux_view(connection, terminal, args.window_id)))
             except Exception as error:
                 # A view failure never changes a launch's submission outcome.
-                print(json.dumps({"status": "unavailable", "reason": type(error).__name__}))
+                print(json.dumps({"status": "unavailable", "reason": type(error).__name__,
+                                  "readback_required": True,
+                                  "next_action": "Inspect iTerm after unlocking, then use view --window-id; do not relaunch agents."}))
 
         iterm2.run_until_complete(view_connected)
         return

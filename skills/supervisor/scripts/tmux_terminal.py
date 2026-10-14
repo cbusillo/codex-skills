@@ -99,7 +99,7 @@ class Terminal:
             )
             if result.returncode == 0:
                 view = json.loads(result.stdout)
-                if isinstance(view, dict) and view.get("status") in {"attached", "opening", "unavailable"}:
+                if isinstance(view, dict) and view.get("status") in {"attached", "opening", "pending_elsewhere", "unavailable"}:
                     return {**view, "view_command": command}
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
@@ -280,8 +280,13 @@ async def operate(args):
             if choice:
                 result["account"] = account_choice.public(choice)
             results.append(result)
-            if len(results) == 1:
-                result["view"] = terminal.view(args.window_id)
         except Exception as error:
             raise iterm_tab.LaunchFailure(results, progress, error) from error
+        if len(results) == 1:
+            try:
+                result["view"] = terminal.view(args.window_id)
+            except Exception as error:
+                result["view"] = {"status": "unavailable", "reason": type(error).__name__,
+                                  "readback_required": True,
+                                  "next_action": "Inspect iTerm, then use view --window-id; do not relaunch agents."}
     return results[0] if len(results) == 1 else results
