@@ -913,6 +913,10 @@ For a single PR or a stack, read the Director's overall `OWNER/direction`,
 repository and applicable global instructions, and task context first. Any
 train requirement there takes precedence over local configuration absence;
 missing host configuration then leaves routing unknown, never a direct merge.
+An explicitly declared Launchplane setup or custom operator config path also
+means configured, even if the local detector finds nothing. Use that supplied
+configuration for the policy read; an unreadable setup still leaves routing
+unknown. Local absence never overrides a known Director setup.
 Resolve the landing route from the snapshot's
 `launchplane.mergeTrain` before any direct merge or branch integration:
 

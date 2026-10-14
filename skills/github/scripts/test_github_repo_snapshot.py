@@ -196,8 +196,7 @@ class SnapshotTests(unittest.TestCase):
                 self.assertNotIn("mergeTrainReason:", result.stdout)
             else:
                 summary = json.loads(result.stdout)["launchplane"]
-                self.assertFalse(any(warning["code"].startswith("missing_")
-                                     for warning in summary["warnings"]))
+                self.assertIsNone(summary["mergeTrain"].get("reason"))
                 self.assertEqual(summary["mergeTrain"]["status"], "not_configured")
                 self.assertFalse(summary["mergeTrain"]["enabled"])
 

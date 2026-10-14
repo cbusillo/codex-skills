@@ -817,7 +817,6 @@ fi
 section "Landing"
 if command -v jq >/dev/null 2>&1; then
   jq -r '[
-    (if .status == "not_configured" then "landingRoute: repository_protected_branch" else empty end),
     "mergeTrainStatus: " + .status,
     (if .reason != null then "mergeTrainReason: " + .reason else empty end),
     "mergeTrainEnabled: " + (if .enabled == null then "unknown" else (.enabled | tostring) end),
