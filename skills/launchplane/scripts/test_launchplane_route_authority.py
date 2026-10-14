@@ -310,5 +310,31 @@ def test_unreadable_apply_response_preserves_available_http_diagnostics():
     assert output["summary"]["trace_id"] == "launchplane_req_broken"
 
 
+@pytest.mark.parametrize("status", ["blocked", "conflict"])
+def test_apply_time_binding_refusal_proves_nothing_written(status):
+    code, output, _, post = run("route-binding-apply", [profiles(), *absent()],
+        [binding_response(), binding_response("apply", status=status)], binding_plan())
+    assert code != 0 and output["status"] == "stale" and post.call_count == 2
+    assert output["result"]["applied"] is False
+
+
+@pytest.mark.parametrize("error_code", ["mutation_in_progress", "mutation_reconciliation_required"])
+def test_unresolved_mutation_is_not_a_harmless_conflict(error_code):
+    code, output, _, post = run("route-binding-apply", [profiles(), *absent()],
+        [binding_response(), http_error(409, error_code)], binding_plan())
+    assert code != 0 and output["status"] == "outcome_unknown" and post.call_count == 2
+    assert output["summary"]["error_code"] == error_code
+
+
+@pytest.mark.parametrize("error", [http_error(403, "authorization_denied"),
+    h.LaunchplaneSafetyError("unsafe_redirect"), OSError("PRIVATE_SENTINEL")])
+def test_failed_audit_read_retains_accepted_trace_and_audit_id(error):
+    code, output, _, post = run("ingress-route-authority-apply", [*ingress_reads(), error],
+        [ingress_response(), ingress_apply_response()], ingress_plan())
+    assert code != 0 and output["status"] == "accepted_unverified" and post.call_count == 2
+    assert output["summary"]["trace_id"] == ingress_apply_response()["trace_id"]
+    assert output["records"]["ingress_route_audit_record_id"] == ingress_apply_response()["records"]["ingress_route_audit_record_id"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

@@ -56,6 +56,26 @@ def _scope(h: Any, args: Any) -> dict[str, str]:
     return scope
 
 
+def _apply_evidence(s: Session, payload: dict[str, Any], error: Any = None) -> None:
+    """Keep accepted-call evidence when a later read or projection fails."""
+    h = s.h
+    payload["summary"].update(h.service_response_diagnostics(error))
+    payload["summary"].update(h.service_response_diagnostics(s.apply_response))
+    if not s.apply_response:
+        return
+    if s.apply_response.get("replayed") is True:
+        try:
+            payload["summary"]["original_trace_id"] = h.public_trace_id(s.apply_response.get("original_trace_id"))
+        except h.LaunchplaneSafetyError:
+            pass
+    if s.args.command == "ingress-route-authority-apply":
+        try:
+            payload["records"] = {"ingress_route_audit_record_id": h.public_identifier(
+                s.apply_response.get("records", {}).get("ingress_route_audit_record_id"))}
+        except h.LaunchplaneSafetyError:
+            pass
+
+
 class Session:
     def __init__(self, h: Any, args: Any, settings: dict[str, str], request: dict[str, Any]):
         self.h, self.args, self.settings = h, args, settings
@@ -319,7 +339,14 @@ def execute(h: Any, args: Any) -> int:
                 response = s.post(args.command, body, apply=True)
                 if kind == "binding":
                     applied, candidate = _binding_result(h, response, body)
-                    if candidate != material["candidate"] or applied["status"] not in {"ready", "unchanged"}:
+                    if applied["status"] in {"blocked", "conflict"}:
+                        payload = h.base_payload(status="stale", operation=args.command, request=request)
+                        payload["result"] = {**applied, "applied": False}
+                        payload["summary"] = {"trace_id": h.public_trace_id(response.get("trace_id")),
+                            "recommendation": "The service refused the changed plan before writing. Review fresh evidence."}
+                        h.emit(payload)
+                        return 1
+                    if candidate != material["candidate"]:
                         raise ValueError("binding_apply_mismatch")
                     result = applied
                 else:
@@ -375,34 +402,33 @@ def execute(h: Any, args: Any) -> int:
     except urllib.error.HTTPError as exc:
         if s.apply_accepted:
             payload = h._apply_response_unverified(operation=args.command, request=request, label="route authority")
-            payload["summary"].update(h.service_response_diagnostics(s.apply_response))
+            _apply_evidence(s, payload)
             h.emit(payload)
         elif s.apply_started and (exc.code >= 500 or exc.code == 408):
             payload = h._apply_outcome_unknown(operation=args.command, request=request, label="route authority")
             payload["summary"].update(h.service_response_diagnostics(h._error_payload_from_http(exc)))
             h.emit(payload)
         else:
-            h.emit_http_error_payload(operation=args.command, request=request, exc=exc)
-    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+            payload = h.summarize_http_error(operation=args.command, request=request, exc=exc)
+            if s.apply_started and payload["summary"].get("error_code") in {"mutation_in_progress", "mutation_reconciliation_required"}:
+                payload["status"] = "outcome_unknown"
+                payload["summary"]["recommendation"] = "The service reports an unresolved mutation. Resolve its state before any retry; retain the original key."
+            h.emit(payload)
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         if s.apply_started:
             payload = (h._apply_response_unverified(operation=args.command, request=request, label="route authority") if s.apply_accepted
                        else h._apply_outcome_unknown(operation=args.command, request=request, label="route authority"))
-            payload["summary"].update(h.service_response_diagnostics(s.apply_response))
+            _apply_evidence(s, payload, exc)
             h.emit(payload)
         else:
             h.emit_provider_unavailable(operation=args.command, request=request)
     except (ValueError, KeyError, TypeError, h.LaunchplaneSafetyError) as exc:
         if s.apply_started:
             payload = (h._apply_outcome_unknown(operation=args.command, request=request, label="route authority")
-                       if isinstance(exc, h.LaunchplaneSafetyError) and exc.code == "unsafe_redirect"
+                       if not s.apply_accepted and isinstance(exc, h.LaunchplaneSafetyError) and exc.code == "unsafe_redirect"
                        else h._apply_response_unverified(operation=args.command, request=request, label="route authority"))
-            payload["summary"].update(h.service_response_diagnostics(exc if isinstance(exc, h.ServiceResponseError) else s.apply_response or s.provider))
-            if s.apply_response and kind == "ingress":
-                audit_id = s.apply_response.get("records", {}).get("ingress_route_audit_record_id")
-                try:
-                    payload["records"] = {"ingress_route_audit_record_id": h.public_identifier(audit_id)}
-                except h.LaunchplaneSafetyError:
-                    pass
+            payload["summary"].update(h.service_response_diagnostics(s.provider))
+            _apply_evidence(s, payload, exc)
             h.emit(payload)
         else:
             code = str(exc)

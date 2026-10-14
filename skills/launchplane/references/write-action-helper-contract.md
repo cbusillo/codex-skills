@@ -592,7 +592,12 @@ certificate evidence. Readback verifies the applied audit's scope, domains,
 edge, TLS ownership, operations and idempotency key. The service's limited audit
 read view is sufficient after that full-response check; host/certificate fields
 are also compared when available. Output retains the audit id and both traces
-on an idempotent replay. Route-binding
+on an idempotent replay. Audit GET authorization currently checks
+`ingress_route.plan` or `route_binding.read` at context scope; an identity with
+only instance-restricted rules can apply but cannot read that audit. Such a
+refusal remains `accepted_unverified` with its apply trace/audit id; record it
+on the owning authorization issue and do not broaden grants or switch identity.
+Route-binding
 plans bind current-record CAS evidence and the candidate's source ids/versions,
 domains and route semantics. Only generated refresh times and candidate hashes
 are excluded from semantic review, since planning regenerates them. Apply then
@@ -609,6 +614,10 @@ service replay under the original key. Domain/binding evidence normally changes
 after a successful write, so repeating the old review returns `stale`; that can
 mean the prior write succeeded and requires current-state inspection, never a
 fresh key to force another write. No command retries or changes identity.
+An apply-time blocked/conflict binding plan is `stale` with `applied: false`,
+because the service returns it before mutation. An unresolved mutation lease
+or reconciliation-required response stays `outcome_unknown` with its specific
+service code, rather than implying a harmless plan conflict.
 
 ### Compose web host routes
 
