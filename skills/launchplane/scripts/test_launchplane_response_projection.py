@@ -48,11 +48,17 @@ def preview_response(login="example-delivery[bot]"):
     }}
 
 
-def invoke(path, body, status=200, *, http_error=False, interrupted=False):
+def invoke(path, body, status=200, *, http_error=False, interrupted=False, mode="dry-run",
+           transport_error=None):
     module = helper if path == "preview" else owner_review.operator
     response = Response(body, status)
-    failure = urllib.error.HTTPError(SETTINGS["service_url"], status, "PRIVATE_SENTINEL",
-                                     Message(), response) if http_error else None
+    failure = transport_error or (urllib.error.HTTPError(
+        SETTINGS["service_url"], status, "PRIVATE_SENTINEL", Message(), response
+    ) if http_error else None)
+    preview_args = list(PREVIEW_ARGS)
+    preview_args[preview_args.index("--mode") + 1] = mode
+    if mode == "apply":
+        preview_args.append("--reviewed-dry-run")
     stdout = io.StringIO()
     with patch.object(module, "safe_urlopen", side_effect=failure, return_value=response) as transport, \
          patch.object(helper, "prepare_operator_settings", return_value=SETTINGS), \
@@ -60,7 +66,7 @@ def invoke(path, body, status=200, *, http_error=False, interrupted=False):
          redirect_stdout(stdout):
         if interrupted:
             response.read = lambda: (_ for _ in ()).throw(OSError("PRIVATE_SENTINEL"))
-        code = helper.main(PREVIEW_ARGS) if path == "preview" else owner_review.main([
+        code = helper.main(preview_args) if path == "preview" else owner_review.main([
             "--repo", "example/site", "--pr", "42"])
     rendered = stdout.getvalue()
     assert "PRIVATE_SENTINEL" not in rendered
@@ -170,6 +176,23 @@ def test_preview_accepts_managed_user_actor_login():
     code, payload = invoke("preview", response)
     assert code == 0
     assert payload["result"]["observation"]["github_actor_login"] == response["result"]["observation"]["token_actor_login"]
+
+
+def test_interrupted_apply_response_preserves_uncertainty_and_received_status():
+    code, payload = invoke("preview", b"", interrupted=True, mode="apply")
+    assert code == 1
+    assert payload["status"] == "outcome_unknown"
+    assert payload["warnings"][0]["code"] == "apply_outcome_unknown"
+    assert payload["summary"]["http_status"] == 200
+
+
+def test_pre_response_transport_refusal_is_not_labeled_a_projection_failure():
+    code, payload = invoke("preview", b"", transport_error=helper.LaunchplaneSafetyError(
+        "invalid_request_url_scheme"
+    ))
+    assert code == 1
+    assert "projection_error_code" not in payload["summary"]
+    assert "http_status" not in payload["summary"]
 
 
 if __name__ == "__main__":

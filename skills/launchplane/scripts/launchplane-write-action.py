@@ -4528,7 +4528,7 @@ def emit_safety_error_payload(
     )
     summary = cast(dict[str, object], payload["summary"])
     summary.update(service_response_diagnostics(provider_payload))
-    if not unsafe_redirect:
+    if not unsafe_redirect and isinstance(provider_payload, (dict, ServiceResponseError)):
         summary["projection_error_code"] = exc.code
     emit(payload)
 
@@ -6822,7 +6822,9 @@ def execute_post(
             emit(payload)
             return 1
         if mutating:
-            emit(_apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state"))
+            payload = _apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state")
+            _require_dict(payload["summary"]).update(service_response_diagnostics(exc))
+            emit(payload)
             return 1
         payload = unavailable_payload(operation=operation, request=request, status="unavailable",
                                       code="provider_unavailable", message="Launchplane service is unavailable.")
