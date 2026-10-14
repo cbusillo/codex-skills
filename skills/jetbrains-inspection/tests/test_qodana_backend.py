@@ -272,10 +272,13 @@ os.kill(os.getpid(), signal.SIGKILL)
                 self.assertTrue(result["diagnostic"]["qodana"]["profile_deleted"])
 
     def test_load_admission_prevents_copy_and_execution(self):
-        with patch.object(backend.os, "getloadavg", return_value=(backend.LOAD_LIMIT + 1, 1, 1)), patch.object(backend, "execute") as execute:
+        with patch.object(backend.os, "getloadavg", return_value=(backend.LOAD_LIMIT + 1, 1, 1)), \
+                patch.object(backend, "checked", return_value=b"unix:///local/docker.sock"), \
+                patch.object(backend, "execute") as execute:
             result = backend.run(self.args, host)
         execute.assert_not_called()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["diagnostic"]["error_reason"], "qodana_host_load_paused")
         self.assertEqual(result["diagnostic"]["qodana"]["license_copy_count"], 0)
 
     def test_mutable_or_paid_image_and_account_stores_are_refused(self):
@@ -299,6 +302,7 @@ os.kill(os.getpid(), signal.SIGKILL)
         with patch.object(host.sys, "argv", [str(SCRIPTS / "jb-inspect.py"), "agent-inspect", "--backend", "qodana", "--repo", str(self.repo)]), \
                 patch.object(host, "build_context") as context, patch.object(host, "command_run") as api, \
                 patch.object(host, "command_qodana", side_effect=lambda args: backend.run(args, host)), \
+                patch.object(backend, "checked", return_value=b"unix:///local/docker.sock"), \
                 patch.object(os, "getloadavg", return_value=(backend.LOAD_LIMIT + 1, 1, 1)), redirect_stdout(output):
             self.assertEqual(host.main(), 0)
         context.assert_not_called()
