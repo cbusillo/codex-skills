@@ -501,7 +501,8 @@ for line in sys.stdin:
 
     def test_one_view_receipt_per_batch_and_gui_failure_does_not_fail_launch(self):
         for failure in ({"status": "unavailable"}, OSError("view failed")):
-            with self.subTest(failure=failure), patch.object(tmux_terminal.Terminal, "view") as view:
+            with self.subTest(failure=failure), patch.object(tmux_terminal.Terminal, "view") as view, \
+                    patch.object(account_choice, "select_batch", return_value=[self.choice, self.choice]):
                 if isinstance(failure, Exception):
                     view.side_effect = failure
                 else:
