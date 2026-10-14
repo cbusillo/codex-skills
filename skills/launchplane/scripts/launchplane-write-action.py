@@ -705,7 +705,6 @@ def service_response_diagnostics(source: object) -> dict[str, object]:
         try:
             projected = public_trace_id(value) if key == "trace_id" else public_code(value)
             if projected:
-                public_summary_string(projected)
                 assert_public_safe_shape(projected)
                 diagnostics[key] = projected
         except LaunchplaneSafetyError:
@@ -1669,7 +1668,7 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
 
 def _github_actor_login(value: object) -> str:
     if not isinstance(value, str) or not re.fullmatch(
-        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?", value
+        r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}(?:\[bot\])?", value
     ):
         raise LaunchplaneSafetyError("invalid_response")
     public_identifier(value.removesuffix("[bot]"))
@@ -4529,7 +4528,8 @@ def emit_safety_error_payload(
     )
     summary = cast(dict[str, object], payload["summary"])
     summary.update(service_response_diagnostics(provider_payload))
-    summary["projection_error_code"] = exc.code
+    if not unsafe_redirect:
+        summary["projection_error_code"] = exc.code
     emit(payload)
 
 
@@ -6837,7 +6837,8 @@ def execute_post(
             return 1
         emit_safety_error_payload(operation=operation, request=request,
                                   exc=LaunchplaneSafetyError("invalid_response"),
-                                  provider_payload=exc)
+                                  provider_payload=(exc if isinstance(exc, ServiceResponseError)
+                                                    else provider_payload))
         return 1
 
 

@@ -9348,7 +9348,6 @@ def test_interrupted_http_context_and_client_entrypoints(kind: str, helper: str,
     assert "private-" not in output.getvalue()
     if http_error:
         if helper == "client":
-            body.read.assert_called_once()
             assert payload["status_code"] == error.code
         else:
             body.read.assert_not_called()

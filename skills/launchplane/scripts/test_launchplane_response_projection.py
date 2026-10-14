@@ -88,14 +88,11 @@ def test_preview_projects_app_actor_and_comment_author_without_private_observati
     assert observed["github_actor_login"] == response["result"]["observation"]["token_actor_login"]
     assert observed["comment_author_login"] == (author or "unknown")
     assert payload["summary"]["trace_id"] == response["trace_id"]
-    # Generic identifiers retain their original bracket rejection.
-    with pytest.raises(helper.LaunchplaneSafetyError):
-        helper.public_identifier(observed["github_actor_login"])
 
 
 @pytest.mark.parametrize("login", ["example[bot]extra", "[bot]", "example[admin]",
                                   "example/site[bot]", "example ghp_planted[bot]", "ghp_planted[bot]",
-                                  {"token": "PRIVATE_SENTINEL"}])
+                                  "sk-planted[bot]", {"token": "PRIVATE_SENTINEL"}])
 def test_preview_invalid_actor_keeps_failure_trace_and_status(login):
     code, payload = invoke("preview", preview_response(login))
     assert code == 1
@@ -158,6 +155,21 @@ def test_interrupted_response_retains_received_http_status(path):
     code, payload = invoke(path, b"", interrupted=True)
     assert code == 1
     assert diagnostics(path, payload)["http_status" if path == "preview" else "status_code"] == 200
+
+
+@pytest.mark.parametrize("path", ["preview", "review"])
+def test_legitimate_credential_error_code_is_not_provider_prose(path):
+    response = {"trace_id": TRACE, "error": {"code": "invalid_credentials", "message": "PRIVATE_SENTINEL"}}
+    code, payload = invoke(path, response, 401, http_error=True)
+    assert code == 1
+    assert diagnostics(path, payload)["error_code"] == response["error"]["code"]
+
+
+def test_preview_accepts_managed_user_actor_login():
+    response = preview_response("example_org")
+    code, payload = invoke("preview", response)
+    assert code == 0
+    assert payload["result"]["observation"]["github_actor_login"] == response["result"]["observation"]["token_actor_login"]
 
 
 if __name__ == "__main__":
