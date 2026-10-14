@@ -17,6 +17,7 @@ import errno
 import fnmatch
 import hashlib
 import http.client
+import importlib.util
 import io
 import json
 import os
@@ -538,6 +539,13 @@ def main() -> int:
             result = command_closeout(args, context)
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
+            if args.backend == "api" and (args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv):
+                return emit_agent_usage_error("Qodana options require an explicit --backend qodana selection.")
+            if args.backend == "qodana":
+                # Keep headless runs outside all desktop configuration/lifecycle paths.
+                result = command_qodana(args)
+                print(public_json(result))
+                return 0
             context = build_context(args)
             result = command_run(args, context)
             return emit_agent_result(result, command=args.command_input)
@@ -575,6 +583,16 @@ def main() -> int:
     finally:
         _ACTIVE_CLIENT_RUN_ID = previous_client_run_id
     return 2
+
+
+def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
+    backend_path = Path(__file__).with_name("qodana_backend.py")
+    spec = importlib.util.spec_from_file_location("jb_qodana_backend", backend_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Qodana backend unavailable")
+    backend = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backend)
+    return backend.run(args, sys.modules[__name__])
 
 
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
@@ -776,6 +794,13 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("wait-for-inspection", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
+    agent = subparsers.choices["agent-inspect"]
+    agent.add_argument("--backend", choices=("api", "qodana"), default="api", help="Explicit per-run backend; the Inspection API remains the default.")
+    agent.add_argument("--qodana-image", help="Pinned Community Docker image repository@sha256:digest.")
+    agent.add_argument("--qodana-license-file", action="append", default=[], help="Existing local IDE key or paid-plugin license; copied privately then deleted. Never an account/token store.")
+    agent.add_argument("--qodana-plugin-zip", action="append", default=[], help="Public plugin package for the disposable profile; does not supply entitlement.")
+    agent.add_argument("--qodana-uv", help="Optional existing Linux uv executable matching the container architecture for configured Python preparation.")
+    agent.add_argument("--qodana-recover-only", action="store_true", help="Recover proved interrupted Qodana profiles/containers without starting an inspection or lifting a stop.")
     for name in ("open-worktree", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
