@@ -9485,6 +9485,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     ingress_plan.add_argument("--payload-file", required=True)
 
+    repair = subparsers.add_parser("dokploy-target-repair-domain-authority-apply",
+        help="Apply only the reviewed exact live-domain authority record repair.")
+    for field in ("context", "instance", "reason"):
+        repair.add_argument(f"--{field}", required=True)
+    _add_reviewed_apply_arguments(repair, apply=True)
+    ingress_authority = subparsers.add_parser("ingress-route-authority-apply",
+        help="Record an exact existing-ingress no-op; provider changes remain disabled.")
+    ingress_authority.add_argument("--payload-file", required=True)
+    _add_reviewed_apply_arguments(ingress_authority, apply=True)
+    for command in ("route-authority-discover", "route-binding-read", "route-binding-dry-run", "route-binding-apply"):
+        binding = subparsers.add_parser(command, help="Read or reconcile service-owned route authority.")
+        for field in ("product", "context", "instance"):
+            binding.add_argument(f"--{field}", required=True)
+        if command in {"route-binding-dry-run", "route-binding-apply"}:
+            binding.add_argument("--reason", required=True)
+            _add_reviewed_apply_arguments(binding, apply=command.endswith("-apply"))
+
     for command in sorted(DOKPLOY_COMPOSE_DOMAIN_COMMANDS):
         domain = subparsers.add_parser(command, help="Review or apply tracked compose web host routes.")
         domain.add_argument("--payload-file", required=True, help="Private local JSON payload file.")
@@ -9639,9 +9656,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return args
 
 
-INERT_PLANNER_COMMANDS = {
-    "dokploy-target-repair-domain-authority-dry-run", "ingress-route-dry-run",
-}
 INGRESS_PLAN_ROUTE_FIELDS = {
     "domain_names", "edge_endpoint_key", "certificate_id", "ssl_forced",
     "hsts_enabled", "hsts_subdomains", "trust_forwarded_proto", "http2_support",
@@ -9860,80 +9874,12 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
             "exact_domains_verified": True, "requires_apply": False}
 
 
-def execute_inert_plan(args: argparse.Namespace) -> int:
-    ingress_input = _ingress_plan_input(args) if args.command == "ingress-route-dry-run" else None
-    scope = ingress_input if ingress_input is not None else vars(args)
-    request: dict[str, object] = {"mode": "dry-run", "payload_source": "private_file" if ingress_input else "service_records", "planner_request_sent": False}
-    for key in ("context", "instance"):
-        request[key] = _plan_identifier(scope[key], key)
-        if ingress_input is None:
-            setattr(args, key, request[key])
-    if ingress_input is not None:
-        request["product"] = ingress_input["product"]
-    elif not args.reason.strip():
-        raise ValueError("reason_required")
-    settings = prepare_operator_settings(args=args, operation=args.command, request=request)
-    if settings is None:
-        return 2
-    provider: dict[str, Any] | None = None
-    try:
-        def read(path: str, query: dict[str, str]) -> dict[str, Any]:
-            nonlocal provider
-            provider = None
-            provider = request_launchplane_read(service_url=settings["service_url"], path=path,
-                settings=settings, query=query, timeout=args.timeout)
-            if provider.get("status") != "ok":
-                raise LaunchplaneSafetyError("invalid_response")
-            return provider
-        body = _ingress_plan_body(ingress_input, read) if ingress_input is not None else _domain_authority_plan_body(args, read)
-        provider = None
-        request["planner_request_sent"] = True
-        provider = request_launchplane(service_url=settings["service_url"],
-            path=helper_command_path(args.command), settings=settings, body=body,
-            timeout=args.timeout, idempotency_key="")
-        result = _project_inert_plan(provider, body)
-        payload = base_payload(status="accepted", operation=args.command, request=request)
-        payload["result"] = result
-        if ingress_input is not None:
-            records = _require_dict(provider.get("records"))
-            payload["records"] = {"ingress_route_audit_record_id": public_identifier(
-                records.get("ingress_route_audit_record_id"))}
-        payload["summary"] = {"trace_id": public_trace_id(provider.get("trace_id")),
-                              "recommendation": "Planning evidence only; this command cannot apply."}
-        emit(payload)
-        return 0
-    except urllib.error.HTTPError as exc:
-        emit_http_error_payload(operation=args.command, request=request, exc=exc)
-    except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=args.command, request=request,
-            exc=exc, provider_payload=provider)
-    except ValueError as exc:
-        code = str(exc)
-        if code in {"plan_lane_not_unique", "invalid_plan_lane_url", "plan_domain_scope_mismatch",
-                    "plan_endpoint_not_active", "invalid_plan_domains", "invalid_product"} and not request["planner_request_sent"]:
-            payload = unavailable_payload(operation=args.command, request=request, status="invalid",
-                code=code, message="Service evidence did not match the requested plan scope.")
-            summary = cast(dict[str, object], payload["summary"])
-            summary["error_code"] = code
-            if provider is not None:
-                try:
-                    summary["trace_id"] = public_trace_id(provider.get("trace_id"))
-                except LaunchplaneSafetyError:
-                    pass
-            emit(payload)
-        else:
-            emit_safety_error_payload(operation=args.command, request=request,
-                exc=LaunchplaneSafetyError("invalid_response"), provider_payload=provider)
-    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
-        emit_provider_unavailable(operation=args.command, request=request)
-    return 1
-
-
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
-        if args.command in INERT_PLANNER_COMMANDS:
-            return execute_inert_plan(args)
+        from launchplane_route_authority import COMMANDS as route_authority_commands, execute as execute_route_authority
+        if args.command in route_authority_commands:
+            return execute_route_authority(sys.modules[__name__], args)
         if args.command == "merge-train-policy-read":
             try:
                 if args.repo:

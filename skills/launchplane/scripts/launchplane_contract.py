@@ -184,6 +184,24 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "dokploy-target-repair-domain-authority-apply": {
+        "method": "POST", "path": "/v1/dokploy-targets/setup", "mode": "apply",
+    },
+    "ingress-route-authority-apply": {
+        "method": "POST", "path": "/v1/drivers/ingress/route-apply", "mode": "apply",
+    },
+    "route-authority-discover": {
+        "method": "GET", "path": "/v1/product-profiles/{product}", "mode": "read",
+    },
+    "route-binding-read": {
+        "method": "GET", "path": "/v1/route-bindings/records/current", "mode": "read",
+    },
+    "route-binding-dry-run": {
+        "method": "POST", "path": "/v1/route-bindings/reconcile", "mode": "dry-run",
+    },
+    "route-binding-apply": {
+        "method": "POST", "path": "/v1/route-bindings/reconcile", "mode": "apply",
+    },
     "dokploy-target-repair-domain-authority-dry-run": {
         "method": "POST",
         "path": "/v1/dokploy-targets/setup",
@@ -477,6 +495,12 @@ LOCAL_EXTENSION_ROUTES = {
 }
 
 INTERNAL_HELPER_ROUTES = {
+    "route-authority-binding-list": {
+        "method": "GET", "path": "/v1/route-bindings/records",
+    },
+    "route-authority-audit-read": {
+        "method": "GET", "path": "/v1/ingress/route-audits/records/{record_id}",
+    },
     "ingress-plan-edge-endpoint-read": {
         "method": "GET",
         "path": "/v1/edge-endpoints/records/{endpoint_key}",
