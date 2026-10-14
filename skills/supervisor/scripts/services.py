@@ -71,7 +71,7 @@ def render(config_path, catalog, output):
         label = f"{LABEL_PREFIX}.{name}"
         job = {
             "Label": label,
-            "ProgramArguments": [config["uv"], "run", "--no-project", str(runner),
+            "ProgramArguments": [config["uv"], "run", "--no-project", "--no-cache", str(runner),
                                  "run", "--config", str(config_path), "--service", name],
             "WorkingDirectory": str(catalog.resolve()),
             "EnvironmentVariables": {"PATH": f"{Path(config['uv']).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
@@ -127,12 +127,17 @@ def reconciliation_marker(config_path, name):
     return config_path.with_name(f"{config_path.name}.{name}.reconcile")
 
 
-def supervise(settings, stopped, marker):
+def supervise(settings, stopped, marker, uv_executable):
     """Keep successful bounded jobs running; preserve failures for the Supervisor."""
     while not stopped.is_set():
         # Survives a runner crash, forced stop or host restart mid-command.
         marker.touch(mode=0o600)
-        child = subprocess.Popen(settings["argv"], cwd=settings["cwd"], start_new_session=True)
+        # Only the long-running uv child needs a temporary cache. Its short
+        # helper calls keep normal caching instead of inheriting UV_NO_CACHE.
+        child_argv = settings["argv"]
+        if child_argv[0] == uv_executable and "--no-cache" not in child_argv[1:]:
+            child_argv = [uv_executable, "--no-cache", *child_argv[1:]]
+        child = subprocess.Popen(child_argv, cwd=settings["cwd"], start_new_session=True)
         emit("started", pid=child.pid)
         try:
             while child.poll() is None:
@@ -174,7 +179,8 @@ def main(argv=None):
         if args.command == "render":
             emit("rendered", directory=str(render(args.config, args.catalog, args.output)))
             return 0
-        settings = load_config(args.config)["services"][args.service]
+        config = load_config(args.config)
+        settings = config["services"][args.service]
         config_path = args.config.resolve()
         marker = reconciliation_marker(config_path, args.service)
         if args.command == "clear":
@@ -191,7 +197,7 @@ def main(argv=None):
                 if marker.exists():
                     emit("reconciliation_required", reason="previous command did not finish cleanly")
                     return 1
-                return supervise(settings, stopped, marker)
+                return supervise(settings, stopped, marker, config["uv"])
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)

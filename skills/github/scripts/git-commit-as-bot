@@ -115,7 +115,7 @@ if [ -n "$app_configured" ] && [ -z "$primary_app_configured" ] && repo=$(commit
 	if [ -n "$python_command" ]; then
 		selected_prefix=$($python_command "$identity_helper" app-prefix --repo "$repo")
 	elif command -v uv >/dev/null 2>&1; then
-		selected_prefix=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-prefix --repo "$repo")
+		selected_prefix=$("$script_dir/github-python" "$identity_helper" app-prefix --repo "$repo")
 	else
 		echo "error: git-commit-as-bot requires uv or GIT_COMMIT_AS_BOT_PYTHON to choose the identity for $repo" >&2
 		exit 127
@@ -129,7 +129,7 @@ if [ -n "$app_configured" ] && repo=$(commit_repository); then
 	if [ -n "$python_command" ]; then
 		$python_command "$identity_helper" app-auth --repo "$repo" --require-installation >/dev/null 2>"$identity_error_file" || identity_status=$?
 	elif command -v uv >/dev/null 2>&1; then
-		uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth --repo "$repo" --require-installation >/dev/null 2>"$identity_error_file" || identity_status=$?
+		"$script_dir/github-python" "$identity_helper" app-auth --repo "$repo" --require-installation >/dev/null 2>"$identity_error_file" || identity_status=$?
 	else
 		rm -f "$identity_error_file"
 		echo "error: git-commit-as-bot requires uv or GIT_COMMIT_AS_BOT_PYTHON to choose the identity for $repo" >&2

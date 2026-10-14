@@ -6,6 +6,7 @@
 """Exercise generated service entry points with bounded offline child fixtures."""
 
 import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -72,6 +73,45 @@ class ServicesTests(unittest.TestCase):
                                  capture_output=True, timeout=15)
         self.assertEqual(resumed.returncode, 1)
         self.assertEqual(len((self.root / "passes.txt").read_text().splitlines()), 4)
+
+    def test_running_service_and_uv_child_leave_shared_cache_prunable(self):
+        self.assert_service_cache_prunable([])
+
+    def test_uv_child_with_existing_cache_flag_still_runs_and_allows_pruning(self):
+        self.assert_service_cache_prunable(["--no-cache"])
+
+    def assert_service_cache_prunable(self, cache_flags):
+        self.fixture.write_text(
+            "from pathlib import Path\nimport subprocess\nimport time\n"
+            "Path('child-cache').write_text(subprocess.check_output(['uv', '--no-config', 'cache', 'dir'], text=True).strip())\n"
+            "Path('started').touch()\ntime.sleep(60)\n")
+        uv = self.data["uv"]
+        self.data["services"]["foreign"]["argv"] = [
+            uv, *cache_flags, "run", "--no-project", "--python", "3.12", "python", str(self.fixture)]
+        self.save()
+        cache = self.root / "shared-cache"
+        cache.mkdir()
+        output = services.render(self.config, Path(__file__).resolve().parents[3], self.root / "jobs")
+        with (output / f"{services.LABEL_PREFIX}.foreign.plist").open("rb") as stream:
+            job = plistlib.load(stream)
+        env = {**os.environ, "UV_CACHE_DIR": str(cache), "UV_LOCK_TIMEOUT": "1"}
+        env.pop("UV_NO_CACHE", None)
+        runner = subprocess.Popen(job["ProgramArguments"], cwd=job["WorkingDirectory"], env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            until = time.monotonic() + 10
+            while not (self.root / "started").exists() and time.monotonic() < until:
+                if runner.poll() is not None:
+                    break
+                time.sleep(0.01)
+            self.assertTrue((self.root / "started").exists())
+            self.assertEqual((self.root / "child-cache").read_text(), str(cache))
+            subprocess.run([uv, "--no-config", "cache", "prune", "--cache-dir", str(cache)],
+                           env=env, capture_output=True, check=True, timeout=10)
+            self.assertIsNone(runner.poll())
+        finally:
+            runner.terminate()
+            runner.communicate(timeout=10)
 
     def test_sigterm_stops_active_child_and_leaves_no_restart(self):
         self.fixture.write_text(

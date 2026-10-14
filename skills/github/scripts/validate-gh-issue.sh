@@ -230,6 +230,7 @@ printf 'CODEX_GITHUB_TOKEN=codex-home-token\n' >"$codex_home_dir/local.env"
 generated_worktree="$tmpdir/.code/working/codex-skills/branches/review"
 mkdir -p "$generated_worktree/github/scripts"
 cp "$repo_root/github/scripts/gh-with-env-token" "$generated_worktree/github/scripts/gh-with-env-token"
+cp "$repo_root/github/scripts/github-python" "$generated_worktree/github/scripts/github-python"
 
 : >"$env_log"
 env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN -u CODE_HOME -u CODEX_HOME \
