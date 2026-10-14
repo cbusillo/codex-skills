@@ -1667,7 +1667,7 @@ class UpdateTests(unittest.TestCase):
                     with contextlib.redirect_stdout(output):
                         self.assertEqual(hook.main(catalog_root=self.checkout), 0)
                     self.assertIn("Catalog blocked", output.getvalue())
-                    self.assertIn(hook.LOOP_PATH.read_text().strip(), output.getvalue())
+                    self.assertIn(str(hook.LOOP_PATH), output.getvalue())
                     self.assertIn("Fixture overdue reminder.", output.getvalue())
 
     def test_hook_emits_one_catalog_line_on_both_harnesses_only_when_needed(self):
