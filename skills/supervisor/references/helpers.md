@@ -6,6 +6,39 @@ path. The status, question and candidate helpers are read-only. iTerm controls
 require macOS, iTerm2's Python API enabled and the session's existing authority;
 API connection failure is a stop, not a reason to change personal settings.
 
+The shared launcher passes Claude Code `--settings '{"promptSuggestionEnabled": false}'`
+before its brief on either backend, including when the command file has other
+settings. A launch-file inline `--settings` object is merged with this override,
+preserving its other keys. For `--settings file.json`, set
+`"promptSuggestionEnabled": false` in that file first: the launcher checks it
+before launch and preserves the file argument, private values and relative
+permission-rule base. It never rewrites that file or inlines its contents.
+Use literal JSON or a readable file path; relative files resolve under the command's `cd` directory.
+Use an absolute path in place of shell-expanded settings paths.
+Relative settings files require an absolute `cd` directory; otherwise use an absolute file path.
+Claude launches also scope `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` to the
+launch so an inherited override cannot enable suggestions. Remove explicit
+assignments of that variable from command files; the launcher supplies it.
+Existing sessions may still draw dim suggestions. `read` retains the
+plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
+prompt's text, line index and style (`dim`, `non_dim`, `mixed`, `empty`, or
+`unknown`). tmux reads SGR faint attributes with `capture-pane -e`; iTerm reads
+cell faint attributes. A single leading inverse cursor cell followed by dim
+characters is classified as dim; other mixed styles stay mixed. Missing
+prompt/style evidence is unknown. This is a
+single visible line, not a full multiline draft or idle-prompt proof; inspect
+the full screen and transcript too. `director_input_verified` is always false:
+no terminal style establishes authorship or approval. Follow the skill's
+Director-input and Ctrl-U checks before clearing or closing.
+
+A send failure after typing reports JSON on stdout, an explicit failure on
+stderr, and exits nonzero. `text_sent: true` (or `null` for uncertain text delivery), `input_may_contain_text: true`
+and `submission: not_attempted|unknown` preserve the partial outcome. Read
+both output and exit status; do not redirect away a refusal and send again.
+After verified non-submission, `clear --verified-target` sends Ctrl-U; read
+back empty input before another send. An unknown submission needs readback,
+not a retry.
+
 ## Private ledger
 
 Create a private JSON array from the handoff's actual session identities. Paths
@@ -634,7 +667,7 @@ Read Context Panel's
 for ranking, stale-list eligibility, count-only receipt fields and retention.
 The launcher checks the published stale list's observation time, refuses once
 it reaches 30 minutes, and reports `nextCapacityAt` when nothing is rankable.
-Reader failure refuses; `--account <name>` is the explicit override, but still
+Reader failure refuses; for OpenAI and Anthropic, `--account <name>` is the explicit override, but still
 needs a snapshot row so its launch receipt uses the correct opaque ID.
 Configuration errors and Context Panel's plain reset prompt lines are reported
 in launch output. Never apply a reset; Chris does that.
@@ -693,7 +726,7 @@ accounts in any order:
 
 ```toml
 [accounts]
-snapshot_command = ["<path to ContextPanelAccountSnapshot>"]
+snapshot_command = ["/Applications/Context Panel.app/Contents/MacOS/Context Panel", "--account-snapshot"]
 
 [[accounts.account]]
 name = "<local nickname>"
@@ -706,7 +739,23 @@ name = "<default-profile nickname>"
 provider = "anthropic"
 context_panel_label = "<default profile label in the snapshot>"
 env = {}
+
+[[accounts.account]]
+name = "<existing AGY login nickname>"
+provider = "google"
+context_panel_label = "<Google label from the snapshot>"  # or context_panel_configuration_id
+single_login = true
+env = {}
 ```
+
+Point `snapshot_command` at the installed app executable, with its full path
+as one array element and `--account-snapshot` as the next. Invoke it directly;
+`open -a` cannot return the reader's JSON and exit status. The reader updates
+with the installed app; an old separately built `context-panel-account-snapshot`
+may omit rankings. The Supervisor replaces that standalone command in its private config,
+then previews each provider through `account_choice.py` before launching. Use the
+installed app's actual path if it differs from the example. See Context Panel's
+[installed-reader contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#agent-readable-account-snapshot).
 
 Private-config migration: delete the `reserve =` lines under `[accounts]`
 and in each `[[accounts.account]]`, including any per-account reserve.
@@ -714,8 +763,11 @@ Keep the `[accounts]` table, snapshot command and account environment mappings;
 remove obsolete comments that prescribe a fallback order.
 They are ignored by the launcher for compatibility with existing files; account
 order now only helps people read the mapping. Configure Use last and other
-capacity choices in Context Panel. Document this change for the Director;
-do not edit their private config yourself.
+capacity choices in Context Panel. The Supervisor owns this private config;
+executing agents propose the exact migration on the owning issue and the
+Supervisor applies it after source landing. Rewrite any earlier Google
+placeholder row using the explicit single-login form above; invalid rows
+refuse configuration loading for every provider.
 
 Codex accounts must set `CODEX_HOME` to the account's home. Claude Code
 accounts set `CLAUDE_CONFIG_DIR` for an alternate profile or use `env = {}`
@@ -725,6 +777,25 @@ The launcher unsets an inherited
 an alternate profile, not the default. The helper never reads credentials and
 never changes a
 login, including the desktop app's.
+
+Google requires the explicit `single_login = true` and `env = {}` form. AGY 1.3.4's
+`--help` (checked October 13, 2026) and its [authentication docs](https://antigravity.google/docs/cli/install/)
+provide no account/home override; this row identifies the existing AGY login,
+without switching or independently verifying it. Configure exactly one Google
+row matching the existing login, and confirm that login in the launched AGY
+session. Multiple configured Google rows or multiple Google snapshot rows refuse,
+as does `--account` for Google. Google follows Context Panel's Use next or
+eligible published launch order and writes the same count-only receipts as the
+other providers. Output includes `account_binding: existing-agy-login` and empty
+`env_keys`, so it does not claim an account was pinned by an environment variable.
+Google launch files must invoke `agy` directly and keep `HOME` unchanged; remove
+`HOME`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` settings from the file to use the mapped existing login. A launch
+file invoking another harness refuses before tabs or receipts.
+If the AGY login changes, reconcile the mapping and Context Panel row before
+launching again. No credentials or login settings are read or changed by this
+selection path. The Supervisor applies private-config migrations after the
+source PR lands, then records the real launch's account and transcript on the
+owning issue.
 
 ## Finished-session shutdown stages
 

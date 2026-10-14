@@ -800,6 +800,26 @@ def accounts_config(text=ACCOUNTS_TOML):
     )
 
 
+GOOGLE_TOML = """
+[accounts]
+snapshot_command = ["/Applications/Context Panel.app/Contents/MacOS/Context Panel", "--account-snapshot"]
+
+[[accounts.account]]
+name = "agy-login"
+provider = "google"
+context_panel_label = "Gemini"
+single_login = true
+env = {}
+"""
+
+
+def google_snapshot():
+    row = {**account_row("Gemini", .5, []), "provider": "google", "id": "google-abc"}
+    return {"schemaVersion": 1, "accounts": [row],
+            "answers": {"useNext": [{"provider": row["provider"], "accountID": row["id"]}]},
+            "ranking": [{"provider": row["provider"], "launchOrder": [row["id"], row["id"]]}]}
+
+
 def choose_from(rows, recommendations=None, **extra):
     snapshot = {"schemaVersion": 1, "accounts": rows}
     if recommendations is not None:
@@ -824,7 +844,7 @@ class AccountChoiceTests(unittest.TestCase):
                              "readingsObservedAt": (NOW - timedelta(minutes=age)).isoformat()}]}
 
     def test_use_next_is_authoritative_despite_config_reserves_order_and_row_state(self):
-        for provider in account_choice.PROVIDERS:
+        for provider in account_choice.ACCOUNT_VARIABLES:
             config = accounts_config()
             for account in config["accounts"]:
                 account["provider"] = provider
@@ -935,6 +955,59 @@ class AccountChoiceTests(unittest.TestCase):
             snapshot["answers"]["useNext"][0]["accountID"] = "anthropic-abc"
             choice = account_choice.choose("anthropic", config, snapshot, None, name=name)
             self.assertEqual(account_choice.public(choice)["env_keys"], [])
+
+    def test_google_requires_explicit_single_login_and_empty_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "supervisor.toml"
+            path.write_text(GOOGLE_TOML)
+            config = account_choice.load_config(path)
+            self.assertEqual(config["accounts"][0]["env"], {})
+            for text in (GOOGLE_TOML.replace("single_login = true", ""),
+                         GOOGLE_TOML.replace("single_login = true", "single_login = false"),
+                         GOOGLE_TOML.replace("env = {}", ""),
+                         GOOGLE_TOML.replace("env = {}", 'env = { GOOGLE_HOME = "/pretend" }')):
+                path.write_text(text)
+                with self.subTest(text=text), self.assertRaises(ValueError):
+                    account_choice.load_config(path)
+            duplicate = GOOGLE_TOML.split("[[accounts.account]]", 1)[1].replace("agy-login", "second")
+            path.write_text(GOOGLE_TOML + "\n[[accounts.account]]" + duplicate)
+            with self.assertRaises(ValueError):
+                account_choice.load_config(path)
+
+    def test_google_follows_context_panel_and_reports_existing_login(self):
+        config, snapshot = accounts_config(GOOGLE_TOML), google_snapshot()
+        choice = account_choice.choose("google", config, snapshot, None, now=NOW)
+        self.assertEqual(choice["account_id"], snapshot["accounts"][0]["id"])
+        self.assertEqual(choice["source"], "context-panel")
+        self.assertEqual(account_choice.public(choice)["account_binding"], account_choice.GOOGLE_ACCOUNT_BINDING)
+        self.assertEqual(account_choice.public(choice)["env_keys"], [])
+        batch = account_choice.choose_batch("google", config, snapshot, None, count=2, now=NOW)
+        self.assertEqual([c["account_id"] for c in batch], snapshot["ranking"][0]["launchOrder"])
+        # Other providers' rows do not make the one Google login ambiguous.
+        snapshot["accounts"].append(account_row("main", .9, []))
+        self.assertEqual(account_choice.choose("google", config, snapshot, None)["account_id"], choice["account_id"])
+        with self.assertRaises(ValueError):
+            account_choice.choose("google", config, snapshot, None, name=choice["name"])
+        snapshot["answers"]["useNext"] = []
+        with self.assertRaises(ValueError):
+            account_choice.choose("google", config, snapshot, None)
+        with self.assertRaises(ValueError):
+            account_choice.choose("google", config, None, "reader failed")
+
+    def test_google_refuses_multiple_snapshot_logins_and_unmatched_choice(self):
+        config = accounts_config(GOOGLE_TOML)
+        snapshot = google_snapshot()
+        snapshot["accounts"].append({**snapshot["accounts"][0], "id": "google-def", "label": "Other"})
+        with self.assertRaises(ValueError):
+            account_choice.choose("google", config, snapshot, None)
+        snapshot = google_snapshot()
+        snapshot["answers"]["useNext"][0]["accountID"] = "google-def"
+        with self.assertRaises(ValueError):
+            account_choice.choose("google", config, snapshot, None)
+        snapshot = google_snapshot()
+        snapshot["accounts"][0]["label"] = "Different login"
+        with self.assertRaises(ValueError):
+            account_choice.choose("google", config, snapshot, None)
 
     def test_select_preview_and_receipts_use_readers_storage_root(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1131,6 +1204,192 @@ class TabCloseTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def assert_file_settings_argument(self, command, path, brief):
+        args = shlex.split(command)
+        separator = args.index("--")
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--settings")
+        options, _ = parser.parse_known_args(args[:separator])
+        self.assertEqual(options.settings, str(path))
+        self.assertEqual(args[separator + 1:], [brief])
+
+    def test_claude_launch_preserves_existing_settings_and_overrides_suggestions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            settings = {"model": "fixture-model", "permissions": {"allow": ["Read"]},
+                        iterm_tab.CLAUDE_SUGGESTION_SETTING: True}
+            path = root / "settings.json"
+            path.write_text(json.dumps(settings))
+            for option in ("--settings " + shlex.quote(json.dumps(settings)),
+                           "--settings=" + shlex.quote(json.dumps(settings))):
+                with self.subTest(option=option):
+                    command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude {option}", "brief")
+                    args = shlex.split(command)
+                    # Claude's single-value option uses the final occurrence.
+                    index = max(i for i, arg in enumerate(args) if arg == "--settings")
+                    received = json.loads(args[index + 1])
+                    self.assertEqual(received["model"], settings["model"])
+                    self.assertEqual(received["permissions"], settings["permissions"])
+                    self.assertFalse(received[iterm_tab.CLAUDE_SUGGESTION_SETTING])
+                    self.assertEqual(args[-1], "brief")
+
+            with self.assertRaises(ValueError):
+                iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
+            settings[iterm_tab.CLAUDE_SUGGESTION_SETTING] = False
+            settings["env"] = {"FIXTURE_PRIVATE_VALUE": "opaque-fixture-value"}
+            path.write_text(json.dumps(settings))
+            command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
+            self.assertNotIn(settings["env"]["FIXTURE_PRIVATE_VALUE"], command)
+            self.assert_file_settings_argument(command, "settings.json", "brief")
+            self.assertEqual(json.loads(path.read_text()), settings)
+
+    def test_iterm_read_preserves_screen_when_style_data_is_unavailable(self):
+        text = "❯ draft"
+        for line in (SimpleNamespace(string=text, string_at=lambda x: text[x]),
+                     SimpleNamespace(string=text, string_at=lambda x: "", style_at=lambda x: None)):
+            screen = SimpleNamespace(number_of_lines=1, line=lambda i: line)
+            self.assertEqual(iterm_tab.iterm_input_line(screen)["style"], "unknown")
+
+    def test_claude_settings_file_uses_explicit_directory_and_stays_opaque(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / "settings.json"
+            path.write_text(json.dumps({iterm_tab.CLAUDE_SUGGESTION_SETTING: False}))
+            with self.assertRaises(ValueError):
+                iterm_tab.append_brief("claude --settings settings.json", "brief")
+            with self.assertRaises(ValueError):
+                iterm_tab.append_brief("cd relative&&exec claude --settings settings.json", "brief")
+            command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))}&&exec claude --settings settings.json", "brief")
+            self.assert_file_settings_argument(command, "settings.json", "brief")
+            command = iterm_tab.append_brief(f"claude --settings {shlex.quote(str(path))}", "brief")
+            self.assertIn(shlex.quote(str(path)), command)
+
+    def test_claude_launch_overrides_inherited_suggestion_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            child = Path(folder) / "claude"
+            child.write_text(f'#!{sys.executable}\nimport os\nprint(os.getenv({iterm_tab.CLAUDE_SUGGESTION_ENV!r}))\n')
+            child.chmod(0o700)
+            with patch.dict(os.environ, {iterm_tab.CLAUDE_SUGGESTION_ENV: "true"}):
+                command = iterm_tab.with_account(f"exec {shlex.quote(str(child))}", {"provider": "anthropic", "env": {}}, "brief")
+                result = subprocess.run(["/bin/sh", "-c", command], check=True, capture_output=True, text=True)
+            self.assertNotEqual(result.stdout.strip(), "true")
+            with self.assertRaises(ValueError):
+                iterm_tab.with_account(f"env {iterm_tab.CLAUDE_SUGGESTION_ENV}=true claude", {"provider": "anthropic", "env": {}}, "brief")
+
+    def test_inverse_cursor_suggestion_and_normal_typed_text_on_both_backends(self):
+        for rest_dim, expected in ((True, "dim"), (False, "non_dim")):
+            ansi = "❯ \x1b[7mc\x1b[0m" + ("\x1b[2m" if rest_dim else "") + "andidate\x1b[0m"
+            lines, styles = iterm_tab.ansi_screen(ansi)
+            self.assertEqual(iterm_tab.input_line(lines, styles)["style"], expected)
+            text = "❯ candidate"
+            line = SimpleNamespace(string=text, string_at=lambda x: text[x],
+                style_at=lambda x: SimpleNamespace(faint=rest_dim and x > 2, inverse=x == 2))
+            screen = SimpleNamespace(number_of_lines=1, line=lambda i: line)
+            self.assertEqual(iterm_tab.iterm_input_line(screen)["style"], expected)
+
+    def test_initial_iterm_text_failure_reports_unknown_delivery(self):
+        terminal = SimpleNamespace(session_id="exact", async_send_text=AsyncMock(side_effect=RuntimeError("RPC failed")))
+        with self.assertRaises(iterm_tab.SendFailure) as caught:
+            asyncio.run(iterm_tab.send(terminal, "draft"))
+        self.assertIsNone(caught.exception.detail["text_sent"])
+        self.assertTrue(caught.exception.detail["input_may_contain_text"])
+        self.assertEqual(caught.exception.detail["submission"], "not_attempted")
+
+    def test_tmux_prompt_styles_reset_mixed_and_color_components(self):
+        for captured, expected in (("❯ \x1b[2myes\x1b[0m", "dim"),
+                                   ("❯ yes", "non_dim"),
+                                   ("❯ \x1b[2myes\x1b[22m typed", "mixed"),
+                                   ("\x1b[2mstatus\x1b[0m\n❯ yes", "non_dim"),
+                                   ("❯ \x1b[38;2;2;22;0myes", "non_dim"),
+                                   ("❯ \x1b[38:2:2:22:0myes", "non_dim"),
+                                   ("❯ ", "empty"), ("no prompt", "unknown")):
+            with self.subTest(captured=captured):
+                lines, styles = iterm_tab.ansi_screen(captured)
+                result = iterm_tab.input_line(lines, styles)
+                self.assertEqual(result["style"], expected)
+                self.assertFalse(result["director_input_verified"])
+
+    def test_iterm_read_uses_cell_faint_style_and_missing_style_is_unknown(self):
+        for faint, expected in ((True, "dim"), (False, "non_dim"), (None, "unknown")):
+            text = "❯ yes"
+            line = SimpleNamespace(string=text, string_at=lambda x: text[x],
+                                   style_at=lambda x: None if faint is None else SimpleNamespace(faint=faint, inverse=False))
+            screen = SimpleNamespace(number_of_lines=1, line=lambda i: line)
+            terminal = SimpleNamespace(session_id="exact", async_get_screen_contents=AsyncMock(return_value=screen))
+            app = SimpleNamespace(terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])])
+            with self.subTest(faint=faint):
+                result = asyncio.run(iterm_tab.operate(app, argparse.Namespace(command="read", session_id="exact")))
+                self.assertEqual(result["screen"], [text])
+                self.assertEqual(result["input_line"]["style"], expected)
+                self.assertFalse(result["input_line"]["director_input_verified"])
+
+    def test_return_failure_reports_unknown_submission_with_typed_text(self):
+        terminal = SimpleNamespace(session_id="exact", async_send_text=AsyncMock(
+            side_effect=[None, RuntimeError("RPC failed")]))
+        with self.assertRaises(iterm_tab.SendFailure) as caught:
+            asyncio.run(iterm_tab.send(terminal, "draft"))
+        self.assertEqual(caught.exception.detail["submission"], "unknown")
+        self.assertTrue(caught.exception.detail["text_sent"])
+    def test_google_launch_loads_config_preserves_brief_and_writes_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config_path = root / "supervisor.toml"
+            config_path.write_text(GOOGLE_TOML)
+            child = root / "agy"
+            child.write_text(f'#!{sys.executable}\nimport argparse\n'
+                             'parser = argparse.ArgumentParser()\n'
+                             'parser.add_argument("--prompt-interactive", required=True)\n'
+                             'print(parser.parse_args().prompt_interactive, end="")\n')
+            child.chmod(0o700)
+            launch = root / "launch.txt"
+            launch.write_text("cd / && exec " + shlex.quote(str(child)))
+            args = account_launch_args(launch)
+            args.account_provider, args.account_config = "google", config_path
+            brief = "--Google brief\nKeep $(touch injected) literal."
+            args.brief_file[0].write_text(brief)
+            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
+                return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            with (patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                  patch.object(account_choice, "read_snapshot", return_value=(google_snapshot(), None)),
+                  patch.object(account_choice, "storage_root", return_value=root)):
+                result = asyncio.run(iterm_tab.operate(app, args))
+            sent = terminal.async_send_text.await_args_list[0].args[0]
+            command = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
+            completed = subprocess.run(["/bin/sh", "-c", command], cwd=root,
+                                       capture_output=True, text=True, check=True)
+            self.assertEqual(completed.stdout, brief)
+            self.assertEqual(result["account"]["account_binding"], account_choice.GOOGLE_ACCOUNT_BINDING)
+            self.assertEqual(result["account"]["env_keys"], [])
+            receipts = list((root / "Launch Receipts").glob("*.json"))
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(json.loads(receipts[0].read_text())["accountID"], result["account"]["account_id"])
+
+    def test_google_wrong_harness_or_home_override_refuses_before_tabs_and_receipts(self):
+        choice = account_choice.choose("google", accounts_config(GOOGLE_TOML), google_snapshot(), None)
+        with tempfile.TemporaryDirectory() as folder:
+            launch = Path(folder) / "launch.txt"
+            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
+                return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            for command in ("codex", "claude", "HOME=/alt agy", "cd / && env HOME=/alt exec agy",
+                            "CODEX_HOME=/alt agy"):
+                launch.write_text(command)
+                args = account_launch_args(launch)
+                args.account_provider = "google"
+                with (self.subTest(command=command),
+                      patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
+                      patch.object(account_choice, "select", return_value=choice),
+                      patch.object(account_choice, "prepare_launch") as prepare,
+                      patch.object(account_choice, "record_launch") as receipt,
+                      self.assertRaises(ValueError)):
+                    asyncio.run(iterm_tab.operate(app, args))
+                prepare.assert_not_called()
+                receipt.assert_not_called()
+                window.async_create_tab.assert_not_called()
+
     def test_brief_cannot_be_discarded_by_a_comment_or_shell_wrapper(self):
         for command in ("codex --remote unix:// # launch", "bash -c 'codex'",
                         "codex --remote unix://;", "codex --remote unix:// &&",
@@ -1169,7 +1428,10 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             child = root / "claude"
-            child.write_text('#!/bin/sh\n[ "$1" = "--" ] && shift\nprintf "%s\\n" "$#" "$1"\n')
+            child.write_text(f'#!{sys.executable}\nimport json, sys\n'
+                             'args = sys.argv[1:]\n'
+                             'prompt = args[args.index("--") + 1:]\n'
+                             'print(len(prompt))\nprint(prompt[0])\n')
             child.chmod(0o700)
             launch = root / "launch.txt"
             launch.write_text("cd / && exec " + shlex.quote(str(child)))
@@ -1436,7 +1698,10 @@ class TerminalTests(unittest.TestCase):
                 env={**os.environ, "CLAUDE_CONFIG_DIR": "/inherited/alternate"},
             )
             self.assertEqual(launched.stdout.splitlines(), ["", "brief"])
-        with self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
+        self.assertIn(account_choice.ACCOUNT_VARIABLES["anthropic"],
+                      iterm_tab.account_settings("env CLAUDE_CONFIG_DIR=/other claude",
+                                                 {account_choice.ACCOUNT_VARIABLES["anthropic"]}))
+        with self.assertRaises(ValueError):
             iterm_tab.with_account("env CLAUDE_CONFIG_DIR=/other claude", choice)
 
     def test_exact_session_and_ambiguity(self):
@@ -1621,7 +1886,11 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
             child = Path(folder) / "claude"
-            child.write_text('#!/bin/sh\n[ "$1" = "--" ] && shift\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
+            child.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
+                             'args = sys.argv[1:]\n'
+                             'print(os.getenv("CLAUDE_CONFIG_DIR"))\n'
+                             'print(os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"))\n'
+                             'print(args[args.index("--") + 1])\n')
             child.chmod(0o700)
             command.write_text("cd / && " + shlex.quote(str(child)) + "\n")
             args = account_launch_args(command)
@@ -1703,7 +1972,9 @@ class TerminalTests(unittest.TestCase):
                         "cd /x; and set -gx CLAUDE_CONFIG_DIR /other; and claude brief",
                         "env -S'CLAUDE_CONFIG_DIR=/other claude brief'",
                         "env --split-string='CLAUDE_CONFIG_DIR=/other claude brief'"):
-            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "already sets CLAUDE_CONFIG_DIR"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                self.assertIn(account_choice.ACCOUNT_VARIABLES["anthropic"],
+                              iterm_tab.account_settings(command, {account_choice.ACCOUNT_VARIABLES["anthropic"]}))
                 iterm_tab.with_account(command, choice)
         for command in ("bash --noprofile --norc -c 'claude brief'",
                         "env TERM=xterm-256color claude 'Discuss CLAUDE_CONFIG_DIR=/x'",

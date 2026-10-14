@@ -47,11 +47,13 @@ class Terminal:
             if len(values) != len(fields):
                 raise ValueError("tmux inventory is malformed")
             window, tab, pane, title, tty, pid, dead, status, identity, server = values
+            if not pid and dead != "1":
+                raise ValueError("live tmux pane has no PID; inventory unavailable")
             identity = identity or f"{server}:{pane}"
             rows.append({"window_id": window, "tab_id": tab,
                          "session_id": f"tmux:{self.socket_name}:{identity}",
                          "title": title, "tty": tty, "pane_id": pane,
-                         "pid": int(pid), "dead": dead == "1", "exit_status": status,
+                         "pid": int(pid) if pid else None, "dead": dead == "1", "exit_status": status,
                          "backend": "tmux", "tmux_socket": self.socket_name})
         return rows
 
@@ -63,8 +65,9 @@ class Terminal:
 
     def read(self, identity):
         row = self.select(identity)
-        screen = self.run("capture-pane", "-p", "-t", row["pane_id"]).stdout.splitlines()
-        return {**row, "screen": screen}
+        captured = self.run("capture-pane", "-p", "-e", "-t", row["pane_id"]).stdout
+        screen, styles = iterm_tab.ansi_screen(captured)
+        return {**row, "screen": screen, "input_line": iterm_tab.input_line(screen, styles)}
 
     async def send(self, identity, text, submit=True, allow_tabs=False):
         iterm_tab.validate_text(text, allow_tabs=allow_tabs)
@@ -73,12 +76,21 @@ class Terminal:
             raise ValueError("agent process has exited; no input was sent")
         if "\n" in text or "\t" in text:
             text = "\x1b[200~" + text + "\x1b[201~"
-        self.run("send-keys", "-t", row["pane_id"], "-l", "--", text)
+        try:
+            self.run("send-keys", "-t", row["pane_id"], "-l", "--", text)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            raise iterm_tab.SendFailure(identity, "not_attempted", "text send outcome unknown", text_sent=None) from error
         if submit:
             await asyncio.sleep(0.4)
-            if self.select(identity) != row:
-                raise ValueError("terminal state changed after text; inspect before submitting or retrying")
-            self.run("send-keys", "-t", row["pane_id"], "Enter")
+            try:
+                if self.select(identity) != row:
+                    raise ValueError("terminal state changed after text")
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                raise iterm_tab.SendFailure(identity, "not_attempted", str(error)) from error
+            try:
+                self.run("send-keys", "-t", row["pane_id"], "Enter")
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                raise iterm_tab.SendFailure(identity, "unknown", str(error)) from error
 
     def verify_closed(self, identity, entry):
         from close_ttys import inventory
