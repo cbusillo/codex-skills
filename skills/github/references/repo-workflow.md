@@ -325,39 +325,41 @@ Qualify either keyword as `OWNER/repo#N` when its issue is in another repository
 Superseded or competing PRs also retain non-closing references under the
 [canonical implementation procedure](#superseded-or-competing-prs).
 
-Put post-merge steps such as deploy proof, Client acceptance, and observation
-on the parent issue or milestone. Record the next action, who takes it, and
-the evidence there; completing an implementation issue does not complete that
-parent or authorize a release. If later proof has no parent or milestone,
-retain the existing issue as the parent and split out the PR-sized
-implementation deliverable before opening its closing PR. When a milestone
-holds the proof, keep its next action, actor, questions and evidence on its
-existing parent or `Track:` issue, linked from the milestone description.
-Preserve the agreed exit criteria and verify the proof before closing it under the
-[milestone contract](../../github-plan/references/milestones.md).
-Open a new issue for a post-merge check only
-when that check fails, after searching for an existing issue for the failure.
+An issue closes when the PR completing its work lands. The PR's tests and
+the deploy's existing health checks are the proof; do not add per-issue deploy
+checks or an agent come-back step to verify, qualify, or read back the change.
+Do not move that chore to a parent or create another issue for it. A later
+failure is breakage: search for an existing issue and record the actual fix.
+
+If the real finish line is an event, such as a lane turning healthy, a Client
+accepting a release, or an outside event, keep the issue open with a recorded
+wait naming the event and its actor under github-plan's
+[wait procedure](cli-reference.md#planning-claim) and
+[Status Labels](../../github-plan/SKILL.md#status-labels).
+Use `Refs` while that event remains outstanding. Preserve unresolved Director,
+Client, and other people's waits; a merge does not resolve them or authorize a
+release. A parent or milestone closes only when its own exit criteria hold under
+the [milestone contract](../../github-plan/references/milestones.md).
+Real remaining engineering work stays actionable with its own completing PR,
+rather than being recorded as an event wait.
 Split old oversized issues into PR-sized deliverables when working them;
 preserve their original requests under the
 [issue ownership rules](issue-templates.md), rather than rewriting them.
 
-For a Client's or outside reporter's issue, do not close on merge alone. Leave
-a validation comment and close only after the reporter/current user confirms
-the result or explicitly asks. Keep closing keywords off that issue until
-this condition is met; a separate implementation issue may close on merge.
-Without a separate implementation issue, use `Refs` for the reporter's issue;
-the exception does not require a split.
+For a Client's or outside reporter's issue awaiting confirmation, record that
+confirmation as the event wait. Keep closing keywords off that issue until
+the reporter/current user confirms the result or explicitly asks to close it;
+a separate completed implementation issue may close on merge. The wait does
+not require creating a separate issue.
 
-The session responsible for landing owns the issue readback: the Supervisor
-after an assigned handoff, otherwise the executing session. After a merge-train
-batch lands, that session reads back the referenced issues and links the
-landing evidence, including the parents holding later proof. Link a
-deliverable's parent from the PR with `Refs #parent` (or `Refs OWNER/repo#N`
-for a parent in another repository) so that handoff retains
-the remaining work and its next actor. If `Closes` did not fire, follow github-plan's
+The session responsible for landing reconciles GitHub issue state and planning
+metadata as part of the landing: the Supervisor after an assigned handoff,
+otherwise the executing session. This is bookkeeping, not another product
+qualification step or a reason to leave completed work open. If `Closes` did
+not fire, follow github-plan's
 [Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off) to reconcile
-the completed issue. Comment with the remaining action when its finish line
-is not met; never force closure or bypass the reporter exception.
+the completed issue. When its finish line remains unmet, record the actual
+event wait or remaining engineering work; never force closure or clear a real wait.
 Reconcile durable plan metadata under the same Close Or Hand Off procedure
 even when GitHub already auto-closed the issue; auto-close does not settle its
 Current Status, planning labels or Project Status.

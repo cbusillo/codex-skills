@@ -90,8 +90,9 @@ A compact, observable "Done" state. This should be a specific condition that
 can be verified (e.g., "The CLI prints the correct version and all tests pass").
 For implementation work, scope this to one PR-sized deliverable using
 [issue closing and post-merge proof](repo-workflow.md#issue-closing-and-post-merge-proof);
-keep later deploy, acceptance, and observation steps on the parent issue or
-milestone. Preserve the original request when splitting an older broad issue.
+close it at the PR completing its work. Record a real event finish line as a
+wait naming the event and actor; do not create an agent come-back check on a
+parent. Preserve the original request when splitting an older broad issue.
 
 ### Current Status
 The recovery point for future sessions. Keep it short and concrete.
