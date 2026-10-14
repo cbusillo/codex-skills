@@ -312,6 +312,7 @@ class OverallDirectionTests(unittest.TestCase):
     def test_shows_the_merged_stop_boundaries_link_and_loop(self) -> None:
         text = self.run_hook(self.reader(body=OVERALL))
         self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertIn("A fixture acceptance boundary also lives in prose", text)
         self.assertNotIn("Fixture purpose", text, "only the stop boundaries are printed, not the whole file")
         self.assertIn("https://github.com/owner/direction/", text)
         self.assertTrue(text.endswith(hook.loop_summary(hook.LOOP_PATH.read_text())))

@@ -591,7 +591,7 @@ for authorized train entry and landing. Do not call `gh-pr.py merge` or merge
 directly in GitHub. A task brief that assigns routing to a direction or
 Supervisor session owns that handoff.
 After a confirmed landing, reconcile the runtime checkout as described in
-[AGENTS.md](AGENTS.md#runtime-checkout-discipline).
+[the GitHub skill's After A Merge procedure](skills/github/SKILL.md#after-a-merge).
 
 The `direction` skill holds a repository's direction in one Director-approved
 `DIRECTION.md` at the root, keeps milestones as waypoints that must be listed
