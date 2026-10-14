@@ -90,16 +90,21 @@ The state directory is resolved through the operating system's UID home,
 independently of a harness's HOME override. An owner-only journal records each run before
 license copying. After SIGKILL/crash, the next invocation holds the kernel lock
 and recovers only journaled profiles with matching ownership markers and
-containers with the exact run label and private mount. The marker is deleted
-last, so partial cleanup can resume. Missing or changed storage, unknown ownership
+containers with the exact run label and private mount, on the journaled local
+Docker socket. The marker is deleted last, so partial cleanup can resume.
+macOS recovery compares volume UUIDs across remounts. A deleted task directory
+on that verified mounted volume can be cleared after container absence is proved.
+Unavailable or changed storage, unknown ownership
 or unavailable Docker retains the record and returns UNKNOWN; other proved
 records are still recovered. Changing task cache
 roots neither loses recovery custody nor lifts a trial stop. A forcibly killed
 helper cannot report cleanup at that instant; recovery confirms deletion on
-the next invocation. The Docker client inherits the lock descriptor, so a
-surviving client cannot create a late container after another caller recovers
-its journal. The native analysis timeout is also supplied to Qodana; wait for
-an inherited live client to finish rather than bypassing its lock.
+the next invocation. A detached local monitor retains the lock and watches a
+parent-lifetime pipe through execution and result collection. Parent EOF stops
+its exact client/container, even while paused, then deletes the private profile.
+Client termination precedes container removal to prevent late creation. The
+native analysis timeout is also supplied to Qodana. A monitor or host crash
+keeps the journal for proved recovery; never bypass a live monitor's lock.
 
 Recover without starting a new inspection or copying licenses:
 

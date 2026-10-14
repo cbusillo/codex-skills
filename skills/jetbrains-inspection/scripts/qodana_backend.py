@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import plistlib
 import re
 import selectors
 import signal
@@ -124,10 +125,30 @@ def delete_private(private):
     private.rmdir()
 
 
-def save_run_record(private, receipt):
+def storage_anchor(path):
+    anchor = path
+    while anchor.parent != anchor and anchor.parent.stat().st_dev == anchor.stat().st_dev:
+        anchor = anchor.parent
+    return anchor
+
+
+def storage_identity(anchor):
+    if not anchor.is_dir():
+        raise Blocked("qodana_recovery_storage_unavailable")
+    if sys.platform == "darwin":
+        data = plistlib.loads(checked(["/usr/sbin/diskutil", "info", "-plist", str(anchor)]))
+        if not data.get("VolumeUUID") or data.get("MountPoint") != str(anchor):
+            raise Blocked("qodana_recovery_storage_unavailable")
+        return {"volume_uuid": data["VolumeUUID"]}
+    return {"device": anchor.stat().st_dev}
+
+
+def save_run_record(private, receipt, env=None):
+    anchor = storage_anchor(private.parent)
     record = {"run_id": receipt["run_id"], "private": str(private),
               "container_name": "jb-qodana-" + receipt["run_id"],
-              "parent_device": private.parent.stat().st_dev, "parent_inode": private.parent.stat().st_ino}
+              "storage_anchor": str(anchor), "storage_identity": storage_identity(anchor),
+              "docker_endpoint": (env or {}).get("DOCKER_HOST", "")}
     (private / "owner.json").write_text(json.dumps(record))
     path = state_dir() / (receipt["run_id"] + ".json")
     path.write_text(json.dumps(record))
@@ -142,11 +163,13 @@ def recover_record(path, env):
     name = "jb-qodana-" + run_id
     if path.is_symlink() or path.stem != run_id or record["container_name"] != name or not private.is_absolute() or not private.name.startswith("private-") or private.is_symlink():
         raise Blocked("qodana_recovery_ownership_unproven")
-    if not private.parent.is_dir():
-        raise Blocked("qodana_recovery_storage_unavailable")
-    parent = private.parent.stat()
-    if parent.st_dev != record["parent_device"] or parent.st_ino != record["parent_inode"]:
+    if storage_identity(Path(record["storage_anchor"])) != record["storage_identity"]:
         raise Blocked("qodana_recovery_storage_changed")
+    recorded_endpoint = record.get("docker_endpoint")
+    if recorded_endpoint:
+        if not recorded_endpoint.startswith("unix://"):
+            raise Blocked("qodana_recovery_ownership_unproven")
+        env = {**env, "DOCKER_HOST": recorded_endpoint}
     if private.exists():
         marker = private / "owner.json"
         if marker.is_symlink() or (marker.is_file() and json.loads(marker.read_text()) != record):
@@ -183,6 +206,8 @@ def recover_runs(env):
             recover_record(path, env)
             count += 1
         except Blocked as error:
+            if str(error) == "qodana_interrupted":
+                raise
             unresolved.append(str(error))
         except Exception:
             unresolved.append("qodana_recovery_unavailable")
@@ -410,18 +435,28 @@ class Monitor:
                     self.observe(chunk)
 
 
-def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
+def parent_gone(parent_fd):
+    if parent_fd is None:
+        return False
+    try:
+        return os.read(parent_fd, 1) == b""
+    except BlockingIOError:
+        return False
+
+
+def execute_worker(argv, name, private, env, timeout, receipt, *, parent_fd=None):
     monitor = Monitor(private)
     started = time.monotonic()
     process = None
     paused = False
     try:
-        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                                   pass_fds=(lock_fd,) if lock_fd is not None else ())
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         os.set_blocking(process.stdout.fileno(), False)
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
             while True:
+                if parent_gone(parent_fd):
+                    raise Blocked("qodana_parent_gone")
                 for _, _ in selector.select(timeout=0.05):
                     chunk = os.read(process.stdout.fileno(), 65536)
                     if chunk:
@@ -466,7 +501,6 @@ def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
         ignore_cleanup_signals()
         # Remove owned container/writable layer before deleting its profile. This
         # also stops paused workers; never kill by executable name or desktop PID.
-        receipt["container_removed"] = remove_container(name, env)
         if process is not None:
             if process.poll() is None:
                 process.terminate()
@@ -476,6 +510,96 @@ def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
                     process.kill()
                     process.wait(timeout=5)
             process.stdout.close()
+        # The client is now gone and cannot create a late container.
+        receipt["container_removed"] = remove_container(name, env)
+
+
+def record_boundary(receipt):
+    receipt["boundary_event"] = True
+    try:
+        path = state_dir() / "boundary-stop.json"
+        path.write_text(json.dumps({"run_id": receipt["run_id"], "reason": "qodana_trial_or_purchase_stop"}))
+        path.chmod(0o600)
+        receipt["boundary_recorded"] = True
+    except OSError:
+        receipt["boundary_recorded"] = False
+
+
+def finish_guardian(guardian):
+    pid, writer = guardian
+    os.close(writer)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        finished, _ = os.waitpid(pid, os.WNOHANG)
+        if finished:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
+    """A detached local monitor retains the lock and deletes copies on parent EOF.
+
+    The pipe proves parent lifetime without PID reuse assumptions. The monitor
+    stays alive after delivering the safe receipt until collection finishes, so
+    SIGKILL at any parent stage still cleans the profile, including paused runs.
+    """
+    life_read, life_write = os.pipe()
+    result_read, result_write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(life_write)
+        os.close(result_read)
+        os.setsid()
+        os.set_blocking(life_read, False)
+        reason = "qodana_completed"
+        try:
+            execute_worker(argv, name, private, env, timeout, receipt, parent_fd=life_read)
+        except Blocked as error:
+            reason = str(error)
+        except BaseException:
+            reason = "qodana_worker_failed"
+        finally:
+            ignore_cleanup_signals()
+            if reason == "qodana_trial_or_purchase_stop":
+                record_boundary(receipt)
+            try:
+                with os.fdopen(result_write, "w") as output:
+                    json.dump({"reason": reason, "receipt": receipt}, output)
+            except (BrokenPipeError, OSError):
+                pass
+            while not parent_gone(life_read):
+                time.sleep(0.05)
+            if receipt.get("container_removed"):
+                try:
+                    if private.exists():
+                        delete_private(private)
+                    (state_dir() / (receipt["run_id"] + ".json")).unlink(missing_ok=True)
+                except OSError:
+                    pass  # The ownership journal/marker keeps cleanup resumable.
+            os.close(life_read)
+            if lock_fd is not None:
+                os.close(lock_fd)
+            os._exit(0)
+    os.close(life_read)
+    os.close(result_write)
+    guardian = (pid, life_write)
+    try:
+        chunks = []
+        while chunk := os.read(result_read, 65536):
+            chunks.append(chunk)
+        result = json.loads(b"".join(chunks))
+        receipt.update(result["receipt"])
+        if result["reason"] != "qodana_completed":
+            raise Blocked(result["reason"])
+        return guardian
+    except BaseException:
+        ignore_cleanup_signals()
+        finish_guardian(guardian)
+        receipt["container_removed"] = remove_container(name, env)
+        raise
+    finally:
+        os.close(result_read)
 
 
 def envelope(host, receipt, findings, reason, gaps, artifact):
@@ -483,6 +607,7 @@ def envelope(host, receipt, findings, reason, gaps, artifact):
     action = "Fix current findings; retain the recorded coverage gaps." if verdict == "RED" else "Resolve the reported prerequisite or qualify coverage before using Qodana as a gate; the API remains the default."
     if receipt.get("boundary_event") or reason == "qodana_trial_or_purchase_stop":
         action = "Stop Qodana work and report the trial/purchase boundary to the Director; do not activate or purchase."
+    cleanup_clean = receipt["profile_deleted"] and receipt["container_removed"] and not receipt.get("unresolved_record_count")
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "qodana",
             "status": "findings" if verdict == "RED" else "error", "helper_exit_code": host.classify_run_exit({"verdict": verdict}),
             "agent_result": {"verdict": verdict, "bucket": "findings" if verdict == "RED" else "environment_blocked",
@@ -492,8 +617,8 @@ def envelope(host, receipt, findings, reason, gaps, artifact):
             "finding_count": len(findings), "findings": findings[:FINDING_LIMIT], "findings_limit": FINDING_LIMIT,
             "findings_truncated": len(findings) > FINDING_LIMIT, "findings_artifact": artifact,
             "proof_failures": gaps, "inspection_outcome": {"verdict": verdict, "reason": reason},
-            "lifecycle_outcome": {"status": "clean" if receipt["profile_deleted"] and receipt["container_removed"] else "unknown"},
-            "cleanup": {"status": "closed" if receipt["profile_deleted"] and receipt["container_removed"] else "failed"},
+            "lifecycle_outcome": {"status": "clean" if cleanup_clean else "unknown"},
+            "cleanup": {"status": "closed" if cleanup_clean else "failed"},
             "identity": {"helper_revision": receipt["helper_revision"], "qodana_backend_revision": receipt["backend_revision"],
                          "inspection_run_id": receipt["run_id"], "qodana_image": receipt.get("image")},
             "diagnostic": {"error_reason": reason, "qodana": receipt}}
@@ -508,6 +633,7 @@ def run(args, host):
     private = None
     root = None
     journal = None
+    guardian = None
     lock = None
     env = safe_env()
     old_handlers = {}
@@ -580,7 +706,7 @@ def run(args, host):
         private = Path(tempfile.mkdtemp(prefix="private-", dir=root))
         private.chmod(0o700)
         receipt["profile_deleted"] = False
-        journal = save_run_record(private, receipt)
+        journal = save_run_record(private, receipt, env)
         for name in ("project", "config", "home", "cache", "results", "logs", "data", "bin", "plugins"):
             (private / name).mkdir(mode=0o700)
         hashes = snapshot(repo, private / "project")
@@ -612,7 +738,7 @@ def run(args, host):
         receipt["repo_head_sha"] = host.git_head_sha(repo)
         receipt["container_removed"] = False
         argv += ["--timeout", str(max(1, args.timeout_ms))]
-        execute(argv, name, private, env, max(1, args.timeout_ms / 1000), receipt, lock_fd=lock.fileno())
+        guardian = execute(argv, name, private, env, max(1, args.timeout_ms / 1000), receipt, lock_fd=lock.fileno())
         gaps = coverage_gaps(language, selected, expected, private / "results", any(Path(f).name == "__manifest__.py" for f in hashes))
         if config.get("lanes"):
             gaps.append("qodana_lane_models_unqualified")
@@ -641,15 +767,13 @@ def run(args, host):
         if old_handlers:
             ignore_cleanup_signals()
         if reason == "qodana_trial_or_purchase_stop":
-            receipt["boundary_event"] = True
+            record_boundary(receipt)
+        if guardian is not None and not finish_guardian(guardian):
+            receipt["container_removed"] = False
+        if private is not None and receipt["container_removed"]:
             try:
-                (state_dir() / "boundary-stop.json").write_text(json.dumps({"run_id": receipt["run_id"], "reason": reason}))
-                receipt["boundary_recorded"] = True
-            except OSError:
-                receipt["boundary_recorded"] = False
-        if private is not None:
-            try:
-                delete_private(private)
+                if private.exists():
+                    delete_private(private)
                 receipt["profile_deleted"] = not private.exists()
             except OSError:
                 receipt["profile_deleted"] = False
@@ -657,7 +781,7 @@ def run(args, host):
             reason = "qodana_cleanup_incomplete"
         elif journal is not None:
             try:
-                journal.unlink()
+                journal.unlink(missing_ok=True)
             except OSError:
                 reason = "qodana_recovery_record_cleanup_failed"
         if lock is not None:
