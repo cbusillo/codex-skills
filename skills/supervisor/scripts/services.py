@@ -135,7 +135,7 @@ def supervise(settings, stopped, marker, uv_executable):
         # Only the long-running uv child needs a temporary cache. Its short
         # helper calls keep normal caching instead of inheriting UV_NO_CACHE.
         child_argv = settings["argv"]
-        if child_argv[0] == uv_executable:
+        if child_argv[0] == uv_executable and "--no-cache" not in child_argv[1:]:
             child_argv = [uv_executable, "--no-cache", *child_argv[1:]]
         child = subprocess.Popen(child_argv, cwd=settings["cwd"], start_new_session=True)
         emit("started", pid=child.pid)

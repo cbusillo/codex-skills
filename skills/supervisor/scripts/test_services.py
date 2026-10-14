@@ -75,13 +75,19 @@ class ServicesTests(unittest.TestCase):
         self.assertEqual(len((self.root / "passes.txt").read_text().splitlines()), 4)
 
     def test_running_service_and_uv_child_leave_shared_cache_prunable(self):
+        self.assert_service_cache_prunable([])
+
+    def test_uv_child_with_existing_cache_flag_still_runs_and_allows_pruning(self):
+        self.assert_service_cache_prunable(["--no-cache"])
+
+    def assert_service_cache_prunable(self, cache_flags):
         self.fixture.write_text(
             "from pathlib import Path\nimport subprocess\nimport time\n"
             "Path('child-cache').write_text(subprocess.check_output(['uv', '--no-config', 'cache', 'dir'], text=True).strip())\n"
             "Path('started').touch()\ntime.sleep(60)\n")
         uv = self.data["uv"]
         self.data["services"]["foreign"]["argv"] = [
-            uv, "run", "--no-project", "--python", "3.12", "python", str(self.fixture)]
+            uv, *cache_flags, "run", "--no-project", "--python", "3.12", "python", str(self.fixture)]
         self.save()
         cache = self.root / "shared-cache"
         cache.mkdir()
