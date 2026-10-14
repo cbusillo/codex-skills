@@ -136,7 +136,16 @@ def storage_identity(anchor):
     if not anchor.is_dir():
         raise Blocked("qodana_recovery_storage_unavailable")
     if sys.platform == "darwin":
-        data = plistlib.loads(checked(["/usr/sbin/diskutil", "info", "-plist", str(anchor)]))
+        info = command(["/usr/sbin/diskutil", "info", "-plist", str(anchor)])
+        if info.returncode:
+            # APFS firmlinks such as /Users are not diskutil volume names.
+            # Resolve their actual device through df without parsing mount paths.
+            rows = checked(["df", "-P", str(anchor)]).decode().splitlines()
+            device = rows[-1].split()[0]
+            info = command(["/usr/sbin/diskutil", "info", "-plist", device])
+        if info.returncode:
+            raise Blocked("qodana_recovery_storage_unavailable")
+        data = plistlib.loads(info.stdout)
         mount = Path(data.get("MountPoint", ""))
         if not data.get("VolumeUUID") or not mount.is_dir() or mount.stat().st_dev != anchor.stat().st_dev:
             raise Blocked("qodana_recovery_storage_unavailable")
@@ -806,6 +815,8 @@ def run(args, host):
             lock.close()
         for sig, handler in old_handlers.items():
             signal.signal(sig, handler)
+    if old_handlers and (state_dir() / "boundary-stop.json").exists():
+        receipt["boundary_event"] = True
     if findings and reason in {"qodana_completed", "qodana_coverage_unproven"}:
         try:
             artifact_path = root / (receipt["run_id"] + ".json")

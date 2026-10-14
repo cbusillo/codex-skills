@@ -340,10 +340,24 @@ os.kill(os.getpid(), signal.SIGKILL)
         mounted = self.root / "data-volume"
         anchor.mkdir(); mounted.mkdir()
         data = plistlib.dumps({"MountPoint": str(mounted), "VolumeUUID": "fixture-volume"})
-        with patch.object(fresh.sys, "platform", "darwin"), patch.object(fresh, "checked", return_value=data):
+        with patch.object(fresh.sys, "platform", "darwin"), patch.object(fresh, "command", return_value=subprocess.CompletedProcess([], 0, data, b"")):
             identity = fresh.storage_identity(anchor)
         self.assertEqual(identity["volume_uuid"], plistlib.loads(data)["VolumeUUID"])
         self.assertIs(backend.storage_identity, original)
+
+    def test_diskutil_firmlink_refusal_resolves_device_through_df(self):
+        import plistlib
+        fresh = load("qodana_firmlink_test", SCRIPTS / "qodana_backend.py")
+        data = plistlib.dumps({"MountPoint": str(self.root), "VolumeUUID": "fixture-volume"})
+        attempts = []
+        def query(argv, **_kwargs):
+            attempts.append(argv)
+            return subprocess.CompletedProcess(argv, 1 if len(attempts) == 1 else 0, b"" if len(attempts) == 1 else data, b"")
+        df = b"Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/fixture 1 1 0 100% /fixture\n"
+        with patch.object(fresh.sys, "platform", "darwin"), patch.object(fresh, "command", side_effect=query), patch.object(fresh, "checked", return_value=df):
+            identity = fresh.storage_identity(self.root)
+        self.assertEqual(identity["volume_uuid"], plistlib.loads(data)["VolumeUUID"])
+        self.assertEqual(attempts[-1][-1], df.decode().splitlines()[-1].split()[0])
 
     def test_qodana_recovery_flag_without_explicit_backend_never_opens_api(self):
         output = io.StringIO()
