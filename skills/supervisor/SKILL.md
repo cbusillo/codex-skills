@@ -83,7 +83,7 @@ commands:
   - name: supervisor-foreign-watch
     source: skill
     resource_path: scripts/foreign_watch.py
-    example_argv: ["uv", "run", "scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWN-LOGIN", "--state", "<private-state.json>", "--deadline-seconds", "1800"]
+    example_argv: ["uv", "run", "--no-cache", "scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWN-LOGIN", "--state", "<private-state.json>", "--deadline-seconds", "1800"]
     purpose: Wake on untrusted foreign comments and Launchplane product-review records without starting work.
   - name: supervisor-finished-map
     source: skill
@@ -639,3 +639,8 @@ write out only new recovery information needed for takeover:
 - The Director answers in plain words and the Supervisor records them. Never
   hand the Director shell lines to paste.
 - Verify an alignment claim before the text reaches other people.
+
+Long-running watches should start with `uv run --no-cache` so their lifetime does
+not hold the shared cache-use lock and defer native cache maintenance. This uses
+uv's temporary cache; existing cached watches finish naturally before relaunch.
+Never interrupt another session to obtain a cache lock.

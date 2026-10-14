@@ -3244,8 +3244,7 @@ def read_next_train_enrollment(repo: str) -> dict[str, Any]:
     helper = SKILL_DIR.parent / "launchplane/scripts/launchplane-write-action.py"
     try:
         result = subprocess.run(
-            ["uv", "run", "--no-project", "--no-config", "--python", "3.12", "python",
-             str(helper), "merge-train-policy-read", "--repo", repo],
+            [str(SKILL_DIR / "scripts/github-python"), str(helper), "merge-train-policy-read", "--repo", repo],
             capture_output=True, text=True, timeout=30,
         )
         payload = json.loads(result.stdout)

@@ -144,7 +144,7 @@ if [ -n "${GITHUB_CLIENT_APP_OWNERS:-}" ]; then
 	if [ -n "$python_command" ]; then
 		app_prefix=$($python_command "$identity_helper" app-prefix --repo "$repo")
 	elif command -v uv >/dev/null 2>&1; then
-		app_prefix=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-prefix --repo "$repo")
+		app_prefix=$("$script_dir/github-python" "$identity_helper" app-prefix --repo "$repo")
 	else
 		echo "error: git-push-as-bot requires uv or GIT_PUSH_AS_BOT_PYTHON to choose the identity for $repo" >&2
 		exit 127
@@ -172,7 +172,7 @@ if [ "$app_variable_count" -gt 0 ] || [ "$client_app" -eq 1 ]; then
 	if [ -n "$python_command" ]; then
 		app_auth_output=$($python_command "$identity_helper" app-auth --repo "$repo" --require-installation) || app_auth_status=$?
 	elif command -v uv >/dev/null 2>&1; then
-		app_auth_output=$(uv run --no-project --no-config --python 3.12 "$identity_helper" app-auth --repo "$repo" --require-installation) || app_auth_status=$?
+		app_auth_output=$("$script_dir/github-python" "$identity_helper" app-auth --repo "$repo" --require-installation) || app_auth_status=$?
 	else
 		echo "error: git-push-as-bot requires uv or GIT_PUSH_AS_BOT_PYTHON for GitHub App authentication" >&2
 		exit 127

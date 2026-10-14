@@ -15,7 +15,7 @@ run_python() {
 	if [ -n "$python_command" ]; then
 		"$python_command" "$@"
 	else
-		uv run --no-project --no-config --python 3.12 python "$@"
+		"$script_dir/github-python" "$@"
 	fi
 }
 
@@ -850,7 +850,7 @@ app_auth_for_command() {
 	if [ -n "$python_command" ]; then
 		$python_command "$identity_helper" "$@"
 	else
-		uv run --no-project --no-config --python 3.12 "$identity_helper" "$@"
+		"$script_dir/github-python" "$identity_helper" "$@"
 	fi
 }
 

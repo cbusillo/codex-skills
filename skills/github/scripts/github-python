@@ -1,0 +1,10 @@
+#!/bin/sh
+# Preserve project isolation while honoring the native user cache route.
+set -eu
+uv_config="${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml"
+if [ -f "$uv_config" ]; then
+    cache_dir=$(uv --no-config --config-file "$uv_config" cache dir)
+else
+    cache_dir=$(uv --no-config cache dir)
+fi
+exec uv run --no-project --no-config --cache-dir "$cache_dir" --python 3.12 python "$@"

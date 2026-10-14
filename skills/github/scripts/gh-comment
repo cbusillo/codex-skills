@@ -10,4 +10,4 @@ if ! command -v uv >/dev/null 2>&1; then
 	printf 'error: gh-comment requires uv or GH_COMMENT_PYTHON\n' >&2
 	exit 127
 fi
-exec uv run --no-project --no-config --python 3.12 python "$script_dir/github_comment.py" "$@"
+exec "$script_dir/github-python" "$script_dir/github_comment.py" "$@"

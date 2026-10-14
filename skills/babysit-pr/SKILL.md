@@ -25,7 +25,7 @@ commands:
     source: skill
     resource_path: scripts/gh_pr_watch.py
     example_argv:
-      ["uv", "run", "scripts/gh_pr_watch.py", "--pr", "auto", "--watch"]
+      ["uv", "run", "--no-cache", "scripts/gh_pr_watch.py", "--pr", "auto", "--watch"]
     purpose: Continuously emit JSONL snapshots while babysitting a PR.
   - name: retry-failed-checks
     source: skill
@@ -86,7 +86,7 @@ branch and a bare number resolves through the current repository; for a PR in
 another repository, pass its URL or `--repo OWNER/REPO`.
 
 ```bash
-uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --watch   # ongoing, JSONL
+uv run --no-cache <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --watch   # ongoing, JSONL
 uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --once    # one snapshot
 uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --retry-failed-now
 ```
@@ -286,3 +286,8 @@ summary only at a stop condition. Follow
 [Agent Comments](../references/talking-with-the-director.md#agent-comments):
 link commits, checks and reviews; write out only remaining actions and results
 that exist nowhere else.
+
+Long-running watches should start with `uv run --no-cache` so their lifetime does
+not hold the shared cache-use lock and defer native cache maintenance. This uses
+uv's temporary cache; existing cached watches finish naturally before relaunch.
+Never interrupt another session to obtain a cache lock.

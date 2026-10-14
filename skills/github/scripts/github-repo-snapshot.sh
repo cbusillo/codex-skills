@@ -18,7 +18,7 @@ configuration_helper="${GITHUB_REPO_SNAPSHOT_CONFIGURATION_HELPER:-$script_dir/g
 if [[ -n "${GITHUB_REPO_SNAPSHOT_PYTHON:-}" ]]; then
   python_command=("$GITHUB_REPO_SNAPSHOT_PYTHON")
 elif command -v uv >/dev/null 2>&1; then
-  python_command=(uv run --no-project --no-config --python 3.12 python)
+  python_command=("$script_dir/github-python")
 else
   printf 'error: github-repo-snapshot requires uv or GITHUB_REPO_SNAPSHOT_PYTHON\n' >&2
   exit 127

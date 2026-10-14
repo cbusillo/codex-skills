@@ -1,0 +1,67 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Prove native cache routing without importing caller project settings."""
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+@unittest.skipUnless(shutil.which("uv"), "uv required")
+class CacheRoutingTests(unittest.TestCase):
+    def test_user_cache_and_explicit_override_preserve_cwd_and_args(self):
+        launcher = Path(__file__).with_name("github-python")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            config = root / "config/uv"
+            config.mkdir(parents=True)
+            configured = root / "configured"
+            (config / "uv.toml").write_text(f'cache-dir = "{configured}"\n')
+            # A caller project config would fail parsing if discovery leaked in.
+            caller = root / "caller"
+            caller.mkdir()
+            (caller / "uv.toml").write_text("not valid TOML\n")
+            script = root / "probe.py"
+            script.write_text('import json,os,sys; print(json.dumps([os.environ.get("UV_CACHE_DIR"),os.getcwd(),sys.argv[1:]]))\n')
+            env = {**os.environ, "XDG_CONFIG_HOME": str(config.parent), "UV_PYTHON_DOWNLOADS": "never"}
+            env.pop("UV_CACHE_DIR", None)
+            for override in (None, root / "override"):
+                if override is not None:
+                    env["UV_CACHE_DIR"] = str(override)
+                process = subprocess.run([str(launcher), str(script), "space value"], cwd=caller,
+                                         env=env, text=True, capture_output=True, check=True)
+                payload = json.loads(process.stdout)
+                self.assertEqual(payload[1:], [str(caller), ["space value"]])
+                expected = override or configured
+                self.assertTrue((expected / ".lock").exists())
+                self.assertFalse((caller / ".venv").exists())
+
+    def test_no_cache_watch_leaves_shared_cache_prunable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            cache = root / "cache"
+            cache.mkdir()
+            uv = shutil.which("uv")
+            env = {**os.environ, "UV_CACHE_DIR": str(cache), "UV_LOCK_TIMEOUT": "1"}
+            watcher = subprocess.Popen([uv, "run", "--no-project", "--no-config", "--no-cache",
+                                        "--python", "3.12", "python", "-c",
+                                        'import time; print("ready", flush=True); time.sleep(60)'],
+                                       env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(watcher.stdout.readline().strip(), "ready")
+                subprocess.run([uv, "--no-config", "cache", "prune", "--cache-dir", str(cache)],
+                               env=env, check=True, capture_output=True, timeout=10)
+                self.assertIsNone(watcher.poll())
+            finally:
+                watcher.terminate()
+                watcher.communicate(timeout=10)
+
+
+if __name__ == "__main__":
+    unittest.main()
