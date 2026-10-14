@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pytest==9.1.1"]
+# ///
+"""Exercise preview and saved-review projection through fake HTTP responses."""
+
+import io
+import json
+import urllib.error
+from contextlib import redirect_stdout
+from email.message import Message
+from unittest.mock import patch
+
+import pytest
+
+from test_launchplane_helpers import owner_review, write_action as helper
+
+
+SETTINGS = {"service_url": "https://service.example.invalid", "token": "PRIVATE_SENTINEL"}
+TRACE = "launchplane_req_projection_fixture"
+SERVICE_CODE = "product_review_unavailable"
+PREVIEW_ARGS = [
+    "preview-feedback-remediation", "--mode", "dry-run", "--product", "example-site",
+    "--context", "example-preview", "--repository", "example/site", "--pull-request-url",
+    "https://github.com/example/site/pull/42", "--terminal-status", "destroyed",
+    "--reason", "Check existing absent feedback", "--related-issue", "example/service#1",
+    "--idempotency-key", "example-projection-dry-run",
+]
+
+
+class Response(io.BytesIO):
+    def __init__(self, body, status):
+        super().__init__(body if isinstance(body, bytes) else json.dumps(body).encode())
+        self.status = status
+
+
+def preview_response(login="example-delivery[bot]"):
+    # Producer's absent-comment App actor shape, with private observation fields.
+    return {"status": "accepted", "trace_id": TRACE, "records": {}, "result": {
+        "schema_version": 1, "remediation_id": "example-remediation", "mode": "dry-run",
+        "planned_action": "none", "outcome": "planned", "companion_feedback_id": "",
+        "observation": {"state": "absent", "comment_id": 0, "comment_url": "",
+                        "comment_author_id": 0, "comment_author_login": "",
+                        "token_actor_id": 123, "token_actor_login": login,
+                        "digest_sha256": "a" * 64, "marker": "FOREIGN_MARKER",
+                        "excerpt": "PRIVATE_SENTINEL"},
+    }}
+
+
+def invoke(path, body, status=200, *, http_error=False, interrupted=False):
+    module = helper if path == "preview" else owner_review.operator
+    response = Response(body, status)
+    failure = urllib.error.HTTPError(SETTINGS["service_url"], status, "PRIVATE_SENTINEL",
+                                     Message(), response) if http_error else None
+    stdout = io.StringIO()
+    with patch.object(module, "safe_urlopen", side_effect=failure, return_value=response) as transport, \
+         patch.object(helper, "prepare_operator_settings", return_value=SETTINGS), \
+         patch.object(owner_review, "resolve_settings", return_value=SETTINGS), \
+         redirect_stdout(stdout):
+        if interrupted:
+            response.read = lambda: (_ for _ in ()).throw(OSError("PRIVATE_SENTINEL"))
+        code = helper.main(PREVIEW_ARGS) if path == "preview" else owner_review.main([
+            "--repo", "example/site", "--pr", "42"])
+    rendered = stdout.getvalue()
+    assert "PRIVATE_SENTINEL" not in rendered
+    assert "FOREIGN_MARKER" not in rendered
+    assert SETTINGS["service_url"] not in rendered
+    assert transport.call_count == 1
+    assert transport.call_args.args[0].method == ("POST" if path == "preview" else "GET")
+    return code, json.loads(rendered)
+
+
+def diagnostics(path, payload):
+    return payload["summary"] if path == "preview" else payload
+
+
+@pytest.mark.parametrize("state", ["absent", "present"])
+def test_preview_projects_app_actor_and_comment_author_without_private_observation(state):
+    response = preview_response()
+    response["result"]["observation"]["state"] = state
+    author = "example-commenter[bot]" if state == "present" else ""
+    response["result"]["observation"]["comment_author_login"] = author
+    code, payload = invoke("preview", response)
+    assert code == 0
+    observed = payload["result"]["observation"]
+    assert observed["state"] == state
+    assert observed["github_actor_login"] == response["result"]["observation"]["token_actor_login"]
+    assert observed["comment_author_login"] == (author or "unknown")
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    # Generic identifiers retain their original bracket rejection.
+    with pytest.raises(helper.LaunchplaneSafetyError):
+        helper.public_identifier(observed["github_actor_login"])
+
+
+@pytest.mark.parametrize("login", ["example[bot]extra", "[bot]", "example[admin]",
+                                  "example/site[bot]", "example ghp_planted[bot]", "ghp_planted[bot]",
+                                  {"token": "PRIVATE_SENTINEL"}])
+def test_preview_invalid_actor_keeps_failure_trace_and_status(login):
+    code, payload = invoke("preview", preview_response(login))
+    assert code == 1
+    assert payload["result"] == {}
+    assert payload["summary"]["trace_id"] == TRACE
+    assert payload["summary"]["http_status"] == 200
+    assert payload["summary"]["projection_error_code"] == "invalid_response"
+
+
+@pytest.mark.parametrize("path", ["preview", "review"])
+@pytest.mark.parametrize("http_error", [True, False])
+def test_failed_service_response_keeps_code_trace_and_http_status(path, http_error):
+    response = {"status": "error", "trace_id": TRACE, "error": {
+        "code": SERVICE_CODE, "message": "PRIVATE_SENTINEL", "url": SETTINGS["service_url"]},
+        "token": "PRIVATE_SENTINEL"}
+    status = 403 if http_error else 200
+    code, payload = invoke(path, response, status, http_error=http_error)
+    assert code == 1
+    retained = diagnostics(path, payload)
+    assert retained["error_code"] == response["error"]["code"]
+    assert retained["trace_id"] == response["trace_id"]
+    assert retained["http_status" if path == "preview" else "status_code"] == status
+
+
+@pytest.mark.parametrize("path", ["preview", "review"])
+@pytest.mark.parametrize("bad_field", ["code", "trace"])
+def test_invalid_diagnostic_does_not_drop_its_safe_neighbor(path, bad_field):
+    response = {"trace_id": TRACE, "error": {"code": SERVICE_CODE}}
+    if bad_field == "code":
+        response["error"]["code"] = "ghp_planted"
+    else:
+        response["trace_id"] = "https://private.example.invalid/PRIVATE_SENTINEL"
+    code, payload = invoke(path, response, 403, http_error=True)
+    assert code == 1
+    retained = diagnostics(path, payload)
+    assert retained["http_status" if path == "preview" else "status_code"] == 403
+    if bad_field == "code":
+        assert retained["trace_id"] == TRACE
+        assert retained.get("error_code") != response["error"]["code"]
+    else:
+        assert retained["error_code"] == SERVICE_CODE
+        assert not retained.get("trace_id")
+    assert "ghp_planted" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("path", ["preview", "review"])
+@pytest.mark.parametrize("body", [b'{broken PRIVATE_SENTINEL', b'\xffPRIVATE_SENTINEL', b'[]'])
+@pytest.mark.parametrize("http_error", [True, False])
+def test_unparseable_service_response_keeps_only_available_http_status(path, body, http_error):
+    status = 502 if http_error else 200
+    code, payload = invoke(path, body, status, http_error=http_error)
+    assert code == 1
+    retained = diagnostics(path, payload)
+    assert retained["http_status" if path == "preview" else "status_code"] == status
+    assert not retained.get("trace_id")
+
+
+@pytest.mark.parametrize("path", ["preview", "review"])
+def test_interrupted_response_retains_received_http_status(path):
+    code, payload = invoke(path, b"", interrupted=True)
+    assert code == 1
+    assert diagnostics(path, payload)["http_status" if path == "preview" else "status_code"] == 200
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

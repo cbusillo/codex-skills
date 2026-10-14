@@ -673,6 +673,60 @@ def build_url(service_url: str, path: str) -> str:
     return build_launchplane_url(service_url, path)
 
 
+class _ServiceResponse(dict[str, Any]):
+    """Keep transport status outside the service's projected JSON fields."""
+
+    def __init__(self, payload: dict[str, Any], http_status: object) -> None:
+        super().__init__(payload)
+        self.http_status = http_status
+
+
+class ServiceResponseError(ValueError):
+    def __init__(self, diagnostics: dict[str, object]) -> None:
+        super().__init__("invalid_response")
+        self.response_diagnostics = diagnostics
+
+
+def service_response_diagnostics(source: object) -> dict[str, object]:
+    """Retain each safe diagnostic independently of invalid neighboring fields."""
+    if isinstance(source, ServiceResponseError):
+        return dict(source.response_diagnostics)
+    diagnostics: dict[str, object] = {}
+    status = getattr(source, "http_status", None)
+    if type(status) is int and 100 <= status <= 599:
+        diagnostics["http_status"] = status
+    if not isinstance(source, dict):
+        return diagnostics
+    error = source.get("error")
+    candidates = {"trace_id": source.get("trace_id")}
+    if isinstance(error, dict):
+        candidates["error_code"] = error.get("code")
+    for key, value in candidates.items():
+        try:
+            projected = public_trace_id(value) if key == "trace_id" else public_code(value)
+            if projected:
+                public_summary_string(projected)
+                assert_public_safe_shape(projected)
+                diagnostics[key] = projected
+        except LaunchplaneSafetyError:
+            pass
+    return diagnostics
+
+
+def _read_service_response(response: Any) -> dict[str, Any]:
+    status = getattr(response, "status", None)
+    try:
+        payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, http.client.HTTPException) as exc:
+        setattr(exc, "http_status", status)
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ServiceResponseError(service_response_diagnostics(_ServiceResponse({}, status))) from exc
+    if not isinstance(payload, dict):
+        raise ServiceResponseError(service_response_diagnostics(_ServiceResponse({}, status)))
+    return _ServiceResponse(payload, status)
+
+
 def request_launchplane(
     *,
     service_url: str,
@@ -690,10 +744,7 @@ def request_launchplane(
     if idempotency_key:
         request.add_header("Idempotency-Key", idempotency_key)
     with safe_urlopen(request, timeout=timeout) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("invalid_response")
-    return payload
+        return _read_service_response(response)
 
 
 def request_launchplane_read(
@@ -711,10 +762,7 @@ def request_launchplane_read(
     request.add_header("Accept", "application/json")
     request.add_header("Authorization", f"Bearer {settings['token']}")
     with safe_urlopen(request, timeout=timeout) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("invalid_response")
-    return payload
+        return _read_service_response(response)
 
 
 def _require_dict(value: object) -> dict[str, Any]:
@@ -1619,6 +1667,15 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
     return projected
 
 
+def _github_actor_login(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?", value
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    public_identifier(value.removesuffix("[bot]"))
+    return value
+
+
 def _project_preview_feedback_remediation_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
     if any(str(key) not in PREVIEW_FEEDBACK_REMEDIATION_RESULT_FIELDS for key in source):
@@ -1652,10 +1709,10 @@ def _project_preview_feedback_remediation_result(result: object) -> dict[str, ob
         projected_observation: dict[str, object] = {
             "state": public_code(observation.get("state"), default="unknown"),
             "comment_id": _nonnegative_int(observation.get("comment_id", 0)),
-            "comment_author_login": public_identifier(
+            "comment_author_login": _github_actor_login(
                 observation.get("comment_author_login") or "unknown"
             ),
-            "github_actor_login": public_identifier(
+            "github_actor_login": _github_actor_login(
                 observation.get("token_actor_login") or "unknown"
             ),
         }
@@ -4144,7 +4201,7 @@ def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
         parsed = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError, http.client.HTTPException, OSError):
         parsed = {}
-    return parsed if isinstance(parsed, dict) else {}
+    return _ServiceResponse(parsed if isinstance(parsed, dict) else {}, exc.code)
 
 
 def _status_for_http_error(code: int, provider_payload: dict[str, object]) -> str:
@@ -4416,10 +4473,12 @@ def summarize_http_error(
             "Launchplane controller request was rejected; inspect the trace before retrying.",
         )]
         return payload
+    diagnostics = service_response_diagnostics(provider_payload)
     summary: dict[str, object] = {
         "http_status": exc.code,
-        "trace_id": public_trace_id(provider_payload.get("trace_id")),
-        "error_code": public_code(error.get("code"), default=status),
+        "trace_id": "",
+        "error_code": status,
+        **diagnostics,
         "recommendation": http_error_recommendation(status),
     }
     payload["summary"] = summary
@@ -4439,7 +4498,7 @@ def summarize_http_error(
         if operation in READ_ONLY_OPERATIONS
         else "Launchplane write action was rejected; inspect the trace in an approved operator surface."
     )
-    payload["warnings"] = [warning(str(error.get("code") or status), message)]
+    payload["warnings"] = [warning(str(summary["error_code"]), message)]
     return payload
 
 
@@ -4468,14 +4527,9 @@ def emit_safety_error_payload(
             else "Launchplane returned an invalid response."
         ),
     )
-    if isinstance(provider_payload, dict):
-        try:
-            trace_id = public_trace_id(provider_payload.get("trace_id"))
-        except LaunchplaneSafetyError:
-            trace_id = ""
-        if trace_id:
-            summary = cast(dict[str, object], payload["summary"])
-            summary["trace_id"] = trace_id
+    summary = cast(dict[str, object], payload["summary"])
+    summary.update(service_response_diagnostics(provider_payload))
+    summary["projection_error_code"] = exc.code
     emit(payload)
 
 
@@ -6625,6 +6679,7 @@ def execute_post(
     if settings is None:
         return 2
     mutating = operation.endswith("-apply") or request.get("mode") == "apply" or request.get("mutate") is True
+    provider_payload: dict[str, Any] | None = None
     try:
         provider_payload = request_launchplane(
             service_url=settings["service_url"],
@@ -6732,12 +6787,15 @@ def execute_post(
         return 0
     except urllib.error.HTTPError as exc:
         if mutating and (exc.code >= 500 or exc.code == 408):
-            emit(_apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state"))
+            payload = _apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state")
+            _require_dict(payload["summary"]).update(service_response_diagnostics(_error_payload_from_http(exc)))
+            emit(payload)
             return 1
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc,
+                                  provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         if operation == "privileged-policy-propose":
@@ -6766,15 +6824,20 @@ def execute_post(
         if mutating:
             emit(_apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state"))
             return 1
-        emit_provider_unavailable(operation=operation, request=request)
+        payload = unavailable_payload(operation=operation, request=request, status="unavailable",
+                                      code="provider_unavailable", message="Launchplane service is unavailable.")
+        _require_dict(payload["summary"]).update(service_response_diagnostics(exc))
+        emit(payload)
         return 1
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be read; the plan may have been saved.")
             payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
             emit(payload)
             return 1
-        emit_invalid_response(operation=operation, request=request)
+        emit_safety_error_payload(operation=operation, request=request,
+                                  exc=LaunchplaneSafetyError("invalid_response"),
+                                  provider_payload=exc)
         return 1
 
 
