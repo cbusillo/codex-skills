@@ -1,12 +1,12 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Bounded record repairs through the configured Launchplane service identity.
 
 Review digests are helper checks. The service owns authorization, provider
 projection checks, no-op enforcement, and route-binding record CAS.
 """
-# /// script
-# requires-python = ">=3.12"
-# dependencies = []
-# ///
 from __future__ import annotations
 
 import copy
