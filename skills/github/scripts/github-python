@@ -11,8 +11,8 @@ else
     uv_config="$uv_user_home/.config/uv/uv.toml"
 fi
 if [ -f "$uv_config" ]; then
-    cache_dir=$(uv --no-config --config-file "$uv_config" cache dir)
+    cache_dir=$(UV_NO_CACHE=0 uv --no-config --config-file "$uv_config" cache dir)
 else
-    cache_dir=$(uv --no-config cache dir)
+    cache_dir=$(UV_NO_CACHE=0 uv --no-config cache dir)
 fi
 UV_CACHE_DIR="$cache_dir" exec uv run --no-project --no-config --python 3.12 python "$@"

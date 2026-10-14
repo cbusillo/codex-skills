@@ -1049,8 +1049,10 @@ the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
 an uncertain close. Other terminal applications use the same skill procedure
 through their supported controls, not this iTerm adapter.
 
-Rendered persistent service runners use temporary uv caches. Their children
-inherit `UV_NO_CACHE=1`, including nested uv helpers, so a long child cannot pin
-the shared cache lock. This may reinstall declared dependencies on each launch.
+Rendered persistent service runners use temporary uv caches. The configured uv
+executable also receives `--no-cache` when it launches a long-running service
+child. This flag is local to that invocation: short nested helper calls retain
+normal caching and avoid repeated dependency downloads. Direct service commands
+must use the documented temporary-cache watch launcher when they run a watch.
 Apply updated service definitions only at the owning Supervisor's normal
 restart boundary; do not interrupt another session to make cache maintenance run.

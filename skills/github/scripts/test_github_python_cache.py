@@ -33,6 +33,7 @@ class CacheRoutingTests(unittest.TestCase):
             env.pop("UV_CACHE_DIR", None)
             env.pop("HOME", None)
             for override in (None, root / "override"):
+                env["UV_NO_CACHE"] = "1" if override is not None else "0"
                 if override is not None:
                     env["UV_CACHE_DIR"] = str(override)
                 process = subprocess.run([str(launcher), str(script), "space value"], cwd=caller,
@@ -41,7 +42,8 @@ class CacheRoutingTests(unittest.TestCase):
                 self.assertEqual(payload[1:], [str(caller), ["space value"]])
                 expected = override or configured
                 self.assertEqual(payload[0], str(expected))
-                self.assertTrue(expected.is_dir())
+                if override is None:
+                    self.assertTrue(expected.is_dir())
                 self.assertFalse((caller / ".venv").exists())
 
     def test_no_cache_watch_leaves_shared_cache_prunable(self):
