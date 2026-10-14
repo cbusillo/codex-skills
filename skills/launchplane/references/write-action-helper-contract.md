@@ -727,6 +727,12 @@ The helper derives the service-required confirmation phrase and projects only
 bounded observation and mutation evidence; it never accepts a raw comment id or
 arbitrary marker.
 
+The projected `comment_author_login` and `github_actor_login` accept a bounded
+GitHub login with an optional exact `[bot]` suffix for App actors. Brackets
+remain invalid in generic identifiers. Observation markers, excerpts and token
+actor ids are not emitted; service actor/marker ownership checks still decide
+whether remediation is permitted.
+
 ## Configuration
 
 The helper uses this private admin config source order. A global `--url`,
@@ -1358,6 +1364,18 @@ opaque values, raw requests, provider env, or headers are not copied into output
 Unauthorized, unavailable, denied, stale, and mismatched-intent responses keep
 the same envelope and include compact `summary.error_code`, `summary.trace_id`,
 and `warnings` entries. They do not include raw request bodies.
+
+Preview-feedback projection failures retain independently validated
+`summary.error_code`, `summary.trace_id` and transport `summary.http_status`
+when available, plus the local `summary.projection_error_code`. An unsafe
+diagnostic is dropped without discarding its safe neighbors. Unparseable or
+interrupted bodies retain the received HTTP status; missing service codes or
+traces are never reconstructed from body text, exception messages or headers.
+
+The private saved Client-review reader uses the same diagnostic projection:
+failed reads remain nonzero with `ok=false` and the existing generic `error`,
+adding bounded `error_code`, `trace_id` and `status_code` when available. It
+does not emit provider prose, URLs, credentials or arbitrary error fields.
 
 Public timestamp projections accept UTC timestamps with optional fractional
 seconds (up to six digits), preserving their exact value. Policy preflight thus

@@ -76,6 +76,13 @@ def read_review(args):
         query=query,
         timeout=args.timeout,
     )
+    try:
+        return project_review(args, payload)
+    except (ValueError, TypeError, AttributeError) as error:
+        raise operator.ServiceResponseError(operator.service_response_diagnostics(payload)) from error
+
+
+def project_review(args, payload):
     if (
         payload.get("status") != "ok"
         or str(payload.get("repository") or "").casefold() != args.repo.casefold()
@@ -115,15 +122,21 @@ def main(argv=None):
     try:
         decision = read_review(args)
     except urllib.error.HTTPError as error:
+        diagnostics = operator.service_response_diagnostics(operator._error_payload_from_http(error))
+        diagnostics.pop("http_status", None)
         print(
             json.dumps(
-                {"ok": False, "error": "owner_review_read_failed", "status_code": error.code}
+                {"ok": False, "error": "owner_review_read_failed", "status_code": error.code,
+                 **diagnostics}
             )
         )
         return 1
-    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
         # Never print config, credentials, provider bodies, or exception text.
-        print(json.dumps({"ok": False, "error": "owner_review_read_unavailable"}))
+        diagnostics = operator.service_response_diagnostics(error)
+        if "http_status" in diagnostics:
+            diagnostics["status_code"] = diagnostics.pop("http_status")
+        print(json.dumps({"ok": False, "error": "owner_review_read_unavailable", **diagnostics}))
         return 1
     print(json.dumps({"ok": True, "decision": decision}, ensure_ascii=False))
     return 0

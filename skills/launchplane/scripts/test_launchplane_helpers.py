@@ -5268,12 +5268,13 @@ def test_summaries_and_trace_ids_fail_closed_on_secret_values() -> None:
         hdrs=Message(),
         fp=io.BytesIO(json.dumps({"trace_id": "Bearer secret-token", "error": {"code": "authorization_denied", "message": "secret"}}).encode()),
     )
-    try:
-        write_action.summarize_http_error(operation="product-config-preflight", request={}, exc=http_error)
-    except safety.LaunchplaneSafetyError as raised:
-        assert raised.code == "invalid_response"
-    else:
-        raise AssertionError("expected unsafe HTTP error trace to fail closed")
+    projected_error = write_action.summarize_http_error(
+        operation="product-config-preflight", request={}, exc=http_error
+    )
+    assert not projected_error["summary"]["trace_id"]
+    assert projected_error["summary"]["http_status"] == http_error.code
+    assert projected_error["summary"]["error_code"] == "authorization_denied"
+    assert "Bearer secret-token" not in json.dumps(projected_error)
 
 
 def test_authorization_denial_keeps_denied_status() -> None:
@@ -9346,7 +9347,10 @@ def test_interrupted_http_context_and_client_entrypoints(kind: str, helper: str,
         assert payload["ok"] is False
     assert "private-" not in output.getvalue()
     if http_error:
-        body.read.assert_not_called()
+        if helper == "client":
+            assert payload["status_code"] == error.code
+        else:
+            body.read.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
