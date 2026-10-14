@@ -268,18 +268,49 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
         return result
     if payload.get("status") not in (None, "SUCCESS"):
         return failed("google", f"agy finished with status {payload.get('status')}")
-    # agy does not report the model that ran; say where the name came from instead of implying it did.
     requested = model or agy_settings().get("model")
     return {
         "ok": True,
         "provider": "google",
-        "model": requested,
-        "model_source": "requested, not reported by the CLI" if requested else "unknown",
+        **agy_model(requested, payload.get("conversation_id")),
         "response": payload.get("response") or "",
     }
 
 
 REVIEWERS = {"openai": review_openai, "anthropic": review_anthropic, "google": review_google}
+
+
+def agy_log(conversation_id: Any) -> str:
+    base = AGY_SETTINGS.expanduser().parent
+    cli_log = base / "cli.log"
+    fallback = ""
+    candidates = [cli_log]
+    if isinstance(conversation_id, str) and re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id):
+        candidates += sorted((base / "log").glob("cli-*.log"), reverse=True)
+    for path in candidates:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        conversations = re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
+        if conversation_id and conversation_id in conversations:
+            return text
+        if path == cli_log and not conversations:
+            fallback = text
+    return fallback
+
+
+def agy_model(requested: str | None, conversation_id: Any = None) -> dict[str, Any]:
+    """Read the model agy resolved for this run from cli.log when available."""
+    default = {"model": requested, "model_source": "requested, not reported by the CLI" if requested else "unknown"}
+    log = agy_log(conversation_id)
+    reroutes = re.findall(r'model alias "([^"]+)" resolved to "([^"]+)"', log)
+    labels = re.findall(r'Propagating selected model override to backend: label="([^"]+)"', log)
+    if reroutes and (not labels or labels[-1] == reroutes[-1][1]):
+        return {"model": reroutes[-1][1], "model_source": "reported by the CLI (rerouted)"}
+    if labels:
+        return {"model": labels[-1], "model_source": "reported by the CLI"}
+    return default
 
 
 def protobuf_fields(data: bytes) -> dict[int, Any]:

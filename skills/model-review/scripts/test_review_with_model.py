@@ -715,6 +715,46 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["model"], result["model_source"]),
                          (0, "replacement", "reported by the CLI (rerouted)"))
 
+    def test_google_reports_the_model_agy_resolved_in_cli_log(self) -> None:
+        self.install("agy", FAKE_AGY)
+        base = self.home / ".gemini" / "antigravity-cli"
+        base.mkdir(parents=True)
+        (base / "settings.json").write_text(json.dumps({"model": "retired-alias"}))
+        conversation = "12345678-1234-1234-1234-123456789abc"
+        other = "87654321-4321-4321-4321-cba987654321"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": "none", "conversation_id": conversation, "denied_actions": []}),
+               "FAKE_AGY_CWD_FILE": str(self.root / "cwd")}
+        rerouted_log = (
+            'I1013 16:57:41.887720 1 model_resolver.go:155] model alias "retired-alias" resolved to "replacement"\n'
+            'I1013 16:57:41.888060 1 model_config_manager.go:340] Propagating selected model override to backend: label="replacement"\n'
+            f"I1013 16:57:42.943221 1 server.go:1219] Created conversation {conversation}\n"
+        )
+        (base / "cli.log").write_text(rerouted_log)
+        code, result = self.review("google", **env)
+        self.assertNotEqual(result["model"], "retired-alias")
+        self.assertEqual((code, result["model"], result["model_source"]),
+                         (0, "replacement", "reported by the CLI (rerouted)"))
+        (base / "cli.log").write_text(
+            'I1013 17:14:50.632344 165 model_config_manager.go:340] Propagating selected model override to backend: label="selected"\n'
+            f"I1013 17:14:50.865659 413 server.go:1219] Created conversation {conversation}\n"
+        )
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["model"], result["model_source"]),
+                         (0, "selected", "reported by the CLI"))
+        # A cli.log pointing at another session's conversation falls back to the run's own log or request.
+        (base / "cli.log").write_text(
+            'I1013 17:15:00.000000 1 model_config_manager.go:340] Propagating selected model override to backend: label="other-session"\n'
+            f"I1013 17:15:01.000000 1 server.go:1219] Created conversation {other}\n"
+        )
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["model"], result["model_source"]),
+                         (0, "retired-alias", "requested, not reported by the CLI"))
+        (base / "log").mkdir()
+        (base / "log" / "cli-20261013_165740.log").write_text(rerouted_log)
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["model"], result["model_source"]),
+                         (0, "replacement", "reported by the CLI (rerouted)"))
+
     def test_a_planted_finding_arrives_once_inside_a_real_review_and_only_when_the_owner_set_it(self) -> None:
         self.install("codex", FAKE_CODEX)
         marker = self.home / ".code" / "model-review-fault.md"
