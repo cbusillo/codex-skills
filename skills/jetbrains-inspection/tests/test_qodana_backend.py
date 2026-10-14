@@ -320,6 +320,40 @@ os.kill(os.getpid(), signal.SIGKILL)
         self.assertEqual(result["cleanup"]["status"], "failed")
         self.assertEqual(result["lifecycle_outcome"]["status"], "unknown")
 
+    def test_slow_monitor_cleanup_stays_owned_and_preserves_container_receipt(self):
+        def pending(*args):
+            self.completed(*args)
+            return ("synthetic-monitor", "synthetic-pipe")
+        with patch.object(backend, "finish_guardian", return_value=False), patch.object(backend, "delete_private") as delete:
+            result = self.run_backend(pending)
+        delete.assert_not_called()
+        self.assertTrue(result["diagnostic"]["qodana"]["container_removed"])
+        self.assertEqual(result["cleanup"]["status"], "deferred")
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+
+    def test_macos_firmlink_uses_diskutil_mount_device_not_path_equality(self):
+        import plistlib
+        original = backend.storage_identity
+        # Call the tracked implementation instead of this fixture's identity stub.
+        fresh = load("qodana_storage_test", SCRIPTS / "qodana_backend.py")
+        anchor = self.root / "users-firmlink"
+        mounted = self.root / "data-volume"
+        anchor.mkdir(); mounted.mkdir()
+        data = plistlib.dumps({"MountPoint": str(mounted), "VolumeUUID": "fixture-volume"})
+        with patch.object(fresh.sys, "platform", "darwin"), patch.object(fresh, "checked", return_value=data):
+            identity = fresh.storage_identity(anchor)
+        self.assertEqual(identity["volume_uuid"], plistlib.loads(data)["VolumeUUID"])
+        self.assertIs(backend.storage_identity, original)
+
+    def test_qodana_recovery_flag_without_explicit_backend_never_opens_api(self):
+        output = io.StringIO()
+        with patch.object(host.sys, "argv", [str(SCRIPTS / "jb-inspect.py"), "agent-inspect", "--qodana-recover-only"]), \
+                patch.object(host, "build_context") as context, patch.object(host, "command_run") as api, redirect_stdout(output):
+            self.assertEqual(host.main(), 0)
+        context.assert_not_called()
+        api.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue())["agent_result"]["verdict"], "UNKNOWN")
+
     def test_detached_monitor_deletes_copies_when_parent_is_killed_during_load_pause(self):
         import time
         state = self.root / "state"

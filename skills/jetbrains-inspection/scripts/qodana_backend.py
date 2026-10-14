@@ -137,9 +137,13 @@ def storage_identity(anchor):
         raise Blocked("qodana_recovery_storage_unavailable")
     if sys.platform == "darwin":
         data = plistlib.loads(checked(["/usr/sbin/diskutil", "info", "-plist", str(anchor)]))
-        if not data.get("VolumeUUID") or data.get("MountPoint") != str(anchor):
+        mount = Path(data.get("MountPoint", ""))
+        if not data.get("VolumeUUID") or not mount.is_dir() or mount.stat().st_dev != anchor.stat().st_dev:
             raise Blocked("qodana_recovery_storage_unavailable")
         return {"volume_uuid": data["VolumeUUID"]}
+    mount_info = command(["findmnt", "--noheadings", "--output", "UUID", "--target", str(anchor)]) if shutil.which("findmnt") else None
+    if mount_info is not None and mount_info.returncode == 0 and mount_info.stdout.strip():
+        return {"volume_uuid": mount_info.stdout.decode().strip()}
     return {"device": anchor.stat().st_dev}
 
 
@@ -551,6 +555,10 @@ def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
         os.close(life_write)
         os.close(result_read)
         os.setsid()
+        null_fd = os.open(os.devnull, os.O_RDWR)
+        for inherited in (0, 1, 2):
+            os.dup2(null_fd, inherited)
+        os.close(null_fd)
         os.set_blocking(life_read, False)
         reason = "qodana_completed"
         try:
@@ -595,11 +603,18 @@ def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
         return guardian
     except BaseException:
         ignore_cleanup_signals()
-        finish_guardian(guardian)
-        receipt["container_removed"] = remove_container(name, env)
+        # Close the result reader first: a large receipt cannot keep the monitor
+        # blocked writing while we wait for its private cleanup.
+        os.close(result_read)
+        result_read = None
+        if not finish_guardian(guardian):
+            receipt["cleanup_pending"] = True
+        else:
+            receipt["container_removed"] = remove_container(name, env)
         raise
     finally:
-        os.close(result_read)
+        if result_read is not None:
+            os.close(result_read)
 
 
 def envelope(host, receipt, findings, reason, gaps, artifact):
@@ -607,7 +622,7 @@ def envelope(host, receipt, findings, reason, gaps, artifact):
     action = "Fix current findings; retain the recorded coverage gaps." if verdict == "RED" else "Resolve the reported prerequisite or qualify coverage before using Qodana as a gate; the API remains the default."
     if receipt.get("boundary_event") or reason == "qodana_trial_or_purchase_stop":
         action = "Stop Qodana work and report the trial/purchase boundary to the Director; do not activate or purchase."
-    cleanup_clean = receipt["profile_deleted"] and receipt["container_removed"] and not receipt.get("unresolved_record_count")
+    cleanup_clean = receipt["profile_deleted"] and receipt["container_removed"] and not receipt.get("unresolved_record_count") and not receipt.get("cleanup_pending") and not receipt.get("journal_cleanup_failed")
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "qodana",
             "status": "findings" if verdict == "RED" else "error", "helper_exit_code": host.classify_run_exit({"verdict": verdict}),
             "agent_result": {"verdict": verdict, "bucket": "findings" if verdict == "RED" else "environment_blocked",
@@ -618,7 +633,7 @@ def envelope(host, receipt, findings, reason, gaps, artifact):
             "findings_truncated": len(findings) > FINDING_LIMIT, "findings_artifact": artifact,
             "proof_failures": gaps, "inspection_outcome": {"verdict": verdict, "reason": reason},
             "lifecycle_outcome": {"status": "clean" if cleanup_clean else "unknown"},
-            "cleanup": {"status": "closed" if cleanup_clean else "failed"},
+            "cleanup": {"status": "closed" if cleanup_clean else "deferred" if receipt.get("cleanup_pending") else "failed"},
             "identity": {"helper_revision": receipt["helper_revision"], "qodana_backend_revision": receipt["backend_revision"],
                          "inspection_run_id": receipt["run_id"], "qodana_image": receipt.get("image")},
             "diagnostic": {"error_reason": reason, "qodana": receipt}}
@@ -769,20 +784,23 @@ def run(args, host):
         if reason == "qodana_trial_or_purchase_stop":
             record_boundary(receipt)
         if guardian is not None and not finish_guardian(guardian):
-            receipt["container_removed"] = False
-        if private is not None and receipt["container_removed"]:
+            receipt["cleanup_pending"] = True
+        if private is not None and receipt["container_removed"] and not receipt.get("cleanup_pending"):
             try:
                 if private.exists():
                     delete_private(private)
                 receipt["profile_deleted"] = not private.exists()
             except OSError:
                 receipt["profile_deleted"] = False
-        if not receipt["profile_deleted"] or not receipt["container_removed"]:
+        if receipt.get("cleanup_pending"):
+            reason = "qodana_cleanup_pending"
+        elif not receipt["profile_deleted"] or not receipt["container_removed"]:
             reason = "qodana_cleanup_incomplete"
         elif journal is not None:
             try:
                 journal.unlink(missing_ok=True)
             except OSError:
+                receipt["journal_cleanup_failed"] = True
                 reason = "qodana_recovery_record_cleanup_failed"
         if lock is not None:
             lock.close()

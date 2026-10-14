@@ -539,6 +539,8 @@ def main() -> int:
             result = command_closeout(args, context)
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
+            if args.backend == "api" and (args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv):
+                return emit_agent_usage_error("Qodana options require an explicit --backend qodana selection.")
             if args.backend == "qodana":
                 # Keep headless runs outside all desktop configuration/lifecycle paths.
                 result = command_qodana(args)
