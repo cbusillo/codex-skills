@@ -545,6 +545,60 @@ provider prose and reasons are dropped. HTTP refusal preserves the service
 error code and trace with no retry or identity change. Malformed or changing
 plan evidence returns an invalid response with its validated trace.
 
+### Reviewed route-authority record repairs
+
+These are bounded local extensions using the same configured identity and
+existing service APIs. Source delivery grants no execution authority. A service
+denial stops the operation; preserve its action, requested scope and trace on
+the source and owning authorization issues. Never substitute a workflow,
+credential or provider write. Source validation uses offline tests only.
+
+- `route-authority-discover --product P --context C --instance I` confirms the
+  exact tuple in the current profile list and reads its binding state.
+- `route-binding-read` with the same scope returns present/absent and the
+  service's current record digest. Only a structured `404 not_found` from the
+  exact current-binding GET establishes absence. Other failures remain errors.
+- `dokploy-target-repair-domain-authority-apply --context C --instance I --reason R`
+  applies the exact host set reviewed with the existing domain dry run. That
+  dry run now includes `plan_sha256` and `apply_eligible`. A newly observed alias
+  changes the digest and needs a new review and authorization covering it.
+- `ingress-route-authority-apply --payload-file <private-file>` records the
+  existing ingress no-op reviewed with `ingress-route-dry-run`. The payload has
+  the same restricted shape; create, update and enable/disable remain false.
+  The full host domain set, active edge record, resolved upstream, route options
+  and existing certificate evidence are bound to the review. Missing TLS
+  evidence fails closed. The applied audit is read back by exact record id.
+- `route-binding-dry-run --product P --context C --instance I --reason R` plans
+  `POST /v1/route-bindings/reconcile` after profile and current-binding reads.
+  `route-binding-apply` uses the same scope and reason. Coordinates come only
+  from the service's candidate, never caller-supplied domains or provider ids.
+  Blocked/conflict plans are diagnostic evidence and never apply eligible.
+
+Each apply requires `--reviewed-dry-run`, `--expected-plan-digest`,
+`--dry-run-evidence-file` (saved helper JSON outside repositories), and a stable
+`--idempotency-key`. Before applying, the helper repeats fresh discovery and
+the service dry run, then compares the review digest. Plan material stays
+private; only its digest, scope, counts, safe finding codes and trace are emitted.
+Legacy dry-run receipts without a digest are not apply eligible.
+
+Domain repair preserves unrelated tracked metadata and verifies the exact
+live-domain and target projections after apply. The service compares provider
+authority and performs its record write with CAS. Ingress apply must still be
+an exact provider no-op; readback verifies the applied audit's scope, host,
+domains, edge, TLS ownership, operations and idempotency key. Route-binding
+plans bind current-record CAS evidence and the candidate's source ids/versions,
+domains and route semantics. Only generated refresh times and candidate hashes
+are excluded from semantic review, since planning regenerates them. Apply then
+compares the service's candidate and reads back its exact record digest.
+
+The helper's reviewed-plan comparison is a client-side preflight, not a
+server-enforced reviewed-source lock. The service replans at apply and enforces
+its own current-binding CAS; a concurrent source change can produce an accepted
+but unverified result, which the helper reports without retry. A lost apply
+response is `outcome_unknown`; an accepted response with failed projection or
+readback is `accepted_unverified`. Preserve the request/key and resolve the
+record state before another attempt. No command retries or changes identity.
+
 ### Compose web host routes
 
 `dokploy-target-reconcile-compose-domain-dry-run` / `-apply` and

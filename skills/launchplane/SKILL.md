@@ -1197,6 +1197,12 @@ verification.
   Read [inert domain and ingress planning](references/write-action-helper-contract.md#inert-domain-and-ingress-planning)
   before either command. They use fresh service records and verify exact live
   identity/domain evidence privately; neither command can apply.
+- For bounded domain-authority repair, an existing-ingress no-op audit, or
+  record-only route-binding reconciliation, read
+  [reviewed route-authority record repairs](references/write-action-helper-contract.md#reviewed-route-authority-record-repairs).
+  `route-authority-discover` and `route-binding-read` obtain fresh scope/CAS
+  evidence; the separate apply commands require saved matching dry-run evidence,
+  a reviewed digest, idempotency and readback. They add no service authority.
 - `GET /v1/production-backup-authority` and
   `POST /v1/production-backup-authority/apply`: Bounded local-extension paths
   for a production lane's backup policy and targets

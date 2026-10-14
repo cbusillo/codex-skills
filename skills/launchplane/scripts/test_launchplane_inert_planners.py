@@ -76,7 +76,7 @@ def ingress_response():
     }, "result": {"status": "unchanged", "dry_run": True, "operations": [{
         "action": "no-op", "host_id": HOST_ID, "domain_names": DOMAINS,
         "requires_apply": False, "change_categories": [],
-    }], "proxy_host": {"id": HOST_ID, "domain_names": DOMAINS, "forward_host": "192.0.2.10",
+    }], "proxy_host": {"id": HOST_ID, "domain_names": DOMAINS, "certificate_id": 8, "forward_host": "192.0.2.10",
                        "advanced_config": "private provider prose", "meta": {"token": "PRIVATE_SENTINEL"}}}}
 
 
