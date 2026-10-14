@@ -35,6 +35,7 @@ LICENSE_RE = re.compile(r"(?:pycharm\.key|idea\.key|plugin_[A-Za-z0-9_-]+\.licen
 BOUNDARY_RE = re.compile(r"(?:start(?:ing|ed)?|activat(?:e[ds]?|ing|ion)|obtain(?:ing|ed)?|issu(?:e[ds]?|ing))\b.{0,100}\btrial|\btrial\b.{0,100}\b(?:start(?:ing|ed)?|activat(?:e[ds]?|ing|ion)|obtain(?:ing|ed)?|issu(?:e[ds]?|ing))|purchas|buy.{0,30}licen", re.I)
 LOAD_LIMIT = 64
 FINDING_LIMIT = 25
+RUN_LABEL = "codex-skills.qodana.run"
 # An effective profile and a successful exit are not execution/completeness proof.
 PARITY_GAPS = {
     "python": ["python_parity_unqualified", "measured_python_DuplicatedCode_HttpUrlsUsage_gap_unqualified", "python_clean_completeness_unproven"],
@@ -94,22 +95,78 @@ def safe_env():
 
 
 def worker_lock_path():
-    return Path("/tmp") / f"codex-skills-qodana-{os.getuid()}.lock"
+    return state_dir() / "worker.lock"
 
 
 def state_dir():
     # Shared across task caches and outside cache/30-day task retention.
-    return Path.home() / ".local/state/jetbrains-inspection/qodana"
+    import pwd
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/jetbrains-inspection/qodana"
+
+
+def ignore_cleanup_signals():
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, signal.SIG_IGN)
+
+
+def delete_private(private):
+    # Keep the ownership marker through partial deletion and delete it last.
+    for entry in private.iterdir():
+        if entry.name == "owner.json":
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    marker = private / "owner.json"
+    if marker.exists():
+        marker.unlink()
+    private.rmdir()
 
 
 def save_run_record(private, receipt):
     record = {"run_id": receipt["run_id"], "private": str(private),
-              "container_name": "jb-qodana-" + receipt["run_id"]}
+              "container_name": "jb-qodana-" + receipt["run_id"],
+              "parent_device": private.parent.stat().st_dev, "parent_inode": private.parent.stat().st_ino}
     (private / "owner.json").write_text(json.dumps(record))
     path = state_dir() / (receipt["run_id"] + ".json")
     path.write_text(json.dumps(record))
     path.chmod(0o600)
     return path
+
+
+def recover_record(path, env):
+    record = json.loads(path.read_text())
+    run_id = str(uuid.UUID(record["run_id"]))
+    private = Path(record["private"])
+    name = "jb-qodana-" + run_id
+    if path.is_symlink() or path.stem != run_id or record["container_name"] != name or not private.is_absolute() or not private.name.startswith("private-") or private.is_symlink():
+        raise Blocked("qodana_recovery_ownership_unproven")
+    if not private.parent.is_dir():
+        raise Blocked("qodana_recovery_storage_unavailable")
+    parent = private.parent.stat()
+    if parent.st_dev != record["parent_device"] or parent.st_ino != record["parent_inode"]:
+        raise Blocked("qodana_recovery_storage_changed")
+    if private.exists():
+        marker = private / "owner.json"
+        if marker.is_symlink() or (marker.is_file() and json.loads(marker.read_text()) != record):
+            raise Blocked("qodana_recovery_ownership_unproven")
+        if not marker.is_file() and any(private.iterdir()):
+            raise Blocked("qodana_recovery_ownership_unproven")
+    inspection = command(["docker", "container", "inspect", name], env=env)
+    if inspection.returncode == 0:
+        info = json.loads(inspection.stdout)[0]
+        labels = info.get("Config", {}).get("Labels", {})
+        mounts = info.get("Mounts", [])
+        if labels.get(RUN_LABEL) != run_id or not any(m.get("Destination") == "/private" and m.get("Source") == str(private) for m in mounts):
+            raise Blocked("qodana_recovery_ownership_unproven")
+        if not remove_container(name, env):
+            raise Blocked("qodana_recovery_incomplete")
+    elif b"No such" not in inspection.stderr:
+        raise Blocked("qodana_recovery_unavailable")
+    if private.exists():
+        delete_private(private)
+    path.unlink()
 
 
 def recover_runs(env):
@@ -118,38 +175,18 @@ def recover_runs(env):
     Recover exact journaled state after SIGKILL/crash, never by age/PID/path alone.
     The per-run marker and container run label/mount must agree before removal.
     """
-    count = 0
+    count, unresolved = 0, []
     for path in state_dir().glob("*.json"):
         if path.name == "boundary-stop.json":
             continue
-        if path.is_symlink():
-            raise Blocked("qodana_recovery_ownership_unproven")
-        record = json.loads(path.read_text())
-        run_id = str(uuid.UUID(record["run_id"]))
-        private = Path(record["private"])
-        name = "jb-qodana-" + run_id
-        if path.stem != run_id or record["container_name"] != name or not private.is_absolute() or not private.name.startswith("private-") or private.is_symlink():
-            raise Blocked("qodana_recovery_ownership_unproven")
-        if private.exists():
-            marker = private / "owner.json"
-            if marker.is_symlink() or not marker.is_file() or json.loads(marker.read_text()) != record:
-                raise Blocked("qodana_recovery_ownership_unproven")
-        inspection = command(["docker", "container", "inspect", name], env=env)
-        if inspection.returncode == 0:
-            info = json.loads(inspection.stdout)[0]
-            labels = info.get("Config", {}).get("Labels", {})
-            mounts = info.get("Mounts", [])
-            if labels.get("codex-skills.qodana.run") != run_id or not any(m.get("Destination") == "/private" and m.get("Source") == str(private) for m in mounts):
-                raise Blocked("qodana_recovery_ownership_unproven")
-            if not remove_container(name, env):
-                raise Blocked("qodana_recovery_incomplete")
-        elif b"No such" not in inspection.stderr:
-            raise Blocked("qodana_recovery_unavailable")
-        if private.exists():
-            shutil.rmtree(private)
-        path.unlink()
-        count += 1
-    return count
+        try:
+            recover_record(path, env)
+            count += 1
+        except Blocked as error:
+            unresolved.append(str(error))
+        except Exception:
+            unresolved.append("qodana_recovery_unavailable")
+    return {"recovered_run_count": count, "unresolved_record_count": len(unresolved), "reasons": sorted(set(unresolved))}
 
 
 def profile_for(repo, name):
@@ -191,18 +228,22 @@ def copy_licenses(paths, config, receipt):
 
 
 def unpack_plugins(paths, cache):
-    for raw in paths:
+    for index, raw in enumerate(paths):
+        destination = cache / f"bundle-{index}"
+        destination.mkdir(parents=True)
         with zipfile.ZipFile(Path(raw).expanduser()) as package:
             for member in package.infolist():
-                target = (cache / member.filename).resolve()
-                if not target.is_relative_to(cache.resolve()) or (member.external_attr >> 16) & 0o170000 == 0o120000:
+                target = (destination / member.filename).resolve()
+                if not target.is_relative_to(destination.resolve()) or (member.external_attr >> 16) & 0o170000 == 0o120000:
                     raise Blocked("qodana_plugin_package_invalid")
-            package.extractall(cache)
+            package.extractall(destination)
+        if not all(child.is_dir() for child in destination.iterdir()):
+            raise Blocked("qodana_plugin_package_invalid")
 
 
 def docker_argv(name, image, private, language, uv_binary=None):
     argv = ["nice", "-n", "10", "docker", "run", "--pull", "never", "--name", name,
-            "--label", "codex-skills.qodana=local", "--label", "codex-skills.qodana.run=" + name.removeprefix("jb-qodana-"),
+            "--label", "codex-skills.qodana=local", "--label", RUN_LABEL + "=" + name.removeprefix("jb-qodana-"),
             "--log-driver", "none", "--cpus", "2",
             "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "512",
             "--entrypoint", "/usr/bin/nice", "-v", f"{private}:/private",
@@ -219,6 +260,10 @@ def docker_argv(name, image, private, language, uv_binary=None):
     for license_copy in (private / "config").iterdir():
         if LICENSE_RE.fullmatch(license_copy.name):
             argv += ["-v", f"{license_copy}:/private/config/{license_copy.name}:ro"]
+    for index, plugin in enumerate(sorted((private / "plugins").glob("bundle-*/*"))):
+        # Supported custom-plugin mount, with a run-specific folder name so it
+        # never shadows the image's built-in plugins or uses a build-number cache.
+        argv += ["-v", f"{plugin}:/opt/idea/plugins/{name}-{index}:ro"]
     argv += [image, "-n", "10", "/opt/idea/bin/qodana", "scan", "--project-dir", "/data/project",
              "--results-dir", "/private/results", "--cache-dir", "/private/cache",
              "--config", "/private/qodana.yaml", "--save-report=false",
@@ -365,13 +410,14 @@ class Monitor:
                     self.observe(chunk)
 
 
-def execute(argv, name, private, env, timeout, receipt):
+def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
     monitor = Monitor(private)
     started = time.monotonic()
     process = None
     paused = False
     try:
-        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                                   pass_fds=(lock_fd,) if lock_fd is not None else ())
         os.set_blocking(process.stdout.fileno(), False)
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
@@ -417,6 +463,7 @@ def execute(argv, name, private, env, timeout, receipt):
         if process.returncode != 0:
             raise Blocked("qodana_execution_failed")
     finally:
+        ignore_cleanup_signals()
         # Remove owned container/writable layer before deleting its profile. This
         # also stops paused workers; never kill by executable name or desktop PID.
         receipt["container_removed"] = remove_container(name, env)
@@ -434,7 +481,7 @@ def execute(argv, name, private, env, timeout, receipt):
 def envelope(host, receipt, findings, reason, gaps, artifact):
     verdict = "RED" if findings and reason == "qodana_completed" else "UNKNOWN"
     action = "Fix current findings; retain the recorded coverage gaps." if verdict == "RED" else "Resolve the reported prerequisite or qualify coverage before using Qodana as a gate; the API remains the default."
-    if reason == "qodana_trial_or_purchase_stop":
+    if receipt.get("boundary_event") or reason == "qodana_trial_or_purchase_stop":
         action = "Stop Qodana work and report the trial/purchase boundary to the Director; do not activate or purchase."
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "qodana",
             "status": "findings" if verdict == "RED" else "error", "helper_exit_code": host.classify_run_exit({"verdict": verdict}),
@@ -470,23 +517,29 @@ def run(args, host):
         import fcntl
         def interrupt(_signum, _frame):
             raise Blocked("qodana_interrupted")
-        for sig in (signal.SIGTERM, signal.SIGHUP):
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
             old_handlers[sig] = signal.signal(sig, interrupt)
+        state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
         lock = worker_lock_path().open("a")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Blocked("qodana_worker_busy") from None
-        state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
         endpoint = checked(["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], env=env).decode().strip()
         if not endpoint.startswith("unix://"):
             raise Blocked("qodana_local_docker_required")
         # Pin every subsequent command to this verified local socket, even if
         # another task changes Docker's current context while this run executes.
         env["DOCKER_HOST"] = endpoint
-        receipt["recovered_run_count"] = recover_runs(env)
+        recovery = recover_runs(env)
+        receipt.update(recovery)
+        if recovery["unresolved_record_count"]:
+            raise Blocked("qodana_recovery_incomplete")
         if (state_dir() / "boundary-stop.json").exists():
+            receipt["boundary_event"] = True
             raise Blocked("qodana_stop_recorded")
+        if args.qodana_recover_only:
+            raise Blocked("qodana_recovery_only_no_inspection")
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("qodana_host_load_paused")
         repo = Path(host.git_root(Path(args.repo).expanduser().resolve()) or args.repo).resolve()
@@ -528,7 +581,7 @@ def run(args, host):
         private.chmod(0o700)
         receipt["profile_deleted"] = False
         journal = save_run_record(private, receipt)
-        for name in ("project", "config", "home", "cache", "results", "logs", "data", "bin"):
+        for name in ("project", "config", "home", "cache", "results", "logs", "data", "bin", "plugins"):
             (private / name).mkdir(mode=0o700)
         hashes = snapshot(repo, private / "project")
         if not selected <= hashes.keys():
@@ -547,7 +600,7 @@ def run(args, host):
             (private / "bin/uv").chmod(0o700)
         (private / "qodana.yaml").write_text(json.dumps(yaml))
         (private / "probe.vmoptions").write_text("-Xmx1536m\n-XX:ActiveProcessorCount=2\n-XX:-HeapDumpOnOutOfMemoryError\n-Djava.awt.headless=true\n-Duser.home=/private/home\n-Didea.headless.enable.statistics=false\n-Didea.log.path=/private/logs\n")
-        unpack_plugins(args.qodana_plugin_zip, private / "cache/plugins/262")
+        unpack_plugins(args.qodana_plugin_zip, private / "plugins")
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("qodana_host_load_paused")
         copy_licenses(args.qodana_license_file, private / "config", receipt)
@@ -558,7 +611,8 @@ def run(args, host):
             argv += ["--only-directory", host.normalize_inspection_lane_path(args.directory, repo).relative_to(repo).as_posix()]
         receipt["repo_head_sha"] = host.git_head_sha(repo)
         receipt["container_removed"] = False
-        execute(argv, name, private, env, max(1, args.timeout_ms / 1000), receipt)
+        argv += ["--timeout", str(max(1, args.timeout_ms))]
+        execute(argv, name, private, env, max(1, args.timeout_ms / 1000), receipt, lock_fd=lock.fileno())
         gaps = coverage_gaps(language, selected, expected, private / "results", any(Path(f).name == "__manifest__.py" for f in hashes))
         if config.get("lanes"):
             gaps.append("qodana_lane_models_unqualified")
@@ -584,6 +638,8 @@ def run(args, host):
         # activation values or raw private paths; only the reason code escapes.
         reason = "qodana_backend_failed"
     finally:
+        if old_handlers:
+            ignore_cleanup_signals()
         if reason == "qodana_trial_or_purchase_stop":
             receipt["boundary_event"] = True
             try:
@@ -593,7 +649,7 @@ def run(args, host):
                 receipt["boundary_recorded"] = False
         if private is not None:
             try:
-                shutil.rmtree(private)
+                delete_private(private)
                 receipt["profile_deleted"] = not private.exists()
             except OSError:
                 receipt["profile_deleted"] = False

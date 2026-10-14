@@ -8,11 +8,13 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import unittest
 import uuid
+import zipfile
 from argparse import Namespace
 from collections.abc import Callable
 from contextlib import redirect_stdout
@@ -57,6 +59,8 @@ class QodanaTests(unittest.TestCase):
     lock_patch: Any
 
     def setUp(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
@@ -107,7 +111,7 @@ class QodanaTests(unittest.TestCase):
         backend.checked_original = backend.checked
         with patch.object(backend, "checked", side_effect=self.prerequisite), \
                 patch.object(backend.os, "getloadavg", return_value=(1, 1, 1)), \
-                patch.object(backend, "execute", side_effect=execute or self.completed):
+                patch.object(backend, "execute", side_effect=lambda *args, **_kwargs: (execute or self.completed)(*args)):
             return backend.run(self.args, host)
 
     def test_completed_red_has_only_requested_current_findings_and_full_artifact(self):
@@ -224,15 +228,101 @@ os.kill(os.getpid(), signal.SIGKILL)
             with self.subTest(variant=variant):
                 if variant == "missing_marker":
                     (private / "owner.json").unlink()
-                info = [{"Config": {"Labels": {"codex-skills.qodana.run": "other"}},
+                info = [{"Config": {"Labels": {backend.RUN_LABEL: "other"}},
                          "Mounts": [{"Destination": "/private", "Source": str(private)}]}]
                 with patch.object(backend, "command", return_value=subprocess.CompletedProcess([], 0, json.dumps(info).encode(), b"")), \
                         patch.object(backend, "remove_container") as remove:
-                    with self.assertRaises(backend.Blocked):
-                        backend.recover_runs(backend.safe_env())
+                    recovered = backend.recover_runs(backend.safe_env())
+                    self.assertGreater(recovered["unresolved_record_count"], 0)
                 remove.assert_not_called()
                 self.assertTrue(private.exists())
                 self.assertTrue(journal.exists())
+
+    def test_partial_deletion_keeps_marker_and_next_recovery_finishes(self):
+        state = self.root / "state"
+        state.mkdir()
+        private = self.root / "private-partial"
+        private.mkdir()
+        (private / "config").mkdir()
+        (private / "config/plugin_TEST.license").write_bytes(b"synthetic")
+        backend.save_run_record(private, {"run_id": str(uuid.uuid4())})
+        with patch.object(backend.shutil, "rmtree", side_effect=PermissionError):
+            with self.assertRaises(PermissionError):
+                backend.delete_private(private)
+        self.assertTrue((private / "owner.json").exists())
+        with patch.object(backend, "command", return_value=subprocess.CompletedProcess([], 1, b"", b"No such container")):
+            result = backend.recover_runs(backend.safe_env())
+        self.assertEqual(result["unresolved_record_count"], 0)
+        self.assertFalse(private.exists())
+
+    def test_missing_storage_retains_journal_and_still_recovers_other_record(self):
+        state = self.root / "state"
+        state.mkdir()
+        storage = self.root / "storage"
+        storage.mkdir()
+        private = storage / "private-offline"
+        private.mkdir()
+        journal = backend.save_run_record(private, {"run_id": str(uuid.uuid4())})
+        storage.rename(self.root / "offline-storage")
+        valid = self.root / "private-valid"
+        valid.mkdir()
+        backend.save_run_record(valid, {"run_id": str(uuid.uuid4())})
+        with patch.object(backend, "command", return_value=subprocess.CompletedProcess([], 1, b"", b"No such container")):
+            result = backend.recover_runs(backend.safe_env())
+        self.assertTrue(journal.exists())
+        self.assertFalse(valid.exists())
+        self.assertEqual(result["recovered_run_count"], 1)
+        self.assertEqual(result["unresolved_record_count"], 1)
+
+    def test_repeated_signals_during_cleanup_do_not_interrupt_license_deletion(self):
+        original = backend.delete_private
+        def signal_during_delete(private):
+            signal.raise_signal(signal.SIGTERM)
+            signal.raise_signal(signal.SIGHUP)
+            original(private)
+        with patch.object(backend, "delete_private", side_effect=signal_during_delete):
+            result = self.run_backend()
+        self.assertTrue(result["diagnostic"]["qodana"]["profile_deleted"])
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+
+    def test_recovery_only_does_not_start_inspection(self):
+        self.args.qodana_recover_only = True
+        with patch.object(backend, "execute") as execute:
+            result = self.run_backend(execute)
+        execute.assert_not_called()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["diagnostic"]["qodana"]["license_copy_count"], 0)
+
+    def test_scope_modes_and_legacy_config_fallback_resolve_real_file_sets(self):
+        (self.repo / ".github").mkdir()
+        (self.repo / ".github/github.json").write_text(json.dumps({"jetbrains": {"scopePreference": "whole_project"}}))
+        self.args.scope = None
+        broad = self.run_backend()
+        self.assertGreater(broad["selected_file_count"], 1)
+        self.args.scope = "directory"
+        self.args.directory = str(self.repo / "src")
+        directory = self.run_backend()
+        self.assertEqual(directory["selected_file_count"], 2)
+        subprocess.run(["git", "-C", str(self.repo), "add", "--all"], check=True)
+        self.args.scope = "changed_files"
+        self.args.changed_files_mode = "unstaged"
+        self.args.include_unversioned = False
+        (self.repo / "src/a.py").write_text("print(other_missing)\n")
+        changed = self.run_backend()
+        self.assertEqual(changed["selected_file_count"], 1)
+
+    def test_public_plugin_package_is_mounted_read_only_in_disposable_image(self):
+        package = self.root / "public-plugin.zip"
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("test-plugin/lib/test.jar", b"synthetic-public-artifact")
+        self.args.qodana_plugin_zip = [str(package)]
+        def inspect_plugins(argv, *rest):
+            mounts = [value for value in argv if ":/opt/idea/plugins/" in value]
+            self.assertTrue(mounts)
+            self.assertTrue(all(value.rsplit(":", 1)[-1] == "ro" for value in mounts))
+            self.completed(argv, *rest)
+        result = self.run_backend(inspect_plugins)
+        self.assertTrue(result["diagnostic"]["qodana"]["profile_deleted"])
 
     def test_launch_mounts_licenses_read_only_and_keeps_host_project_outside_container(self):
         def inspect_launch(argv, *rest):

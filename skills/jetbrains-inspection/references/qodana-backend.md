@@ -44,7 +44,10 @@ WebStorm licensing does not grant a Qodana JS token, and this backend neither
 loads nor obtains one. Native Qodana and macOS Keychain loading are outside this
 backend.
 
-Use `--qodana-plugin-zip` for an existing public plugin package. Supply only
+Use `--qodana-plugin-zip` for an existing public plugin ZIP with its distribution
+folder at the top level. The extracted package is mounted read-only under a
+run-specific folder in the image's plugins directory; it never replaces a
+built-in image plugin or copies a desktop plugin directory. Supply only
 existing IDE keys or paid-plugin activation files through repeatable
 `--qodana-license-file`; no account directory, token store or Keychain source.
 Files are read from their local sources into the private profile, filesystem
@@ -83,14 +86,32 @@ copy needed safe evidence to the owning issue/task-evidence, then remove the
 run artifact during closeout. A failed deletion reports UNKNOWN and requires
 recovery; process exit zero is not a green gate.
 
-An owner-only journal in that same fixed state directory records each run before
+The state directory is resolved through the operating system's UID home,
+independently of a harness's HOME override. An owner-only journal records each run before
 license copying. After SIGKILL/crash, the next invocation holds the kernel lock
 and recovers only journaled profiles with matching ownership markers and
-containers with the exact run label and private mount. Unknown ownership or
-unavailable Docker retains the record and returns UNKNOWN. Changing task cache
+containers with the exact run label and private mount. The marker is deleted
+last, so partial cleanup can resume. Missing or changed storage, unknown ownership
+or unavailable Docker retains the record and returns UNKNOWN; other proved
+records are still recovered. Changing task cache
 roots neither loses recovery custody nor lifts a trial stop. A forcibly killed
 helper cannot report cleanup at that instant; recovery confirms deletion on
-the next invocation. Do not force-delete unproved state.
+the next invocation. The Docker client inherits the lock descriptor, so a
+surviving client cannot create a late container after another caller recovers
+its journal. The native analysis timeout is also supplied to Qodana; wait for
+an inherited live client to finish rather than bypassing its lock.
+
+Recover without starting a new inspection or copying licenses:
+
+```sh
+uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
+  --backend qodana --qodana-recover-only
+```
+
+This emits UNKNOWN because no inspection runs, with recovered/unresolved counts.
+Restore the recorded storage or Docker prerequisite and use this command again
+to finish proved cleanup. It preserves trial stops and unproved ownership.
+Do not force-delete unproved state.
 
 The backend returns the normal schema-v1 agent envelope with additive
 `backend: qodana`, pinned image/run/source provenance, findings by file and

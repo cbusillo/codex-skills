@@ -798,6 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--qodana-license-file", action="append", default=[], help="Existing local IDE key or paid-plugin license; copied privately then deleted. Never an account/token store.")
     agent.add_argument("--qodana-plugin-zip", action="append", default=[], help="Public plugin package for the disposable profile; does not supply entitlement.")
     agent.add_argument("--qodana-uv", help="Optional existing Linux uv executable matching the container architecture for configured Python preparation.")
+    agent.add_argument("--qodana-recover-only", action="store_true", help="Recover proved interrupted Qodana profiles/containers without starting an inspection or lifting a stop.")
     for name in ("open-worktree", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")
