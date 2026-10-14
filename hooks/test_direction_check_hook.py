@@ -39,6 +39,18 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
 
 
 class ReminderTests(unittest.TestCase):
+    def test_startup_keeps_commands_and_reference_without_the_procedure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "loop.md"
+            path.write_text("# Fixture loop\n\n```text\ngo    start work\nland  land work\n```\n\nDetailed fixture procedure.\n")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"CLAUDECODE": "0"}), mock.patch.object(hook, "LOOP_PATH", path), mock.patch.object(hook, "direction_root", return_value=Path.cwd()), mock.patch.object(hook, "read_marker", return_value=marker(turn=dt.datetime.now(dt.timezone.utc))), mock.patch.object(hook, "origin_repo", return_value=None), contextlib.redirect_stdout(output):
+                self.assertEqual(hook.main(), 0)
+            text = output.getvalue()
+            self.assertIn("```text\ngo    start work\nland  land work\n```", text)
+            self.assertIn(str(path), text)
+            self.assertNotIn("Detailed fixture procedure", text)
+
     def test_archived_weekly_reminder_is_suppressed_without_hiding_daily_turn(self) -> None:
         state = marker(turn=ago(days=2))
         metadata = {"full_name": "owner/repo", "archived": True}
@@ -75,17 +87,12 @@ class ReminderTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(HOOK), "--skills-only"], cwd=directory, env=env, text=True, capture_output=True, check=True)
             self.assertEqual(result.stdout, "")
 
-    def test_each_claude_prompt_gets_only_the_step_table(self) -> None:
-        protocol = hook.SKILLS_PROTOCOL_PATH.read_text()
-        rows = [line for line in protocol.splitlines() if line.startswith("|")]
+    def test_each_claude_prompt_gets_one_line_pointing_to_the_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             env = {"DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
             result = subprocess.run([sys.executable, str(HOOK), "--turn"], cwd=directory, env=env, text=True, capture_output=True, check=True)
-            self.assertIn(result.stdout.strip(), protocol)
-            self.assertLess(len(result.stdout.strip()), len(protocol.strip()))
-            self.assertTrue(rows)
-            for row in rows:
-                self.assertIn(row, result.stdout)
+            self.assertEqual(len(result.stdout.splitlines()), 1)
+            self.assertIn(str(hook.SKILLS_PROTOCOL_PATH), result.stdout)
             env.pop("CLAUDECODE")
             result = subprocess.run([sys.executable, str(HOOK), "--turn"], cwd=directory, env=env, text=True, capture_output=True, check=True)
             self.assertEqual(result.stdout, "")
@@ -109,7 +116,7 @@ class ReminderTests(unittest.TestCase):
         output = io.StringIO()
         with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}), mock.patch.object(hook, "SKILLS_PROTOCOL_PATH", Path("/missing/protocol.md")), mock.patch.object(hook, "direction_root", return_value=Path.cwd()), mock.patch.object(hook, "read_marker", return_value={}), contextlib.redirect_stdout(output):
             self.assertEqual(hook.main(), 0)
-        self.assertIn(hook.LOOP_PATH.read_text().strip(), output.getvalue())
+        self.assertIn(str(hook.LOOP_PATH), output.getvalue())
         self.assertIn("Direction check overdue", output.getvalue())
 
     def test_current_checks_print_nothing(self) -> None:
@@ -216,7 +223,7 @@ class ReminderTests(unittest.TestCase):
 
             self.assertEqual(run(nested).stdout, "")
             (root / "DIRECTION.md").write_text("# Direction\n")
-            expected = hook.LOOP_PATH.read_text().strip()
+            expected = hook.loop_summary(hook.LOOP_PATH.read_text())
             self.assertEqual(run(nested).stdout.strip(), expected)
             self.assertEqual(run(root).stdout.strip(), expected)
 
@@ -253,6 +260,13 @@ Fixture purpose.
 An agent asks the owner before:
 
 - a fixture boundary
+  with a wrapped condition
+
+- another fixture boundary
+
+Later procedure belongs in the full file.
+
+- a later list is not part of the opening boundaries
 
 ## Journey
 
@@ -296,16 +310,19 @@ class OverallDirectionTests(unittest.TestCase):
 
     def test_shows_the_merged_stop_boundaries_link_and_loop(self) -> None:
         text = self.run_hook(self.reader(body=OVERALL))
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertIn("- a fixture boundary\n  with a wrapped condition", text)
+        self.assertIn("- another fixture boundary", text)
+        self.assertNotIn("Later procedure", text)
+        self.assertNotIn("- a later list", text)
         self.assertNotIn("Fixture purpose", text, "only the stop boundaries are printed, not the whole file")
         self.assertIn("https://github.com/owner/direction/", text)
-        self.assertTrue(text.endswith(hook.LOOP_PATH.read_text().strip()))
+        self.assertTrue(text.endswith(hook.loop_summary(hook.LOOP_PATH.read_text())))
         self.assertIn("repos/owner/direction/contents/DIRECTION.md", self.calls.read_text())
 
     def test_own_direction_file_keeps_todays_output_without_a_read(self) -> None:
         (self.repo / "DIRECTION.md").write_text("# Direction\n")
         self.audit("owner/direction", "owner/product")
-        self.assertEqual(self.run_hook(self.reader(body=OVERALL)), hook.LOOP_PATH.read_text().strip())
+        self.assertEqual(self.run_hook(self.reader(body=OVERALL)), hook.loop_summary(hook.LOOP_PATH.read_text()))
         self.assertFalse(self.calls.exists())
 
     def test_owner_without_an_audited_direction_repository_sees_nothing_and_costs_no_read(self) -> None:
@@ -335,7 +352,7 @@ class OverallDirectionTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", str(worktree)], check=True)
         text = self.run_hook(self.reader(error="error connecting to api.github.com"), cwd=worktree)
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertIn(hook.stop_boundary_bullets(OVERALL), text)
         self.assertIn(str(local.resolve()), text)
         self.assertNotIn("uncommitted draft", text)
         self.assertNotIn("committed proposal", text)
@@ -348,7 +365,7 @@ class OverallDirectionTests(unittest.TestCase):
         self.sibling_checkout()
         self.audit()
         text = self.run_hook(self.reader(body=OVERALL))
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertIn(hook.stop_boundary_bullets(OVERALL), text)
 
     def test_unreadable_overall_direction_is_one_line(self) -> None:
         text = self.run_hook(self.reader(error="error connecting to api.github.com"))

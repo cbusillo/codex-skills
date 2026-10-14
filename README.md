@@ -613,14 +613,15 @@ each intermediate step. This applies even outside direction repositories.
 Codex already carries a skills protocol in its base instructions, so it does
 not receive this additional copy.
 In a repository with a root `DIRECTION.md`, it prints the shared
-[executing loop](skills/references/executing-loop.md) at session start. The loop
+[executing loop's command block](skills/references/executing-loop.md) and a link
+to its full procedure at session start. The loop
 defines `next`, `go`, escalation, landing, and closeout for either harness
 when its session-start hook is registered.
 In a repository without one, when its origin repository owner's
 `OWNER/direction` repository is in the marker's audited repositories or is checked out as
 `direction` beside the repository's main checkout, it prints that overall
-direction's stop boundaries, read from the merged default branch (or from that
-checkout's last-fetched default branch when GitHub cannot be read), with the
+direction's opening stop-boundary bullets, read from the merged default branch
+(or from that checkout's last-fetched default branch when GitHub cannot be read), with the
 file's link and the executing loop. When neither can be read
 it says so in one line. Repositories under other repository owners print
 nothing extra.
@@ -642,10 +643,10 @@ unless `DIRECTION_MARKER` names another file. For Codex, the installer or
 in JSON so later setup does not recreate inline TOML declarations.
 Claude's separate `compact` handler uses `--skills-only` to restore the protocol
 without repeating the executing loop or overdue-audit reminder. Claude's
-`UserPromptSubmit` handler uses `--turn` to print only the protocol's step table
-with each prompt, about 230 tokens, because Claude Code otherwise shows the
-protocol once while Codex re-sends its skill catalog; `evals/transcript-measure.py`
-reports how real sessions on both harnesses load the owning skill.
+`UserPromptSubmit` handler uses `--turn` to print a one-line reminder to name
+and load each step's owning skill. The full table stays in the startup and
+compaction protocol; `evals/transcript-measure.py` reports how real sessions
+on both harnesses load the owning skill.
 
 ### Session alerts
 

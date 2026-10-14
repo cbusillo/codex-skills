@@ -11,7 +11,7 @@ records each weekly audit in the marker per repository. When this machine's
 own turn is older than a day, the hook reads the shared record, so a turn
 taken on another machine counts; when that read fails it says so instead of
 calling the turn overdue.
-With --turn, run for each Claude Code prompt, it prints only the protocol's step table.
+With --turn, run for each Claude Code prompt, it prints a one-line skills reminder.
 At session start this hook prints the skills protocol on Claude Code and the executing loop for repositories with a
 root DIRECTION.md. In a repository without one, whose origin owner keeps an overall direction in OWNER/direction
 that has been audited on this machine or is checked out beside it, it prints that file's stop boundaries, where the file lives, and the loop.
@@ -207,6 +207,26 @@ def section(text: str, heading: str) -> str | None:
     return "\n".join(lines).strip() or None
 
 
+def stop_boundary_bullets(text: str) -> str:
+    """The opening boundary list, including wrapped lines, without later procedure."""
+    boundaries = section(text, "Stop Boundaries") or ""
+    lines: list[str] = []
+    for line in boundaries.splitlines():
+        if line.startswith(("- ", "* ", "+ ")) or (lines and line.startswith(("  ", "\t"))):
+            lines.append(line)
+        elif not line.strip():
+            continue
+        elif lines:
+            break
+    return "\n".join(lines) or "(no boundary list found; read the file in full)"
+
+
+def loop_summary(text: str) -> str:
+    """Print the command block; keep the full procedure at its owning reference."""
+    block = re.search(r"```text\n.*?\n```", text, re.DOTALL)
+    return (f"{block.group()}\n\nRead the [executing loop]({LOOP_PATH}) before its steps." if block else "")
+
+
 def run_reader(*args: str) -> subprocess.CompletedProcess[str]:
     """The GitHub reader, bounded across its whole process tree.
 
@@ -295,7 +315,7 @@ def overall_direction(repo: str | None, root: Path | None, marker: dict[str, obj
             )
         source = local_reason
         where = f"`git -C {local} show refs/remotes/origin/HEAD:DIRECTION.md` (on GitHub: {url})"
-    boundaries = section(text, "Stop Boundaries") or "(the file has no Stop Boundaries section; read it in full)"
+    boundaries = stop_boundary_bullets(text)
     return (
         f"Overall direction: this repository has no DIRECTION.md of its own, so {owner}'s overall direction applies. "
         f"Read {where} before acting. Its stop boundaries, from {source}:\n\n{boundaries}"
@@ -435,24 +455,12 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
     )
 
 
-def step_table(protocol: str) -> str:
-    """The protocol's step table with the paragraph that introduces it."""
-    blocks = protocol.split("\n\n")
-    for index, block in enumerate(blocks):
-        if block.startswith("| ") and index:
-            return f"{blocks[index - 1]}\n\n{block}".strip()
-    return ""
-
-
 def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime_catchup: bool = False,
          turn: bool = False) -> int:
     if turn:
         # Claude Code shows the session-start text once; Codex re-sends its catalog on its own.
         if os.environ.get("CLAUDECODE") == "1":
-            try:
-                print(step_table(SKILLS_PROTOCOL_PATH.read_text()), flush=True)
-            except OSError:
-                pass
+            print(f"Name each step's owning skill and load it before acting; see {SKILLS_PROTOCOL_PATH}.", flush=True)
         return 0
     try:
         if os.environ.get("CLAUDECODE") == "1":
@@ -476,7 +484,7 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
         marker = read_marker(path)
         root = direction_root(Path.cwd())
         try:
-            loop = LOOP_PATH.read_text().strip()
+            loop = loop_summary(LOOP_PATH.read_text())
         except OSError:
             loop = ""  # A missing loop reference must not hide an overdue reminder.
         if root is not None:
@@ -505,7 +513,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skills-only", action="store_true")
-    parser.add_argument("--turn", action="store_true", help="print only the skills step table, for each prompt")
+    parser.add_argument("--turn", action="store_true", help="print a one-line skills reminder for each prompt")
     parser.add_argument("--runtime-catchup", action="store_true", help="Enable catch-up with the updated native hook timeout")
     parser.add_argument("--catalog-root", type=Path, help="Catalog checkout for status diagnostics")
     args = parser.parse_args()

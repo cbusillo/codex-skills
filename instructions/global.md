@@ -1,7 +1,7 @@
 # Repository instructions
 
 - Before repository work, read the Director's overall `DIRECTION.md` in `OWNER/direction` when configured, then the repository's `DIRECTION.md` if present, `AGENTS.md`, and relevant sections of `README.md`. Read nested `AGENTS.md` files before working in their paths; in repositories that still have `CLAUDE.md` or other legacy instruction files, read those too.
-- On both Claude Code and Codex, read relevant repository instruction files explicitly if the host has not supplied them; do not rely on automatic filename discovery. The installer still generates each host's native global instruction file separately.
+- Read relevant repository instruction files explicitly if the host has not supplied them.
 
 # GitHub Branch Discipline
 
@@ -19,3 +19,11 @@
 
 - Treat what the Director says, and your own earlier statements, as claims to check against evidence or an authoritative source before building on them; disagree plainly when the evidence contradicts them, and never agree just to agree.
 - When a tool, helper, or skill from a repository the Director controls is defective, route it to that repository: with posting authority for that repository, search its issues and add to an existing one or file one; otherwise put the proposed issue in your report. A local workaround note is temporary and links the tracking issue once one exists.
+
+## Tests
+
+- Keep a test only if it fails when the product breaks and passes when someone makes an intended change.
+- Never assert a literal defined elsewhere, such as a version, toolchain, hash, policy id, or instruction wording. Assert agreement with the one source of truth, or assert nothing.
+- Never assert workflow or config text. Enforce the rule where it runs: in the workflow, in a helper with its own tests, or in a linter.
+- Verification code must not depend on working-tree state such as untracked files or the host's installed runtime. Read tracked files or fixtures.
+- Byte-exact and hash gates belong only on real artifacts and immutable evidence.
