@@ -88,3 +88,9 @@ runtime-major decisions.
 - [Python version support status](https://devguide.python.org/versions/)
 - [GitHub-hosted runner image labels and migration policy](https://github.com/actions/runner-images#available-images)
 - [Dependabot configuration options](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference)
+
+GitHub shell bootstraps use `github/scripts/github-python`: it asks uv for the
+native user-configured cache path, exports that route, and runs stdlib Python
+with caller project configuration excluded. Explicit `UV_CACHE_DIR` wins.
+Invalid user configuration fails with uv's diagnostic; it never silently falls
+back to a different cache. System-wide cache configuration remains excluded.

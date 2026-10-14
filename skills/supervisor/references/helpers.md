@@ -1048,3 +1048,9 @@ non-force close request and has no dry-run mode. An uncertain inventory or remai
 the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
 an uncertain close. Other terminal applications use the same skill procedure
 through their supported controls, not this iTerm adapter.
+
+Rendered persistent service runners use temporary uv caches. Their children
+inherit `UV_NO_CACHE=1`, including nested uv helpers, so a long child cannot pin
+the shared cache lock. This may reinstall declared dependencies on each launch.
+Apply updated service definitions only at the owning Supervisor's normal
+restart boundary; do not interrupt another session to make cache maintenance run.
