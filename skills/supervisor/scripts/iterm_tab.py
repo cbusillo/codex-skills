@@ -665,6 +665,53 @@ async def operate(app, args):
     return result
 
 
+async def open_tmux_view(connection, terminal, container):
+    """Create a gateway with its command; never send input to an iTerm session."""
+    import iterm2
+
+    command = terminal.view_command(container)
+    # Serialize hierarchy lookup and creation across simultaneous launchers.
+    # The gateway's creation-time command also identifies a pending attachment.
+    # iTerm's create-window RPC does not complete inside an API transaction.
+    with terminal.view_lock(container) as acquired:
+        if not acquired:
+            return {"status": "opening", "readback_required": True}
+        app = await iterm2.async_get_app(connection)
+        await app.async_refresh()
+        clients = terminal.control_clients(container)
+        candidates = sessions(app) + app.buried_sessions
+        for session in candidates:
+            tty = await session.async_get_variable("tty")
+            if any(tty and tty.removeprefix("/dev/") == client.removeprefix("/dev/")
+                   for client in clients):
+                return {"status": "attached", "session_id": session.session_id}
+            profile = await session.async_get_profile()
+            if profile.command == command:
+                return {"status": "opening", "session_id": session.session_id,
+                        "readback_required": True}
+
+        preference = await iterm2.preferences.async_get_preference(
+            connection, iterm2.preferences.PreferenceKey.OPEN_TMUX_WINDOWS_IN)
+        profile = iterm2.LocalWriteOnlyProfile()
+        profile.set_name("Supervised agents")
+        profile.set_use_custom_command(iterm2.Profile.USE_CUSTOM_COMMAND_ENABLED)
+        profile.set_command(command)
+        profile.set_use_custom_window_title(True)
+        profile.set_custom_window_title("Supervised agents")
+        # These overrides belong only to this newly created gateway. They never
+        # save a profile or change preferences, and its exit leaves tmux running.
+        profile.set_close_sessions_on_end(True)
+        window = await iterm2.Window.async_create(connection, profile_customizations=profile)
+        result = {"status": "opening", "window_id": window.window_id if window else None,
+                  "readback_required": True, "restore_windows_as": preference}
+        if type(preference) is not int or preference != 2:
+            result["warning"] = (
+                'iTerm Settings > General > tmux > "When attaching, restore windows as" '
+                'is not "tabs in the attaching window". The view may use other windows; '
+                'only the Director changes this setting.')
+        return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("iterm", "tmux"), default="iterm")
@@ -673,6 +720,8 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list")
     commands.add_parser("window")
+    view = commands.add_parser("view", help="open the Supervisor tmux view after unlocking")
+    view.add_argument("--window-id", required=True)
     close = commands.add_parser("close")
     close.add_argument("--session-id", required=True)
     close.add_argument("--ledger", type=Path, required=True,
@@ -702,6 +751,24 @@ def main():
             source.add_argument("--text-file", type=Path)
             sub.add_argument("--no-submit", action="store_true")
     args = parser.parse_args()
+    if args.command == "view":
+        if args.backend != "tmux" or args.tmux_socket != "supervisor":
+            print(json.dumps({"status": "skipped", "reason": "not the Supervisor tmux server"}))
+            return
+        import iterm2
+        import tmux_terminal
+
+        async def view_connected(connection):
+            try:
+                terminal = tmux_terminal.Terminal(args.tmux_socket)
+                terminal.verify_container(args.window_id)
+                print(json.dumps(await open_tmux_view(connection, terminal, args.window_id)))
+            except Exception as error:
+                # A view failure never changes a launch's submission outcome.
+                print(json.dumps({"status": "unavailable", "reason": type(error).__name__}))
+
+        iterm2.run_until_complete(view_connected)
+        return
     if args.backend == "tmux":
         import tmux_terminal
 

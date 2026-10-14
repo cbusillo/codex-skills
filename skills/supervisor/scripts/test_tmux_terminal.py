@@ -7,6 +7,7 @@
 
 import argparse
 import asyncio
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -18,13 +19,116 @@ import tempfile
 import time
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 import account_choice
 import close_ttys
 import iterm_tab
 import tmux_terminal
+
+
+class ViewTests(unittest.TestCase):
+    def setUp(self):
+        self.terminal = tmux_terminal.Terminal("supervisor")
+        self.container = "$17"
+        self.command = self.terminal.view_command(self.container)
+        self.app = SimpleNamespace(terminal_windows=[], buried_sessions=[], async_refresh=AsyncMock())
+        self.created = []
+
+        class Profile:
+            USE_CUSTOM_COMMAND_ENABLED = "custom"
+
+            def __init__(self):
+                self.values = {}
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda value: self.values.update({name.removeprefix("set_"): value})
+                raise AttributeError(name)
+
+        async def create(connection, *, profile_customizations):
+            self.created.append(profile_customizations.values)
+            session = self.session("gateway", "/dev/ttys987", profile_customizations.values["command"])
+            window = SimpleNamespace(window_id="view-window", tabs=[SimpleNamespace(sessions=[session])])
+            self.app.terminal_windows.append(window)
+            return window
+
+        self.sdk = SimpleNamespace(
+            async_get_app=AsyncMock(return_value=self.app),
+            preferences=SimpleNamespace(async_get_preference=AsyncMock(return_value=2),
+                                        PreferenceKey=SimpleNamespace(OPEN_TMUX_WINDOWS_IN="restore")),
+            LocalWriteOnlyProfile=Profile, Profile=Profile,
+            Window=SimpleNamespace(async_create=AsyncMock(side_effect=create)),
+        )
+
+    @staticmethod
+    def session(identity, tty, command="shell"):
+        # No input methods: the creation path cannot accidentally type into it.
+        return SimpleNamespace(session_id=identity, async_get_variable=AsyncMock(return_value=tty),
+                               async_get_profile=AsyncMock(return_value=SimpleNamespace(command=command)))
+
+    def open(self, clients=()):
+        with patch.dict(sys.modules, {"iterm2": self.sdk}), \
+                patch.object(self.terminal, "control_clients", return_value=clients), \
+                patch.object(self.terminal, "view_lock", return_value=nullcontext(True)):
+            return asyncio.run(iterm_tab.open_tmux_view("connection", self.terminal, self.container))
+
+    def test_no_client_creates_gateway_and_pending_gateway_prevents_second_window(self):
+        result = self.open()
+        self.assertEqual(result["status"], "opening")
+        self.assertEqual(shlex.split(self.created[0]["command"])[-1], self.container)
+        self.assertEqual(shlex.split(self.created[0]["command"])[1:3], ["-L", self.terminal.socket_name])
+        self.assertIn("-CC", shlex.split(self.created[0]["command"]))
+        self.assertTrue(self.created[0]["close_sessions_on_end"])
+        self.assertNotIn("warning", result)
+        self.assertEqual(self.open()["status"], "opening")
+        self.assertEqual(len(self.created), 1)
+        self.assertEqual(self.open(["ttys987"])["status"], "attached")
+        self.assertEqual(len(self.created), 1)
+
+    def test_attached_iterm_gateway_in_buried_sessions_prevents_creation(self):
+        self.app.buried_sessions = [self.session("existing-gateway", "/dev/ttys123")]
+        result = self.open(["/dev/ttys123"])
+        self.assertEqual(result["status"], "attached")
+        self.assertEqual(result["session_id"], "existing-gateway")
+        self.assertFalse(self.created)
+
+    def test_unrelated_control_client_or_other_container_does_not_hide_missing_view(self):
+        other_command = self.terminal.view_command("$18")
+        self.app.buried_sessions = [self.session("other-container", "/dev/ttys124", other_command)]
+        self.assertEqual(self.open(["/dev/ttys125"])["status"], "opening")
+        self.assertEqual(len(self.created), 1)
+
+    def test_non_tab_or_unknown_preference_warns_once_for_the_view(self):
+        for preference in (0, 1, None):
+            with self.subTest(preference=preference):
+                self.app.terminal_windows.clear()
+                self.sdk.preferences.async_get_preference.return_value = preference
+                self.assertTrue(self.open()["warning"])
+                self.assertNotIn("warning", self.open(["ttys987"]))
+
+    def test_non_supervisor_socket_never_attempts_gui(self):
+        with patch.object(tmux_terminal.subprocess, "run") as run:
+            result = tmux_terminal.Terminal("supervisor-test").view(self.container)
+        self.assertEqual(result["status"], "skipped")
+        run.assert_not_called()
+
+    def test_concurrent_opener_leaves_gui_to_the_lock_holder(self):
+        with patch.dict(sys.modules, {"iterm2": self.sdk}), \
+                patch.object(self.terminal, "view_lock", return_value=nullcontext(False)):
+            result = asyncio.run(iterm_tab.open_tmux_view("connection", self.terminal, self.container))
+        self.assertEqual(result["status"], "opening")
+        self.sdk.async_get_app.assert_not_called()
+        self.assertFalse(self.created)
+
+    def test_gui_timeout_is_reported_without_retry_or_agent_input(self):
+        with patch.object(tmux_terminal.sys, "platform", "darwin"), \
+                patch.object(tmux_terminal.subprocess, "run", side_effect=subprocess.TimeoutExpired("view", 10)) as run:
+            result = self.terminal.view(self.container)
+        self.assertEqual(result["status"], "unavailable")
+        self.assertTrue(result["readback_required"])
+        run.assert_called_once()
 
 
 class PaneParserTests(unittest.TestCase):
@@ -352,6 +456,49 @@ for line in sys.stdin:
             select.assert_not_called()
         self.assertEqual(before, self.terminal.list())
         self.assertFalse((self.root / "Launch Receipts").exists())
+
+    def test_client_inventory_filters_plain_control_and_other_session_clients(self):
+        # Real tmux -C is a protocol client, not an iTerm view (no client TTY).
+        client = subprocess.Popen(["tmux", "-L", self.socket, "-C", "attach", "-t", self.window],
+                                  stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(client.wait, timeout=5)
+        self.addCleanup(client.stdin.close)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            rows = self.terminal.run("list-clients", "-t", self.window, "-F", "#{client_control_mode}").stdout
+            if "1" in rows:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("disposable protocol client did not attach")
+        self.assertEqual(self.terminal.control_clients(self.window), [])
+        self.assertEqual(self.terminal.control_clients(self.operate("window")["window_id"]), [])
+        row = self.launch()
+        self.assertEqual(row["view"]["status"], "skipped")
+        self.wait_screen(row["session_id"], "READY:")
+        client.stdin.write(b"detach-client\n")
+        client.stdin.flush()
+        client.wait(timeout=5)
+        self.assertFalse(self.terminal.select(row["session_id"])["dead"])
+
+    def test_parallel_view_lock_excludes_second_creator_and_recovers_after_exit(self):
+        with self.terminal.view_lock(self.window) as first:
+            with self.terminal.view_lock(self.window) as second:
+                self.assertTrue(first)
+                self.assertFalse(second)
+            with self.terminal.view_lock(self.operate("window")["window_id"]) as other:
+                self.assertTrue(other)
+        with self.terminal.view_lock(self.window) as later:
+            self.assertTrue(later)
+
+    def test_one_view_receipt_per_batch_and_gui_failure_does_not_fail_launch(self):
+        with patch.object(tmux_terminal.Terminal, "view", return_value={"status": "unavailable"}) as view:
+            rows = self.launch(command_file=[self.command, self.command], brief_file=[self.brief, self.brief])
+        view.assert_called_once_with(self.window)
+        self.assertEqual(rows[0]["view"]["status"], "unavailable")
+        self.assertNotIn("view", rows[1])
+        for row in rows:
+            self.wait_screen(row["session_id"], "READY:")
 
     def test_receipt_failure_retains_exact_staged_pane_without_starting_agent(self):
         with patch.object(account_choice, "record_launch", side_effect=OSError("storage full")):

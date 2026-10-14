@@ -575,7 +575,8 @@ before its command. The default dedicated server is `tmux -L supervisor`;
 `--tmux-socket <name>` selects a separate test server. List, read, send and
 close do not start or replace a missing server. Only `window` creates a
 container. Each launch creates one background tmux window in that container,
-with no GUI connection or focus change.
+without depending on a GUI connection. On macOS's default `supervisor` socket,
+the first successful launch in a batch also opens the view described below.
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux window
@@ -603,9 +604,37 @@ path only for iTerm launches. Record the returned tmux coordinates in the same
 ledger and route close/read calls by each entry's backend. Never use an
 iTerm-only `list` result to infer that a tmux task is gone.
 
-To view a container, the Supervisor can open iTerm's tmux integration with the
-`view_command` returned by `window`: `tmux -L supervisor -CC attach -t <window-id>`.
-The Director sees each agent window as a native iTerm tab. Disconnecting the
+When no iTerm control-mode client is attached to the container, `new` creates a
+dedicated **Supervised agents** iTerm window. It uses iTerm's supported Python
+[window creation API](https://iterm2.com/python-api/window.html#iterm2.Window.async_create)
+with the attach command as the new gateway's startup command, never keystrokes
+or input sent to an existing session. Creation-time overrides name only the
+new gateway; no saved profile, iTerm preference or tmux setting is changed.
+A process lock for the exact tmux server and container serializes lookup and
+creation. Exact container/client TTY
+matching recognizes existing iTerm views; the startup command recognizes a
+gateway still attaching, so another launch does not create a second view.
+
+The first successful launch's `view` result reports `attached`, `opening`,
+`unavailable`, or `skipped`. On creation it reads iTerm's
+[restore preference](https://iterm2.com/python-api/preferences.html#iterm2.preferences.PreferenceKey.OPEN_TMUX_WINDOWS_IN).
+For **tabs in the attaching window** (value 2), later agent windows appear as
+tabs there. Other values, or an unknown value, produce one warning in that
+view receipt, not one per agent or later launch. Tell the Director that the
+setting controls grouping; only they change it. Other sockets never open a
+view automatically.
+
+The GUI attempt is bounded to ten seconds in a separate process. A locked
+screen or unavailable API produces an unavailable view receipt while agents
+keep running. Do not relaunch agents to recover their view. After unlocking,
+inspect iTerm, then retry just the view through the same deduplicating route:
+
+```sh
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux view --window-id '<container-id>'
+```
+
+The `view_command` returned by `window` remains the manual attach command:
+`tmux -L supervisor -CC attach -t <window-id>`. Disconnecting or closing the
 view leaves the server and sessions running. Do not use `kill-server`,
 `kill-session`, or a raw pane/window kill to disconnect or close workers.
 Existing plain iTerm sessions continue through the helper without `--backend

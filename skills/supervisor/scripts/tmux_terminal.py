@@ -5,11 +5,16 @@
 """tmux backend for iterm_tab; no GUI connection or account-choice policy."""
 
 import asyncio
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import sys
+import tempfile
 import uuid
 
 import account_choice
@@ -31,6 +36,75 @@ class Terminal:
             # tmux diagnostics can echo the command/brief; retain targets, not text.
             raise ValueError(f"tmux {argv[0]} failed; list and read before retrying")
         return result
+
+    def verify_container(self, container):
+        if not re.fullmatch(r"\$[0-9]+", container):
+            raise ValueError("window id must be the exact tmux session id from window/list")
+        if not any(r["window_id"] == container for r in self.list()):
+            raise ValueError("window id does not identify a tmux session")
+
+    def view_command(self, container):
+        if not re.fullmatch(r"\$[0-9]+", container):
+            raise ValueError("window id must be the exact tmux session id from window/list")
+        executable = shutil.which("tmux")
+        if not executable:
+            raise ValueError("tmux executable unavailable")
+        # New iTerm commands do not inherit the launcher's shell PATH.
+        return shlex.join([executable, "-L", self.socket_name, "-CC", "attach", "-t", container])
+
+    def control_clients(self, container):
+        self.verify_container(container)
+        result = self.run("list-clients", "-t", container, "-F",
+                          "#{session_id}\t#{client_control_mode}\t#{client_tty}")
+        clients = []
+        for line in result.stdout.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 3 or fields[0] != container or fields[1] not in {"0", "1"}:
+                raise ValueError("tmux client inventory is malformed")
+            if fields[1] == "1" and fields[2]:
+                clients.append(fields[2])
+        return clients
+
+    @contextmanager
+    def view_lock(self, container):
+        self.verify_container(container)
+        server = self.run("display-message", "-p", "-t", container, "#{pid}").stdout.strip()
+        if not server.isdecimal():
+            raise ValueError("tmux server identity unavailable")
+        path = os.path.join(tempfile.gettempdir(),
+                            f"supervisor-iterm-view-{os.getuid()}-{server}-{container[1:]}.lock")
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as lock:
+            metadata = os.fstat(lock.fileno())
+            if metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+                raise ValueError("view lock is not private to this user")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+            else:
+                yield True
+
+    def view(self, container):
+        if self.socket_name != "supervisor" or sys.platform != "darwin":
+            return {"status": "skipped", "reason": "automatic view is macOS Supervisor-only"}
+        command = self.view_command(container)
+        # iTerm authentication may block while locked. Bound the GUI attempt in
+        # a child so it cannot hold up tmux work or corrupt the launch JSON.
+        try:
+            result = subprocess.run(
+                [sys.executable, iterm_tab.__file__, "--backend", "tmux",
+                 "--tmux-socket", self.socket_name, "view", "--window-id", container],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                view = json.loads(result.stdout)
+                if isinstance(view, dict) and view.get("status") in {"attached", "opening", "unavailable"}:
+                    return {**view, "view_command": command}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+        return {"status": "unavailable", "readback_required": True, "view_command": command,
+                "next_action": "After unlocking, inspect iTerm and use view --window-id; do not relaunch agents."}
 
     def list(self):
         fields = ("session_id", "window_id", "pane_id", "pane_title", "pane_tty",
@@ -167,10 +241,7 @@ async def operate(args):
         return {"window_id": window, "backend": "tmux", "tmux_socket": args.tmux_socket,
                 "view_command": f"tmux -L {args.tmux_socket} -CC attach -t {shlex.quote(window)}"}
 
-    if not re.fullmatch(r"\$[0-9]+", args.window_id):
-        raise ValueError("window id must be the exact tmux session id from window/list")
-    if not any(r["window_id"] == args.window_id for r in terminal.list()):
-        raise ValueError("window id does not identify a tmux session")
+    terminal.verify_container(args.window_id)
     commands, choices = iterm_tab.prepare_launches(args)
     results = []
     for command, choice in zip(commands, choices):
@@ -209,6 +280,8 @@ async def operate(args):
             if choice:
                 result["account"] = account_choice.public(choice)
             results.append(result)
+            if len(results) == 1:
+                result["view"] = terminal.view(args.window_id)
         except Exception as error:
             raise iterm_tab.LaunchFailure(results, progress, error) from error
     return results[0] if len(results) == 1 else results
