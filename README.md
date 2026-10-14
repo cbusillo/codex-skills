@@ -591,7 +591,7 @@ for authorized train entry and landing. Do not call `gh-pr.py merge` or merge
 directly in GitHub. A task brief that assigns routing to a direction or
 Supervisor session owns that handoff.
 After a confirmed landing, reconcile the runtime checkout as described in
-[AGENTS.md](AGENTS.md#runtime-checkout-discipline).
+[the GitHub skill's After A Merge procedure](skills/github/SKILL.md#after-a-merge).
 
 The `direction` skill holds a repository's direction in one Director-approved
 `DIRECTION.md` at the root, keeps milestones as waypoints that must be listed
@@ -613,7 +613,8 @@ each intermediate step. This applies even outside direction repositories.
 Codex already carries a skills protocol in its base instructions, so it does
 not receive this additional copy.
 In a repository with a root `DIRECTION.md`, it prints the shared
-[executing loop](skills/references/executing-loop.md) at session start. The loop
+[executing loop's command block](skills/references/executing-loop.md) and a link
+to its full procedure at session start. The loop
 defines `next`, `go`, escalation, landing, and closeout for either harness
 when its session-start hook is registered.
 In a repository without one, when its origin repository owner's
@@ -642,10 +643,10 @@ unless `DIRECTION_MARKER` names another file. For Codex, the installer or
 in JSON so later setup does not recreate inline TOML declarations.
 Claude's separate `compact` handler uses `--skills-only` to restore the protocol
 without repeating the executing loop or overdue-audit reminder. Claude's
-`UserPromptSubmit` handler uses `--turn` to print only the protocol's step table
-with each prompt, about 230 tokens, because Claude Code otherwise shows the
-protocol once while Codex re-sends its skill catalog; `evals/transcript-measure.py`
-reports how real sessions on both harnesses load the owning skill.
+`UserPromptSubmit` handler uses `--turn` to print a one-line reminder to name
+and load each step's owning skill. The full table stays in the startup and
+compaction protocol; `evals/transcript-measure.py` reports how real sessions
+on both harnesses load the owning skill.
 
 ### Session alerts
 
@@ -728,8 +729,7 @@ See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
 Execution skills share [task scope and authorization](skills/references/execution-scope.md).
 The [shared global instructions](instructions/global.md) tell agents on both
 hosts to read repository `AGENTS.md` and relevant nested files explicitly when
-the host has not already supplied them; repository guidance does not depend on
-Claude Code discovering that filename automatically.
+the host has not already supplied them.
 They name people and permissions with the shared [role words](skills/references/role-words.md):
 Director, Client, and admin.
 Existing authorization is reused within its scope; exact-action approvals and
