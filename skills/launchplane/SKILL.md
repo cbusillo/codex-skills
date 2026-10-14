@@ -941,8 +941,11 @@ whether a repository is enrolled, its base branches and enqueue labels;
 `.github/github.json` only carries routing hints. The bounded read uses the
 existing private admin configuration and standing `merge_train.policy_targets`
 permission. It emits only that repository's targets and policy revision evidence.
-If configuration, access or a valid service response is unavailable, enrollment
-is unknown. Never infer a direct merge path from missing metadata or a failed read.
+For a Director with Launchplane configured, missing settings, unavailable access
+or an invalid service response leave enrollment unknown. Never infer a direct
+merge path from missing metadata or a failed read. A Director without Launchplane
+uses the GitHub skill's [Merging](../github/SKILL.md#merging) procedure, which
+establishes configuration absence locally and skips this skill and train steps.
 
 Use Launchplane's controller route as the default merge-train workflow. Before
 advancing or diagnosing a train, read [merge-train execution](references/merge-train.md)

@@ -14,6 +14,7 @@ gh_bin="${GITHUB_REPO_SNAPSHOT_GH:-$script_dir/gh-with-env-token}"
 pr_helper="${GITHUB_REPO_SNAPSHOT_PR_HELPER:-$script_dir/gh-pr.py}"
 read_helper="${GITHUB_REPO_SNAPSHOT_READ_HELPER:-$script_dir/github_read.py}"
 policy_helper="${GITHUB_REPO_SNAPSHOT_POLICY_HELPER:-$script_dir/../../launchplane/scripts/launchplane-write-action.py}"
+configuration_helper="${GITHUB_REPO_SNAPSHOT_CONFIGURATION_HELPER:-$script_dir/github_launchplane.py}"
 if [[ -n "${GITHUB_REPO_SNAPSHOT_PYTHON:-}" ]]; then
   python_command=("$GITHUB_REPO_SNAPSHOT_PYTHON")
 elif command -v uv >/dev/null 2>&1; then
@@ -108,6 +109,16 @@ read_merge_train_policy() {
   if ! command -v jq >/dev/null 2>&1; then
     printf '{"source":"launchplane","status":"unknown","reason":"jq_unavailable","enabled":null,"targets":[],"policy":null}\n'
     return
+  fi
+  local configuration="" configuration_args=()
+  if [[ -n "$effective_config_path" ]]; then
+    configuration_args=(--config "$effective_config_path")
+  fi
+  if configuration="$("${python_command[@]}" "$configuration_helper" ${configuration_args[@]+"${configuration_args[@]}"} 2>/dev/null)"; then
+    if jq -e '.status == "not_configured"' <<<"$configuration" >/dev/null 2>&1; then
+      printf '{"source":"local_configuration","status":"not_configured","enabled":false,"targets":[],"policy":null}\n'
+      return
+    fi
   fi
   if [[ -f "$policy_helper" ]] && response="$("${python_command[@]}" "$policy_helper" merge-train-policy-read --repo-root "$repo_root" 2>/dev/null)"; then
     if jq -e '
@@ -627,13 +638,13 @@ if [[ "$json_output" -eq 1 ]]; then
         {
           status: "no_config",
           enabled: false,
-          warnings: [{code: "missing_config", message: "No repo metadata config was loaded."}]
+          warnings: []
         }
       elif ($config.data.launchplane // null) == null then
         {
-          status: "not_configured",
+          status: "no_routing_metadata",
           enabled: false,
-          warnings: [{code: "missing_launchplane_metadata", message: "Launchplane metadata is not configured for this repo."}]
+          warnings: []
         }
       elif ($config.data.launchplane | type) != "object" then
         {
@@ -784,7 +795,7 @@ if [[ -n "$config_path" ]]; then
   # shellcheck disable=SC2016 # jq variables are intentionally single-quoted.
   run_or_note "launchplane metadata summary" jq -r '
     if (.launchplane // null) == null then
-      "status: not_configured"
+      "status: no_routing_metadata"
     else
       .launchplane as $lp |
       (if ($lp.context | type) == "object" then $lp.context else {} end) as $context |
@@ -803,7 +814,7 @@ if [[ -n "$config_path" ]]; then
   ' "$effective_config_path"
 fi
 
-section "Merge Train (Launchplane policy)"
+section "Landing"
 if command -v jq >/dev/null 2>&1; then
   jq -r '[
     "mergeTrainStatus: " + .status,

@@ -35,6 +35,13 @@ as an empty authoritative result. Launchplane routing metadata with a string
 `context` is reported under `launchplane.routing`; helper-object metadata stays
 under `launchplane.context`. Invalid Launchplane metadata carries warnings.
 A failed JSON projection returns nonzero instead of an empty successful snapshot.
+Use `launchplane.mergeTrain` for landing under the GitHub skill's
+[Merging](../SKILL.md#merging) procedure. `not_configured` is local configuration
+absence; that procedure checks the Director's overall direction and all
+applicable instructions before using a protected-branch route. A Director
+without Launchplane needs no policy read or Launchplane repair.
+Missing repository routing metadata alone cannot establish absence;
+configured-but-unreadable enrollment stays `unknown`.
 
 Summarize only actionable state:
 
