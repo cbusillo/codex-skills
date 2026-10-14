@@ -200,7 +200,7 @@ below and read their logs during checks. The bounded invocation here remains
 available for a one-off check.
 
 ```sh
-uv run skills/supervisor/scripts/foreign_watch.py --owner OWNER --repo OWNER/REPO --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
+uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --repo OWNER/REPO --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
 ```
 
 Repeat `--repo` and login flags for the run's configured scope. Initial startup
@@ -426,17 +426,17 @@ credential sources. A configuration has this shape, with all four entries:
   "uv": "/absolute/path/to/uv",
   "services": {
     "enqueue": {
-      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/auto_enqueue.py", "--owner", "OWNER", "--hold-file", "/private/holds.json", "--apply"],
+      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/auto_enqueue.py", "--owner", "OWNER", "--hold-file", "/private/holds.json", "--apply"],
       "cwd": "/runtime/catalog",
       "restart_seconds": 60
     },
     "drive": {
-      "argv": ["/absolute/path/to/uv", "run", "/private/existing-bounded-drive-loop.py"],
+      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/private/existing-bounded-drive-loop.py"],
       "cwd": "/runtime/catalog",
       "restart_seconds": 60
     },
     "foreign": {
-      "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--state", "/private/foreign-state.json", "--persistent"],
+      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--state", "/private/foreign-state.json", "--persistent"],
       "cwd": "/runtime/catalog",
       "restart_seconds": 60
     },

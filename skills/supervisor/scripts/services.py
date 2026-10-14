@@ -71,7 +71,7 @@ def render(config_path, catalog, output):
         label = f"{LABEL_PREFIX}.{name}"
         job = {
             "Label": label,
-            "ProgramArguments": [config["uv"], "run", "--no-project", str(runner),
+            "ProgramArguments": [config["uv"], "run", "--no-project", "--no-cache", str(runner),
                                  "run", "--config", str(config_path), "--service", name],
             "WorkingDirectory": str(catalog.resolve()),
             "EnvironmentVariables": {"PATH": f"{Path(config['uv']).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
@@ -132,7 +132,10 @@ def supervise(settings, stopped, marker):
     while not stopped.is_set():
         # Survives a runner crash, forced stop or host restart mid-command.
         marker.touch(mode=0o600)
-        child = subprocess.Popen(settings["argv"], cwd=settings["cwd"], start_new_session=True)
+        # A service runner and its uv children must not pin the shared cache.
+        child_env = {**os.environ, "UV_NO_CACHE": "1"}
+        child = subprocess.Popen(settings["argv"], cwd=settings["cwd"],
+                                 env=child_env, start_new_session=True)
         emit("started", pid=child.pid)
         try:
             while child.poll() is None:

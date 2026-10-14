@@ -39,7 +39,8 @@ class CacheRoutingTests(unittest.TestCase):
                 payload = json.loads(process.stdout)
                 self.assertEqual(payload[1:], [str(caller), ["space value"]])
                 expected = override or configured
-                self.assertTrue((expected / ".lock").exists())
+                self.assertEqual(payload[0], str(expected))
+                self.assertTrue(expected.is_dir())
                 self.assertFalse((caller / ".venv").exists())
 
     def test_no_cache_watch_leaves_shared_cache_prunable(self):
