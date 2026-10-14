@@ -244,8 +244,10 @@ Common top-level keys:
   only when Launchplane configuration is present or uncertain. Its local
   `github_launchplane.py` check considers repository routing metadata,
   environment keys beginning `LAUNCHPLANE_` (including empty settings), and
-  entries in `~/.config/launchplane/`, without opening private files or reading
-  credential values. Unreadable configuration presence stays uncertain.
+  presence of `~/.config/launchplane/` (including an empty directory), without
+  opening private files or reading credential values. Unreadable configuration
+  presence or a missing/redirected `HOME` stays uncertain: absence is checked
+  only in the user's native home, independently of harness home overrides.
   Its `launchplane.mergeTrain` summary has `status` (`enrolled`,
   `not_enrolled`, `not_configured` or `unknown`), nullable `enabled`, per-branch `targets`
   with `baseBranch` and `readyLabel`, and policy revision evidence.

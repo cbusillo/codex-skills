@@ -29,15 +29,29 @@ def helper_metadata():
 class SnapshotTests(unittest.TestCase):
     @staticmethod
     def snapshot(metadata, *, text=False, policy=None, policy_exit=0,
-                 private_config=True, launchplane_env=None, real_policy=False):
+                 private_config=True, launchplane_env=None, real_policy=False, isolated_home=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "https://github.com/example/project.git"], check=True)
             config = root / "metadata.json"
             if metadata is not None:
                 config.write_text(json.dumps(metadata))
             fixture_home = root / "home"
             fixture_home.mkdir()
+            child_home = fixture_home / "isolated" if isolated_home else fixture_home
+            child_home.mkdir(exist_ok=True)
+            # The detector runs against a fixture user's native home, independent
+            # of this host's installed configuration. Its CLI and source are real.
+            configuration_helper = root / "configuration.py"
+            configuration_helper.write_text(
+                "import sys\nfrom pathlib import Path\n"
+                f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+                "import github_launchplane\n"
+                f"github_launchplane.director_home = lambda: Path({str(fixture_home)!r})\n"
+                "github_launchplane.main()\n"
+            )
             if private_config:
                 operator_config = fixture_home / ".config" / "launchplane" / "local-operator.json"
                 operator_config.parent.mkdir(parents=True)
@@ -59,8 +73,9 @@ class SnapshotTests(unittest.TestCase):
                 ["bash", str(SCRIPT), *([] if metadata is None else ["--config", str(config)]),
                  *([] if text else ["--json"])],
                 cwd=root,
-                env={**env, "HOME": str(fixture_home), **(launchplane_env or {}),
+                env={**env, "HOME": str(child_home), **(launchplane_env or {}),
                      "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh"),
+                     "GITHUB_REPO_SNAPSHOT_CONFIGURATION_HELPER": str(configuration_helper),
                      "GITHUB_REPO_SNAPSHOT_POLICY_HELPER": str(policy_helper)},
                 capture_output=True, text=True,
             )
@@ -179,7 +194,8 @@ class SnapshotTests(unittest.TestCase):
                 self.assertNotIn("mergeTrainReason:", result.stdout)
             else:
                 summary = json.loads(result.stdout)["launchplane"]
-                self.assertEqual(summary["warnings"], [])
+                self.assertFalse(any(warning["code"].startswith("missing_")
+                                     for warning in summary["warnings"]))
                 self.assertEqual(summary["mergeTrain"]["status"], "not_configured")
                 self.assertFalse(summary["mergeTrain"]["enabled"])
 
@@ -208,6 +224,15 @@ class SnapshotTests(unittest.TestCase):
         route = json.loads(result.stdout)["launchplane"]["mergeTrain"]
         self.assertEqual(route["status"], "unknown")
         self.assertIsNone(route["enabled"])
+        self.assertEqual(route["reason"], "invalid_config")
+
+    def test_isolated_home_snapshot_never_takes_absent_path(self):
+        result = self.snapshot({}, isolated_home=True,
+                               policy={"status": "unavailable"}, policy_exit=1)
+        self.assertTrue(result.policy_called)
+        route = json.loads(result.stdout)["launchplane"]["mergeTrain"]
+        self.assertEqual(route["status"], "unknown")
+        self.assertIsNone(route["enabled"])
 
     def test_text_without_jq_keeps_local_snapshot_and_unknown_enrollment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -230,18 +255,34 @@ class SnapshotTests(unittest.TestCase):
 
 class ConfigurationTests(unittest.TestCase):
     def test_unreadable_private_directory_stays_unknown(self):
-        with patch.object(Path, "iterdir", side_effect=PermissionError):
-            self.assertEqual(configuration_status({}, home=Path("/fixture"), environ={}), "unknown")
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            with patch.object(Path, "lstat", side_effect=PermissionError):
+                self.assertEqual(configuration_status({}, home=home, environ={}, expected_home=home), "unknown")
 
     def test_broken_private_symlinks_do_not_prove_absence(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             (home / ".config").symlink_to(home / "missing")
-            self.assertEqual(configuration_status({}, home=home, environ={}), "unknown")
+            self.assertEqual(configuration_status({}, home=home, environ={}, expected_home=home), "unknown")
             (home / ".config").unlink()
             (home / ".config").mkdir()
             (home / ".config" / "launchplane").symlink_to(home / "missing")
-            self.assertEqual(configuration_status({}, home=home, environ={}), "configured")
+            self.assertEqual(configuration_status({}, home=home, environ={}, expected_home=home), "configured")
+
+    def test_isolated_or_missing_home_never_proves_absence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            isolated = home / "isolated"
+            isolated.mkdir()
+            for requested in (isolated, home / "missing"):
+                self.assertEqual(configuration_status({}, home=requested, environ={}, expected_home=home), "unknown")
+
+    def test_empty_private_directory_keeps_configured_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".config" / "launchplane").mkdir(parents=True)
+            self.assertEqual(configuration_status({}, home=home, environ={}, expected_home=home), "configured")
 
 
 if __name__ == "__main__":

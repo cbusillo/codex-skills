@@ -14,6 +14,7 @@ gh_bin="${GITHUB_REPO_SNAPSHOT_GH:-$script_dir/gh-with-env-token}"
 pr_helper="${GITHUB_REPO_SNAPSHOT_PR_HELPER:-$script_dir/gh-pr.py}"
 read_helper="${GITHUB_REPO_SNAPSHOT_READ_HELPER:-$script_dir/github_read.py}"
 policy_helper="${GITHUB_REPO_SNAPSHOT_POLICY_HELPER:-$script_dir/../../launchplane/scripts/launchplane-write-action.py}"
+configuration_helper="${GITHUB_REPO_SNAPSHOT_CONFIGURATION_HELPER:-$script_dir/github_launchplane.py}"
 if [[ -n "${GITHUB_REPO_SNAPSHOT_PYTHON:-}" ]]; then
   python_command=("$GITHUB_REPO_SNAPSHOT_PYTHON")
 elif command -v uv >/dev/null 2>&1; then
@@ -113,7 +114,7 @@ read_merge_train_policy() {
   if [[ -n "$effective_config_path" ]]; then
     configuration_args=(--config "$effective_config_path")
   fi
-  if configuration="$("${python_command[@]}" "$script_dir/github_launchplane.py" ${configuration_args[@]+"${configuration_args[@]}"} 2>/dev/null)"; then
+  if configuration="$("${python_command[@]}" "$configuration_helper" ${configuration_args[@]+"${configuration_args[@]}"} 2>/dev/null)"; then
     if jq -e '.status == "not_configured"' <<<"$configuration" >/dev/null 2>&1; then
       printf '{"source":"local_configuration","status":"not_configured","enabled":false,"targets":[],"policy":null}\n'
       return
