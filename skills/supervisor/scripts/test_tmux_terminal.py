@@ -36,12 +36,14 @@ class ViewTests(unittest.TestCase):
         self.app = SimpleNamespace(terminal_windows=[], buried_sessions=[], async_refresh=AsyncMock(),
                                    current_terminal_window=None)
         self.created = []
+        self.startup_input = []
 
         class Profile:
             USE_CUSTOM_COMMAND_ENABLED = "custom"
 
-            def __init__(self):
-                self.values = {}
+            def __init__(self, values=None):
+                self.values = {"Initial Text": "source personal-config"}
+                self.values.update(values or {})
 
             def __getattr__(self, name):
                 if name.startswith("set_"):
@@ -50,6 +52,8 @@ class ViewTests(unittest.TestCase):
 
         async def create(connection, *, profile_customizations):
             self.created.append(profile_customizations.values)
+            if text := profile_customizations.values.get("Initial Text"):
+                self.startup_input.append(text)
             session = self.session("gateway", "/dev/ttys987", profile_customizations.values["command"])
             window = SimpleNamespace(window_id="view-window", tabs=[SimpleNamespace(sessions=[session])])
             self.app.terminal_windows.append(window)
@@ -83,6 +87,7 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("-L") + 1], self.terminal.socket_name)
         self.assertIn("-CC", argv)
         self.assertTrue(self.created[0]["close_sessions_on_end"])
+        self.assertFalse(self.startup_input)
         self.assertNotIn("warning", result)
         self.assertEqual(self.open()["status"], "opening")
         self.assertEqual(len(self.created), 1)
@@ -129,6 +134,14 @@ class ViewTests(unittest.TestCase):
         self.app.current_terminal_window = SimpleNamespace(current_tab=previous_tab)
         self.open()
         previous_tab.async_select.assert_awaited_once()
+
+    def test_gateway_ending_during_creation_reports_unavailable(self):
+        self.sdk.Window.async_create.side_effect = None
+        self.sdk.Window.async_create.return_value = None
+        result = self.open()
+        self.assertEqual(result["status"], "unavailable")
+        self.assertTrue(result["readback_required"])
+        self.assertTrue(result["next_action"])
 
     def test_gui_timeout_is_reported_without_retry_or_agent_input(self):
         with patch.object(tmux_terminal.sys, "platform", "darwin"), \
@@ -491,7 +504,8 @@ for line in sys.stdin:
 
     def test_parallel_view_lock_excludes_second_creator_and_recovers_after_exit(self):
         with self.terminal.view_lock(self.window) as first:
-            with self.terminal.view_lock(self.window) as second:
+            with patch.dict(os.environ, {"TMPDIR": str(self.root)}), \
+                    self.terminal.view_lock(self.window) as second:
                 self.assertTrue(first)
                 self.assertFalse(second)
             with self.terminal.view_lock(self.operate("window")["window_id"]) as other:

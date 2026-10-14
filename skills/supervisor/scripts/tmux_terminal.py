@@ -14,7 +14,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import uuid
 
 import account_choice
@@ -68,11 +67,13 @@ class Terminal:
     @contextmanager
     def view_lock(self, container):
         self.verify_container(container)
-        server = self.run("display-message", "-p", "-t", container, "#{pid}").stdout.strip()
-        if not server.isdecimal():
+        identity = self.run("display-message", "-p", "-t", container,
+                            "#{pid}\t#{socket_path}").stdout.strip().split("\t")
+        if len(identity) != 2 or not identity[0].isdecimal() or not os.path.isabs(identity[1]):
             raise ValueError("tmux server identity unavailable")
-        path = os.path.join(tempfile.gettempdir(),
-                            f"supervisor-iterm-view-{os.getuid()}-{server}-{container[1:]}.lock")
+        server, socket_path = identity
+        path = os.path.join(os.path.dirname(socket_path),
+                            f"supervisor-iterm-view-{server}-{container[1:]}.lock")
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as lock:
             metadata = os.fstat(lock.fileno())

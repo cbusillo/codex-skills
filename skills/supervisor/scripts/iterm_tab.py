@@ -693,7 +693,11 @@ async def open_tmux_view(connection, terminal, container):
 
         preference = await iterm2.preferences.async_get_preference(
             connection, iterm2.preferences.PreferenceKey.OPEN_TMUX_WINDOWS_IN)
-        profile = iterm2.LocalWriteOnlyProfile()
+        # The SDK has no named setter for Initial Text; its public constructor
+        # accepts creation-time profile properties. Suppress inherited input.
+        profile = iterm2.LocalWriteOnlyProfile({"Initial Text": ""})
+        profile.set_send_code_when_idle(False)
+        profile.set_triggers([])
         profile.set_name("Supervised agents")
         profile.set_use_custom_command(iterm2.Profile.USE_CUSTOM_COMMAND_ENABLED)
         profile.set_command(command)
@@ -709,8 +713,11 @@ async def open_tmux_view(connection, terminal, container):
         finally:
             if previous_tab:
                 await previous_tab.async_select()
-        result = {"status": "opening", "window_id": window.window_id if window else None,
+        result = {"status": "opening" if window else "unavailable",
+                  "window_id": window.window_id if window else None,
                   "readback_required": True, "restore_windows_as": preference}
+        if window is None:
+            result["next_action"] = "Inspect iTerm, then use view --window-id; do not relaunch agents."
         if type(preference) is not int or preference != 2:
             result["warning"] = (
                 'iTerm Settings > General > tmux > "When attaching, restore windows as" '

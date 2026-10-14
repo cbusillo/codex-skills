@@ -608,8 +608,9 @@ When no iTerm control-mode client is attached to the container, `new` creates a
 dedicated **Supervised agents** iTerm window. It uses iTerm's supported Python
 [window creation API](https://iterm2.com/python-api/window.html#iterm2.Window.async_create)
 with the attach command as the new gateway's startup command, never keystrokes
-or input sent to an existing session. Creation-time overrides name only the
-new gateway; no saved profile, iTerm preference or tmux setting is changed.
+or input sent to an existing session. Creation-time overrides name the new
+gateway and clear inherited startup text, idle input and triggers; no saved
+profile, iTerm preference or tmux setting is changed.
 A process lock for the exact tmux server and container serializes lookup and
 creation. Exact container/client TTY
 matching recognizes existing iTerm views; the startup command recognizes a
@@ -640,8 +641,9 @@ The `view_command` returned by `window` remains the manual attach command:
 gateway leaves the server and sessions running. Use **Shell > tmux > Detach**
 to close the integrated view safely. iTerm's ordinary agent-tab/window Close
 action can kill the corresponding tmux window; it is not a detach operation.
-Opening the gateway may momentarily move focus; the helper restores the exact
-previously selected tab. Attachment can resize tmux panes, so let an agent's
+Opening the gateway may move focus. The helper requests the previous tab after
+window creation; iTerm may move focus again when restoring tmux tabs. Attachment
+can resize tmux panes, so let an agent's
 screen settle before verifying its input line. Do not use `kill-server`,
 `kill-session`, or a raw pane/window kill to disconnect or close workers.
 Existing plain iTerm sessions continue through the helper without `--backend
