@@ -73,7 +73,12 @@ Only a complete active-policy response proves absence. Missing config, denial,
 transport failure, duplicate targets or malformed policy mean unknown to callers.
 The snapshot emits `launchplane.mergeTrain.status=unknown` and `enabled=null`
 on those failures, independently of `github.json`, with a compact safe `reason`
-code for diagnosis. A read grants no merge authority.
+code for diagnosis. Before attempting this read, the snapshot checks local
+configuration presence under the [snapshot schema](../../github/references/config-schema.md).
+Confirmed local absence skips this helper; the GitHub skill's
+[Merging](../../github/SKILL.md#merging) procedure still applies the Director's
+direction and instruction precedence when choosing a landing route.
+A read grants no merge authority.
 
 ## Odoo addon settings
 

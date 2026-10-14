@@ -11,7 +11,6 @@ import shutil
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 from github_launchplane import configuration_status
 
@@ -264,11 +263,17 @@ class SnapshotTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    @unittest.skipIf(getattr(os, "geteuid", lambda: 0)() == 0, "needs an unprivileged POSIX user")
     def test_unreadable_private_directory_stays_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            with patch.object(Path, "lstat", side_effect=PermissionError):
+            parent = home / ".config"
+            parent.mkdir()
+            parent.chmod(0)
+            try:
                 self.assertEqual(configuration_status({}, home=home, environ={}, expected_home=home), "unknown")
+            finally:
+                parent.chmod(0o700)
 
     def test_broken_private_symlinks_do_not_prove_absence(self):
         with tempfile.TemporaryDirectory() as directory:
