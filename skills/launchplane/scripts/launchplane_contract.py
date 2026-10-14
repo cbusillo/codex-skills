@@ -191,7 +191,7 @@ LOCAL_EXTENSION_ROUTES = {
         "method": "POST", "path": "/v1/drivers/ingress/route-apply", "mode": "apply",
     },
     "route-authority-discover": {
-        "method": "GET", "path": "/v1/product-profiles", "mode": "read",
+        "method": "GET", "path": "/v1/product-profiles/{product}", "mode": "read",
     },
     "route-binding-read": {
         "method": "GET", "path": "/v1/route-bindings/records/current", "mode": "read",
@@ -495,6 +495,9 @@ LOCAL_EXTENSION_ROUTES = {
 }
 
 INTERNAL_HELPER_ROUTES = {
+    "route-authority-binding-list": {
+        "method": "GET", "path": "/v1/route-bindings/records",
+    },
     "route-authority-audit-read": {
         "method": "GET", "path": "/v1/ingress/route-audits/records/{record_id}",
     },

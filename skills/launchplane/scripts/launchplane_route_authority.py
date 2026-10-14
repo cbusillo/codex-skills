@@ -65,6 +65,7 @@ class Session:
         self.apply_accepted = False
         self.request = request
         self.apply_response: dict[str, Any] | None = None
+        self.readback_view = "full"
 
     def read(self, path: str, query: dict[str, str]) -> dict[str, Any]:
         self.provider = None
@@ -106,7 +107,14 @@ class Session:
             error = self.h._error_payload_from_http(exc)
             self.provider = error
             if exc.code == 404 and error.get("error", {}).get("code") == "not_found":
-                self.h.public_trace_id(error.get("trace_id"))
+                # Generic unknown-route 404s have the same code. Confirm absence
+                # through the independent, exactly scoped collection read.
+                listing = self.read(self.h.internal_helper_path("route-authority-binding-list"),
+                                    {**scope, "limit": "2"})
+                if (any(listing.get(key) != value for key, value in scope.items())
+                    or listing.get("records") != [] or listing.get("count") != 0
+                    or not self.h.public_trace_id(listing.get("trace_id"))):
+                    raise ValueError("binding_current_unavailable")
                 return {"state": "absent"}, None
             raise urllib.error.HTTPError(exc.url, exc.code, exc.msg, exc.headers,
                                          io.BytesIO(json.dumps(error).encode())) from None
@@ -143,8 +151,8 @@ def _plan(s: Session, kind: str, scope: dict[str, str], ingress: dict[str, Any] 
         material = {"body": body, "lane": lane, "endpoint": endpoint["record"],
                     "host": _host_material(h, host)}
     else:
-        profile = s.read(h.helper_command_path("route-authority-discover"), {})
-        _lane_from_profiles(h, profile, scope)
+        profile = s.read(h._product_read_path("product-profile-read", product=scope["product"]), {})
+        _lane_from_profile(h, profile, scope)
         expected, _record = s.current(scope)
         body = {"schema_version": 1, **scope, "mode": "dry-run", "expected_current": expected,
                 "source_label": "operator-reconcile", "reason": args.reason}
@@ -154,13 +162,11 @@ def _plan(s: Session, kind: str, scope: dict[str, str], ingress: dict[str, Any] 
     return body, public, material, response
 
 
-def _lane_from_profiles(h: Any, response: dict[str, Any], scope: dict[str, str]):
-    profiles = response.get("profiles")
-    if not isinstance(profiles, list):
-        raise ValueError("invalid_profiles")
-    matches = [(profile, lane) for profile in profiles if isinstance(profile, dict)
-               and profile.get("product") == scope["product"]
-               for lane in profile.get("lanes", []) if isinstance(lane, dict)
+def _lane_from_profile(h: Any, response: dict[str, Any], scope: dict[str, str]):
+    profile = h._require_dict(response.get("profile"))
+    if profile.get("product") != scope["product"] or not isinstance(profile.get("lanes"), list):
+        raise ValueError("invalid_profile")
+    matches = [(profile, lane) for lane in profile["lanes"] if isinstance(lane, dict)
                and all(lane.get(key) == scope[key] for key in ("context", "instance"))]
     if len(matches) != 1:
         raise ValueError("plan_lane_not_unique")
@@ -238,17 +244,24 @@ def _readback(s: Session, kind: str, scope: dict[str, str], body: dict[str, Any]
             record_id=urllib.parse.quote(audit_id, safe="")),
             {"product": scope["product"], "context": scope["context"]}).get("record"))
         ingress = body["ingress"]
+        operations = copy.deepcopy(response["result"]["operations"])
+        limited = (audit.get("expected_host_id") is None and audit.get("provider_host_id") is None
+                   and audit.get("provider_certificate_ref") == "")
+        if limited:
+            s.readback_view = "audit_read_view"
+            for operation in operations:
+                operation["host_id"] = None
         return (audit.get("record_id") == audit_id and audit.get("mode") == "apply"
                 and audit.get("dry_run") is False and audit.get("status") == "unchanged"
                 and audit.get("product") == scope["product"] and audit.get("context") == scope["context"]
                 and audit.get("edge_endpoint_key") == ingress["route"]["edge_endpoint_key"]
-                and audit.get("expected_host_id") == ingress["expected_host_id"]
-                and audit.get("provider_host_id") == ingress["expected_host_id"]
+                and (limited or (audit.get("expected_host_id") == ingress["expected_host_id"]
+                                 and audit.get("provider_host_id") == ingress["expected_host_id"]))
                 and set(audit.get("requested_domains", [])) == set(ingress["route"]["domain_names"])
                 and audit.get("tls_owner") == ("provider" if material["host"]["certificate_id"] else "none")
-                and audit.get("provider_certificate_ref") == (str(material["host"]["certificate_id"]) if material["host"]["certificate_id"] else "")
-                and audit.get("operations") == response["result"]["operations"]
-                and audit.get("trace_id") == response["trace_id"]
+                and (limited or audit.get("provider_certificate_ref") == (str(material["host"]["certificate_id"]) if material["host"]["certificate_id"] else ""))
+                and audit.get("operations") == operations
+                and audit.get("trace_id") == (response.get("original_trace_id") if response.get("replayed") is True else response["trace_id"])
                 and audit.get("idempotency_key") == s.args.idempotency_key)
     expected, record = s.current(scope)
     return (record is not None and stable_record(record) == material["candidate"]
@@ -277,7 +290,7 @@ def execute(h: Any, args: Any) -> int:
     s = Session(h, args, settings, request)
     try:
         if args.command == "route-authority-discover":
-            profile, lane = _lane_from_profiles(h, s.read(h.helper_command_path(args.command), {}), scope)
+            profile, lane = _lane_from_profile(h, s.read(h._product_read_path("product-profile-read", product=scope["product"]), {}), scope)
             expectation, record = s.current(scope)
             result = {"mode": "read", "lane_verified": True, "binding_state": expectation["state"],
                       "public_url_recorded": bool(lane.get("base_url")),
@@ -311,6 +324,11 @@ def execute(h: Any, args: Any) -> int:
                     result = applied
                 else:
                     checked = copy.deepcopy(response)
+                    if kind == "ingress" and checked.get("replayed") is True:
+                        count = checked.get("records", {}).get("ingress_provider_domain_count")
+                        if not isinstance(count, str) or not re.fullmatch(r"[1-9][0-9]{0,2}", count):
+                            raise ValueError("invalid_replay_records")
+                        checked["records"]["ingress_provider_domain_count"] = int(count)
                     if kind == "domain":
                         if checked["result"].get("applied") is not True or checked["result"]["setup"].get("applied") is not True or checked["result"].get("mode") != "apply":
                             raise ValueError("domain_apply_mismatch")
@@ -336,14 +354,20 @@ def execute(h: Any, args: Any) -> int:
                 result["read_back_matches"] = matches
                 payload = h.base_payload(status="accepted" if matches else "accepted_unverified", operation=args.command, request=request)
                 payload["result"] = result
+                if kind == "ingress":
+                    result["read_back_view"] = s.readback_view
+                    payload["records"] = {"ingress_route_audit_record_id": h.public_identifier(
+                        accepted_response["records"].get("ingress_route_audit_record_id"))}
                 payload["summary"] = {"trace_id": h.public_trace_id(accepted_response.get("trace_id")),
                                       "recommendation": "Record read-back verified." if matches else "Read-back differs; inspect the records before any retry."}
+                if accepted_response.get("replayed") is True:
+                    payload["summary"]["original_trace_id"] = h.public_trace_id(accepted_response.get("original_trace_id"))
                 h.emit(payload)
                 return 0 if matches else 1
         payload = h.base_payload(status="accepted", operation=args.command, request=request)
         payload["result"] = result
         if s.provider:
-            payload["summary"] = h.service_response_diagnostics(s.provider)
+            payload["summary"] = {"trace_id": h.public_trace_id(s.provider.get("trace_id"))}
         if kind == "ingress":
             payload["records"] = {"ingress_route_audit_record_id": h.public_identifier(response["records"].get("ingress_route_audit_record_id"))}
         h.emit(payload)
@@ -372,13 +396,21 @@ def execute(h: Any, args: Any) -> int:
             payload = (h._apply_outcome_unknown(operation=args.command, request=request, label="route authority")
                        if isinstance(exc, h.LaunchplaneSafetyError) and exc.code == "unsafe_redirect"
                        else h._apply_response_unverified(operation=args.command, request=request, label="route authority"))
-            payload["summary"].update(h.service_response_diagnostics(s.apply_response or s.provider))
+            payload["summary"].update(h.service_response_diagnostics(exc if isinstance(exc, h.ServiceResponseError) else s.apply_response or s.provider))
+            if s.apply_response and kind == "ingress":
+                audit_id = s.apply_response.get("records", {}).get("ingress_route_audit_record_id")
+                try:
+                    payload["records"] = {"ingress_route_audit_record_id": h.public_identifier(audit_id)}
+                except h.LaunchplaneSafetyError:
+                    pass
             h.emit(payload)
         else:
             code = str(exc)
-            if isinstance(exc, ValueError) and not request["planner_request_sent"] and code in {
+            if isinstance(exc, ValueError) and code in {
                 "plan_lane_not_unique", "invalid_plan_lane_url", "plan_domain_scope_mismatch",
                 "plan_endpoint_not_active", "invalid_plan_domains", "invalid_product",
+                "tls_ownership_unknown", "binding_current_mismatch", "binding_source_unverified",
+                "binding_current_unavailable",
             }:
                 payload = h.unavailable_payload(operation=args.command, request=request, status="invalid",
                     code=code, message="Service evidence did not match the requested plan scope.")

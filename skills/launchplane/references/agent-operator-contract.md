@@ -75,7 +75,9 @@ The helper also tracks internal routes outside the projected command count:
 the read-before-write `GET /v1/work-graph/merge-train/policy-targets`, the
 read-back `GET /v1/dokploy-targets/inspect`, and the read-back
 `GET /v1/private-health-endpoints/records/{endpoint_key}`, and the ingress planner's
-`GET /v1/edge-endpoints/records/{endpoint_key}`. The two inert domain-authority
+`GET /v1/edge-endpoints/records/{endpoint_key}`, scoped absence confirmation via
+`GET /v1/route-bindings/records`, and applied-ingress audit readback via
+`GET /v1/ingress/route-audits/records/{record_id}`. The two inert domain-authority
 and ingress planners have local-extension bindings with a dry-run-only
 conformance check. Contract validation checks that
 these routes remain absent from the

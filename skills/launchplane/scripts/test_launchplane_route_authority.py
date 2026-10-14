@@ -33,10 +33,15 @@ def http_error(status=404, code="not_found"):
 
 
 def profiles():
-    return {"status": "ok", "trace_id": "launchplane_req_profiles", "profiles": [{
+    return {"status": "ok", "trace_id": "launchplane_req_profiles", "profile": {
         "product": SCOPE["product"], "production_use": "live", "lanes": [
             {"context": SCOPE["context"], "instance": SCOPE["instance"],
-             "base_url": "https://shop.example.invalid"}]}]}
+             "base_url": "https://shop.example.invalid"}]}}
+
+
+def absent():
+    return [http_error(), {"status": "ok", "trace_id": "launchplane_req_list", **SCOPE,
+                           "records": [], "count": 0, "limit": 2}]
 
 
 def binding_record():
@@ -213,13 +218,13 @@ def test_ingress_endpoint_drift_stops_before_apply():
 
 
 def binding_plan():
-    return run("route-binding-dry-run", [profiles(), http_error()], [binding_response()])[1]
+    return run("route-binding-dry-run", [profiles(), *absent()], [binding_response()])[1]
 
 
 def test_binding_absent_expectation_and_record_only_apply():
     plan = binding_plan()
     readback = {"status": "ok", "trace_id": "launchplane_req_read", "record": binding_record()}
-    code, output, _, post = run("route-binding-apply", [profiles(), http_error(), readback],
+    code, output, _, post = run("route-binding-apply", [profiles(), *absent(), readback],
         [binding_response(), binding_response("apply")], plan)
     assert code == 0 and output["result"]["read_back_matches"] is True
     assert post.call_args.kwargs["body"]["expected_current"] == {"state": "absent"}
@@ -246,7 +251,7 @@ def test_binding_review_drift_never_applies(cause):
         record["product"] = "foreign"
     else:
         response["result"]["status"] = "blocked"
-    code, _, _, post = run("route-binding-apply", [profiles(), http_error()], [response], binding_plan())
+    code, _, _, post = run("route-binding-apply", [profiles(), *absent()], [response], binding_plan())
     assert code != 0 and post.call_count == 1
 
 
@@ -254,19 +259,55 @@ def test_binding_time_only_candidate_movement_retains_same_review():
     fresh = binding_response()
     fresh["result"]["record"]["source"]["refreshed_at"] = "2026-10-14T22:05:00Z"
     fresh["result"]["record"]["updated_at"] = "2026-10-14T22:05:00Z"
-    code, output, _, _ = run("route-binding-dry-run", [profiles(), http_error()], [fresh])
+    code, output, _, _ = run("route-binding-dry-run", [profiles(), *absent()], [fresh])
     assert code == 0 and output["result"]["plan_sha256"] == binding_plan()["result"]["plan_sha256"]
 
 
-@pytest.mark.parametrize("error", [http_error(403, "authorization_denied"), http_error(404, "missing_route"), TimeoutError()])
+@pytest.mark.parametrize("error", [http_error(403, "authorization_denied"), TimeoutError()])
 def test_binding_unavailable_current_is_never_absent(error):
     code, _, _, post = run("route-binding-dry-run", [profiles(), error], [])
     assert code != 0 and post.call_count == 0
 
 
 def test_discovery_verifies_service_owned_tuple_without_post():
-    code, output, _, post = run("route-authority-discover", [profiles(), http_error()], [])
+    code, output, _, post = run("route-authority-discover", [profiles(), *absent()], [])
     assert code == 0 and output["result"]["lane_verified"] is True and post.call_count == 0
+    assert "error_code" not in output["summary"]
+
+
+def test_generic_missing_routes_cannot_establish_absence():
+    code, output, _, post = run("route-binding-dry-run", [profiles(), http_error(), http_error()])
+    assert code != 0 and post.call_count == 0
+    assert output["summary"]["trace_id"] == "launchplane_req_failure"
+
+
+def test_ingress_applied_audit_read_view_is_sufficient_after_full_apply_response():
+    audit = audit_readback()
+    audit["record"].update(expected_host_id=None, provider_host_id=None, provider_certificate_ref="")
+    for operation in audit["record"]["operations"]:
+        operation["host_id"] = None
+    code, output, _, _ = run("ingress-route-authority-apply", [*ingress_reads(), audit],
+        [ingress_response(), ingress_apply_response()], ingress_plan())
+    assert code == 0 and output["result"]["read_back_view"] == "audit_read_view"
+    assert output["records"]["ingress_route_audit_record_id"] == audit["record"]["record_id"]
+
+
+def test_ingress_replay_retains_original_audit_trace_and_typed_count():
+    response = ingress_apply_response()
+    response.update(replayed=True, original_trace_id=response["trace_id"], trace_id="launchplane_req_replay")
+    response["records"] = {key: str(value) for key, value in response["records"].items()}
+    code, output, _, _ = run("ingress-route-authority-apply", [*ingress_reads(), audit_readback()],
+        [ingress_response(), response], ingress_plan())
+    assert code == 0 and output["summary"]["original_trace_id"] == response["original_trace_id"]
+
+
+def test_unreadable_apply_response_preserves_available_http_diagnostics():
+    failure = h.ServiceResponseError({"http_status": 202, "trace_id": "launchplane_req_broken"})
+    code, output, _, _ = run("dokploy-target-repair-domain-authority-apply", [inspection()],
+        [domain_response(), failure], domain_plan())
+    assert code != 0 and output["status"] == "accepted_unverified"
+    assert output["summary"]["http_status"] == 202
+    assert output["summary"]["trace_id"] == "launchplane_req_broken"
 
 
 if __name__ == "__main__":
