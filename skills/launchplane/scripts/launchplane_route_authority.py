@@ -70,8 +70,9 @@ def _apply_evidence(s: Session, payload: dict[str, Any], error: Any = None) -> N
             pass
     if s.args.command == "ingress-route-authority-apply":
         try:
+            records = h._require_dict(s.apply_response.get("records"))
             payload["records"] = {"ingress_route_audit_record_id": h.public_identifier(
-                s.apply_response.get("records", {}).get("ingress_route_audit_record_id"))}
+                records.get("ingress_route_audit_record_id"))}
         except h.LaunchplaneSafetyError:
             pass
 

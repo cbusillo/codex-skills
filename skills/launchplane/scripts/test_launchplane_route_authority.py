@@ -336,5 +336,13 @@ def test_failed_audit_read_retains_accepted_trace_and_audit_id(error):
     assert output["records"]["ingress_route_audit_record_id"] == ingress_apply_response()["records"]["ingress_route_audit_record_id"]
 
 
+def test_malformed_applied_ingress_records_still_emit_bounded_json():
+    response = ingress_apply_response()
+    response["records"] = ["PRIVATE_SENTINEL"]
+    code, output, _, post = run("ingress-route-authority-apply", ingress_reads(),
+        [ingress_response(), response], ingress_plan())
+    assert code != 0 and output["status"] == "accepted_unverified" and post.call_count == 2
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
