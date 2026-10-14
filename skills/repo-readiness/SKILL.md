@@ -60,7 +60,14 @@ inspection, browser, CI, deployment, or security gates.
    tracked-file mutation is a preparation blocker. Do not invent or substitute a
    replacement setup command.
 
-   If the shared Launchplane context helper is present and configured, call it once
+   Use the GitHub skill's [Merging](../github/SKILL.md#merging) route when
+   landing readiness matters. For a Director whose snapshot reports
+   `launchplane.mergeTrain.status: not_configured`, skip Launchplane context,
+   policy and train checks; assess the repository's own protected-branch gates.
+   No Launchplane failure or setup action belongs in that readiness report.
+   Configured-but-unreadable enrollment remains unknown under that procedure.
+
+   If Launchplane is configured and the shared context helper is present, call it once
    as optional readiness context for the active repo/branch/PR:
 
    ```bash

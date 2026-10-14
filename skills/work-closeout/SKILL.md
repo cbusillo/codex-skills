@@ -152,7 +152,14 @@ preserved, or intentionally left in place.
    fast-forward it before default-branch work or audits.` The active task
    worktree remains the authoritative agent source.
 
-   If the shared Launchplane context helper is present and configured, call it
+   Consume the landing route from readiness or the GitHub skill's
+   [Merging](../github/SKILL.md#merging) procedure. For a Director without
+   Launchplane configuration, skip Launchplane context, policy and train steps;
+   close out the repository's protected-branch work without a Launchplane
+   failure, setup suggestion or train handoff. Configured-but-unreadable
+   enrollment stays unknown and is preserved with its routing next action.
+
+   If Launchplane is configured and the shared context helper is present, call it
    once as optional closeout context for the repo/workstream:
 
    ```bash

@@ -240,12 +240,22 @@ Common top-level keys:
   configuration under `launchplane.context`.
   Enrollment and enqueue routing come from the active Launchplane policy:
   `uv run skills/launchplane/scripts/launchplane-write-action.py merge-train-policy-read --repo OWNER/REPO`
-  (from the catalog root). The snapshot reads it in both text and JSON mode.
+  (from the catalog root). The snapshot reads it in both text and JSON mode
+  only when Launchplane configuration is present or uncertain. Its local
+  `github_launchplane.py` check considers repository routing metadata,
+  environment keys beginning `LAUNCHPLANE_` (including empty settings), and
+  entries in `~/.config/launchplane/`, without opening private files or reading
+  credential values. Unreadable configuration presence stays uncertain.
   Its `launchplane.mergeTrain` summary has `status` (`enrolled`,
-  `not_enrolled` or `unknown`), nullable `enabled`, per-branch `targets`
+  `not_enrolled`, `not_configured` or `unknown`), nullable `enabled`, per-branch `targets`
   with `baseBranch` and `readyLabel`, and policy revision evidence.
-  Missing configuration, denial, failed reads and malformed responses mean
-  `unknown`; they never authorize a different merge path. Raw `config.data`
+  `not_configured` has `source: local_configuration`, `enabled: false`, empty
+  targets and no policy or failure reason: this Director has no Launchplane,
+  so use the repository's protected-branch PR merge under the GitHub skill's
+  [Merging](../SKILL.md#merging) procedure. Repository metadata absence alone
+  cannot establish this state, and explicit train instructions still apply.
+  For a configured Director, missing settings, denial, failed reads and
+  malformed responses mean `unknown`; they never authorize a different merge path. Raw `config.data`
   remains routing metadata. Do not store a `launchplane.mergeTrain` block in
   repository config: enrollment, base branches and enqueue labels belong to
   the service policy. The snapshot ignores legacy copies. The

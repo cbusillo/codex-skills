@@ -744,9 +744,10 @@ how existing approval and task boundaries apply.
 
 ## Workflow
 
-1. **Orient**: Run `scripts/github-repo-snapshot.sh`. Its merge-train enrollment
-   comes from Launchplane's active policy; unavailable reads mean unknown,
-   regardless of `.github/github.json`. Use `github-plan` when
+1. **Orient**: Run `scripts/github-repo-snapshot.sh`. It checks for Director
+   Launchplane configuration before reading enrollment from the active policy;
+   configured-but-unavailable reads mean unknown. Resolve landing under
+   [Merging](#merging). Use `github-plan` when
    planning state matters. [Repo workflow](references/repo-workflow.md) holds
    orientation, PR, check, review, merge-readiness, and cleanup detail; read
    the section for the step you are on.
@@ -908,16 +909,35 @@ Use PRs for all non-trivial changes.
 
 ## Merging
 
-For a single PR or a stack, resolve the landing route before any direct merge
-or branch integration. When Launchplane's active policy, repository instructions,
+For a single PR or a stack, resolve the landing route from the snapshot's
+`launchplane.mergeTrain` before any direct merge or branch integration:
+
+- `not_configured` means this Director has no Launchplane configuration. Use
+  the repository's own protected-branch PR merge, with the authority and fresh
+  checks below. Skip Launchplane skill, policy, context and train steps; no
+  Launchplane setup or repair is needed.
+- `enrolled` uses the train; `not_enrolled` is a confirmed active-policy read
+  and allows the repository's protected-branch route unless instructions assign
+  it to the train.
+- `unknown` keeps the PR for authoritative routing. Report the read's reason;
+  a failed, refused or malformed read never becomes `not_configured` or permits
+  a direct merge.
+
+Repository metadata is only a positive configuration/routing hint, never
+enrollment authority. The snapshot's local configuration check also considers
+Launchplane environment settings and private config presence without reading
+credentials. Missing metadata or a missing URL alone does not prove absence.
+If repository instructions or task context require Launchplane, retain that
+route even when the local snapshot says `not_configured`; report the missing
+configuration as unknown routing rather than bypassing that requirement.
+
+When Launchplane's active policy, repository instructions,
 or task context assigns landing to its merge train, load
 [`launchplane`](../launchplane/SKILL.md#merge-train-controller) and use that
 workflow. Follow the task's assigned direction or Supervisor handoff; otherwise
 use the train workflow within the task's existing landing authorization.
-Repository metadata is only a routing hint; use the Launchplane skill's
-enrollment read when the route is unresolved. An unavailable read leaves
-enrollment unknown: report its reason and retain the PR for authoritative
-routing; it does not establish a direct merge path.
+For a configured Director whose route is unresolved, use the Launchplane
+skill's enrollment read; an unavailable read still leaves enrollment unknown.
 
 Merging implementation work means merging its PR through GitHub. Never merge a
 task branch locally into a protected branch as a shortcut; local integration is

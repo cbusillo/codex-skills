@@ -10,6 +10,9 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from github_launchplane import configuration_status
 
 SCRIPT = Path(__file__).with_name("github-repo-snapshot.sh")
 
@@ -25,26 +28,44 @@ def helper_metadata():
 
 class SnapshotTests(unittest.TestCase):
     @staticmethod
-    def snapshot(metadata, *, text=False, policy=None, policy_exit=0):
+    def snapshot(metadata, *, text=False, policy=None, policy_exit=0,
+                 private_config=True, launchplane_env=None, real_policy=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "--quiet", str(root)], check=True)
             config = root / "metadata.json"
-            config.write_text(json.dumps(metadata))
+            if metadata is not None:
+                config.write_text(json.dumps(metadata))
+            fixture_home = root / "home"
+            fixture_home.mkdir()
+            if private_config:
+                operator_config = fixture_home / ".config" / "launchplane" / "local-operator.json"
+                operator_config.parent.mkdir(parents=True)
+                operator_config.write_text("invalid configuration")
             policy_helper = root / "policy.py"
+            policy_called = root / "policy-called"
             if policy is not None:
                 policy_helper.write_text(
-                    "import sys\n"
+                    "import sys\nfrom pathlib import Path\n"
+                    f"Path({str(policy_called)!r}).touch()\n"
                     f"print({json.dumps(json.dumps(policy))})\n"
                     f"sys.exit({policy_exit})\n"
                 )
-            return subprocess.run(
-                ["bash", str(SCRIPT), "--config", str(config), *([] if text else ["--json"])],
+            if real_policy:
+                policy_helper = SCRIPT.parents[2] / "launchplane" / "scripts" / "launchplane-write-action.py"
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith("LAUNCHPLANE_")}
+            result = subprocess.run(
+                ["bash", str(SCRIPT), *([] if metadata is None else ["--config", str(config)]),
+                 *([] if text else ["--json"])],
                 cwd=root,
-                env={**os.environ, "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh"),
+                env={**env, "HOME": str(fixture_home), **(launchplane_env or {}),
+                     "GITHUB_REPO_SNAPSHOT_GH": str(root / "missing-gh"),
                      "GITHUB_REPO_SNAPSHOT_POLICY_HELPER": str(policy_helper)},
                 capture_output=True, text=True,
             )
+            result.policy_called = policy_called.exists()
+            return result
 
     def test_product_routing_context(self):
         routing = {"product": "example-product", "context": "example_context", "publicName": "Example product"}
@@ -147,6 +168,47 @@ class SnapshotTests(unittest.TestCase):
             if reason != expected:
                 self.assertNotIn(reason, result.stdout)
 
+    def test_no_launchplane_skips_policy_read_without_a_failure(self):
+        for text in (False, True):
+            result = self.snapshot(None, text=text, private_config=False,
+                                   policy={"status": "unauthorized"}, policy_exit=1)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(result.policy_called)
+            if text:
+                self.assertIn("mergeTrainStatus: not_configured", result.stdout)
+                self.assertNotIn("mergeTrainReason:", result.stdout)
+            else:
+                summary = json.loads(result.stdout)["launchplane"]
+                self.assertEqual(summary["warnings"], [])
+                self.assertEqual(summary["mergeTrain"]["status"], "not_configured")
+                self.assertFalse(summary["mergeTrain"]["enabled"])
+
+    def test_configured_but_unreadable_never_takes_absent_path(self):
+        for metadata, private_config, environment in (
+            ({}, True, {}),
+            ({}, False, {"LAUNCHPLANE_OPERATOR_URL": "https://example.invalid"}),
+            ({}, False, {"LAUNCHPLANE_LOCAL_OPERATOR_TOKEN": ""}),
+            (helper_metadata(), False, {}),
+            ({"launchplane": {"enabled": False}}, False, {}),
+        ):
+            for code in ("missing_service_url", "missing_operator_config", "authorization_denied"):
+                with self.subTest(metadata=metadata, private_config=private_config, code=code):
+                    result = self.snapshot(
+                        metadata, private_config=private_config, launchplane_env=environment,
+                        policy={"status": "unavailable", "warnings": [{"code": code}]}, policy_exit=1,
+                    )
+                    self.assertTrue(result.policy_called)
+                    route = json.loads(result.stdout)["launchplane"]["mergeTrain"]
+                    self.assertEqual(route["status"], "unknown")
+                    self.assertIsNone(route["enabled"])
+
+    def test_real_policy_helper_with_invalid_private_configuration_stays_unknown(self):
+        result = self.snapshot({}, real_policy=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        route = json.loads(result.stdout)["launchplane"]["mergeTrain"]
+        self.assertEqual(route["status"], "unknown")
+        self.assertIsNone(route["enabled"])
+
     def test_text_without_jq_keeps_local_snapshot_and_unknown_enrollment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -164,6 +226,22 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("== Repository ==", result.stdout)
             self.assertIn("mergeTrainEnabled: unknown", result.stdout)
+
+
+class ConfigurationTests(unittest.TestCase):
+    def test_unreadable_private_directory_stays_unknown(self):
+        with patch.object(Path, "iterdir", side_effect=PermissionError):
+            self.assertEqual(configuration_status({}, home=Path("/fixture"), environ={}), "unknown")
+
+    def test_broken_private_symlinks_do_not_prove_absence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".config").symlink_to(home / "missing")
+            self.assertEqual(configuration_status({}, home=home, environ={}), "unknown")
+            (home / ".config").unlink()
+            (home / ".config").mkdir()
+            (home / ".config" / "launchplane").symlink_to(home / "missing")
+            self.assertEqual(configuration_status({}, home=home, environ={}), "configured")
 
 
 if __name__ == "__main__":

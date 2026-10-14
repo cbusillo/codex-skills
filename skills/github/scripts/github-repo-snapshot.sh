@@ -109,6 +109,16 @@ read_merge_train_policy() {
     printf '{"source":"launchplane","status":"unknown","reason":"jq_unavailable","enabled":null,"targets":[],"policy":null}\n'
     return
   fi
+  local configuration="" configuration_args=()
+  if [[ -n "$effective_config_path" ]]; then
+    configuration_args=(--config "$effective_config_path")
+  fi
+  if configuration="$("${python_command[@]}" "$script_dir/github_launchplane.py" ${configuration_args[@]+"${configuration_args[@]}"} 2>/dev/null)"; then
+    if jq -e '.status == "not_configured"' <<<"$configuration" >/dev/null 2>&1; then
+      printf '{"source":"local_configuration","status":"not_configured","enabled":false,"targets":[],"policy":null}\n'
+      return
+    fi
+  fi
   if [[ -f "$policy_helper" ]] && response="$("${python_command[@]}" "$policy_helper" merge-train-policy-read --repo-root "$repo_root" 2>/dev/null)"; then
     if jq -e '
       .status == "available" and .operation == "merge-train-policy-read" and
@@ -627,13 +637,13 @@ if [[ "$json_output" -eq 1 ]]; then
         {
           status: "no_config",
           enabled: false,
-          warnings: [{code: "missing_config", message: "No repo metadata config was loaded."}]
+          warnings: []
         }
       elif ($config.data.launchplane // null) == null then
         {
           status: "not_configured",
           enabled: false,
-          warnings: [{code: "missing_launchplane_metadata", message: "Launchplane metadata is not configured for this repo."}]
+          warnings: []
         }
       elif ($config.data.launchplane | type) != "object" then
         {
@@ -803,9 +813,10 @@ if [[ -n "$config_path" ]]; then
   ' "$effective_config_path"
 fi
 
-section "Merge Train (Launchplane policy)"
+section "Landing"
 if command -v jq >/dev/null 2>&1; then
   jq -r '[
+    (if .status == "not_configured" then "landingRoute: repository_protected_branch" else empty end),
     "mergeTrainStatus: " + .status,
     (if .reason != null then "mergeTrainReason: " + .reason else empty end),
     "mergeTrainEnabled: " + (if .enabled == null then "unknown" else (.enabled | tostring) end),
