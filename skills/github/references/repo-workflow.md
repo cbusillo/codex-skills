@@ -348,8 +348,10 @@ Split old oversized issues into PR-sized deliverables when working them;
 preserve their original requests under the
 [issue ownership rules](issue-templates.md), rather than rewriting them.
 
-For a Client's or outside reporter's issue awaiting confirmation, record that
-confirmation as the event wait. Keep closing keywords off that issue until
+For a Client's or outside reporter's issue awaiting confirmation, request it
+on the issue through the authorized communication path, linking existing
+validation evidence, and record that confirmation as the event wait.
+Keep closing keywords off that issue until
 the reporter/current user confirms the result or explicitly asks to close it;
 a separate completed implementation issue may close on merge. The wait does
 not require creating a separate issue.
@@ -365,6 +367,11 @@ event wait or remaining engineering work; never force closure or clear a real wa
 Reconcile durable plan metadata under the same Close Or Hand Off procedure
 even when GitHub already auto-closed the issue; auto-close does not settle its
 Current Status, planning labels or Project Status.
+
+Apply the same rule to legacy qualification-only records: use `gh-plan.py close`
+when work is complete and existing deployment health evidence passes. A pending
+deploy remains authorized operational work or a real event wait; a pending
+Client release keeps its person's wait. A queue category alone proves none of these.
 
 ### Superseded Or Competing PRs
 
