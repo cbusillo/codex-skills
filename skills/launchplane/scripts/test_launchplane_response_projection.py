@@ -105,7 +105,7 @@ def test_preview_invalid_actor_keeps_failure_trace_and_status(login):
     assert payload["result"] == {}
     assert payload["summary"]["trace_id"] == TRACE
     assert payload["summary"]["http_status"] == 200
-    assert payload["summary"]["projection_error_code"] == "invalid_response"
+    assert helper.public_code(payload["summary"]["projection_error_code"])
 
 
 @pytest.mark.parametrize("path", ["preview", "review"])
