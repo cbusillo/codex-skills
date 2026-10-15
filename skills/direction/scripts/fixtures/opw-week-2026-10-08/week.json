@@ -1,0 +1,32 @@
+{
+  "evidence": "https://github.com/cbusillo/codex-skills/issues/1906#issuecomment-6202349442",
+  "direction_source": "https://github.com/Mbanks89/direction/blob/9a58a32cfd3bf2322046b6ec4a7d95b348063a8d/DIRECTION.md",
+  "since": "2026-10-08T04:00:00Z",
+  "until": "2026-10-15T04:00:00Z",
+  "repositories": [
+    {"full_name": "Mbanks89/OPW", "archived": true},
+    {"full_name": "Mbanks89/opw-channel-profit-optimizer", "archived": false},
+    {"full_name": "Mbanks89/opw-infra-ops", "archived": false},
+    {"full_name": "Mbanks89/opw-shopify-theme", "archived": false},
+    {"full_name": "Mbanks89/direction", "archived": false},
+    {"full_name": "Mbanks89/opw-handbook", "archived": false}
+  ],
+  "pulls": [
+    {
+      "repo": "Mbanks89/direction",
+      "number": 9,
+      "title": "Let agents merge their own pull requests within the stop boundaries",
+      "merged_at": "2026-10-12T14:51:00Z",
+      "kind": "Direction",
+      "files": [{"filename": "DIRECTION.md"}]
+    }
+  ],
+  "merged_by_kind": {
+    "Direction": 1,
+    "Milestone": 0,
+    "live fix": 0,
+    "sales-channel": 0,
+    "tooling": 0,
+    "own projects": 0
+  }
+}

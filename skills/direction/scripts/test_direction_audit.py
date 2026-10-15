@@ -1073,6 +1073,8 @@ def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targe
     assert not module.enrich_waiting_inbound_blockers([zero], "o/r", fetch=denied)
 
 SINCE = NOW - dt.timedelta(days=7)
+# Ordinary fixture merges occur at NOW, strictly before the report's end.
+WINDOW_END = NOW + dt.timedelta(seconds=1)
 OWN_DIRECTION = DIRECTION + """
 ## Order
 1. Live breakage first.
@@ -1096,7 +1098,7 @@ def summary(module: Any, **overrides: Any) -> dict[str, Any]:
     params: dict[str, Any] = {
         "own_projects": module.own_project_patterns(OWN_DIRECTION), "tracked_issues": {("o/live", 10)},
         "direction_source": "o/direction:DIRECTION.md@default-branch",
-        "pulls": {}, "milestones": {}, "events": {}, "since": SINCE, "until": NOW,
+        "pulls": {}, "milestones": {}, "events": {}, "since": SINCE, "until": WINDOW_END,
     }
     params.update(overrides)
     return module.capacity_summary(**params)
@@ -1320,7 +1322,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
             }}}}}
         return []
-    result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=fetch)
+    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
     assert not errors
     assert result["merged_by_rank"] == {"milestone": 2, "tooling": 0, "own": 2}
     assert native_calls == [1, 2, 4]  # Explicit proven links do not need another read.
@@ -1336,7 +1338,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
                 return [{**merged_pull(1, NOW), "labels": [{"name": "own-project"}]}, merged_pull(2, NOW),
                         {**merged_pull(3, NOW), "labels": [{"name": "own-project"}]}]
             return fetch(args)
-        labeled, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=label_only)
+        labeled, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=label_only)
         assert not errors
         # Native milestone attribution still wins for pull 1.
         assert labeled["merged_by_rank"] == {"milestone": 1, "tooling": 1, "own": 1}
@@ -1348,7 +1350,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
         if "/contents/" in args[1]:
             return {"content": base64.b64encode(DIRECTION.encode()).decode()}
         return fetch(args)
-    partial, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=missing_order)
+    partial, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=missing_order)
     assert "capacity_own_projects" in errors and partial["own_share_status"] == "unknown"
     assert partial["merged_by_rank"]["milestone"] == 2
 
@@ -1456,7 +1458,7 @@ def test_mixed_repository_counts_labeled_or_linked_own_work_as_own() -> None:
             }}}}}
         return []
 
-    result, truncated = module.fetch_capacity("o/direction", SINCE, NOW, fetch=fetch)
+    result, truncated = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
     # Milestone links win over the label; a labeled pull request or one linked to
     # labeled work or an own-project repository counts as own; the rest is tooling.
     assert result["merged_by_rank"] == {"milestone": 1, "own": 4, "tooling": 3}
@@ -1502,7 +1504,7 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
             }}}}}
         return []
 
-    result, truncated = module.fetch_capacity("o/direction", SINCE, NOW, fetch=fetch)
+    result, truncated = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
     assert result["merged_by_rank"]["tooling"] == 99
     assert truncated == []
     assert not any("page=2" in path for path in calls if "/pulls" in path)
@@ -1514,7 +1516,7 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
         if args[1] == "graphql":
             raise module.AuditError("HTTP 403")
         return fetch(args)
-    partial, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=missing_links)
+    partial, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=missing_links)
     assert partial["own_share_status"] == "unknown" and "capacity_pull_links:o/live#0" in errors
 
     def nothing_lists(args: list[str]) -> Any:
@@ -1523,7 +1525,7 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
         raise module.AuditError(f"{args[1]} failed: HTTP 403")
 
     try:
-        module.fetch_capacity("o/direction", SINCE, NOW, fetch=nothing_lists)
+        module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=nothing_lists)
     except module.AuditError as exc:
         assert "installation/repositories" in str(exc) and "user/repos" in str(exc)
     else:
@@ -1541,6 +1543,97 @@ REPORT_RULES = [
 
 def mapped_direction(rules: Any = REPORT_RULES) -> str:
     return OWN_DIRECTION + '\n## Capacity\nReport only; a quarter is context.\n\n## Reporting map\n```json\n' + json.dumps(rules) + '\n```\n'
+
+
+def opw_fixture_capacity(module: Any, *, extra_pulls: list[dict[str, Any]] | None = None,
+                         since: dt.datetime | None = None, until: dt.datetime | None = None) -> tuple[dict[str, Any], list[str]]:
+    """Exercise the capacity reader offline, without the audit entrypoint/marker."""
+    import base64
+
+    folder = SCRIPT.parent / "fixtures" / "opw-week-2026-10-08"
+    week = json.loads((folder / "week.json").read_text())
+    direction = (folder / "DIRECTION.md").read_text()
+    pulls = week["pulls"] + (extra_pulls or [])
+    calls: list[str] = []
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        calls.append(path)
+        if path == "repos/Mbanks89/direction/contents/DIRECTION.md":
+            return {"content": base64.b64encode(direction.encode()).decode()}
+        if path.startswith("installation/repositories?"):
+            return {"repositories": [{**repo, "owner": {"login": "Mbanks89"}}
+                                     for repo in week["repositories"]]}
+        if path == "graphql":
+            if any("REOPENED_EVENT" in arg for arg in args):
+                return reopened_page([])
+            return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
+                "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}}}}
+        for repo in week["repositories"]:
+            prefix = f"repos/{repo['full_name']}/"
+            if path.startswith(prefix + "pulls?"):
+                return [{**pull, "body": "", "labels": [], "updated_at": pull.get("merged_at") or week["until"]}
+                        for pull in pulls if pull["repo"] == repo["full_name"]]
+            if path.startswith(prefix + "milestones?"):
+                return []
+            for pull in pulls:
+                if pull["repo"] == repo["full_name"] and path.startswith(prefix + f"pulls/{pull['number']}/files?"):
+                    return pull["files"]
+        raise AssertionError(f"Unexpected fixture read: {args}")
+
+    with patch.object(module, "gh_json", side_effect=AssertionError("Fixture must not access GitHub")):
+        result, errors = module.fetch_capacity(
+            "Mbanks89/direction", since or module._parse_time(week["since"]),
+            until or module._parse_time(week["until"]), fetch=fetch, include_archived=True,
+        )
+    assert not errors, errors
+    assert all(any(path.startswith(f"repos/{repo['full_name']}/pulls?") for path in calls)
+               for repo in week["repositories"])
+    return result, calls
+
+
+def test_opw_sourced_seven_day_hand_count_matches_reporting_map() -> None:
+    module = load()
+    folder = SCRIPT.parent / "fixtures" / "opw-week-2026-10-08"
+    week = json.loads((folder / "week.json").read_text())
+    direction = (folder / "DIRECTION.md").read_text()
+    assigned: dict[tuple[str, int], str | None] = {}
+    classify = module.direction_reporting.classify
+
+    def record_kind(rules: Any, pull: dict[str, Any], **kwargs: Any) -> Any:
+        attribution = classify(rules, pull, **kwargs)
+        assigned[pull["repo"], pull["number"]] = attribution[0]
+        return attribution
+
+    with patch.object(module.direction_reporting, "classify", side_effect=record_kind):
+        result, _calls = opw_fixture_capacity(module)
+    assert assigned == {(pull["repo"], pull["number"]): pull["kind"] for pull in week["pulls"]}
+    report = result["reporting"]
+    assert report["status"] == "complete" and not report["unresolved"]
+    assert report["merged_total"] == result["merged_total"] == len(week["pulls"])
+    assert report["merged_by_kind"] == week["merged_by_kind"]
+    for kind, count in week["merged_by_kind"].items():
+        assert math.isclose(report["share_by_kind"][kind], count / len(week["pulls"]), abs_tol=0.001)
+    assert report["capacity"] == module.github_direction_next.section_map(direction)["Capacity"].strip()
+    assert result["own_projects"] == [] and result["own_share"] == 0
+
+
+def test_reporting_uses_start_inclusive_end_exclusive_merge_windows() -> None:
+    module = load()
+    week = json.loads((SCRIPT.parent / "fixtures" / "opw-week-2026-10-08" / "week.json").read_text())
+    start, end = (module._parse_time(week[key]) for key in ("since", "until"))
+    second = dt.timedelta(seconds=1)
+    # Synthetic merges test the interval; they are not Mike's reported PRs.
+    extras = [{**week["pulls"][0], "number": 100 + n, "merged_at": stamp(moment) if moment else None}
+              for n, moment in enumerate((start - second, start, end - second, end, None))]
+    result, calls = opw_fixture_capacity(module, extra_pulls=extras)
+    expected = len(week["pulls"]) + 2
+    assert result["merged_total"] == result["reporting"]["merged_total"] == expected
+    assert result["reporting"]["merged_by_kind"]["Direction"] == expected
+    assert not any("/pulls/103/files?" in path for path in calls)
+    following, _calls = opw_fixture_capacity(module, extra_pulls=extras, since=end, until=end + second)
+    assert following["merged_total"] == following["reporting"]["merged_total"] == 1
 
 
 def test_reporting_map_rejects_malformed_rules_instead_of_guessing() -> None:
@@ -1619,7 +1712,7 @@ def test_reporting_week_split_uses_native_labels_and_keeps_legacy_output() -> No
     calls: list[str] = []
     graph = ({("o/milestone", 1)}, [])
     with patch.object(module, "tracked_capacity_issues", return_value=graph):
-        result, errors = module.fetch_capacity("o/direction", SINCE, NOW,
+        result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
                                                fetch=reporting_fetch(module, mapped_direction(), pulls, calls))
     assert not errors
     report = result["reporting"]
@@ -1631,7 +1724,7 @@ def test_reporting_week_split_uses_native_labels_and_keeps_legacy_output() -> No
     assert calls.count("repos/o/live/issues/50") == 1
     legacy_calls: list[str] = []
     with patch.object(module, "tracked_capacity_issues", return_value=graph):
-        legacy, errors = module.fetch_capacity("o/direction", SINCE, NOW,
+        legacy, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
                                                fetch=reporting_fetch(module, OWN_DIRECTION, pulls, legacy_calls))
     assert not errors and "reporting" not in legacy
     assert legacy["merged_by_rank"] == result["merged_by_rank"]
@@ -1674,7 +1767,7 @@ def test_reporting_missing_evidence_and_invalid_map_keep_window_open() -> None:
                     or (failure == "links" and args[1] == "graphql" and not any("REOPENED_EVENT" in arg for arg in args))):
                 raise module.AuditError("HTTP 403")
             return fetch(args)
-        result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=unavailable)
+        result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=unavailable)
         assert errors and result["reporting"]["status"] == ("invalid" if failure == "map" else "unknown")
         assert len(result["reporting"]["unresolved"]) == 1
         assert result["reporting"]["unresolved"][0]["reason"] == {
@@ -1682,7 +1775,7 @@ def test_reporting_missing_evidence_and_invalid_map_keep_window_open() -> None:
         }[failure]
         audited = run(module, capacity=result, truncated=errors)
         assert "coverage_incomplete" in kinds(audited)
-    empty, errors = module.fetch_capacity("o/direction", SINCE, NOW,
+    empty, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
                                          fetch=reporting_fetch(module, mapped_direction(), [], []))
     assert not errors and empty["reporting"]["status"] == "no_merges"
     assert all(value is None for value in empty["reporting"]["share_by_kind"].values())
@@ -1693,7 +1786,7 @@ def test_optional_reporting_reads_preserve_legacy_status_and_page_direction_chan
     pulls = [{**merged_pull(1, NOW, body="Refs #50"), "labels": []}]
     graph = ({("o/live", 50)}, [])
     with patch.object(module, "tracked_capacity_issues", return_value=graph):
-        baseline, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=reporting_fetch(
+        baseline, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=reporting_fetch(
             module, mapped_direction().partition("## Reporting map")[0], pulls, []))
         assert not errors
         for failure in ("files", "labels", "links", "map", "files_cut", "bad_row", "late_direction"):
@@ -1715,7 +1808,7 @@ def test_optional_reporting_reads_preserve_legacy_status_and_page_direction_chan
                     if failure == "late_direction":
                         return [{"filename": "DIRECTION.md"}]
                 return fetch(args)
-            result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=optional_failure)
+            result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=optional_failure)
             assert {key: value for key, value in result.items() if key != "reporting"} == baseline
             assert (bool(errors) if failure != "late_direction" else not errors), (failure, errors)
             assert len(result["reporting"]["unresolved"]) == 1
@@ -1734,7 +1827,7 @@ def test_cached_optional_label_failure_keeps_later_legacy_own_share_unknown() ->
             reads.append(args[1])
             raise module.AuditError("HTTP 403")
         return fetch(args)
-    result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=denied_label)
+    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=denied_label)
     assert reads.count("repos/o/live/issues/50") == 1
     assert "capacity_issue_labels:o/live#50" in errors
     assert result["own_share_status"] == "unknown"
@@ -1743,10 +1836,17 @@ def test_cached_optional_label_failure_keeps_later_legacy_own_share_unknown() ->
 
 def test_only_the_direction_repository_audit_counts_capacity() -> None:
     module = load()
-    windows: list[tuple[str, dt.datetime]] = []
+    windows: list[tuple[str, dt.datetime, dt.datetime]] = []
+    fractional_now = NOW.replace(microsecond=750000)
+    next_start = dt.datetime.fromisoformat(module.direction_mark.utc_stamp(fractional_now))
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> dt.datetime:
+            return fractional_now.astimezone(tz)
 
     def capacity(repo: str, since: dt.datetime, until: dt.datetime, **_kwargs: Any) -> tuple[dict[str, Any], list[str]]:
-        windows.append((repo, since))
+        windows.append((repo, since, until))
         return summary(module, since=since, until=until), ["capacity_pulls:o/live"]
 
     for audited in ("o/direction", "o/r"):
@@ -1755,6 +1855,7 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
             marker.write_text(json.dumps({"audits": {audited: stamp(SINCE)}}))
             output = StringIO()
             with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
+                  patch.object(module.dt, "datetime", Clock),
                   patch.dict(vars(module), {
                       "merged_direction": lambda *_args, **_kwargs: DIRECTION,
                       "gh_json": lambda args, **_kwargs: {"archived": False} if args[1] == f"repos/{audited}" else [],
@@ -1767,7 +1868,7 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
             # The direction audit's capacity read was incomplete, so its window stays open.
             assert (result["marked"] is None) is (audited == "o/direction")
             assert (json.loads(marker.read_text())["audits"][audited] == stamp(SINCE)) is (audited == "o/direction")
-    assert windows == [("o/direction", SINCE)]
+    assert windows == [("o/direction", SINCE, next_start)]
 
 
 def test_weekly_direction_audit_covers_active_repositories_without_a_direction_file() -> None:

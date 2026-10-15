@@ -1509,9 +1509,10 @@ def _labels(item: dict[str, Any]) -> set[str]:
     return {str(label.get("name", "")).casefold() for label in item.get("labels") or [] if isinstance(label, dict)}
 
 
-def _within(value: Any, since: dt.datetime, until: dt.datetime) -> bool:
+def _within(value: Any, since: dt.datetime, until: dt.datetime, *, end_exclusive: bool = False) -> bool:
     moment = _parse_time(value)
-    return moment is not None and since <= moment <= until
+    return (moment is not None and since <= moment
+            and (moment < until if end_exclusive else moment <= until))
 
 
 def capacity_summary(
@@ -1536,7 +1537,7 @@ def capacity_summary(
     for repo in sorted(pulls):
         # A pull request updated mid-read can shift into the next page twice.
         unique = {pull.get("number"): pull for pull in pulls[repo]}
-        merged = [pull for pull in unique.values() if _within(pull.get("merged_at"), since, until)]
+        merged = [pull for pull in unique.values() if _within(pull.get("merged_at"), since, until, end_exclusive=True)]
         if not merged:
             continue
         counts = dict.fromkeys(RANKS, 0)
@@ -1786,7 +1787,7 @@ def fetch_capacity(
                 )
                 truncated += [f"capacity_pulls:{name}"] if cut else []
                 for pull in {row.get("number"): row for row in pulls[name]}.values():
-                    if not _within(pull.get("merged_at"), since, until):
+                    if not _within(pull.get("merged_at"), since, until, end_exclusive=True):
                         continue
                     legacy_tracked = bool(pull_issue_refs(name, pull) & tracked_issues)
                     if not reporting_rules and legacy_tracked:
@@ -1888,11 +1889,11 @@ def main(argv: list[str] | None = None) -> int:
     if any(not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) for repo in args.remove_missing_repo):
         parser.error("--remove-missing-repo requires an exact OWNER/REPO name")
     if args.prune_unadopted:
-        import direction_mark
+        import direction_mark as prune_marker
 
         try:
             result = prune_unadopted(
-                direction_mark.marker_path(), fetch=lambda a: gh_json(a, gh=args.gh),
+                prune_marker.marker_path(), fetch=lambda a: gh_json(a, gh=args.gh),
                 apply=args.apply_prune, remove_missing_repos=tuple(args.remove_missing_repo),
             )
         except (AuditError, OSError, ValueError) as exc:
@@ -1950,7 +1951,10 @@ def main(argv: list[str] | None = None) -> int:
         unadopted = None
         if repo.split("/")[1].casefold() == "direction":
             shared = cached_reads(fetch)
-            capacity, cut = fetch_capacity(repo, audit_since, now, fetch=shared, include_archived=args.include_archived)
+            # The next window starts at the persisted marker, whose formatter
+            # owns timestamp precision. Use that same instant as this end.
+            capacity_until = dt.datetime.fromisoformat(direction_mark.utc_stamp(now))
+            capacity, cut = fetch_capacity(repo, audit_since, capacity_until, fetch=shared, include_archived=args.include_archived)
             truncated.extend(cut)
             capacity["milestone_outcomes"] = milestone_outcomes(repo, direction_text or "", audit_since, now, fetch=shared)
             unadopted = active_unadopted_report(repo, audit_since, fetch=shared, include_archived=args.include_archived)
