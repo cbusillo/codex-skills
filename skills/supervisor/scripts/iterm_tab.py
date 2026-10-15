@@ -18,6 +18,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 import account_choice
@@ -628,6 +629,47 @@ def with_account(command_text, choice, brief=None):
     return " && ".join([*prefixes, command_text])
 
 
+def check_codex_project(command_text, choice):
+    """Require an explicit, already-trusted directory in the selected Codex home."""
+    if choice["provider"] != "openai":
+        return
+    words, _ = launch_parts(command_text)
+    if Path(words[0]).name != "codex":
+        raise ValueError("openai account selection requires a direct Codex invocation")
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("-C", "--cd", action="append")
+    try:
+        options, _ = parser.parse_known_args(words[1:])
+    except argparse.ArgumentError as error:
+        raise ValueError("Codex launches require -C /absolute/repository") from error
+    if not options.cd or len(options.cd) != 1:
+        raise ValueError("Codex launches require exactly one -C /absolute/repository (or --cd)")
+    directory = Path(options.cd[0])
+    if not directory.is_absolute() or not directory.is_dir():
+        raise ValueError("Codex -C/--cd must name an existing absolute repository directory")
+    directory = directory.resolve()
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
+    config_path = home / "config.toml"
+    try:
+        with config_path.open("rb") as stream:
+            config = tomllib.load(stream)
+    except FileNotFoundError:
+        config = {}
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Cannot verify Codex folder trust in {config_path} "
+                         f"({type(error).__name__}); inspect that config before retrying") from None
+    projects = config.get("projects", {})
+    project = projects.get(str(directory), {}) if isinstance(projects, dict) else {}
+    if not isinstance(project, dict) or project.get("trust_level") != "trusted":
+        command = shlex.join(["codex", "-C", str(directory)])
+        raise ValueError(
+            f"Codex folder is not explicitly trusted: {directory} in {config_path}; "
+            f"open CODEX_HOME={shlex.quote(str(home))} {command} interactively and review "
+            "the folder-trust prompt, then retry. A trusted parent folder is insufficient; "
+            "the launcher never edits config.toml"
+        )
+
+
 def prepare_launches(args):
     """Validate the full batch and prepare accounts before creating terminals."""
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
@@ -653,6 +695,8 @@ def prepare_launches(args):
             choices = account_choice.select_batch(
                 args.account_provider, args.account_config, args.account, count=len(files)
             )
+        for text, choice in zip(command_texts, choices):
+            check_codex_project(text, choice)
         command_texts = [with_account(text, choice, brief)
                          for text, choice, brief in zip(command_texts, choices, briefs)]
     elif getattr(args, "account", None):

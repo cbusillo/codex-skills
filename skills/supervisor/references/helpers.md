@@ -559,7 +559,7 @@ Launch files contain one direct agent invocation and its already authorized
 model settings, without a prompt or the Discord channels flag. Put the exact
 brief in a separate UTF-8 file and pass `--brief-file`; the launcher reads it
 and appends it as one quoted prompt argument. For example, a launch file can
-contain `cd /absolute/repository && exec codex --remote unix://`, with the task
+contain `cd /absolute/repository && exec codex --remote unix:// -C /absolute/repository`, with the task
 text in the brief file. The supported form is a direct `codex`, `claude` or
 `agy` invocation, optionally preceded by `cd PATH &&` and simple command or
 environment prefixes. `agy` uses its native `--prompt-interactive` option;
@@ -803,12 +803,25 @@ Successful launch output reports environment variable names, without their
 private path values. A daemon refusal includes the selected home in its recovery
 diagnostic; keep that diagnostic out of public comments.
 
-For Codex's shared app server, launch with `codex --remote unix://`: the empty
+For Codex's shared app server, launch with `codex --remote unix:// -C /absolute/repository`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
 its own daemon. A fixed socket or WebSocket endpoint attaches to that server's
 account regardless of the exported home. Keep the per-session `-c` settings:
 removing `--remote` while retaining the reasoning override can select embedded
 mode instead of the shared daemon (see [the Q152 validation](https://github.com/cbusillo/codex-skills/issues/1613#issuecomment-6102593628)).
+`-C` (or `--cd`) must name the brief's repository explicitly: a shell `cd` alone
+leaves a remote worker in the daemon's working folder. The launcher requires
+exactly one existing absolute directory and checks every launch in a batch
+before starting any daemon, creating terminals or preparing receipts.
+Each selected account's `config.toml` must already contain
+`[projects."/absolute/repository"]` with `trust_level = "trusted"` for that
+resolved directory; trusting a parent folder does not cover a repository root.
+An untrusted folder refuses with the selected home and an interactive Codex
+command to review its folder-trust prompt. Review trust yourself before retrying;
+the launcher never edits config or supplies trust overrides. An unreadable or
+malformed config also refuses without printing its contents. See the official
+[directory option](https://developers.openai.com/codex/cli/reference/) and
+[project trust setting](https://developers.openai.com/codex/config-reference/).
 Before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
 runs `CODEX_HOME=<selected-home> codex app-server daemon start` for each selected
 home, with a 30-second command timeout. Native `start` reuses a healthy running
