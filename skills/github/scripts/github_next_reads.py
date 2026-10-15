@@ -14,8 +14,10 @@ import os
 import sys
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, TypeVar
+
+import github_api
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -47,6 +49,7 @@ class NextReads:
         self.phases: list[dict[str, Any]] = []
         self.phase_name = "startup"
         self.stop = threading.Event()
+        self.retry_runtime = github_api.RetryRuntime(sleep=self._sleep, cancelled=self.stop.is_set)
         self.progress_seconds = progress_seconds
         self.previous_deadline: str | None = None
         self.phase_started = self.started
@@ -78,13 +81,23 @@ class NextReads:
         return self
 
     def __exit__(self, *_: Any) -> None:
-        self.pool.shutdown(wait=True, cancel_futures=True)
         self.stop.set()
-        self.reporter.join()
-        if self.previous_deadline is None:
-            os.environ.pop("GITHUB_RETRY_DEADLINE_AT", None)
-        else:
-            os.environ["GITHUB_RETRY_DEADLINE_AT"] = self.previous_deadline
+        try:
+            self.pool.shutdown(wait=True, cancel_futures=True)
+        finally:
+            self.reporter.join()
+            if self.previous_deadline is None:
+                os.environ.pop("GITHUB_RETRY_DEADLINE_AT", None)
+            else:
+                os.environ["GITHUB_RETRY_DEADLINE_AT"] = self.previous_deadline
+
+    def _sleep(self, seconds: float) -> None:
+        self.stop.wait(seconds)
+
+    def _read(self, read: Callable[[], T]) -> T:
+        if self.stop.is_set():
+            raise CancelledError()
+        return read()
 
     def progress(self) -> None:
         # No repository names, issue text, URLs, credentials or session data.
@@ -120,7 +133,7 @@ class NextReads:
                     raise ReadDeadline("global next time budget exhausted; evidence unread")
                 with self.lock:
                     self.requests += 1
-                future.set_result(read())
+                future.set_result(self._read(read))
             except BaseException as exc:
                 future.set_exception(exc)
         # Consumers may annotate their own copy, never another observation.
@@ -144,7 +157,7 @@ class NextReads:
     def submit(self, key: Any, read: Callable[[], T]) -> Future[T]:
         with self.lock:
             if key not in self.tasks:
-                self.tasks[key] = self.pool.submit(read)
+                self.tasks[key] = self.pool.submit(self._read, read)
             return self.tasks[key]
 
     def map(self, read: Callable[[T], R], values: list[T]) -> list[R]:
@@ -155,7 +168,7 @@ class NextReads:
         offset = 0
         while offset < len(values) or pending:
             while offset < len(values) and len(pending) < self.workers:
-                pending[self.pool.submit(read, values[offset])] = offset
+                pending[self.pool.submit(self._read, lambda value=values[offset]: read(value))] = offset
                 offset += 1
             completed, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in completed:
@@ -163,17 +176,19 @@ class NextReads:
         return results
 
     def drain(self, *, unused_failure: Callable[[BaseException], None] | None = None) -> None:
-        self.pool.shutdown(wait=True, cancel_futures=True)
         # In particular, an authentication failure in an unused read-ahead
-        # task must never be hidden by its consumer's scan bound.
-        for future in self.tasks.values():
-            if not future.cancelled():
+        # task must never be hidden behind another worker's retry wait.
+        pending = {future for future in self.tasks.values() if not future.cancel()}
+        while pending:
+            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
                 try:
                     future.result()
                 except BaseException as exc:
                     if unused_failure is None:
                         raise
                     unused_failure(exc)
+        self.pool.shutdown(wait=True, cancel_futures=True)
 
     def receipt(self) -> dict[str, Any]:
         return {"elapsed_seconds": round(time.monotonic() - self.started, 3),

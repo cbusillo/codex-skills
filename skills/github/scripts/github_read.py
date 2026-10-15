@@ -236,6 +236,7 @@ class GitHubReader:
         cache_coalesce_seconds: float = 5.0,
         cache_revalidate: bool = False,
         deadline_at: Optional[float] = None,
+        retry_runtime: Optional[github_api_core.RetryRuntime] = None,
     ) -> None:
         self.gh_cmd = gh_cmd
         # Resolve before constructing the opt-in cache: bodies and actor checks
@@ -258,6 +259,7 @@ class GitHubReader:
         self.cache_coalesce_seconds = cache_coalesce_seconds
         self.cache_revalidate = cache_revalidate
         self.deadline_at = deadline_at
+        self.retry_runtime = retry_runtime
         self.completed_steps: list[str] = []
         self.requests: list[dict[str, Any]] = []
         self.results: list[github_api_core.ApiResult] = []
@@ -297,6 +299,7 @@ class GitHubReader:
             is_write=False,
             extra_headers=extra_headers,
             retry_policy=retry_policy,
+            retry_runtime=self.retry_runtime,
             deadline_at=self.deadline_at if deadline_at is None else deadline_at,
             allow_escape_sequences=allow_escape_sequences,
             conditional_cache=not self.cache_enabled if conditional_cache is None else conditional_cache,
