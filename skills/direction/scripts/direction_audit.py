@@ -1844,11 +1844,11 @@ def main(argv: list[str] | None = None) -> int:
     if any(not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) for repo in args.remove_missing_repo):
         parser.error("--remove-missing-repo requires an exact OWNER/REPO name")
     if args.prune_unadopted:
-        import direction_mark
+        import direction_mark as prune_marker
 
         try:
             result = prune_unadopted(
-                direction_mark.marker_path(), fetch=lambda a: gh_json(a, gh=args.gh),
+                prune_marker.marker_path(), fetch=lambda a: gh_json(a, gh=args.gh),
                 apply=args.apply_prune, remove_missing_repos=tuple(args.remove_missing_repo),
             )
         except (AuditError, OSError, ValueError) as exc:
@@ -1906,7 +1906,10 @@ def main(argv: list[str] | None = None) -> int:
         unadopted = None
         if repo.split("/")[1].casefold() == "direction":
             shared = cached_reads(fetch)
-            capacity, cut = fetch_capacity(repo, audit_since, now, fetch=shared, include_archived=args.include_archived)
+            # The next window starts at the persisted marker, whose formatter
+            # owns timestamp precision. Use that same instant as this end.
+            capacity_until = dt.datetime.fromisoformat(direction_mark.utc_stamp(now))
+            capacity, cut = fetch_capacity(repo, audit_since, capacity_until, fetch=shared, include_archived=args.include_archived)
             truncated.extend(cut)
             capacity["milestone_outcomes"] = milestone_outcomes(repo, direction_text or "", audit_since, now, fetch=shared)
             unadopted = active_unadopted_report(repo, audit_since, fetch=shared, include_archived=args.include_archived)

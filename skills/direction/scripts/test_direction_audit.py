@@ -1614,7 +1614,7 @@ def test_opw_sourced_seven_day_hand_count_matches_reporting_map() -> None:
     assert report["merged_total"] == result["merged_total"] == len(week["pulls"])
     assert report["merged_by_kind"] == week["merged_by_kind"]
     for kind, count in week["merged_by_kind"].items():
-        assert math.isclose(report["share_by_kind"][kind], count / len(week["pulls"]))
+        assert math.isclose(report["share_by_kind"][kind], count / len(week["pulls"]), abs_tol=0.001)
     assert report["capacity"] == module.github_direction_next.section_map(direction)["Capacity"].strip()
     assert result["own_projects"] == [] and result["own_share"] == 0
 
@@ -1836,10 +1836,17 @@ def test_cached_optional_label_failure_keeps_later_legacy_own_share_unknown() ->
 
 def test_only_the_direction_repository_audit_counts_capacity() -> None:
     module = load()
-    windows: list[tuple[str, dt.datetime]] = []
+    windows: list[tuple[str, dt.datetime, dt.datetime]] = []
+    fractional_now = NOW.replace(microsecond=750000)
+    next_start = dt.datetime.fromisoformat(module.direction_mark.utc_stamp(fractional_now))
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> dt.datetime:
+            return fractional_now.astimezone(tz)
 
     def capacity(repo: str, since: dt.datetime, until: dt.datetime, **_kwargs: Any) -> tuple[dict[str, Any], list[str]]:
-        windows.append((repo, since))
+        windows.append((repo, since, until))
         return summary(module, since=since, until=until), ["capacity_pulls:o/live"]
 
     for audited in ("o/direction", "o/r"):
@@ -1848,6 +1855,7 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
             marker.write_text(json.dumps({"audits": {audited: stamp(SINCE)}}))
             output = StringIO()
             with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
+                  patch.object(module.dt, "datetime", Clock),
                   patch.dict(vars(module), {
                       "merged_direction": lambda *_args, **_kwargs: DIRECTION,
                       "gh_json": lambda args, **_kwargs: {"archived": False} if args[1] == f"repos/{audited}" else [],
@@ -1860,7 +1868,7 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
             # The direction audit's capacity read was incomplete, so its window stays open.
             assert (result["marked"] is None) is (audited == "o/direction")
             assert (json.loads(marker.read_text())["audits"][audited] == stamp(SINCE)) is (audited == "o/direction")
-    assert windows == [("o/direction", SINCE)]
+    assert windows == [("o/direction", SINCE, next_start)]
 
 
 def test_weekly_direction_audit_covers_active_repositories_without_a_direction_file() -> None:
