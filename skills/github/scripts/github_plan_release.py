@@ -16,6 +16,7 @@ import github_plan_termination as termination
 
 COMMENT_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 RELEASE_MARKER = "github-plan:abandoned-release "
+PENDING_MARKER = "github-plan:pending-release "
 ISSUE_REFUSAL_SCOPE = "issue"
 
 
@@ -221,6 +222,29 @@ def prepare_release(
                + ("\n".join(f"- {a.get('worktree') or 'no local worktree'} (branch {a['branch']})" for a in terminated["retained_artifacts"]) or "None; no source branch or worktree was created.")
                + "\n" if terminated is not None else "")
             + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
+
+
+def pending_body(body: str) -> str:
+    """Stage preservation evidence without an operative release or receipt."""
+    pending = body.replace("Released claim ", "Pending release of claim ", 1).replace(
+        "<!-- " + RELEASE_MARKER, "<!-- " + PENDING_MARKER)
+    if receipt_for(pending_comment := {"body": pending}) is not None or claim.released_claim_id(pending):
+        raise ValueError("Pending release must contain no operative release authority")
+    if pending_receipt_for(pending_comment) != receipt_for({"body": body}):
+        raise ValueError("Pending release must preserve its exact proposed receipt")
+    return pending
+
+
+def pending_receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:
+    """Read staging evidence for recovery only; this is never release authority."""
+    body = comment.get("body") or ""
+    header = re.match(r"Pending release of claim ([1-9]\d*)\n", body)
+    if header is None:
+        return None
+    proposed = body.replace(header[0], f"Released claim {header[1]}\n", 1).replace(
+        "<!-- " + PENDING_MARKER, "<!-- " + RELEASE_MARKER)
+    receipt = receipt_for({"body": proposed})
+    return receipt if receipt is not None and receipt["source_id"] == int(header[1]) else None
 
 
 def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:

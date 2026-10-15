@@ -46,6 +46,9 @@ class ReleaseHarness(unittest.TestCase):
         self.evidence_failure = None
         self.source_branch_date = None
         self.race = lambda: None
+        self.confirmation_failure = None
+        self.confirmation_applied = False
+        self.related_failure = None
 
     @staticmethod
     def comment(n, body, date):
@@ -54,7 +57,7 @@ class ReleaseHarness(unittest.TestCase):
 
     def api(self, method, path, **_kwargs):
         self.assertEqual(method, "GET")
-        if "issues/comments/88" in path:
+        if path.endswith(f"issues/comments/{self.evidence['id']}"):
             if self.evidence_failure:
                 raise PLAN.PlanError("Evidence unavailable", api_result={"status": self.evidence_failure})
             return "bot", copy.deepcopy(self.evidence)
@@ -69,10 +72,26 @@ class ReleaseHarness(unittest.TestCase):
         return "bot", copy.deepcopy(next(p for p in self.f.pulls if p["number"] == n))
 
     def post(self, kind, number, body, **kwargs):
+        if kwargs.get("failed_step") == "release_related_ownership" and self.related_failure:
+            raise self.related_failure
+        if kwargs.get("edit_comment") is not None:
+            self.f.events.append("confirm_release")
+            c = next(c for c in self.f.comments if c["id"] == kwargs["edit_comment"])
+            guards = [(kwargs.get("expected_body"), c["body"]), (kwargs.get("expected_updated_at"), c["updated_at"])]
+            self.assertTrue(any(expected is not None for expected, _ in guards))
+            for expected, observed in guards:
+                if expected is not None:
+                    self.assertEqual(observed, expected)
+            if not self.confirmation_failure or self.confirmation_applied:
+                c["body"] = body
+            if self.confirmation_failure:
+                raise self.confirmation_failure
+            return {"ok": True, "comment": {"id": c["id"], "url": c["html_url"]}}
         result = self.f.post(kind, number, body, **kwargs)
         c = self.f.comments[-1]
         c.update(created_at="2026-10-03T00:00:00Z", updated_at="2026-10-03T00:00:00Z")
         result["comment"]["url"] = f"https://github.com/owner/repo/issues/42#issuecomment-{c['id']}"
+        c["html_url"] = result["comment"]["url"]
         self.race()
         return result
 
@@ -795,6 +814,171 @@ class ReleaseTests(ReleaseHarness):
         with self.assertRaisesRegex(PLAN.PlanError, "activity after") as caught: self.run_release()
         self.assertIn("post_release", caught.exception.payload["completed_steps"])
         self.assertEqual(self.f.events.count("post"), 1)
+
+    def test_post_write_resumption_or_evidence_change_leaves_no_usable_release(self):
+        for route in ("finished", "terminated"):
+            for mode in ("session", "evidence", *(("process",) if route == "terminated" else ())):
+                with self.subTest(route=route, mode=mode):
+                    self.setUp()
+                    if route == "terminated":
+                        self.termination_setup()
+                    def resume():
+                        if mode == "session":
+                            self.f.inventory["sessions"] = [{"sessionId": fixtures.OTHER["session"]}]
+                        elif mode == "process":
+                            release.termination.inventory.return_value = [(12345, "other", "codex")]
+                        else:
+                            self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
+                    self.race = resume
+                    with self.assertRaises(PLAN.PlanError) as caught:
+                        self.run_release()
+                    posted = self.f.comments[-1]
+                    self.assertEqual(caught.exception.payload["release_comment"]["id"], posted["id"])
+                    self.assertIsNone(release.receipt_for(posted))
+                    self.assertIsNone(CLAIM.released_claim_id(posted["body"]))
+                    self.assertNotIn("confirm_release", self.f.events)
+                    # A transient process disappearing must not revive the failed release.
+                    self.f.inventory["sessions"] = []
+                    if mode == "process":
+                        release.termination.inventory.return_value = []
+                    self.assert_source_still_owned()
+                    posts = self.f.events.count("post")
+                    self.f.args.resume_from = self.args.claim_comment
+                    with patch.object(self.f, "read_api", side_effect=self.api), self.assertRaises(PLAN.PlanError):
+                        self.f.run_claim()
+                    self.assertEqual(self.f.events.count("post"), posts)
+                    if route == "terminated":
+                        artifact = self.termination_record["retained_artifacts"][0]
+                        self.assertEqual((Path(artifact["worktree"]) / "unfinished.txt").read_text(), self.uncommitted_source)
+
+    def assert_source_still_owned(self):
+        effective = release.effective_comments(self.f.comments)
+        conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
+        self.assertIn(self.args.claim_comment, [c["id"] for c in conflicts])
+
+    def test_pending_release_preserves_sibling_claim_and_recorded_wait(self):
+        sibling = self.comment(7, CLAIM.marker({**fixtures.OTHER, "session": "sibling-session"}), "2026-10-01T01:00:00Z")
+        self.f.comments.append(sibling)
+        self.f.wait = fixtures.wait_record.reviewed(
+            evidence="Owner acceptance pending", waiting_for="Owner test", ends_when="Owner accepts")
+        original_wait = copy.deepcopy(self.f.wait)
+        self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
+        with self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        effective = release.effective_comments(self.f.comments)
+        conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
+        self.assertEqual({c["id"] for c in conflicts}, {self.args.claim_comment, sibling["id"]})
+        with patch.object(PLAN, "wait_authors", return_value={BOT}):
+            observed_wait = PLAN.current_wait(self.f.issue, [
+                {"user": {"login": BOT}, "body": fixtures.wait_record.marker(self.f.wait)}, *effective], "owner/repo")
+        self.assertEqual(observed_wait, original_wait)
+
+    def test_confirmed_release_rerun_reuses_exact_receipt_without_new_writes(self):
+        self.run_release()
+        result = self.f.emitted.call_args.args[0]
+        writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
+        self.args.session = "successor-supervisor-session"
+        self.run_release()
+        self.assertEqual(self.f.emitted.call_args.args[0]["release_comment"]["id"], result["release_comment"]["id"])
+        self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
+        self.args.dry_run = True
+        self.run_release()
+        self.assertEqual(self.f.emitted.call_args.args[0]["release_comment"]["id"], result["release_comment"]["id"])
+        self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
+
+    def test_failed_pending_attempt_requires_fresh_closure_evidence_before_recovery(self):
+        for route in ("finished", "terminated"):
+            with self.subTest(route=route):
+                self.setUp()
+                if route == "terminated":
+                    self.termination_setup()
+                self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
+                self.f.inventory["sessions"] = []
+                self.race = lambda: None
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
+                self.assert_source_still_owned()
+                # The existing attestation route supplies the supported recovery.
+                self.evidence["id"] = 89
+                self.args.evidence_comment = self.args.evidence_comment.rsplit("-", 1)[0] + "-89"
+                if route == "terminated":
+                    fresh_now = release.stamp("2026-10-04T01:00:00Z")
+                    class Clock(datetime):
+                        @classmethod
+                        def now(cls, tz=None):
+                            return fresh_now.astimezone(tz or timezone.utc)
+                    with patch.object(release.termination, "datetime", Clock):
+                        self.evidence["body"] = release.termination.body(release.termination.verify(self.termination_record, "session-b"))
+                        self.evidence.update(created_at=fresh_now.isoformat(), updated_at=fresh_now.isoformat())
+                        self.run_release()
+                else:
+                    self.evidence.update(created_at="2026-10-04T01:00:00Z", updated_at="2026-10-04T01:00:00Z")
+                    self.run_release()
+                self.successor()
+
+    def test_related_recovery_reuses_source_when_observed_branch_pr_has_closed(self):
+        self.f.comments.append(self.comment(2, "Claimed by trial-b to finish source work", "2026-10-01T01:00:00Z"))
+        self.args.related_claim_comment = [2]
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "body": "Refs #42",
+                         "head": {"ref": fixtures.OTHER["branch"], "sha": "source-head", "repo": {"full_name": "owner/repo"}},
+                         "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.related_failure = github_comment.CommentError("Related write rejected", failure=PLAN.github_api_core.FailureDetail(
+            cause="rejected", message="Related write rejected", retryable=False,
+            fallback_eligible=False, disposition="stop", write_outcome="rejected"))
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        source_release = caught.exception.payload["release_comment"]["id"]
+        release.validate_evidence(release.receipt_for(self.f.comments[-1]), self.evidence, BOT)
+        # GitHub's open-PR observation changes; the requested handoff is unchanged.
+        self.f.pulls = []
+        self.related_failure = None
+        posts = self.f.events.count("post")
+        self.run_release()
+        self.assertEqual(self.f.emitted.call_args.args[0]["release_comment"]["id"], source_release)
+        self.assertEqual(self.f.events.count("post"), posts + 1)
+        self.successor()
+
+    def test_uncertain_confirmation_preserves_exact_record_and_never_replays(self):
+        for route in ("finished", "terminated"):
+            for applied in (False, True):
+                with self.subTest(route=route, applied=applied):
+                    self.setUp()
+                    if route == "terminated":
+                        self.termination_setup()
+                    self.confirmation_applied = applied
+                    self.confirmation_failure = github_comment.CommentError(
+                        "Confirmation response lost", failure=PLAN.github_api_core.FailureDetail(
+                            cause="transport", message="Response lost", retryable=False,
+                            fallback_eligible=False, disposition="stop", write_outcome="unknown"),
+                        payload={"outcome_certainty": "unknown"})
+                    with self.assertRaises(PLAN.PlanError) as caught:
+                        self.run_release()
+                    self.assertEqual(self.f.events.count("post"), 1)
+                    self.assertEqual(self.f.events.count("confirm_release"), 1)
+                    posted = self.f.comments[-1]
+                    self.assertEqual(caught.exception.payload["release_comment"]["id"], posted["id"])
+                    self.assertEqual(caught.exception.payload["outcome_certainty"], "unknown")
+                    self.assertTrue(caught.exception.payload["release_recovery_action"])
+                    if applied:
+                        release.validate_evidence(release.receipt_for(posted), self.evidence, BOT)
+                    else:
+                        self.assertIsNone(release.receipt_for(posted))
+                        self.assert_source_still_owned()
+                    # Fresh readback recovers an applied confirmation; an inert
+                    # attempt cannot silently revive under the old evidence.
+                    self.confirmation_failure = None
+                    writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
+                    if applied:
+                        self.run_release()
+                        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+                    else:
+                        with self.assertRaises(PLAN.PlanError):
+                            self.run_release()
+                    self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
 
     def test_retained_pr_updates_after_closure_refuse_before_post(self):
         self.refresh_setup()

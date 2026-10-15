@@ -2083,6 +2083,25 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         raise PlanError("Session-ended evidence is not on the cited issue")
     completed = []
     result = {}
+    release_state = "not_started"
+    def recovery_action():
+        if release_state == "confirmed":
+            return ("The source release is confirmed. Preserve its unchanged attestation. Inspect the failed related "
+                    "record and transport reconciliation before retrying; after resolving any unknown outcome, "
+                    "rerun the same command with unchanged arguments to reuse the source and deduplicate related releases.")
+        if release_state == "not_started":
+            return ("This invocation started no release write; earlier records may exist. Inspect the issue history and "
+                    "preserve any confirmed release's unchanged attestation. Resolve the current preflight refusal "
+                    "and inspect a fresh --dry-run before releasing.")
+        if release_state == "pending_unconfirmed":
+            return ("The initial pending POST is unconfirmed and release_comment may be empty. Inspect the transport "
+                    "operation marker and reconciliation evidence to locate any posted pending record before recovery; "
+                    "never replay an unknown write. A pending record grants no release authority. Resolve the refusal, "
+                    "freshly verify closure and post a new --evidence-comment attestation before another --dry-run.")
+        return ("Read the exact release_comment, cited evidence and transport reconciliation before recovery; "
+                "never replay an unknown write. If confirmed, rerun with unchanged arguments to reuse it. "
+                "A pending record does not release ownership: resolve the refusal, freshly verify closure and post a new "
+                "--evidence-comment attestation before another --dry-run and release. Preserve other claims, retained artifacts and waits.")
     # Fresh-read before writing and again after posting. Native peer coverage
     # stays explicit; the caller attests closure for hosts without peer APIs.
     def preflight():
@@ -2180,18 +2199,58 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
     try:
         issue, comments, inventory, body, related = preflight()
         completed.append("release_preflight")
+        receipt = github_plan_release.receipt_for({"body": body})
+        if receipt is None:
+            raise PlanError("Prepared release has no valid receipt")
+        existing = next((c for c in reversed(comments)
+                         if (prior := github_plan_release.receipt_for(c)) is not None
+                         and all(prior.get(k) == v for k, v in receipt.items() if k not in {"role", "releaser_session", "checked_prs"})
+                         and (c.get("user") or {}).get("login") == expected_actor
+                         and github_plan_claim.released_claim_id(c.get("body") or "") == args.claim_comment), None)
+        def comment_result(comment):
+            return {"comment": {"id": comment["id"], "url": comment.get("html_url")}}
+        if existing is None:
+            for comment in comments:
+                if ((comment.get("user") or {}).get("login") != expected_actor
+                        or (comment.get("body") or "").splitlines()[:1] != [f"Pending release of claim {args.claim_comment}"]):
+                    continue
+                prior = github_plan_release.pending_receipt_for(comment)
+                if prior is None or (prior["evidence_url"] == receipt["evidence_url"]
+                                     and prior["evidence_updated_at"] == receipt["evidence_updated_at"]):
+                    result = comment_result(comment)
+                    release_state = "pending"
+                    raise PlanError("Prior pending attempt requires freshly verified closure and a refreshed --evidence-comment attestation")
         if args.dry_run:
             emit({"ok": True, "dry_run": True, "release_body": body, "related_ids": args.related_claim_comment,
+                  "release_state": "confirmed" if existing is not None else "not_started",
+                  "release_comment": comment_result(existing)["comment"] if existing is not None else {},
                   "session_coverage": inventory.get("session_coverage"), "completed_steps": completed})
             return
-        result = github_comment_core.comment("issue", issue["number"], body, repo=issue["repo"],
-            gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor, completed_steps=completed, failed_step="post_release", dedupe_body=True)
-        completed.append("post_release")
-        issue, comments, inventory, fresh_body, related = preflight()
-        release_id = result["comment"]["id"]
-        if not any(c.get("id") == release_id and (c.get("body") or "").startswith(body) for c in comments) or fresh_body != body:
-            raise PlanError("Release readback changed; preserve records and inspect before any retry")
-        completed.append("release_readback")
+        if existing is not None:
+            result = comment_result(existing)
+            completed.append("reuse_confirmed_release")
+        else:
+            pending_body = github_plan_release.pending_body(body)
+            release_state = "pending_unconfirmed"
+            result = github_comment_core.comment("issue", issue["number"], pending_body, repo=issue["repo"],
+                gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor, completed_steps=completed, failed_step="post_release", dedupe_body=True)
+            release_state = "pending"
+            completed.append("post_release")
+            issue, comments, inventory, fresh_body, related = preflight()
+            release_id = result["comment"]["id"]
+            pending = next((c for c in comments if c.get("id") == release_id), None)
+            if pending is None or not (pending.get("body") or "").startswith(pending_body) or fresh_body != body:
+                raise PlanError("Release readback changed; preserve records and inspect before any retry")
+            completed.append("release_readback")
+            # Publish authority only after full post-write preflight, through
+            # the maintained guarded, single-attempt exact-comment PATCH.
+            release_state = "confirmation_unconfirmed"
+            result = github_comment_core.comment("issue", issue["number"], body, repo=issue["repo"],
+                edit_comment=release_id, expected_body=pending["body"], expected_updated_at=pending["updated_at"],
+                gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
+                completed_steps=completed, failed_step="confirm_release")
+            completed.append("confirm_release")
+        release_state = "confirmed"
         related_results = []
         for comment in related:
             related_results.append(github_comment_core.comment("issue", issue["number"],
@@ -2199,16 +2258,20 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 repo=issue["repo"], gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
                 completed_steps=completed, failed_step="release_related_ownership", dedupe_body=True))
         emit({"ok": True, "release_comment": result["comment"], "related_releases": related_results,
+              "release_state": release_state,
               "source_claim": args.claim_comment, "session_coverage": inventory.get("session_coverage"),
               "completed_steps": completed, "exclusive_lock": False})
     except PlanError as exc:
-        exc.payload.update(completed_steps=completed, release_comment=result.get("comment", {}))
+        exc.payload.update(completed_steps=completed, release_comment=result.get("comment", {}),
+                           release_state=release_state, release_recovery_action=recovery_action())
         raise
     except github_comment_core.CommentError as exc:
         raise PlanError(str(exc), failure=exc.failure, api_result=exc.api_result,
-            payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
+            payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {}),
+                     "release_state": release_state, "release_recovery_action": recovery_action()}) from exc
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
         raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {}),
+            "release_state": release_state, "release_recovery_action": recovery_action(),
             "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 
