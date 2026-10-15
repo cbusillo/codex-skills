@@ -267,7 +267,7 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
             f"Native session unavailable: {record['legacy_reason']}")):
         raise ValueError("Legacy evidence no longer attests this source identity")
     ended = re.findall(r"(?m)^Ended at: (\S+)$", text)
-    terminated = termination.evidence(text, record["session"]) if "legacy_reason" not in record else None
+    terminated = termination.evidence(text, record["session"], apply_policy=False) if "legacy_reason" not in record else None
     if terminated != receipt.get("termination"):
         raise ValueError("Termination evidence no longer matches the release")
     if ((evidence.get("user") or {}).get("login") != author

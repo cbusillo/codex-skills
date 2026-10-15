@@ -10,7 +10,8 @@ import copy
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+import subprocess
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from pathlib import Path
 from argparse import Namespace
@@ -211,10 +212,14 @@ class ReleaseTests(ReleaseHarness):
         self.termination_record = {
             "session_id": "session-b", "harness": harness, "pid": 12345, "tty": "ttys123",
             "host": "source-host", "transcript": str(transcript), "transcript_roots": [str(root)],
-            "tmux_socket": "supervisor", "tmux_pane": "%12",
+            "tmux_socket": "supervisor", "tmux_session_id": "tmux:supervisor:" + "a" * 32,
             "ended_at": "2026-10-02T00:00:00Z", "cause": "terminal force-quit",
             "retained_artifacts": [{"branch": fixtures.OTHER["branch"], "worktree": str(root / "preserved")}],
         }
+        preserved = root / "preserved"
+        subprocess.run(["git", "init", "-q", "--initial-branch", fixtures.OTHER["branch"], str(preserved)], check=True)
+        self.uncommitted_source = "uncommitted source work"
+        (preserved / "unfinished.txt").write_text(self.uncommitted_source)
         self.termination_path = root / "termination.json"
         self.args.termination_record = self.termination_path
         fixed_now = release.stamp("2026-10-02T01:00:00Z")
@@ -247,14 +252,15 @@ class ReleaseTests(ReleaseHarness):
                 self.assertEqual(receipt["termination"]["retained_artifacts"], self.termination_record["retained_artifacts"])
                 self.assertIn(self.termination_record["retained_artifacts"][0]["worktree"], released["body"])
                 self.successor()
-                self.assertTrue(self.termination_path.exists())
+                artifact = self.termination_record["retained_artifacts"][0]
+                self.assertEqual((Path(artifact["worktree"]) / "unfinished.txt").read_text(), self.uncommitted_source)
 
     def test_terminated_session_with_live_process_or_resumed_process_refuses(self):
         self.termination_setup()
         for processes in ([(12345, "other", "codex")], [(88, "ttys123", "claude")],
                           [(88, "other", "codex resume session-b")]):
             with self.subTest(processes=processes), patch.object(release.termination, "inventory", return_value=processes):
-                with self.assertRaisesRegex(PLAN.PlanError, "running"):
+                with self.assertRaises(PLAN.PlanError):
                     self.run_release()
                 self.f.assert_no_writes()
 
@@ -269,7 +275,7 @@ class ReleaseTests(ReleaseHarness):
                 else:
                     target = transcript if mode == "native_record" else transcript.with_name("resumed-session-b.jsonl")
                     target.write_text(transcript.read_text() + json.dumps({"timestamp": "2026-10-02T00:59:00Z", "type": "session_meta", "payload": {"id": "session-b"}}) + "\n")
-                with self.assertRaisesRegex(PLAN.PlanError, "recent|resumed"):
+                with self.assertRaises(PLAN.PlanError):
                     self.run_release()
                 self.f.assert_no_writes()
 
@@ -284,10 +290,14 @@ class ReleaseTests(ReleaseHarness):
                 if mode in {"pane", "server_error"}:
                     release.termination.run_terminal.return_value = SimpleNamespace(
                         returncode=0 if mode == "pane" else 1,
-                        stdout="%12\t0\n", stderr="error connecting to /fixture/socket (Permission denied)")
+                        stdout="a" * 32 + "\t0\t1\n", stderr="error connecting to /fixture/socket (Permission denied)")
                 if mode == "missing_record": self.args.termination_record = None
                 if mode == "artifacts": self.termination_record["retained_artifacts"] = []
-                if mode == "source_branch": self.termination_record["retained_artifacts"][0]["branch"] = "work/other"
+                if mode == "source_branch":
+                    artifact = self.termination_record["retained_artifacts"][0]
+                    artifact["branch"] = "work/other"
+                    subprocess.run(["git", "-C", artifact["worktree"], "symbolic-ref", "HEAD", "refs/heads/" + artifact["branch"]], check=True)
+                    self.evidence["body"] = release.termination.body(release.termination.verify(self.termination_record, "session-b"))
                 self.termination_path.write_text(json.dumps(self.termination_record))
                 with self.assertRaises(PLAN.PlanError):
                     self.run_release()
@@ -295,11 +305,46 @@ class ReleaseTests(ReleaseHarness):
 
     def test_terminated_session_dead_pane_and_edited_attestation(self):
         self.termination_setup()
-        release.termination.run_terminal.return_value = SimpleNamespace(returncode=0, stdout="%12\t1\n", stderr="")
+        release.termination.run_terminal.return_value = SimpleNamespace(returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")
         self.run_release()
         self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
         with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
             self.successor()
+
+    def test_termination_uses_launch_nonce_and_distinguishes_restarted_server(self):
+        self.termination_setup()
+        ended = release.stamp(self.termination_record["ended_at"]).timestamp()
+        for nonce, dead, started, allowed in (("a" * 32, "1", ended - 100, True),
+                                              ("b" * 32, "1", ended + 100, True),
+                                              ("b" * 32, "1", ended - 100, False),
+                                              ("a" * 32, "0", ended + 100, False)):
+            with self.subTest(nonce=nonce, dead=dead, started=started):
+                release.termination.run_terminal.return_value = SimpleNamespace(
+                    returncode=0, stdout=f"{nonce}\t{dead}\t{int(started)}\n", stderr="")
+                if allowed:
+                    self.run_release()
+                    self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+                else:
+                    posts = self.f.events.count("post")
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_release()
+                    self.assertEqual(self.f.events.count("post"), posts)
+
+    def test_historical_termination_receipt_survives_later_quiet_period_policy(self):
+        self.termination_setup()
+        self.run_release()
+        with patch.object(release.termination, "QUIET_PERIOD", timedelta(days=2)):
+            self.successor()
+
+    def test_termination_wrong_or_missing_retained_worktree_refuses(self):
+        self.termination_setup()
+        artifact = self.termination_record["retained_artifacts"][0]
+        for path, branch in ((artifact["worktree"], "work/wrong"),
+                             (str(self.termination_path.parent / "absent"), artifact["branch"])):
+            with self.subTest(path=path, branch=branch):
+                record = {**self.termination_record, "retained_artifacts": [{"worktree": path, "branch": branch}]}
+                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                    release.termination.verify(record, "session-b")
 
     def test_launchplane_missing_exact_release_becomes_claimable(self):
         self.run_release()

@@ -31,7 +31,7 @@ def stamp(value):
     return result
 
 
-def validate(data, session):
+def validate(data, session, *, apply_policy=True):
     if not isinstance(data, dict) or data.get("session_id") != session:
         raise ValueError("Termination evidence must identify the exact native session")
     if type(data.get("pid")) is not int or data["pid"] <= 0:
@@ -49,14 +49,15 @@ def validate(data, session):
                 or not isinstance(artifact.get("worktree"), str) or not Path(artifact["worktree"]).is_absolute()):
             raise ValueError("Each retained artifact requires a branch and absolute worktree path")
     ended, checked, last = (stamp(data[key]) for key in ("ended_at", "checked_at", "last_activity_at"))
-    if last > ended or ended > checked or checked - last < QUIET_PERIOD:
+    if last > ended or ended > checked or apply_policy and checked - last < QUIET_PERIOD:
         raise ValueError("Source transcript has recent activity or activity after termination")
-    if data.get("terminal_state") not in {"pane dead", "server missing"}:
+    if (not isinstance(data.get("terminal_state"), str) or not data["terminal_state"]
+            or apply_policy and data["terminal_state"] not in {"pane dead", "server missing", "server replaced"}):
         raise ValueError("Termination evidence requires a dead pane or missing server")
     return data
 
 
-def evidence(text, session):
+def evidence(text, session, *, apply_policy=True):
     lines = text.splitlines()
     if lines[:1] != [f"Terminated session {session}"]:
         return None
@@ -64,16 +65,19 @@ def evidence(text, session):
     if len(records) != 1:
         raise ValueError("Terminated-session attestation requires one termination evidence record")
     data = json.loads(records[0][len("<!-- " + MARKER):-len(" -->")])
-    return validate(data, session)
+    return validate(data, session, apply_policy=apply_policy)
 
 
 def terminal_state(record):
-    server, pane = record.get("tmux_socket"), record.get("tmux_pane")
-    if (not isinstance(server, str) or not re.fullmatch(r"[\w.-]+", server)
-            or not isinstance(pane, str) or not re.fullmatch(r"%\d+", pane)):
-        raise ValueError("Termination record requires its original tmux socket name and pane ID")
-    result = run_terminal(["tmux", "-L", server, "list-panes", "-a", "-F", "#{pane_id}\t#{pane_dead}"],
-                            capture_output=True, text=True, timeout=10, check=False)
+    server, identity = record.get("tmux_socket"), record.get("tmux_session_id")
+    if not isinstance(server, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", server):
+        raise ValueError("Termination record requires its original tmux socket name")
+    match = re.fullmatch(rf"tmux:{re.escape(server)}:([0-9a-f]{{32}})", identity or "")
+    if not match:
+        raise ValueError("Termination record requires the original nonce-bearing tmux session ID")
+    result = run_terminal(["tmux", "-L", server, "list-panes", "-a", "-F",
+                           "#{@supervisor_identity}\t#{pane_dead}\t#{start_time}"],
+                          capture_output=True, text=True, timeout=10, check=False)
     if result.returncode:
         error = result.stderr.strip()
         if result.returncode == 1 and (
@@ -82,8 +86,17 @@ def terminal_state(record):
         ):
             return "server missing"
         raise ValueError("Cannot verify the original tmux server; preserve claims")
-    if f"{pane}\t1" in result.stdout.splitlines():
+    rows = [line.split("\t") for line in result.stdout.splitlines()]
+    if not rows or any(len(row) != 3 or row[1] not in {"0", "1"} or not row[2].isdigit() for row in rows):
+        raise ValueError("Original tmux server inventory is uncertain")
+    matches = [row for row in rows if row[0] == match[1]]
+    if len(matches) == 1 and matches[0][1] == "1":
         return "pane dead"
+    # A restarted server reuses pane numbers. Its creation time and absence of
+    # the recorded launch nonce establish that the original server is gone.
+    starts = {int(row[2]) for row in rows}
+    if not matches and len(starts) == 1 and starts.pop() > stamp(record["ended_at"]).timestamp():
+        return "server replaced"
     raise ValueError("Original tmux pane is live or its identity is uncertain")
 
 
@@ -91,6 +104,8 @@ def verify(record, session):
     """Never infer termination from absence alone; caller supplies original identity."""
     if record.get("session_id") != session or record.get("host") != socket.gethostname():
         raise ValueError("Run termination checks on the recorded source host with the exact native session")
+    if record.get("harness") not in {"codex", "claude"}:
+        raise ValueError("Termination record requires the original native harness")
     pid, tty = record.get("pid"), record.get("tty")
     if type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty.strip():
         raise ValueError("Termination record requires the recorded source PID and TTY")
@@ -126,9 +141,19 @@ def verify(record, session):
         if session_record.session_status(entry) != before:
             raise ValueError("Source transcript changed during termination checks")
         last = max(last, max(times)) if last else max(times)
-    data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts")}
+    data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
     data.update(checked_at=now.isoformat(), last_activity_at=last.isoformat(), terminal_state=terminal_state(record))
-    return validate(data, session)
+    validate(data, session)
+    for artifact in data["retained_artifacts"]:
+        path = Path(artifact["worktree"]).resolve()
+        # Require the worktree root, not an arbitrary directory within a clone.
+        root = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        branch = subprocess.run(["git", "-C", str(path), "symbolic-ref", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        if Path(root).resolve() != path or branch != artifact["branch"]:
+            raise ValueError("Retained worktree does not match its recorded root and branch")
+    return data
 
 
 def body(data):
@@ -152,7 +177,7 @@ def verify_attestation(record_path, text, session):
         raise ValueError("Terminated-session release requires --termination-record for fresh source-host checks")
     record = json.loads(Path(record_path).read_text(encoding="utf-8"))
     observed = verify(record, session)
-    for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts"):
+    for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id"):
         if observed[key] != attested[key]:
             raise ValueError("Termination record no longer matches the attested source identity or retained artifacts")
     # The attestation can be reused after a retry, but fresh probes always run.

@@ -866,7 +866,7 @@ Update the ledger's handoff URL from the actual issue record.
 ### Recovery after a host or terminal crash
 
 A session killed without closeout cannot supply its own safe-exit verdict.
-Use the terminated-session route below, from the original source host, as a
+For a tmux-hosted worker, use the terminated-session route below, from the original source host, as a
 Supervisor or direction session. Leave its worktrees, branches and uncommitted
 files in place. `release_session_claims.py finish` remains the route for a
 session that actually finished and wrote its verdict.
@@ -875,7 +875,8 @@ Copy the exact original session identity from the private launch ledger into
 a private JSON object. Preserve its native `session_id`, `harness`, recorded
 `pid`, `tty`, and `transcript`; do not infer identity from a token mentioned in
 someone else's transcript. Add the recorded source `host` (matching that
-host's hostname), original `tmux_socket` name and `tmux_pane` ID, actual
+host's hostname), original `tmux_socket` name and nonce-bearing
+`tmux_session_id` from launch output, actual
 timezone-qualified `ended_at` and `cause`. Name every preserved worktree and
 branch, including work in other repositories, under `retained_artifacts`.
 The record has this shape (values are illustrative):
@@ -890,7 +891,7 @@ The record has this shape (values are illustrative):
   "transcript": "/private/sessions/exact-native-session-id.jsonl",
   "transcript_roots": ["/private/sessions", "/private/archived_sessions"],
   "tmux_socket": "supervisor",
-  "tmux_pane": "%12",
+  "tmux_session_id": "tmux:supervisor:0123456789abcdef0123456789abcdef",
   "ended_at": "2026-01-01T20:16:00-05:00",
   "cause": "terminal force-quit killed the original tmux server",
   "retained_artifacts": [
@@ -921,9 +922,12 @@ ordinary PR link, ownership and commit-activity guards still apply.
 
 The helper freshly checks the recorded PID/TTY and resumed processes, exact
 native transcript identity/activity, and the original dead pane or missing
-server before release and again on readback. It refuses a running process,
+server before release and again on readback. A replacement server qualifies
+only when its start time is after termination and the original launch nonce
+is absent; reused pane numbers supply no identity evidence. Retained paths
+must still be worktree roots on their recorded branches. It refuses a running process,
 transcript activity within five minutes, activity after the actual termination,
-a live/uncertain pane, or a changed record. PID reuse refuses too. It never
+a live/uncertain terminal, or a changed record. PID reuse refuses too. It never
 stops a process or removes a terminal. The release records the retained
 artifacts; claim release does not clear waits, native blockers or retained-work
 ownership gates. Keep the original termination time across retries.
@@ -934,12 +938,22 @@ distinct from the release comment's ID. When retained PRs need a handoff, pass
 the new release comment's numeric ID as `--handoff-comment`. Inspect the
 supported route with the helper's help before putting it in a brief:
 
+Without a retained PR, continue the verified preserved branch using only the
+released original claim ID:
+
 ```sh
-uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch <verified-preserved-branch> --resume-from <original-claim-comment-id> --handoff-comment <release-comment-id> --next-action "Resume the retained work after checking its current state"
+uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch <verified-preserved-branch> --resume-from <original-claim-comment-id> --next-action "Resume the preserved branch after checking its current state"
 ```
 
-Omit `--handoff-comment` when there is no retained-PR handoff. Add the actual
-admission and existing wait-resolution evidence when required. Read
+With a retained-PR handoff, claim a **new task branch**, separate from every
+retained PR/source branch. The existing retained-handoff route preserves the
+original worktrees and PRs; it does not authorize editing their branches.
+
+```sh
+uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch work/<new-task-slug> --resume-from <original-claim-comment-id> --handoff-comment <release-comment-id> --next-action "Continue the prerequisite while preserving the retained PR work"
+```
+
+Add the actual admission and existing wait-resolution evidence when required. Read
 [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
 for retained PR and conflict-refresh rules; a release grants no new product,
 runtime, or merge authority. Recheck all preserved artifacts before adopting
