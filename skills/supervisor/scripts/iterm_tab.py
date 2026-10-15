@@ -18,6 +18,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 import account_choice
@@ -628,6 +629,120 @@ def with_account(command_text, choice, brief=None):
     return " && ".join([*prefixes, command_text])
 
 
+def git_trust_metadata(path):
+    """Read bounded regular Git metadata, as Codex's trust-root resolver does."""
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024:
+        raise ValueError("unusable Git trust metadata")
+    return path.read_text(encoding="utf-8").strip()
+
+
+def git_trust_pointer(marker):
+    text = git_trust_metadata(marker)
+    if not text.startswith("gitdir:") or not text[7:].strip():
+        raise ValueError("invalid Git directory pointer")
+    return Path(os.path.normpath(marker.parent / text[7:].strip()))
+
+
+def codex_git_trust_root(directory):
+    """Resolve the main checkout, validating linked-worktree backlinks read-only.
+
+    Mirrors openai/codex codex-rs/git-utils/src/trust.rs: an arbitrary .git
+    pointer (including a submodule) does not inherit another checkout's trust.
+    """
+    try:
+        for root in (directory, *directory.parents):
+            marker = root / ".git"
+            if marker.is_dir():
+                if (marker / "HEAD").exists():
+                    return root
+                continue
+            if not marker.exists():
+                continue
+            git_dir = git_trust_pointer(marker)
+            if git_dir.is_symlink() or not git_dir.is_dir():
+                return None
+            canonical = git_dir.resolve()
+            if canonical.parent.name != "worktrees":
+                return None
+            common = canonical.parent.parent
+            backlink = canonical / git_trust_metadata(canonical / "gitdir")
+            linked_common = canonical / git_trust_metadata(canonical / "commondir")
+            if (backlink.name != ".git" or backlink.parent.resolve() != root.resolve()
+                    or linked_common.resolve() != common):
+                return None
+            main_root = git_dir.parent.parent.parent
+            main_marker = main_root / ".git"
+            main_git_dir = main_marker if main_marker.is_dir() else git_trust_pointer(main_marker)
+            return main_root if main_git_dir.resolve() == common else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def check_codex_project(command_text, choice):
+    """Require an explicit, already-trusted directory in the selected Codex home."""
+    if choice["provider"] != "openai":
+        if launch_agent(command_text) == "codex":
+            raise ValueError("Codex launches require --account-provider openai")
+        return
+    words, _ = launch_parts(command_text)
+    if Path(words[0]).name != "codex":
+        raise ValueError("openai account selection requires a direct Codex invocation")
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("-C", "--cd", action="append")
+    try:
+        options, _ = parser.parse_known_args(words[1:])
+    except argparse.ArgumentError as error:
+        raise ValueError("Codex launches require -C /absolute/repository") from error
+    if not options.cd or len(options.cd) != 1:
+        raise ValueError("Codex launches require exactly one -C /absolute/repository (or --cd)")
+    directory = Path(options.cd[0])
+    if not directory.is_absolute() or not directory.is_dir():
+        raise ValueError("Codex -C/--cd must name an existing absolute repository directory")
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
+    config_path = home / "config.toml"
+    try:
+        with config_path.open("rb") as stream:
+            config = tomllib.load(stream)
+    except FileNotFoundError:
+        config = {}
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Cannot verify Codex folder trust in {config_path} "
+                         f"({type(error).__name__}); inspect that config before retrying") from None
+    projects = config.get("projects", {})
+    trust_root = codex_git_trust_root(directory)
+    target = trust_root or directory
+    project = {}
+    matched = False
+    if isinstance(projects, dict):
+        for path in (directory, trust_root):
+            if path is None:
+                continue
+            for key in (str(path.resolve()), str(path)):
+                if key in projects:
+                    target, project = Path(key), projects[key]
+                    matched = True
+                    break
+            else:
+                continue
+            break
+    if not isinstance(project, dict) or project.get("trust_level") != "trusted":
+        command = shlex.join(["codex", "-C", str(directory)])
+        recovery = (
+            f"review the existing projects entry for {target} yourself and deliberately set "
+            "its trust_level to trusted only if appropriate, then retry; Codex may not "
+            "show another folder-trust prompt"
+            if matched else
+            f"open CODEX_HOME={shlex.quote(str(home))} {command} interactively and review "
+            "the folder-trust prompt, then retry"
+        )
+        raise ValueError(
+            f"Codex folder is not trusted: {directory} (trust target: {target}) in {config_path}; "
+            f"{recovery}. An unrelated trusted parent is insufficient; "
+            "the launcher never edits config.toml"
+        )
+
+
 def prepare_launches(args):
     """Validate the full batch and prepare accounts before creating terminals."""
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
@@ -653,6 +768,8 @@ def prepare_launches(args):
             choices = account_choice.select_batch(
                 args.account_provider, args.account_config, args.account, count=len(files)
             )
+        for text, choice in zip(command_texts, choices):
+            check_codex_project(text, choice)
         command_texts = [with_account(text, choice, brief)
                          for text, choice, brief in zip(command_texts, choices, briefs)]
     elif getattr(args, "account", None):

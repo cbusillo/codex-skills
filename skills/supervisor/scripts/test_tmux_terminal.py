@@ -650,9 +650,14 @@ class TmuxTests(TmuxFixture):
     def test_codex_uses_shared_daemon_preflight_and_selected_home(self):
         codex = self.root / "codex"
         self.agent.rename(codex)
-        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote unix://")
+        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote unix:// -C {shlex.quote(str(self.root))}")
         self.choice = {**self.choice, "provider": "openai", "account_id": "openai-ab12",
                        "env": {"CODEX_HOME": str(self.root / "codex-account")}}
+        home = Path(self.choice["env"]["CODEX_HOME"])
+        home.mkdir()
+        (home / "config.toml").write_text(
+            f'[projects.{json.dumps(str(self.root.resolve()))}]\ntrust_level = "trusted"\n'
+        )
         before = self.terminal.list()
         with patch.object(iterm_tab, "check_codex_daemon", side_effect=ValueError("daemon unavailable")):
             with self.assertRaisesRegex(ValueError, "daemon"):
