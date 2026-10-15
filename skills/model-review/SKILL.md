@@ -100,6 +100,8 @@ paper over it by pasting files into the prompt.
 The helper requests a provider-neutral JSON completion result internally and
 returns just its report as `response` or the output file. Only `status: completed`
 with a nonempty `review` succeeds; a completed no-findings report may say `none`.
+The `review` field is a string; requests for structured findings are encoded as
+JSON text inside it, so callers still receive that text as their report.
 An explicit `refused` or `incomplete` status fails with that bounded outcome.
 Missing or malformed completion evidence is `unavailable`, even after file reads.
 These failures retain model/account provenance but omit partial or withheld text;

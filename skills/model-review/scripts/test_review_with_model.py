@@ -373,12 +373,12 @@ class ReviewWithModelTests(unittest.TestCase):
         # Vary the language, not one provider's exact refusal sentence. An unstructured
         # response cannot establish completion, even after successful real file reads.
         responses = [
-            "A safety check stopped this review after partial reads. No findings report is available.",
-            "I inspected example.txt but cannot finish the requested assessment.",
-            json.dumps({"status": "refused", "review": "WITHHELD-REPORT-CONTENT " * 500}),
-            json.dumps({"status": "incomplete", "review": "WITHHELD-REPORT-CONTENT"}),
+            ("A safety check stopped this review after partial reads. No findings report is available.", "unavailable"),
+            ("I inspected example.txt but cannot finish the requested assessment.", "unavailable"),
+            (json.dumps({"status": "refused", "review": "WITHHELD-REPORT-CONTENT " * 500}), "refused"),
+            (json.dumps({"status": "incomplete", "review": "WITHHELD-REPORT-CONTENT"}), "incomplete"),
         ]
-        for response in responses:
+        for response, outcome in responses:
             with self.subTest(response=response[:60]):
                 code, result = self.run_helper(
                     "run", "--provider", "anthropic", "--repo", str(self.repo),
@@ -386,7 +386,7 @@ class ReviewWithModelTests(unittest.TestCase):
                     FAKE_CLAUDE_JSON=json.dumps({"result": response, "modelUsage": {"claude-test": {}}}),
                     FAKE_CLAUDE_SOURCE_FILE=str(source_copy), FAKE_REVIEW_CALLS=str(calls))
                 self.assertEqual((code, result["ok"]), (1, False))
-                self.assertIn(result["outcome"], {"unavailable", "refused", "incomplete"})
+                self.assertEqual(result["outcome"], outcome)
                 self.assertEqual(result["model"], "claude-test")
                 self.assertEqual(source_copy.read_text(), source.read_text())
                 self.assertTrue(result["launch_receipt"])
@@ -412,7 +412,8 @@ class ReviewWithModelTests(unittest.TestCase):
         self.install("agy", FAKE_AGY)
         for provider in review_with_model.PROVIDERS:
             # Whole-response fences are formatting, not evidence of interruption.
-            for response in (completed("none"), "```json\n" + completed("none") + "\n```"):
+            for response in (completed("none"), "```json\n" + completed("none") + "\n```",
+                             "```JSON\n" + completed("none") + "\n```"):
                 with self.subTest(provider=provider, completed=response):
                     code, result = self.review(
                         provider, FAKE_ANSWER=response, FAKE_CLAUDE_JSON=json.dumps({"result": response}),

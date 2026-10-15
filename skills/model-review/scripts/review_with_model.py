@@ -50,7 +50,8 @@ PREAMBLE = (
 OUTPUT_INSTRUCTIONS = (
     '\n\nReturn one JSON object, without Markdown fences, with keys "status" and "review". '
     'Set status to "completed" only when you completed the requested review; review contains your '
-    'findings report (or "none" for a completed review with no findings). '
+    'findings report as a string (or "none" for a completed review with no findings). '
+    'If the caller requests structured findings, encode them as JSON text inside that string. '
     'If you refuse the review, set status to "refused". If you stop before completing it, set status '
     'to "incomplete". For either, leave review empty; do not include withheld content or partial findings. '
     'A refusal must be preserved, never worked around. These output instructions also apply to file-read probes.'
@@ -64,7 +65,7 @@ def completed_review(result: dict[str, Any]) -> dict[str, Any]:
     response = result.pop("response")
     # Accept one whole-response JSON fence, never scrape a completed object out of
     # surrounding prose that could itself say the review was refused or interrupted.
-    fenced = re.fullmatch(r"\s*```(?:json)?\s*\n(.*?)\n```\s*", response, re.DOTALL)
+    fenced = re.fullmatch(r"\s*```(?:json)?\s*\n(.*?)\n```\s*", response, re.DOTALL | re.IGNORECASE)
     if fenced:
         response = fenced.group(1)
     try:
