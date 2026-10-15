@@ -2083,6 +2083,12 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         raise PlanError("Session-ended evidence is not on the cited issue")
     completed = []
     result = {}
+    release_state = "not_started"
+    recovery_action = (
+        "Read the exact release_comment and cited evidence before recovery. A pending record does not release ownership; "
+        "resolve the refusal and freshly verify closure before another release. If confirmation was attempted, "
+        "inspect whether that exact comment is pending or confirmed; never replay an unknown write. "
+        "Preserve other claims, retained artifacts and recorded waits.")
     # Fresh-read before writing and again after posting. Native peer coverage
     # stays explicit; the caller attests closure for hosts without peer APIs.
     def preflight():
@@ -2184,14 +2190,27 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             emit({"ok": True, "dry_run": True, "release_body": body, "related_ids": args.related_claim_comment,
                   "session_coverage": inventory.get("session_coverage"), "completed_steps": completed})
             return
-        result = github_comment_core.comment("issue", issue["number"], body, repo=issue["repo"],
+        pending_body = github_plan_release.pending_body(body)
+        release_state = "pending"
+        result = github_comment_core.comment("issue", issue["number"], pending_body, repo=issue["repo"],
             gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor, completed_steps=completed, failed_step="post_release", dedupe_body=True)
         completed.append("post_release")
         issue, comments, inventory, fresh_body, related = preflight()
         release_id = result["comment"]["id"]
-        if not any(c.get("id") == release_id and (c.get("body") or "").startswith(body) for c in comments) or fresh_body != body:
+        pending = next((c for c in comments if c.get("id") == release_id), None)
+        if pending is None or not (pending.get("body") or "").startswith(pending_body) or fresh_body != body:
             raise PlanError("Release readback changed; preserve records and inspect before any retry")
         completed.append("release_readback")
+        # The full post-write liveness/ownership check passed while the record
+        # was inert. Publish authority only now, with the maintained exact-comment
+        # edit's author/body/timestamp guards and single-attempt PATCH semantics.
+        release_state = "confirmation_unconfirmed"
+        result = github_comment_core.comment("issue", issue["number"], body, repo=issue["repo"],
+            edit_comment=release_id, expected_body=pending["body"], expected_updated_at=pending["updated_at"],
+            gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
+            completed_steps=completed, failed_step="confirm_release")
+        completed.append("confirm_release")
+        release_state = "confirmed"
         related_results = []
         for comment in related:
             related_results.append(github_comment_core.comment("issue", issue["number"],
@@ -2199,16 +2218,20 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 repo=issue["repo"], gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
                 completed_steps=completed, failed_step="release_related_ownership", dedupe_body=True))
         emit({"ok": True, "release_comment": result["comment"], "related_releases": related_results,
+              "release_state": release_state,
               "source_claim": args.claim_comment, "session_coverage": inventory.get("session_coverage"),
               "completed_steps": completed, "exclusive_lock": False})
     except PlanError as exc:
-        exc.payload.update(completed_steps=completed, release_comment=result.get("comment", {}))
+        exc.payload.update(completed_steps=completed, release_comment=result.get("comment", {}),
+                           release_state=release_state, release_recovery_action=recovery_action)
         raise
     except github_comment_core.CommentError as exc:
         raise PlanError(str(exc), failure=exc.failure, api_result=exc.api_result,
-            payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
+            payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {}),
+                     "release_state": release_state, "release_recovery_action": recovery_action}) from exc
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
         raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {}),
+            "release_state": release_state, "release_recovery_action": recovery_action,
             "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 

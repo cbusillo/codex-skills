@@ -46,6 +46,8 @@ class ReleaseHarness(unittest.TestCase):
         self.evidence_failure = None
         self.source_branch_date = None
         self.race = lambda: None
+        self.confirmation_failure = None
+        self.confirmation_applied = False
 
     @staticmethod
     def comment(n, body, date):
@@ -69,10 +71,21 @@ class ReleaseHarness(unittest.TestCase):
         return "bot", copy.deepcopy(next(p for p in self.f.pulls if p["number"] == n))
 
     def post(self, kind, number, body, **kwargs):
+        if kwargs.get("edit_comment") is not None:
+            self.f.events.append("confirm_release")
+            c = next(c for c in self.f.comments if c["id"] == kwargs["edit_comment"])
+            self.assertEqual(c["body"], kwargs["expected_body"])
+            self.assertEqual(c["updated_at"], kwargs["expected_updated_at"])
+            if not self.confirmation_failure or self.confirmation_applied:
+                c["body"] = body
+            if self.confirmation_failure:
+                raise self.confirmation_failure
+            return {"ok": True, "comment": {"id": c["id"], "url": c["html_url"]}}
         result = self.f.post(kind, number, body, **kwargs)
         c = self.f.comments[-1]
         c.update(created_at="2026-10-03T00:00:00Z", updated_at="2026-10-03T00:00:00Z")
         result["comment"]["url"] = f"https://github.com/owner/repo/issues/42#issuecomment-{c['id']}"
+        c["html_url"] = result["comment"]["url"]
         self.race()
         return result
 
@@ -795,6 +808,83 @@ class ReleaseTests(ReleaseHarness):
         with self.assertRaisesRegex(PLAN.PlanError, "activity after") as caught: self.run_release()
         self.assertIn("post_release", caught.exception.payload["completed_steps"])
         self.assertEqual(self.f.events.count("post"), 1)
+
+    def test_post_write_resumption_or_evidence_change_leaves_no_usable_release(self):
+        for route in ("finished", "terminated"):
+            for mode in ("session", "evidence"):
+                with self.subTest(route=route, mode=mode):
+                    self.setUp()
+                    if route == "terminated":
+                        self.termination_setup()
+                    def resume():
+                        if mode == "session":
+                            self.f.inventory["sessions"] = [{"sessionId": fixtures.OTHER["session"]}]
+                        else:
+                            self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
+                    self.race = resume
+                    with self.assertRaises(PLAN.PlanError) as caught:
+                        self.run_release()
+                    posted = self.f.comments[-1]
+                    self.assertEqual(caught.exception.payload["release_comment"]["id"], posted["id"])
+                    self.assertIsNone(release.receipt_for(posted))
+                    self.assertIsNone(CLAIM.released_claim_id(posted["body"]))
+                    self.assertNotIn("confirm_release", self.f.events)
+                    # A transient process disappearing must not revive the failed release.
+                    self.f.inventory["sessions"] = []
+                    self.assert_source_still_owned()
+                    posts = self.f.events.count("post")
+                    self.f.args.resume_from = self.args.claim_comment
+                    with patch.object(self.f, "read_api", side_effect=self.api), self.assertRaises(PLAN.PlanError):
+                        self.f.run_claim()
+                    self.assertEqual(self.f.events.count("post"), posts)
+                    if route == "terminated":
+                        artifact = self.termination_record["retained_artifacts"][0]
+                        self.assertEqual((Path(artifact["worktree"]) / "unfinished.txt").read_text(), self.uncommitted_source)
+
+    def assert_source_still_owned(self):
+        effective = release.effective_comments(self.f.comments)
+        conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
+        self.assertIn(self.args.claim_comment, [c["id"] for c in conflicts])
+
+    def test_pending_release_preserves_sibling_claim_and_recorded_wait(self):
+        sibling = self.comment(7, CLAIM.marker({**fixtures.OTHER, "session": "sibling-session"}), "2026-10-01T01:00:00Z")
+        self.f.comments.append(sibling)
+        self.f.wait = fixtures.wait_record.reviewed(
+            evidence="Owner acceptance pending", waiting_for="Owner test", ends_when="Owner accepts")
+        original_wait = copy.deepcopy(self.f.wait)
+        self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
+        with self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        self.assertEqual(self.f.wait, original_wait)
+        self.assertIn(sibling, self.f.comments)
+        self.assert_source_still_owned()
+
+    def test_uncertain_confirmation_preserves_exact_record_and_never_replays(self):
+        for route in ("finished", "terminated"):
+            for applied in (False, True):
+                with self.subTest(route=route, applied=applied):
+                    self.setUp()
+                    if route == "terminated":
+                        self.termination_setup()
+                    self.confirmation_applied = applied
+                    self.confirmation_failure = github_comment.CommentError(
+                        "Confirmation response lost", failure=PLAN.github_api_core.FailureDetail(
+                            cause="transport", message="Response lost", retryable=False,
+                            fallback_eligible=False, disposition="stop", write_outcome="unknown"),
+                        payload={"outcome_certainty": "unknown"})
+                    with self.assertRaises(PLAN.PlanError) as caught:
+                        self.run_release()
+                    self.assertEqual(self.f.events.count("post"), 1)
+                    self.assertEqual(self.f.events.count("confirm_release"), 1)
+                    posted = self.f.comments[-1]
+                    self.assertEqual(caught.exception.payload["release_comment"]["id"], posted["id"])
+                    self.assertEqual(caught.exception.payload["outcome_certainty"], "unknown")
+                    self.assertTrue(caught.exception.payload["release_recovery_action"])
+                    if applied:
+                        release.validate_evidence(release.receipt_for(posted), self.evidence, BOT)
+                    else:
+                        self.assertIsNone(release.receipt_for(posted))
+                        self.assert_source_still_owned()
 
     def test_retained_pr_updates_after_closure_refuse_before_post(self):
         self.refresh_setup()

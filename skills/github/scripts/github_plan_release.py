@@ -16,6 +16,7 @@ import github_plan_termination as termination
 
 COMMENT_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 RELEASE_MARKER = "github-plan:abandoned-release "
+PENDING_MARKER = "github-plan:pending-release "
 ISSUE_REFUSAL_SCOPE = "issue"
 
 
@@ -221,6 +222,12 @@ def prepare_release(
                + ("\n".join(f"- {a.get('worktree') or 'no local worktree'} (branch {a['branch']})" for a in terminated["retained_artifacts"]) or "None; no source branch or worktree was created.")
                + "\n" if terminated is not None else "")
             + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
+
+
+def pending_body(body: str) -> str:
+    """Stage preservation evidence without an operative release or receipt."""
+    return body.replace("Released claim ", "Pending release of claim ", 1).replace(
+        "<!-- " + RELEASE_MARKER, "<!-- " + PENDING_MARKER)
 
 
 def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:
