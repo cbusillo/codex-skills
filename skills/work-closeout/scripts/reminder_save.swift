@@ -252,7 +252,7 @@ do {
         }
         app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.reminders").first
         guard let app, remindersWindow(app) != nil else {
-            finish("manual_required", "Open one Reminders list window with its sidebar visible; no mutation")
+            finish("manual_required", "Open one Reminders list window with its sidebar visible; close extra list windows before saving. No mutation")
         }
     }
     let url = hasURL ? URL(string: request.url) : nil

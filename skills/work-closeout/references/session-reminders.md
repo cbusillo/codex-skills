@@ -19,7 +19,9 @@ uv run <skill-dir>/scripts/reminder_save.py --plain \
 
 Plain mode needs no harness, directory or session ID. Use `--notes` for ordinary
 notes and optionally `--url https://example.com/report` for a web attachment;
-`--link` stays reserved for session issue/PR notes. Choose `--repeat daily`,
+`--link` stays reserved for session issue/PR notes. For international domains,
+use the browser-copied ASCII/punycode hostname; raw Unicode hostnames are refused
+rather than converted to a potentially different site. Unicode paths are escaped. Choose `--repeat daily`,
 `weekdays`, `weekly --weekday monday` (any full lowercase weekday), or `monthly`;
 omit it for a one-off. The first due date must match the weekly day or fall on a
 weekday for `weekdays`. Monthly repeats use the first due date's day with native
@@ -37,7 +39,8 @@ refuses duplicate incomplete matches. When attaching a link, titles must also be
 unique among completed items so the native UI can select one row. Plain reminders
 without links may reuse completed titles and update a live item beside completed
 occurrences. For a linked repeating reminder, completed same-title occurrences
-therefore require the visible manual workflow for later updates. An existing incomplete match needs its explicit `--update-id` and update
+therefore require the visible manual workflow for later updates. An existing
+incomplete match needs its explicit `--update-id` and update
 authority; the same title is required. The same ID-based repair and deletion
 rules below apply. A renamed title is a different target, so do not rename to
 bypass an existing-item refusal.
@@ -49,7 +52,10 @@ UI adapter. The `saved` receipt requires saved-field readback in both cases;
 `visible_url_verified` is false when no URL was requested. Removing an existing
 link requires the visible manual workflow; a no-link update to an item with an
 EventKit URL refuses before writing, because EventKit absence alone cannot prove
-that the native attachment disappeared. Never recreate after
+that the native attachment disappeared. A `saved` receipt without a requested URL
+verifies no EventKit URL; it does not prove the absence of a UI-only attachment
+on an item created outside this helper. Use the visible manual workflow to remove
+those attachments. Never recreate after
 `partial`, a timeout or an uncertain receipt: inspect the same item first. For
 manual fallback, check the exact title in the unique list and use the dry-run
 fields. Terminal confirmation below applies only to session links.
@@ -216,5 +222,4 @@ the most recent thread; use a separately requested fresh-session reminder instea
 - [iTerm2 command URL and confirmation](https://iterm2.com/documentation-url-scheme.html)
 - [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) and installed `codex resume --help`
 - [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
-
 - [Apple EventKit recurrence rules](https://developer.apple.com/documentation/eventkit/ekrecurrencerule)

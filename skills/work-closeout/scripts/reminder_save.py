@@ -57,7 +57,9 @@ def plain_plan(title: str, notes: str, url: str | None, list_name: str,
         def escaped(value: str, safe: str) -> str:
             return quote(re.sub(r"%(?![0-9a-fA-F]{2})", "%25", value), safe=safe)
 
-        host = parsed.hostname.encode("idna").decode("ascii")
+        if not parsed.hostname.isascii():
+            raise ValueError("Use a browser-copied ASCII/punycode hostname; Unicode paths are supported")
+        host = parsed.hostname
         if ":" in host:
             host = f"[{host}]"
         port = f":{parsed.port}" if parsed.port is not None else ""

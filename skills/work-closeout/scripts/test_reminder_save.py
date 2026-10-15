@@ -257,7 +257,9 @@ class PlainReminderTests(unittest.TestCase):
         # Every selected weekday is accepted only with its matching first occurrence.
         for index, day in enumerate(reminder_save.WEEKDAYS):
             fields = self.plain(due=f"2026-10-{19 + index}T08:00", weekday=day)
-            self.assertEqual(fields["weekday"], index)
+            self.assertEqual(fields["due"], f"2026-10-{19 + index}T08:00")
+            with self.assertRaises(ValueError):
+                self.plain(due=fields["due"], weekday=reminder_save.WEEKDAYS[(index + 1) % 7])
 
     def test_plain_invalid_fields_and_schedule(self):
         for overrides in ({"title": " "}, {"title": "a\nb"}, {"notes": "bad\x00note"},
@@ -310,15 +312,22 @@ class PlainReminderTests(unittest.TestCase):
                             self.assertEqual(self.decisions()[0][0]["action"], action)
 
     def test_web_links_are_normalized_before_writer_and_dry_run(self):
-        url = "https://bücher.example/wiki/Köln?q=é#résumé"
+        url = "https://xn--bcher-kva.example/wiki/Köln?q=é#résumé"
         fields = self.plain(url=url)
         self.assertTrue(fields["url"].isascii())
-        self.assertEqual(urlsplit(fields["url"]).hostname, "bücher.example".encode("idna").decode("ascii"))
+        self.assertEqual(urlsplit(fields["url"]).hostname, urlsplit(url).hostname)
         self.assertEqual(unquote(urlsplit(fields["url"]).path), urlsplit(url).path)
         with patch.object(reminder_save.sys, "platform", "darwin"), self.writer([], final={
                 "status": "saved", "saved_fields_verified": True, "visible_url_verified": True}):
             reminder_save.native(fields)
         self.assertEqual(self.writers[0].sent[0]["url"], fields["url"])
+
+    def test_unicode_domains_require_browser_encoded_host_instead_of_rewriting_it(self):
+        for host in ("faß.de", "βόλος.com", "bücher.example"):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                self.plain(url=f"https://{host}/report")
+        url = "https://xn--fa-hia.de/menu"
+        self.assertEqual(self.plain(url=url)["url"], url)
 
     def test_url_components_escape_brackets_and_bare_percent_before_saving(self):
         for url in ("https://example.com/report[1]?filter[status]=open&pct=100%",
