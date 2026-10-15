@@ -30,6 +30,9 @@ def cancellation_fixture(mode: str) -> None:
     module.api_json = module.real_api_json
     api = module.github_api_core
     entered = threading.Event()
+    both_sleeping = threading.Event()
+    sleepers = set()
+    sleeper_lock = threading.Lock()
     attempted = []
     stopped_at = []
     pools = []
@@ -39,6 +42,10 @@ def cancellation_fixture(mode: str) -> None:
     def runtime(**kwargs):
         original_sleep = kwargs.get("sleep", time.sleep)
         def sleep(seconds):
+            with sleeper_lock:
+                sleepers.add(threading.get_ident())
+                if len(sleepers) == 2:
+                    both_sleeping.set()
             entered.set()
             original_sleep(seconds)
         return runtime_type(**{**kwargs, "sleep": sleep})
@@ -56,10 +63,17 @@ def cancellation_fixture(mode: str) -> None:
         cause="invalid_credentials", message="fixture credential failure",
         retryable=False, fallback_eligible=False, disposition="stop"))
 
-    def read():
+    def read(number=1):
         if mode == "preflight":
             return module.ensure_graphql_budget(recoverable=True)
-        return module.api_json("GET", "/repos/fixture/source/issues/1")
+        if mode == "transport":
+            return module.api_json("POST", "/graphql", {"query": "query { viewer { login } }"})
+        return module.api_json("GET", f"/repos/fixture/source/issues/{number}")
+
+    def raw_transport(command, **_kwargs):
+        attempted.append("legacy GraphQL transport")
+        return subprocess.CompletedProcess(command, 1,
+            'HTTP/2.0 503 Service Unavailable\nretry-after: 60\ncontent-type: application/json\n\n{"message":"fixture unavailable"}', "")
 
     original_json = module.gh_json
     def gh_json(args, **kwargs):
@@ -89,15 +103,17 @@ def cancellation_fixture(mode: str) -> None:
                 held = threading.Event()
                 def other():
                     held.set()
-                    return read()
+                    return read(2)
                 reads.submit("other", other)
                 assert held.wait(3)
+                assert both_sleeping.wait(3), "both workers must enter pending retry waits"
                 reads.submit("queued", lambda: attempted.append("unexpected queued read"))
                 stopped_at.append(time.monotonic())
                 os.kill(os.getpid(), signal.SIGINT)
 
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "GITHUB_RETRY_STATE_DIR": directory, "GITHUB_RETRY_MAX_WAIT_SECONDS": "120",
+            "GITHUB_READ_CACHE_DIR": str(Path(directory) / "cache"),
             "GITHUB_RETRY_BASE_BACKOFF_SECONDS": "60", "GITHUB_RETRY_JITTER_SECONDS": "0",
             "GITHUB_RETRY_WAIT_SLICE_SECONDS": "60", "GITHUB_RETRY_DEADLINE_AT": str(time.time() + 180),
             "GH_PLAN_SKIP_BOT": "0", "GH_PLAN_ALLOW_ACTIVE_FIRST": "0"}), patch.multiple(
@@ -106,6 +122,7 @@ def cancellation_fixture(mode: str) -> None:
                 api, "call_gh", transport), patch.object(api, "RetryRuntime", runtime), patch.object(
                 module.github_identity, "active_auth_fallback_allowed", return_value=False), patch.object(
                 module.github_identity, "own_user_opted_in", return_value=False), patch.object(
+                module.subprocess, "run", raw_transport), patch.object(
                 sys, "argv", ["gh-plan.py", "--repo", "fixture/direction", "next", "--read-workers", "2"]):
         prior_deadline = os.environ["GITHUB_RETRY_DEADLINE_AT"]
         try:
@@ -121,15 +138,15 @@ def cancellation_fixture(mode: str) -> None:
         assert len(attempted) <= 2, "cancellation issued another transport attempt"
         latency = time.monotonic() - stopped_at[0]
         print(json.dumps({"mode": mode, "latency": latency, "attempts": len(attempted),
-                          "threads_clean": True}), file=sys.stderr)
+                          "sleeping_workers": len(sleepers), "threads_clean": True}), file=sys.stderr)
         raise SystemExit(code)
 
 
 def test_cli_cancellation_and_fatal_reads_interrupt_backoff_and_join_workers() -> None:
-    for mode in ("interrupt", "preflight", "fatal", "drain"):
+    for mode in ("interrupt", "preflight", "transport", "fatal", "drain"):
         proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--cancellation-fixture", mode],
                               capture_output=True, text=True, timeout=20)
-        interrupted = mode in {"interrupt", "preflight"}
+        interrupted = mode in {"interrupt", "preflight", "transport"}
         assert proc.returncode == (130 if interrupted else 1), (proc.stdout, proc.stderr)
         payload = json.loads(proc.stdout)
         assert payload["ok"] is False, payload
@@ -137,6 +154,8 @@ def test_cli_cancellation_and_fatal_reads_interrupt_backoff_and_join_workers() -
         assert payload["fallback_eligible"] is False, payload
         metrics = json.loads(proc.stderr.splitlines()[-1])
         assert metrics["latency"] < 5, metrics
+        if interrupted:
+            assert metrics["sleeping_workers"] == 2, metrics
         assert payload["elapsed_wait"] < 5, payload
         print(f"cancellation fixture: {metrics}")
 
