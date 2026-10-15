@@ -435,6 +435,17 @@ def repository_hold(context: dict[str, Any], repo: str) -> dict[str, Any] | None
     return next((value for key, value in context.get("repository_holds", {}).items() if key.casefold() == repo.casefold()), None)
 
 
+def reviewed_remaining_scope(item: dict[str, Any], review: dict[str, Any]) -> bool:
+    """A fresh caller can establish a real remainder without erasing delivery."""
+    queue = item.get("queue") or {}
+    discussion = item.get("discussion") or {}
+    return bool(queue.get("reason") in {"merged_source_needs_finish_line_review", "source_action_predates_merged_pr"}
+                and discussion.get("complete") is True and review.get("discussion_digest") == discussion.get("digest")
+                and review.get("state") == "available" and review.get("ownership_complete") is True
+                and queue.get("observed_ownership_complete") is True and not queue.get("wait_review_required")
+                and (item.get("source_delivery") or {}).get("complete") is True)
+
+
 def include_parent_context(
     item: dict[str, Any], parents: list[dict[str, Any]], *, complete: bool,
     tracking_roots: list[dict[str, Any]],
@@ -813,7 +824,7 @@ def rank_portfolio_work(
         if queue.get("state") == "verification":
             verification.append(item)
             continue
-        if queue.get("state") == "scope_review":
+        if queue.get("state") == "scope_review" and not reviewed_remaining_scope(item, review or {}):
             scope_review.append(item)
             continue
         if queue.get("state") == "waiting":
@@ -847,10 +858,10 @@ def rank_portfolio_work(
             item["review_required"] = "current_ownership_evidence_incomplete"
         else:
             category = review.get("category")
-            if (item.get("via") or item.get("client_request")) and category != "live_incident":
+            if item["overall_milestone_context"]["state"] == "matched" and category != "live_incident":
                 category = "milestone"
             occurrences = review.get("stop_occurrences") or []
-            if category not in {"live_incident", "milestone", "repeated_stop_tooling", "own_project"} or (category == "milestone" and not (item.get("via") or item.get("client_request"))):
+            if category not in {"live_incident", "milestone", "repeated_stop_tooling", "own_project"} or (category == "milestone" and item["overall_milestone_context"]["state"] != "matched"):
                 item["review_required"] = "direction_eligibility"
             else:
                 stop_count = len({url for url in occurrences if isinstance(url, str) and url.startswith("https://")}) if isinstance(occurrences, list) else 0
@@ -872,7 +883,7 @@ def rank_portfolio_work(
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
     candidates.sort(key=lambda candidate: (
         0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") in {"all_milestones_waiting_on_people", "all_milestones_staffed_or_waiting"} else priority.get(candidate.get("category"), 1 if candidate.get("via") or candidate.get("client_request") else 5)),
-        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (candidate["rank"] if candidate.get("via") or candidate.get("client_request") else candidate.get("repository_rank", candidate["rank"])),
+        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (candidate["rank"] if candidate.get("via") or candidate.get("client_request") or candidate.get("category") == "milestone" else candidate.get("repository_rank", candidate["rank"])),
         str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))
     for rank, item in enumerate(candidates, 1):

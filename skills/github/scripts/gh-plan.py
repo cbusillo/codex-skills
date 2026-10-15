@@ -3675,14 +3675,18 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
         raise PlanError(f"Invalid selection context: {exc}") from exc
 
 
-def next_source_delivery(item: dict[str, Any], trusted: set[str]) -> dict[str, Any]:
+def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositories: dict[str, Any] | None = None) -> dict[str, Any]:
     """Verify bounded current-status PR links; a merged slice never closes an issue."""
     refs = github_next_queue.delivery_references(item, trusted)
     result: dict[str, Any] = {"complete": len(refs) <= 8, "merged_prs": [], "completion_proven": False,
                               "scope": "current_status_explicit_pr_references", "all_linked_prs_searched": False}
     if len(refs) > 8:
         result["omitted_reference_count"] = len(refs) - 8
+    repositories = repositories if repositories is not None else {}
     for repo, number in refs[:8]:
+        if NEXT_READS is not None and NEXT_READS.expired:
+            result.update(complete=False, unread_reference_count=len(refs[:8]) - refs[:8].index((repo, number)))
+            break
         try:
             _, pull = api_json("GET", f"/repos/{repo}/pulls/{number}", bucket="rest_core", failed_step="next_delivery_pull")
             if not isinstance(pull, dict) or "merged_at" not in pull:
@@ -3695,7 +3699,9 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str]) -> dict[str, A
                     raise ValueError("Merge timestamp lacks timezone")
             except (TypeError, AttributeError, ValueError) as exc:
                 raise PlanError("Source PR merge timestamp unavailable") from exc
-            _, repository = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="next_delivery_destination")
+            if repo.casefold() not in repositories:
+                _, repositories[repo.casefold()] = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="next_delivery_destination")
+            repository = repositories[repo.casefold()]
             default = repository.get("default_branch") if isinstance(repository, dict) else None
             if not default or not (pull.get("base") or {}).get("ref"):
                 raise PlanError("Source PR landing destination unavailable")
@@ -3707,6 +3713,19 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str]) -> dict[str, A
         except PlanError as exc:
             result["complete"] = False
             result.setdefault("unavailable", []).append({"repo": repo, "number": number, "reason": next_source_error(exc)})
+    if result["merged_prs"] and github_next_queue.remaining_work(github_next_queue.current_status(item.get("discussion") or {}, trusted))["state"] == "engineering":
+        try:
+            owner, name = item["repo"].split("/")
+            _, edited = api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
+                payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
+                      "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
+            issue = ((edited.get("data") or {}).get("repository") or {}).get("issue")
+            if not isinstance(issue, dict) or "lastEditedAt" not in issue or not issue.get("createdAt"):
+                raise PlanError("Source action body-edit evidence unavailable")
+            result["body_recorded_at"] = issue["lastEditedAt"] or issue["createdAt"]
+        except PlanError as exc:
+            result["complete"] = False
+            result["body_edit_error"] = next_source_error(exc)
     return result
 
 
@@ -3721,6 +3740,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                 "all_active_sessions_searched": False,
                 "repositories": {repo: value for result in results for repo, value in result["repositories"].items()}}
     evidence: dict[str, dict[str, Any]] = {}
+    delivery_repositories: dict[str, Any] = {}
     comment_limit = getattr(args, "comment_limit", None) or 100
     for item in items:
         if item.get("queue"):
@@ -3763,7 +3783,9 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                         observed["coverage"]["local_error"] = str(exc)
             except PlanError as exc:
                 observed["coverage"]["error"] = next_source_error(exc)
-        item["source_delivery"] = next_source_delivery(item, trusted)
+        preliminary = github_next_queue.classify(item, evidence[repo], trusted=trusted)
+        if preliminary.get("state") not in {"underway", "waiting"} and (item.get("discussion") or {}).get("complete") is True:
+            item["source_delivery"] = next_source_delivery(item, trusted, repositories=delivery_repositories)
         item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted)
     return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,
             "all_active_sessions_searched": False,
@@ -3776,9 +3798,10 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
     for item in candidates:
         hold = github_direction_next.repository_hold(context, item["repo"])
         state = (item.get("queue") or {}).get("state", "review")
+        review = reviews.get(f"{item['repo']}#{item['number']}".casefold(), {})
         if hold:
             groups["excluded"].append({**item, "exclusion": "repository_held", "review": hold})
-        elif state in {"underway", "verification", "scope_review"}:
+        elif state in {"underway", "verification", "scope_review"} and not (state == "scope_review" and github_direction_next.reviewed_remaining_scope(item, review)):
             groups[{"verification": "verification_only"}.get(state, state)].append(item)
         elif state == "waiting":
             groups["excluded"].append({**item, "exclusion": "recorded_wait"})
@@ -3797,7 +3820,8 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
             if (isinstance(complete, bool) and complete and review.get("discussion_digest") == discussion.get("digest")
                     and review.get("state") == "available" and review.get("ownership_complete") is True
                     and (item.get("queue") or {}).get("observed_ownership_complete") is True
-                    and (item.get("queue") or {}).get("reason") in {"current_scope_needs_review", "current_action_not_recorded"}):
+                    and ((item.get("queue") or {}).get("reason") in {"current_scope_needs_review", "current_action_not_recorded"}
+                         or github_direction_next.reviewed_remaining_scope(item, review))):
                 row.update(availability="available", review=review)
             groups["candidates"].append(row)
             if row["availability"] == "available":

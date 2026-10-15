@@ -34,7 +34,7 @@ def current_status(discussion: dict[str, Any], trusted: set[str]) -> str:
         if str(comment.get("author") or "").casefold() not in trusted:
             continue
         found = github_direction_next.section_map(comment.get("body") or "").get("Current Status")
-        comment_time = timestamp(comment.get("created_at") or comment.get("updated_at"))
+        comment_time = timestamp(comment.get("updated_at") or comment.get("created_at"))
         # Older status comments are historical once the issue's current body
         # has newer evidence. Unmanaged records without status use comments.
         if found is not None and (not has_body_status or (comment_time is not None and body_time is not None and comment_time >= body_time)):
@@ -71,9 +71,10 @@ def remaining_work(status: str) -> dict[str, Any]:
         return {**result, "state": "scope_review", "reason": "current_action_belongs_to_linked_record"}
     source_action = re.split(r"\b(?:do not|don't|never)\b", action, maxsplit=1, flags=re.I)[0]
     # A next independent source slice remains work after an earlier slice lands.
-    next_source_slice = bool(re.search(
-        r"\bselects?\s+(?:the\s+)?next\s+(?:(?:independent|worthwhile)\s+)?(?:duplicate-code|test-audit|source|implementation)\b",
-        source_action, re.I))
+    def next_source_slice(text: str) -> bool:
+        return bool(re.search(
+            r"\bselects?\s+(?:the\s+)?next\s+(?:(?:independent|worthwhile)\s+)?(?:duplicate-code\s+cluster|(?:test-audit|source|implementation|refactor)\s+slice)\b",
+            text, re.I))
     source_action = re.sub(r"\b(?:signed|matching|companion|release) (?:\w+ ){0,2}build\b", "artifact", source_action, flags=re.I)
     delivered = bool(re.search(r"\b(?:landed|merged|delivered|source landing confirmed|source engineering is complete|completed .*slices)\b", state, re.I))
     if re.search(r"\b(?:not|never|yet to be|needs to be|must be|will be|to be|awaiting|pending)\s+(?:\w+\s+){0,2}(?:merged|landed|delivered)\b", state, re.I):
@@ -105,13 +106,13 @@ def remaining_work(status: str) -> dict[str, Any]:
                 continue
             return True
         return False
-    engineering = source_step(source_action) or next_source_slice
+    engineering = source_step(source_action) or next_source_slice(source_action)
     qualification = re.search(qualification_words, action, re.I)
     # A conditional future source step after qualification is still a
     # qualification frontier; do not suggest its implementation prematurely.
     conditional = re.search(r"\b(?:once|after|then)\b", source_action, re.I)
     first_action = source_action[:conditional.start()] if conditional else source_action
-    current_engineering = source_step(first_action) or next_source_slice
+    current_engineering = source_step(first_action) or next_source_slice(first_action)
     qualification_frontier = re.search(qualification_words, first_action, re.I) or re.search(r"\b(?:signed .*build|releases?|deploy\w*|publication|image|rollout|install\w*)\b", first_action, re.I)
     if qualification and qualification_frontier and not current_engineering and (delivered or re.search(r"\bqualification\b", state, re.I)):
         waiting_on = "deploy_or_release" if re.search(r"\b(?:deploy\w*|releases?|publication|signed .*build)\b", action, re.I) else "qualification"
@@ -142,18 +143,23 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         work = {**work, "state": "scope_review", "reason": "merged_source_needs_finish_line_review"}
         row.update(work)
     if delivery.get("merged_prs") and work["state"] == "engineering":
+        recorded_times = []
+        values = [delivery.get("body_recorded_at")]
+        values.extend(comment.get("updated_at") or comment.get("created_at") for comment in discussion.get("comments", [])
+                      if str(comment.get("author") or "").casefold() in trusted
+                      and "Current Status" in github_direction_next.section_map(comment.get("body") or ""))
+        for value in values:
+            try:
+                recorded = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if recorded.tzinfo is not None:
+                    recorded_times.append(recorded)
+            except (AttributeError, TypeError, ValueError):
+                continue
         try:
-            recorded = datetime.fromisoformat(discussion["updated_at"].replace("Z", "+00:00"))
-            for comment in discussion.get("comments", []):
-                if (str(comment.get("author") or "").casefold() in trusted
-                        and "Current Status" in github_direction_next.section_map(comment.get("body") or "")):
-                    observed = datetime.fromisoformat((comment.get("created_at") or comment.get("updated_at") or "").replace("Z", "+00:00"))
-                    if recorded.tzinfo is not None and observed.tzinfo is not None:
-                        recorded = max(recorded, observed)
             merged = [datetime.fromisoformat(pr["merged_at"].replace("Z", "+00:00")) for pr in delivery["merged_prs"]]
-            predates = recorded.tzinfo is not None and any(time.tzinfo is not None and recorded < time for time in merged)
+            predates = not recorded_times or any(time.tzinfo is None or max(recorded_times) <= time for time in merged)
         except (KeyError, TypeError, ValueError):
-            predates = False
+            predates = True  # An activity timestamp cannot prove a fresh body action.
         if predates:
             work = {**work, "state": "scope_review", "reason": "source_action_predates_merged_pr"}
             row.update(work)

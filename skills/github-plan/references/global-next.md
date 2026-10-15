@@ -188,9 +188,13 @@ enable spare-capacity admission or infer a repeated stop.
 Current-status PR references also have bounded `source_delivery` evidence:
 the reader verifies merge time, implementation association and the repository's
 default branch. It reports unavailable or omitted references and never claims
-to have searched every linked PR. A source action older than its merged PR
+to have searched every linked PR. For a potential engineering remainder, a bounded
+GraphQL issue read supplies the body's actual edit time; trusted Current Status
+comment edits can also establish a fresh action. Issue activity time cannot.
+A source action older than its merged PR, or without status-edit evidence,
 moves to `scope_review`; a freshly recorded engineering remainder stays
-actionable. Delivered release/recovery follow-through is kept outside the
+actionable. A current caller review can also establish the remaining scope,
+subject to the same complete wait and ownership evidence. Delivered release/recovery follow-through is kept outside the
 source queue even when a legacy wait review is still required. None of these
 classifications closes the issue or proves its full finish line.
 
