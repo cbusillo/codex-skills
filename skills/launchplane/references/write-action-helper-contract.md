@@ -847,7 +847,7 @@ diagnostics remain in the summary. Retain the original request and idempotency
 key, then run `preview-feedback-remediation --mode dry-run` for the same target
 to read back the comment state. A present comment does not prove whether a
 replacement completed: the dry run can still plan replacement after a successful
-apply. Inspect the original trace and resolve the response verification failure
+apply. Inspect available trace or service records and resolve the response verification failure
 before any apply retry; replaying the same key cannot repair a deterministic
 projection mismatch. An invalid dry-run response remains `invalid` and exits 1.
 

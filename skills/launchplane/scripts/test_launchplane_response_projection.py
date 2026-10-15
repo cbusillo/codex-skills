@@ -5,6 +5,7 @@
 # ///
 """Exercise preview and saved-review projection through fake HTTP responses."""
 
+import http.client
 import io
 import json
 import urllib.error
@@ -227,6 +228,31 @@ def test_pre_response_transport_refusal_is_not_labeled_a_projection_failure(mode
     assert payload["status"] == "invalid"
     assert "projection_error_code" not in payload["summary"]
     assert "http_status" not in payload["summary"]
+
+
+@pytest.mark.parametrize("key", ["retry-✓", "retry\r\nPRIVATE_SENTINEL"])
+def test_apply_header_encoding_failure_is_not_an_uncertain_response(key):
+    def encode_headers(request, **_kwargs):
+        connection = http.client.HTTPConnection("service.example.invalid")
+        connection.putrequest("POST", "/")
+        for name, value in request.header_items():
+            connection.putheader(name, value)
+        pytest.fail("Expected header rejection before opening a connection")
+
+    args = list(PREVIEW_ARGS)
+    args[args.index("--mode") + 1] = "apply"
+    args[args.index("--idempotency-key") + 1] = key
+    args.append("--reviewed-dry-run")
+    stdout = io.StringIO()
+    with patch.object(helper, "prepare_operator_settings", return_value=SETTINGS), \
+         patch.object(helper, "safe_urlopen", side_effect=encode_headers), redirect_stdout(stdout):
+        code = helper.main(args)
+    rendered = stdout.getvalue()
+    payload = json.loads(rendered)
+    assert code == 1 and payload["status"] == "invalid"
+    assert "projection_error_code" not in payload["summary"]
+    assert "http_status" not in payload["summary"]
+    assert "PRIVATE_SENTINEL" not in rendered
 
 
 if __name__ == "__main__":

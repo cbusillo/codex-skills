@@ -6681,7 +6681,7 @@ def _preview_feedback_response_unverified(
     summary["recommendation"] = (
         "Run preview-feedback-remediation --mode dry-run for the same target to read back "
         "the comment state. A present comment does not prove whether a replacement completed. "
-        "Inspect the original trace and resolve the response verification failure before any "
+        "Inspect available trace or service records and resolve the response verification failure before any "
         "apply retry; retain the original request and idempotency key."
     )
     return payload
@@ -6859,7 +6859,9 @@ def execute_post(
         emit(payload)
         return 1
     except (ValueError, json.JSONDecodeError) as exc:
-        if operation == "preview-feedback-remediation" and mutating:
+        if operation == "preview-feedback-remediation" and mutating and (
+            isinstance(exc, ServiceResponseError) or provider_payload is not None
+        ):
             emit(_preview_feedback_response_unverified(
                 request=request,
                 source=exc if isinstance(exc, ServiceResponseError) else provider_payload,
