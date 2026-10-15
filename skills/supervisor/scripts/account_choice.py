@@ -340,12 +340,12 @@ def record_launch(choice, now=None):
     receipt = {"schemaVersion": 1, "provider": provider,
                "accountID": account_id, "launchedAt": now.isoformat(timespec="seconds").replace("+00:00", "Z")}
     target = directory / f"{now:%Y%m%dT%H%M%SZ}-supervisor-{uuid.uuid4().hex}.json"
-    write_launch_receipt(target, receipt)
     if "gui" in choice:
         gui_directory = directory.parent / "Supervisor GUI Receipts"
         gui_directory.mkdir(mode=0o700, exist_ok=True)
         prune_receipts(gui_directory, now, max_bytes=16 * 1024)
         write_launch_receipt(gui_directory / target.name, {**receipt, "gui": choice["gui"]})
+    write_launch_receipt(target, receipt)
     return target
 
 

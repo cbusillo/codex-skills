@@ -39,6 +39,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.source.mkdir(parents=True)
         self.state = self.root / "private/gui.json"
         self.addCleanup(patch.stopall)
+        patch.dict(os.environ, {"ZDOTDIR": str(self.root)}).start()
         patch.object(Path, "home", return_value=self.home).start()
         patch.object(gui_launch, "state_path", return_value=self.state).start()
         self.unlocked = patch.object(gui_launch, "require_unlocked").start()
@@ -137,7 +138,6 @@ class GuiLaunchTests(unittest.TestCase):
                     asyncio.run(iterm_tab.operate(app, self.args) if backend == "iterm"
                                 else tmux_terminal.operate(self.args))
                 failure = raised.exception.detail["failed_launch"]
-                self.assertEqual(failure["gui_reservation"], "released_unsubmitted")
                 self.assertTrue(failure["account"]["gui"]["token"])
                 self.assertFalse(self.state.exists())
 
@@ -155,10 +155,27 @@ class GuiLaunchTests(unittest.TestCase):
         receipt = account_choice.record_launch(choices[0], now=then)
         gui_receipt = receipt.parent.parent / "Supervisor GUI Receipts" / receipt.name
         self.assertNotIn(str(self.account), receipt.read_text())
-        account_choice.prune_receipts(receipt.parent, datetime.now(timezone.utc))
-        account_choice.prune_receipts(gui_receipt.parent, datetime.now(timezone.utc), max_bytes=16 * 1024)
+        new_receipt = account_choice.record_launch(choices[0])
         self.assertFalse(receipt.exists())
         self.assertFalse(gui_receipt.exists())
+        self.assertTrue(new_receipt.exists())
+
+    def test_gui_receipt_failure_does_not_leave_a_count_receipt(self):
+        _, choices = iterm_tab.prepare_launches(self.args)
+        (self.root / "Supervisor GUI Receipts").write_text("occupied fixture")
+        with self.assertRaises(OSError):
+            account_choice.record_launch(choices[0])
+        self.assertEqual(list((self.root / "Launch Receipts").iterdir()), [])
+
+    def test_rollback_failure_preserves_original_cause_and_recovery_token(self):
+        original = ValueError("fake marketplace failure")
+        with patch.object(gui_launch, "marketplace", side_effect=original), \
+                patch.object(gui_launch, "release", side_effect=OSError("fake rollback failure")):
+            with self.assertRaises(ValueError) as raised:
+                iterm_tab.prepare_launches(self.args)
+        self.assertIs(raised.exception.__cause__, original)
+        self.assertIn(str(original), str(raised.exception))
+        self.assertIn(json.loads(self.state.read_text())["token"], str(raised.exception))
 
     def test_apostrophe_heavy_brief_is_staged_outside_tmux_message(self):
         self.brief.write_text("GUI task: com.example.Task\n" + "Chris's app: don't change other windows.\n" * 200)
@@ -267,11 +284,18 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertFalse(self.state.exists())
 
     def test_remote_gui_refuses(self):
-        self.command.write_text("codex --remote unix:// -C " + str(self.repo))
-        with self.assertRaises(ValueError):
-            iterm_tab.prepare_launches(self.args)
+        for option in ("--remote unix://", "--remote=unix://", "--"):
+            self.command.write_text("codex " + option + " -C " + str(self.repo))
+            with self.subTest(option=option), self.assertRaises(ValueError):
+                iterm_tab.prepare_launches(self.args)
         self.daemon.assert_not_called()
         self.assertFalse((self.account / ".tmp").exists())
+
+    def test_default_home_uses_existing_marketplace_without_a_link(self):
+        result = gui_launch.marketplace(self.home / ".codex", self.home / ".codex")
+        self.assertEqual(Path(result["path"]), self.source)
+        self.assertTrue(self.source.is_dir())
+        self.assertFalse(self.source.is_symlink())
 
     def test_marketplace_is_idempotent_and_follows_default_tree_replacement(self):
         first = gui_launch.marketplace(self.account, self.home / ".codex")

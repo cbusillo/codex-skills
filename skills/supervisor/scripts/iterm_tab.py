@@ -819,8 +819,14 @@ def prepare_launches(args):
                 "--state", reservation["state_path"], "--token", reservation["token"],
                 "--command-file", str(command_file),
             ])
-        except Exception:
-            gui_launch.release(Path(reservation["state_path"]), reservation["token"])
+        except Exception as error:
+            try:
+                gui_launch.release(Path(reservation["state_path"]), reservation["token"])
+            except (OSError, ValueError) as rollback:
+                reason = str(error) if isinstance(error, ValueError) else type(error).__name__
+                raise ValueError(f"GUI preparation failed: {reason}; reservation {reservation['token']} "
+                                 f"retained after rollback failed ({type(rollback).__name__}); "
+                                 "inspect shared GUI state before release") from error
             raise
     return command_texts, choices
 
