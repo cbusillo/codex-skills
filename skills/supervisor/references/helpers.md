@@ -789,7 +789,8 @@ permission and input checks first. Read the exact pane, clear only verified
 input if needed, then read back that the entire agent input is empty. Send
 `/quit` for Codex or `/exit` for Claude with `send --verified-target`. Wait at
 most 60 seconds, reading `read` for `dead: true` and checking that the matched
-agent PID and all processes on its TTY have exited. Preserve a running or
+agent PID and processes belonging to that pane have exited. If its TTY was
+reused, use the close preview's ownership proof below. Preserve a running or
 uncertain pane. Record/release native session claims under the existing
 finished-session procedure before removing the terminal.
 
