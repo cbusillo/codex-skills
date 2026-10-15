@@ -32,6 +32,63 @@ from test_github_identity import test_private_key
 from test_gh_plan_sections import PLAN
 
 
+class PublicReadScopeTests(unittest.TestCase):
+    def test_cli_view_uses_number_or_branch_instead_of_url_operands(self) -> None:
+        for command in (("issue", "view"), ("pr", "view"), ("pr", "checks"), ("run", "view")):
+            for url in ("http://github.com/host/private/issues/1",
+                        "https://www.github.com/host/private/issues/1",
+                        "https://GitHub.com/host/private/issues/1",
+                        "https://github.com/host/public/issues/1"):
+                with self.subTest(command=command, url=url):
+                    self.assertFalse(github_api.public_read_command_is_scoped(
+                        [*command, url, "--repo", "host/public"], "host/public"))
+            self.assertTrue(github_api.public_read_command_is_scoped(
+                [*command, "1", "--repo", "host/public"], "host/public"))
+
+    def test_only_the_verified_repository_can_supply_personal_read_scope(self) -> None:
+        for endpoint, allowed in (
+            ("/repos/host/public/issues", True),
+            ("/repos/host/private/issues", False),
+            ("/repos/host/public/../private/issues", False),
+            ("/repos/host/public/%2e%2e/private/issues", False),
+            ("/repos/host/publicity/issues", False),
+            ("/search/issues?q=fixture+repo:host/public", True),
+            ("/search/issues?q=%22repo:host/private%22+repo:host/public", True),
+            ("/search/issues?q=%22repo:host/public%22+is:private", False),
+            ("/search/issues?q=repo:host/public%22suffix%22+is:private", False),
+            ("/search/issues?q=don%27t+repo:host/public", True),
+            ("/search/issues?q=repo:host/public+repo:host/private", False),
+            ("/search/issues?q=repo:host/public+org:host", False),
+            ("/search/issues?q=repo:host/public+user:host", False),
+            ("/search/issues?q=repo:host/public+owner:host", False),
+            ("/search/issues?q=repo:host/public+OR(repo:host/private)", False),
+            ("/search/issues?q=repo:host/public+OR+is:private", False),
+            ("graphql", False),
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(github_api.public_read_command_is_scoped(
+                    ["api", "--method", "GET", "--include", "-H", "Accept: application/json", endpoint],
+                    "host/public"), allowed)
+
+    def test_bundled_search_flags_cannot_bypass_repository_scope(self) -> None:
+        for flag in ("-dS", "-dSrepo:host/private", "-wdS=repo:host/private"):
+            with self.subTest(flag=flag):
+                self.assertFalse(github_api.public_read_command_is_scoped(
+                    ["pr", "list", "--repo", "host/public", flag, "repo:host/private"], "host/public"))
+
+    def test_cli_search_keeps_its_implicit_repository_scope(self) -> None:
+        for command in ("issue", "pr"):
+            for flag in ("--search", "-S", "--search=", "-Sattached", "-S="):
+                for query, allowed in (("reminders", True), ("don't", True),
+                                       ("repo:host/private", False), ("OR is:private", False),
+                                       ('"repo:host/private"', True)):
+                    argv = ([flag + query] if flag in {"--search=", "-S="} else ["-S" + query]
+                            if flag == "-Sattached" else [flag, query])
+                    with self.subTest(command=command, flag=flag, query=query):
+                        self.assertEqual(github_api.public_read_command_is_scoped(
+                            [command, "list", "--repo", "host/public", *argv], "host/public"), allowed)
+
+
 class PlanCommandContextTests(unittest.TestCase):
     def run_context(self, argv: tuple[str, ...], checkout: str | None, *,
                     inherited: str | None = None, fail: bool = False) -> list[str | None]:
@@ -101,26 +158,33 @@ class PlanCommandContextTests(unittest.TestCase):
 
 class AppHandler(BaseHTTPRequestHandler):
     calls: list[tuple[str, str, str]] = []
+    repositories: dict[str, tuple[int, Any]] = {}
 
     def respond(self, method: str) -> None:
         if method == "POST":
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        jwt = self.headers["Authorization"].split()[1].split(".")[1]
-        app = json.loads(base64.urlsafe_b64decode(jwt + "=" * (-len(jwt) % 4)))["iss"]
+        authorization = self.headers.get("Authorization")
+        app = ""
+        if authorization:
+            jwt = authorization.split()[1].split(".")[1]
+            app = json.loads(base64.urlsafe_b64decode(jwt + "=" * (-len(jwt) % 4)))["iss"]
         type(self).calls.append((method, self.path, app))
         payload = None
+        status = None
         if self.path == "/app":
             payload = {"slug": f"app-{app}", "owner": {"login": "client"}}
         elif self.path.startswith("/app/installations/") and method == "GET":
             payload = {"id": int(app) + 100, "app_id": int(app), "app_slug": f"app-{app}"}
         elif self.path.startswith("/repos/") and self.path.endswith("/installation"):
-            if "/missing/" not in self.path:
+            if not self.path.split("/")[3].startswith("missing"):
                 payload = {"id": int(app) + 100, "app_id": int(app)}
+        elif self.path in type(self).repositories:
+            status, payload = type(self).repositories[self.path]
         elif method == "POST":
             payload = {"token": f"fake-token-{app}", "expires_at": datetime.fromtimestamp(
                 time.time() + 3600, UTC).isoformat()}
         body = json.dumps(payload).encode() if payload else b""
-        self.send_response(200 if payload else 404)
+        self.send_response(status if status is not None else (200 if payload else 404))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -154,6 +218,7 @@ class ClientAppTests(unittest.TestCase):
         self.addCleanup(thread.join)
         self.addCleanup(self.server.shutdown)
         AppHandler.calls = []
+        AppHandler.repositories = {}
         self.env = {
             "HOME": str(self.root), "PATH": os.environ["PATH"],
             "CODEX_SKILLS_ENV_FILE": str(self.root / "missing.env"),
@@ -226,6 +291,7 @@ class ClientAppTests(unittest.TestCase):
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
             "args = sys.argv[1:]\n"
+            "with open(os.path.join(os.environ['HOME'], 'gh-calls.jsonl'), 'a') as log: log.write(json.dumps(args) + '\\n')\n"
             "if args[:2] == ['auth', 'status']: raise SystemExit(0)\n"
             "if args[:2] == ['auth', 'token']: print('fake-user-token'); raise SystemExit(0)\n"
             "token = os.environ.get('GH_TOKEN', '')\n"
@@ -293,6 +359,118 @@ class ClientAppTests(unittest.TestCase):
             result = self.wrapper(*args, own_user=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("acting as your own GitHub user", result.stderr)
+
+    def public_repository(self, repo: str = "host/missing-public") -> None:
+        AppHandler.repositories[f"/repos/{repo}"] = (200, {"full_name": repo, "private": False})
+
+    def gh_calls(self) -> list[list[str]]:
+        path = self.root / "gh-calls.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_public_read_uses_declared_person_only_with_command_opt_in(self) -> None:
+        self.public_repository()
+        args = ("api", "/repos/host/missing-public")
+        result = self.wrapper(*args)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
+        self.assertEqual(self.gh_calls(), [])
+        result = self.wrapper(*args, own_user=True)
+        self.assertNotEqual(result.returncode, 0)  # No declared personal login.
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+            result = self.wrapper(*args, own_user=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["login"], "own-user")
+        self.assertIn(("GET", "/repos/host/missing-public", ""), AppHandler.calls)
+        self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
+
+    def test_public_fallback_rejects_cross_repository_search_before_personal_auth(self) -> None:
+        self.public_repository()
+        with patch.dict(os.environ, {"GH_REPO": "host/missing-public",
+                                    "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+            for args in (("api", "/search/issues?q=repo:host/private"),
+                         ("api", "/search/issues?q=repo:host/missing-public+OR+is:private"),
+                         ("search", "issues", "repo:host/private"),
+                         ("issue", "list", "--repo", "host/missing-public", "--search", "repo:host/private"),
+                         ("pr", "list", "--repo", "host/missing-public", "-Srepo:host/private"),
+                         ("pr", "list", "--repo", "host/missing-public", "-dS", "repo:host/private"),
+                         ("issue", "list", "--repo", "host/missing-public", "--search", "org:host"),
+                         ("api", "/search/issues?q=repo:host/missing-public+owner:host"),
+                         ("issue", "view", "http://github.com/host/private/issues/1", "--repo", "host/missing-public"),
+                         ("pr", "view", "https://www.github.com/host/private/pull/1", "--repo", "host/missing-public"),
+                         ("pr", "checks", "https://GitHub.com/host/private/pull/1", "--repo", "host/missing-public"),
+                         ("repo", "view", "host/private")):
+                with self.subTest(args=args):
+                    result = self.wrapper(*args, own_user=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.gh_calls(), [])
+
+    def test_public_private_installation_and_write_routes(self) -> None:
+        for installed in (False, True):
+            for public in (False, True):
+                repo = f"host/{'product' if installed else 'missing'}-{'public' if public else 'private'}"
+                AppHandler.repositories[f"/repos/{repo}"] = (
+                    200 if public else 404, {"full_name": repo, "private": not public})
+                for write in (False, True):
+                    with self.subTest(installed=installed, public=public, write=write):
+                        AppHandler.calls = []
+                        args = (("api", f"/repos/{repo}") if not write else
+                                ("issue", "comment", "1", "--repo", repo, "--body", "fixture"))
+                        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+                            result = self.wrapper(*args, own_user=True)
+                        self.assertEqual(result.returncode == 0, installed or public or write, result.stderr)
+                        if installed:
+                            self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
+                            response = json.loads(result.stdout)
+                            self.assertEqual(response["login"], "app-2[bot]")
+                        elif not write:
+                            self.assertIn(("GET", f"/repos/{repo}", ""), AppHandler.calls)
+                        else:
+                            self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
+
+    def test_public_read_rejects_unknown_visibility_wrong_login_and_required_automation(self) -> None:
+        repo = "host/missing-public"
+        for status, payload in ((404, None), (403, None), (429, None), (500, None), (301, None),
+                                (200, {}), (200, {"full_name": repo, "private": True}),
+                                (200, {"full_name": "host/other", "private": False})):
+            with self.subTest(status=status, payload=payload):
+                AppHandler.calls = []
+                AppHandler.repositories[f"/repos/{repo}"] = (status, payload)
+                with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+                    result = self.wrapper("api", f"/repos/{repo}", own_user=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(("GET", f"/repos/{repo}", ""), AppHandler.calls)
+                self.assertEqual(self.gh_calls(), [])
+        self.public_repository(repo)
+        for declared, flags in (("other-person", ()), ("own-user", ("--require-automation-auth",))):
+            with self.subTest(declared=declared, flags=flags), patch.dict(
+                    os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": declared}):
+                AppHandler.calls = []
+                result = self.wrapper(*flags, "api", f"/repos/{repo}", own_user=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(f"/repos/{repo}" in args for args in self.gh_calls()))
+                if flags:
+                    self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
+
+    def test_plan_public_reads_use_personal_actor_without_borrowing_an_app(self) -> None:
+        self.public_repository()
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1",
+                                    "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+            for command in (("show", "1"), ("search", "fixture"), ("index",)):
+                with self.subTest(command=command):
+                    result = self.plan("host/missing-public", command=command)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["last_actor"], "own-user")
+        self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
+
+    def test_python_identity_defers_public_probe_to_the_wrapper(self) -> None:
+        self.public_repository()
+        wrapper = str(Path(identity.__file__).with_name("gh-with-env-token"))
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1", "GH_REPO": "host/missing-public"}):
+            actor, expected, _ = github_api.request_identity(
+                operation="github.read", is_write=False, gh_cmd=wrapper, gh_prefix_args=None,
+                actor="app-1[bot]", expected_actor="app-1[bot]")
+        self.assertEqual((actor, expected), (None, None))
+        self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
 
     def test_client_route_preserves_explicit_expected_login_override(self) -> None:
         args = ("issue", "comment", "1", "--repo", "host/product", "--body", "fixture")

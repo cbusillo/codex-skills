@@ -843,7 +843,10 @@ each target repository:
 Client fleets may configure a second narrow App by repository owner; read
 [Client fleet configuration](references/cli-reference.md#client-fleets-with-two-apps)
 when setting up or diagnosing that route. The installation rules above apply
-to the selected App.
+to the selected App. Without a Client installation, ordinary reads may use the
+declared personal account under the existing per-command own-user opt-in only
+after an unauthenticated GitHub repository read confirms public visibility.
+Private or unverified repositories still fail clearly; writes are unchanged.
 
 Otherwise never fall back to the active human `gh` account unless the user
 explicitly approves that one-off; then set

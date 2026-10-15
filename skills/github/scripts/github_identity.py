@@ -53,12 +53,28 @@ class NotInstalledForAutomation(GitHubAppError):
     """The App is not installed on a repository of the account that registered it."""
 
 
+class PublicReadRepository(GitHubAppError):
+    """A missing Client installation needs a public-read check in the wrapper."""
+
+    def __init__(self, repository: str) -> None:
+        self.repository = repository
+        self.installation_message = (
+            f"the GitHub Client App is not installed on {repository}; reads require "
+            "its installation on this repository"
+        )
+        super().__init__(
+            f"{self.installation_message}, or a verified public repository "
+            f"with {OWN_USER_OPT_IN}=1 for the declared personal account on this command"
+        )
+
+
 # app-auth exits with these statuses so the shell wrappers can tell the cases
 # apart: the person's own login (a ContributorRepository), or a definite
 # refusal in the registering account's repository (NotInstalledForAutomation),
 # as opposed to a failed lookup (1).
 CONTRIBUTOR_EXIT_STATUS = 3
 NOT_INSTALLED_EXIT_STATUS = 4
+PUBLIC_READ_EXIT_STATUS = 5
 
 # Acting as the person's own GitHub user is a stop the agent asks its Director
 # about, so it runs only when the caller sets this for the command; a value in
@@ -725,12 +741,28 @@ def github_app_auth(
             if repository_config is not None:
                 return _mint_and_cache(repository_config, cache_path, current_time)
             if config.require_repository_installation:
-                raise GitHubAppError(f"the GitHub Client App is not installed on {repository}; reads require its installation on this repository")
+                raise PublicReadRepository(repository)
     with _locked_cache(config) as cache_path:
         cached = None if refresh else _read_cached_token(cache_path, now=current_time)
         if cached:
             return cached
         return _mint_and_cache(config, cache_path, current_time)
+
+
+def repository_is_public(config: GitHubAppConfig, repository: str) -> bool:
+    """Read visibility from GitHub without credentials, redirects or config hints."""
+    request = urllib.request.Request(
+        f"{config.api_url}/repos/{repository}", method="GET",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "codex-skills-public-read"},
+    )
+    try:
+        payload = _request_json(request, operation="unauthenticated repository lookup")
+    except GitHubAppHTTPError as error:
+        if error.status == 404:
+            return False
+        raise
+    return (isinstance(payload, dict) and payload.get("private") is False
+            and str(payload.get("full_name", "")).casefold() == repository.casefold())
 
 
 def _mint_and_cache(config: GitHubAppConfig, cache_path: pathlib.Path, current_time: int) -> tuple[str, str]:
@@ -771,6 +803,8 @@ def main() -> int:
             f"exit {CONTRIBUTOR_EXIT_STATUS} when the account that registered the App does not own --repo."
         ),
     )
+    app_auth.add_argument("--no-personal-read", action="store_true",
+                          help="Keep missing-Client reads on the automation-only refusal path.")
     app_check = subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")
     app_check.add_argument("--repo", help="Verify the installation on OWNER/REPO.")
     subparsers.add_parser("app-token", help="Mint or reuse a GitHub App installation token.")
@@ -799,6 +833,23 @@ def main() -> int:
                 print(login)
             print(token)
             return 0
+    except PublicReadRepository as error:
+        # The CLI is the credential boundary. In-process identity selection
+        # defers here, avoiding a second anonymous lookup for every Python read.
+        automation_only = str(configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") or "").casefold() in {"1", "true", "yes"}
+        automation_only = automation_only or getattr(args, "no_personal_read", False)
+        if own_user_opted_in() and not automation_only:
+            try:
+                if repository_is_public(config, error.repository):
+                    print(f"note: GitHub confirms {error.repository} is public", file=sys.stderr)
+                    return PUBLIC_READ_EXIT_STATUS
+                print(f"note: GitHub does not report {error.repository} as public", file=sys.stderr)
+            except GitHubAppError as probe_error:
+                detail = str(probe_error).removeprefix("GitHub App ")
+                print(f"note: public visibility could not be verified: {detail}", file=sys.stderr)
+        message = error.installation_message if automation_only or own_user_opted_in() else str(error)
+        print(f"error: GitHub App authentication failed before gh invocation: {message}", file=sys.stderr)
+        return 1
     except ContributorRepository as error:
         print(f"note: {error}", file=sys.stderr)
         return CONTRIBUTOR_EXIT_STATUS
