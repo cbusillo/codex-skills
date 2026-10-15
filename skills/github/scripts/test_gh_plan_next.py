@@ -3334,7 +3334,7 @@ TESTS.extend([test_identity_refused_graph_node_keeps_other_milestone_candidates,
 
 def test_parallel_global_graph_preserves_selection_waits_and_coverage() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    leaves = [global_issue("someone/project", number) for number in range(10, 18)]
+    leaves = [global_issue("someone/MyProject", number) for number in range(10, 18)]
     edges = {("someone/direction", 1): relationships(sub_issues=leaves)}
     with global_fixture(roots, leaves, edges, clear_waits=leaves) as (module, result, _reads):
         args = next_args()
@@ -3400,7 +3400,7 @@ def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() 
     edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
     with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
         def slow_inventory(*_args, **_kwargs):
-            module.NEXT_READS.deadline = time.time() + 5
+            module.NEXT_READS.deadline = time.time() + module.NEXT_READS.final_evidence_reserve / 2
             return [optional], {"complete": True, "repositories": [{"repo": optional["repo"], "direction": DIRECTION}]}
         module.discover_direction_work = slow_inventory
         args = next_args()
@@ -3456,9 +3456,22 @@ def test_global_read_wrapper_coalesces_gets_and_classifies_actual_deadlines() ->
             # before the wall clock actually expires.
             failure = module.github_api_core.FailureDetail(cause="deadline_exceeded", message="reset beyond deadline",
                 retryable=False, fallback_eligible=False, disposition="stop")
-            module.next_source_error(module.PlanError(failure.message, failure=failure))
+            refused = module.PlanError(failure.message, failure=failure, api_result={
+                "retry_exhausted_reason": "deadline_exceeded", "effective_deadline": reads.deadline,
+                "retry_at": reads.deadline + 60})
+            module.next_source_error(refused)
+            module.next_source_error(refused)
             assert not reads.expired
-            assert reads.receipt()["budget_stops"][failure.cause]
+            assert reads.receipt()["budget_stops"][failure.cause] == 1
+            assert reads.receipt()["budget_context"][0]["retry_at"] > reads.deadline
+            network_timeout = module.PlanError("TLS handshake timeout", failure=failure,
+                api_result={"retry_exhausted_reason": "max_attempts_exhausted"})
+            try:
+                module.next_source_error(network_timeout)
+            except module.PlanError as exc:
+                assert exc is network_timeout
+            else:
+                raise AssertionError("network failure was mislabeled as a budget refusal")
             reads.deadline = time.time() - 1
             try:
                 module.api_json("GET", "/unread")
@@ -3537,7 +3550,55 @@ def test_enrollment_helper_does_not_launch_after_inherited_deadline() -> None:
         run.assert_not_called()
 
 
-TESTS.extend([test_graph_read_ahead_is_bounded_beyond_a_deep_scan_frontier,
+
+def test_unused_provider_read_ahead_keeps_partial_result_and_credentials_still_stop() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 10)
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    for cause in ("network_provider_failure", "invalid_credentials"):
+        with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
+            failure = module.github_api_core.FailureDetail(cause=cause, message="fixture rejected",
+                retryable=False, fallback_eligible=False, disposition="stop")
+            error = module.PlanError(failure.message, failure=failure)
+            collect = module.collect_paged_rest_items
+            def observed(path: str, **kwargs: Any) -> Any:
+                if path.endswith("/2/comments"):
+                    raise error
+                return collect(path, **kwargs)
+            module.collect_paged_rest_items = observed
+            args = next_args(scan_limit=2)
+            args.read_workers = 2
+            if cause == "invalid_credentials":
+                try:
+                    module.cmd_next(args)
+                except module.PlanError as exc:
+                    assert exc is error
+                else:
+                    raise AssertionError("unused credential failure was hidden")
+            else:
+                module.cmd_next(args)
+                assert result["graph_context"]["truncated"]
+                assert not result["candidate_coverage"]["complete"]
+                assert result["performance"]["read_ahead_failures"][cause] == 1
+
+
+def test_global_milestone_backend_receipt_contributes_actual_attempts() -> None:
+    import time
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    with global_fixture(roots, [], {}) as (module, _result, _reads):
+        backend = module.github_api_core.RetrySummary(attempts=3, elapsed_wait=0.5, retry_eligible=True,
+            last_actor="automation-gh", last_bucket="rest_core", outcome_certainty="confirmed",
+            reconciliation=None, recommended_next_action="none", effective_deadline=time.time()+60)
+        module.github_milestone_core.list_milestones = lambda *_a, **_kw: {
+            "milestones": [root["milestone"] for root in roots], **backend.as_dict()}
+        module.cmd_next(next_args())
+        assert module.CURRENT_RETRY_SUMMARY.attempts == backend.attempts
+        assert module.CURRENT_RETRY_SUMMARY.elapsed_wait == backend.elapsed_wait
+
+
+TESTS.extend([test_unused_provider_read_ahead_keeps_partial_result_and_credentials_still_stop,
+              test_global_milestone_backend_receipt_contributes_actual_attempts,
+              test_graph_read_ahead_is_bounded_beyond_a_deep_scan_frontier,
               test_enrollment_helper_does_not_launch_after_inherited_deadline,
               test_global_read_wrapper_coalesces_gets_and_classifies_actual_deadlines,
               test_one_worker_discovery_reads_each_discussion_once,

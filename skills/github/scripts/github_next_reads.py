@@ -40,6 +40,10 @@ class NextReads:
         self.reused_failures = 0
         self.budget_stops: dict[str, int] = {}
         self.read_ahead_unevaluated = 0
+        self.read_ahead_failures: dict[str, int] = {}
+        self.budget_errors: set[BaseException] = set()
+        self.budget_context: list[dict[str, Any]] = []
+        self.effective_seconds: float | None = seconds or None
         self.phases: list[dict[str, Any]] = []
         self.phase_name = "startup"
         self.stop = threading.Event()
@@ -56,12 +60,17 @@ class NextReads:
     def remaining_seconds(self) -> float:
         return max(0.0, self.deadline - time.time()) if self.deadline is not None else float("inf")
 
+    @property
+    def final_evidence_reserve(self) -> float:
+        return min(30, self.effective_seconds / 5) if self.effective_seconds is not None else 0
+
     def __enter__(self) -> NextReads:
         self.previous_deadline = os.environ.get("GITHUB_RETRY_DEADLINE_AT")
         if self.previous_deadline:
             inherited = float(self.previous_deadline)
             self.deadline = min(self.deadline, inherited) if self.deadline else inherited
         if self.deadline is not None:
+            self.effective_seconds = max(0.0, self.deadline - time.time())
             os.environ["GITHUB_RETRY_DEADLINE_AT"] = str(self.deadline)
         self.reporter = threading.Thread(target=self._progress, daemon=True)
         self.reporter.start()
@@ -123,9 +132,14 @@ class NextReads:
                     self.reused_failures += 1
             raise
 
-    def budget_stop(self, cause: str) -> None:
+    def budget_stop(self, cause: str, *, error: BaseException, retry_at: Any = None) -> None:
         with self.lock:
+            if error in self.budget_errors:
+                return
+            self.budget_errors.add(error)
             self.budget_stops[cause] = self.budget_stops.get(cause, 0) + 1
+            self.budget_context.append({"cause": cause,
+                "retry_at": retry_at if type(retry_at) in {int, float} else None})
 
     def submit(self, key: Any, read: Callable[[], T]) -> Future[T]:
         with self.lock:
@@ -148,18 +162,26 @@ class NextReads:
                 results[pending.pop(future)] = future.result()
         return results
 
-    def drain(self) -> None:
+    def drain(self, *, unused_failure: Callable[[BaseException], None] | None = None) -> None:
         self.pool.shutdown(wait=True, cancel_futures=True)
         # In particular, an authentication failure in an unused read-ahead
         # task must never be hidden by its consumer's scan bound.
         for future in self.tasks.values():
             if not future.cancelled():
-                future.result()
+                try:
+                    future.result()
+                except BaseException as exc:
+                    if unused_failure is None:
+                        raise
+                    unused_failure(exc)
 
     def receipt(self) -> dict[str, Any]:
         return {"elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "time_budget_seconds": self.seconds, "deadline_exhausted": self.expired,
                 "workers": self.workers, "reads": self.requests, "reused_reads": self.reused,
                 "reused_failures": self.reused_failures, "budget_stops": self.budget_stops,
+                "budget_context": self.budget_context,
+                "effective_time_budget_seconds": self.effective_seconds,
                 "read_ahead_unevaluated": self.read_ahead_unevaluated,
+                "read_ahead_failures": self.read_ahead_failures,
                 "phases": [*self.phases, self._current_phase()]}

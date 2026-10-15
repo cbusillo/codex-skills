@@ -12,6 +12,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import time
 from typing import Any
 
 
@@ -526,33 +527,38 @@ def discussion_evidence(
     return conflicts, owned
 
 
-def run_read(argv: list[str], *, cwd: pathlib.Path | None = None) -> str:
-    result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, timeout=30)
+def run_read(argv: list[str], *, cwd: pathlib.Path | None = None, deadline_at: float | None = None) -> str:
+    timeout = min(30, max(0, deadline_at - time.time())) if deadline_at is not None else 30
+    if timeout <= 0:
+        raise subprocess.TimeoutExpired(argv, timeout)
+    result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, timeout=timeout)
     if result.returncode:
         raise ValueError(f"Ownership inventory failed: {argv[0]} {argv[1]} (exit {result.returncode})")
     return result.stdout
 
 
-def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None) -> dict[str, Any]:
-    remote = run_read(["git", "remote", "get-url", "origin"], cwd=cwd).strip()
+def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
+                    deadline_at: float | None = None) -> dict[str, Any]:
+    deadline_options = {"deadline_at": deadline_at} if deadline_at is not None else {}
+    remote = run_read(["git", "remote", "get-url", "origin"], cwd=cwd, **deadline_options).strip()
     if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
         raise ValueError("Run claim from a checkout of the target repository")
     worktrees = []
-    for block in run_read(["git", "worktree", "list", "--porcelain"], cwd=cwd).strip().split("\n\n"):
+    for block in run_read(["git", "worktree", "list", "--porcelain"], cwd=cwd, **deadline_options).strip().split("\n\n"):
         fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
         branch = fields.get("branch", "").removeprefix("refs/heads/")
         path = fields.get("worktree", "")
         worktrees.append({"branch": branch, "path": path})
-    local = run_read(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd=cwd).splitlines()
+    local = run_read(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd=cwd, **deadline_options).splitlines()
     remote_branches = [
         line.split("\t", 1)[1].removeprefix("refs/heads/")
-        for line in run_read(["git", "ls-remote", "--heads", "origin"], cwd=cwd).splitlines()
+        for line in run_read(["git", "ls-remote", "--heads", "origin"], cwd=cwd, **deadline_options).splitlines()
     ]
     sessions: list[dict[str, Any]] = []
     coverage: dict[str, Any] = {"codex": {"status": "unavailable", "reason": "no CLI peer inventory"}}
     if shutil.which("claude"):
         try:
-            sessions = json.loads(run_read(["claude", "agents", "--json"], cwd=pathlib.Path.home()))
+            sessions = json.loads(run_read(["claude", "agents", "--json"], cwd=pathlib.Path.home(), **deadline_options))
             if not isinstance(sessions, list) or any(
                 not isinstance(s, dict) or not isinstance(s.get("sessionId"), str)
                 or not isinstance(s.get("cwd"), str) for s in sessions

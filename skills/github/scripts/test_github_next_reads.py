@@ -122,6 +122,36 @@ def test_slow_first_source_does_not_idle_other_workers() -> None:
         assert reads.map(read, [0, 1, 2]) == [0, 1, 2]
 
 
+def test_short_inherited_budget_keeps_some_time_for_discovery() -> None:
+    clock = 100.0
+    with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": str(clock + 25)}), patch(
+            "github_next_reads.time.time", return_value=clock):
+        with NextReads(workers=1, seconds=180) as reads:
+            assert 0 < reads.final_evidence_reserve < reads.remaining_seconds
+            assert reads.receipt()["effective_time_budget_seconds"] < reads.seconds
+
+
+def test_local_ownership_commands_share_one_total_deadline() -> None:
+    import github_plan_claim as claim
+    from types import SimpleNamespace
+    clock = {"now": 100.0}
+    observed = []
+    def command(argv, **kwargs):
+        observed.append(kwargs["timeout"])
+        clock["now"] += 1
+        return SimpleNamespace(returncode=0, stdout="git@github.com:someone/project.git\n" if "get-url" in argv else "")
+    with patch.object(claim.time, "time", lambda: clock["now"]), patch.object(claim.subprocess, "run", command):
+        deadline = clock["now"] + 1.5
+        try:
+            claim.local_inventory("someone/project", 1, deadline_at=deadline)
+        except claim.subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError("local inventory started commands after its total deadline")
+    assert len(observed) == 2
+    assert 0 < observed[-1] < observed[0]
+
+
 def main() -> None:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

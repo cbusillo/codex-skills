@@ -1225,10 +1225,11 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
-Global `next` bounds network work with `--time-budget SECONDS` (default 180)
-and `--read-workers 1..16` (default 8). Increase the budget for broader evidence;
+Global `next` bounds network work with `--time-budget SECONDS`
+and `--read-workers COUNT`; `--help` reports the current defaults and bounds.
+Increase the budget for broader evidence;
 one worker is the supported serial route. Native graph ownership runs before
-optional discovery, which reserves up to 30 seconds for final evidence reads.
+optional discovery, which reserves part of the effective budget for final evidence reads.
 Invocation-local observations coalesce duplicate GETs;
 the first read still contacts the existing authenticated reader, including
 conditional validation, quota reserve and inherited retry deadline. No body
@@ -1240,6 +1241,8 @@ count, including retries. A deadline returns partial evidence, names known
 unevaluated discoveries and withholds complete ranking claims. Unknown sources
 and incomplete discussion, dependencies, waits, ownership and Dependabot
 coverage retain their separate receipts. Stdout remains one JSON envelope.
+Local ownership subprocesses share the same inherited deadline. Ordinary claim
+preflight retains its existing subprocess policy when no explicit deadline is supplied.
 `reads` counts first invocation-local REST GET observations; `reused_reads`
 includes cached failures, separately counted in `reused_failures`. Project
 GraphQL and service calls are outside those REST counters. Their elapsed time
@@ -1248,6 +1251,10 @@ deadline. `budget_stops` distinguishes retry-deadline refusals (including a
 reset/backoff beyond the remaining budget) from unread requests after expiry.
 Graph read-ahead beyond the logical scan is capped at the worker count and
 reported in `read_ahead_unevaluated`; it does not count as evaluated coverage.
+Unused speculative provider failures are counted in `read_ahead_failures`;
+consumed provider failures and all credential/actor failures retain their stop
+policy. `budget_context` retains known retry/reset times, while early network
+timeouts remain failures. Milestone-backend attempts join the aggregate receipt.
 Parallel reads near the shared wait-read bound may retain a different subset
 of evidence; all unread references and incomplete coverage remain explicit.
 

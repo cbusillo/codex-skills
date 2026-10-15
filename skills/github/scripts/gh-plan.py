@@ -203,6 +203,15 @@ def record_retry_summary(summary: Optional[github_api_core.RetrySummary]) -> Non
         CURRENT_RETRY_FIELDS = CURRENT_RETRY_SUMMARY.as_dict() if CURRENT_RETRY_SUMMARY else {}
 
 
+def record_retry_metadata(result: dict[str, Any]) -> None:
+    """Include the shared milestone backend's own transport receipt."""
+    keys = ("attempts", "elapsed_wait", "retry_eligible", "last_actor", "last_bucket",
+            "outcome_certainty", "reconciliation", "recommended_next_action", "effective_deadline")
+    if all(key in result for key in keys):
+        record_retry_summary(github_api_core.RetrySummary(**{key: result[key] for key in keys},
+            exhausted_reason=result.get("retry_exhausted_reason")))
+
+
 def die(
     message: str,
     *,
@@ -912,11 +921,14 @@ def api_json_uncached(
         and not github_identity.active_auth_fallback_allowed()
         and not github_identity.own_user_opted_in()
     ):
+        read_deadline = time.time() + github_api_core.remaining_retry_timeout_seconds()
+        if NEXT_READS is not None and NEXT_READS.deadline is not None:
+            read_deadline = min(NEXT_READS.deadline, time.time() + github_api_core.default_retry_policy().max_wait_seconds)
         reader = github_read.GitHubReader(
             gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR,
             operation=operation or CURRENT_OPERATION, strict_actor=True,
             cache_enabled=True, cache_revalidate=True,
-            deadline_at=time.time() + github_api_core.remaining_retry_timeout_seconds(),
+            deadline_at=read_deadline,
         )
         reader.completed_steps = list(completed_steps or [])
         try:
@@ -3645,7 +3657,8 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                 target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
                 if target.is_dir() and not (NEXT_READS and NEXT_READS.expired):
                     try:
-                        local = github_plan_claim.local_inventory(repo, 0, cwd=target)
+                        local = github_plan_claim.local_inventory(repo, 0, cwd=target,
+                            **({"deadline_at": NEXT_READS.deadline} if NEXT_READS else {}))
                         observed["inventory"] = local
                         observed["coverage"].update(local_artifacts="read", sessions=local.get("session_coverage", {}))
                     except (ValueError, OSError, subprocess.SubprocessError) as exc:
@@ -3703,9 +3716,15 @@ def next_source_error(exc: PlanError) -> str:
     # Credential rejection, quota and provider failures retain their stop policy.
     if isinstance(exc, ClassifiedPlanError):
         raise exc
-    if NEXT_READS is not None and (isinstance(exc.__cause__, github_next_reads.ReadDeadline)
-                                   or (exc.failure and exc.failure.cause == "deadline_exceeded")):
-        NEXT_READS.budget_stop(exc.failure.cause if exc.failure else "read_budget_exhausted")
+    metadata = exc.api_result or {}
+    effective_deadline = metadata.get("effective_deadline")
+    budget_refusal = (NEXT_READS is not None and exc.failure and exc.failure.cause == "deadline_exceeded" and (
+        NEXT_READS.expired or (metadata.get("retry_exhausted_reason") == "deadline_exceeded"
+            and type(effective_deadline) in {int, float} and NEXT_READS.deadline is not None
+            and effective_deadline == NEXT_READS.deadline)))
+    if NEXT_READS is not None and (isinstance(exc.__cause__, github_next_reads.ReadDeadline) or budget_refusal):
+        NEXT_READS.budget_stop(exc.failure.cause if exc.failure else "read_budget_exhausted",
+                              error=exc.__cause__ or exc, retry_at=metadata.get("retry_at"))
         return "global next read deadline prevents this evidence read"
     if exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found", "identity_refused"}:
         raise exc
@@ -4050,10 +4069,12 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     if not titles and section_map(direction_text).get("Milestones", "").strip():
         raise PlanError(f"Could not parse the nonempty Milestones section in {repo}/{DIRECTION_FILE}")
     gh_cmd, expected_actor = milestone_route()
-    milestone_inventory = github_milestone_core.list_milestones(
+    milestone_result = github_milestone_core.list_milestones(
         repo, state="all", limit=NEXT_PLAN_INVENTORY_LIMIT + 1,
         operation=CURRENT_OPERATION, actor=None, expected_actor=expected_actor, gh_cmd=gh_cmd,
-    )["milestones"]
+    )
+    record_retry_metadata(milestone_result)
+    milestone_inventory = milestone_result["milestones"]
     milestones_truncated = len(milestone_inventory) > NEXT_PLAN_INVENTORY_LIMIT
     completed_titles = [
         milestone["title"] for milestone in milestone_inventory[:NEXT_PLAN_INVENTORY_LIMIT]
@@ -4066,6 +4087,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             repo, args.milestone, operation=CURRENT_OPERATION,
             actor=None, expected_actor=expected_actor, gh_cmd=gh_cmd,
         )
+        record_retry_metadata(result)
         scope = result["milestone"]
         if scope["title"] not in titles:
             raise PlanError("The selected milestone is not listed in the owner's direction")
@@ -4088,6 +4110,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     nodes: dict[tuple[str, int], dict[str, Any]] = {}
     parents: dict[tuple[str, int], dict[str, Any] | None] = {}
     context_lock = threading.Lock()
+    context_locks: dict[str, Any] = {}
     graph_read_ahead: set[tuple[str, int]] = set()
 
     def load_node(issue_repo: str, number: int) -> dict[str, Any]:
@@ -4101,14 +4124,17 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
             seeds[key] = {**raw_issue, "repo": issue_repo}
+            context_key = issue_repo.casefold()
             with context_lock:
-                if issue_repo not in contexts:
+                repo_lock = context_locks.setdefault(context_key, threading.Lock())
+            with repo_lock:
+                if context_key not in contexts:
                     target_config = load_config(issue_repo)
                     focus_actor, focus_values, focus_context = next_focus_context(issue_repo, target_config)
                     actor = focus_actor or actor
-                    contexts[issue_repo] = (target_config, focus_values)
+                    contexts[context_key] = (target_config, focus_values)
                     focus_contexts[issue_repo] = focus_context
-            target_config, focus_values = contexts[issue_repo]
+            target_config, focus_values = contexts[context_key]
             focus = focus_values.get(raw_issue.get("html_url") or raw_issue.get("url"))
             base = {
                 **compact_list_issue(issue_repo, raw_issue),
@@ -4180,7 +4206,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     def prefetch_nodes(refs: list[dict[str, Any]], *, ancestry: bool = False) -> None:
         for ref in refs[:NEXT_READS.workers]:
             key = (ref["repo"].casefold(), ref["number"])
-            future = NEXT_READS.submit(("node", *key), lambda key=key: load_node(*key))
+            issue_repo, number = ref["repo"], ref["number"]
+            future = NEXT_READS.submit(("node", *key), lambda issue_repo=issue_repo, number=number: load_node(issue_repo, number))
             if ancestry:
                 NEXT_READS.submit(("prefetch_parent", *key), lambda key=key, future=future: prefetch_parent(key, future))
 
@@ -4202,6 +4229,18 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 break
             graph_read_ahead.add(key)
             prefetch_nodes([ref])
+
+    unused_errors: set[BaseException] = set()
+    def unused_failure(exc: BaseException) -> None:
+        if (isinstance(exc, PlanError) and not isinstance(exc, ClassifiedPlanError) and exc.failure
+                and exc.failure.cause in {"network_provider_failure", "provider_failure"}):
+            if exc in unused_errors:
+                return
+            unused_errors.add(exc)
+            cause = exc.failure.cause
+            NEXT_READS.read_ahead_failures[cause] = NEXT_READS.read_ahead_failures.get(cause, 0) + 1
+            return
+        raise exc
 
     def with_ancestry(leaf_item: dict[str, Any]) -> dict[str, Any]:
         ancestors: list[dict[str, Any]] = []
@@ -4255,7 +4294,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     NEXT_READS.read_ahead_unevaluated = len(graph_read_ahead.difference(nodes))
     # Settle the bounded graph look-ahead before taking inventory snapshots.
     for key in graph_read_ahead:
-        NEXT_READS.tasks[("node", *key)].result()
+        try:
+            NEXT_READS.tasks[("node", *key)].result()
+        except BaseException as exc:
+            unused_failure(exc)
     ranked["dependency_context"]["relationship_limit"] = NEXT_RELATIONSHIP_LIMIT
     graph_evaluation_note = ("Milestone graph evaluation stopped early. Raise --scan-limit to check more linked issues."
                              if ranked["truncated"] else None)
@@ -4346,7 +4388,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             # Leave time to qualify the rows already read. Spending the entire
             # budget on more discussions would leave ownership unread for all
             # discoveries, even when independent source work is available.
-            final_evidence_reserve = min(30, NEXT_READS.seconds / 5)
+            final_evidence_reserve = NEXT_READS.final_evidence_reserve
             if NEXT_READS.expired or NEXT_READS.remaining_seconds < final_evidence_reserve:
                 break
             if NEXT_READS.workers > 1:
@@ -4462,7 +4504,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     NEXT_READS.start_phase("ownership")
     queue_context = annotate_next_queue(list({(entry["repo"].casefold(), entry["number"]): entry
         for entry in [*ranked["candidates"], *discoveries]}.values()), args)
-    queue_context.setdefault("repositories", {}).update(graph_queue_context.get("repositories", {}))
+    for name, observed in graph_queue_context.get("repositories", {}).items():
+        queue_context.setdefault("repositories", {}).setdefault(name, observed)
     NEXT_READS.start_phase("wait_evidence")
     wait_context = next_wait_context(
         [seeds[key] for key in evidence_keys if key in seeds],
@@ -4568,7 +4611,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         inventory_complete=not discovery.get("inventory_truncated", False) and "error" not in discovery,
     ) if scope is None else {"dependabot_context": {"complete": False, "exclusion": "explicit_milestone_scope"}}
     # Account for every speculative read before emitting the terminal receipt.
-    NEXT_READS.drain()
+    NEXT_READS.drain(unused_failure=unused_failure)
     emit({
         "ok": True, "actor": actor, "repo": repo,
         "scope": {"kind": "direction", "owner": repo.split("/")[0], "milestone": scope},
