@@ -1,0 +1,51 @@
+{
+  "source": "https://github.com/cbusillo/codex-skills/issues/1862#issuecomment-6183137081",
+  "notes": "Minimal status replay from NEXTSHADOW-D1. Actions shortened; claim identities and wait evidence are synthetic. No live reads.",
+  "cases": [
+    {
+      "number": 2437,
+      "state": "Active; real remaining work, with delivered source preserved.",
+      "action": "An executing agent completes the remaining storage-bound domain/contracts and storage-method layers in separate completing PRs.",
+      "waiting_for": "No new person or event wait; all existing waits and authority boundaries are preserved.",
+      "wait_state": "clear",
+      "claim": "released"
+    },
+    {
+      "number": 3231,
+      "state": "Active; real remaining work, with delivered source preserved.",
+      "action": "An executing recovery agent repairs the supported original-intent/provider-absence classification gap in its own completing PR.",
+      "waiting_for": "No new person or event wait; all existing waits and authority boundaries are preserved.",
+      "wait_state": "review"
+    },
+    {
+      "number": 3330,
+      "state": "Active; remaining browser-session qualification.",
+      "action": "Supervisor routes a browser-capable agent with existing authorized human-session access to read the real Products/incident UI and click Refresh.",
+      "waiting_for": "None; Supervisor agent acts next to choose the supported browser interface. No access grant or Director decision is requested.",
+      "wait_state": "review"
+    },
+    {
+      "number": 3620,
+      "state": "Active; unclaimed follow-up identified during review.",
+      "action": "Supervisor routes the typed-settings integration with the existing two-slot work before such a website uses that driver.",
+      "waiting_for": "No Director decision or new grant. Source implementation and isolated qualification remain agent work.",
+      "wait_state": "review"
+    },
+    {
+      "number": 3573,
+      "state": "Active; existing source worker resumed in its original claim.",
+      "action": "Finish the review corrections, refresh the PR against current main, run gates and review, then Ready handoff to Supervisor.",
+      "waiting_for": "No Chris input for engineering. GA4 input remains Chris's existing item on tenant #74; Justin's exact accepted release governs later activation. No live activation in this session.",
+      "wait_state": "clear",
+      "claim": "active"
+    },
+    {
+      "number": 3590,
+      "state": "Active; existing source worker implements the missing explicit source option on the existing isolated-preview route.",
+      "action": "Finish behavior/production-fence tests and review, then hand the PR to Supervisor.",
+      "waiting_for": "None; no Owner question or access/grant action identified. #166's Client wait remains intact.",
+      "wait_state": "clear",
+      "claim": "active"
+    }
+  ]
+}

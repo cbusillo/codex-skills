@@ -20,6 +20,7 @@ from typing import Any
 
 import github_agent
 import github_plan_claim
+import github_plan_wait
 import github_client
 import github_milestone as github_milestone_core
 
@@ -118,6 +119,13 @@ def milestone_order_wait(reason: str, milestone_titles: list[str]) -> bool:
 
 def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
     """Validate the recorded wait, leaving person/event interpretation to review."""
+    structured = item.get("structured_wait")
+    if structured is not None:
+        rows = waiting_records(item, status_text)
+        return {"requested": bool(rows) or item.get("plan_status") == "waiting",
+                "valid": True, "reason": None,
+                "waiting_for": "; ".join(row["waiting_for"] for row in rows),
+                "since": None, "recorded_at": item.get("updated_at")}
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.DOTALL)
     status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.IGNORECASE)
     rows = waiting_records(item, status_text)
@@ -171,6 +179,10 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
 def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
     if item.get("plan_status") in {"blocked", "stale", "done"} or item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work", "pull_request"}:
         return item
+    status_text = re.sub(r"\*\*(Waiting for|Parked until)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
+    if (item.get("exclusion") == "wait_review_required" and not re.search(
+            r"(?im)^\s*(?:[-*]\s+)?(?:Waiting for|Parked until):", status_text)):
+        return item
     evidence = milestone_wait_evidence(item, status_text, milestone_titles)
     if not evidence["requested"] or evidence["valid"]:
         return item
@@ -179,7 +191,7 @@ def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_title
     result = {**item, "wait_finding": finding}
     if item.get("blocked_by"):
         return {**result, "exclusion": "blocked_by_open_dependency"}
-    if result.get("exclusion") == "waiting":
+    if result.get("exclusion") in {"waiting", "wait_review_required"}:
         result.pop("exclusion")
         if result.get("open_sub_issues"):
             result["exclusion"] = "delegated_to_open_sub_issues"
@@ -441,7 +453,7 @@ def include_parent_context(
     for parent in parents:
         if (parent["repo"].casefold(), parent["number"]) in tracking:
             continue
-        if parent.get("exclusion") in {"waiting", "label_blocked_without_native_edge"}:
+        if parent.get("exclusion") in {"waiting", "wait_review_required", "label_blocked_without_native_edge"}:
             return {**result, "exclusion": "parent_waiting", "waiting_on_parent": parent["url"], "_own_exclusion": item.get("exclusion")}
     return result
 
@@ -705,6 +717,7 @@ def rank_portfolio_work(
     repository_clients: dict[str, dict[str, Any]] | None = None,
     director_owner: str | None = None,
     bot_logins: tuple[str, ...] = (),
+    reference_repositories: set[str] | None = None,
 ) -> dict[str, Any]:
     """Share final evidence handling across adapters without inferring permission.
 
@@ -737,7 +750,7 @@ def rank_portfolio_work(
                 checked = check_milestone_wait(parent, status, milestone_titles)
                 if checked.get("wait_finding") and checked["wait_finding"] not in findings:
                     findings.append(checked["wait_finding"])
-                if checked.get("exclusion") in {"waiting", "label_blocked_without_native_edge"}:
+                if checked.get("exclusion") in {"waiting", "wait_review_required", "label_blocked_without_native_edge"}:
                     valid_parent = parent
                     break
             item = dict(item)
@@ -826,6 +839,8 @@ def rank_portfolio_work(
         elif review["state"] == "ineligible":
             excluded.append({**item, "exclusion": "outside_owner_direction", "review": review})
             continue
+        elif item.get("wait_review_required") or queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown"}:
+            item["review_required"] = queue.get("reason") or "wait_review_required"
         elif review["state"] == "waiting":
             item["review_required"] = "invalid_milestone_wait_needs_current_ownership_review"
         elif review.get("ownership_complete") is not True:
@@ -879,24 +894,26 @@ def rank_portfolio_work(
             continue
         body = (entry.get("discussion") or {}).get("body", "")
         status = section_map(body).get("Current Status", "")
-        rows = waiting_records(entry, status)
+        rows = waiting_records(entry, status, reference_repositories=reference_repositories)
         if entry.get("exclusion") == "reviewed_wait":
             recorded_waits.append({"repo": entry["repo"], "number": entry["number"], "url": entry["url"],
                                    "waiting_for": entry["review"]["reason"], "reported_by": entry["url"],
                                    "reported_at": entry.get("updated_at"), "last_verified": None,
-                                   "references": [], "review": entry["review"], "source": "caller_review"})
-        if not rows and entry.get("plan_status") == "waiting":
+                                   "references": [], "review": entry["review"], "source": "caller_review", "milestone": entry.get("milestone")})
+        if not rows and (entry.get("plan_status") == "waiting" or entry.get("exclusion") == "wait_review_required"):
             rows = [{"repo": entry["repo"], "number": entry["number"], "url": entry["url"],
                      "waiting_for": "Waiting party or condition not recorded", "reported_by": entry["url"],
                      "reported_at": entry.get("updated_at"), "last_verified": None,
-                     "references": [], "non_external": True}]
+                     "references": [], "non_external": True,
+                     **({"source": "legacy_wait_review"} if entry.get("wait_review_required") else {})}]
         for row in rows:
+            row = {**row, "milestone": entry.get("milestone")}
             key = (row["repo"].casefold(), row["number"], row["waiting_for"])
             if key in seen_waits:
                 continue
             seen_waits.add(key)
             if row.get("unowned", row["non_external"]):
-                if entry.get("plan_status") == "waiting" or entry.get("exclusion") == "waiting":
+                if entry.get("plan_status") == "waiting" or entry.get("exclusion") in {"waiting", "wait_review_required"}:
                     unowned.append({**row, "review_required": True})
                 elif not row["non_external"]:
                     recorded_waits.append({**row, "review_required": True})
@@ -991,8 +1008,25 @@ def non_external_wait(reason: str) -> bool:
     ))
 
 
-def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, Any]]:
+def waiting_records(issue: dict[str, Any], status_text: str, *, reference_repositories: set[str] | None = None) -> list[dict[str, Any]]:
     """A wait belongs to its reporting issue; references are supporting context."""
+    structured = issue.get("structured_wait")
+    if structured is not None:
+        if structured["state"] != "waiting":
+            return []
+        rows = []
+        for wait in structured["waits"]:
+            rows.append({
+                "repo": issue["repo"], "number": issue["number"], "url": issue["url"],
+                "state": issue.get("state"), "plan_status": issue.get("plan_status"),
+                "waiting_for": wait["waiting_for"], "ends_when": wait["ends_when"],
+                "reported_by": issue["url"], "reported_at": issue.get("updated_at"),
+                "last_verified": None,
+                "references": issue_references(wait["waiting_for"] + "\n" + wait["ends_when"], repo=issue["repo"], known_repositories=reference_repositories),
+                "no_current_wait": False, "agent_next": False,
+                "non_external": False, "unowned": False, "source": "structured_wait",
+            })
+        return rows
     records: list[dict[str, Any]] = []
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S)
     status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since|Last verified)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
@@ -1009,26 +1043,15 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
         reason = re.sub(r"<!--.*?-->", "", match[1], flags=re.S).strip()
         if not reason:
             continue
-        references: dict[tuple[str, int], dict[str, Any]] = {}
-        plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", reason)
-        for ref in re.finditer(
-            r"https://github\.com/([^/\s)]+/[^/\s)]+)/(issues|pull)/(\d+)"
-            r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", plain,
-        ):
-            repo = ref.group(1) or ref.group(4) or issue["repo"]
-            number = int(ref.group(3) or ref.group(5))
-            kind = ref.group(2) or "issues"
-            references[(repo, number)] = {
-                "repo": repo, "number": number,
-                "url": f"https://github.com/{repo}/{kind}/{number}",
-            }
+        references = issue_references(reason, repo=issue["repo"], known_repositories=reference_repositories)
         records.append({
             "repo": issue["repo"], "number": issue["number"], "url": issue["url"],
             "state": issue.get("state"), "plan_status": issue.get("plan_status"),
+            **({"source": "legacy_wait_review", "review_required": True} if issue.get("wait_review_required") else {}),
             "waiting_for": reason, "reported_by": issue["url"],
             "reported_at": issue.get("updated_at"),
             "last_verified": verified[1].strip() if verified else None,
-            "references": list(references.values()),
+            "references": references,
             "no_current_wait": no_current_wait(reason),
             "agent_next": no_current_wait(reason) or agent_next_wait(reason),
             "non_external": no_current_wait(reason) or non_external_wait(reason),
@@ -1036,6 +1059,18 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
                 r"separately authorized (?:production |live )?(?:activation|work)|live acceptance|approval|authorization", reason.strip().rstrip(" ."), re.I,
             )),
         })
+    if not records and issue.get("wait_review_required"):
+        state = re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*((?:waiting (?:on|for)|parked until)\s+\S[^\n]*)", status_text)
+        if state:
+            records.append({
+                "repo": issue["repo"], "number": issue["number"], "url": issue["url"],
+                "state": issue.get("state"), "plan_status": issue.get("plan_status"),
+                "waiting_for": state[1], "reported_by": issue["url"],
+                "reported_at": issue.get("updated_at"), "last_verified": None,
+                "references": issue_references(state[1], repo=issue["repo"], known_repositories=reference_repositories),
+                "no_current_wait": False, "agent_next": False, "non_external": False,
+                "unowned": False, "source": "legacy_wait_review", "review_required": True,
+            })
     return records
 
 
@@ -1047,18 +1082,37 @@ def next_action_references(status_text: str) -> list[dict[str, Any]]:
     match = re.search(r"(?im)^\s*(?:[-*]\s+)?Next action:\s*(.+)$", status_text)
     if not match:
         return []
-    plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", match[1])
+    return issue_references(match[1], repo=None)
+
+
+def issue_references(text: str, *, repo: str | None, known_repositories: set[str] | None = None) -> list[dict[str, Any]]:
+    """Resolve repository shorthand only within its reporting owner's context."""
+    plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", text)
     references: dict[tuple[str, int], dict[str, Any]] = {}
+    previous_end = -1
     for ref in re.finditer(
-        r"https://github\.com/([^/\s)]+/[^/\s)]+)/issues/(\d+)"
-        r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b", plain,
+        r"https://github\.com/([^/\s)]+/[^/\s)]+)/(issues|pull)/(\d+)"
+        r"|(?<![\w/#])([\w.-]+/[\w.-]+)#(\d+)\b"
+        r"|(?<![\w#])([\w.-]+)#(\d+)\b"
+        r"|(?<![\w/])#(\d+)\b", plain,
     ):
-        repo = ref.group(1) or ref.group(3)
-        if not repo:
-            continue
-        number = int(ref.group(2) or ref.group(4))
-        references[(repo.casefold(), number)] = {
-            "repo": repo, "number": number, "url": f"https://github.com/{repo}/issues/{number}",
+        target = ref.group(1) or ref.group(4)
+        if not target:
+            # A slash separates adjacent recognized issue references; an
+            # arbitrary URL/file path cannot establish repository shorthand.
+            if ref.start() and plain[ref.start() - 1] == "/" and ref.start() != previous_end + 1:
+                continue
+
+            if repo is None:
+                continue
+            target = repo.split("/")[0] + "/" + ref.group(6) if ref.group(6) else repo
+            if ref.group(6) and target.casefold() not in {name.casefold() for name in (known_repositories or {repo})}:
+                continue
+        number = int(ref.group(3) or ref.group(5) or ref.group(7) or ref.group(8))
+        previous_end = ref.end()
+        references[(target.casefold(), number)] = {
+            "repo": target, "number": number,
+            "url": f"https://github.com/{target}/{ref.group(2) or 'issues'}/{number}",
         }
     return list(references.values())
 
@@ -1071,8 +1125,13 @@ def evaluate_direction_node(
     relationships: dict[str, list[dict[str, Any]]] | None,
     relationship_error: str | None = None,
     truncated_relationships: list[str] | None = None,
+    structured_wait: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Classify raw issue evidence identically for CLI and service consumers."""
+    """Classify raw issue evidence identically for CLI and service consumers.
+
+    Supply structured_wait from the claim wait resolver after a complete,
+    authorized discussion read. Omission retains legacy review evidence only.
+    """
     if truncated_relationships:
         relationship_error = "Relationship evidence exceeded the reader's collection limit"
     _, item = evaluate_next_plan(
@@ -1087,6 +1146,11 @@ def evaluate_direction_node(
         return {"item": {**item, "exclusion": "pull_request"}}
     status_text = section_map(issue.get("body") or "").get("Current Status", "")
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S).strip()
+    if structured_wait is not None:
+        github_plan_wait.validate(structured_wait)
+        item["wait_review_required"] = structured_wait["state"] == "review"
+        if structured_wait["state"] != "review":
+            item["structured_wait"] = structured_wait
     # An agent's own next step, such as Supervisor closeout, is work to offer.
     rows = waiting_records(item, status_text)
     reports = [row for row in rows if not row["agent_next"]]
@@ -1098,10 +1162,13 @@ def evaluate_direction_node(
         item["open_sub_issues"] = summary["open_sub_issues"]
     if (
         next_plan_status(issue, config) == "waiting"
-        or re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text)
+        or ((structured_wait is None or structured_wait["state"] == "review") and re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text))
+        or (structured_wait is not None and structured_wait["state"] == "waiting")
         or (reports and not (summary["open_blockers"] or summary["open_sub_issues"]))
     ):
         item["exclusion"] = "waiting"
+    if item.get("wait_review_required") and item.get("exclusion") == "waiting" and item.get("plan_status") != "waiting":
+        item["exclusion"] = "wait_review_required"
     return {
         "item": item,
         "blockers": summary["open_blockers"],
@@ -1255,10 +1322,11 @@ def rank_direction_work(
             continue
         reports = [] if item.get("wait_finding") else node.get("waiting") or []
         waiting.extend({**report, "milestone": milestone, "via": via} for report in reports)
-        if reason == "waiting" and not reports and not tracking:
+        if reason in {"waiting", "wait_review_required"} and not reports and not tracking:
             waiting.append({
                 **step,
                 "milestone": milestone,
+                **({"source": "legacy_wait_review"} if reason == "wait_review_required" else {}),
                 "waiting_for": node.get("status_text") or "Waiting party or condition not recorded",
                 "reported_by": item["url"],
                 "reported_at": item.get("updated_at"),
@@ -1268,7 +1336,7 @@ def rank_direction_work(
                 "track": item["url"],
                 "references": next_action_references(status_text or ""),
             }
-        if reason in {"waiting", "label_blocked_without_native_edge"} and not tracking:
+        if reason in {"waiting", "wait_review_required", "label_blocked_without_native_edge"} and not tracking:
             excluded.append(item)
             degraded += reason == "label_blocked_without_native_edge"
             continue
@@ -1335,6 +1403,7 @@ def rank_direction_work(
 def milestone_summary(
     milestone_titles: list[str], *, completed: list[str], candidates: list[dict[str, Any]],
     graph_waits: list[dict[str, Any]], track_next_actions: dict[str, dict[str, Any]],
+    underway: list[dict[str, Any]] | None = None, verification_only: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Say, for each open listed milestone, what work it offers or who it waits on.
 
@@ -1350,18 +1419,26 @@ def milestone_summary(
                 for item in candidates
                 if (item.get("via") and (item.get("milestone") or {}).get("title") == title)
                 or title in (item.get("overall_milestone_context") or {}).get("titles", [])]
+        def linked(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [{"repo": row["repo"], "number": row["number"], "url": row["url"]}
+                    for row in rows if (row.get("via") and (row.get("milestone") or {}).get("title") == title)
+                    or title in (row.get("overall_milestone_context") or {}).get("titles", [])]
+        owned = linked(underway or [])
+        qualification = linked(verification_only or [])
         waits: list[dict[str, Any]] = []
+        reviews: list[dict[str, Any]] = []
         for row in graph_waits:
             record = {"repo": row["repo"], "number": row["number"], "url": row["url"],
                       "waiting_for": row.get("waiting_for")}
-            if (row.get("milestone") or {}).get("title") == title and record not in waits:
-                waits.append(record)
+            target = reviews if row.get("source") == "legacy_wait_review" and row.get("plan_status") != "waiting" else waits
+            if (row.get("milestone") or {}).get("title") == title and record not in target:
+                target.append(record)
         track = track_next_actions.get(title) or {}
         summary.append({
             "milestone": title,
             "track": track.get("track"),
-            "state": "work_listed" if work else "waiting" if waits else "no_linked_work",
-            "work": work,
+            "state": "work_listed" if work or qualification else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "no_linked_work",
+            "work": work, "underway": owned, "verification_only": qualification, "wait_reviews": reviews,
             "waits": waits,
             # Named by the Track's Next action but not reached over native edges.
             "next_action_outside_graph": track.get("references", []),

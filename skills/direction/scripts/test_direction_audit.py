@@ -2247,6 +2247,32 @@ def test_overall_audit_follows_track_to_invalid_cross_repository_wait() -> None:
                                        fetch=lambda _: (_ for _ in ()).throw(module.AuditError("unavailable")))
 
 
+def test_overall_audit_reads_current_structured_wait_before_prose() -> None:
+    module = load()
+    root = {**issue(1, 'Track: Dogfood week'), 'state': 'open',
+            'milestone': {'title': 'Dogfood week', 'state': 'open'},
+            'html_url': 'https://github.com/owner/direction/issues/1'}
+    other = {**issue(2, 'Track: Thin fork decision'), 'state': 'open',
+             'milestone': {'title': 'Thin fork decision', 'state': 'open'},
+             'html_url': 'https://github.com/owner/direction/issues/2'}
+    child = {**issue(120, 'Source work', body='## Current Status\nState: Waiting.\nWaiting for: milestone Thin fork decision.'),
+             'state': 'open', 'user': {'login': 'owner'},
+             'html_url': 'https://github.com/owner/business/issues/120'}
+    import github_plan_wait
+    comment = {'user': {'login': 'owner'}, 'body': github_plan_wait.marker(github_plan_wait.reviewed(evidence='Existing wait resolved'))}
+    def fetch(args: list[str]) -> Any:
+        path = args[1].split('?')[0]
+        if path == 'repos/owner/direction/issues/1/sub_issues':
+            return [child]
+        if path == 'repos/owner/business/issues/120':
+            return child
+        if path == 'repos/owner/business/issues/120/comments':
+            return [comment]
+        return []
+    assert not module.enrich_milestone_waits([root, other], 'owner/direction', ['Dogfood week', 'Thin fork decision'], fetch=fetch)
+    assert root['_milestone_wait_findings'] == []
+
+
 def test_local_wait_findings_need_no_dependency_reads() -> None:
     module = load()
     base = {**issue(120, "Inventory", labels=("plan:waiting",),

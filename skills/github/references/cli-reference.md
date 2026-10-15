@@ -1415,7 +1415,17 @@ authorizes execution.
 entry point for service consumers such as Launchplane. It accepts tracking
 roots, ordered milestone titles, completed milestone titles, a node reader,
 and the scan bound. The same module's `evaluate_direction_node` classifies raw
-issue, relationship and label evidence, including Current Status waits;
+issue, relationship and label evidence. Pass `structured_wait` resolved through
+`github_plan_wait.current` (including the managed planning body) from the complete
+bounded discussion and configured automation/Director authors. A clear record
+overrides status prose; a pending record holds the whole issue/subtree. Split
+independent child work from a parent-only hold rather than silently dropping that
+hold. Missing or unreadable records require review. Adapters that omit this
+optional parameter retain legacy reporting and have not adopted structured
+selection authority. Pass known repository identities as `reference_repositories`
+to portfolio reporting to resolve `repo#N` shorthand; full references remain
+readable even outside that inventory. This interface update needs service-adapter
+adoption; a catalog update alone does not prove an installed service upgraded.
 `rank_next_candidates` supplies the common ordering for local and global calls.
 Bounded readers must pass `truncated_relationships` or `relationship_error`
 to the classifier when their evidence is incomplete; it then returns an unknown
