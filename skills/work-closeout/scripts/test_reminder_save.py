@@ -320,6 +320,17 @@ class PlainReminderTests(unittest.TestCase):
             reminder_save.native(fields)
         self.assertEqual(self.writers[0].sent[0]["url"], fields["url"])
 
+    def test_url_components_escape_brackets_and_bare_percent_before_saving(self):
+        for url, expected in (
+                ("https://example.com/report[1]?filter[status]=open&pct=100%",
+                 "https://example.com/report%5B1%5D?filter%5Bstatus%5D=open&pct=100%25"),
+                ("https://[::1]/report%2Fmonthly#part[2]",
+                 "https://[::1]/report%2Fmonthly#part%5B2%5D")):
+            with self.subTest(url=url):
+                fields = self.plain(url=url)
+                self.assertEqual(fields["url"], expected)
+                self.assertEqual(self.plain(url=fields["url"])["url"], fields["url"])
+
     def test_plain_receipts_require_fields_and_requested_visible_link(self):
         with patch.object(reminder_save.sys, "platform", "darwin"):
             for url in (None, "https://example.com/report"):

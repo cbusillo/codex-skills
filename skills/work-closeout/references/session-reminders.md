@@ -36,7 +36,8 @@ optional link (several different tasks can share one report). The shared writer
 refuses duplicate incomplete matches. When attaching a link, titles must also be
 unique among completed items so the native UI can select one row. Plain reminders
 without links may reuse completed titles and update a live item beside completed
-occurrences. An existing incomplete match needs its explicit `--update-id` and update
+occurrences. For a linked repeating reminder, completed same-title occurrences
+therefore require the visible manual workflow for later updates. An existing incomplete match needs its explicit `--update-id` and update
 authority; the same title is required. The same ID-based repair and deletion
 rules below apply. A renamed title is a different target, so do not rename to
 bypass an existing-item refusal.

@@ -160,7 +160,9 @@ func saveAttachment(_ request: Request, app: NSRunningApplication) -> Bool {
     for _ in 0..<20 {
         groups = reminderGroups()
         if groups.count == 1 && descendants(groups[0]).contains(where: {
-            text($0, "AXRole") == "AXLink" && text($0, "AXTitle") == request.url
+            text($0, "AXRole") == "AXLink" &&
+            (text($0, "AXTitle") == request.url ||
+             (attribute($0, "AXURL") as? URL)?.absoluteString == request.url)
         }) { return true }
         settleUI()
     }
@@ -253,6 +255,7 @@ do {
     guard let timezone = TimeZone(identifier: request.timezone),
           (plain ? (!hasURL || (["https", "http"].contains(url?.scheme ?? "") && url?.host != nil))
                  : url?.scheme == "iterm2"),
+          (!plain || !hasURL || url?.absoluteString == request.url),
           !request.title.isEmpty, !request.list.isEmpty else {
         finish("refused", "Invalid reminder fields")
     }

@@ -53,14 +53,19 @@ def plain_plan(title: str, notes: str, url: str | None, list_name: str,
         if (parsed.scheme not in ("https", "http") or not parsed.hostname
                 or any(c.isspace() or ord(c) < 32 for c in url)):
             raise ValueError("Plain reminder URL must be an absolute HTTP or HTTPS URL")
-        # Match Foundation's escaped URL representation before dry run, lookup and UI save.
+        # Normalize each URL component before dry run, lookup and UI save.
+        def escaped(value: str, safe: str) -> str:
+            return quote(re.sub(r"%(?![0-9a-fA-F]{2})", "%25", value), safe=safe)
+
         host = parsed.hostname.encode("idna").decode("ascii")
         if ":" in host:
             host = f"[{host}]"
         port = f":{parsed.port}" if parsed.port is not None else ""
-        userinfo = parsed.netloc.rpartition("@")[0] + "@" if "@" in parsed.netloc else ""
-        url = quote(parsed._replace(netloc=userinfo + host + port).geturl(),
-                    safe=":/?#[]@!$&'()*+,;=%")
+        userinfo = escaped(parsed.netloc.rpartition("@")[0], ":!$&'()*+,;=%") + "@" if "@" in parsed.netloc else ""
+        url = parsed._replace(netloc=userinfo + host + port,
+                              path=escaped(parsed.path, "/:@!$&'()*+,;=%"),
+                              query=escaped(parsed.query, "/?:@!$&'()*+,;=%"),
+                              fragment=escaped(parsed.fragment, "/?:@!$&'()*+,;=%")).geturl()
     if repeat not in (None, "daily", "weekdays", "weekly", "monthly"):
         raise ValueError("Unsupported repeat pattern")
     if repeat == "weekly":
