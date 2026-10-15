@@ -820,7 +820,7 @@ id = "github.plan.index"
 request_priority = "bulk"
 capabilities = ["issues_read", "metadata_read"]
 permission_mode = "fixed"
-permission_note = "Read-only repository metadata uses the existing metadata capability and safe repository GET probe; unavailable archive metadata preserves the issue inventory with unknown disposition. No new grant, actor, or mutation. Issue inventory and classified auth, actor, quota or provider failures retain their existing terminal policy."
+permission_note = "Read-only repository metadata uses the existing metadata capability and safe repository GET probe; unavailable archive metadata preserves the issue inventory with unknown disposition. Git-inferred repository context is bound before reader setup, selecting its configured App consistently with explicit --repo. No new grant, actor, or mutation. Issue inventory and classified auth, actor, quota or provider failures retain their existing terminal policy."
 entrypoint = "github/scripts/gh-plan.py index"
 intent = "List compact durable planning issues by label and state."
 current_transport = "rest_api"
@@ -833,7 +833,7 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No retained GraphQL transport; the REST issues endpoint supplies the planning index fields and avoids routine GraphQL pressure. REST observations conditionally revalidate with GitHub on every read; no coalesced body-only return, new permission, or mutation-read cache. Issue inventory permission and actor failures remain terminal; an unavailable metadata-only record returns unknown archive context; classified auth, actor, quota and provider failures remain terminal."
-source_refs = ["github/scripts/gh-plan.py:cmd_index", "github/scripts/gh-plan.py:collect_paged_rest_items", "github/scripts/github_read.py:request"]
+source_refs = ["github/scripts/gh-plan.py:command_repository", "github/scripts/gh-plan.py:cmd_index", "github/scripts/gh-plan.py:collect_paged_rest_items", "github/scripts/github_read.py:request"]
 test_refs = ["github/scripts/test_planning_archive.py:ArchiveTests", "github/scripts/validate-gh-plan.py:test_plan_index_paginates_filters_prs_and_honors_limit", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "skill-creator/evaluations/exec-harness/fake-gh-plan-index.json", "github/scripts/validate-operation-matrix.py:self-test", "github/scripts/validate-gh-plan.py:test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh", "github/scripts/validate-gh-plan.py:test_planning_conditional_reads_do_not_hide_permission_or_actor_failures", "github/scripts/validate-gh-plan.py:test_authorized_planning_fallback_retains_uncached_actor_route", "github/scripts/test_github_read.py:test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait"]
 
 [[operations]]
@@ -855,7 +855,7 @@ retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No retained GraphQL transport; the REST issue search endpoint preserves planning discovery while using the search bucket explicitly."
 source_refs = ["github/scripts/github_repository_scope.py:search_query", "github/scripts/gh-plan.py:cmd_search", "github/scripts/gh-plan.py:collect_paged_rest_items"]
-test_refs = ["github/scripts/test_gh_plan_search.py:SearchTests", "github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bucket_and_conditional_state", "github/scripts/validate-gh-plan.py:test_plan_paged_rest_failure_receives_completed_page_evidence", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_gh_plan_search.py:SearchTests", "github/scripts/test_github_client_app.py:PlanCommandContextTests", "github/scripts/test_github_client_app.py:ClientAppTests", "github/scripts/validate-gh-plan.py:test_plan_search_uses_search_bucket_and_conditional_state", "github/scripts/validate-gh-plan.py:test_plan_paged_rest_failure_receives_completed_page_evidence", "github/scripts/validate-gh-plan.py:test_plan_rest_command_context_and_limit_validation", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.plan.show"
@@ -2413,7 +2413,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
-"github/scripts/gh-plan.py" = "105cadcbabc5968e09dc50a1e42c5989df607d737937e9fe695d9558bea97d84"
+"github/scripts/gh-plan.py" = "5fbf8e06cc6e6545684adfde2aae4cae3b00d98304f934e940af6dd267c2d080"
 "github/scripts/github_next_queue.py" = "a3b70748205be3b4aecbeafce5ce5033585fd11f78a9a1d427dcbad630897843"
 "github/scripts/gh-pr.py" = "63da814199a3d3d19fbd6dcd919194f8f413ae6460f61b5c206d5bde162b7d93"
 "github/scripts/gh-rulesets.py" = "0b6cfb046b92b6adce65841dd27eccd12884709753769744887c3e0376ce5748"

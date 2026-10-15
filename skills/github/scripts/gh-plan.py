@@ -1877,10 +1877,14 @@ def cmd_index(args: argparse.Namespace) -> None:
           "count": len(items), "plans": [{**item, "repository": context} for item in items]})
 
 
+def search_has_scope(query: str) -> bool:
+    unquoted_query = re.sub(r'"(?:\\.|[^"\\])*"', '""', query)
+    return bool(re.search(r"(?:^|[\s(])(?:repo|org|user):", unquoted_query, re.IGNORECASE))
+
+
 def cmd_search(args: argparse.Namespace) -> None:
     query = args.query.strip()
-    unquoted_query = re.sub(r'"(?:\\.|[^"\\])*"', '""', query)
-    has_scope = re.search(r"(?:^|[\s(])(?:repo|org|user):", unquoted_query, re.IGNORECASE)
+    has_scope = search_has_scope(query)
     repo = args.repo or (repo_from_git() if has_scope else default_repo())
     query_parts = [query]
     if args.repo or not has_scope:
@@ -6042,6 +6046,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def command_repository(args: argparse.Namespace) -> str | None:
+    """Bind single-repository commands without narrowing owner/global discovery."""
+    if getattr(args, "issue", None):
+        # A qualified issue overrides --repo, which is only its default.
+        return issue_ref(claim_reference(args).issue, args.repo or "")[0] or default_repo()
+    if args.repo:
+        return args.repo
+    if args.command == "project-list":
+        return None
+    if args.command == "search" and search_has_scope(args.query):
+        return None
+    repo = default_repo()
+    if args.command == "next" and github_direction_next.is_direction_repository(repo):
+        return None
+    return repo
+
+
 def main() -> None:
     global CURRENT_OPERATION, CURRENT_TRANSPORT, CURRENT_BUCKET, CURRENT_IS_WRITE
     global CURRENT_RETRY_FIELDS, CURRENT_RETRY_SUMMARY
@@ -6081,15 +6102,10 @@ def main() -> None:
         CURRENT_IS_WRITE = False
     previous_repo = os.environ.get("GH_REPO")
     try:
-        if args.repo or getattr(args, "issue", None):
-            # A qualified issue overrides --repo, which is only its default.
-            target_repo = (issue_ref(claim_reference(args).issue, args.repo or "")[0]
-                           if getattr(args, "issue", None) else args.repo)
-            if not target_repo:
-                target_repo = default_repo()
-            # Bind readers, probes and transport before any cache is prepared.
-            if target_repo:
-                os.environ["GH_REPO"] = target_repo
+        target_repo = command_repository(args)
+        # Bind readers, probes and transport before any cache is prepared.
+        if target_repo:
+            os.environ["GH_REPO"] = target_repo
         args.func(args)
     except ClassifiedPlanError as exc:
         die(
@@ -6128,11 +6144,10 @@ def main() -> None:
         )
         die("Interrupted", code=130, error_code="cancelled", failure=failure)
     finally:
-        if args.repo or getattr(args, "issue", None):
-            if previous_repo is None:
-                os.environ.pop("GH_REPO", None)
-            else:
-                os.environ["GH_REPO"] = previous_repo
+        if previous_repo is None:
+            os.environ.pop("GH_REPO", None)
+        else:
+            os.environ["GH_REPO"] = previous_repo
 
 
 if __name__ == "__main__":

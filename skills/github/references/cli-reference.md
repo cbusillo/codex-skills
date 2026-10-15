@@ -603,6 +603,15 @@ Use these through the `github-plan` skill when the user is asking for durable
 work tracking, roadmap state, parent/sub-issues, blockers, stale plan cleanup,
 or Project focus state.
 
+Repository-scoped commands bind the repository inferred from Git before reader
+setup and App selection, including commands without an issue argument. This
+also covers repository-local `next` and searches without a positive scope.
+Without `--repo`, scoped searches, owner-only `project-list`, and global `next`
+from `OWNER/direction` keep their existing owner/global identity context.
+Explicit `--repo` still binds that context; qualified issue references take
+precedence over their default repository. The inherited `GH_REPO` is restored
+when the command ends, including on failure.
+
 - `index`: List compact plan issues through paged REST reads, excluding pull
   requests and ordering by most recently updated. Supports `--state`, `--label`,
   and an exact positive `--limit`. Compact states remain normalized as uppercase
