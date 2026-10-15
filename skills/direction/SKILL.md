@@ -481,6 +481,22 @@ repository or declaration reads keep `capacity.own_share_status` `unknown`
 and the audit window open for a rerun; partial counts are not a settled share.
 A complete window without merges has status `no_merges` and no share.
 
+Directors needing additional work kinds may opt in under `## Reporting map`
+in their merged overall `DIRECTION.md`. Read
+[weekly reporting maps](references/reporting-map.md) before drafting a map or
+interpreting `capacity.reporting`. It documents the JSON format, one-count-per-PR
+precedence, conflict and direction-change rules, and validation against a hand
+count. The map changes reporting only; claims, admission, execution order and PR
+creation stay unchanged. The `own-project` evidence rule reuses the Order item;
+it never duplicates the repository list. Without a map the existing output is unchanged.
+With a map, reporting-only failures leave the legacy own-share status alone
+but keep the shared audit window open for a complete recount. An invalid map
+needs a corrected direction PR; a transient unreadable source needs a rerun.
+For a permanently unreadable source or file-list cap, correct bad PR links
+where possible or have the Director correct/remove the optional map through
+the normal direction PR; removing it restores the existing report without
+discarding its window. Do not edit the marker to hide missing evidence.
+
 The audit of `OWNER/direction` also returns `capacity.milestone_outcomes`: for
 each listed milestone, what moved in its `Track:` graph during the window,
 beside the pull-request counts. `issues_closed` comes from the graph listings;
