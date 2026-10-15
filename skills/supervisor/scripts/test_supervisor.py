@@ -1203,14 +1203,14 @@ class TabCloseTests(unittest.TestCase):
         self.assertEqual(result.stdout, "unset")
 
 
-def trusted_codex_launch(directory, home):
+def project_fixture_toml(directory):
+    return f'[projects.{json.dumps(str(directory.resolve()))}]\ntrust_level = "trusted"\n'
+
+
+def write_codex_project_fixture(directory, home):
     """Create isolated project trust for launch tests, without any account login."""
-    directory = directory.resolve()
     home.mkdir(parents=True, exist_ok=True)
-    (home / "config.toml").write_text(
-        f'[projects.{json.dumps(str(directory))}]\ntrust_level = "trusted"\n'
-    )
-    return f"codex --remote unix:// -C {shlex.quote(str(directory))}"
+    (home / "config.toml").write_text(project_fixture_toml(directory))
 
 
 class CodexProjectTests(unittest.TestCase):
@@ -1232,19 +1232,19 @@ class CodexProjectTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(repository), "worktree", "add", "--detach", str(worktree)],
                            capture_output=True, check=True)
             home = root / "selected"
-            trusted_codex_launch(repository, home)
+            write_codex_project_fixture(repository, home)
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
             for directory in (repository / "subdirectory", worktree / "subdirectory", worktree):
                 directory.mkdir(exist_ok=True)
                 with self.subTest(directory=directory):
                     iterm_tab.check_codex_project("codex -C " + shlex.quote(str(directory)), choice)
             config = home / "config.toml"
-            trusted = config.read_text()
+            baseline = project_fixture_toml(repository)
             for override in ('trust_level = "untrusted"', ""):
-                config.write_text(trusted + f'\n[projects.{json.dumps(str(worktree))}]\n{override}\n')
+                config.write_text(baseline + f'\n[projects.{json.dumps(str(worktree))}]\n{override}\n')
                 with self.subTest(override=override), self.assertRaises(ValueError):
                     iterm_tab.check_codex_project("codex -C " + shlex.quote(str(worktree)), choice)
-            config.write_text(trusted)
+            config.write_text(baseline)
             # A copied pointer must not inherit trust from the real worktree's repository.
             impostor = root / "impostor"
             impostor.mkdir()
@@ -1262,11 +1262,12 @@ class CodexProjectTests(unittest.TestCase):
             home = root / "selected"
             home.mkdir()
             config = home / "config.toml"
-            config.write_text(f'[projects.{json.dumps(str(alias))}]\ntrust_level = "trusted"\n')
+            baseline = f'[projects.{json.dumps(str(alias))}]\ntrust_level = "trusted"\n'
+            config.write_text(baseline)
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
             command = "codex -C " + shlex.quote(str(alias))
             iterm_tab.check_codex_project(command, choice)
-            config.write_text(config.read_text() + f'\n[projects.{json.dumps(str(directory))}]\ntrust_level = "untrusted"\n')
+            config.write_text(baseline + f'\n[projects.{json.dumps(str(directory))}]\ntrust_level = "untrusted"\n')
             with self.assertRaises(ValueError):
                 iterm_tab.check_codex_project(command, choice)
 
@@ -1277,7 +1278,7 @@ class CodexProjectTests(unittest.TestCase):
             repository.mkdir()
             home = root / "selected"
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
-            trusted_codex_launch(repository, home)
+            write_codex_project_fixture(repository, home)
             before = (home / "config.toml").read_bytes()
             for options in (["-C", str(repository)], ["--cd", str(repository)],
                             ["--cd=" + str(repository)], ["-C" + str(repository)]):
@@ -1336,7 +1337,8 @@ class CodexProjectTests(unittest.TestCase):
             repository = root / "repository"
             repository.mkdir()
             homes = [root / "trusted", root / "untrusted"]
-            command = trusted_codex_launch(repository, homes[0])
+            write_codex_project_fixture(repository, homes[0])
+            command = "codex --remote unix:// -C " + shlex.quote(str(repository))
             choices = [{"provider": "openai", "env": {"CODEX_HOME": str(home)}} for home in homes]
             files = [root / "first", root / "second"]
             for path in files:
@@ -1353,7 +1355,7 @@ class CodexProjectTests(unittest.TestCase):
             prepare.assert_not_called()
             receipt.assert_not_called()
 
-    def test_prepared_remote_worker_uses_brief_repository_from_another_shell_folder(self):
+    def test_prepared_command_preserves_explicit_directory_and_brief(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             repository = root / "brief's repository"
@@ -1368,9 +1370,9 @@ class CodexProjectTests(unittest.TestCase):
             )
             fake_codex.chmod(0o700)
             home = root / "selected"
-            command = trusted_codex_launch(repository, home)
+            write_codex_project_fixture(repository, home)
             launch = root / "launch"
-            launch.write_text(command.replace("codex", shlex.quote(str(fake_codex)), 1))
+            launch.write_text(f"{shlex.quote(str(fake_codex))} --remote unix:// -C {shlex.quote(str(repository))}")
             args = account_launch_args(launch)
             args.account_provider = "openai"
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
@@ -1717,7 +1719,8 @@ class TerminalTests(unittest.TestCase):
             choice = {"provider": "openai", "name": "selected", "source": "context-panel",
                       "reason": "use next", "env": {"CODEX_HOME": str(home)}}
             launch = root / "launch.txt"
-            launch.write_text(trusted_codex_launch(root, home))
+            write_codex_project_fixture(root, home)
+            launch.write_text("codex --remote unix:// -C " + shlex.quote(str(root)))
             terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
             tab = SimpleNamespace(tab_id="tab", current_session=terminal)
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
@@ -1773,7 +1776,7 @@ class TerminalTests(unittest.TestCase):
                        for h in (home, root / "down")]
             files = [root / "first.txt", root / "second.txt"]
             for choice in choices:
-                trusted_codex_launch(root, Path(choice["env"]["CODEX_HOME"]))
+                write_codex_project_fixture(root, Path(choice["env"]["CODEX_HOME"]))
             for path in files:
                 path.write_text("codex --remote unix:// -C " + shlex.quote(str(root)))
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
@@ -1842,7 +1845,8 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             launch = Path(folder) / "launch.txt"
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(Path(folder) / "selected")}}
-            launch.write_text(trusted_codex_launch(Path(folder), Path(choice["env"]["CODEX_HOME"])))
+            write_codex_project_fixture(Path(folder), Path(choice["env"]["CODEX_HOME"]))
+            launch.write_text("codex --remote unix:// -C " + shlex.quote(folder))
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
             args = argparse.Namespace(command="new", window_id="chosen", command_file=launch, brief_file=fixture_briefs(launch),

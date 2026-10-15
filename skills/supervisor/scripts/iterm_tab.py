@@ -713,6 +713,7 @@ def check_codex_project(command_text, choice):
     trust_root = codex_git_trust_root(directory)
     target = trust_root or directory
     project = {}
+    matched = False
     if isinstance(projects, dict):
         for path in (directory, trust_root):
             if path is None:
@@ -720,16 +721,24 @@ def check_codex_project(command_text, choice):
             for key in (str(path.resolve()), str(path)):
                 if key in projects:
                     target, project = Path(key), projects[key]
+                    matched = True
                     break
             else:
                 continue
             break
     if not isinstance(project, dict) or project.get("trust_level") != "trusted":
         command = shlex.join(["codex", "-C", str(directory)])
+        recovery = (
+            f"review the existing projects entry for {target} yourself and deliberately set "
+            "its trust_level to trusted only if appropriate, then retry; Codex may not "
+            "show another folder-trust prompt"
+            if matched else
+            f"open CODEX_HOME={shlex.quote(str(home))} {command} interactively and review "
+            "the folder-trust prompt, then retry"
+        )
         raise ValueError(
             f"Codex folder is not trusted: {directory} (trust target: {target}) in {config_path}; "
-            f"open CODEX_HOME={shlex.quote(str(home))} {command} interactively and review "
-            "the folder-trust prompt, then retry. An unrelated trusted parent is insufficient; "
+            f"{recovery}. An unrelated trusted parent is insufficient; "
             "the launcher never edits config.toml"
         )
 

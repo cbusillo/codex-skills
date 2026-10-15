@@ -811,7 +811,8 @@ removing `--remote` while retaining the reasoning override can select embedded
 mode instead of the shared daemon (see [the Q152 validation](https://github.com/cbusillo/codex-skills/issues/1613#issuecomment-6102593628)).
 `-C` (or `--cd`) must name the brief's repository explicitly: a shell `cd` alone
 leaves a remote worker in the daemon's working folder. The launcher requires
-exactly one existing absolute directory and checks every launch in a batch
+exactly one existing literal absolute directory (no `~` or shell variables)
+and checks every launch in a batch
 before starting any daemon, creating terminals or preparing receipts.
 The preflight reads each selected account's `config.toml` `[projects]` entries.
 It checks the canonical directory, then its original spelling, then the Git
@@ -822,6 +823,9 @@ matching entry must have `trust_level = "trusted"`. Trusting an unrelated parent
 such as `/Users/example/Developer` does not cover a repository root.
 An untrusted folder refuses with the selected home and an interactive Codex
 command to review its folder-trust prompt, naming the actual trust target.
+When an explicit entry already exists with an untrusted or absent trust level,
+the refusal instead asks you to review that entry and deliberately change it
+yourself if appropriate; launching Codex may not show another prompt.
 Review trust yourself before retrying;
 the launcher never edits config or supplies trust overrides. An unreadable or
 malformed config also refuses without printing its contents. The preflight uses
