@@ -7,10 +7,9 @@
 import contextlib
 import io
 import json
-from pathlib import Path
-import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -30,9 +29,9 @@ class ReminderSaveTests(unittest.TestCase):
         self.directory.mkdir()
 
     def fields(self, harness="codex", **overrides):
-        args = dict(harness=harness, directory=self.directory, session=SESSION,
-                    prompt=None, list_name="test list", due="2026-10-20T09:00",
-                    timezone="America/New_York", links=[ISSUE, PR])
+        args = {"harness": harness, "directory": self.directory, "session": SESSION,
+                "prompt": None, "list_name": "test list", "due": "2026-10-20T09:00",
+                "timezone": "America/New_York", "links": [ISSUE, PR]}
         args.update(overrides)
         return reminder_save.plan(**args)
 
@@ -226,6 +225,117 @@ class ReminderSaveTests(unittest.TestCase):
             request = backend.call_args.args[0]
             self.assertEqual(request["update_id"], dry_run["update_id"])
             self.assertTrue(request["preserve_existing"])
+
+
+class PlainReminderTests(unittest.TestCase):
+    setUp = ReminderSaveTests.setUp
+    fields = ReminderSaveTests.fields
+    item = ReminderSaveTests.item
+    writer = ReminderSaveTests.writer
+    decisions = ReminderSaveTests.decisions
+
+    def plain(self, **overrides):
+        args = {"title": "Weekly motor report", "notes": "Assign this week's 3 dismantles\nReview report",
+                "url": None, "list_name": "test list", "due": "2026-10-19T08:00",
+                "timezone": "America/New_York", "repeat": "weekly", "weekday": "monday"}
+        args.update(overrides)
+        return reminder_save.plain_plan(**args)
+
+    def test_plain_fields_and_standard_repeats(self):
+        for repeat in (None, "daily", "weekdays", "weekly", "monthly"):
+            for url in (None, "https://example.com/report?week=42"):
+                with self.subTest(repeat=repeat, url=url):
+                    fields = self.plain(repeat=repeat, weekday="monday" if repeat == "weekly" else None, url=url)
+                    self.assertEqual(fields["repeat"], repeat)
+                    self.assertEqual(fields["url"], url or "")
+                    self.assertEqual(fields["notes"], "Assign this week's 3 dismantles\nReview report")
+                    self.assertNotIn("fallback", fields)
+        # Every selected weekday is accepted only with its matching first occurrence.
+        for index, day in enumerate(reminder_save.WEEKDAYS):
+            fields = self.plain(due=f"2026-10-{19 + index}T08:00", weekday=day)
+            self.assertEqual(fields["weekday"], index)
+
+    def test_plain_invalid_fields_and_schedule(self):
+        for overrides in ({"title": " "}, {"title": "a\nb"}, {"notes": "bad\x00note"},
+                          {"list_name": " "}, {"url": "iterm2://command"}, {"url": "/report"},
+                          {"url": "https://example.com/\nreport"}, {"url": ""},
+                          {"repeat": "yearly", "weekday": None}, {"weekday": None},
+                          {"weekday": "tuesday"}, {"repeat": "daily"},
+                          {"repeat": "weekdays", "weekday": None, "due": "2026-10-24T08:00"},
+                          {"due": "2026-03-08T02:30"}, {"due": "2026-11-01T01:30"}):
+            with self.subTest(overrides=overrides), self.assertRaises((ValueError, KeyError)):
+                self.plain(**overrides)
+
+    def test_plain_duplicate_and_explicit_target_decisions_use_shared_writer(self):
+        request = self.plain()
+        title = request["title"]
+        existing = self.item("open", False, title=title)
+        completed = self.item("done", True, title=title)
+        unrelated = self.item("other", False, same_target=False, title="Another report")
+        with patch.object(reminder_save.sys, "platform", "darwin"):
+            for items, flags in (([existing], {}), ([existing, dict(existing, id="other")], {}),
+                                 ([completed], {}), ([], {"update_id": "missing"}),
+                                 ([completed], {"delete_id": "done"})):
+                with self.subTest(items=items, flags=flags), self.writer(items), self.assertRaises(ValueError):
+                    reminder_save.native({**request, **flags})
+                self.assertEqual(self.decisions(), [[]])
+            for flags, action in (({}, "create"), ({"update_id": "open"}, "update"),
+                                  ({"delete_id": "open"}, "delete")):
+                items = [unrelated, existing] if flags else [unrelated]
+                receipt = {"status": "deleted" if action == "delete" else "saved",
+                           "saved_fields_verified": True, "visible_url_verified": False}
+                with self.writer(items, final=receipt):
+                    reminder_save.native({**request, **flags})
+                self.assertEqual(self.decisions()[0][0]["action"], action)
+
+    def test_plain_receipts_require_fields_and_requested_visible_link(self):
+        with patch.object(reminder_save.sys, "platform", "darwin"):
+            for url in (None, "https://example.com/report"):
+                for final in ({"status": "saved"}, {"status": "partial", "reminder_id": "owned"},
+                              {"status": "saved", "saved_fields_verified": False},
+                              {"status": "manual_required"}):
+                    with self.subTest(url=url, final=final), self.writer([], final=final), self.assertRaises(ValueError):
+                        reminder_save.native(self.plain(url=url))
+                final = {"status": "saved", "saved_fields_verified": True, "visible_url_verified": False}
+                with self.writer([], final=final):
+                    if url:
+                        with self.assertRaises(ValueError):
+                            reminder_save.native(self.plain(url=url))
+                    else:
+                        reminder_save.native(self.plain())
+            with self.writer([], final={"status": "saved", "saved_fields_verified": True,
+                                       "visible_url_verified": True}):
+                reminder_save.native(self.plain(url="https://example.com/report"))
+
+    def test_plain_cli_dry_run_and_fake_apply(self):
+        argv = ["reminder_save.py", "--plain", "--title", "Weekly motor report",
+                "--notes", "Assign dismantles", "--list", "test", "--due", "2026-10-19T08:00",
+                "--timezone", "America/New_York", "--repeat", "weekly", "--weekday", "monday"]
+        with patch.object(reminder_save, "native") as backend:
+            output = io.StringIO()
+            with patch.object(reminder_save.sys, "argv", argv), contextlib.redirect_stdout(output):
+                self.assertEqual(reminder_save.main(), 0)
+            backend.assert_not_called()
+            dry = json.loads(output.getvalue())
+            self.assertEqual(dry["notes"], "Assign dismantles")
+            self.assertEqual(dry["url"], "")
+            backend.return_value = {"status": "saved", "saved_fields_verified": True}
+            with patch.object(reminder_save.sys, "argv", argv + ["--apply"]), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(reminder_save.main(), 0)
+            self.assertEqual(backend.call_args.args[0]["repeat"], dry["repeat"])
+            self.assertEqual(backend.call_args.args[0]["weekday"], dry["weekday"])
+
+    def test_cli_modes_do_not_mix(self):
+        plain = ["--plain", "--title", "Report", "--list", "test"]
+        session = ["--session-id", SESSION, "--harness", "codex", "--directory", str(self.directory), "--list", "test"]
+        schedule = ["--due", "2026-10-19T08:00", "--timezone", "America/New_York"]
+        for mode, extras in ((plain, ["--harness", "codex"]), (plain, ["--repeat-days", "2"]),
+                             (plain, ["--link", ISSUE]), (session, ["--repeat", "daily"]),
+                             (session, ["--notes", "report"]), (session, ["--url", "https://example.com"])):
+            with self.subTest(extras=extras), patch.object(reminder_save, "native") as backend:
+                with patch.object(reminder_save.sys, "argv", ["reminder_save.py", *mode, *schedule, *extras, "--apply"]), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(reminder_save.main(), 1)
+                backend.assert_not_called()
 
 
 if __name__ == "__main__":
