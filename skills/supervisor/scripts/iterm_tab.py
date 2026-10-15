@@ -154,9 +154,12 @@ async def verify_startup(read, timeout=2.0):
     deadline = time.monotonic() + timeout
     while True:
         snapshot = await read()
-        if snapshot["dead"]:
+        # tmux can observe PTY EOF before SIGCHLD supplies the exit status.
+        # Keep the failure, but use the remaining window to collect its cause.
+        awaiting_status = snapshot["dead"] and snapshot.get("exit_status") == ""
+        if snapshot["dead"] and (not awaiting_status or time.monotonic() >= deadline):
             raise StartupFailure(snapshot)
-        if time.monotonic() >= deadline:
+        if not snapshot["dead"] and time.monotonic() >= deadline:
             return
         await asyncio.sleep(min(0.2, max(0, deadline - time.monotonic())))
 

@@ -138,6 +138,20 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                 await iterm_tab.verify_startup(read)
         self.assertEqual(read.await_count, 2)
 
+    async def test_dead_pane_collects_exit_status_after_pty_eof(self):
+        ready = {"dead": True, "exit_status": "1", "screen": ["fixture failure"]}
+        read = AsyncMock(side_effect=[{**ready, "exit_status": ""}, ready])
+        with patch.object(iterm_tab.asyncio, "sleep", new_callable=AsyncMock):
+            with self.assertRaises(iterm_tab.StartupFailure) as raised:
+                await iterm_tab.verify_startup(read)
+        self.assertEqual(raised.exception.snapshot, ready)
+        self.assertEqual(read.await_count, 2)
+
+    async def test_dead_pane_without_exit_status_still_fails_at_deadline(self):
+        read = AsyncMock(return_value={"dead": True, "exit_status": "", "screen": ["fixture failure"]})
+        with self.assertRaises(iterm_tab.StartupFailure):
+            await iterm_tab.verify_startup(read, timeout=0)
+
     async def test_alive_after_observation_passes(self):
         await iterm_tab.verify_startup(AsyncMock(return_value={"dead": False, "screen": ["ready"]}), timeout=0)
 
