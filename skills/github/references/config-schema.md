@@ -222,8 +222,9 @@ Common top-level keys:
   and require it. Verify passing checks for the current PR head.
   Use the adopting repository's documented change areas to classify full-local
   exceptions, rather than classifying every edit by the repository's name.
-- `qualityGate.test.default`: legacy test command, used when `test.local` is
-  absent. Preserve its declared scope until the repository adopts the split;
+- `qualityGate.test.default`: legacy test command, used until both `test.local`
+  and `test.ci` are declared. An incomplete split does not override legacy test
+  requirements. Preserve its declared scope until the repository adopts the split;
   do not silently reinterpret an existing full gate as focused. To adopt,
   replace `default` with `local` and `ci` and reconcile repository instructions,
   testing docs and CI. For unset metadata fields, use repository instructions,

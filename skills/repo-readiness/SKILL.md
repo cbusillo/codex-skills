@@ -35,8 +35,8 @@ inspection, browser, CI, deployment, or security gates.
    If it has a `qualityGate` block, use it for how to run lint/static
    analysis, format checks, typechecks, builds, and IDE/static inspections.
    For tests, distinguish `qualityGate.test.local` (focused local command) from
-   `qualityGate.test.ci` (full CI gate); use `test.default` only as the legacy
-   fallback when `local` is absent. Read the
+   `qualityGate.test.ci` (full CI gate); use the legacy `test.default` and
+   repository requirements until both split keys are declared. Read the
    [test command contract](../github/references/config-schema.md#workflow-metadata)
    when selecting commands or adopting the split. Use
    `qualityGate.docsRequiredWhen` for docs freshness triggers. If it has a
@@ -194,7 +194,9 @@ records and write out only otherwise unrecorded gaps. Use
   success alone does not establish PR readiness. Otherwise retain repository
   requirements, including legacy `test.default`, until adoption under the test
   command contract above; metadata absence does not opt a repository in.
-- Safety, authorization, approval-rule, destructive-helper or shared-infrastructure
+- Without the split, shared contract, deployment, release, or security-sensitive
+  changes retain the broader repo gate and any required inspection/security checks.
+- Under the split, safety, authorization, approval-rule, destructive-helper or shared-infrastructure
   change: also run the full local suite. For shared contracts, deployment or
   release changes, broaden local coverage for the affected risk and retain any
   explicit repository gates.

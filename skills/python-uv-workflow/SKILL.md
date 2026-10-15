@@ -86,7 +86,7 @@ explicitly asks.
 
 Repository-specific execution details—such as custom test commands, lockfile policies, or platform-specific entrypoints—should be managed via repository metadata:
 
-- **`.github/github.json`**: Use `qualityGate.test.local` for focused local tests and `qualityGate.test.ci` for the full CI suite, retaining `test.default` as a legacy fallback when `local` is absent. The [test command contract](../github/references/config-schema.md#workflow-metadata) owns adoption and full-local execution; keep required lint, type checks and IDE inspection. `metadataFreshness` lists events that should trigger a metadata review.
+- **`.github/github.json`**: Use `qualityGate.test.local` for focused local tests and `qualityGate.test.ci` for the full CI suite, retaining `test.default` as a legacy fallback until both split keys are declared. The [test command contract](../github/references/config-schema.md#workflow-metadata) owns adoption and full-local execution; keep required lint, type checks and IDE inspection. `metadataFreshness` lists events that should trigger a metadata review.
 - **`AGENTS.md`**: Refer to this file for behavioral quirks, lockfile consistency requirements, or stewardship rules specific to the repository.
 - **Environment Variables**: Use repository-documented environment variables for gating live tests or providing necessary credentials.
 
