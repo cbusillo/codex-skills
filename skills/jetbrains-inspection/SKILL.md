@@ -129,6 +129,20 @@ repository policy and ask when the sharing decision remains unclear.
 
 Set `HELPER=<skill-dir>/scripts/jb-inspect.py`; `<skill-dir>` holds this `SKILL.md`.
 
+For plugin installation or update requests, use the plugin's
+[full-build setup and recovery instructions](https://github.com/cbusillo/jetbrains-inspection-api#full-builds-and-automatic-ide-updates).
+In the IDE, add
+`https://github.com/cbusillo/jetbrains-inspection-api/releases/latest/download/updatePlugins.xml`
+once under **Settings → Plugins → ⚙ → Manage Plugin Repositories**. The IDE then
+offers full-build updates through its normal update checks; the user applies
+the update and restarts when requested. Check that the feed and its linked zip
+are published before recommending installation. Marketplace Stable approval and
+an `agents` channel upload are separate from a usable GitHub build. After the
+restart, use `resolve-route --repo "$PWD"` and require the installed
+`plugin_version` and `plugin_build_fingerprint` to match the chosen release's
+version and clean source commit. A release or feed alone does not prove the
+running IDE was updated.
+
 ## Before The First Inspection
 
 If `.github/github.json` sets `qualityGate.inspection.prepare`, the assessment
