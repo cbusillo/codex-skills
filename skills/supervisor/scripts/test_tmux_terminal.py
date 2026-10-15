@@ -273,8 +273,8 @@ class PaneParserTests(unittest.TestCase):
         capability.start()
         self.addCleanup(capability.stop)
         self.marker = "a" * 32
-        self.dead = f"$1\t@1\t%1\texited\t/dev/ttys987\t\t1\t0\t{self.marker}\t123\n"
-        self.live = "$1\t@2\t%2\tlive\t/dev/ttys986\t456\t0\t\tlive-nonce\t123\n"
+        self.dead = f"$1\t@1\t%1\texited\t/dev/ttys987\t\t1\t0\t\t{self.marker}\t123\n"
+        self.live = "$1\t@2\t%2\tlive\t/dev/ttys986\t456\t0\t\t\tlive-nonce\t123\n"
         self.identity = "tmux:fixture:" + self.marker
 
     def test_empty_dead_pid_does_not_block_inventory_read_or_live_send(self):
