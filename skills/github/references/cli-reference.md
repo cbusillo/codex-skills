@@ -776,6 +776,12 @@ process inventory excluding any matching or unidentified interactive Codex
 process. A loaded idle thread still refuses, even after a safe-exit turn.
 Missing daemons, unreadable transcripts, age and partial peer coverage cannot
 establish native completion. This needs no attestation comment or release write.
+An app-server process is excluded only when its exact listening socket was read;
+extension/stdio and unconfigured servers remain unidentified. On a host with
+unidentified interactive clients, native-only recovery stays unavailable; an
+exact authored release remains the supported ended-ownership proof.
+Loaded peers are read before transcript scans. A timed-out or truncated observed
+peer inventory is reported as incomplete and preserves retained-artifact conflicts.
 
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;

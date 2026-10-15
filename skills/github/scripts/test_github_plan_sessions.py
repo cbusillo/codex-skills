@@ -18,15 +18,15 @@ import github_plan_sessions as SESSIONS
 
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
     def test_resumed_cli_session_is_live_even_without_a_daemon(self):
-        for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder"):
+        for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder", "codex exec resume holder"):
             self.assertEqual([r["sessionId"] for r in SESSIONS.process_sessions(command, {"holder"})], ["holder"])
-        for command in ("rg resume holder", "codex exec please resume holder", "codex please resume holder"):
+        for command in ("rg resume holder", "rg codex resume holder", "codex exec please resume holder", "codex please resume holder"):
             self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
 
-    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False):
+    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False):
         thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "status": {"type": state}}
         if mismatch: thread["id"] = "another-session"
-        reads, calls, unexpected = 0, 0, []
+        reads, calls, unexpected, observed_ids = 0, 0, [], set()
         async def handler(request):
             nonlocal reads
             ws = web.WebSocketResponse()
@@ -36,11 +36,13 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                 method = request["method"]
                 if method == "initialized": continue
                 if method == "initialize": result = {}
-                elif method == "thread/loaded/list": result = {"data": ["holder"], "nextCursor": None}
+                elif method == "thread/loaded/list": result = {"data": ["holder", "peer"] if with_peer else ["holder"], "nextCursor": None}
                 elif method == "thread/read":
                     reads += 1
                     observed = copy.deepcopy(thread)
-                    if reads > 1 and after: observed["status"]["type"] = after
+                    observed_ids.add(request["params"]["threadId"])
+                    if request["params"]["threadId"] == "peer": observed.update(id="peer", status={"type": "idle"})
+                    if reads > 2 and after: observed["status"]["type"] = after
                     result = {"thread": observed}
                 else:
                     unexpected.append(method)
@@ -51,6 +53,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         def status(_entry):
             nonlocal calls
             calls += 1
+            if with_peer: self.assertIn("peer", observed_ids)
             return {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z", "size": calls if changed else 1}}
         # AF_UNIX paths are short on macOS; /var/folders can exceed that limit.
         with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
@@ -65,12 +68,12 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             os.chmod(socket_path, 0o600)
             try:
                 with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)):
-                    result = await SESSIONS.observe_home(home, {"holder"})
-                self.assertTrue(socket_path.exists())  # The observer leaves the native server intact.
+                    peers, states, coverage = await SESSIONS.observe_home(home, {"holder"})
             finally:
                 await runner.cleanup()
         self.assertEqual(unexpected, [])
-        return result
+        self.assertEqual(coverage["peer_complete"], not mismatch)
+        return peers, states
 
     async def test_unloaded_native_session_with_verified_final_handoff_is_candidate(self):
         peers, states = await self.observe("notLoaded")
@@ -94,6 +97,10 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(states["holder"]["state"], "live")
         self.assertTrue(peers)
 
+    async def test_loaded_peers_are_read_before_claim_transcript_work(self):
+        peers, _ = await self.observe("notLoaded", with_peer=True)
+        self.assertIn("peer", [peer["sessionId"] for peer in peers])
+
     async def test_missing_daemon_does_not_establish_end(self):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(FileNotFoundError):
@@ -101,6 +108,24 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+    def test_app_server_process_requires_its_exact_observed_socket(self):
+        socket_path = str(Path("/fixture/socket").resolve())
+        self.assertTrue(SESSIONS.process_absence_known(f"codex app-server --listen unix://{socket_path}", {socket_path}))
+        self.assertFalse(SESSIONS.process_absence_known("codex app-server", {socket_path}))
+        self.assertFalse(SESSIONS.process_absence_known("codex app-server --listen unix:///other/socket", {socket_path}))
+
+    def test_incomplete_peer_scan_is_reported_and_cannot_prove_native_end(self):
+        async def read(_home, _sessions, _proof):
+            return [], {"holder": {"state": "ended"}}, {"peer_complete": False, "socket": "/fixture/socket"}
+        with patch.object(SESSIONS.shutil, "which", return_value="codex"), \
+                patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+                patch.object(SESSIONS, "observe_home", side_effect=read), \
+                patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+            _, states, coverage = SESSIONS.observe({"holder"})
+        self.assertNotIn("holder", states)
+        self.assertTrue(coverage["observed_source_incomplete"])
+        self.assertEqual(coverage["status"], "incomplete")
+
     def test_snapshot_reads_archived_sibling_transcripts_for_the_same_native_identity(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
@@ -121,25 +146,25 @@ class ObservationMergeTests(unittest.TestCase):
             self.assertFalse(snapshot[str(sibling.resolve())]["safe_verdict"])
 
     def test_unknown_interactive_process_or_missing_process_inventory_prevents_native_end(self):
-        async def read(_home, _sessions): return [], {"holder": {"state": "ended"}}
-        for command in ("codex resume --last", "codex --remote unix://fixture", "codex", "node /opt/codex-cli", ""):
+        async def read(_home, _sessions, _proof): return [], {"holder": {"state": "ended"}}, {"peer_complete": True, "socket": "/fixture/socket"}
+        for command in ("codex resume --last", "codex --remote unix://fixture", "codex", "node /opt/codex-cli", "codex app-server", "codex app-server --listen unix:///unobserved/socket", ""):
             for returncode in (0, 1):
                 with self.subTest(command=command, returncode=returncode), \
                         patch.object(SESSIONS.shutil, "which", return_value="codex"), \
                         patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
                         patch.object(SESSIONS, "observe_home", side_effect=read), \
                         patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=returncode, stdout=command)):
-                    _, states = SESSIONS.observe({"holder"})
+                    _, states, _ = SESSIONS.observe({"holder"})
                     self.assertEqual(states.get("holder", {}).get("state") == "ended", not command and returncode == 0)
 
     def test_live_evidence_wins_across_account_homes(self):
-        async def read(home, _sessions):
-            return [], {"holder": {"state": "live" if home.name == "live" else "ended"}}
+        async def read(home, _sessions, _proof):
+            return [], {"holder": {"state": "live" if home.name == "live" else "ended"}}, {"peer_complete": True, "socket": str(home / "socket")}
         with patch.object(SESSIONS.shutil, "which", return_value="codex"), \
                 patch.object(SESSIONS, "codex_homes", return_value=[Path("/live"), Path("/ended")]), \
                 patch.object(SESSIONS, "observe_home", side_effect=read), \
                 patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
-            _, states = SESSIONS.observe({"holder"})
+            _, states, _ = SESSIONS.observe({"holder"})
         self.assertEqual(states["holder"]["state"], "live")
 
 

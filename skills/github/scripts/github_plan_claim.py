@@ -537,10 +537,12 @@ def discussion_evidence(
 def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
     from github_plan_sessions import observe
     ids = {r["session"] for c in comments for r in records(c.get("body") or "")}
-    peers, states = observe(ids)
+    released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
+    proof_ids = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
+    peers, states, coverage = observe(ids, proof_ids)
     return {**inventory, "sessions": [*inventory["sessions"], *peers], "session_states": states,
             "session_coverage": {**inventory.get("session_coverage", {}), "codex_claims": {
-                "status": "available" if states else "unavailable",
+                **coverage,
                 "scope": "exact claimed sessions and observed active daemon threads; partial global coverage"}}}
 
 

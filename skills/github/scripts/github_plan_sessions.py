@@ -41,7 +41,7 @@ def transcript_snapshot(session: str, primary: str) -> dict[str, dict]:
         {"session_id": session, "harness": "codex", "transcript": str(path)}) for path in paths}
 
 
-async def observe_home(home: Path, sessions: set[str]) -> tuple[list[dict], dict[str, dict]]:
+async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] | None = None):
     """Read the existing stock daemon over its native socket; only read RPCs."""
     import aiohttp
     import stat
@@ -50,6 +50,8 @@ async def observe_home(home: Path, sessions: set[str]) -> tuple[list[dict], dict
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
         raise ValueError("unsafe native session socket")
     peers, states = [], {}
+    coverage = {"status": "incomplete", "peer_complete": False, "socket": str(socket_path)}
+    proof_sessions = sessions if proof_sessions is None else proof_sessions
     sequence = 0
 
     async def request(method, params):
@@ -63,7 +65,7 @@ async def observe_home(home: Path, sessions: set[str]) -> tuple[list[dict], dict
                     raise ValueError("native session read rejected")
                 return message["result"]
 
-    async def inspect(session):
+    async def inspect(session, *, prove=False):
         thread = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
         if thread.get("id") != session:
             raise ValueError("native session identity mismatch")
@@ -71,7 +73,7 @@ async def observe_home(home: Path, sessions: set[str]) -> tuple[list[dict], dict
         if state in {"active", "idle", "systemError"}:
             peers.append({"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "codex_session"})
             states[session] = {"state": "live", "source": "codex_app_server"}
-        elif session in sessions and state == "notLoaded" and thread.get("path"):
+        elif prove and session in proof_sessions and state == "notLoaded" and thread.get("path"):
             before = transcript_snapshot(session, thread["path"])
             # A final turn is insufficient: the thread must be unloaded, every
             # known native transcript stable, and process absence checked below.
@@ -84,6 +86,8 @@ async def observe_home(home: Path, sessions: set[str]) -> tuple[list[dict], dict
             elif after.get("status", {}).get("type") in {"active", "idle", "systemError"}:
                 peers.append({"sessionId": session, "cwd": after["cwd"], "state": "active", "source": "codex_session"})
                 states[session] = {"state": "live", "source": "codex_app_server"}
+        elif state != "notLoaded":
+            raise ValueError("native session state is unknown")
 
     try:
         async with asyncio.timeout(5):
@@ -99,22 +103,39 @@ async def observe_home(home: Path, sessions: set[str]) -> tuple[list[dict], dict
                         cursor = page.get("nextCursor")
                         if not cursor:
                             break
-                    for session in [*sorted(sessions), *sorted(loaded - sessions)]:
+                    loaded_ok = not cursor
+                    # Observe every loaded peer before any potentially large
+                    # transcript scan. Released claims need metadata only.
+                    for session in sorted(loaded):
                         try:
                             await inspect(session)
+                        except (KeyError, TypeError, ValueError, OSError, ImportError):
+                            loaded_ok = False
+                    coverage.update(status="available" if loaded_ok else "incomplete", peer_complete=loaded_ok)
+                    for session in sorted(sessions):
+                        try:
+                            await inspect(session, prove=coverage["peer_complete"])
                         except (KeyError, TypeError, ValueError, OSError, ImportError):
                             continue  # No successful observation means unknown, never ended.
     except (KeyError, TypeError, ValueError, OSError, TimeoutError, aiohttp.ClientError):
         pass
-    return peers, states
+    return peers, states, coverage
+
+
+def codex_argv_start(argv: list[str]) -> int | None:
+    if argv and Path(argv[0]).name.casefold().startswith("codex"):
+        return 0
+    if (len(argv) > 1 and Path(argv[0]).name in {"node", "nodejs", "python", "python3", "sh", "bash", "zsh", "bun", "deno"}
+            and Path(argv[1]).name.casefold().startswith("codex")):
+        return 1
+    return None
 
 
 def process_sessions(text: str, sessions: set[str]) -> list[dict]:
     peers = []
     for line in text.splitlines():
         argv = line.split()
-        names = [Path(arg).name.casefold() for arg in argv[:3]]
-        executable = next((i for i, name in enumerate(names) if name.startswith("codex")), None)
+        executable = codex_argv_start(argv)
         if executable is None:
             continue
         # Command text inside an exec prompt is not CLI syntax. Ambiguous
@@ -124,6 +145,10 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
                   "-i", "--image", "--add-dir", "-s", "--sandbox", "-a", "--ask-for-approval", "--enable", "--disable"}
         while index < len(argv) and argv[index].startswith("-") and argv[index] != "--":
             index += 2 if argv[index] in values else 1
+        if index < len(argv) and argv[index] == "exec":
+            index += 1
+            while index < len(argv) and argv[index].startswith("-") and argv[index] != "--":
+                index += 2 if argv[index] in values else 1
         resumed = {argv[index + 1].strip("\"'")} if (
             index + 1 < len(argv) and argv[index] == "resume" and not argv[index + 1].startswith("-")) else set()
         for session in resumed & sessions:
@@ -131,44 +156,52 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
     return peers
 
 
-def process_absence_known(text: str) -> bool:
+def process_absence_known(text: str, observed_sockets: set[str] | None = None) -> bool:
     for line in text.splitlines():
         argv = line.split()
-        names = [Path(arg).name.casefold() for arg in argv[:2]]
-        if any(name.startswith("codex") for name in names):
-            # App-server processes are accounted for by exact thread reads.
-            # A TUI, --last/picker, wrapper or remote client cannot be ruled out.
-            if len(argv) < 2 or argv[1] != "app-server":
+        executable = codex_argv_start(argv)
+        if executable is not None:
+            # A stdio/extension server or unobserved daemon is unidentified too.
+            listeners = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--listen"]
+            listeners += [arg.split("=", 1)[1] for arg in argv if arg.startswith("--listen=")]
+            if (executable + 1 >= len(argv) or argv[executable + 1] != "app-server"
+                    or len(listeners) != 1 or not listeners[0].startswith("unix://")
+                    or str(Path(listeners[0][7:]).resolve()) not in (observed_sockets or set())):
                 return False
     return True
 
 
-def observe(sessions: set[str]) -> tuple[list[dict], dict[str, dict]]:
+def observe(sessions: set[str], proof_sessions: set[str] | None = None):
     if not shutil.which("codex"):
-        return [], {}
+        return [], {}, {"status": "unavailable", "peer_complete": False}
 
     async def run():
-        return await asyncio.gather(*(observe_home(home, sessions) for home in codex_homes()), return_exceptions=True)
+        return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in codex_homes()), return_exceptions=True)
 
     peers, states = [], {}
-    absent = False
+    process_text = None
+    sources = []
     try:
         process_read = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=5)
         if process_read.returncode == 0:
             peers.extend(process_sessions(process_read.stdout, sessions))
-            absent = process_absence_known(process_read.stdout)
+            process_text = process_read.stdout
     except (OSError, subprocess.SubprocessError):
         pass
     for result in asyncio.run(run()):
         if isinstance(result, BaseException):
             continue
-        observed, outcomes = result
+        observed, outcomes, coverage = result
+        sources.append(coverage)
         peers.extend(observed)
         for session, outcome in outcomes.items():
             if states.get(session, {}).get("state") != "live":
                 states[session] = outcome
     for peer in peers:
         states[peer["sessionId"]] = {"state": "live", "source": peer["source"]}
-    if not absent:
+    peer_complete = bool(sources) and all(s["peer_complete"] for s in sources)
+    observed_sockets = {s["socket"] for s in sources if s["peer_complete"]}
+    if not peer_complete or process_text is None or not process_absence_known(process_text, observed_sockets):
         states = {session: state for session, state in states.items() if state["state"] != "ended"}
-    return peers, states
+    return peers, states, {"status": "available" if peer_complete else "incomplete", "peer_complete": peer_complete,
+                           "source_count": len(sources), "observed_source_incomplete": any(not s["peer_complete"] for s in sources)}

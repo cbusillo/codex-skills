@@ -2375,9 +2375,14 @@ def claim_once(args: argparse.Namespace) -> None:
         ended_owners = github_plan_claim.ended_ownership(current_comments, inventory)
         if any(entry["branch"] == claim["branch"] and entry["claim_id"] != args.resume_from for entry in ended_owners):
             raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
-        return github_plan_claim.discussion_evidence(
+        conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
             ended_claims={entry["claim_id"] for entry in ended_owners})
+        if inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
+            branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
+            conflicts.extend({"source": "native_session_inventory", "branch": entry["branch"], "certainty": "incomplete"}
+                             for entry in ended_owners if entry["branch"] in branches)
+        return conflicts, owned
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
         wait = waiting_issue["claim_wait"]

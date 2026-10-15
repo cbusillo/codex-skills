@@ -738,7 +738,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "closed_pr_artifacts")
         self.assert_no_writes()
 
-    def test_five_launchplane_finished_holder_refusals(self):
+    def test_five_launchplane_finished_handoffs_allow_successor_claims(self):
         cases = json.loads(Path(__file__).with_name("fixtures").joinpath("launchplane-3109-ended-ownership.json").read_text())
         for case in cases:
             with self.subTest(case=case["case"]):
@@ -852,6 +852,13 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("post", self.events)
         self.assertNotIn("status", self.events)
         self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_incomplete_observed_native_peer_scan_preserves_retained_ownership(self):
+        self.ended_holder_fixture()
+        self.inventory["session_coverage"]["codex_claims"] = {"status": "incomplete", "observed_source_incomplete": True}
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assert_no_writes()
+        self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "native_session_inventory")
 
     def test_final_readback_coordination_names_the_new_holder(self):
         self.after_status = self.compete
@@ -2490,7 +2497,6 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.setUp()
                 self.released_status_fixture()
-                if change == "no_resume": self.args.resume_from = None
                 if change == "wrong_author": self.comments[1]["user"]["login"] = "someone-else"
                 if change == "wrong_id": self.comments[1]["body"] = "Released claim 11"
                 if change == "id_suffix": self.comments[1]["body"] = "Released claim 1.other"
