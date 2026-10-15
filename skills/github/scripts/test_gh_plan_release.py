@@ -390,6 +390,28 @@ class ReleaseTests(ReleaseHarness):
         self.run_release()
         self.assertEqual((Path(artifact["worktree"]) / "unfinished.txt").read_text(), self.uncommitted_source)
 
+    def test_termination_successor_can_continue_the_preserved_branch(self):
+        self.termination_setup()
+        self.run_release()
+        artifact = self.termination_record["retained_artifacts"][0]
+        self.f.args.branch = artifact["branch"]
+        self.f.inventory["worktrees"] = [{"branch": artifact["branch"], "path": artifact["worktree"]}]
+        self.successor()
+        self.assertEqual((Path(artifact["worktree"]) / "unfinished.txt").read_text(), self.uncommitted_source)
+
+    def test_unrelated_detached_worktree_cannot_borrow_the_source_branch(self):
+        self.termination_setup()
+        artifact = self.termination_record["retained_artifacts"][0]
+        prefix = ["git", "-C", artifact["worktree"], "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                  "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
+        subprocess.run([*prefix, "commit", "-q", "--allow-empty", "-m", "source"], check=True)
+        subprocess.run([*prefix, "checkout", "--quiet", "--orphan", "unrelated"], check=True)
+        subprocess.run([*prefix, "commit", "-q", "--allow-empty", "-m", "unrelated"], check=True)
+        subprocess.run([*prefix, "checkout", "--quiet", "--detach"], check=True)
+        with self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        self.f.assert_no_writes()
+
     def test_termination_receipt_must_match_attested_artifacts(self):
         self.termination_setup()
         self.run_release()

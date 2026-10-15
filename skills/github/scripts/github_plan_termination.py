@@ -197,10 +197,18 @@ def verify(record, session):
         branch = subprocess.run(["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
                                 capture_output=True, text=True, timeout=10, check=False)
         if branch.returncode == 1:
-            # A rebase/bisect may leave HEAD detached. Preserve it and prove the
-            # recorded branch still exists; never alter the interrupted operation.
-            subprocess.run(["git", "-C", str(path), "show-ref", "--verify", "--quiet", "refs/heads/" + artifact["branch"]],
-                           capture_output=True, text=True, timeout=10, check=True)
+            # Bind an interrupted rebase/bisect to its recorded branch. A plain
+            # detached checkout must descend from that branch's recorded ref.
+            linked = False
+            for name in ("rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"):
+                state = subprocess.run(["git", "-C", str(path), "rev-parse", "--git-path", name],
+                                       capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+                state_path = Path(state) if Path(state).is_absolute() else path / state
+                if state_path.is_file() and state_path.read_text().strip() in {artifact["branch"], "refs/heads/" + artifact["branch"]}:
+                    linked = True
+            if not linked:
+                subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", "refs/heads/" + artifact["branch"], "HEAD"],
+                               capture_output=True, text=True, timeout=10, check=True)
         elif branch.returncode != 0 or branch.stdout.strip() != artifact["branch"]:
             raise ValueError("Retained worktree does not match its recorded branch")
         if Path(root).resolve() != path:
