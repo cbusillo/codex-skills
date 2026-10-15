@@ -323,7 +323,9 @@ def execute(h: Any, args: Any) -> int:
                 result["record_sha256"] = expectation["record_sha256"]
         else:
             body, result, material, response = _plan(s, kind, scope, ingress)
-            eligible = kind != "binding" or result["status"] in {"ready", "unchanged"}
+            eligible = (kind != "binding" or result["status"] in {"ready", "unchanged"}) and not (
+                kind == "domain" and body.get("expected_current_provider_target_fingerprint")
+            )
             result.update(plan_sha256=digest(material), apply_eligible=eligible)
             if apply:
                 if not eligible or result["plan_sha256"] != expected:
