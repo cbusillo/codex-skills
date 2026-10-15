@@ -253,11 +253,11 @@ active issue labels and continuing background jobs do not lift a hold.
    linked, not spare capacity. Claim using exactly the branch the worktree helper will create
    (`work/<task-slug>` for the catalog's `github/scripts/dev-worktree`). Read
    [task worktrees](../github/references/worktrees.md) for its callable path,
-   private per-host root setting and host integration, then
+   private per-host root setting and host integration. On a host with a guarded
+   helper, keep its current command until `hostHelper` is provisioned rather
+   than using the portable default. Read
    [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for refusal, partial recovery, or release. Continue only on confirmed success;
-   on a host with a guarded helper, keep its current command until `hostHelper`
-   is provisioned rather than using the portable default.
    preserve competing or uncertain ownership for the Director to decide. Keep
    Current Status current through handoff or completion.
    Claim waits come only from native blockers, labels and the structured wait

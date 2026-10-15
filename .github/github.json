@@ -6,6 +6,7 @@
     "executionScope": "skills/references/execution-scope.md",
     "githubSkill": "skills/github/SKILL.md",
     "githubWorkflow": "skills/github/references/repo-workflow.md",
+    "taskWorktrees": "skills/github/references/worktrees.md",
     "githubPostMergeCheckouts": "skills/github/references/post-merge-checkouts.md",
     "backgroundReviewReporting": "skills/references/background-review-reporting.md",
     "executionEnvironment": "skills/github/references/execution-environment.md",
