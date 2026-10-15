@@ -24,6 +24,10 @@ Read for `next` in a repository owner's direction repository, including explicit
    evidence and names known skipped discoveries; it never proves availability
    or complete portfolio/milestone ranking. Check the independent coverage
    receipts even when the command exits successfully.
+   Ctrl-C or a fatal read failure signals the invocation's reader retry runtime
+   before joining workers, waking pending backoffs and cancelling queued reads.
+   An already running transport retains its existing bounded request deadline;
+   cancellation does not kill a transport or switch its acting identity.
 3. Apply Choose Work to possible candidates from both sources. Read each full
    discussion, including the latest comments, and current PR/branch/worktree and
    supported session evidence. A complete `discussion` snapshot is the full

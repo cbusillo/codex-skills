@@ -634,6 +634,7 @@ def run_raw(
         bucket=resolved_bucket,
         attempt_with_timeout=lambda timeout: attempt(timeout),
         repository=github_api_core.github_http_cache.repository_from_command(args),
+        retry_runtime=NEXT_READS.retry_runtime if NEXT_READS is not None and not resolved_is_write else None,
     )
     record_retry_fields(retried)
     if last_proc is None:
@@ -930,6 +931,7 @@ def api_json_uncached(
             operation=operation or CURRENT_OPERATION, strict_actor=True,
             cache_enabled=True, cache_revalidate=True,
             deadline_at=read_deadline,
+            retry_runtime=NEXT_READS.retry_runtime if NEXT_READS is not None else None,
         )
         reader.completed_steps = list(completed_steps or [])
         try:

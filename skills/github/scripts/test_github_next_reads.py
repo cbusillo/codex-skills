@@ -10,11 +10,140 @@ import contextlib
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
+import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest.mock import patch
 
 from github_next_reads import NextReads, ReadDeadline
+
+
+def cancellation_fixture(mode: str) -> None:
+    """Exercise the real CLI envelope and reader/retry path, without GitHub."""
+    from test_gh_plan_next import load_module
+    module = load_module()
+    module.api_json = module.real_api_json
+    api = module.github_api_core
+    entered = threading.Event()
+    attempted = []
+    stopped_at = []
+    original_wait = api._wait_until
+    actor = "fixture-reader"
+
+    def wait_until(*args, **kwargs):
+        entered.set()
+        return original_wait(*args, **kwargs)
+
+    def transport(method, path, body, **kwargs):
+        attempted.append(path)
+        assert kwargs["actor"] == kwargs["expected_actor"] == actor
+        limit = api.RateLimitInfo(retry_after=60, resource="core")
+        return api.ApiResult(ok=False, status=503, body={}, actor=actor,
+            expected_actor=actor, rate_limit=limit,
+            failure=api.FailureDetail(cause="server_error", message="fixture retry",
+                retryable=True, fallback_eligible=False, disposition="retry"))
+
+    fatal = module.PlanError("fixture credential failure", failure=api.FailureDetail(
+        cause="invalid_credentials", message="fixture credential failure",
+        retryable=False, fallback_eligible=False, disposition="stop"))
+
+    def read():
+        return module.api_json("GET", "/repos/fixture/source/issues/1")
+
+    def fail():
+        assert entered.wait(3), "reader did not reach retry wait"
+        stopped_at.append(time.monotonic())
+        raise fatal
+
+    def direction_next(_args, _repo):
+        reads = module.NEXT_READS
+        if mode == "fatal":
+            reads.map(lambda index: read() if index == 0 else fail(), [0, 1])
+        else:
+            reads.submit("backoff", read)
+            assert entered.wait(3), "reader did not reach retry wait"
+            if mode == "drain":
+                assert reads.submit("fatal", fail).exception(timeout=3) is fatal
+                reads.drain(unused_failure=lambda exc: module.next_source_error(exc))
+            else:
+                # Two workers are occupied before a third task is queued.
+                held = threading.Event()
+                def other():
+                    held.set()
+                    return read()
+                reads.submit("other", other)
+                assert held.wait(3)
+                reads.submit("queued", lambda: attempted.append("unexpected queued read"))
+                stopped_at.append(time.monotonic())
+                os.kill(os.getpid(), signal.SIGINT)
+
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "GITHUB_RETRY_STATE_DIR": directory, "GITHUB_RETRY_MAX_WAIT_SECONDS": "120",
+            "GITHUB_RETRY_BASE_BACKOFF_SECONDS": "60", "GITHUB_RETRY_JITTER_SECONDS": "0",
+            "GITHUB_RETRY_WAIT_SLICE_SECONDS": "60", "GITHUB_RETRY_DEADLINE_AT": str(time.time() + 180),
+            "GH_PLAN_SKIP_BOT": "0", "GH_PLAN_ALLOW_ACTIVE_FIRST": "0"}), patch.multiple(
+                module, EXPECTED_ACTOR=actor, direction_next=direction_next), patch.object(
+                api, "request_identity", return_value=(actor, actor, [])), patch.object(
+                api, "call_gh", transport), patch.object(api, "_wait_until", wait_until), patch.object(
+                module.github_identity, "active_auth_fallback_allowed", return_value=False), patch.object(
+                module.github_identity, "own_user_opted_in", return_value=False), patch.object(
+                sys, "argv", ["gh-plan.py", "--repo", "fixture/direction", "next", "--read-workers", "2"]):
+        prior_deadline = os.environ["GITHUB_RETRY_DEADLINE_AT"]
+        try:
+            module.main()
+        except SystemExit as exc:
+            code = exc.code
+        else:
+            raise AssertionError("fixture did not produce a terminal failure")
+        assert module.NEXT_READS is None
+        assert os.environ["GITHUB_RETRY_DEADLINE_AT"] == prior_deadline
+        assert not any(thread.name.startswith("global-next") for thread in threading.enumerate())
+        assert "unexpected queued read" not in attempted
+        assert len(attempted) <= 2, "cancellation issued another transport attempt"
+        latency = time.monotonic() - stopped_at[0]
+        print(json.dumps({"mode": mode, "latency": latency, "attempts": len(attempted),
+                          "threads_clean": True}), file=sys.stderr)
+        raise SystemExit(code)
+
+
+def test_cli_cancellation_and_fatal_reads_interrupt_backoff_and_join_workers() -> None:
+    for mode in ("interrupt", "fatal", "drain"):
+        proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--cancellation-fixture", mode],
+                              capture_output=True, text=True, timeout=8)
+        assert proc.returncode == (130 if mode == "interrupt" else 1), (proc.stdout, proc.stderr)
+        payload = json.loads(proc.stdout)
+        assert payload["ok"] is False, payload
+        assert payload["error_code"] == ("cancelled" if mode == "interrupt" else "invalid_credentials"), payload
+        assert payload["fallback_eligible"] is False, payload
+        metrics = json.loads(proc.stderr.splitlines()[-1])
+        assert metrics["latency"] < 2, metrics
+        print(f"cancellation fixture: {metrics}")
+
+
+def test_cancelled_global_graphql_read_never_launches_transport() -> None:
+    from test_gh_plan_next import load_module
+    module = load_module()
+    with NextReads(workers=1, seconds=60) as reads, patch.object(
+            module.github_api_core, "request_identity", return_value=("fixture-reader", "fixture-reader", [])), patch.object(
+            module.subprocess, "run", side_effect=AssertionError("transport launched after cancellation")):
+        module.NEXT_READS = reads
+        reads.stop.set()
+        try:
+            module.run_raw(["api", "graphql", "--input", "-"],
+                           input_text=json.dumps({"query": "query { viewer { login } }"}),
+                           is_write=False, operation="github.plan.next", bucket="graphql")
+        except module.PlanError as exc:
+            assert exc.failure.cause == "cancelled"
+            assert exc.api_result["attempts"] == 0
+        else:
+            raise AssertionError("cancelled GraphQL read succeeded")
+        finally:
+            module.NEXT_READS = None
 
 
 def test_duplicate_observations_share_one_request_and_independent_bodies() -> None:
@@ -160,4 +289,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--cancellation-fixture":
+        cancellation_fixture(sys.argv[2])
+    else:
+        main()
