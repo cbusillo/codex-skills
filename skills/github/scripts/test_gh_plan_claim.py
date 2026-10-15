@@ -894,6 +894,36 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
         self.assertEqual(caught.exception.payload["competing_evidence"][0]["session"], target["session"])
 
+    def test_incomplete_handoff_inventory_names_the_retained_branch_and_source(self):
+        self.refresh_fixture()
+        self.inventory["session_coverage"]["codex_claims"] = {"observed_source_incomplete": True}
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assert_no_writes()
+        evidence = caught.exception.payload["competing_evidence"][0]
+        self.assertIn(evidence["branch"], self.inventory["local_branches"])
+        self.assertEqual(evidence["session"], OTHER["session"])
+
+    def test_handoff_with_deleted_retained_branches_ignores_unrelated_incomplete_source(self):
+        self.refresh_fixture()
+        self.args.refresh_pr = None
+        self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
+        self.inventory["session_coverage"]["codex_claims"] = {"observed_source_incomplete": True}
+        for pull in self.pulls:
+            pull.update(state="closed", merged_at="2026-10-02T01:00:00Z")
+            self.targets[str(pull["number"])]["state"] = "closed"
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_non_listening_native_source_does_not_revive_released_artifact_ownership(self):
+        import github_plan_sessions
+        self.ended_holder_fixture()
+        self.observe_inventory = CLAIM.observe_sessions
+        with patch.object(github_plan_sessions, "observe", return_value=([], {}, {
+                "status": "unavailable", "observed_source_incomplete": False})):
+            self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertTrue(self.emitted.call_args.args[0]["retained_artifacts"])
+
     def test_final_readback_coordination_names_the_new_holder(self):
         self.after_status = self.compete
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()

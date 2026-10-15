@@ -6,6 +6,7 @@
 import copy
 import json
 import os
+import socket
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -111,6 +112,18 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsafe_existing_socket_is_incomplete(self):
         peers, states = await self.observe("idle", unsafe=True)
         self.assertEqual((peers, states), ([], {}))
+
+    async def test_non_listening_stale_socket_is_unavailable(self):
+        with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
+            home = Path(folder)
+            path = home / "app-server-control/app-server-control.sock"
+            path.parent.mkdir()
+            with socket.socket(socket.AF_UNIX) as stale:
+                stale.bind(str(path))
+                os.chmod(path, 0o600)
+                peers, states, coverage = await SESSIONS.observe_home(home, {"holder"})
+        self.assertEqual((peers, states), ([], {}))
+        self.assertEqual(coverage["status"], "unavailable")
 
 
 class ObservationMergeTests(unittest.TestCase):

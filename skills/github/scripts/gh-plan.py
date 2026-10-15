@@ -2478,9 +2478,13 @@ def claim_once(args: argparse.Namespace) -> None:
             retained_waits = observed_waits
         target_inventory = github_plan_claim.observe_sessions(
             github_plan_claim.local_inventory(target_repo, target_number), target_session_comments)
-        if target_inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
-            refuse([{"source": "native_session_inventory", "certainty": "incomplete"}])
         source_session = github_plan_claim.records(next(c for c in source_comments if c.get("id") == args.resume_from)["body"])[0]["session"]
+        if target_inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
+            present = set(target_inventory["local_branches"]) | set(target_inventory["remote_branches"]) | {t["branch"] for t in target_inventory["worktrees"]}
+            uncertain = [{"source": "native_session_inventory", "branch": branch, "session": source_session, "certainty": "incomplete"}
+                         for branch in sorted(permitted & present)]
+            if uncertain:
+                refuse(uncertain)
         live_sources = [{"source": "source_session", "session": peer["sessionId"],
                          "certainty": "visible_in_native_inventory"}
                         for peer in target_inventory["sessions"]

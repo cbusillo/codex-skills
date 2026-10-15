@@ -123,6 +123,9 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                             await inspect(session, prove=coverage["peer_complete"])
                         except (KeyError, TypeError, ValueError, OSError, ImportError):
                             continue  # No successful observation means unknown, never ended.
+    except aiohttp.ClientConnectorError as error:
+        if isinstance(error.os_error, (ConnectionRefusedError, FileNotFoundError)):
+            coverage.update(status="unavailable", reason="socket_not_listening")
     except (KeyError, TypeError, ValueError, OSError, TimeoutError, aiohttp.ClientError):
         pass
     return peers, states, coverage

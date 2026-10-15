@@ -786,6 +786,9 @@ Socket reads do not require `codex` on PATH. Existing unsafe or unreadable socke
 are incomplete sources. `session_coverage` also reports unidentified interactive
 processes for exact-release successors; an authored release proves ended claim
 ownership, not the absence of every unobservable session on the host.
+An absent or non-listening socket is unavailable, not an active peer. Incomplete
+handoff coverage is scoped to retained branches still present locally/remotely;
+the refusal names those branches and the source session for coordination.
 
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;
