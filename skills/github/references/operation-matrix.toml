@@ -948,18 +948,18 @@ capabilities = ["issues_write", "pull_requests_read", "contents_read"]
 permission_mode = "fixed"
 permission_note = "Same configured automation identity as source claim; existing issue/comment and retained PR/commit reads suffice. Read-only backfill preview reuses the retained-PR guard and target-checkout native inventory. Source activity and retained-worktree peers refuse before issue-scoped metadata conflicts. PR-scoped releases read the claimed branch ref and commit using existing Contents read, and check that source branch against the attestation; a separate Dependabot work-record branch may update after the session ends; source claim and evidence still require the configured automation actor. Legacy mode uses the same PR read surface with state=all and an exact owner:branch head filter to corroborate the supplied branch; missing corroboration refuses. The caller verifies the branch belongs to the worker. Legacy source branch refs/commits use the same Contents reads even for issue claims. Existing Contents read probes/grants cover the source branch ref and commit; missing access or a disappearing known source ref refuses, and no identity change is made."
 entrypoint = "github/scripts/gh-plan.py release-claim"
-intent = "Record and read back abandoned-claim release using an exact closed-session attestation and fresh ownership/native peer checks; retain artifact and dependency guards."
+intent = "Stage an inert abandoned-claim release, recheck closure and ownership, then confirm its exact comment; reuse matching confirmed receipts and require fresh closure evidence after pending attempts."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Paged issue comments; GET evidence comment, claimed source branch ref/commit for a PR or legacy claim, exact-head filtered PRs in any state for legacy branch corroboration, retained PR and head commit; read-only Git/native peer inventory; shared deduplicated exact release comments and readback"
+endpoint_or_command = "Paged issue comments; GET evidence comment, claimed source branch ref/commit for a PR or legacy claim, exact-head filtered PRs in any state for legacy branch corroboration, retained PR and head commit; read-only Git/native peer inventory; shared deduplicated pending comment POST and readback; shared exact-comment GET and single-attempt PATCH guarded by author, thread, observed body and timestamp; related exact release comments"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "mixed"
 idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "read_after_write"
-retained_graphql_rationale = "No GraphQL; exact release bodies use maintained REST comment reconciliation."
-source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:prepare_release", "github/scripts/github_plan_release.py:check_retained_pr", "github/scripts/github_plan_release.py:effective_comments"]
+retained_graphql_rationale = "No GraphQL; the existing Issues write grant and safe issue/comment probes cover pending POST and exact confirmation PATCH with no profile expansion or identity change. Readback refusal leaves no release authority; unknown writes retain exact record and reconciliation evidence without replay. Matching confirmed receipts are reused, and unchanged closure evidence cannot revive pending attempts. Other claims, waits and retained artifacts remain independent."
+source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:prepare_release", "github/scripts/github_plan_release.py:pending_body", "github/scripts/github_plan_release.py:pending_receipt_for", "github/scripts/github_plan_release.py:check_retained_pr", "github/scripts/github_plan_release.py:effective_comments", "github/scripts/github_comment.py:_comment_impl"]
 test_refs = ["github/scripts/test_gh_plan_release.py:test_dependabot_rebase_after_end_does_not_block_release_of_separate_source_branch", "github/scripts/test_gh_plan_release.py:test_pr_release_still_refuses_new_activity_on_claimed_source_branch", "github/scripts/test_gh_plan_release.py:test_pr_claim_release_preserves_separate_repair_pr_linked_by_canonical_pr_url", "github/scripts/test_gh_plan_release.py:test_pr_closed_session_attestation_releases_and_allows_successor", "github/scripts/test_gh_plan_release.py:test_pr_attestation_new_activity_live_peer_or_changed_evidence_refuses", "github/scripts/test_gh_plan_release.py"]
 
 [[operations]]
@@ -2391,7 +2391,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_app_setup.py" = "752a8c6d16f8117271700a616a506dabc80528544f5315a1d15d67ab141ec4c4"
 "github/scripts/gh-comment" = "21ecb30d4d60b61c760f1df630fd6b56347873709bba2d05b7f32f9222fa4656"
 "github/scripts/gh-issue" = "2589d7e258872b5dc2609ceb581053b2daae205156ac360d1a84a2f49eb0f01f"
-"github/scripts/gh-plan.py" = "df93fb8ac4a709acb9761cc6e4c314c40ca236b5e4d10ef40f11c1b2e2e74f95"
+"github/scripts/gh-plan.py" = "deb41e67762cb73fcee5e4080f512111ff5d4bd1e39de607c7ae0cc4416b9c8d"
 "github/scripts/github_next_queue.py" = "a3b70748205be3b4aecbeafce5ce5033585fd11f78a9a1d427dcbad630897843"
 "github/scripts/gh-pr.py" = "63da814199a3d3d19fbd6dcd919194f8f413ae6460f61b5c206d5bde162b7d93"
 "github/scripts/gh-rulesets.py" = "0b6cfb046b92b6adce65841dd27eccd12884709753769744887c3e0376ce5748"
