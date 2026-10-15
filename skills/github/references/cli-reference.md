@@ -1749,7 +1749,8 @@ and commands with no target repository keep the existing primary credential
 selection. The separate bulk reader App still serves bulk reads when configured.
 With no Client routing configured, existing fleet behavior is unchanged.
 `gh-plan.py --repo OWNER/REPO` supplies that repository context for the entire
-command, including reader initialization and actor checks. It takes precedence
+command, including reader initialization and actor checks; a qualified issue
+reference supplies its own target instead. The resolved target takes precedence
 over an inherited `GH_REPO`; setting `GH_REPO` separately is unnecessary.
 
 If the Client App is not installed on the target, reads fail with the missing

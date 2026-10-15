@@ -281,13 +281,13 @@ class ClientAppTests(unittest.TestCase):
             github_comment.authenticated_actor(gh_cmd=wrapper, operation="github.comment.issue",
                 expected_actor="different[bot]", write_repository="host/product")
 
-    def plan(self, repo: str) -> subprocess.CompletedProcess[str]:
+    def plan(self, repo: str, issue: str = "1") -> subprocess.CompletedProcess[str]:
         # Reproduce a two-App Client fleet without a separate bulk-reader App.
         env = {name: value for name, value in os.environ.items()
                if not name.startswith("GITHUB_READER_APP_")}
         return subprocess.run(
             [sys.executable, str(Path(identity.__file__).with_name("gh-plan.py")),
-             "--repo", repo, "show", "1"],
+             "--repo", repo, "show", issue],
             env={**env, "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
                  "GH_WITH_ENV_TOKEN_PYTHON": sys.executable},
             capture_output=True, text=True, timeout=15,
@@ -316,7 +316,19 @@ class ClientAppTests(unittest.TestCase):
     def test_plan_client_repository_keeps_missing_installation_refusal(self) -> None:
         missing = self.plan("host/missing")
         self.assertNotEqual(missing.returncode, 0)
-        self.assertIn("Client App is not installed on host/missing", missing.stdout)
+        payload = json.loads(missing.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_code"], "identity_refused")
+
+    def test_plan_qualified_issue_selects_its_owner_over_default_repository(self) -> None:
+        for default, target in (("host/product", "client/product"), ("client/product", "host/product")):
+            for ref in (f"{target}#1", f"https://github.com/{target}/issues/1"):
+                with self.subTest(default=default, ref=ref):
+                    result = self.plan(default, ref)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(payload["issue"]["repo"], target)
+                    self.assertEqual(payload["last_actor"], self.auth(target)[1])
 
     def test_python_bulk_reads_use_reader_then_client_when_reader_absent(self) -> None:
         kwargs = dict(operation="github.plan.index", is_write=False, gh_cmd=github_api.DEFAULT_GH,

@@ -6041,11 +6041,13 @@ def main() -> None:
     if args.command == "wait" and not args.clear and not args.waiting_for:
         CURRENT_IS_WRITE = False
     previous_repo = os.environ.get("GH_REPO")
-    if args.repo:
-        # Reader construction and repository-less probes must select the same
-        # App as the explicit target, before any request or cache is prepared.
-        os.environ["GH_REPO"] = args.repo
     try:
+        if args.repo:
+            # A qualified issue overrides --repo, which is only its default.
+            target_repo = (issue_ref(claim_reference(args).issue, args.repo)[0]
+                           if getattr(args, "issue", None) else args.repo)
+            # Bind readers, probes and transport before any cache is prepared.
+            os.environ["GH_REPO"] = target_repo
         args.func(args)
     except ClassifiedPlanError as exc:
         die(
