@@ -30,6 +30,7 @@ TARGET = {
     "base": "trunk",
     "label": "enqueue-from-policy",
     "policy": {"record_id": "revision"},
+    "scheduler_drives_train": True,
 }
 
 
@@ -185,6 +186,14 @@ class Fake:
     def qualified(self, *_args):
         return self.qualify
 
+    def queue(self, _target):
+        dry = response(self.pulls.values(), self.writes)["result"]["dry_run_result"]
+        for row in dry["queue"]:
+            if row["number"] in self.ineligible:
+                row["ineligible_reasons"] = self.ineligible[row["number"]]
+        dry["queue_order"] = [row["number"] for row in dry["queue"] if not row["ineligible_reasons"]]
+        return dry
+
     def label(self, _target, number):
         self.writes.append(number)
         self.pulls[number]["labels"].append({"name": TARGET["label"]})
@@ -218,6 +227,199 @@ class EnqueueTests(unittest.TestCase):
         watch.run_pass(
             fake, self.args, lambda event, payload: self.events.append((event, payload))
         )
+
+    def staging_fake(self):
+        fake = Fake()
+        fake.pulls[99] = pr(99)
+        fake.pulls[99]["labels"] = [{"name": TARGET["label"]}]
+        fake.observation = candidate_response([99])
+
+        def train(_target):
+            fake.calls += 1
+            fake.before(fake)
+            return copy.deepcopy(fake.observation)
+
+        fake.train = train
+        return fake
+
+    def test_staging_qualifies_next_batch_without_changing_published_candidate(self):
+        fake = self.staging_fake()
+        candidate = copy.deepcopy(fake.observation)
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+        self.assertEqual(fake.observation, candidate)
+        self.assertEqual(fake.pulls[99]["labels"], [{"name": TARGET["label"]}])
+        self.assertFalse(any(event == "driver_handoff" for event, _ in self.events))
+        self.assertTrue(any(event == "next_batch_queued" for event, _ in self.events))
+        for _ in range(3):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+
+    def test_staging_preserves_existing_queue_and_unknown_label_author(self):
+        for change in ("queued", "unknown_author", "missing"):
+            with self.subTest(change=change):
+                fake = self.staging_fake()
+                fake.pulls[6]["labels"] = [{"name": TARGET["label"]}]
+                if change == "unknown_author":
+                    fake.ineligible[6] = [
+                        f"{TARGET['label']} label ignored: could not read who applied it"
+                    ]
+                if change == "missing":
+                    original = fake.queue
+
+                    def queue(target):
+                        dry = original(target)
+                        dry["queue"] = [row for row in dry["queue"] if row["number"] != 6]
+                        dry["queue_order"] = [number for number in dry["queue_order"] if number != 6]
+                        return dry
+
+                    fake.queue = queue
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [])
+
+    def test_staging_stops_on_new_or_unknown_queue_labels_between_writes(self):
+        for change in ("queued", "unknown_author", "missing"):
+            with self.subTest(change=change):
+                fake = self.staging_fake()
+
+                def before(io):
+                    if not io.writes:
+                        return
+                    io.pulls[6]["labels"] = [{"name": TARGET["label"]}]
+                    if change == "unknown_author":
+                        io.ineligible[6] = [
+                            f"{TARGET['label']} label ignored: could not read who applied it"
+                        ]
+                    elif change == "missing":
+                        io.ineligible[6] = ["targets another base"]
+
+                fake.before = before
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [1])
+
+    def test_staging_rechecks_author_policy_head_and_readiness_before_each_label(self):
+        for change in ("author", "head", "readiness", "mergeability"):
+            with self.subTest(change=change):
+                fake = self.staging_fake()
+
+                def before(io):
+                    if not io.writes:
+                        return
+                    if change == "author":
+                        io.ineligible[2] = ["actor role is not allowed to enqueue"]
+                    elif change == "head":
+                        io.pulls[2]["head"]["sha"] = "d" * 40
+                    elif change == "readiness":
+                        io.qualify = False
+                    else:
+                        io.pulls[2]["mergeable"] = None
+
+                fake.before = before
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [1])
+
+    def test_staging_stops_when_candidate_lands_changes_fails_or_release_is_held(self):
+        for change in ("landed", "replacement", "failed", "release", "reconcile"):
+            with self.subTest(change=change):
+                fake = self.staging_fake()
+
+                def before(io):
+                    if not io.writes:
+                        return
+                    if change == "landed":
+                        io.observation = response(io.pulls.values(), io.writes)
+                    elif change == "replacement":
+                        io.observation = candidate_response([98])
+                    elif change == "failed":
+                        io.observation = candidate_response([99], status="failed")
+                    elif change == "release":
+                        io.observation["result"]["controller_action"] = "release_hold"
+                    else:
+                        io.observation["result"]["controller_reconciliation_status"] = "required"
+
+                fake.before = before
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [1])
+
+    def test_staging_preserves_blocked_prs_and_requires_complete_candidate_evidence(self):
+        fake = self.staging_fake()
+        fake.pulls[1]["labels"] = [{"name": "merge-blocked"}]
+        fake.ineligible[1] = ["held by merge-blocked label"]
+        self.run_pass(fake)
+        self.assertNotIn(1, fake.writes)
+        self.assertEqual(fake.pulls[1]["labels"], [{"name": "merge-blocked"}])
+        for field in ("base_sha", "candidate_sha", "candidate_ref", "pull_request_numbers"):
+            with self.subTest(field=field):
+                fake = self.staging_fake()
+                fake.observation["result"]["candidate"].pop(field)
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [])
+
+    def test_staging_rechecks_policy_after_queue_read(self):
+        fake = self.staging_fake()
+        original = fake.queue
+        reads = []
+
+        def queue(target):
+            reads.append(target)
+            if len(reads) > 1:
+                fake.targets[0]["policy"] = {"record_id": "new-policy"}
+            return original(target)
+
+        fake.queue = queue
+        with self.assertRaises(watch.WatchError):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+
+    def test_staging_requires_a_live_mutating_scheduler(self):
+        for value in (False, None):
+            with self.subTest(value=value):
+                fake = self.staging_fake()
+                fake.targets[0]["scheduler_drives_train"] = value
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [])
+
+    def test_staging_unavailable_queue_or_another_enrolled_base_never_writes(self):
+        fake = self.staging_fake()
+        fake.queue = Mock(side_effect=watch.LaunchplaneReadError("queue unavailable"))
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        fake = self.staging_fake()
+        fake.targets.append({**TARGET, "base": "release"})
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+
+    def test_staging_read_failure_before_writes_does_not_starve_other_repositories(self):
+        fake = self.staging_fake()
+        other = {**TARGET, "repo": "example/other"}
+        fake.targets.append(other)
+        visited = []
+        original = fake.train
+
+        def train(target):
+            visited.append(target["repo"])
+            if target == other:
+                return response([pr()])
+            return original(target)
+
+        fake.train = train
+        fake.queue = Mock(side_effect=watch.LaunchplaneReadError("queue unavailable"))
+        self.run_pass(fake)
+        self.assertIn(other["repo"], visited)
+
+    def test_staging_read_failure_after_a_label_stops_without_replay(self):
+        fake = self.staging_fake()
+        original = fake.queue
+
+        def queue(target):
+            if fake.writes:
+                raise watch.LaunchplaneReadError("queue unavailable")
+            return original(target)
+
+        fake.queue = queue
+        with self.assertRaises(watch.LaunchplaneReadError):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
 
     def test_capped_area_group_and_repeat_does_not_extend_queued_batch(self):
         fake = Fake()
@@ -559,7 +761,7 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.writes, [1, 2, 4, 5])
         self.assertFalse(any(event == "batch_stopped" for event, _ in self.events))
         self.run_pass(fake)
-        self.assertEqual(fake.writes, [1, 2, 4, 5])
+        self.assertEqual(fake.writes, [1, 2, 4, 5, 3])
 
     def test_own_candidate_planning_building_and_passed_states_continue(self):
         for candidate_status in ("planned", "building", "passed"):
@@ -1078,6 +1280,76 @@ class EnqueueTests(unittest.TestCase):
         self.assertFalse(
             watch.latest_ready(pr(), [waiting, comment(number=2)], {"engineer"})
         )
+
+
+class QueueReadTests(unittest.TestCase):
+    def setUp(self):
+        self.live = object.__new__(watch.Live)
+        self.live.deadline = watch.time.time() + 30
+        self.live.settings = {"service_url": "https://control.example", "token": "fixture"}
+        self.payload = response([pr()])
+        self.payload["result"].update(repository=REPO, base_branch=TARGET["base"])
+
+    def test_queue_uses_existing_read_only_plan_and_projects_author_dispositions(self):
+        with patch.object(watch.operator, "request_launchplane", return_value=self.payload) as read:
+            queue = self.live.queue(TARGET)
+        self.assertEqual(queue["queue"][0]["ineligible_reasons"],
+                         [f"missing {TARGET['label']} label"])
+        self.assertIs(read.call_args.kwargs["body"]["mutate"], False)
+        self.assertNotIn("idempotency_key", read.call_args.kwargs)
+
+    def test_denied_wrong_target_or_mutating_queue_never_qualifies(self):
+        for field, value in (("repository", "another/repo"), ("base_branch", "other"),
+                             ("mode", "mutate"), ("dry_run_result", {})):
+            with self.subTest(field=field):
+                payload = copy.deepcopy(self.payload)
+                payload["result"][field] = value
+                with patch.object(watch.operator, "request_launchplane", return_value=payload):
+                    with self.assertRaises(watch.LaunchplaneReadError):
+                        self.live.queue(TARGET)
+        for status in (401, 403):
+            with self.subTest(status=status):
+                error = urllib.error.HTTPError("https://control.example", status, "denied", {}, None)
+                with patch.object(watch.operator, "request_launchplane", side_effect=error):
+                    with self.assertRaises(watch.WatchError) as refused:
+                        self.live.queue(TARGET)
+                    self.assertNotIsInstance(refused.exception, watch.LaunchplaneReadError)
+
+    def test_snapshot_refusals_allow_a_fresh_read_without_stopping_the_watcher(self):
+        for status in (400, 409, 500, 503):
+            with self.subTest(status=status):
+                error = urllib.error.HTTPError("https://control.example", status, "unavailable", {}, None)
+                with patch.object(watch.operator, "request_launchplane", side_effect=error):
+                    with self.assertRaises(watch.LaunchplaneReadError) as refused:
+                        self.live.queue(TARGET)
+                self.assertTrue(watch.transient_read_error(refused.exception))
+
+    def test_malformed_or_truncated_queue_response_is_a_bounded_read_failure(self):
+        for error in (watch.operator.ServiceResponseError({}),
+                      watch.http.client.IncompleteRead(b"", 100)):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(watch.operator, "request_launchplane", side_effect=error):
+                    with self.assertRaises(watch.LaunchplaneReadError):
+                        self.live.queue(TARGET)
+        payload = copy.deepcopy(self.payload)
+        payload["result"]["dry_run_result"]["queue_order"] = [0]
+        with patch.object(watch.operator, "request_launchplane", return_value=payload):
+            with self.assertRaises(watch.LaunchplaneReadError):
+                self.live.queue(TARGET)
+
+    def test_policy_read_requires_explicit_controller_scheduler_mutation_for_staging(self):
+        scheduler = {"enabled": True, "mutate": True, "runner_mode": "controller"}
+        for changes in ({}, {"enabled": False}, {"mutate": False}, {"runner_mode": "level1"}):
+            with self.subTest(changes=changes):
+                raw = {"repository": REPO, "base_branch": TARGET["base"],
+                       "enqueue_label": TARGET["label"], "scheduler": {**scheduler, **changes}}
+                payload = {"status": "ok", "trace_id": "fixture", "record": {
+                    "status": "active", "record_id": "fixture-policy",
+                    "updated_at": "2026-01-01T00:00:00Z", "policy_sha256": "a" * 64,
+                    "policy": {"policies": [raw]}}}
+                with patch.object(watch.operator, "request_launchplane_read", return_value=payload):
+                    target = self.live.policies("example")[0]
+                self.assertEqual(target["scheduler_drives_train"], not changes)
 
 
 def api_result(certainty=None):

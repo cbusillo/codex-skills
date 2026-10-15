@@ -353,7 +353,8 @@ The oldest eligible PR anchors a group; additional members share at least one
 of its top-level areas. Renames count both source and destination; root files
 form one area. `--max-batch-size` defaults to four. Area grouping is a routing
 heuristic; Launchplane's combined candidate checks still prove compatibility.
-An active candidate, reconciliation, landing, or preexisting queue preserves
+An active candidate normally preserves its batch; scheduler-backed staging below
+is the bounded exception. Reconciliation, landing, or a preexisting next queue preserves
 that repository's batch. Each write rechecks policy, pauses, train state, current
 head and readiness. A behind-base single-member queue awaiting the train's
 branch update can still accumulate this watcher's group before any stored
@@ -366,14 +367,36 @@ stops continuation. Another actor's new or changed queued label,
 landing, reconciliation, failed candidate or unavailable evidence stops it.
 Candidate observations can omit the queue: unchanged policy, selected head and
 PR labels retain the scan's author admission while every write still reads
-current readiness. A later pass preserves that candidate and admits no arrivals.
-The watcher never adds arrivals to an already queued group;
+current readiness.
+
+On a target whose controller scheduler is explicitly enabled and mutating,
+while a published candidate is checking, a later pass can stage one capped group
+for the next candidate. Targets driven locally keep their existing handoff.
+Staging reads the full author-policy queue through the
+existing Level 1 run-once service path with `mutate: false`; that path writes
+only its normal diagnostic evidence, never a branch, label or merge. An
+unavailable queue read before any write leaves that repository busy for this
+pass and lets other repositories proceed; authorization denials still stop.
+After a write begins, the existing no-replay stop remains. Every
+staged label requires the same published candidate ref, SHA, base and complete
+membership, a fresh author-policy queue and current-head readiness. Unknown
+label authors, incomplete labeled-PR inventory, another enrolled base,
+failed/uncertain evidence, a release hold, or a candidate transition stop
+staging. A queued group outside the active candidate blocks further groups,
+including on repeat passes, preserving the per-pass cap and existing routing custody.
+If the running candidate later fails or changes, Launchplane may combine its
+remaining members with that queue under its own policy cap and recovery rules.
+The current candidate keeps its membership; Launchplane selects the queued
+group only at its next candidate boundary. Staging emits `next_batch_queued`
+without a local-driver handoff, since the active scheduler continues the train.
+
+The watcher never extends an already queued next group;
 clearing a previously labeled PR's hold can still change the train's membership.
 
-The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, and
+The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, `next_batch_queued`, and
 `driver_handoff` events. Busy diagnostics include queue dispositions and labeled
-PR numbers when available. Once the controller proves there is no active
-candidate, reconciliation, landing or eligible queue, labeled PRs it reports
+PR numbers when available. Once the controller proves there is no reconciliation,
+landing or eligible next queue, labeled PRs it reports
 as ineligible do not hold the repository busy. Their labels stay in place;
 the train still owns their holds. Dispositions cover all enrolled bases in
 the repository. Labeled PRs absent from that inventory, or still reported as

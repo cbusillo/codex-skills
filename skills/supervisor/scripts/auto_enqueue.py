@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import importlib.util
+import http.client
 import json
 import math
 import re
@@ -218,6 +219,31 @@ def own_candidate(response, own, candidate_records=()):
     )
 
 
+def staging_candidate(response):
+    """Identify a published candidate whose membership must stay unchanged."""
+    result = response.get("result") or {}
+    candidate = result.get("candidate") or {}
+    members = candidate.get("pull_request_numbers") or []
+    if (
+        not own_candidate(response, members)
+        or result.get("controller_action") != "observe_candidate"
+        or result.get("blocking_reason")
+        or candidate.get("status") not in {"ready_for_checks", "passed"}
+        or not (response.get("records") or {}).get("merge_train_batch_candidate_record_id")
+        or not all(
+            isinstance(candidate.get(key), str)
+            and re.fullmatch(r"[0-9a-f]{40}", candidate[key])
+            for key in ("base_sha", "candidate_sha")
+        )
+        or not candidate.get("candidate_ref")
+    ):
+        return None
+    return (
+        candidate["candidate_ref"], candidate["base_sha"],
+        candidate["candidate_sha"], tuple(members),
+    )
+
+
 class Live:
     def __init__(self, deadline):
         self.deadline = deadline
@@ -264,12 +290,24 @@ class Live:
                 request={"repository": repo}, provider_payload=payload
             )["result"]
             for target in projected["targets"]:
+                configured = next(
+                    item for item in policies
+                    if item["repository"].casefold() == repo.casefold()
+                    and item["base_branch"] == target["baseBranch"]
+                )
+                scheduler = configured.get("scheduler") or {}
                 targets.append(
                     {
                         "repo": repo,
                         "base": target["baseBranch"],
                         "label": target["readyLabel"],
                         "policy": projected["policy"],
+                        "scheduler_drives_train": (
+                            isinstance(scheduler, dict)
+                            and scheduler.get("enabled") is True
+                            and scheduler.get("mutate") is True
+                            and scheduler.get("runner_mode") == "controller"
+                        ),
                     }
                 )
         return targets
@@ -378,6 +416,44 @@ class Live:
             and decision["decision"] == "accepted"
             and decision["head_sha"] == pr["head"]["sha"]
         )
+
+    def queue(self, target):
+        """Read the full author-policy queue without advancing the active train."""
+        remaining = self.deadline - time.time()
+        if remaining <= 0:
+            raise TimeoutError("watch deadline")
+        try:
+            payload = operator.request_launchplane(
+                service_url=self.settings["service_url"], settings=self.settings,
+                path="/v1/work-graph/merge-train/run-once",
+                body={"repository": target["repo"], "base_branch": target["base"],
+                      "mutate": False},
+                timeout=min(180, remaining),
+            )
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                raise LaunchplaneReadError("queue read unavailable")
+            dry = result.get("dry_run_result")
+            if (
+                payload.get("status") != "accepted"
+                or result.get("mode") != "dry-run"
+                or result.get("repository") != target["repo"]
+                or result.get("base_branch") != target["base"]
+                or not isinstance(dry, dict)
+                or not isinstance(dry.get("queue"), list)
+                or not isinstance(dry.get("queue_order"), list)
+            ):
+                raise LaunchplaneReadError("queue read unavailable")
+            return operator._project_merge_train_dry_run(dry)
+        except urllib.error.HTTPError as error:
+            denied = error.code in {401, 403}
+            error.close()
+            if denied:
+                raise WatchError("queue read rejected") from None
+            raise LaunchplaneReadError("queue read unavailable") from None
+        except (operator.ServiceResponseError, operator.LaunchplaneSafetyError,
+                http.client.HTTPException):
+            raise LaunchplaneReadError("queue read unavailable") from None
 
     def qualified(self, target, pr, extra_trusted, agent_review_required=False):
         repo, number = target["repo"], pr["number"]
@@ -548,6 +624,16 @@ def needs_ready_handoff(row, target):
     }
 
 
+def read_staging_queue(io, target, state, emit):
+    try:
+        return io.queue(target)
+    except (OSError, LaunchplaneReadError, subprocess.TimeoutExpired) as error:
+        if state.write_started or not transient_read_error(error):
+            raise
+        emit("busy", {"repository": target["repo"], "reason": "queue_read_unavailable"})
+        return None
+
+
 def run_pass(io, args, emit, *, state=None):
     state = PassState() if state is None else state
     targets = io.policies(args.owner)
@@ -567,7 +653,12 @@ def run_pass(io, args, emit, *, state=None):
                 if other["repo"].casefold() == repo.casefold() and other != target
             ]
             responses = [response] + [io.train(other) for other in others]
-            if any(not idle(value) for value in responses):
+            staging = (
+                staging_candidate(response)
+                if not others and target.get("scheduler_drives_train") is True
+                else None
+            )
+            if any(not idle(value) for value in responses) and not staging:
                 busy_result = response.get("result") or {}
                 emit(
                     "busy",
@@ -578,6 +669,14 @@ def run_pass(io, args, emit, *, state=None):
                     },
                 )
                 continue
+            if staging:
+                staged_queue = read_staging_queue(io, target, state, emit)
+                if staged_queue is None:
+                    continue
+                response["result"]["dry_run_result"] = staged_queue
+                if not own_queue(response["result"]["dry_run_result"], staging[3]):
+                    emit("busy", {"repository": repo})
+                    continue
             queue = response["result"]["dry_run_result"]["queue"]
             author_allowed = {
                 item["number"]: item
@@ -603,7 +702,11 @@ def run_pass(io, args, emit, *, state=None):
                     in dispositions[pr["number"]]["ineligible_reasons"]
                 )
             ]
-            if labeled:
+            if labeled and (
+                not staging
+                or set(labeled) - set(staging[3])
+                or any(number not in dispositions for number in labeled)
+            ):
                 emit(
                     "busy",
                     {
@@ -623,6 +726,14 @@ def run_pass(io, args, emit, *, state=None):
                     for label in pr["labels"]
                 )
             }
+            if staging and any(
+                pr["number"] not in staging[3]
+                and target["label"] in {label["name"] for label in pr["labels"]}
+                and pr["number"] not in held_labels
+                for pr in pulls
+            ):
+                emit("busy", {"repository": repo})
+                continue
             candidates = []
             if getattr(args, "batch_read", False):
                 diagnostic = io.batch(repo, [item["number"] for item in pulls if item["number"] in author_allowed])
@@ -697,6 +808,15 @@ def run_pass(io, args, emit, *, state=None):
                 fresh = io.train(target)
                 pr = io.get(f"/repos/{repo}/pulls/{item['number']}")
                 continuing = own_candidate(fresh, own, candidate_records)
+                staging_current = bool(staging and staging_candidate(fresh) == staging)
+                if staging_current:
+                    staged_queue = read_staging_queue(io, target, state, emit)
+                    if staged_queue is None:
+                        break
+                    fresh["result"]["dry_run_result"] = staged_queue
+                    staging_current = own_queue(
+                        fresh["result"]["dry_run_result"], (*staging[3], *own)
+                    )
                 # Candidate observation can omit the queue. Its unchanged policy,
                 # selected head and labels retain the scan's author admission;
                 # readiness is still read again below before every label write.
@@ -718,16 +838,18 @@ def run_pass(io, args, emit, *, state=None):
                     )
                 # A scheduler may not yet have incorporated another actor's label
                 # into its candidate. Do not extend that actor's queue either.
-                if continuing and any(
-                    other["number"] not in own
+                if (continuing or staging_current) and any(
+                    other["number"] not in (*own, *(staging[3] if staging else ()))
                     and target["label"] in {label["name"] for label in other["labels"]}
                     and sorted(label["name"] for label in other["labels"])
                     != held_labels.get(other["number"])
                     for other in io.pages(f"/repos/{repo}/pulls", state="open")
                 ):
                     continuing = False
+                    staging_current = False
                 if (
-                    not (idle(fresh, own) or continuing)
+                    not (idle(fresh, own) or continuing or staging_current)
+                    or (staging and not staging_current)
                     or any(not idle(io.train(other)) for other in others)
                     or not allowed
                     or pr["head"]["sha"] != item["head"]
@@ -743,6 +865,8 @@ def run_pass(io, args, emit, *, state=None):
                 ):
                     emit("batch_stopped", {"repository": repo, "labeled": own})
                     break
+                if staging and target not in io.policies(args.owner):
+                    raise WatchError("policy or hold changed")
                 if continuing:
                     record = (fresh.get("records") or {}).get(
                         "merge_train_batch_candidate_record_id"
@@ -758,6 +882,9 @@ def run_pass(io, args, emit, *, state=None):
                     {"repository": repo, "pr": item["number"], "head": item["head"]},
                 )
             if own:
+                if staging:
+                    emit("next_batch_queued", {"repository": repo, "prs": own})
+                    continue
                 emit(
                     "driver_handoff",
                     {
