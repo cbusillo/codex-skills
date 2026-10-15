@@ -342,5 +342,56 @@ def test_second_read_failure_never_reuses_first_trace(error):
     assert payload["request"]["planner_request_sent"] is False
 
 
+FINGERPRINT = "synthetic-private-comparison-fingerprint"
+
+
+def fingerprint_fixture():
+    observed, response = inspection(), copy.deepcopy(domain_response())
+    for provider in (observed["inspect"]["provider_target_record"],
+                     response["result"]["setup"]["provider_target_record"]):
+        provider.pop("provider_evidence", None)
+        provider["comparison_fingerprint"] = FINGERPRINT
+    return observed, response
+
+
+def test_domain_fingerprint_stays_private_and_is_forwarded_and_verified():
+    observed, response = fingerprint_fixture()
+    code, payload, _, post = invoke(DOMAIN_COMMAND, reads=[observed], response=response)
+    assert code == 0
+    assert post.call_args.kwargs["body"]["expected_current_provider_target_fingerprint"] == FINGERPRINT
+    assert payload["result"]["apply_eligible"] is False
+    assert FINGERPRINT not in json.dumps(payload)
+    assert_private_dropped(payload)
+
+
+@pytest.mark.parametrize("fingerprint", [None, 37, "", "x" * 1024])
+def test_bad_fingerprint_never_posts(fingerprint):
+    observed, response = fingerprint_fixture()
+    observed["inspect"]["provider_target_record"]["comparison_fingerprint"] = fingerprint
+    code, payload, _, post = invoke(DOMAIN_COMMAND, reads=[observed], response=response)
+    assert code != 0
+    post.assert_not_called()
+    assert_private_dropped(payload)
+
+
+@pytest.mark.parametrize("change", ["missing", "tampered", "identity", "evidence"])
+def test_fingerprint_plan_rejects_mismatch_without_publication(change):
+    observed, response = fingerprint_fixture()
+    provider = response["result"]["setup"]["provider_target_record"]
+    if change == "missing":
+        provider.pop("comparison_fingerprint")
+    elif change == "tampered":
+        provider["comparison_fingerprint"] = FINGERPRINT[:-1] + "d"
+    elif change == "identity":
+        provider["target_id"] = "other-target"
+    else:
+        provider["provider_evidence"] = {"private_payload": "PRIVATE_SENTINEL"}
+    code, payload, _, _ = invoke(DOMAIN_COMMAND, reads=[observed], response=response)
+    assert code != 0
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert FINGERPRINT not in json.dumps(payload)
+    assert_private_dropped(payload)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
