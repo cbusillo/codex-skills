@@ -488,6 +488,9 @@ interpreting `capacity.reporting`. It documents the JSON format, one-count-per-P
 precedence, conflict and direction-change rules, and validation against a hand
 count. The map changes reporting only; claims, admission, execution order and PR
 creation stay unchanged. Without a map the existing output is unchanged.
+With a map, reporting-only failures leave the legacy own-share status alone
+but keep the shared audit window open for a complete recount. An invalid map
+needs a corrected direction PR; a transient unreadable source needs a rerun.
 
 The audit of `OWNER/direction` also returns `capacity.milestone_outcomes`: for
 each listed milestone, what moved in its `Track:` graph during the window,

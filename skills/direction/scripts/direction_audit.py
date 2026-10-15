@@ -1519,6 +1519,7 @@ def capacity_summary(
     incomplete: bool = False, own_label: str = "own-project", own_issues: frozenset[tuple[str, int]] | set[tuple[str, int]] = frozenset(),
     direction_text: str = "",
     reporting_rules: list[dict[str, Any]] | None = None, reporting_error: str | None = None,
+    reporting_incomplete: bool = False,
 ) -> dict[str, Any]:
     """The overall direction's weekly numbers from per-repository listings.
 
@@ -1601,7 +1602,7 @@ def capacity_summary(
         result["reporting"] = direction_reporting.report(
             reporting_rules or [], reporting_rows,
             capacity=result["own_share_direction"]["capacity"], source=direction_source,
-            incomplete=incomplete, error=reporting_error,
+            incomplete=incomplete or reporting_incomplete, error=reporting_error,
         )
     return result
 
@@ -1697,13 +1698,14 @@ def fetch_capacity(
     owner = direction_repo.split("/")[0].casefold()
     truncated: list[str] = []
     text = merged_direction(direction_repo, fetch=fetch)
+    reporting_errors: list[str] = []
     reporting_error = None
     try:
         reporting_rules = direction_reporting.reporting_map(text or "")
     except ValueError as exc:
         reporting_rules = []
         reporting_error = str(exc)
-        truncated.append("capacity_reporting_map")
+        reporting_errors.append("capacity_reporting_map")
     own_label = own_project_label(direction_repo)
     try:
         own_projects = own_project_patterns(text or "", own_label=own_label)
@@ -1728,11 +1730,11 @@ def fetch_capacity(
         """Additional evidence is read only when the Director opted in."""
         try:
             files, files_cut = fetch_paginated(f"repos/{repo_name}/pulls/{merged['number']}/files", fetch=fetch)
-            if files_cut or not files or any(not isinstance(row.get("filename"), str) for row in files):
+            if files_cut or not files or any(not isinstance(row, dict) or not isinstance(row.get("filename"), str) for row in files):
                 raise AuditError("changed files incomplete")
             merged["_report_files"] = files
         except AuditError:
-            truncated.append(f"capacity_reporting_files:{repo_name}#{merged['number']}")
+            reporting_errors.append(f"capacity_reporting_files:{repo_name}#{merged['number']}")
         labels = set(_labels(merged))
         labels_complete = isinstance(merged.get("labels"), list)
         for ref in sorted(pull_issue_refs(repo_name, merged)):
@@ -1744,7 +1746,7 @@ def fetch_capacity(
                     linked_labels[ref] = None
             if linked_labels[ref] is None:
                 labels_complete = False
-                truncated.append(f"capacity_reporting_labels:{ref[0]}#{ref[1]}")
+                reporting_errors.append(f"capacity_reporting_labels:{ref[0]}#{ref[1]}")
             else:
                 labels.update(linked_labels[ref])
         merged["_report_labels"] = labels if labels_complete else None
@@ -1784,18 +1786,22 @@ def fetch_capacity(
                 for pull in {row.get("number"): row for row in pulls[name]}.values():
                     if not _within(pull.get("merged_at"), since, until):
                         continue
-                    if reporting_rules is None and pull_issue_refs(name, pull) & tracked_issues:
+                    legacy_tracked = bool(pull_issue_refs(name, pull) & tracked_issues)
+                    if not reporting_rules and legacy_tracked:
                         continue
                     pull["_report_links_complete"] = True
                     try:
                         pull["_native_issue_refs"] = native_pull_issue_refs(name, pull["number"], fetch=fetch)
                     except AuditError:
-                        truncated.append(f"capacity_pull_links:{name}#{pull.get('number')}")
+                        if legacy_tracked:
+                            reporting_errors.append(f"capacity_reporting_links:{name}#{pull.get('number')}")
+                        else:
+                            truncated.append(f"capacity_pull_links:{name}#{pull.get('number')}")
                         pull["_report_links_complete"] = False
-                    if reporting_rules:
-                        mark_reporting(name, pull)
                     if not pull_issue_refs(name, pull) & tracked_issues:
                         mark_own_links(name, pull)
+                    if reporting_rules:
+                        mark_reporting(name, pull)
             milestones[name], cut = fetch_paginated(f"repos/{name}/milestones?state=closed", fetch=fetch, max_pages=2)
             truncated += [f"capacity_milestones:{name}"] if cut else []
             events[name], cut = reopened_issue_events(name, since, fetch=fetch)
@@ -1809,8 +1815,9 @@ def fetch_capacity(
         incomplete=bool(truncated), own_label=own_label, own_issues=own_issues,
         direction_text=text or "",
         reporting_rules=reporting_rules, reporting_error=reporting_error,
+        reporting_incomplete=bool(reporting_errors),
     )
-    return summary, truncated
+    return summary, truncated + reporting_errors
 
 
 def main(argv: list[str] | None = None) -> int:

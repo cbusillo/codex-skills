@@ -43,7 +43,8 @@ or native-link reader. Evidence values are `direction-only`, `milestone` and
 `own-project`, each used at most once. `direction-only` is required first.
 Milestone and own-project evidence use the existing graph and declaration;
 the map does not replace the own-projects Order item, including explicit none.
-Unknown keys, duplicate names/JSON keys and malformed maps are reported as
+Heading capitalization is ignored. A label may belong to only one kind.
+Unknown keys, duplicate names/JSON keys, labels shared between kinds and malformed maps are reported as
 invalid; they never silently select the legacy tooling fallback.
 
 ## One count for each PR
@@ -90,7 +91,12 @@ Statuses are `complete`, `no_merges`, `needs_review` (unmatched/conflicting/mixe
 PRs), `unknown` (incomplete evidence) and `invalid` (bad map).
 
 Incomplete map, graph, repository, file, label or link reads keep the weekly
-window open through `coverage_incomplete`; partial counts are visible.
+window open through `coverage_incomplete`; partial counts are visible. Invalid
+maps keep that window open until a corrected direction PR merges, so the next
+check can recount the entire window. Optional reporting failures change the
+new report's status, while the legacy own-share status still depends only on
+its existing evidence. The shared audit window deliberately waits for both
+reports; while it is open the dates and counts can span more than a week.
 Classification questions with complete reads are reporting work for a person,
 not capacity alarms or admission refusals. The weekly check still stamps its
 normal local audit marker, so use fixtures when testing implementation and

@@ -1547,11 +1547,13 @@ def test_reporting_map_rejects_malformed_rules_instead_of_guessing() -> None:
     parser = module.direction_reporting.reporting_map
     assert parser(OWN_DIRECTION) is None
     assert parser(mapped_direction()) == REPORT_RULES
+    assert parser(mapped_direction().replace("## Reporting map", "## Reporting Map")) == REPORT_RULES
     for rules in ([], {}, REPORT_RULES[1:], [REPORT_RULES[1], REPORT_RULES[0]],
                   [REPORT_RULES[0], REPORT_RULES[0]],
                   [REPORT_RULES[0], {"name": "bad", "labels": []}],
                   [REPORT_RULES[0], {"name": "bad", "evidence": []}],
                   [REPORT_RULES[0], {"name": "bad", "labels": ["bug"], "limit": 0.25}],
+                  [REPORT_RULES[0], {"name": "live", "labels": ["hotfix"]}, {"name": "ops", "labels": ["HotFix"]}],
                   [REPORT_RULES[0], {"name": "DIRECTION", "labels": ["bug"]}]):
         try:
             parser(mapped_direction(rules))
@@ -1565,6 +1567,12 @@ def test_reporting_map_rejects_malformed_rules_instead_of_guessing() -> None:
         except ValueError:
             continue
         raise AssertionError("Malformed reporting declaration was ignored")
+    for heading in ("Reporting maps", "Reporting map (draft)"):
+        try:
+            parser(mapped_direction().replace("Reporting map", heading))
+        except ValueError:
+            continue
+        raise AssertionError("Misspelled map heading silently disabled reporting")
 
 
 def reporting_fetch(module: Any, direction: str, pulls: list[dict[str, Any]], calls: list[str]) -> Any:
@@ -1578,7 +1586,7 @@ def reporting_fetch(module: Any, direction: str, pulls: list[dict[str, Any]], ca
         if path.startswith("installation/repositories"):
             return {"repositories": [{"full_name": "o/live", "owner": {"login": "o"}, "pushed_at": stamp(NOW)}]}
         if path.startswith("repos/o/live/pulls?"):
-            return pulls
+            return [dict(pull) for pull in pulls]
         if match := re.match(r"repos/o/live/pulls/(\d+)/files", path):
             number = int(match[1])
             return [{"filename": "DIRECTION.md" if number in {14, 15} else "app.py"}]
@@ -1662,18 +1670,56 @@ def test_reporting_missing_evidence_and_invalid_map_keep_window_open() -> None:
         def unavailable(args: list[str]) -> Any:
             if ((failure == "files" and "/files" in args[1])
                     or (failure == "labels" and args[1] == "repos/o/live/issues/50")
-                    or (failure == "links" and args[1] == "graphql")):
+                    or (failure == "links" and args[1] == "graphql" and not any("REOPENED_EVENT" in arg for arg in args))):
                 raise module.AuditError("HTTP 403")
             return fetch(args)
         result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=unavailable)
         assert errors and result["reporting"]["status"] == ("invalid" if failure == "map" else "unknown")
         assert len(result["reporting"]["unresolved"]) == 1
+        assert result["reporting"]["unresolved"][0]["reason"] == {
+            "files": "files_unavailable", "labels": "labels_unavailable", "links": "links_unavailable", "map": "invalid_map",
+        }[failure]
         audited = run(module, capacity=result, truncated=errors)
         assert "coverage_incomplete" in kinds(audited)
     empty, errors = module.fetch_capacity("o/direction", SINCE, NOW,
                                          fetch=reporting_fetch(module, mapped_direction(), [], []))
     assert not errors and empty["reporting"]["status"] == "no_merges"
     assert all(value is None for value in empty["reporting"]["share_by_kind"].values())
+
+
+def test_optional_reporting_reads_preserve_legacy_status_and_page_direction_changes() -> None:
+    module = load()
+    pulls = [{**merged_pull(1, NOW, body="Refs #50"), "labels": []}]
+    graph = ({("o/live", 50)}, [])
+    with patch.object(module, "tracked_capacity_issues", return_value=graph):
+        baseline, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=reporting_fetch(
+            module, mapped_direction().partition("## Reporting map")[0], pulls, []))
+        assert not errors
+        for failure in ("files", "labels", "links", "map", "files_cut", "bad_row", "late_direction"):
+            calls: list[str] = []
+            fetch = reporting_fetch(module, mapped_direction([]) if failure == "map" else mapped_direction(), pulls, calls)
+            def optional_failure(args: list[str]) -> Any:
+                path = args[1]
+                if failure == "labels" and path == "repos/o/live/issues/50":
+                    raise module.AuditError("HTTP 403")
+                if failure == "links" and path == "graphql" and not any("REOPENED_EVENT" in arg for arg in args):
+                    raise module.AuditError("HTTP 403")
+                if "/files" in path:
+                    if failure == "files":
+                        raise module.AuditError("HTTP 403")
+                    if failure == "bad_row":
+                        return [None]
+                    if failure == "files_cut" or (failure == "late_direction" and path.endswith("&page=1")):
+                        return [{"filename": f"app{n}.py"} for n in range(100)]
+                    if failure == "late_direction":
+                        return [{"filename": "DIRECTION.md"}]
+                return fetch(args)
+            result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=optional_failure)
+            assert {key: value for key, value in result.items() if key != "reporting"} == baseline
+            assert (bool(errors) if failure != "late_direction" else not errors), (failure, errors)
+            assert len(result["reporting"]["unresolved"]) == 1
+            if failure == "late_direction":
+                assert result["reporting"]["unresolved"][0]["reason"] == "mixed_direction_change"
 
 
 def test_only_the_direction_repository_audit_counts_capacity() -> None:

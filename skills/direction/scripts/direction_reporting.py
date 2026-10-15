@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Optional weekly PR reporting rules, independent of work admission."""
 
 from __future__ import annotations
@@ -10,13 +15,15 @@ from typing import Any
 def reporting_map(text: str) -> list[dict[str, Any]] | None:
     """Read one explicit JSON map; absence preserves the legacy report."""
     sections = re.split(r"(?m)^##\s+", text)
-    matches = [part.partition("\n")[2] for part in sections[1:]
-               if part.partition("\n")[0].strip() == "Reporting map"]
+    headings = [(part.partition("\n")[0].strip(), part.partition("\n")[2]) for part in sections[1:]]
+    matches = [(name, body) for name, body in headings if re.match(r"(?i)^Reporting maps?\b", name)]
     if not matches:
         return None
     if len(matches) != 1:
         raise ValueError("Reporting map heading must occur once")
-    block = re.fullmatch(r"\s*```json\s*\n(.*?)\n```\s*", matches[0], re.S)
+    if matches[0][0].casefold() != "reporting map":
+        raise ValueError("Use the heading Reporting map without a suffix")
+    block = re.fullmatch(r"\s*```json\s*\n(.*?)\n```\s*", matches[0][1], re.S)
     if not block:
         raise ValueError("Reporting map must contain one JSON code block")
 
@@ -33,6 +40,7 @@ def reporting_map(text: str) -> list[dict[str, Any]] | None:
         raise ValueError("Reporting map must be a nonempty array of rules")
     names: set[str] = set()
     evidence: set[str] = set()
+    used_labels: set[str] = set()
     for index, rule in enumerate(rules):
         if not isinstance(rule, dict) or set(rule) not in ({"name", "labels"}, {"name", "evidence"}):
             raise ValueError("Each reporting rule needs name and either labels or evidence")
@@ -45,6 +53,10 @@ def reporting_map(text: str) -> list[dict[str, Any]] | None:
             if (not isinstance(labels, list) or not labels
                     or any(not isinstance(label, str) or not label.strip() or label != label.strip() for label in labels)):
                 raise ValueError("Rule labels must be a nonempty array of label names")
+            normalized = {label.casefold() for label in labels}
+            if normalized & used_labels:
+                raise ValueError("A label may belong to only one reporting kind")
+            used_labels.update(normalized)
         else:
             selector = rule["evidence"]
             if not isinstance(selector, str) or selector not in {"direction-only", "milestone", "own-project"} or selector in evidence:
@@ -69,8 +81,10 @@ def classify(
         if paths == {"DIRECTION.md"}:
             return rules[0]["name"], None, []
         return None, "mixed_direction_change", []
-    if not pull.get("_report_links_complete", False) or pull.get("_report_labels") is None:
-        return None, "attribution_unavailable", []
+    if not pull.get("_report_links_complete", False):
+        return None, "links_unavailable", []
+    if pull.get("_report_labels") is None:
+        return None, "labels_unavailable", []
     labels = pull["_report_labels"]
     label_matches = [rule["name"] for rule in rules if "labels" in rule
                      and labels & {label.casefold() for label in rule["labels"]}]
