@@ -770,10 +770,12 @@ Codex uses the stock app-server read protocol on existing daemon sockets in the 
 and configured Supervisor account homes. It reads loaded threads and exact
 claim session IDs without starting or resuming them. Active threads and observed
 native CLI resumes refuse, including a different session using a retained
-worktree. A completed native transcript ending with an unqualified safe-exit
-verdict, verified against the exact idle/unloaded thread and rechecked for
-activity, can establish ended ownership without a release write. Idle alone,
-missing daemons, unreadable transcripts, age and partial peer coverage cannot.
+worktree. Native-only completion requires an unloaded exact thread, stable
+safe-exit transcripts across configured session/archive roots, and successful
+process inventory excluding any matching or unidentified interactive Codex
+process. A loaded idle thread still refuses, even after a safe-exit turn.
+Missing daemons, unreadable transcripts, age and partial peer coverage cannot
+establish native completion. This needs no attestation comment or release write.
 
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;

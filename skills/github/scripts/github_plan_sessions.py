@@ -32,6 +32,15 @@ def codex_homes() -> list[Path]:
     return list(dict.fromkeys(p.expanduser().resolve() for p in homes))
 
 
+def transcript_snapshot(session: str, primary: str) -> dict[str, dict]:
+    paths = {Path(primary).resolve()}
+    for home in codex_homes():
+        for root in (home / "sessions", home / "archived_sessions"):
+            paths.update(path.resolve() for path in root.rglob(f"*{session}*.jsonl"))
+    return {str(path): native_helpers()[1].session_status(
+        {"session_id": session, "harness": "codex", "transcript": str(path)}) for path in paths}
+
+
 async def observe_home(home: Path, sessions: set[str]) -> tuple[list[dict], dict[str, dict]]:
     """Read the existing stock daemon over its native socket; only read RPCs."""
     import aiohttp
@@ -59,20 +68,20 @@ async def observe_home(home: Path, sessions: set[str]) -> tuple[list[dict], dict
         if thread.get("id") != session:
             raise ValueError("native session identity mismatch")
         state = thread.get("status", {}).get("type")
-        if state == "active":
+        if state in {"active", "idle", "systemError"}:
             peers.append({"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "codex_session"})
             states[session] = {"state": "live", "source": "codex_app_server"}
-        elif session in sessions and state in {"idle", "notLoaded"} and thread.get("path"):
-            before = native_helpers()[1].session_status(
-                {"session_id": session, "harness": "codex", "transcript": thread["path"]})
-            # Re-read both native state and transcript; idle alone is not ended.
+        elif session in sessions and state == "notLoaded" and thread.get("path"):
+            before = transcript_snapshot(session, thread["path"])
+            # A final turn is insufficient: the thread must be unloaded, every
+            # known native transcript stable, and process absence checked below.
             after = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
-            verified = native_helpers()[1].session_status(
-                {"session_id": session, "harness": "codex", "transcript": thread["path"]})
-            if (before == verified and before["safe_verdict"] and after.get("id") == session
-                    and after.get("status", {}).get("type") in {"idle", "notLoaded"}):
-                states[session] = {"state": "ended", "source": "codex_app_server", "ended_at": before["timestamp"]}
-            elif after.get("status", {}).get("type") == "active":
+            verified = transcript_snapshot(session, thread["path"])
+            if (before == verified and all(s["safe_verdict"] for s in before.values()) and after.get("id") == session
+                    and after.get("status", {}).get("type") == "notLoaded"):
+                states[session] = {"state": "ended", "source": "codex_app_server",
+                                   "ended_at": max(s["timestamp"] for s in before.values())}
+            elif after.get("status", {}).get("type") in {"active", "idle", "systemError"}:
                 peers.append({"sessionId": session, "cwd": after["cwd"], "state": "active", "source": "codex_session"})
                 states[session] = {"state": "live", "source": "codex_app_server"}
 
@@ -104,13 +113,34 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
     peers = []
     for line in text.splitlines():
         argv = line.split()
-        if not argv or Path(argv[0]).name != "codex":
+        names = [Path(arg).name.casefold() for arg in argv[:3]]
+        executable = next((i for i, name in enumerate(names) if name.startswith("codex")), None)
+        if executable is None:
             continue
-        resumed = {argv[i + 1].strip("\"'") for i, arg in enumerate(argv[:-1]) if arg in {"resume", "--resume", "-r"}}
-        resumed.update(arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume="))
+        # Command text inside an exec prompt is not CLI syntax. Ambiguous
+        # interactive invocations remain unknown rather than guessing an ID.
+        index = executable + 1
+        values = {"-c", "--config", "--remote", "-C", "--cd", "-p", "--profile", "-m", "--model",
+                  "-i", "--image", "--add-dir", "-s", "--sandbox", "-a", "--ask-for-approval", "--enable", "--disable"}
+        while index < len(argv) and argv[index].startswith("-") and argv[index] != "--":
+            index += 2 if argv[index] in values else 1
+        resumed = {argv[index + 1].strip("\"'")} if (
+            index + 1 < len(argv) and argv[index] == "resume" and not argv[index + 1].startswith("-")) else set()
         for session in resumed & sessions:
             peers.append({"sessionId": session, "source": "codex_process", "state": "live"})
     return peers
+
+
+def process_absence_known(text: str) -> bool:
+    for line in text.splitlines():
+        argv = line.split()
+        names = [Path(arg).name.casefold() for arg in argv[:2]]
+        if any(name.startswith("codex") for name in names):
+            # App-server processes are accounted for by exact thread reads.
+            # A TUI, --last/picker, wrapper or remote client cannot be ruled out.
+            if len(argv) < 2 or argv[1] != "app-server":
+                return False
+    return True
 
 
 def observe(sessions: set[str]) -> tuple[list[dict], dict[str, dict]]:
@@ -121,10 +151,12 @@ def observe(sessions: set[str]) -> tuple[list[dict], dict[str, dict]]:
         return await asyncio.gather(*(observe_home(home, sessions) for home in codex_homes()), return_exceptions=True)
 
     peers, states = [], {}
+    absent = False
     try:
         process_read = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=5)
         if process_read.returncode == 0:
             peers.extend(process_sessions(process_read.stdout, sessions))
+            absent = process_absence_known(process_read.stdout)
     except (OSError, subprocess.SubprocessError):
         pass
     for result in asyncio.run(run()):
@@ -137,4 +169,6 @@ def observe(sessions: set[str]) -> tuple[list[dict], dict[str, dict]]:
                 states[session] = outcome
     for peer in peers:
         states[peer["sessionId"]] = {"state": "live", "source": peer["source"]}
+    if not absent:
+        states = {session: state for session, state in states.items() if state["state"] != "ended"}
     return peers, states

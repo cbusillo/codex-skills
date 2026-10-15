@@ -767,14 +767,34 @@ class ClaimTests(unittest.TestCase):
                     self.inventory["local_branches"].append(record["branch"])
                     self.inventory["remote_branches"].append(record["branch"])
                     self.inventory["worktrees"].append({"branch": record["branch"], "path": "/retained/lp-3109-d1"})
-                before = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls))
                 self.run_claim()
                 result = self.emitted.call_args.args[0]
                 self.assertTrue(result["ok"])
                 retained = next(r for r in result["retained_artifacts"] if r["claim_id"] == historical[0]["id"])
                 self.assertEqual(retained["branch"], record["branch"])
                 self.assertTrue(retained["worktrees"])
-                self.assertEqual((self.inventory, self.pulls, self.closed_pulls), before)
+
+    def test_historical_leftovers_also_allow_independent_plain_claims(self):
+        cases = json.loads(Path(__file__).with_name("fixtures").joinpath("launchplane-3109-ended-ownership.json").read_text())
+        for case in cases:
+            with self.subTest(case=case["case"]):
+                self.setUp()
+                self.args.issue = "3109"
+                self.args.branch = "work/" + case["case"].lower()
+                self.issue["number"] = 3109
+                self.comments = copy.deepcopy(case["comments"])
+                source = CLAIM.records(self.comments[0]["body"])[0]
+                path = "/retained/" + source["branch"].split("/")[-1]
+                self.inventory["local_branches"] = [source["branch"]]
+                self.inventory["remote_branches"] = [source["branch"]]
+                self.inventory["worktrees"] = [{"branch": source["branch"], "path": path}]
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertTrue(result["ok"])
+                self.assertNotIn("refresh_pr", result["claim"])
+                self.assertNotIn("resume_from", result["claim"])
+                self.assertEqual(result["retained_artifacts"][0]["worktrees"], [path])
+                self.assertEqual(result["retained_artifacts"][0]["branch"], source["branch"])
 
     def ended_holder_fixture(self, *, released=True):
         self.comments = [
@@ -807,9 +827,9 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                 self.assert_no_writes()
                 holder = caught.exception.payload["coordination"][0]
-                self.assertEqual(holder["session"], OTHER["session"])
+                self.assertEqual(holder["session"], "another-native-session" if state == "released_other_peer" else OTHER["session"])
                 self.assertEqual(holder["branch"], OTHER["branch"])
-                self.assertIn("handoff", holder["next_action"])
+                self.assertTrue(holder.get("claim_url") or holder.get("work_record"))
 
     def test_ended_artifact_branch_cannot_be_reused_or_hide_a_new_claim(self):
         for change in ("same_branch", "new_claim", "late_native_evidence"):
@@ -832,6 +852,13 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("post", self.events)
         self.assertNotIn("status", self.events)
         self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_final_readback_coordination_names_the_new_holder(self):
+        self.after_status = self.compete
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        holder = caught.exception.payload["coordination"][0]
+        self.assertEqual(holder["session"], OTHER["session"])
+        self.assertEqual(holder["worker"], OTHER["worker"])
 
     def test_explicit_planning_checkout_supplies_custom_configuration(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -2785,6 +2785,7 @@ def claim_once(args: argparse.Namespace) -> None:
             completed.append("update_labels")
             actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
+        comments = final_comments
         check_agent(final)
         conflicts, observed = ownership_snapshot(final_status, final_comments)
         if conflicts:

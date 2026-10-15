@@ -4,6 +4,7 @@
 # ///
 """Fake native daemon evidence, including refusal and read-only transport."""
 import copy
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -17,8 +18,10 @@ import github_plan_sessions as SESSIONS
 
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
     def test_resumed_cli_session_is_live_even_without_a_daemon(self):
-        rows = SESSIONS.process_sessions("/opt/bin/codex resume holder\nrg resume holder\n/opt/bin/codex resume different", {"holder"})
-        self.assertEqual([r["sessionId"] for r in rows], ["holder"])
+        for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder"):
+            self.assertEqual([r["sessionId"] for r in SESSIONS.process_sessions(command, {"holder"})], ["holder"])
+        for command in ("rg resume holder", "codex exec please resume holder", "codex please resume holder"):
+            self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
 
     async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False):
         thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "status": {"type": state}}
@@ -48,7 +51,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         def status(_entry):
             nonlocal calls
             calls += 1
-            return {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z", "size": calls if changed else 1}
+            return {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z", "size": calls if changed else 1}}
         # AF_UNIX paths are short on macOS; /var/folders can exceed that limit.
         with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
             home = Path(folder)
@@ -61,7 +64,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             await web.UnixSite(runner, str(socket_path)).start()
             os.chmod(socket_path, 0o600)
             try:
-                with patch.object(SESSIONS, "native_helpers", return_value=(None, SimpleNamespace(session_status=status))):
+                with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)):
                     result = await SESSIONS.observe_home(home, {"holder"})
                 self.assertTrue(socket_path.exists())  # The observer leaves the native server intact.
             finally:
@@ -69,26 +72,25 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unexpected, [])
         return result
 
-    async def test_idle_native_session_with_verified_final_handoff_is_ended(self):
-        peers, states = await self.observe("idle")
+    async def test_unloaded_native_session_with_verified_final_handoff_is_candidate(self):
+        peers, states = await self.observe("notLoaded")
         self.assertEqual(peers, [])
         self.assertEqual(states["holder"]["state"], "ended")
 
     async def test_active_session_overrides_completion(self):
-        peers, states = await self.observe("active")
-        self.assertEqual(states["holder"]["state"], "live")
-        self.assertEqual(peers[0]["sessionId"], "holder")
+        for state in ("active", "idle", "systemError"):
+            peers, states = await self.observe(state)
+            self.assertEqual(states["holder"]["state"], "live")
+            self.assertEqual(peers[0]["sessionId"], "holder")
 
     async def test_idle_failure_unknown_and_changed_evidence_do_not_prove_end(self):
         for kwargs in ({"safe": False}, {"changed": True}, {"mismatch": True}):
             with self.subTest(kwargs=kwargs):
-                _, states = await self.observe("idle", **kwargs)
+                _, states = await self.observe("notLoaded", **kwargs)
                 self.assertNotIn("holder", states)
-        _, states = await self.observe("systemError")
-        self.assertNotIn("holder", states)
 
     async def test_resumed_while_reading_is_live(self):
-        peers, states = await self.observe("idle", after="active")
+        peers, states = await self.observe("notLoaded", after="active")
         self.assertEqual(states["holder"]["state"], "live")
         self.assertTrue(peers)
 
@@ -99,6 +101,37 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+    def test_snapshot_reads_archived_sibling_transcripts_for_the_same_native_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            history = [
+                {"type": "session_meta", "payload": {"id": "holder"}},
+                {"type": "event_msg", "timestamp": "2026-10-01T02:00:00Z", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
+                {"type": "event_msg", "timestamp": "2026-10-01T02:00:01Z", "payload": {"type": "task_complete"}},
+            ]
+            primary = home / "sessions/rollout-holder.jsonl"
+            sibling = home / "archived_sessions/rollout-holder.jsonl"
+            for path, records in ((primary, history), (sibling, [*history, {
+                "type": "event_msg", "timestamp": "2026-10-01T03:00:00Z", "payload": {"type": "task_started"}}])):
+                path.parent.mkdir()
+                path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            with patch.object(SESSIONS, "codex_homes", return_value=[home]):
+                snapshot = SESSIONS.transcript_snapshot("holder", str(primary))
+            self.assertTrue(snapshot[str(primary.resolve())]["safe_verdict"])
+            self.assertFalse(snapshot[str(sibling.resolve())]["safe_verdict"])
+
+    def test_unknown_interactive_process_or_missing_process_inventory_prevents_native_end(self):
+        async def read(_home, _sessions): return [], {"holder": {"state": "ended"}}
+        for command in ("codex resume --last", "codex --remote unix://fixture", "codex", "node /opt/codex-cli", ""):
+            for returncode in (0, 1):
+                with self.subTest(command=command, returncode=returncode), \
+                        patch.object(SESSIONS.shutil, "which", return_value="codex"), \
+                        patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+                        patch.object(SESSIONS, "observe_home", side_effect=read), \
+                        patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=returncode, stdout=command)):
+                    _, states = SESSIONS.observe({"holder"})
+                    self.assertEqual(states.get("holder", {}).get("state") == "ended", not command and returncode == 0)
+
     def test_live_evidence_wins_across_account_homes(self):
         async def read(home, _sessions):
             return [], {"holder": {"state": "live" if home.name == "live" else "ended"}}

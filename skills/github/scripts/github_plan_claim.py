@@ -579,10 +579,12 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -
 
 def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], repo: str, number: int) -> list[dict[str, Any]]:
     holders = []
+    released_ids = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
     for source in comments:
         for record in records(source.get("body") or ""):
             if any(c.get("id") == source.get("id") or c.get("record") == record
-                   or c.get("branch") == record["branch"] or c.get("session") == record["session"] for c in conflicts):
+                   or c.get("session") == record["session"] or (
+                       c.get("branch") == record["branch"] and source.get("id") not in released_ids) for c in conflicts):
                 holders.append({**record, "claim_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{source.get('id')}",
                                 "next_action": "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts"})
     if not holders:
