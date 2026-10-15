@@ -71,10 +71,11 @@ def remaining_work(status: str) -> dict[str, Any]:
     qualification_words = r"\b(?:qualif\w*|verif\w*|observ\w*|confirm\w*|read\w*|proof|evidence|acceptance|test\w*|compares?)\b"
     def source_step(text: str) -> bool:
         for match in re.finditer(source_verbs, text, re.I):
-            if re.fullmatch(r"complete(?:s|ing)?", match[0], re.I) and not re.search(
-                    r"\b(?:source|implementation|migration|contracts|storage|refactor)\b",
-                    re.split(r"[.;]", text[match.end():], maxsplit=1)[0], re.I):
-                continue
+            if re.fullmatch(r"complete(?:s|ing)?", match[0], re.I):
+                completion = re.split(r"[.;]", text[match.end():], maxsplit=1)[0]
+                if (re.search(qualification_words, completion, re.I) or not re.search(
+                        r"\b(?:source|implementation|migration|contracts|storage|refactor)\b", completion, re.I)):
+                    continue
             prefix = text[:match.start()]
             if re.search(qualification_words, prefix, re.I) and not re.search(r"(?:\b(?:and|or)\s+(?:\w+ly\s+)?|[.;]\s*)$", prefix, re.I):
                 continue

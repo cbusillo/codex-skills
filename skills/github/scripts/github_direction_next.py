@@ -825,6 +825,8 @@ def rank_portfolio_work(
                 item.update(availability="available", category=category, claim_required=True)
             else:
                 item["review_required"] = "direction_discussion_and_current_ownership"
+        elif queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown"}:
+            item["review_required"] = queue["reason"]
         elif review["state"] == "underway":
             underway.append({**item, "availability": "underway", "review": review})
             continue
@@ -1050,6 +1052,18 @@ def waiting_records(issue: dict[str, Any], status_text: str) -> list[dict[str, A
                 r"separately authorized (?:production |live )?(?:activation|work)|live acceptance|approval|authorization", reason.strip().rstrip(" ."), re.I,
             )),
         })
+    if not records and issue.get("wait_review_required"):
+        state = re.search(r"(?im)^\s*(?:[-*]\s+)?State:\s*((?:waiting (?:on|for)|parked until)\s+\S[^\n]*)", status_text)
+        if state:
+            records.append({
+                "repo": issue["repo"], "number": issue["number"], "url": issue["url"],
+                "state": issue.get("state"), "plan_status": issue.get("plan_status"),
+                "waiting_for": state[1], "reported_by": issue["url"],
+                "reported_at": issue.get("updated_at"), "last_verified": None,
+                "references": issue_references(state[1], repo=issue["repo"]),
+                "no_current_wait": False, "agent_next": False, "non_external": False,
+                "unowned": False, "source": "legacy_wait_review", "review_required": True,
+            })
     return records
 
 
@@ -1068,6 +1082,7 @@ def issue_references(text: str, *, repo: str | None) -> list[dict[str, Any]]:
     """Resolve repository shorthand only within its reporting owner's context."""
     plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", text)
     references: dict[tuple[str, int], dict[str, Any]] = {}
+    previous_end = -1
     for ref in re.finditer(
         r"https://github\.com/([^/\s)]+/[^/\s)]+)/(issues|pull)/(\d+)"
         r"|(?<![\w/#])([\w.-]+/[\w.-]+)#(\d+)\b"
@@ -1076,10 +1091,18 @@ def issue_references(text: str, *, repo: str | None) -> list[dict[str, Any]]:
     ):
         target = ref.group(1) or ref.group(4)
         if not target:
+            # A slash separates adjacent recognized issue references; an
+            # arbitrary URL/file path cannot establish repository shorthand.
+            if ref.start() and plain[ref.start() - 1] == "/" and ref.start() != previous_end + 1:
+                continue
+            if ref.group(6) and ref.group(6).casefold() == "pr":
+                continue
+
             if repo is None:
                 continue
             target = repo.split("/")[0] + "/" + ref.group(6) if ref.group(6) else repo
         number = int(ref.group(3) or ref.group(5) or ref.group(7) or ref.group(8))
+        previous_end = ref.end()
         references[(target.casefold(), number)] = {
             "repo": target, "number": number,
             "url": f"https://github.com/{target}/{ref.group(2) or 'issues'}/{number}",

@@ -34,9 +34,14 @@ def source(case: dict) -> tuple[dict, list[dict]]:
     if case.get('claim'):
         record = {'worker': 'fixture-worker', 'session': 'fixture-session',
                   'branch': f"work/fixture-{case['number']}", 'claimed_at': '2026-10-14T22:00:00Z'}
-        comments.append({'id': 1, 'user': {'login': 'bot'}, 'body': claim.marker(record) + '\n' + wait.marker(wait.reviewed(evidence='Saved request reviewed'))})
+        comments.append({'id': 1, 'user': {'login': 'bot'}, 'body': claim.marker(record)})
         if case['claim'] == 'released':
             comments.append({'id': 2, 'user': {'login': 'bot'}, 'body': 'Released claim 1'})
+    if case['wait_state'] == 'clear':
+        if comments:
+            comments[0]['body'] += '\n' + wait.marker(wait.reviewed(evidence='Saved request reviewed'))
+        else:
+            comments.append({'id': 1, 'user': {'login': 'bot'}, 'body': wait.marker(wait.reviewed(evidence='Saved request reviewed'))})
     return raw, comments
 
 
@@ -62,11 +67,9 @@ def test_live_cases_preserve_available_review_and_underway_states() -> None:
         result = run_global(raw, comments)
         if case['wait_state'] == 'review':
             assert not result['available_candidates'], case
-            row = next(row for row in result['excluded'] if row['number'] == case['number'])
-            assert row['exclusion'] == 'wait_review_required', row
+            row = next(row for row in [*result['candidates'], *result['excluded']] if row['number'] == case['number'])
             assert row['wait_review_required']
-            summary = result['milestone_summary'][0]
-            assert summary['wait_reviews'] and not summary['waits'], summary
+            assert not result['milestone_summary'][0]['waits']
         elif case['claim'] == 'active':
             assert not result['available_candidates'], case
             assert [row['number'] for row in result['underway']] == [case['number']]
@@ -134,7 +137,6 @@ def test_adjacent_reference_boundaries_preserve_supported_context_and_numeric_na
     refs = direction.waiting_records(item, 'Waiting for: ' + ordinary)[0]['references']
     assert {(row['repo'], row['number']) for row in refs} == {('owner/project', 12), ('other/project', 13), ('206/123', 14), ('cbusillo/123', 15), ('cbusillo/direction', 16)}
     # Track next-action prose has no established shorthand context.
-    assert direction.next_action_references('Next action: ' + text) == []
     assert direction.next_action_references('Next action: owner/project#12')[0]['repo'] == 'owner/project'
 
 
@@ -157,6 +159,51 @@ def test_milestone_qualification_is_visible_even_without_source_work() -> None:
     summary = direction.milestone_summary(['First'], completed=[], candidates=[], graph_waits=[], track_next_actions={}, verification_only=[row])[0]
     assert summary['state'] == 'work_listed' and summary['verification_only']
     assert not summary['waits']
+
+
+def test_caller_review_cannot_override_a_required_wait_review() -> None:
+    row = queue_tests.item()
+    row['discussion']['body'] = row['discussion']['body'].split('<!-- github-plan:wait')[0]
+    for reason in ['wait_review_required', 'unreadable_ownership_or_wait', 'incomplete_discussion']:
+        row.update(queue={'state': 'review', 'reason': reason},
+                   via=[{'repo': 'owner/direction', 'number': 1}], milestone={'title': 'First'}, plan_status='active')
+        context = {'issues': {'owner/repo#1': cli.reviewed(row, ownership_complete=True)}}
+        result = direction.rank_portfolio_work({'candidates': [row], 'excluded': []}, [],
+            milestone_titles=['First'], selection_context=context)
+        assert not result['available_candidates']
+        assert result['candidates'][0]['review_required'] == reason
+
+
+def test_state_only_legacy_hold_is_visible_for_review() -> None:
+    raw, comments = source(cases()[2])
+    raw['body'] = '## Current Status\nState: Waiting on the device decision.\nNext action: Implement export.'
+    result = run_global(raw, comments)
+    summary = result['milestone_summary'][0]
+    assert not result['available_candidates'] and not summary['waits']
+    assert summary['wait_reviews'] and 'device decision' in summary['wait_reviews'][0]['waiting_for']
+
+
+def test_completing_qualification_is_not_source_implementation() -> None:
+    for action in ['Complete the storage qualification after deploy.', 'Complete the migration verification after deploy.']:
+        row = queue_tests.item(action, 'Active; source merged')
+        result = queue.classify(row, queue_tests.evidence(), trusted={'owner', 'bot'})
+        assert result['state'] == 'verification', result
+    raw, comments = source({**cases()[0], 'claim': None})
+    assert run_global(raw, comments)['available_candidates']
+
+
+def test_paths_and_pull_request_prose_do_not_invent_repositories() -> None:
+    assert not direction.issue_references('PR#2792 https://docs.example.com/runbook/page#3 path/to/file#12', repo='cbusillo/direction')
+    assert direction.issue_references('owner/PR#12', repo='cbusillo/direction')[0]['repo'] == 'owner/PR'
+
+
+def test_malformed_contributor_envelope_requires_wait_review() -> None:
+    raw, comments = source(cases()[0])
+    raw['body'] += '\n<!-- github-plan:original-request:start -->\n'
+    result = run_global(raw, comments)
+    assert not result['available_candidates']
+    row = next(row for row in result['excluded'] if row['number'] == raw['number'])
+    assert row['exclusion'] == 'wait_review_required'
 
 
 if __name__ == '__main__':

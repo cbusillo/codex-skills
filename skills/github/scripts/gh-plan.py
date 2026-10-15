@@ -4006,6 +4006,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 wait = current_wait(raw_issue, comments[:comment_limit], issue_repo) if complete else None
             except (ValueError, KeyError, TypeError):
                 wait = None
+            except PlanError as exc:
+                if exc.failure is not None:
+                    raise
+                wait = None
             if wait is None:
                 wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
             static = next_static_exclusion(raw_issue, config=target_config, focus=focus)
