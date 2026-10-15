@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -28,6 +30,73 @@ import github_issue
 import github_milestone
 from test_github_identity import test_private_key
 from test_gh_plan_sections import PLAN
+
+
+class PlanCommandContextTests(unittest.TestCase):
+    def run_context(self, argv: tuple[str, ...], checkout: str | None, *,
+                    inherited: str | None = None, fail: bool = False) -> list[str | None]:
+        args = PLAN.build_parser().parse_args(argv)
+        observed = []
+
+        def command(_args: Any) -> None:
+            observed.append(os.environ.get("GH_REPO"))
+            if fail:
+                raise PLAN.PlanError("Synthetic command failure")
+
+        args.func = command
+        env = {"GH_REPO": inherited} if inherited is not None else {}
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(PLAN, "repo_from_git", return_value=checkout), \
+                patch.object(PLAN, "build_parser") as parser, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            parser.return_value.parse_args.return_value = args
+            if fail:
+                with self.assertRaises(SystemExit):
+                    PLAN.main()
+            else:
+                PLAN.main()
+            self.assertEqual(os.environ.get("GH_REPO"), inherited)
+        return observed
+
+    def test_repository_commands_bind_inferred_context_before_dispatch(self) -> None:
+        commands = (
+            ("index",), ("search", "fixture"), ("search", '"user:fixture"'),
+            ("next",), ("wait", "--all"), ("create", "fixture"), ("ensure-labels",),
+            ("reconcile-landing", "--pr", "1"), ("milestone-list",), ("milestone-show", "1"),
+            ("milestone-create", "fixture"), ("milestone-update", "1", "--title", "fixture"),
+            ("milestone-close", "1"),
+        )
+        for command in commands:
+            for inherited in (None, "client/product"):
+                with self.subTest(command=command, inherited=inherited):
+                    observed = self.run_context(command, "host/product", inherited=inherited)
+                    self.assertEqual(observed, ["host/product"])
+
+    def test_owner_and_global_commands_preserve_scope_without_requiring_checkout(self) -> None:
+        for command, checkout in (
+            (("project-list", "--owner", "host"), None),
+            (("search", "repo:host/product fixture"), None),
+            (("search", "user:host fixture"), "client/product"),
+            (("search", "org:host fixture"), None),
+            (("next",), "host/direction"),
+        ):
+            for inherited in (None, "client/product"):
+                with self.subTest(command=command, checkout=checkout, inherited=inherited):
+                    observed = self.run_context(command, checkout, inherited=inherited)
+                    self.assertEqual(observed, [inherited])
+
+    def test_explicit_repository_still_binds_global_commands(self) -> None:
+        for command in (("search", "user:host fixture"), ("next",),
+                        ("project-list", "--owner", "host")):
+            with self.subTest(command=command):
+                observed = self.run_context(("--repo", "host/direction", *command), None)
+                self.assertEqual(observed, ["host/direction"])
+
+    def test_failed_command_restores_inherited_context(self) -> None:
+        for inherited in (None, "client/product"):
+            with self.subTest(inherited=inherited):
+                observed = self.run_context(("index",), "host/product", inherited=inherited, fail=True)
+                self.assertEqual(observed, ["host/product"])
 
 
 class AppHandler(BaseHTTPRequestHandler):
@@ -163,7 +232,11 @@ class ClientAppTests(unittest.TestCase):
             "login = 'own-user' if token == 'fake-user-token' or not token else 'app-' + token[-1] + '[bot]'\n"
             "if args[:2] == ['api', 'user']: print(login); raise SystemExit(0)\n"
             "if '--include' in args: print('HTTP/2.0 200\\n')\n"
-            "endpoint = next((a for a in args if a.startswith('/repos/')), '')\n"
+            "endpoint = next(('/' + a.lstrip('/') for a in args if a.lstrip('/').startswith(('repos/', 'search/'))), '')\n"
+            "if endpoint.startswith('/search/issues'):\n"
+            "    print(json.dumps({'items': [], 'total_count': 0, 'incomplete_results': False})); raise SystemExit(0)\n"
+            "if endpoint.endswith('/milestones') or '/milestones?' in endpoint:\n"
+            "    print('[]'); raise SystemExit(0)\n"
             "if endpoint.endswith('/issues') or '/issues?' in endpoint:\n"
             "    if '--method' not in args or args[args.index('--method') + 1] == 'GET': print('[]'); raise SystemExit(0)\n"
             "    issue = json.load(sys.stdin)\n"
@@ -282,7 +355,8 @@ class ClientAppTests(unittest.TestCase):
                 expected_actor="different[bot]", write_repository="host/product")
 
     def plan(self, repo: str | None, issue: str = "1", *,
-             checkout_repo: str = "client/product") -> subprocess.CompletedProcess[str]:
+             checkout_repo: str = "client/product",
+             command: tuple[str, ...] | None = None) -> subprocess.CompletedProcess[str]:
         # Reproduce a two-App Client fleet without a separate bulk-reader App.
         env = {name: value for name, value in os.environ.items()
                if not name.startswith("GITHUB_READER_APP_")}
@@ -296,7 +370,7 @@ class ClientAppTests(unittest.TestCase):
                             f"https://github.com/{checkout_repo}.git"], check=True, capture_output=True)
         return subprocess.run(
             [sys.executable, str(Path(identity.__file__).with_name("gh-plan.py")),
-             *(["--repo", repo] if repo else []), "show", issue],
+             *(["--repo", repo] if repo else []), *(command or ("show", issue))],
             env={**env, "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
                  "GH_WITH_ENV_TOKEN_PYTHON": sys.executable},
             cwd=checkout, capture_output=True, text=True, timeout=15,
@@ -351,6 +425,26 @@ class ClientAppTests(unittest.TestCase):
                 payload = json.loads(result.stdout)
                 self.assertEqual(payload["issue"]["repo"], repo)
                 self.assertEqual(payload["last_actor"], self.auth(repo)[1])
+
+    def test_plan_no_issue_reads_select_inferred_repository_app(self) -> None:
+        for repo in ("host/product", "client/product"):
+            for command in (("index",), ("search", "fixture"), ("wait", "--all"), ("milestone-list",)):
+                with self.subTest(repo=repo, command=command):
+                    result = self.plan(None, checkout_repo=repo, command=command)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(payload["repo"], repo)
+                    self.assertEqual(payload["last_actor"], self.auth(repo)[1])
+
+    def test_plan_inferred_index_preserves_missing_installation_refusal(self) -> None:
+        result = self.plan(None, checkout_repo="host/missing", command=("index",))
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_code"], "identity_refused")
+        self.assertIn(("GET", "/repos/host/missing/installation", self.env["GITHUB_CLIENT_APP_ID"]),
+                      AppHandler.calls)
+        self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
 
     def test_python_bulk_reads_use_reader_then_client_when_reader_absent(self) -> None:
         kwargs = dict(operation="github.plan.index", is_write=False, gh_cmd=github_api.DEFAULT_GH,
