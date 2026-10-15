@@ -30,7 +30,7 @@ including an external link to another external file, is accepted.
 
 ## Read budgets and timeout diagnostics
 
-`product-promotion-status-read` defaults to a bounded 30-second HTTP socket
+`dokploy-inventory-read` and `product-promotion-status-read` default to a bounded 30-second HTTP socket
 timeout to accommodate complete release-checklist compilation. Other reads,
 including the read-only POST used by `target-replacement-plan-read`, keep their
 10-second default. An explicit `--timeout` before the subcommand overrides
@@ -54,6 +54,32 @@ is `accepted_unverified`, with the accepted result retained. Explicit reads and
 unavailable applies exit nonzero; optional context still exits `0` with an
 unavailable envelope. Client-review reads also fail with bounded JSON and a
 nonzero exit.
+
+## Dokploy inventory read
+
+`dokploy-inventory-read --limit 25` reads `GET /v1/dokploy/inventory`
+using existing private admin configuration. This bounded local extension requires
+the service's existing global `dokploy_target.inspect` read boundary; it creates
+no grant. It includes empty/untracked projects, environments and targets, without
+depending on product records. All provider operations behind the service are GETs.
+
+The result preserves project/environment IDs and display names, target IDs,
+categories and display names, and placement server IDs/display names. Local
+placement is `dokploy_host`, with null server fields: no OS/guest hostname is
+inferred. Server display names are provider labels, not independently verified
+guest identities or running-workload/health evidence. Output contains no env
+values, credentials, addresses or compose source. Unexpected fields fail closed.
+
+Follow each `next_offset` using `--offset N --inventory-digest DIGEST` until it
+is null, keeping the first page's digest. `total_projects`, `total_environments`
+and `total_targets` cover the provider credential's visible snapshot. The provider
+root uses unpaginated `project.all`; Launchplane pages projects in ID order and
+hydrates the selected page. The digest binds project/environment names and IDs
+and target membership, not a transaction over target detail/placement reads.
+On HTTP 409, restart at zero. No failure yields a partial-success page. Reduce
+`--limit` on a page-target budget failure; a single project over the service
+budget remains unavailable. Runtime use waits for normal delivery of the service
+route; this command never falls back to direct provider access.
 
 ## Merge-train enrollment read
 

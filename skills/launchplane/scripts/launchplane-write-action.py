@@ -25,6 +25,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_contract import internal_helper_path  # noqa: E402
+from launchplane_inventory import project_inventory  # noqa: E402
 from launchplane_safety import (  # noqa: E402
     LaunchplaneSafetyError,
     assert_public_safe_shape,
@@ -55,6 +56,7 @@ LOCAL_OPERATOR_ENV_KEYS = {
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
 }
 READ_ONLY_OPERATIONS = {
+    "dokploy-inventory-read",
     "merge-train-policy-read",
     "repository-inventory-read",
     "integration-allowances-read",
@@ -6992,6 +6994,42 @@ def execute_merge_train_policy_import(
         return 1
 
 
+def execute_dokploy_inventory_read(*, args: argparse.Namespace) -> int:
+    operation = "dokploy-inventory-read"
+    request: dict[str, object] = {"offset": args.offset, "limit": args.limit}
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    query = {"offset": str(args.offset), "limit": str(args.limit)}
+    if args.inventory_digest:
+        query["inventory_digest"] = args.inventory_digest
+    provider_payload = None
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"], path=helper_command_path(operation),
+            settings=settings, query=query, timeout=args.timeout,
+        )
+        result, trace_id = project_inventory(provider_payload)
+        if result["offset"] != args.offset or result["limit"] != args.limit or (args.inventory_digest and result["inventory_digest"] != args.inventory_digest):
+            raise LaunchplaneSafetyError("invalid_response")
+        payload = base_payload(status="ok", operation=operation, request=request)
+        payload["result"] = result
+        payload["summary"] = {"trace_id": trace_id, "recommendation": "Follow next_offset with the same inventory_digest until null. Restart at zero on inventory change. Placement names are provider labels; dokploy_host has no verified guest hostname."}
+        emit(payload)
+        return 0
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=operation, request=request, exc=exc)
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
+        emit_read_transport_error(operation=operation, request=request, timeout=args.timeout, exc=exc)
+    except ServiceResponseError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=LaunchplaneSafetyError("invalid_response"), provider_payload=exc)
+    except (ValueError, json.JSONDecodeError):
+        emit_invalid_response(operation=operation, request=request)
+    return 1
+
+
 def execute_repository_inventory_read(
     *, args: argparse.Namespace, request: dict[str, object]
 ) -> int:
@@ -9120,7 +9158,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument(
         "--timeout", type=float, default=argparse.SUPPRESS,
-        help="HTTP timeout seconds (promotion status: 30; controller: 180; other commands: 10).",
+        help="HTTP timeout seconds (promotion status and Dokploy inventory: 30; controller: 180; other commands: 10).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -9206,6 +9244,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         required=True,
         help="Private saved JSON output from the reviewed merge-train policy dry-run.",
     )
+
+    dokploy_inventory_read = subparsers.add_parser("dokploy-inventory-read", help="Read one value-free Dokploy inventory page, including empty/untracked projects.")
+    dokploy_inventory_read.add_argument("--offset", type=int, default=0)
+    dokploy_inventory_read.add_argument("--limit", type=int, default=25)
+    dokploy_inventory_read.add_argument("--inventory-digest", default="")
 
     repository_inventory_read = subparsers.add_parser(
         "repository-inventory-read",
@@ -9651,7 +9694,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.timeout = getattr(
         args, "timeout",
         180.0 if args.command == "merge-train-controller-run-once"
-        else 30.0 if args.command == "product-promotion-status-read" else 10.0,
+        else 30.0 if args.command in {"product-promotion-status-read", "dokploy-inventory-read"} else 10.0,
     )
     return args
 
@@ -10004,6 +10047,10 @@ def main(argv: list[str]) -> int:
                 expected_current_policy_digest=expected_current_digest,
                 expected_candidate_policy_digest=candidate_digest,
             )
+        if args.command == "dokploy-inventory-read":
+            if not 0 <= args.offset <= 2000 or not 1 <= args.limit <= 100 or (args.offset and not args.inventory_digest) or (args.inventory_digest and not re.fullmatch(r"[a-f0-9]{64}", args.inventory_digest)):
+                raise ValueError("invalid_inventory_page")
+            return execute_dokploy_inventory_read(args=args)
         if args.command == "repository-inventory-read":
             request = {
                 "payload_source": "operator_argument",
