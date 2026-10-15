@@ -108,7 +108,7 @@ not fingerprinted.
 `github-capabilities.py fingerprints` remains an optional diagnostic for comparing
 API-source surfaces. Its hashes are advisory: they are neither stored in the
 matrix nor checked by validation. Source changes are not artifacts or immutable
-evidence under the [shared test policy](../../../instructions/global.md#tests).
+evidence under the [shared test policy](https://github.com/cbusillo/codex-skills/blob/main/instructions/global.md#tests).
 Add a behavioral probe test when a new capability/probe is introduced, covering
 actor routing and unavailable/denied results as applicable. Keep real
 account/repository/App identities and live audit reports in ignored local state,
