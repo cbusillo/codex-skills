@@ -12,7 +12,7 @@ resources:
     description: Derives the supported permission profile and safely audits the configured App across installed repositories.
   - path: references/github-permissions.md
     kind: reference
-    description: Read for App setup, missing access, or new GitHub API surfaces; covers scoped roles, safe evidence and drift maintenance.
+    description: Read for App setup, missing access, or new GitHub API surfaces; covers scoped roles, safe evidence and capability maintenance.
   - path: scripts/github_api.py
     kind: script
     description: Shared body-safe GitHub API transport, terminal envelope, legacy failure classifier, GraphQL operation context, and rate-limit metadata layer.

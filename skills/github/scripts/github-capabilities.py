@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     targets.add_argument("--repo", action="append", type=repository_name, help="owner/name; repeat for multiple repositories")
     targets.add_argument("--all-installed", action="store_true")
     audit.add_argument("--refresh-token", action="store_true", help="Renew the same App's cached token after accepted permission changes")
-    commands.add_parser("fingerprints", help="Print current API surface hashes for review; never modifies the matrix")
+    commands.add_parser("fingerprints", help="Print advisory API surface hashes; not a validation gate and never modifies the matrix")
     return parser
 
 
@@ -74,7 +74,7 @@ def main() -> int:
     args = build_parser().parse_args()
     matrix = capabilities.load_matrix()
     root = capabilities.MATRIX.parents[2]
-    errors = capabilities.validate_permissions(matrix, root, check_sources=False)
+    errors = capabilities.validate_permissions(matrix)
     if errors:
         print(json.dumps({"state": "unavailable", "reason": "invalid_permission_catalog", "errors": errors}))
         return 1

@@ -186,7 +186,7 @@ def validate(matrix_path: Path, repo_root: Path) -> list[str]:
     operations = validate_schema(raw, repo_root, errors)
     if operations:
         validate_static_coverage(operations, repo_root, errors)
-    errors.extend(github_capabilities.validate_permissions(raw, repo_root))
+    errors.extend(github_capabilities.validate_permissions(raw))
     return errors
 
 
