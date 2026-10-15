@@ -248,39 +248,34 @@ landing; [launchplane#3327](https://github.com/cbusillo/launchplane/issues/3327)
 owns replacing this interim helper with service admission.
 
 Use one private hold record for the run, shared by every local watcher and
-pause update. Before initialization, identify Client products and shared release
-inputs from Launchplane's product records and the current Supervisor handoff.
-Mark those repositories coordinated: they stay on the existing product landing
-path, including engineering-only work. This list expresses the Supervisor's
-delivery holds, never enrollment, branch names or enqueue labels.
+pause update. Client repositories and shared release inputs follow the same
+ready handoff path as other repositories, per
+[Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
+Launchplane owns product release holds; do not copy them into this record.
 
 ```sh
-uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --init --coordinated-repo OWNER/CLIENT-REPO --coordinated-repo OWNER/SHARED-REPO
+uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --init
 uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --hold-file <private-holds.json> --handoff-login AGENT_LOGIN --once
 ```
 
 Initialization refuses an existing record. Missing or malformed hold state stops
-the watcher. Its fields are `paused_repositories` and `coordinated_repositories`
-(repository lists), plus `client_releases` (objects with `repository` and a
-`ready` or `open` status). Reuse the same record through takeover; reconcile it
-with the handoff before rearming. Do not maintain another per-session copy.
+the watcher. Reuse the same record through takeover; reconcile it with the
+handoff before rearming. Do not maintain another per-session copy.
 
-Client-product batching remains coordinated as the
-[Client Products rules](../SKILL.md#client-products) require. The watcher's
-`client_releases` entries are an optional manual pause control, not a required
-step for Client releases; leave them empty for normal routing. A ready/open
-entry pauses only the named product's own landings, never Launchplane or any
-other repository. A coordinated product is already held, so ordinary product
-coordination needs no such entry.
-During takeover, use the handoff to distinguish deliberate manual pauses from
-entries created only for the retired Launchplane hold. Clear only the latter
-before rearming, keeping the product coordinated in the same command:
-`--release-finished OWNER/CLIENT-REPO --coordinated-repo OWNER/CLIENT-REPO`.
+For an older record, stop its watcher before editing the file. Remove only
+the entries in the legacy `coordinated_repositories` array that held Client
+repositories or shared inputs solely for product batching. Keep the array
+present (empty when no independent hold remains), preserve deliberate pauses
+and other fields, then preview with `--once` before rearming. Clear any manual
+`client_releases` entries that only duplicated the service's release hold with
+`holds --release-finished OWNER/CLIENT-REPO`. These optional manual pauses
+are not required for a Client release; leave them empty for normal routing.
+Each pauses only its named repository, never Launchplane or other repositories.
 The hold command waits for the current repository's enqueue section before acknowledging the
 update. Between repositories, a pause update can win the lock and make the
 watcher's next nonblocking acquisition stop safely. Finish the hold update and
 reconcile any already emitted enqueue events before rearming the watcher.
-After the release finishes, clear that entry; ordinary pauses remain independent.
+After a deliberate manual pause ends, clear its entry; other pauses remain independent.
 
 ```sh
 uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --pause OWNER/REPO
