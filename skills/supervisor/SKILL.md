@@ -427,20 +427,19 @@ for products a Client runs business on.
   exception: a temporary hotfix in an outage, which only the Director starts
   and the Client still reviews afterward.
 - Open a Client-visible PR as soon as its work is ready; it gets one preview
-  request whenever it opens, so holding it only delays the Client. Batch the
-  landings, not the PRs.
+  request whenever it opens, so holding it only delays the Client.
 - Land each Client-accepted PR first, or in the same train batch as other
   PRs for that product, so a branch update cannot void the acceptance
   ([launchplane#3234](https://github.com/cbusillo/launchplane/issues/3234)).
-  Engineering-only PRs for the product ride with its next visible change.
   [codex-skills#1612](https://github.com/cbusillo/codex-skills/issues/1612)
   replaces this hand ordering once Launchplane's automatic batch flow ships.
-- Once a product's release batch has landed, its release is ready even
-  before the invitation posts. From then until the release finishes, land
-  nothing else on that product, and ask any session running a driver for that
-  product to pause it.
-  The hold on Launchplane landings during Client releases is retired by the
-  [Director's Q160 decision on launchplane#3145](https://github.com/cbusillo/launchplane/issues/3145#issuecomment-6103873272).
+- Green engineering PRs route to the train as soon as they are ready, under
+  [Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
+  A merge deploys testing; engineering-only changes do not open a release
+  review on their own. Launchplane's
+  [release hold](https://github.com/cbusillo/launchplane/blob/main/control_plane/merge_train_release_hold.py)
+  holds the product's repositories while a Client-accepted release runs and
+  clears the hold when it finishes. Let the train enforce it.
 - Every PR in a repository that feeds a Client release (shared add-ons,
   devkit, images, tenants and the live sites) carries a `## Client test notes`
   section. One missing section, even on a housekeeping PR, blocks the release
