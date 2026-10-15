@@ -425,6 +425,9 @@ checks below as relevant.
   record does not show that it created a registered worktree, the owning session is
   unknown: leave it, and mention it when it bears on this closeout. Detached
   auto-review worktrees stay excluded as described below.
+  [Task worktrees](../github/references/worktrees.md) documents portable Git
+  removal and per-host helper retirement. Creation through the catalog helper
+  does not replace a host's lock or guarded retirement policy.
 - After merged PRs, include relevant post-merge Actions and GitHub
   security/quality signal outcomes when GitHub data is available. Report signals
   as clean, findings, unavailable, or not enabled; do not treat unavailable or
