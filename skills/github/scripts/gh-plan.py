@@ -2090,7 +2090,14 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                     "record and transport reconciliation before retrying; after resolving any unknown outcome, "
                     "rerun the same command with unchanged arguments to reuse the source and deduplicate related releases.")
         if release_state == "not_started":
-            return "No release write was started. Resolve the preflight refusal and inspect a fresh --dry-run before releasing."
+            return ("This invocation started no release write; earlier records may exist. Inspect the issue history and "
+                    "preserve any confirmed release's unchanged attestation. Resolve the current preflight refusal "
+                    "and inspect a fresh --dry-run before releasing.")
+        if release_state == "pending_unconfirmed":
+            return ("The initial pending POST is unconfirmed and release_comment may be empty. Inspect the transport "
+                    "operation marker and reconciliation evidence to locate any posted pending record before recovery; "
+                    "never replay an unknown write. A pending record grants no release authority. Resolve the refusal, "
+                    "freshly verify closure and post a new --evidence-comment attestation before another --dry-run.")
         return ("Read the exact release_comment, cited evidence and transport reconciliation before recovery; "
                 "never replay an unknown write. If confirmed, rerun with unchanged arguments to reuse it. "
                 "A pending record does not release ownership: resolve the refusal, freshly verify closure and post a new "
@@ -2197,7 +2204,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             raise PlanError("Prepared release has no valid receipt")
         existing = next((c for c in reversed(comments)
                          if (prior := github_plan_release.receipt_for(c)) is not None
-                         and all(prior.get(k) == v for k, v in receipt.items() if k not in {"role", "releaser_session"})
+                         and all(prior.get(k) == v for k, v in receipt.items() if k not in {"role", "releaser_session", "checked_prs"})
                          and (c.get("user") or {}).get("login") == expected_actor
                          and github_plan_claim.released_claim_id(c.get("body") or "") == args.claim_comment), None)
         def comment_result(comment):

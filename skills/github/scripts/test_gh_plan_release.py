@@ -48,6 +48,7 @@ class ReleaseHarness(unittest.TestCase):
         self.race = lambda: None
         self.confirmation_failure = None
         self.confirmation_applied = False
+        self.related_failure = None
 
     @staticmethod
     def comment(n, body, date):
@@ -71,6 +72,8 @@ class ReleaseHarness(unittest.TestCase):
         return "bot", copy.deepcopy(next(p for p in self.f.pulls if p["number"] == n))
 
     def post(self, kind, number, body, **kwargs):
+        if kwargs.get("failed_step") == "release_related_ownership" and self.related_failure:
+            raise self.related_failure
         if kwargs.get("edit_comment") is not None:
             self.f.events.append("confirm_release")
             c = next(c for c in self.f.comments if c["id"] == kwargs["edit_comment"])
@@ -916,6 +919,28 @@ class ReleaseTests(ReleaseHarness):
                     self.evidence.update(created_at="2026-10-04T01:00:00Z", updated_at="2026-10-04T01:00:00Z")
                     self.run_release()
                 self.successor()
+
+    def test_related_recovery_reuses_source_when_observed_branch_pr_has_closed(self):
+        self.f.comments.append(self.comment(2, "Claimed by trial-b to finish source work", "2026-10-01T01:00:00Z"))
+        self.args.related_claim_comment = [2]
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "body": "Refs #42",
+                         "head": {"ref": fixtures.OTHER["branch"], "sha": "source-head", "repo": {"full_name": "owner/repo"}},
+                         "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.related_failure = github_comment.CommentError("Related write rejected", failure=PLAN.github_api_core.FailureDetail(
+            cause="rejected", message="Related write rejected", retryable=False,
+            fallback_eligible=False, disposition="stop", write_outcome="rejected"))
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        source_release = caught.exception.payload["release_comment"]["id"]
+        release.validate_evidence(release.receipt_for(self.f.comments[-1]), self.evidence, BOT)
+        # GitHub's open-PR observation changes; the requested handoff is unchanged.
+        self.f.pulls = []
+        self.related_failure = None
+        posts = self.f.events.count("post")
+        self.run_release()
+        self.assertEqual(self.f.emitted.call_args.args[0]["release_comment"]["id"], source_release)
+        self.assertEqual(self.f.events.count("post"), posts + 1)
+        self.successor()
 
     def test_uncertain_confirmation_preserves_exact_record_and_never_replays(self):
         for route in ("finished", "terminated"):
