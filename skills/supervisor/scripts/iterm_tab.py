@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "iterm2==2.25",
+#     "websockets==17.2",
 # ]
 # ///
 """Target iTerm or tmux sessions by exact identity; separate text and Return sends."""
@@ -16,6 +17,7 @@ import shlex
 import socket
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import account_choice
@@ -134,7 +136,84 @@ class LaunchFailure(ValueError):
         self.detail = {"status": "launch_failed", "reason": reason,
                        "launched": launched, "failed_launch": failed,
                        "next_action": "List and read these tabs before retrying; earlier launches may be running."}
+        if isinstance(error, StartupFailure):
+            self.detail["failed_launch"]["startup"] = error.snapshot
         super().__init__(reason)
+
+
+class StartupFailure(ValueError):
+    def __init__(self, snapshot):
+        self.snapshot = snapshot
+        super().__init__("terminal exited during startup; inspect its last output before retrying"
+                         if snapshot["dead"] else
+                         "startup observation unavailable; submitted agent may be running; inspect before retrying")
+
+
+async def verify_startup(read, timeout=2.0):
+    """Observe immediate exit; this is not full agent readiness."""
+    deadline = time.monotonic() + timeout
+    last_dead = None
+    while True:
+        try:
+            snapshot = await read()
+        except Exception as error:
+            if last_dead is not None:
+                raise StartupFailure({**last_dead, "observation_error": type(error).__name__}) from error
+            raise
+        if snapshot["dead"]:
+            last_dead = snapshot
+        # tmux can observe PTY EOF before SIGCHLD supplies the exit status.
+        # Keep the failure, but use the remaining window to collect its cause.
+        awaiting_status = (last_dead is not None and last_dead.get("exit_status") == ""
+                           and not last_dead.get("exit_signal"))
+        if last_dead is not None and (not awaiting_status or time.monotonic() >= deadline):
+            raise StartupFailure(last_dead)
+        if last_dead is None and time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(min(0.2, max(0, deadline - time.monotonic())))
+
+
+async def submit_iterm_launch(app, session, command):
+    import iterm2
+
+    last_screen = []
+    async with iterm2.SessionTerminationMonitor(app.connection) as monitor:
+        async def terminated():
+            while await monitor.async_get() != session.session_id:
+                pass
+
+        termination = asyncio.create_task(terminated())
+        try:
+            # Replace the interactive shell so any agent exit ends this exact
+            # terminal, even when the launch file didn't itself use exec.
+            await send(session, "exec /bin/zsh -c " + shlex.quote(command), allow_tabs=True)
+
+            async def read():
+                nonlocal last_screen
+                await app.async_refresh()
+                matches = [s for s in sessions(app) if s.session_id == session.session_id]
+                if termination.done() and termination.exception() is not None:
+                    raise ValueError("iTerm termination monitor failed")
+                dead = termination.done() or len(matches) != 1
+                if matches:
+                    try:
+                        screen = await matches[0].async_get_screen_contents()
+                        last_screen = [screen.line(i).string for i in range(screen.number_of_lines)][-80:]
+                    except Exception:
+                        if not dead:
+                            raise
+                return {"dead": dead, "screen": last_screen}
+
+            try:
+                await verify_startup(read)
+            except StartupFailure:
+                raise
+            except Exception as error:
+                raise StartupFailure({"dead": None, "screen": last_screen,
+                                      "observation_error": type(error).__name__}) from error
+        finally:
+            termination.cancel()
+            await asyncio.gather(termination, return_exceptions=True)
 
 
 def sessions(app):
@@ -374,6 +453,73 @@ def codex_daemon_endpoint(home):
     return home / "app-server-control" / "app-server-control.sock"
 
 
+class DaemonRefusal(ValueError):
+    def __init__(self, state, active_threads):
+        self.state = state
+        self.active_threads = active_threads
+        super().__init__(f"Codex daemon admission {state}; {active_threads} active thread(s). "
+                         "Do not restart or stop it. Wait for it to exit, or select another "
+                         "Context Panel account with --account; inspect active threads before any manual restart")
+
+
+def inspect_codex_daemon(home):
+    """Read loaded thread states and check admission without creating a thread."""
+    from websockets.sync.client import unix_connect
+
+    deadline = time.monotonic() + 10
+    active = 0
+    with unix_connect(str(codex_daemon_endpoint(home)), open_timeout=2, close_timeout=1) as ws:
+        request_id = 0
+
+        def request(method, params):
+            nonlocal request_id
+            request_id += 1
+            ws.send(json.dumps({"id": request_id, "method": method, "params": params}))
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("daemon inspection timed out")
+                message = json.loads(ws.recv(timeout=remaining))
+                if message.get("id") == request_id:
+                    return message
+
+        def result(method, params):
+            response = request(method, params)
+            if "error" in response or not isinstance(response.get("result"), dict):
+                raise ValueError(f"daemon {method} read failed; active threads unknown; do not restart")
+            return response["result"]
+
+        result("initialize", {"clientInfo": {"name": "supervisor_launch_preflight", "version": "1"}})
+        ws.send(json.dumps({"method": "initialized", "params": {}}))
+        cursor, seen = None, set()
+        while True:
+            page = result("thread/loaded/list", {"cursor": cursor, "limit": 100})
+            if not isinstance(page.get("data"), list):
+                raise ValueError("daemon thread inventory unavailable; do not restart")
+            for thread_id in page["data"]:
+                thread = result("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
+                state = thread["status"]["type"]
+                if state not in {"active", "idle", "systemError", "notLoaded"}:
+                    raise ValueError("daemon thread state unknown; do not restart")
+                active += state == "active"
+            cursor = page.get("nextCursor")
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or cursor in seen:
+                raise ValueError("daemon thread pagination unavailable; do not restart")
+            seen.add(cursor)
+        # The daemon gates thread/resume before parsing the native UUID. An
+        # invalid UUID cannot load/create a thread or run its hooks. There is
+        # currently no read-only draining flag in the native protocol.
+        probe = request("thread/resume", {"threadId": "supervisor-launch-preflight-invalid-id"})
+        error = probe.get("error", {})
+        message = error.get("message", "")
+        if "Server is draining" in message:
+            raise DaemonRefusal("draining", active)
+        if error.get("code") != -32600 or not message.startswith("invalid session id:"):
+            raise DaemonRefusal("unknown", active)
+
+
 def check_codex_daemon(choice):
     """Start the selected home's daemon natively, then verify its Unix socket."""
     if choice["provider"] != "openai":
@@ -407,6 +553,12 @@ def check_codex_daemon(choice):
             f"Codex daemon unavailable after start for CODEX_HOME={home} ({type(error).__name__}); "
             f"run {command}, then retry the launch"
         ) from error
+    try:
+        inspect_codex_daemon(home)
+    except Exception as error:
+        detail = str(error) if isinstance(error, ValueError) else type(error).__name__
+        raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
+                         "no terminal was launched; do not restart the daemon automatically") from error
 
 
 def scoped_exec(command_text):
@@ -652,8 +804,11 @@ async def operate(app, args):
                     account_choice.record_launch(choice)
                     progress["receipt_written"] = True
                 progress.update(submission="unknown", phase="submit_command")
-                await send(session, command_text, allow_tabs=True)
+                await submit_iterm_launch(app, session, command_text)
+                progress.update(submission="submitted", phase="startup_observed")
             except Exception as error:
+                if isinstance(error, StartupFailure):
+                    progress.update(submission="submitted", phase="verify_startup")
                 raise LaunchFailure(results, progress, error) from error
             result = {"window_id": windows[0].window_id,
                       "tab_id": tab.tab_id, "session_id": session.session_id}
