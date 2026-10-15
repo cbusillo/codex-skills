@@ -174,7 +174,7 @@ before selection; brief real remaining engineering and record event waits as wai
 The helper's `candidates` are possible source work and may need review. The CLI
 can populate `available_candidates` without a caller snapshot when the current
 step explicitly names source work, bounded ownership reads found no conflict,
-and native milestone/incident evidence or the explicit own-project list in
+and established native or exact listed milestone evidence, incident evidence, or the explicit own-project list in
 overall Order establishes eligibility. That list is read from direction, not
 copied into the helper. This is discovery evidence, not an exclusive lock:
 `queue_context` reports partial session coverage, and Choose Work's full review
@@ -185,8 +185,24 @@ Unclassified tooling still requires current caller category/stop evidence and
 the existing capacity admission proof; automatic queue evidence does not
 enable spare-capacity admission or infer a repeated stop.
 
-`milestone_summary` lists source work, `underway` ownership and
-`verification_only` qualification separately. Unreviewed legacy holds appear in
+Current Status PR references also have bounded `source_delivery` evidence:
+the reader verifies merge time, implementation association and the repository's
+default branch. It reports unavailable or omitted references and never claims
+to have searched every linked PR. When body and trusted comment statuses disagree,
+a bounded GraphQL issue read supplies the body's edit time for choosing the
+current status before looking up its PRs. Historical statuses do not add PR reads.
+That time does not prove the action itself changed. Automatic post-merge source
+availability requires an explicit remainder in a matching trusted Current Status
+comment created after the merge. Other merged-source actions move to `scope_review`.
+A current caller review can establish a body-only engineering remainder or resolve
+a bounded delivery-read gap using its current source-scope evidence, subject to
+the same complete wait and ownership evidence. The helper's incomplete read
+receipt stays visible. Delivered release/recovery follow-through is kept outside the
+source queue even when a legacy wait review is still required. None of these
+classifications closes the issue or proves its full finish line.
+
+`milestone_summary` lists source work, `underway` ownership,
+`verification_only` qualification and `scope_review` separately. Unreviewed legacy holds appear in
 `wait_reviews`; they do not label an entire milestone as waiting on a person.
 Qualification work remains visible even when no source candidate is available.
 

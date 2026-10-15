@@ -68,7 +68,7 @@ def test_live_cases_preserve_available_review_and_underway_states() -> None:
         result = run_global(raw, comments)
         if case['wait_state'] == 'review':
             assert not result['available_candidates'], case
-            row = next(row for row in [*result['candidates'], *result['excluded']] if row['number'] == case['number'])
+            row = next(row for row in [*result['candidates'], *result['excluded'], *result['verification_only'], *result['scope_review']] if row['number'] == case['number'])
             assert row['wait_review_required']
             assert not result['milestone_summary'][0]['waits']
         elif case['claim'] == 'active':
@@ -83,7 +83,7 @@ def test_live_cases_preserve_available_review_and_underway_states() -> None:
         # Local queue and global graph use the same structured authority.
         item = {**direction.compact_list_issue(raw['repo'], raw), 'discussion': direction.discussion_snapshot(raw, comments, complete=True)}
         projected = queue.classify(item, queue_tests.evidence(), trusted={'cbusillo', 'bot'})
-        expected = 'review' if case['wait_state'] == 'review' else 'underway' if case['claim'] == 'active' else 'available'
+        expected = case.get('queue_state', 'review' if case['wait_state'] == 'review' else 'underway' if case['claim'] == 'active' else 'available')
         assert projected['state'] == expected, projected
 
 
