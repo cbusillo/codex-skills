@@ -179,6 +179,7 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
 def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
     if item.get("plan_status") in {"blocked", "stale", "done"} or item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work", "pull_request"}:
         return item
+    status_text = re.sub(r"\*\*(Waiting for|Parked until)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
     if (item.get("exclusion") == "wait_review_required" and not re.search(
             r"(?im)^\s*(?:[-*]\s+)?(?:Waiting for|Parked until):", status_text)):
         return item
@@ -838,8 +839,8 @@ def rank_portfolio_work(
         elif review["state"] == "ineligible":
             excluded.append({**item, "exclusion": "outside_owner_direction", "review": review})
             continue
-        elif queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown"}:
-            item["review_required"] = queue["reason"]
+        elif item.get("wait_review_required") or queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown"}:
+            item["review_required"] = queue.get("reason") or "wait_review_required"
         elif review["state"] == "waiting":
             item["review_required"] = "invalid_milestone_wait_needs_current_ownership_review"
         elif review.get("ownership_complete") is not True:

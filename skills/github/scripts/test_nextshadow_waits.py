@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import github_direction_next as direction
 import github_next_queue as queue
+import github_plan_body as plan_body
 import github_plan_claim as claim
 import github_plan_wait as wait
 import test_gh_plan_next as cli
@@ -104,7 +105,7 @@ def test_current_authorized_wait_wins_and_real_event_waits_remain() -> None:
 
 def test_unread_or_malformed_later_records_never_advertise_clear_work() -> None:
     raw, comments = source(cases()[0])
-    for body in ('<!-- github-plan:wait not-json -->', wait.marker(wait.reviewed(evidence='Pending', waiting_for='Owner decision', ends_when='Owner records a decision'))):
+    for body in (wait.PREFIX + 'not-json -->', wait.marker(wait.reviewed(evidence='Pending', waiting_for='Owner decision', ends_when='Owner records a decision'))):
         changed = [*comments, {'id': 3, 'user': {'login': 'bot'}, 'body': body}]
         assert not run_global(raw, changed)['available_candidates']
         assert not run_global(raw, changed, comment_limit=len(comments))['available_candidates']
@@ -168,7 +169,7 @@ def test_milestone_qualification_is_visible_even_without_source_work() -> None:
 
 def test_caller_review_cannot_override_a_required_wait_review() -> None:
     row = queue_tests.item()
-    row['discussion']['body'] = row['discussion']['body'].split('<!-- github-plan:wait')[0]
+    row['discussion']['body'] = row['discussion']['body'].split(wait.PREFIX)[0]
     for reason in ['wait_review_required', 'unreadable_ownership_or_wait', 'incomplete_discussion']:
         row.update(queue={'state': 'review', 'reason': reason},
                    via=[{'repo': 'owner/direction', 'number': 1}], milestone={'title': 'First'}, plan_status='active')
@@ -204,7 +205,7 @@ def test_paths_and_pull_request_prose_do_not_invent_repositories() -> None:
 
 def test_malformed_contributor_envelope_requires_wait_review() -> None:
     raw, comments = source(cases()[0])
-    raw['body'] += '\n<!-- github-plan:original-request:start -->\n'
+    raw['body'] += '\n' + plan_body.PLAN_ORIGINAL_START + '\n'
     result = run_global(raw, comments)
     assert not result['available_candidates']
     row = next(row for row in result['excluded'] if row['number'] == raw['number'])
@@ -236,6 +237,7 @@ def test_unspecified_state_only_holds_remain_visible_for_wait_review() -> None:
 def test_structured_wait_references_are_read_and_genuine_unknowns_stay_unknown() -> None:
     module = cli.load_module()
     raw, _ = source(cases()[0])
+    raw['labels'] = []
     record = wait.reviewed(evidence='Current event', waiting_for='Recorded decision on #99', ends_when='Full external/repo#100 records closure')
     paths = []
     def fetch(method, path, **kwargs):
@@ -258,6 +260,26 @@ def test_short_references_need_observed_repository_identity() -> None:
     known = {'cbusillo/launchplane', 'cbusillo/123'}
     refs = direction.issue_references('launchplane#2792 123#15 Zendesk#48213', repo='cbusillo/direction', known_repositories=known)
     assert {(ref['repo'], ref['number']) for ref in refs} == {('cbusillo/launchplane', 2792), ('cbusillo/123', 15)}
+
+
+def test_service_wait_review_flag_blocks_available_without_cli_queue() -> None:
+    module = cli.load_module()
+    raw = cli.global_issue('owner/repo', 1, body='## Current Status\nState: Active.\nNext action: Implement export.\nWaiting for: None.')
+    record = {'version': 1, 'state': 'review', 'evidence': '', 'waits': []}
+    row = direction.evaluate_direction_node(raw, config=module.DEFAULT_CONFIG, focus=None, relationships=cli.relationships(), structured_wait=record)['item']
+    row.update(discussion=direction.discussion_snapshot(raw, [], complete=True), via=[{'repo': 'owner/direction', 'number': 1}], milestone={'title': 'First'})
+    result = direction.rank_portfolio_work({'candidates': [row], 'excluded': []}, [], milestone_titles=['First'],
+        selection_context={'issues': {'owner/repo#1': cli.reviewed(row, ownership_complete=True)}})
+    assert not result['available_candidates']
+    assert result['candidates'][0]['review_required'] == 'wait_review_required'
+
+
+def test_bold_legacy_wait_keeps_its_invalid_milestone_finding() -> None:
+    raw, comments = source(cases()[2])
+    raw['body'] = '## Current Status\nState: Waiting.\n**Waiting for:** milestone First.'
+    result = run_global(raw, comments)
+    assert any(finding['reason'] == 'wait_names_another_milestone' for finding in result['findings'])
+    assert not result['available_candidates']
 
 
 if __name__ == '__main__':

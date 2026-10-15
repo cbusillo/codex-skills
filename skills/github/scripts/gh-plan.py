@@ -3864,7 +3864,8 @@ def next_wait_context(
     configs = {item["repo"]: load_config(item["repo"]) for item in issues}
     unique = {(item["repo"].casefold(), item["number"]): item for item in issues
               if set(normalize_labels(item.get("labels"))).intersection(
-                  configs[item["repo"]]["labels"][key] for key in ("active", "waiting", "blocked"))}
+                  configs[item["repo"]]["labels"][key] for key in ("active", "waiting", "blocked"))
+              or (structured_waits or {}).get((item["repo"].casefold(), item["number"]), {}).get("state") == "waiting"}
     groups: dict[str, list[dict[str, Any]]] = {}
     selected = list(unique.values())[:scan_limit]
     for item in selected:
@@ -4197,6 +4198,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                     ranked["waiting"].append({
                         "repo": item["repo"], "number": item["number"], "url": item["url"],
                         **({"source": "legacy_wait_review"} if item["exclusion"] == "wait_review_required" else {}),
+                        "milestone": item.get("milestone"),
                         "waiting_for": item.get("waiting_on_parent") or node.get("status_text") or "Waiting party or condition not recorded",
                         "reported_by": item["url"], "reported_at": item.get("updated_at"),
                     })
