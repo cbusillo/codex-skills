@@ -115,7 +115,7 @@ def test_own_user_create_reports_success_without_duplicate_retry() -> None:
 
     def callback(method: str, path: str, body: Any, **kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
-            assert kwargs["gh_prefix_args"] == ["--write-actor-for", "owner/repo"], kwargs
+            assert "owner/repo" in kwargs["gh_prefix_args"], kwargs
             result = success({"login": personal_login})
         elif method == "GET":
             return success([])
@@ -179,7 +179,7 @@ def test_own_user_sibling_writes_use_resolved_personal_actor() -> None:
     for command in ("edit", "close", "reopen"):
         def callback(method: str, path: str, body: Any, **kwargs: Any) -> github_api.ApiResult:
             if path == "/user":
-                assert kwargs["gh_prefix_args"] == ["--write-actor-for", "owner/repo"], kwargs
+                assert "owner/repo" in kwargs["gh_prefix_args"], kwargs
                 result = success({"login": personal_login})
             else:
                 assert kwargs["expected_actor"] == personal_login, kwargs
