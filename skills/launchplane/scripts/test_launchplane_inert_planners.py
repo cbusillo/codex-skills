@@ -342,7 +342,7 @@ def test_second_read_failure_never_reuses_first_trace(error):
     assert payload["request"]["planner_request_sent"] is False
 
 
-FINGERPRINT = "hmac-sha256:synthetic-key:" + "c" * 64
+FINGERPRINT = "synthetic-private-comparison-fingerprint"
 
 
 def fingerprint_fixture():
@@ -364,7 +364,7 @@ def test_domain_fingerprint_stays_private_and_is_forwarded_and_verified():
     assert_private_dropped(payload)
 
 
-@pytest.mark.parametrize("fingerprint", [None, 37, "invalid", "hmac-sha256:key:short"])
+@pytest.mark.parametrize("fingerprint", [None, 37, "", "x" * 1024])
 def test_bad_fingerprint_never_posts(fingerprint):
     observed, response = fingerprint_fixture()
     observed["inspect"]["provider_target_record"]["comparison_fingerprint"] = fingerprint

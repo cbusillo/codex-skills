@@ -9812,9 +9812,7 @@ def _domain_authority_plan_body(
     }
     if "comparison_fingerprint" in provider:
         fingerprint = provider["comparison_fingerprint"]
-        if not isinstance(fingerprint, str) or not re.fullmatch(
-            r"hmac-sha256:[A-Za-z0-9][A-Za-z0-9._-]{0,63}:[0-9a-f]{64}", fingerprint
-        ):
+        if not isinstance(fingerprint, str) or not 1 <= len(fingerprint) <= 256:
             raise LaunchplaneSafetyError("invalid_response")
         body["expected_current_provider_target_fingerprint"] = fingerprint
     return body
