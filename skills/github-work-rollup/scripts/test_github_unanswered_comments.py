@@ -77,7 +77,7 @@ def reaction(
 def thread() -> dict[str, object]:
     return {
         "title": "Example work",
-        "state": "closed",
+        "state": "open",
         "html_url": "https://github.com/example/repo/issues/42",
     }
 
@@ -587,10 +587,10 @@ def test_collect_comment_reactions_paginates(monkeypatch) -> None:
 
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake_run_json)
 
-    reactions, last_edited_at = github_unanswered_comments.collect_comment_reactions(external)
+    reactions, last_edit = github_unanswered_comments.collect_comment_reactions(external)
 
     assert reactions == [reaction(content="HEART")]
-    assert last_edited_at == ""
+    assert last_edit is None
     assert any("after=cursor-1" in argument for argument in commands[1])
 
 
@@ -678,7 +678,7 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
         "collect_candidate_reactions",
         lambda comments: (
             {review.global_key: [reaction(created_at="2026-07-25T13:00:00Z")]},
-            {review.global_key: "2026-07-25T14:00:00Z"},
+            {review.global_key: github_unanswered_comments.Edit("2026-07-25T14:00:00Z", "outside-reviewer")},
             [],
         ),
     )
@@ -1209,6 +1209,295 @@ def test_named_empty_people_index_is_valid(tmp_path: Path) -> None:
     identities = github_unanswered_comments.people_identities({"cbusillo"}, index)
 
     assert identities["status"] != "error"
+
+
+@pytest.fixture
+def app_ready_discussion():
+    # codex-skills#825: App-ready note, a public response, Q309 and its decision.
+    external = comment(comment_id=1, author="Mbanks89", body="The App is ready.", created_at="2026-07-25T10:00:00Z")
+    reply = comment(comment_id=2, author="fixture-automation", body=f"Thanks, recorded: {external.url}", created_at="2026-07-25T11:00:00Z")
+    question = comment(comment_id=3, author="fixture-automation", body="Director question: Q309. Use the App from the comment above?", created_at="2026-07-25T12:00:00Z")
+    decision = comment(comment_id=4, author="fixture-automation", body="Director decision: Q309. Chris said yes.", created_at="2026-07-25T13:00:00Z")
+    return external, reply, question, decision
+
+
+def test_supervisor_above_question_records_awareness(app_ready_discussion):
+    external, *discussion = app_ready_discussion
+    [result] = classify([external, *discussion], [external])
+    assert result["attention_state"] == "handled"
+    assert result["owner_seen_evidence"]["url"] == discussion[1].url
+
+
+@pytest.mark.parametrize("prefix", ["Director question:", "Director decision:"])
+def test_linked_director_record_covers_only_linked_comment(prefix):
+    first = comment(comment_id=1, author="outside", body="One", created_at="2026-07-25T10:00:00Z")
+    second = comment(comment_id=2, author="outside", body="Two", created_at="2026-07-25T11:00:00Z")
+    record = comment(comment_id=3, author="fixture-automation", body=f"{prefix} Q309 about {second.url} above", created_at="2026-07-25T12:00:00Z")
+    results = classify([first, second, record], [first, second])
+    assert [row["owner_seen"] for row in results] == [False, True]
+    assert results[1]["attention_state"] == "seen_unanswered"
+    assert results[1]["publicly_addressed"] is False
+
+
+def test_above_record_stops_at_previous_record_and_does_not_answer():
+    old = comment(comment_id=1, author="outside", body="Old", created_at="2026-07-25T10:00:00Z")
+    previous = comment(comment_id=2, author="fixture-automation", body="Director question: Q308. Unrelated work?", created_at="2026-07-25T11:00:00Z")
+    new = comment(comment_id=3, author="outside", body="New", created_at="2026-07-25T12:00:00Z")
+    decision = comment(comment_id=4, author="fixture-automation", body="Director decision: Q309. Accepted the comments above.", created_at="2026-07-25T13:00:00Z")
+    later = comment(comment_id=5, author="outside", body="Later", created_at="2026-07-25T14:00:00Z")
+    results = classify([old, previous, new, decision, later], [old, new, later])
+    assert [row["attention_state"] for row in results] == ["needs_your_eyes", "seen_unanswered", "needs_your_eyes"]
+
+
+def test_external_edits_and_untrusted_records_do_not_prove_awareness(app_ready_discussion):
+    external, _, question, _ = app_ready_discussion
+    edited = github_unanswered_comments.replace(external, updated_at="2026-07-25T14:00:00Z")
+    untrusted = github_unanswered_comments.replace(question, author="outside")
+    assert classify([edited, question], [edited])[0]["owner_seen"] is False
+    assert classify([external, untrusted], [external])[0]["owner_seen"] is False
+
+
+@pytest.mark.parametrize("closed_at,updated_at,expected", [
+    ("2026-07-25T12:00:00Z", None, "handled"),
+    ("2026-07-25T09:00:00Z", None, "needs_your_eyes"),
+    ("2026-07-25T12:00:00Z", "2026-07-25T13:00:00Z", "needs_your_eyes"),
+    ("2026-07-27T12:00:00Z", None, "needs_your_eyes"),
+])
+def test_closed_after_comment_uses_latest_version_and_scan_end(closed_at, updated_at, expected):
+    external = comment(comment_id=1, author="outside", body="Accepted?", created_at="2026-07-25T10:00:00Z", updated_at=updated_at)
+    [result] = github_unanswered_comments.comment_states_for_thread(
+        {**thread(), "state": "closed", "closed_at": closed_at}, [external], {external.key},
+        {"cbusillo"}, {"fixture-automation"}, {external.key: []},
+        datetime(2026, 7, 26, tzinfo=timezone.utc),
+    )
+    assert result["attention_state"] == expected
+    assert result["owner_seen"] is False
+
+
+def test_closed_bot_answer_is_handled_without_personal_awareness(app_ready_discussion):
+    external, reply, *_ = app_ready_discussion
+    [result] = github_unanswered_comments.comment_states_for_thread(
+        {**thread(), "state": "closed"}, [external, reply], {external.key},
+        {"cbusillo"}, {"fixture-automation"}, {external.key: []},
+    )
+    assert result["attention_state"] == "handled"
+    assert result["owner_seen"] is False
+    assert result["publicly_addressed"] is True
+
+
+def api_comment(comment_id, author, created_at, body="Reply", **extra):
+    return {"id": comment_id, "user": {"login": author, "type": "User"},
+            "node_id": f"NODE_{comment_id}", "issue_url": "https://api.github.com/repos/outside/project/issues/33",
+            "created_at": created_at, "updated_at": created_at, "body": body,
+            "html_url": f"https://github.com/outside/project/issues/33#issuecomment-{comment_id}", **extra}
+
+
+@pytest.fixture
+def outbound_fixture():
+    # Outside authored issue (hass-uplift-desk#33) and commented PR (MyQ#1).
+    issue = opening(number=33, author="cbusillo", pull_request=False)
+    pull = opening(number=1, author="maintainer")
+    mentioned = opening(number=2, author="maintainer")
+    for item in (issue, pull, mentioned):
+        item["html_url"] = f"https://github.com/outside/project/issues/{item['number']}"
+        item["repository_url"] = "https://api.github.com/repos/outside/project"
+    routes = {
+        "search/issues": {"items": [issue, pull, mentioned], "total_count": 3, "incomplete_results": False},
+        "repos/outside/project/issues/33": issue,
+        "repos/outside/project/issues/33/comments": [
+            api_comment(1, "maintainer", "2026-07-21T00:00:00Z"),
+            api_comment(2, "fixture-automation", "2026-07-22T00:00:00Z"),
+        ],
+        "repos/outside/project/issues/1": pull,
+        "repos/outside/project/issues/1/comments": [
+            api_comment(3, "maintainer", "2026-07-21T00:00:00Z"),
+            api_comment(4, "cbusillo", "2026-07-22T00:00:00Z"),
+            api_comment(5, "maintainer", "2026-07-23T00:00:00Z"),
+            api_comment(6, "maintainer", "2026-07-27T00:00:00Z"),
+        ],
+        "repos/outside/project/pulls/1/comments": [api_comment(7, "reviewer", "2026-07-24T00:00:00Z", pull_request_url="https://api.github.com/repos/outside/project/pulls/1")],
+        "repos/outside/project/pulls/1/reviews": [api_comment(8, "reviewer", "2026-07-24T01:00:00Z", submitted_at="2026-07-24T01:00:00Z")],
+        "repos/outside/project/issues/2": mentioned,
+        "repos/outside/project/issues/2/comments": [api_comment(9, "maintainer", "2026-07-24T00:00:00Z", "@cbusillo can you help?")],
+    }
+    for number in (1, 2, 33):
+        for item in routes[f"repos/outside/project/issues/{number}/comments"]:
+            item["issue_url"] = f"https://api.github.com/repos/outside/project/issues/{number}"
+            item["html_url"] = f"https://github.com/outside/project/issues/{number}#issuecomment-{item['id']}"
+    return routes
+
+
+def outbound_settings():
+    return github_unanswered_comments.resolve_settings(
+        args(outbound=True, self_login=["cbusillo"], bot_login=["fixture-automation"], until="2026-07-26T20:00:00Z"), {},
+    )
+
+
+def test_outbound_lists_authored_and_commented_threads_after_last_human_activity(monkeypatch, outbound_fixture):
+    fake = FakeGitHub(outbound_fixture)
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    assert payload["status"] == "attention"
+    assert {item["comment_id"] for item in payload["attention"]} == {1, 5, 7, 8}
+    assert all(item["attention_state"] == "outbound_reply" for item in payload["attention"])
+    rendered = github_unanswered_comments.render_markdown(payload)
+    assert all(item["comment_url"] in rendered for item in payload["attention"])
+    assert not any(call.startswith("repos/example") for call in fake.calls)
+
+
+def test_outbound_last_human_edit_clears_earlier_replies(monkeypatch, outbound_fixture):
+    outbound_fixture["repos/outside/project/issues/1/comments"][1]["updated_at"] = "2026-07-25T00:00:00Z"
+    fake = FakeGitHub(outbound_fixture)
+    def with_opening_edit(command):
+        result = fake(command)
+        if command[2] == "graphql" and ("id=I_33" in command or "id=NODE_4" in command):
+            result["data"]["node"]["lastEditedAt"] = "2026-07-25T00:00:00Z"
+            result["data"]["node"]["editor"] = {"login": "cbusillo"}
+        return result
+    monkeypatch.setattr(github_unanswered_comments, "run_json", with_opening_edit)
+    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    assert payload["status"] == "clear"
+    assert payload["attention"] == []
+
+
+@pytest.mark.parametrize("search_result", [
+    {"items": [], "total_count": 1, "incomplete_results": True},
+    {"items": [], "total_count": 5, "incomplete_results": False},
+    {"unexpected": []},
+])
+def test_outbound_partial_or_malformed_search_is_degraded(monkeypatch, search_result):
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({"search/issues": search_result}))
+    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    assert payload["status"] == "degraded"
+    assert payload["coverage"]["errors"]
+
+
+@pytest.mark.parametrize("total,expected_pages,degraded", [(101, 2, False), (1001, 10, True)])
+def test_outbound_search_paginates_and_reports_search_cap(monkeypatch, total, expected_pages, degraded):
+    from urllib.parse import parse_qs, urlparse
+    pages = []
+    def search(command):
+        query = parse_qs(urlparse(command[2]).query)
+        page = int(query["page"][0])
+        pages.append(page)
+        rows = [{"number": number, "repository_url": "https://api.github.com/repos/outside/project"}
+                for number in range((page - 1) * 100, min(page * 100, total))]
+        return {"items": rows, "total_count": total, "incomplete_results": False}
+    monkeypatch.setattr(github_unanswered_comments, "run_json", search)
+    found, errors = github_unanswered_comments.outbound_threads({"cbusillo"}, outbound_settings())
+    assert len(pages) == expected_pages
+    assert len(found) == min(total, 1000)
+    assert bool(errors) is degraded
+
+
+def test_outbound_read_failure_preserves_attention_and_degrades(monkeypatch, outbound_fixture):
+    fake = FakeGitHub(outbound_fixture)
+    def denied(command):
+        if command[2] == "repos/outside/project/issues/1":
+            raise github_unanswered_comments.rollup.RollupError("Not visible")
+        return fake(command)
+    monkeypatch.setattr(github_unanswered_comments, "run_json", denied)
+    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    assert payload["status"] == "degraded"
+    assert {item["comment_id"] for item in payload["attention"]} == {1}
+
+
+@pytest.mark.parametrize("status,exit_name", [("clear", "EXIT_CLEAR"), ("attention", "EXIT_ATTENTION"), ("degraded", "EXIT_DEGRADED")])
+def test_outbound_uses_existing_exit_contract(monkeypatch, capsys, status, exit_name):
+    monkeypatch.setattr(github_unanswered_comments, "parse_args", lambda: args(outbound=True, format="json"))
+    monkeypatch.setattr(github_unanswered_comments.rollup, "load_config", lambda path: {})
+    monkeypatch.setattr(github_unanswered_comments, "collect_payload", lambda settings: {"status": status})
+    assert github_unanswered_comments.main() == getattr(github_unanswered_comments, exit_name)
+    assert status in capsys.readouterr().out
+
+
+def test_closed_messages_are_counted_without_attention_detail(monkeypatch):
+    closed = opening(number=33, author="outside", pull_request=False)
+    closed.update(state="closed", closed_at="2026-07-25T00:00:00Z")
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({
+        "repos/example/repo/issues": [closed], "repos/example/repo/issues/33": closed,
+    }))
+    payload = github_unanswered_comments.collect_payload(portfolio_settings())
+    assert payload["status"] == "clear"
+    assert payload["counts"]["handled_closed"] == 1
+    assert payload["attention"] == []
+    assert closed["title"] not in github_unanswered_comments.render_markdown(payload)
+
+
+@pytest.mark.parametrize("prefix", [
+    *github_unanswered_comments.director_questions.QUESTION_PREFIXES,
+    *github_unanswered_comments.director_questions.DECISION_PREFIXES,
+])
+def test_awareness_accepts_existing_record_prefixes(prefix, app_ready_discussion):
+    external, *_ = app_ready_discussion
+    record = comment(comment_id=2, author="fixture-automation", body=f"**{prefix}** the comment above", created_at="2026-07-25T12:00:00Z")
+    [result] = classify([external, record], [external])
+    assert result["owner_seen"] is True
+    assert result["publicly_addressed"] is False
+
+
+def test_quoted_question_inside_ordinary_comment_is_not_awareness(app_ready_discussion):
+    external, *_ = app_ready_discussion
+    record = comment(comment_id=2, author="fixture-automation", body="Example of a future question:\nDirector question: about the comment above", created_at="2026-07-25T12:00:00Z")
+    assert classify([external, record], [external])[0]["owner_seen"] is False
+
+
+def test_outbound_with_portfolio_scope_does_not_adopt_repository_owners(monkeypatch, outbound_fixture):
+    # A maintainer's later update must not hide a reply to the Director.
+    outbound_fixture["repos/outside/project/issues/1/comments"].append(
+        api_comment(10, "outside", "2026-07-25T00:00:00Z", issue_url="https://api.github.com/repos/outside/project/issues/1"),
+    )
+    fake = FakeGitHub(outbound_fixture)
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+    settings = outbound_settings()
+    settings.update(repositories=["outside/other"], scan_repository_scope=True)
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert {item["comment_id"] for item in payload["attention"]} == {1, 5, 7, 8, 10}
+
+
+def test_closed_full_history_scan_uses_requested_closed_thread_rules(monkeypatch):
+    closed = opening(number=42, author="outside", pull_request=False, body="I can provide test files.")
+    closed.update(state="closed", closed_at="2026-07-25T00:00:00Z")
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({"repos/example/repo/issues/42": closed}))
+    settings = github_unanswered_comments.resolve_settings(args(thread=["example/repo#42"], self_login=["cbusillo"], until="2026-07-26T20:00:00Z"), {})
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert payload["status"] == "clear"
+    assert payload["counts"]["handled_closed"] == 1
+
+
+@pytest.mark.parametrize("scope_repo", ["outside/project", "Outside/Project"])
+def test_explicit_thread_scope_wins_over_outbound_discovery(monkeypatch, outbound_fixture, scope_repo):
+    fake = FakeGitHub(outbound_fixture)
+    def case_insensitive_api(command):
+        command = list(command)
+        command[2] = command[2].replace(scope_repo, "outside/project")
+        return fake(command)
+    monkeypatch.setattr(github_unanswered_comments, "run_json", case_insensitive_api)
+    settings = outbound_settings()
+    settings["threads"] = [(scope_repo, 1)]
+    payload = github_unanswered_comments.collect_payload(settings)
+    rows = [row for row in payload["attention"] if row["number"] == 1]
+    assert any(row["comment_id"] == 3 for row in rows)  # Before Chris's unrelated activity.
+    assert all(row["attention_state"] != "outbound_reply" for row in rows)
+
+
+def test_incidental_url_does_not_disable_above_awareness(app_ready_discussion):
+    external, *_ = app_ready_discussion
+    question = comment(comment_id=2, author="fixture-automation", body="Director question: Should we use https://example.com/docs based on the comment above?", created_at="2026-07-25T12:00:00Z")
+    assert classify([external, question], [external])[0]["owner_seen"] is True
+
+
+@pytest.mark.parametrize("editor", ["maintainer", "fixture-automation", ""])
+def test_others_edits_do_not_advance_outbound_human_cutoff(monkeypatch, outbound_fixture, editor):
+    fake = FakeGitHub(outbound_fixture)
+    def edited_by_other(command):
+        result = fake(command)
+        if command[2] == "graphql" and ("id=I_33" in command or "id=NODE_4" in command):
+            result["data"]["node"].update(lastEditedAt="2026-07-25T00:00:00Z", editor={"login": editor})
+        return result
+    monkeypatch.setattr(github_unanswered_comments, "run_json", edited_by_other)
+    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    assert {item["comment_id"] for item in payload["attention"]} == {1, 5, 7, 8}
 
 
 if __name__ == "__main__":
