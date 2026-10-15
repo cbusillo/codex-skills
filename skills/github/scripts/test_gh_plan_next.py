@@ -3403,6 +3403,11 @@ def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() 
             module.NEXT_READS.deadline = time.time() + module.NEXT_READS.final_evidence_reserve / 2
             return [optional], {"complete": True, "repositories": [{"repo": optional["repo"], "direction": DIRECTION}]}
         module.discover_direction_work = slow_inventory
+        def observed_ownership(items: list[dict[str, Any]], _args: Any) -> dict[str, Any]:
+            for item in items:
+                item["queue"] = {"state": "review", "claim_required": True}
+            return {"repositories": {}}
+        module.annotate_next_queue = observed_ownership
         args = next_args()
         args.time_budget = 50
         module.cmd_next(args)
@@ -3411,7 +3416,8 @@ def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() 
         assert not result["performance"]["deadline_exhausted"]
         assert not result["candidate_coverage"]["milestone_ranking_complete"]
         assert result["graph_context"]["complete"]
-        assert any(row["phase"] == "ownership" for row in result["performance"]["phases"])
+        reported = next(row for row in result["candidates"] if row["number"] == leaf["number"])
+        assert reported["queue"]["claim_required"]
 
 
 
@@ -3465,7 +3471,7 @@ def test_global_read_wrapper_coalesces_gets_and_classifies_actual_deadlines() ->
             assert reads.receipt()["budget_stops"][failure.cause] == 1
             assert reads.receipt()["budget_context"][0]["retry_at"] > reads.deadline
             network_timeout = module.PlanError("TLS handshake timeout", failure=failure,
-                api_result={"retry_exhausted_reason": "max_attempts_exhausted"})
+                api_result={"retry_exhausted_reason": "attempt_budget"})
             try:
                 module.next_source_error(network_timeout)
             except module.PlanError as exc:
