@@ -144,18 +144,15 @@ class LaunchFailure(ValueError):
 class StartupFailure(ValueError):
     def __init__(self, snapshot):
         self.snapshot = snapshot
-        super().__init__("terminal exited or reported a startup failure; inspect its last output before retrying")
+        super().__init__("terminal exited during startup; inspect its last output before retrying")
 
 
 async def verify_startup(read, timeout=2.0):
-    """Observe immediate exit/bootstrap errors; this is not full agent readiness."""
+    """Observe immediate exit; this is not full agent readiness."""
     deadline = time.monotonic() + timeout
     while True:
         snapshot = await read()
-        output = "\n".join(snapshot.get("screen", []))
-        if snapshot["dead"] or any(text in output for text in (
-            "Server is draining", "Failed to start a fresh session through the app server",
-        )):
+        if snapshot["dead"]:
             raise StartupFailure(snapshot)
         if time.monotonic() >= deadline:
             return
@@ -173,7 +170,9 @@ async def submit_iterm_launch(app, session, command):
 
         termination = asyncio.create_task(terminated())
         try:
-            await send(session, command, allow_tabs=True)
+            # Replace the interactive shell so any agent exit ends this exact
+            # terminal, even when the launch file didn't itself use exec.
+            await send(session, "exec /bin/zsh -c " + shlex.quote(command), allow_tabs=True)
 
             async def read():
                 nonlocal last_screen
@@ -432,6 +431,15 @@ def codex_daemon_endpoint(home):
     return home / "app-server-control" / "app-server-control.sock"
 
 
+class DaemonRefusal(ValueError):
+    def __init__(self, state, active_threads):
+        self.state = state
+        self.active_threads = active_threads
+        super().__init__(f"Codex daemon admission {state}; {active_threads} active thread(s). "
+                         "Do not restart or stop it. Wait for it to exit, or select another "
+                         "Context Panel account with --account; inspect active threads before any manual restart")
+
+
 def inspect_codex_daemon(home):
     """Read loaded thread states and check admission without creating a thread."""
     from websockets.sync.client import unix_connect
@@ -485,12 +493,9 @@ def inspect_codex_daemon(home):
         error = probe.get("error", {})
         message = error.get("message", "")
         if "Server is draining" in message:
-            raise ValueError(f"Codex daemon is draining; {active} active thread(s). "
-                             "Do not restart or stop it. Wait for it to exit, or select another "
-                             "Context Panel account with --account; inspect active threads before any manual restart")
+            raise DaemonRefusal("draining", active)
         if error.get("code") != -32600 or not message.startswith("invalid session id:"):
-            raise ValueError(f"Codex daemon admission unknown; {active} active thread(s); "
-                             "wait or select another account; do not restart")
+            raise DaemonRefusal("unknown", active)
 
 
 def check_codex_daemon(choice):

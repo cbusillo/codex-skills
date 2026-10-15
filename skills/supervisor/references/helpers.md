@@ -820,13 +820,16 @@ inspect the daemon's active threads and refuse while one is running or their
 state is unknown. Terminal clients and dead tmux panes cannot prove a worker
 has ended; a remote Codex thread can continue after its terminal disappears.
 
-Both terminal backends observe the first two seconds after submission. A dead
-pane or a Codex bootstrap error returns `launch_failed`, retaining the exact
+Both terminal backends observe the first two seconds after submission. An early
+exit, including a failed Codex bootstrap, returns `launch_failed`, retaining the exact
 terminal identity, any already-written count-only receipt, and the pane's last
 output (tmux also reports exit status). Inspect those terminals before retrying;
 the launcher never replays a batch automatically. This observation catches early
-exit, not full agent readiness or a later failure. iTerm uses its native session
-termination monitor; the tmux backend reads pane state without driving iTerm.
+exit, not full agent readiness or a later failure. iTerm replaces the interactive
+shell with the launch command in a scoped zsh process, so an agent exit ends
+that exact session even if the launch file omitted `exec`. It uses the native
+session termination monitor; tmux reads pane state without driving iTerm. Brief
+text and echoed commands are never treated as startup-error evidence.
 
 Accounts live only in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under

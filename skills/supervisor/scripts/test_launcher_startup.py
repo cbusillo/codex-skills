@@ -8,7 +8,9 @@
 import argparse
 import asyncio
 import json
+import shlex
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +20,8 @@ from websockets.sync import client
 
 import iterm_tab
 import tmux_terminal
+
+ADMISSION_OPEN = json.loads((Path(__file__).parent / "fixtures" / "codex-admission-open.json").read_text())["response"]
 
 
 class DaemonTests(unittest.TestCase):
@@ -41,9 +45,9 @@ class DaemonTests(unittest.TestCase):
             elif method == "thread/read":
                 response = {"result": {"thread": {"status": {"type": states[params["threadId"]]}}}}
             elif method == "thread/resume":
-                response = probe if probe is not None else {"error": {
-                    "code": -32600, "message": "Server is draining; retry after reconnecting" if draining
-                    else "invalid session id: invalid character"}}
+                response = probe if probe is not None else ({"error": {
+                    "code": -32600, "message": "Server is draining; retry after reconnecting"}}
+                    if draining else {key: value for key, value in ADMISSION_OPEN.items() if key != "id"})
             else:
                 response = {"result": {}}
             pending.append(json.dumps({"id": message["id"], **response}))
@@ -66,18 +70,22 @@ class DaemonTests(unittest.TestCase):
         self.assertFalse(any(c["method"] in {"thread/start", "turn/start", "turn/interrupt"} for c in calls))
 
     def test_draining_daemon_with_detached_active_worker_refuses(self):
-        with self.assertRaisesRegex(ValueError, "draining; 1 active thread"):
+        with self.assertRaises(iterm_tab.DaemonRefusal) as raised:
             self.inspect(draining=True)
+        self.assertEqual(raised.exception.state, "draining")
+        self.assertEqual(raised.exception.active_threads, 1)
 
     def test_draining_daemon_with_no_active_threads_still_refuses(self):
-        with self.assertRaisesRegex(ValueError, "draining; 0 active thread"):
+        with self.assertRaises(iterm_tab.DaemonRefusal) as raised:
             self.inspect(draining=True, states={"detached-worker": "idle"})
+        self.assertEqual(raised.exception.active_threads, 0)
 
     def test_active_threads_are_counted_across_all_pages(self):
         pages = {None: {"data": ["idle"], "nextCursor": "page2"},
                  "page2": {"data": ["running"], "nextCursor": None}}
-        with self.assertRaisesRegex(ValueError, "1 active thread"):
+        with self.assertRaises(iterm_tab.DaemonRefusal) as raised:
             self.inspect(draining=True, pages=pages, states={"idle": "idle", "running": "active"})
+        self.assertEqual(raised.exception.active_threads, 1)
 
     def test_unavailable_or_unknown_inventory_and_admission_refuse(self):
         for kwargs in ({"fail": "thread/loaded/list"}, {"fail": "thread/read"},
@@ -100,7 +108,7 @@ class DaemonTests(unittest.TestCase):
               patch.object(iterm_tab.socket, "socket") as sock,
               patch.object(iterm_tab, "inspect_codex_daemon", side_effect=ValueError("draining; 1 active thread")),
               patch.object(iterm_tab.account_choice, "record_launch") as receipt):
-            with self.assertRaisesRegex(ValueError, "do not restart"):
+            with self.assertRaises(ValueError):
                 iterm_tab.check_codex_daemon(choice)
             self.assertEqual([c.args[0][-1] for c in run.call_args_list], ["start"])
             receipt.assert_not_called()
@@ -114,10 +122,12 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
             await iterm_tab.verify_startup(AsyncMock(return_value=snapshot), timeout=0)
         self.assertEqual(raised.exception.snapshot, snapshot)
 
-    async def test_live_shell_containing_draining_bootstrap_error_refuses(self):
-        snapshot = {"dead": False, "screen": ["Error: Server is draining; retry after reconnecting"]}
-        with self.assertRaises(iterm_tab.StartupFailure):
-            await iterm_tab.verify_startup(AsyncMock(return_value=snapshot), timeout=0)
+    async def test_live_agent_brief_quoting_draining_error_is_not_a_failure(self):
+        snapshot = {"dead": False, "screen": [
+            "Investigate Error: Server is draining; retry after reconnecting",
+            "Failed to start a fresh session through the app server",
+        ]}
+        await iterm_tab.verify_startup(AsyncMock(return_value=snapshot), timeout=0)
 
     async def test_exit_during_observation_is_detected(self):
         read = AsyncMock(side_effect=[{"dead": False, "screen": []},
@@ -177,6 +187,36 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                 await iterm_tab.submit_iterm_launch(app, session, "fake-agent")
         self.assertEqual(raised.exception.snapshot["screen"], ["last output"])
         context.__aexit__.assert_awaited_once()
+
+    async def test_iterm_agent_exit_without_exec_ends_the_launch_shell(self):
+        queue = asyncio.Queue()
+        context = Mock()
+        context.__aenter__ = AsyncMock(return_value=SimpleNamespace(async_get=queue.get))
+        context.__aexit__ = AsyncMock(return_value=False)
+        output = []
+        screen = SimpleNamespace(number_of_lines=1, line=lambda i: SimpleNamespace(string=output[0]))
+        session = SimpleNamespace(session_id="exact", async_get_screen_contents=AsyncMock(return_value=screen))
+        app = SimpleNamespace(connection=object(), async_refresh=AsyncMock(),
+                              terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[session])])])
+
+        async def send(target, text, **kwargs):
+            result = subprocess.run(["/bin/zsh", "-c", text], capture_output=True, text=True, timeout=2)
+            self.assertEqual(result.returncode, 7)
+            output.append(result.stdout.strip())
+            queue.put_nowait(target.session_id)
+            await asyncio.sleep(0)
+
+        with tempfile.TemporaryDirectory() as folder:
+            agent = Path(folder) / "fixture agent"
+            agent.write_text('#!/bin/sh\nprintf "%s\\n" "$1"\nexit 7\n')
+            agent.chmod(0o700)
+            # No exec: the launcher must still replace the shell and see exit.
+            command = shlex.join([str(agent), "brief mentioning Server is draining"])
+            with (patch.dict("sys.modules", {"iterm2": SimpleNamespace(SessionTerminationMonitor=Mock(return_value=context))}),
+                  patch.object(iterm_tab, "send", side_effect=send)):
+                with self.assertRaises(iterm_tab.StartupFailure):
+                    await iterm_tab.submit_iterm_launch(app, session, command)
+        self.assertEqual(output, ["brief mentioning Server is draining"])
 
 
 if __name__ == "__main__":

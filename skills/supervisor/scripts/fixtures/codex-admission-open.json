@@ -1,0 +1,10 @@
+{
+  "provenance": {
+    "kind": "native read-only protocol observation",
+    "cli_version": "0.162.1",
+    "observed_at": "2026-10-15",
+    "request": {"method": "thread/resume", "params": {"threadId": "supervisor-launch-preflight-invalid-id"}},
+    "notes": "After initialize/initialized on a healthy running daemon over its Unix WebSocket; no thread was created or resumed. Private home and account omitted."
+  },
+  "response": {"error": {"code": -32600, "message": "invalid session id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `s` at 1"}, "id": 2}
+}
