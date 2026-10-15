@@ -35,6 +35,34 @@ PANE_FIELDS = ("session_id", "window_id", "pane_id", "pane_title", "pane_tty",
                "pane_pid", "pane_dead", "pane_dead_status", "pane_dead_signal", "@supervisor_identity", "pid")
 
 
+def process_parents():
+    """Read ancestry only; missing or malformed process evidence preserves the pane."""
+    result = subprocess.run(["ps", "-axo", "pid=,ppid="], check=True,
+                            capture_output=True, text=True, timeout=10)
+    parents = {}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2 or not all(field.isdigit() for field in fields):
+            raise ValueError("unparseable process ancestry")
+        pid, parent = map(int, fields)
+        if pid <= 0 or pid in parents:
+            raise ValueError("uncertain process ancestry")
+        parents[pid] = parent
+    if not parents:
+        raise ValueError("process ancestry unavailable")
+    return parents
+
+
+def belongs_to(pid, root, parents):
+    visited = set()
+    while pid in parents and pid not in visited:
+        if pid == root:
+            return True
+        visited.add(pid)
+        pid = parents[pid]
+    return False
+
+
 class Terminal:
     def __init__(self, socket_name="supervisor"):
         if not re.fullmatch(r"[A-Za-z0-9_-]+", socket_name):
@@ -280,13 +308,23 @@ class Terminal:
                 raise ValueError(f"terminal {key} differs from launch ledger")
         if not row["dead"]:
             raise ValueError("agent process remains; terminal kept")
-        siblings = [r for r in self.list() if r["tab_id"] == row["tab_id"]]
+        panes = self.list()
+        siblings = [r for r in panes if r["tab_id"] == row["tab_id"]]
         if len(siblings) != 1:
             raise ValueError("split or linked tmux window; terminal kept")
         rows = inventory()
         tty = row["tty"].removeprefix("/dev/")
-        if any(pid in {entry["pid"], row["pid"]} or job_tty == tty for pid, job_tty, _ in rows):
+        if any(pid in {entry["pid"], row["pid"]} for pid, _, _ in rows):
             raise ValueError("process remains or PID was reused; terminal kept")
+        jobs = [pid for pid, job_tty, _ in rows if job_tty == tty]
+        if jobs:
+            owners = [pane for pane in panes if pane["pane_id"] != row["pane_id"]
+                      and not pane["dead"] and pane["tty"].removeprefix("/dev/") == tty]
+            if len(owners) != 1 or owners[0]["pid"] not in jobs:
+                raise ValueError("TTY ownership is uncertain; terminal kept")
+            parents = process_parents()
+            if not all(belongs_to(pid, owners[0]["pid"], parents) for pid in jobs):
+                raise ValueError("process belongs to no verified new TTY owner; terminal kept")
         # A dead pane has no input consumer. Never kill a live shell to clear it.
         return row
 

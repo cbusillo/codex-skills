@@ -113,6 +113,13 @@ monitor/scheduler. A new watcher may repeat a notice. `clean: null` means a turn
 ended, not that work succeeded; an abort is also a notice. Use Claude Code's
 `notify_when_idle` when available, not another watcher.
 
+The Codex idle watcher filters a mixed-harness ledger before transcript
+validation. It emits a `skipped: true` diagnostic with the ledger index,
+session id and reason for each non-Codex entry, once per unchanged entry in
+that watch run. Codex entries still require valid, unique native ids and
+transcript paths; malformed ledger structure still refuses. Shared completion
+and closure readers retain their strict ledger validation.
+
 ### Codex provider capacity stops
 
 `status.py` and idle notices report `state: provider_capacity` only for the
@@ -800,6 +807,12 @@ pane, conditional on its launch nonce and dead state still matching inside
 the server. A dead pane has no input consumer; a live shell cannot qualify
 from its screen appearance. Read back disappearance once. An uncertain close
 is retained for reconciliation rather than retried.
+
+If the dead pane's old TTY has been reused, close proceeds only when tmux
+identifies a different live pane on that TTY and process ancestry proves every
+current job there belongs to that new pane's PID tree. Unattributed jobs,
+missing ancestry, and either recorded PID still present preserve the dead
+pane. The live pane is never a close target, and no process is killed.
 
 For the locked-screen acceptance proof, the Supervisor arranges a short test
 with the Director. Prepare one harmless real Codex or Claude launch with an

@@ -117,15 +117,29 @@ def read_jsonl(path: Path) -> list[dict]:
     return records
 
 
-def load_ledger(path: Path) -> list[dict]:
-    """Paths are relative to the ledger, never to the caller's working directory."""
+def load_ledger(path: Path, *, harness: str | None = None,
+                skipped: list[dict] | None = None) -> list[dict]:
+    """Resolve ledger-relative paths, validating only the explicitly selected harness.
+
+    The default remains strict for readers that decide completion or closure.
+    Harness-specific readers can collect a diagnostic for every excluded entry.
+    """
+    if harness is not None and harness not in {"claude", "codex"}:
+        raise ValueError("selected harness must be claude or codex")
     entries = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(entries, list):
         raise TypeError("ledger must be an array of session objects")
     seen = set()
-    for entry in entries:
+    selected = []
+    for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise TypeError("ledger entry must be an object")
+        if harness is not None and entry.get("harness") != harness:
+            if skipped is not None:
+                skipped.append({"ledger_index": index, "session_id": entry.get("session_id"),
+                                "harness": entry.get("harness"), "skipped": True,
+                                "reason": f"watching only {harness} entries", "clean": None})
+            continue
         if entry.get("harness") not in {"claude", "codex"}:
             raise ValueError("ledger harness must be claude or codex")
         for key in ("session_id", "transcript"):
@@ -138,7 +152,8 @@ def load_ledger(path: Path) -> list[dict]:
             entry["tty"] = entry["tty"].removeprefix("/dev/")
         transcript = Path(entry["transcript"]).expanduser()
         entry["transcript"] = str((path.parent / transcript).resolve())
-    return entries
+        selected.append(entry)
+    return selected
 
 
 def text_content(content) -> str:
