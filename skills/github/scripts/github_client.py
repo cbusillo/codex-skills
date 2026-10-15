@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import github_api
+
 SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS.parents[2]) not in sys.path:
     sys.path.insert(0, str(SCRIPTS.parents[2]))
@@ -27,8 +29,11 @@ LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 
 def helper_json(script: Path, *args: str) -> dict[str, Any] | None:
     try:
+        timeout = min(30, github_api.remaining_retry_timeout_seconds())
+        if timeout <= 0:
+            return None
         result = subprocess.run(["uv", "run", str(script), *args], capture_output=True,
-                                text=True, timeout=30, check=False)
+                                text=True, timeout=timeout, check=False)
         value = json.loads(result.stdout) if result.returncode == 0 else None
         return value if isinstance(value, dict) else None
     except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -38,12 +43,18 @@ def helper_json(script: Path, *args: str) -> dict[str, Any] | None:
 def local_repository(repo: str) -> Path | None:
     """Find a sibling primary checkout, verifying its origin before local reads."""
     try:
+        timeout = min(5, github_api.remaining_retry_timeout_seconds())
+        if timeout <= 0:
+            return None
         result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                                capture_output=True, text=True, timeout=5, check=True)
+                                capture_output=True, text=True, timeout=timeout, check=True)
         primary = Path(result.stdout.strip()).parent
         for candidate in (primary, primary.parent / repo.split("/")[-1]):
+            timeout = min(5, github_api.remaining_retry_timeout_seconds())
+            if timeout <= 0:
+                return None
             origin = subprocess.run(["git", "-C", str(candidate), "remote", "get-url", "origin"],
-                                    capture_output=True, text=True, timeout=5, check=False)
+                                    capture_output=True, text=True, timeout=timeout, check=False)
             remote = origin.stdout.strip().removesuffix(".git")
             if origin.returncode == 0 and remote.casefold() in {
                     "https://github.com/" + repo.casefold(), "git@github.com:" + repo.casefold(),

@@ -12,6 +12,18 @@ Read for `next` in a repository owner's direction repository, including explicit
    `graph_context` and `discovery_context` separately, including each source's
    exclusions, merged direction, failures, and bounds. An inaccessible source is
    unknown. A complete graph never means all repositories or sessions were read.
+   Global CLI reads use bounded workers and a total read budget; `--help` prints
+   the current defaults and bounds. Progress is
+   stderr-only; stdout remains one terminal JSON result. `performance` records
+   elapsed time, phase costs and invocation-local read reuse. Raise
+   `--time-budget SECONDS` for broader evidence, or lower `--read-workers`
+   to reduce concurrency. First observations still use the authenticated shared
+   reader/cache/quota path; reuse lasts only for this invocation. Native-frontier
+   ownership is read before optional discovery; discovery reserves part of the
+   effective budget for final wait/ownership evidence. A budget stop preserves unread
+   evidence and names known skipped discoveries; it never proves availability
+   or complete portfolio/milestone ranking. Check the independent coverage
+   receipts even when the command exits successfully.
 3. Apply Choose Work to possible candidates from both sources. Read each full
    discussion, including the latest comments, and current PR/branch/worktree and
    supported session evidence. A complete `discussion` snapshot is the full

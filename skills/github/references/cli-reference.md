@@ -1225,6 +1225,39 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
+Global `next` bounds network work with `--time-budget SECONDS`
+and `--read-workers COUNT`; `--help` reports the current defaults and bounds.
+Increase the budget for broader evidence;
+one worker is the supported serial route. Native graph ownership runs before
+optional discovery, which reserves part of the effective budget for final evidence reads.
+Invocation-local observations coalesce duplicate GETs;
+the first read still contacts the existing authenticated reader, including
+conditional validation, quota reserve and inherited retry deadline. No body
+is reused across invocations without that reader's normal validation.
+Progress contains phase names, elapsed seconds and counts on stderr only.
+The terminal `performance` receipt reports phase timing, reads/reuse, worker
+count and deadline exhaustion; `attempts` remains the actual transport-attempt
+count, including retries. A deadline returns partial evidence, names known
+unevaluated discoveries and withholds complete ranking claims. Unknown sources
+and incomplete discussion, dependencies, waits, ownership and Dependabot
+coverage retain their separate receipts. Stdout remains one JSON envelope.
+Local ownership subprocesses share the same inherited deadline. Ordinary claim
+preflight retains its existing subprocess policy when no explicit deadline is supplied.
+`reads` counts first invocation-local REST GET observations; `reused_reads`
+includes cached failures, separately counted in `reused_failures`. Project
+GraphQL and service calls are outside those REST counters. Their elapsed time
+is included in the phase receipts, and service subprocesses honor the inherited
+deadline. `budget_stops` distinguishes retry-deadline refusals (including a
+reset/backoff beyond the remaining budget) from unread requests after expiry.
+Graph read-ahead beyond the logical scan is capped at the worker count and
+reported in `read_ahead_unevaluated`; it does not count as evaluated coverage.
+Unused speculative provider failures are counted in `read_ahead_failures`;
+consumed provider failures and all credential/actor failures retain their stop
+policy. `budget_context` retains known retry/reset times, while early network
+timeouts remain failures. Milestone-backend attempts join the aggregate receipt.
+Parallel reads near the shared wait-read bound may retain a different subset
+of evidence; all unread references and incomplete coverage remain explicit.
+
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
   Rank actionable open plans without mutating labels, relationships, milestones,
   Projects, or workflows. Native `blocked-by` relationships are authoritative.
