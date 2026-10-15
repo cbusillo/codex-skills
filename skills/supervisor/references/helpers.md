@@ -822,19 +822,23 @@ has ended; a remote Codex thread can continue after its terminal disappears.
 
 Both terminal backends observe the first two seconds after submission. An early
 exit, including a failed Codex bootstrap, returns `launch_failed`, retaining the exact
-terminal identity, any already-written count-only receipt, and the pane's last
-output (tmux also reports exit status). Inspect those terminals before retrying;
+terminal identity, any already-written count-only receipt, and available last
+output (tmux also reports exit status). An iTerm profile that immediately closes
+the exited session can make its final screen unavailable. Inspect those terminals before retrying;
 the launcher never replays a batch automatically. This observation catches early
 exit, not full agent readiness or a later failure. iTerm replaces the interactive
 shell with the launch command in a scoped zsh process, so an agent exit ends
 that exact session even if the launch file omitted `exec`. It uses the native
 session termination monitor; tmux reads pane state without driving iTerm. Brief
 text and echoed commands are never treated as startup-error evidence.
-Both backends use non-interactive zsh and inherit the exported environment.
+Both backends use non-interactive zsh. iTerm inherits the exported environment;
+tmux forwards the launcher variables documented in [tmux launches](#tmux-launches).
 Use executable paths and explicit exports in launch files for tools that need
 them; interactive-only aliases, functions and directory-change hooks are not
 loaded by that scoped shell. A failed observation returns an unknown dead state,
 never proof that the submitted worker exited.
+Failure screens can include echoed account-home exports and the private brief;
+keep the raw launch diagnostic private and redact it before public reporting.
 
 Accounts live only in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under

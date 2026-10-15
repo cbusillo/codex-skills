@@ -8,6 +8,7 @@
 import argparse
 import asyncio
 import json
+import os
 import shlex
 import subprocess
 import tempfile
@@ -203,7 +204,8 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
             # The trailing command would run if the interactive shell returned
             # after the worker exited. -f excludes the host's startup files.
             result = subprocess.run(["/bin/zsh", "-fic", text + "; printf SHELL_RESUMED"],
-                                    capture_output=True, text=True, timeout=2)
+                                    capture_output=True, text=True, timeout=2,
+                                    env={**os.environ, "ZDOTDIR": folder})
             self.assertEqual(result.returncode, 7)
             output.append(result.stdout.strip())
             queue.put_nowait(target.session_id)
