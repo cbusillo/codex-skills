@@ -218,6 +218,8 @@ comments). Configured automation is excluded and does not advance that cutoff.
 This scan lists replies even on closed threads. GitHub search visibility,
 indexing and its 1,000-result cap limit discovery; detected partial results are
 degraded coverage. It uses the same attention and exit-code contract.
+Outbound human identities come from `--self-login`, configured comment subjects,
+or the authenticated human account; repository owners are not inferred for it.
 
 Portfolio scans cover issues and PRs opened in the window, conversation
 comments and inline-review comments; `--thread` includes the opening post,

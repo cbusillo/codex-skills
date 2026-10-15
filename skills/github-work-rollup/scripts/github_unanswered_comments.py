@@ -161,6 +161,7 @@ def resolve_settings(
     if not configured_self:
         configured_self = rollup.as_str_list(config.get("subjects"))
     self_logins = rollup.unique([*configured_self, *args.self_login])
+    outbound_self_logins = list(self_logins)
     configured_login = github_identity.automation_login()
     bot_logins = rollup.unique(
         [
@@ -189,6 +190,7 @@ def resolve_settings(
         "threads": threads,
         "scan_repository_scope": bool(repositories or repo_owners or not explicit_scope),
         "outbound": outbound,
+        "outbound_self_logins": outbound_self_logins,
         "explicit_scope": explicit_scope,
         "self_logins": self_logins,
         "bot_logins": bot_logins,
@@ -816,6 +818,11 @@ def response_targets(
     return False
 
 
+def is_director_record(comment: Comment) -> bool:
+    prefixes = director_questions.QUESTION_PREFIXES + director_questions.DECISION_PREFIXES
+    return comment.kind == "issue_comment" and comment.body.strip().lstrip("*").startswith(prefixes)
+
+
 def targeted_response_for(
     external: Comment,
     comments: list[Comment],
@@ -827,6 +834,8 @@ def targeted_response_for(
 ) -> Comment | None:
     responses = sorted(comments, key=lambda comment: (comment_activity_through(comment, until), comment.comment_id))
     for response in responses:
+        if is_director_record(response):
+            continue  # A question or recorded decision is awareness, not an answer to the commenter.
         if normalize_login(response.author) not in actor_logins or not response.body.strip():
             continue
         if not response_is_after(response, external, until):
@@ -852,10 +861,9 @@ def director_awareness_for(
     records = sorted(
         (
             comment for comment in comments
-            if comment.kind == "issue_comment"
+            if is_director_record(comment)
             and normalize_login(comment.author) in trusted_logins
             and comment_timestamp(comment.created_at) <= until
-            and re.search(r"^Director (?:question|decision):", comment.body, re.IGNORECASE | re.MULTILINE)
         ),
         key=event_sort_key,
     )
@@ -1222,6 +1230,7 @@ def outbound_states_for_thread(
 def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     self_logins = {normalize_login(login) for login in settings["self_logins"] if normalize_login(login)}
     bot_logins = {normalize_login(login) for login in settings["bot_logins"] if normalize_login(login)}
+    outbound_self = {normalize_login(login) for login in settings.get("outbound_self_logins", []) if normalize_login(login)}
     auth_login = authenticated_login()
     normalized_auth = normalize_login(auth_login)
     if normalized_auth:
@@ -1229,6 +1238,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             bot_logins.add(normalized_auth)
         else:
             self_logins.add(normalized_auth)
+            outbound_self.add(normalized_auth)
 
     repositories = resolve_repositories(settings)
     self_logins.update(normalize_login(repo.split("/", 1)[0]) for repo in repositories if "/" in repo)
@@ -1238,6 +1248,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     if people["status"] == "error":
         coverage_errors.append({"repo": "-", "lane": "people_index", "error": rollup.trim(people["error"])})
     self_logins.difference_update(bot_logins)
+    outbound_self.difference_update(bot_logins)
     wait_terms = rollup.unique([*sorted(self_logins), *people["director_names"], *DIRECTOR_ROLE_WORDS])
     unasked_waits: list[dict[str, Any]] = []
 
@@ -1274,7 +1285,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         candidate_ids.setdefault(thread_key, set())
     outbound_scope: set[tuple[str, int]] = set()
     if settings.get("outbound"):
-        found, outbound_errors = outbound_threads(self_logins, settings)
+        found, outbound_errors = outbound_threads(outbound_self, settings)
         coverage_errors.extend(outbound_errors)
         outbound_scope.update(found)
         for thread_key in outbound_scope:
@@ -1336,7 +1347,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         ]
         if comments and comments[0].thread_key in outbound_scope:
             comment_states.extend(outbound_states_for_thread(
-                thread, enriched_comments, self_logins, bot_logins, settings, people["automation"],
+                thread, enriched_comments, outbound_self, bot_logins, settings, people["automation"],
             ))
             continue
         reactions_by_comment = {

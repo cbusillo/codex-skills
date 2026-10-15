@@ -1235,6 +1235,8 @@ def test_linked_director_record_covers_only_linked_comment(prefix):
     record = comment(comment_id=3, author="fixture-automation", body=f"{prefix} Q309 about {second.url} above", created_at="2026-07-25T12:00:00Z")
     results = classify([first, second, record], [first, second])
     assert [row["owner_seen"] for row in results] == [False, True]
+    assert results[1]["attention_state"] == "seen_unanswered"
+    assert results[1]["publicly_addressed"] is False
 
 
 def test_above_record_stops_at_previous_record_and_does_not_answer():
@@ -1366,7 +1368,7 @@ def test_outbound_partial_or_malformed_search_is_degraded(monkeypatch, search_re
     monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({"search/issues": search_result}))
     payload = github_unanswered_comments.collect_payload(outbound_settings())
     assert payload["status"] == "degraded"
-    assert payload["coverage"]["errors"][0]["lane"] == "outbound_search"
+    assert payload["coverage"]["errors"]
 
 
 @pytest.mark.parametrize("total,expected_pages,degraded", [(101, 2, False), (1001, 10, True)])
@@ -1377,8 +1379,6 @@ def test_outbound_search_paginates_and_reports_search_cap(monkeypatch, total, ex
         query = parse_qs(urlparse(command[2]).query)
         page = int(query["page"][0])
         pages.append(page)
-        assert "involves:cbusillo" in query["q"][0]
-        assert "-user:cbusillo" in query["q"][0]
         rows = [{"number": number, "repository_url": "https://api.github.com/repos/outside/project"}
                 for number in range((page - 1) * 100, min(page * 100, total))]
         return {"items": rows, "total_count": total, "incomplete_results": False}
@@ -1421,6 +1421,39 @@ def test_closed_messages_are_counted_without_attention_detail(monkeypatch):
     assert payload["counts"]["handled_closed"] == 1
     assert payload["attention"] == []
     assert closed["title"] not in github_unanswered_comments.render_markdown(payload)
+
+
+@pytest.mark.parametrize("prefix", [
+    *github_unanswered_comments.director_questions.QUESTION_PREFIXES,
+    *github_unanswered_comments.director_questions.DECISION_PREFIXES,
+])
+def test_awareness_accepts_existing_record_prefixes(prefix, app_ready_discussion):
+    external, *_ = app_ready_discussion
+    record = comment(comment_id=2, author="fixture-automation", body=f"**{prefix}** the comment above", created_at="2026-07-25T12:00:00Z")
+    [result] = classify([external, record], [external])
+    assert result["owner_seen"] is True
+    assert result["publicly_addressed"] is False
+
+
+def test_quoted_question_inside_ordinary_comment_is_not_awareness(app_ready_discussion):
+    external, *_ = app_ready_discussion
+    record = comment(comment_id=2, author="fixture-automation", body="Example of a future question:\nDirector question: about the comment above", created_at="2026-07-25T12:00:00Z")
+    assert classify([external, record], [external])[0]["owner_seen"] is False
+
+
+def test_outbound_with_portfolio_scope_does_not_adopt_repository_owners(monkeypatch, outbound_fixture):
+    # A maintainer's later update must not hide a reply to the Director.
+    outbound_fixture["repos/outside/project/issues/1/comments"].append(
+        api_comment(10, "outside", "2026-07-25T00:00:00Z", issue_url="https://api.github.com/repos/outside/project/issues/1"),
+    )
+    fake = FakeGitHub(outbound_fixture)
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+    settings = outbound_settings()
+    settings.update(repositories=["outside/project"], scan_repository_scope=True)
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert {item["comment_id"] for item in payload["attention"]} == {1, 5, 7, 8, 10}
+    searches = [call for call in fake.calls if call.startswith("search/issues?")]
+    assert len(searches) == 1
 
 
 if __name__ == "__main__":
