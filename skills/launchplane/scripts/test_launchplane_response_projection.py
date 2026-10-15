@@ -5,6 +5,7 @@
 # ///
 """Exercise preview and saved-review projection through fake HTTP responses."""
 
+import http.client
 import io
 import json
 import urllib.error
@@ -82,12 +83,14 @@ def diagnostics(path, payload):
 
 
 @pytest.mark.parametrize("state", ["absent", "present"])
-def test_preview_projects_app_actor_and_comment_author_without_private_observation(state):
+@pytest.mark.parametrize("mode", ["apply", "dry-run"])
+def test_preview_projects_app_actor_and_comment_author_without_private_observation(state, mode):
     response = preview_response()
+    response["result"]["mode"] = mode
     response["result"]["observation"]["state"] = state
     author = "example-commenter[bot]" if state == "present" else ""
     response["result"]["observation"]["comment_author_login"] = author
-    code, payload = invoke("preview", response)
+    code, payload = invoke("preview", response, mode=mode)
     assert code == 0
     observed = payload["result"]["observation"]
     assert observed["state"] == state
@@ -186,13 +189,70 @@ def test_interrupted_apply_response_preserves_uncertainty_and_received_status():
     assert payload["summary"]["http_status"] == 200
 
 
-def test_pre_response_transport_refusal_is_not_labeled_a_projection_failure():
+@pytest.mark.parametrize("mode", ["apply", "dry-run"])
+@pytest.mark.parametrize("fault", ["unknown_field", "unsafe_actor", "unsafe_trace", "json", "utf8", "shape"])
+def test_preview_invalid_success_preserves_apply_uncertainty(mode, fault):
+    response = preview_response()
+    response["result"]["mode"] = mode
+    if fault == "unknown_field":
+        response["result"]["unexpected"] = "PRIVATE_SENTINEL"
+    elif fault == "unsafe_actor":
+        response["result"]["observation"]["token_actor_login"] = "ghp_planted[bot]"
+    elif fault == "unsafe_trace":
+        response["trace_id"] = "https://private.example.invalid/PRIVATE_SENTINEL"
+    else:
+        response = {"json": b'{broken PRIVATE_SENTINEL',
+                    "utf8": b'\xffPRIVATE_SENTINEL', "shape": b'[]'}[fault]
+    code, payload = invoke("preview", response, mode=mode)
+    assert code == 1
+    assert payload["status"] == ("accepted_unverified" if mode == "apply" else "invalid")
+    assert payload["records"] == {} and payload["result"] == {}
+    summary = payload["summary"]
+    assert summary["http_status"] == 200
+    assert summary.get("trace_id", "") == (
+        TRACE if isinstance(response, dict) and fault != "unsafe_trace" else ""
+    )
+    assert helper.public_code(summary["projection_error_code"])
+    assert "ghp_planted" not in json.dumps(payload)
+    if mode == "apply":
+        assert payload["warnings"][0]["code"] == "apply_response_unverified"
+        assert summary["recommendation"]
+
+
+@pytest.mark.parametrize("mode", ["apply", "dry-run"])
+def test_pre_response_transport_refusal_is_not_labeled_a_projection_failure(mode):
     code, payload = invoke("preview", b"", transport_error=helper.LaunchplaneSafetyError(
         "invalid_request_url_scheme"
-    ))
+    ), mode=mode)
     assert code == 1
+    assert payload["status"] == "invalid"
     assert "projection_error_code" not in payload["summary"]
     assert "http_status" not in payload["summary"]
+
+
+@pytest.mark.parametrize("key", ["retry-✓", "retry\r\nPRIVATE_SENTINEL"])
+def test_apply_header_encoding_failure_is_not_an_uncertain_response(key):
+    def encode_headers(request, **_kwargs):
+        connection = http.client.HTTPConnection("service.example.invalid")
+        connection.putrequest("POST", "/")
+        for name, value in request.header_items():
+            connection.putheader(name, value)
+        pytest.fail("Expected header rejection before opening a connection")
+
+    args = list(PREVIEW_ARGS)
+    args[args.index("--mode") + 1] = "apply"
+    args[args.index("--idempotency-key") + 1] = key
+    args.append("--reviewed-dry-run")
+    stdout = io.StringIO()
+    with patch.object(helper, "prepare_operator_settings", return_value=SETTINGS), \
+         patch.object(helper, "safe_urlopen", side_effect=encode_headers), redirect_stdout(stdout):
+        code = helper.main(args)
+    rendered = stdout.getvalue()
+    payload = json.loads(rendered)
+    assert code == 1 and payload["status"] == "invalid"
+    assert "projection_error_code" not in payload["summary"]
+    assert "http_status" not in payload["summary"]
+    assert "PRIVATE_SENTINEL" not in rendered
 
 
 if __name__ == "__main__":

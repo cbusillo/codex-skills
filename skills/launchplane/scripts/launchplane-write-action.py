@@ -6667,6 +6667,26 @@ def summarize_privileged_policy_proposal(
     return payload
 
 
+def _preview_feedback_response_unverified(
+    *, request: dict[str, object], source: object, code: str,
+) -> dict[str, object]:
+    payload = unavailable_payload(
+        operation="preview-feedback-remediation", request=request,
+        status="accepted_unverified", code="apply_response_unverified",
+        message="The apply response could not be verified; the comment may have changed.",
+    )
+    summary = cast(dict[str, object], payload["summary"])
+    summary.update(service_response_diagnostics(source))
+    summary["projection_error_code"] = code
+    summary["recommendation"] = (
+        "Run preview-feedback-remediation --mode dry-run for the same target to read back "
+        "the comment state. A present comment does not prove whether a replacement completed. "
+        "Inspect available trace or service records and resolve the response verification failure before any "
+        "apply retry; retain the original request and idempotency key."
+    )
+    return payload
+
+
 def execute_post(
     *,
     args: argparse.Namespace,
@@ -6702,6 +6722,11 @@ def execute_post(
                 )
             )
         except LaunchplaneSafetyError as exc:
+            if operation == "preview-feedback-remediation" and mutating:
+                emit(_preview_feedback_response_unverified(
+                    request=request, source=provider_payload, code=exc.code,
+                ))
+                return 1
             if operation == "privileged-policy-propose":
                 payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be verified; the plan may have been saved.")
                 try:
@@ -6834,6 +6859,15 @@ def execute_post(
         emit(payload)
         return 1
     except (ValueError, json.JSONDecodeError) as exc:
+        if operation == "preview-feedback-remediation" and mutating and (
+            isinstance(exc, ServiceResponseError) or provider_payload is not None
+        ):
+            emit(_preview_feedback_response_unverified(
+                request=request,
+                source=exc if isinstance(exc, ServiceResponseError) else provider_payload,
+                code="invalid_response",
+            ))
+            return 1
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be read; the plan may have been saved.")
             payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
