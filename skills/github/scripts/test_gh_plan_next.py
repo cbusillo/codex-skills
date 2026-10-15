@@ -786,7 +786,10 @@ def test_global_next_implicit_repository_and_explicit_repository_match() -> None
         implicit = dict(result)
         result.clear()
         module.cmd_next(next_args())
-        assert result == implicit
+        # Runtime observations vary; repository resolution must preserve the
+        # selection and coverage, independently of elapsed phase timings.
+        assert {k: v for k, v in result.items() if k != "performance"} == {
+            k: v for k, v in implicit.items() if k != "performance"}
         assert result["scope"]["kind"] == "direction"
         assert result["scope"]["owner"] == "someone"
     assert module.github_direction_next.is_direction_repository("Other/Direction")
@@ -3325,6 +3328,72 @@ def test_local_identity_refused_relationships_degrade_and_credentials_stop() -> 
 
 TESTS.extend([test_identity_refused_graph_node_keeps_other_milestone_candidates,
               test_local_identity_refused_relationships_degrade_and_credentials_stop])
+
+
+
+def test_parallel_global_graph_preserves_selection_waits_and_coverage() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaves = [global_issue("someone/project", number) for number in range(10, 18)]
+    edges = {("someone/direction", 1): relationships(sub_issues=leaves)}
+    with global_fixture(roots, leaves, edges, clear_waits=leaves) as (module, result, _reads):
+        args = next_args()
+        module.cmd_next(args)
+        serial = {key: value for key, value in result.items() if key != "performance"}
+        result.clear()
+        args.read_workers = 3
+        module.cmd_next(args)
+        parallel = {key: value for key, value in result.items() if key != "performance"}
+        assert serial == parallel
+        assert module.NEXT_READS is None
+
+
+def test_global_deadline_preserves_native_frontier_and_names_unread_discoveries() -> None:
+    import time
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 10)
+    optional = global_issue("someone/optional", 20, milestone=roots[0]["milestone"])
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
+        def stalled_inventory(*_args, **_kwargs):
+            module.NEXT_READS.deadline = time.time() - 1
+            return [optional], {"complete": True, "inventory_count": 1, "repositories": [
+                {"repo": optional["repo"], "direction": DIRECTION, "issue_count": 1}]}
+        module.discover_direction_work = stalled_inventory
+        module.cmd_next(next_args())
+        assert result["graph_context"]["complete"]
+        assert any(row["number"] == leaf["number"] for row in result["candidates"])
+        assert result["performance"]["deadline_exhausted"]
+        assert not result["candidate_coverage"]["complete"]
+        assert not result["candidate_coverage"]["milestone_ranking_complete"]
+        assert result["discovery_context"]["evaluated"] == 0
+        assert result["discovery_context"]["unevaluated_count"] == 1
+        assert result["candidate_coverage"]["unevaluated_repositories"] == [
+            {"repo": optional["repo"], "issue_count": 1}]
+        assert result["selection_coverage"]["active_unevaluated_count"] == 1
+
+
+def test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 10)
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    for count in (0, None, "0", False, -1, 1):
+        leaf["comments"] = count
+        with global_fixture(roots, [leaf], edges) as (module, result, _reads):
+            collect = module.collect_paged_rest_items
+            comment_reads = []
+            def observed(path: str, **kwargs: Any) -> Any:
+                if path.endswith(f"/{leaf['number']}/comments"):
+                    comment_reads.append(path)
+                return collect(path, **kwargs)
+            module.collect_paged_rest_items = observed
+            module.cmd_next(next_args())
+            assert bool(comment_reads) is not (type(count) is int and count == 0)
+            assert result["graph_context"]["complete"]
+
+
+TESTS.extend([test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
+              test_parallel_global_graph_preserves_selection_waits_and_coverage,
+              test_global_deadline_preserves_native_frontier_and_names_unread_discoveries])
 
 
 def main() -> None:

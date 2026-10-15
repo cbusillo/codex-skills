@@ -1225,6 +1225,21 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
+Global `next` bounds network work with `--time-budget SECONDS` (default 180)
+and `--read-workers 1..16` (default 8). Increase the budget for broader evidence;
+one worker is the supported serial route. Native graph ownership runs before
+optional discovery. Invocation-local observations coalesce duplicate GETs;
+the first read still contacts the existing authenticated reader, including
+conditional validation, quota reserve and inherited retry deadline. No body
+is reused across invocations without that reader's normal validation.
+Progress contains phase names, elapsed seconds and counts on stderr only.
+The terminal `performance` receipt reports phase timing, reads/reuse, worker
+count and deadline exhaustion; `attempts` remains the actual transport-attempt
+count, including retries. A deadline returns partial evidence, names known
+unevaluated discoveries and withholds complete ranking claims. Unknown sources
+and incomplete discussion, dependencies, waits, ownership and Dependabot
+coverage retain their separate receipts. Stdout remains one JSON envelope.
+
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
   Rank actionable open plans without mutating labels, relationships, milestones,
   Projects, or workflows. Native `blocked-by` relationships are authoritative.
