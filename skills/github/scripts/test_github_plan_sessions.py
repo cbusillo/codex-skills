@@ -49,7 +49,8 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             nonlocal calls
             calls += 1
             return {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z", "size": calls if changed else 1}
-        with tempfile.TemporaryDirectory() as folder:
+        # AF_UNIX paths are short on macOS; /var/folders can exceed that limit.
+        with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
             home = Path(folder)
             socket_path = home / "app-server-control/app-server-control.sock"
             socket_path.parent.mkdir()
