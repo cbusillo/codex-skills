@@ -15,6 +15,7 @@ import re
 import shlex
 import socket
 import subprocess
+import tempfile
 from pathlib import Path
 
 import account_choice
@@ -665,7 +666,23 @@ async def operate(app, args):
     return result
 
 
-async def open_tmux_view(connection, terminal, container):
+def view_state_path():
+    return Path(os.environ.get("CODE_HOME", str(Path.home() / ".code"))) / "skill-data" / "supervisor-view.json"
+
+
+def remember_view_window(path, identity):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            json.dump({"iterm_window_id": identity}, handle)
+            handle.flush()
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+async def open_tmux_view(connection, terminal, container, *, window_id=None, window_number=None, state_path=None):
     """Create a gateway with its command; never send input to an iTerm session."""
     import iterm2
 
@@ -679,6 +696,23 @@ async def open_tmux_view(connection, terminal, container):
                     "next_action": "Another opener holds the view lock. Inspect iTerm, then use view --window-id if needed."}
         app = await iterm2.async_get_app(connection)
         await app.async_refresh()
+        state_path = state_path or view_state_path()
+        if window_number is not None:
+            matches = [w for w in app.terminal_windows if w.number == window_number]
+            if len(matches) != 1:
+                raise ValueError("chosen iTerm window number does not identify one window")
+            window_id = matches[0].window_id
+        if window_id is None and state_path.exists():
+            window_id = json.loads(state_path.read_text(encoding="utf-8"))["iterm_window_id"]
+            if not isinstance(window_id, str) or not window_id:
+                raise ValueError("remembered iTerm window identity is invalid")
+        chosen = None
+        if window_id is not None:
+            matches = [w for w in app.terminal_windows if w.window_id == window_id]
+            if len(matches) != 1:
+                raise ValueError("remembered iTerm window is gone; choose another with --iterm-window-number or --iterm-window-id")
+            chosen = matches[0]
+            remember_view_window(state_path, chosen.window_id)
         clients = terminal.control_clients(container)
         candidates = sessions(app) + app.buried_sessions
         for session in candidates:
@@ -706,24 +740,27 @@ async def open_tmux_view(connection, terminal, container):
         # These overrides belong only to this newly created gateway. They never
         # save a profile or change preferences, and its exit leaves tmux running.
         profile.set_close_sessions_on_end(True)
-        previous = app.current_terminal_window
-        previous_tab = previous.current_tab if previous else None
-        focus_restore_failed = False
-        try:
+        memory_failed = False
+        if chosen is None:
             window = await iterm2.Window.async_create(connection, profile_customizations=profile)
-        finally:
-            if previous_tab:
+            created = window is not None
+            if created:
                 try:
-                    await previous_tab.async_select()
-                except Exception:
-                    focus_restore_failed = True
-        result = {"status": "opening" if window else "unavailable",
+                    remember_view_window(state_path, window.window_id)
+                except OSError:
+                    memory_failed = True
+        else:
+            window = chosen
+            tab = await chosen.async_create_tab(profile_customizations=profile, select=False)
+            created = tab is not None
+        result = {"status": "opening" if created else "unavailable",
                   "window_id": window.window_id if window else None,
                   "readback_required": True, "restore_windows_as": preference,
-                  "focus_warning": "iTerm may move keyboard focus when the tmux tabs appear; check the selected tab before typing."}
-        if focus_restore_failed:
-            result["focus_restore_failed"] = True
-        if window is None:
+                  "focus_warning": "Explicit view requested: iTerm may move focus when restoring tmux tabs. Use Detach before background launches if this is disruptive.",
+                  "close_view": "Shell > tmux > Detach, or close only the gateway. Cmd-W on an agent tab kills that agent."}
+        if memory_failed:
+            result["window_memory_warning"] = "View created, but its window id could not be saved; use --iterm-window-id with this receipt's window_id."
+        if not created:
             result["next_action"] = "Inspect iTerm, then use view --window-id; do not relaunch agents."
         if type(preference) is not int or preference != 2:
             result["warning"] = (
@@ -743,6 +780,9 @@ def main():
     commands.add_parser("window")
     view = commands.add_parser("view", help="open the Supervisor tmux view after unlocking")
     view.add_argument("--window-id", required=True)
+    target = view.add_mutually_exclusive_group()
+    target.add_argument("--iterm-window-id", help="choose and remember an exact stable iTerm window id")
+    target.add_argument("--iterm-window-number", type=int, help="resolve the current iTerm window number once, then remember its stable id")
     close = commands.add_parser("close")
     close.add_argument("--session-id", required=True)
     close.add_argument("--ledger", type=Path, required=True,
@@ -789,10 +829,11 @@ def main():
 
         async def view_connected(connection):
             try:
-                print(json.dumps(await open_tmux_view(connection, terminal, args.window_id)))
+                print(json.dumps(await open_tmux_view(connection, terminal, args.window_id,
+                    window_id=args.iterm_window_id, window_number=args.iterm_window_number)))
             except Exception as error:
                 # A view failure never changes a launch's submission outcome.
-                print(json.dumps({"status": "unavailable", "reason": type(error).__name__,
+                print(json.dumps({"status": "unavailable", "reason": str(error) if isinstance(error, ValueError) else type(error).__name__,
                                   "readback_required": True,
                                   "next_action": "Inspect iTerm after unlocking, then use view --window-id; do not relaunch agents."}))
 

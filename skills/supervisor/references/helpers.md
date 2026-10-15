@@ -575,8 +575,8 @@ before its command. The default dedicated server is `tmux -L supervisor`;
 `--tmux-socket <name>` selects a separate test server. List, read, send and
 close do not start or replace a missing server. Only `window` creates a
 container. Each launch creates one background tmux window in that container,
-without depending on a GUI connection. On macOS's default `supervisor` socket,
-the first successful launch in a batch also opens the view described below.
+without depending on a GUI connection. Launches never open a GUI view; the
+explicit view command below is used on request.
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux window
@@ -604,55 +604,79 @@ path only for iTerm launches. Record the returned tmux coordinates in the same
 ledger and route close/read calls by each entry's backend. Never use an
 iTerm-only `list` result to infer that a tmux task is gone.
 
-When no iTerm control-mode client is attached to the container, `new` creates a
-dedicated **Supervised agents** iTerm window. It uses iTerm's supported Python
-[window creation API](https://iterm2.com/python-api/window.html#iterm2.Window.async_create)
-with the attach command as the new gateway's startup command, never keystrokes
-or input sent to an existing session. Creation-time overrides name the new
-gateway and clear inherited startup text, idle input and triggers; no saved
-profile, iTerm preference or tmux setting is changed.
-A process lock for the exact tmux server and container serializes lookup and
-creation. Exact container/client TTY
-matching recognizes existing iTerm views; the startup command recognizes a
-gateway still attaching, so another launch does not create a second view.
+On macOS, `window` starts a missing server through a transient user-login
+launchd service using tmux's foreground `-D` mode, outside the terminal's
+process tree. The job is registered in memory; no LaunchAgent file, login item,
+saved tmux option or iTerm setting is installed or changed. The native `-D`
+mode keeps an empty server alive. An existing server is reused untouched,
+reported as `server_startup: existing`; this does not prove that a legacy
+server was started independently of iTerm. Never restart or migrate an active
+server just to change its parent. New containers on that server retain its
+current lifecycle until the Supervisor's normal shutdown boundary. A failed
+launchd start refuses without falling back to a terminal-owned server.
+Non-macOS hosts retain native detached startup. Reads and attaches use `-N`,
+so a missing server is never silently replaced.
 
-The first successful launch's `view` result reports `attached`, `opening`,
-`pending_elsewhere`, `unavailable`, or `skipped`. A lock contender reports
-`pending_elsewhere`; this does not establish that the other opener succeeds.
-On creation its `focus_warning` reports that iTerm can move focus when restoring
-tmux tabs, even after the earlier tab-selection request. It also reads iTerm's
-[restore preference](https://iterm2.com/python-api/preferences.html#iterm2.preferences.PreferenceKey.OPEN_TMUX_WINDOWS_IN).
-For **tabs in the attaching window** (value 2), later agent windows appear as
-tabs there. Other values, or an unknown value, produce one warning in that
-view receipt, not one per agent or later launch. Tell the Director that the
-setting controls grouping; only they change it. Other sockets never open a
-view automatically.
+**Opening the view is opt-in.** iTerm's native tmux integration can select tabs
+as it restores them; the creation API's background flag does not govern that
+later restoration. No launch tries to correct keyboard focus after the fact.
+This uses the issue's allowed explicit-view fallback. The first successful
+launch's `view` receipt reports `deferred` and the explicit command when no
+control-mode client is attached, `attached` when one is already present, or
+`skipped` on other sockets. It never starts a GUI child. If a view is attached,
+later tmux windows are surfaced by iTerm itself; detach before background
+launches if its focus behavior interferes with typing.
 
-The `new` GUI attempt is bounded to ten seconds in a separate process. A locked
-screen or unavailable API produces an unavailable view receipt while agents
-keep running. Do not relaunch agents to recover their view. After unlocking,
-inspect iTerm, then retry just the view through the same deduplicating route.
-The receipt includes `retry_command` with the helper path and required backend,
-and a bounded cause such as `timeout`, `exit:<code>`, or `bad_output`.
-A timed-out creation may still appear later; `unavailable` is not proof that
-no window exists. The manual view command uses the normal iTerm API connection:
+Choose the Director's requested iTerm window once, by its current number
+(currently 3 in the assigned brief):
 
 ```sh
-uv run skills/supervisor/scripts/iterm_tab.py --backend tmux view --window-id '<container-id>'
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux view --window-id '<container-id>' --iterm-window-number 3
 ```
 
-The `view_command` returned by `window` remains the manual attach command:
-`tmux -L supervisor -CC attach -t <window-id>`. Disconnecting or closing the
-gateway leaves the server and sessions running. Use **Shell > tmux > Detach**
-to close the integrated view safely. iTerm's ordinary agent-tab/window Close
-action can kill the corresponding tmux window; it is not a detach operation.
-Opening the gateway may move focus. The helper requests the previous tab after
-window creation; iTerm may move focus again when restoring tmux tabs. Attachment
-can resize tmux panes, so let an agent's
-screen settle before verifying its input line. Do not use `kill-server`,
-`kill-session`, or a raw pane/window kill to disconnect or close workers.
-Existing plain iTerm sessions continue through the helper without `--backend
-tmux`; migrate by launching fresh tasks, never moving or restarting active work.
+The helper resolves that number through iTerm's supported Python API and
+remembers its stable `window_id` in private Code-home
+`skill-data/supervisor-view.json`. Subsequent `view --window-id '<container-id>'`
+uses that identity even when window numbers change. `--iterm-window-id` selects
+an exact identity instead. A closed or missing remembered window refuses with
+instructions to choose again; it never falls back to the current window or
+another window that reused the number. With no previous choice and no target,
+an explicit view creates and remembers one dedicated **Supervised agents**
+window. These paths create only a new gateway session and never type into any
+existing session. Tests use fake iTerm objects, never the real app.
+
+For an existing chosen window the helper uses
+[iTerm's tab creation API](https://iterm2.com/python-api/window.html#iterm2.Window.async_create_tab)
+with `select=False` and the attach command supplied at creation. For the
+initial dedicated window it uses `Window.async_create`. New-gateway profile
+overrides clear inherited startup text, idle input and triggers; saved
+profiles are untouched. A lock on the exact server and container serializes
+creation; client TTY and pending-command checks prevent a duplicate gateway.
+The receipt reports uncertain or failed creation without relaunching agents.
+
+The explicit attach is `tmux -N -L supervisor -CC attach -r -t <container-id>`.
+The read-only client rejects pane input, including control-mode `send-keys`;
+messaging agents still uses the maintained `send` command. Attachment and
+later native tabs may move focus; the view receipt says so. The helper reads
+[iTerm's restore preference](https://iterm2.com/python-api/preferences.html#iterm2.preferences.PreferenceKey.OPEN_TMUX_WINDOWS_IN)
+and warns once per created view unless it is **tabs in the attaching window**
+(value 2). Only the Director changes that setting. Other preferences may
+place integrated tabs in separate windows despite the chosen gateway window.
+
+**Q308's safe closing route is Shell > tmux > Detach, or closing only the
+gateway.** That disconnects the view while agents keep running. Ordinary
+Cmd-W/Close on an integrated agent tab or window is explicitly excluded:
+[it kills that tmux window](https://iterm2.com/documentation-tmux-integration.html),
+even for a read-only client. Read-only is an input guard, not a substitute for
+Detach. Never use `kill-server`, `kill-session`, or a raw pane/window kill to
+disconnect or close workers. Existing plain iTerm sessions keep their original
+backend; migrate by launching fresh tasks, never moving active work.
+
+Tests use throwaway `tmux -L` names in private temporary `TMUX_TMPDIR`
+directories. Teardown stops only its own server and launchd job and removes
+its socket and lock files. It never drives real iTerm or touches existing
+Supervisor sockets, clients or lock files. The launchd test kills its own
+simulated terminal process group and proves that its server and worker remain.
 
 For shutdown, complete the Supervisor skill's transcript, issue handoff,
 permission and input checks first. Read the exact pane, clear only verified

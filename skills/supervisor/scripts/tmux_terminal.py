@@ -2,18 +2,22 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""tmux backend for iterm_tab; a bounded child opens the optional iTerm view."""
+"""tmux backend for iterm_tab; launchd startup and an explicit read-only view."""
 
 import asyncio
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import json
 import os
+import plistlib
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import uuid
 
 import account_choice
@@ -28,13 +32,69 @@ class Terminal:
 
     def run(self, *argv, check=True):
         result = subprocess.run(
-            ["tmux", "-L", self.socket_name, *argv],
+            ["tmux", "-N", "-L", self.socket_name, *argv],
             capture_output=True, text=True, timeout=10,
         )
         if check and result.returncode:
             # tmux diagnostics can echo the command/brief; retain targets, not text.
             raise ValueError(f"tmux {argv[0]} failed; list and read before retrying")
         return result
+
+    def send_keys(self, pane, *keys):
+        # tmux otherwise chooses the most recently attached UI client and
+        # inherits its read-only restriction, even for this independent command.
+        # An explicit empty -c sends only to the verified pane, without a UI
+        # client context. The view's own send-keys commands stay read-only.
+        return self.run("send-keys", "-c", "", "-t", pane, *keys)
+
+    def launchd_target(self):
+        # Include the socket directory: isolated tests never share a service.
+        directory = os.path.realpath(os.environ.get("TMUX_TMPDIR", "/tmp"))
+        identity = hashlib.sha256((directory + "/" + self.socket_name).encode()).hexdigest()[:20]
+        return f"gui/{os.getuid()}/com.codex-skills.tmux.{identity}"
+
+    def ensure_server(self):
+        probe = self.run("list-sessions", check=False)
+        if probe.returncode == 0 or probe.stderr.strip() == "no sessions":
+            return "existing"
+        if not any(message in probe.stderr for message in ("no server running", "No such file or directory")):
+            raise ValueError("tmux server state is uncertain; inspect before creating a container")
+        if sys.platform != "darwin":
+            return "native"
+        executable = shutil.which("tmux")
+        if not executable:
+            raise ValueError("tmux executable unavailable")
+        target = self.launchd_target()
+        loaded = subprocess.run(["launchctl", "print", target], capture_output=True, timeout=10)
+        if loaded.returncode:
+            # A transient login-domain service, not a saved login item. tmux's
+            # native foreground mode keeps it owned by launchd, outside iTerm's
+            # process tree. No saved tmux or iTerm configuration is modified.
+            definition = {"Label": target.rsplit("/", 1)[1],
+                          "ProgramArguments": [executable, "-D", "-L", self.socket_name],
+                          "RunAtLoad": True,
+                          "EnvironmentVariables": {key: os.environ[key] for key in
+                              ("PATH", "TMUX_TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "XDG_CONFIG_HOME")
+                              if key in os.environ}}
+            with tempfile.NamedTemporaryFile(suffix=".plist") as handle:
+                plistlib.dump(definition, handle)
+                handle.flush()
+                submitted = subprocess.run(["launchctl", "bootstrap", target.rsplit("/", 1)[0], handle.name],
+                                           capture_output=True, timeout=10)
+            if submitted.returncode:
+                # A simultaneous creator may have registered the same service.
+                loaded = subprocess.run(["launchctl", "print", target], capture_output=True, timeout=10)
+                if loaded.returncode:
+                    raise ValueError(f"launchd startup failed; inspect {target}; no terminal-owned fallback")
+        else:
+            subprocess.run(["launchctl", "kickstart", target], capture_output=True, timeout=10, check=True)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            probe = self.run("list-sessions", check=False)
+            if probe.returncode == 0 or probe.stderr.strip() == "no sessions":
+                return "launchd"
+            time.sleep(0.05)
+        raise ValueError(f"launchd server not ready; inspect {target}; no terminal-owned fallback")
 
     def verify_container(self, container):
         if not re.fullmatch(r"\$[0-9]+", container):
@@ -49,18 +109,21 @@ class Terminal:
         if not executable:
             raise ValueError("tmux executable unavailable")
         # New iTerm commands do not inherit the launcher's shell PATH.
-        return shlex.join([executable, "-L", self.socket_name, "-CC", "attach", "-t", container])
+        return shlex.join([executable, "-N", "-L", self.socket_name, "-CC", "attach", "-r", "-t", container])
 
     def control_clients(self, container):
         self.verify_container(container)
         result = self.run("list-clients", "-t", container, "-F",
-                          "#{session_id}\t#{client_control_mode}\t#{client_tty}")
+                          "#{session_id}\t#{client_control_mode}\t#{client_tty}\t#{client_readonly}")
         clients = []
         for line in result.stdout.splitlines():
             fields = line.split("\t")
-            if len(fields) != 3 or fields[0] != container or fields[1] not in {"0", "1"}:
+            if (len(fields) != 4 or fields[0] != container or fields[1] not in {"0", "1"}
+                    or fields[3] not in {"0", "1"}):
                 raise ValueError("tmux client inventory is malformed")
             if fields[1] == "1" and fields[2]:
+                if fields[3] != "1":
+                    raise ValueError("existing control view is writable; Supervisor must use Detach before opening the read-only view")
                 clients.append(fields[2])
         return clients
 
@@ -98,31 +161,17 @@ class Terminal:
     def view(self, container):
         if self.socket_name != "supervisor" or sys.platform != "darwin":
             return {"status": "skipped", "reason": "automatic view is macOS Supervisor-only"}
-        command = self.view_command(container)
         retry = shlex.join(["uv", "run", iterm_tab.__file__, "--backend", "tmux",
                             "view", "--window-id", container])
-        recovery = {"readback_required": True, "retry_command": retry,
-                    "next_action": "Inspect iTerm before running retry_command; do not relaunch agents."}
-        # iTerm authentication may block while locked. Bound the GUI attempt in
-        # a child so it cannot hold up tmux work or corrupt the launch JSON.
-        try:
-            result = subprocess.run(
-                [sys.executable, iterm_tab.__file__, "--backend", "tmux",
-                 "--tmux-socket", self.socket_name, "view", "--window-id", container],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                view = json.loads(result.stdout)
-                if isinstance(view, dict) and view.get("status") in {"attached", "opening", "pending_elsewhere", "unavailable"}:
-                    return {**recovery, **view, "view_command": command}
-            reason = f"exit:{result.returncode}" if result.returncode else "bad_output"
-        except subprocess.TimeoutExpired:
-            reason = "timeout"
-        except ValueError:
-            reason = "bad_output"
-        except (OSError, subprocess.SubprocessError) as error:
-            reason = type(error).__name__
-        return {**recovery, "status": "unavailable", "reason": reason, "view_command": command}
+        clients = self.control_clients(container)
+        if clients:
+            return {"status": "attached", "client_count": len(clients)}
+        # The native integration may select restored tabs independently of the
+        # gateway's select=False. Opening is explicit, as permitted by #1854;
+        # launches must not connect to or drive the Director's GUI.
+        return {"status": "deferred", "reason": "view is opt-in because native tmux tabs may move focus",
+                "retry_command": retry, "readback_required": True,
+                "next_action": "Open view on request; choose the iTerm window once with --iterm-window-number."}
 
     def list(self):
         fields = ("session_id", "window_id", "pane_id", "pane_title", "pane_tty",
@@ -169,7 +218,7 @@ class Terminal:
         if "\n" in text or "\t" in text:
             text = "\x1b[200~" + text + "\x1b[201~"
         try:
-            self.run("send-keys", "-t", row["pane_id"], "-l", "--", text)
+            self.send_keys(row["pane_id"], "-l", "--", text)
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             raise iterm_tab.SendFailure(identity, "not_attempted", "text send outcome unknown", text_sent=None) from error
         if submit:
@@ -180,7 +229,7 @@ class Terminal:
             except (ValueError, OSError, subprocess.SubprocessError) as error:
                 raise iterm_tab.SendFailure(identity, "not_attempted", str(error)) from error
             try:
-                self.run("send-keys", "-t", row["pane_id"], "Enter")
+                self.send_keys(row["pane_id"], "Enter")
             except (ValueError, OSError, subprocess.SubprocessError) as error:
                 raise iterm_tab.SendFailure(identity, "unknown", str(error)) from error
 
@@ -247,7 +296,7 @@ async def operate(args):
             row = terminal.select(args.session_id)
             if row["dead"]:
                 raise ValueError("agent process has exited; no input was sent")
-            terminal.run("send-keys", "-t", row["pane_id"], "C-u")
+            terminal.send_keys(row["pane_id"], "C-u")
         else:
             text = args.text_file.read_text(encoding="utf-8") if args.text_file else args.text
             await terminal.send(args.session_id, text, not args.no_submit)
@@ -255,9 +304,18 @@ async def operate(args):
     if args.command == "window":
         # One tmux session is the dedicated Supervisor container; each task is a window.
         name = "supervisor-" + uuid.uuid4().hex[:12]
-        window = terminal.run("new-session", "-d", "-s", name, "-n", "control", "-P", "-F", "#{session_id}").stdout.strip()
+        startup = terminal.ensure_server()
+        # Non-macOS retains native tmux startup; macOS must never start a server
+        # in the terminal's process tree, even if it vanishes during creation.
+        if startup == "native":
+            created = subprocess.run(["tmux", "-L", terminal.socket_name, "new-session", "-d", "-s", name,
+                                      "-n", "control", "-P", "-F", "#{session_id}"],
+                                     capture_output=True, text=True, timeout=10, check=True)
+        else:
+            created = terminal.run("new-session", "-d", "-s", name, "-n", "control", "-P", "-F", "#{session_id}")
+        window = created.stdout.strip()
         return {"window_id": window, "backend": "tmux", "tmux_socket": args.tmux_socket,
-                "view_command": f"tmux -L {args.tmux_socket} -CC attach -t {shlex.quote(window)}"}
+                "server_startup": startup, "view_command": terminal.view_command(window)}
 
     terminal.verify_container(args.window_id)
     commands, choices = iterm_tab.prepare_launches(args)
