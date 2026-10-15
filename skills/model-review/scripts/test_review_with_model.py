@@ -361,6 +361,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertNotIn("private contents", json.dumps(result))
         self.assertNotIn("private pattern", json.dumps(result))
         self.assertNotIn("response", result)
+        self.assertFalse(list(self.repo.glob(".model-review-*")), "denials also clean scratch")
 
     def test_partial_read_refusals_are_unavailable_without_exposing_or_retrying_them(self) -> None:
         self.install("claude", READING_CLAUDE)
@@ -410,9 +411,17 @@ class ReviewWithModelTests(unittest.TestCase):
         self.install("claude", FAKE_CLAUDE)
         self.install("agy", FAKE_AGY)
         for provider in review_with_model.PROVIDERS:
+            # Whole-response fences are formatting, not evidence of interruption.
+            for response in (completed("none"), "```json\n" + completed("none") + "\n```"):
+                with self.subTest(provider=provider, completed=response):
+                    code, result = self.review(
+                        provider, FAKE_ANSWER=response, FAKE_CLAUDE_JSON=json.dumps({"result": response}),
+                        FAKE_AGY_JSON=json.dumps({"response": response}), FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                    self.assertEqual((code, result["ok"], result["response"]), (0, True, "none"))
             for response in (json.dumps({"status": "refused"}), json.dumps({"status": "incomplete"}),
                              completed(""), json.dumps({"status": "unknown", "review": "none"}),
-                             "[]", "null", "not a completion result"):
+                             "[]", "null", "not a completion result",
+                             "The review was stopped.\n" + completed("none")):
                 with self.subTest(provider=provider, response=response):
                     code, result = self.review(
                         provider, FAKE_ANSWER=response, FAKE_CLAUDE_JSON=json.dumps({"result": response}),
@@ -431,6 +440,8 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertEqual(len(calls.read_text().splitlines()), 1)
         self.assertNotIn("recovery", result)
+        self.assertEqual(result["denied"], ["command"])
+        self.assertIn("command_diagnostic", result)
         self.assertFalse(list(self.repo.glob(".model-review-*")), "denials also clean scratch")
 
     def saved_command(self, command: str, status: int = 7) -> str:

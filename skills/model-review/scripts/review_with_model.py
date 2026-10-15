@@ -62,6 +62,11 @@ def completed_review(result: dict[str, Any]) -> dict[str, Any]:
     if not result["ok"]:
         return result
     response = result.pop("response")
+    # Accept one whole-response JSON fence, never scrape a completed object out of
+    # surrounding prose that could itself say the review was refused or interrupted.
+    fenced = re.fullmatch(r"\s*```(?:json)?\s*\n(.*?)\n```\s*", response, re.DOTALL)
+    if fenced:
+        response = fenced.group(1)
     try:
         payload = json.loads(response)
     except (ValueError, TypeError):
@@ -280,11 +285,6 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
     except ValueError:
         return failed("google", f"agy exited {proc.returncode} without JSON", detail=proc.stdout[-400:])
     denied = sorted({item.get("action", "?") for item in payload.get("denied_actions") or []})
-    # Retry only an empty command-permission failure, never a model's nonempty refusal
-    # (including one that did not follow the output contract).
-    if denied == ["command"] and (payload.get("response") or "").strip():
-        return failed("google", "review unavailable after command denial", outcome="unavailable",
-                      **agy_model(model or agy_settings().get("model"), payload.get("conversation_id")))
     if denied:
         commands, diagnostic = agy_denied_commands(payload.get("conversation_id")) if "command" in denied else ([], None)
         error = f"agy was denied: {', '.join(denied)}"
@@ -294,6 +294,11 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
                         conversation_id=payload.get("conversation_id"))
         if diagnostic:
             result["command_diagnostic"] = diagnostic
+        # Preserve command diagnostics, but retry only an empty permission failure,
+        # never a nonempty refusal (including one outside the output contract).
+        if denied == ["command"] and (payload.get("response") or "").strip():
+            result.update(outcome="unavailable",
+                          **agy_model(model or agy_settings().get("model"), payload.get("conversation_id")))
         # A shell refusal is not evidence of missing file access. Do not recommend new grants for it.
         if denied != ["command"]:
             result["hint"] = agy_hint(repo)
@@ -506,7 +511,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout, Path(scratch), env)
             else:
                 result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout, Path(scratch))
-            if provider == "google" and result.get("denied") == ["command"]:
+            if provider == "google" and result.get("denied") == ["command"] and not result.get("outcome"):
                 refusal = result
                 reminder = (
                     "A previous attempt stopped after a refused command request"
