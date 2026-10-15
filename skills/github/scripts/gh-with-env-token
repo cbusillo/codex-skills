@@ -930,7 +930,7 @@ if context.is_write or not allowed:
     print(message, file=sys.stderr)
     raise SystemExit(1)
 if sys.argv[3] and not github_api.public_read_command_is_scoped(args, sys.argv[3]):
-    print("error: public repository fallback needs a read scoped to the verified repository; use repo-scoped issue/pr/run commands or REST repos/{owner}/{repo} and a repo-qualified REST issue search", file=sys.stderr)
+    print("error: public repository fallback needs a read scoped to the verified repository; use --repo with number/branch operands for issue/pr/run commands, REST repos/{owner}/{repo}, or a repo-qualified REST issue search", file=sys.stderr)
     raise SystemExit(1)
 PY
 }

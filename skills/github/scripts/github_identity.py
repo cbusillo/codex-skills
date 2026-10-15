@@ -839,8 +839,8 @@ def main() -> int:
                 if repository_is_public(config, error.repository):
                     print(f"note: GitHub confirms {error.repository} is public", file=sys.stderr)
                     return PUBLIC_READ_EXIT_STATUS
-            except GitHubAppError:
-                pass  # Unavailable visibility never changes the missing-installation refusal.
+            except GitHubAppError as probe_error:
+                print(f"note: public visibility could not be verified: {probe_error}", file=sys.stderr)
         print(f"error: GitHub App authentication failed before gh invocation: {error}", file=sys.stderr)
         return 1
     except ContributorRepository as error:

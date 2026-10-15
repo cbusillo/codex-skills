@@ -2938,6 +2938,13 @@ def public_read_command_is_scoped(args: list[str], repository: str) -> bool:
     """
     if args[:2] in [["issue", "list"], ["issue", "view"], ["pr", "list"],
                     ["pr", "view"], ["pr", "checks"], ["run", "list"], ["run", "view"]]:
+        if args[:2] in [["issue", "view"], ["pr", "view"], ["pr", "checks"], ["run", "view"]]:
+            # gh accepts URL spellings the shell's repository selector does
+            # not recognize. Keep this new personal-read route on explicit
+            # --repo plus number/branch operands instead of resolving again.
+            if any(urllib.parse.urlsplit(token).scheme.casefold() in {"http", "https"}
+                   for token in args[2:]):
+                return False
         if args[:2] in [["issue", "list"], ["pr", "list"]]:
             for index, token in enumerate(args):
                 if token in {"--search", "-S"}:

@@ -33,6 +33,18 @@ from test_gh_plan_sections import PLAN
 
 
 class PublicReadScopeTests(unittest.TestCase):
+    def test_cli_view_uses_number_or_branch_instead_of_url_operands(self) -> None:
+        for command in (("issue", "view"), ("pr", "view"), ("pr", "checks"), ("run", "view")):
+            for url in ("http://github.com/host/private/issues/1",
+                        "https://www.github.com/host/private/issues/1",
+                        "https://GitHub.com/host/private/issues/1",
+                        "https://github.com/host/public/issues/1"):
+                with self.subTest(command=command, url=url):
+                    self.assertFalse(github_api.public_read_command_is_scoped(
+                        [*command, url, "--repo", "host/public"], "host/public"))
+            self.assertTrue(github_api.public_read_command_is_scoped(
+                [*command, "1", "--repo", "host/public"], "host/public"))
+
     def test_only_the_verified_repository_can_supply_personal_read_scope(self) -> None:
         for endpoint, allowed in (
             ("/repos/host/public/issues", True),
@@ -371,6 +383,9 @@ class ClientAppTests(unittest.TestCase):
                          ("search", "issues", "repo:host/private"),
                          ("issue", "list", "--repo", "host/missing-public", "--search", "repo:host/private"),
                          ("pr", "list", "--repo", "host/missing-public", "-Srepo:host/private"),
+                         ("issue", "view", "http://github.com/host/private/issues/1", "--repo", "host/missing-public"),
+                         ("pr", "view", "https://www.github.com/host/private/pull/1", "--repo", "host/missing-public"),
+                         ("pr", "checks", "https://GitHub.com/host/private/pull/1", "--repo", "host/missing-public"),
                          ("repo", "view", "host/private")):
                 with self.subTest(args=args):
                     result = self.wrapper(*args, own_user=True)

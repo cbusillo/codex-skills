@@ -1823,6 +1823,12 @@ On REST reads, put query parameters in the endpoint URL rather than using
 `-f`, `-F` or `--input`; those forms retain the wrapper's conservative write
 classification. CLI list `--search` values must also stay within the verified
 repository.
+For view/check commands, use `--repo OWNER/REPO` and a number or branch operand;
+URL operands cannot select this public-read route. The public check and scope
+validation happen before delegation. GitHub CLI retains its redirect behavior,
+so a transferred issue may follow a destination visible to the approved personal
+account; this route does not add response-content filtering. Direct private or
+unverified repository targets still refuse.
 
 Writes retain the existing refusal and per-command own-user
 opt-in below, using the declared personal account when approved; no token from the primary App is borrowed. Missing or partial
