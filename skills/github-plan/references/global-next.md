@@ -18,7 +18,8 @@ Read for `next` in a repository owner's direction repository, including explicit
    `--time-budget SECONDS` for broader evidence, or lower `--read-workers` (1–16)
    to reduce concurrency. First observations still use the authenticated shared
    reader/cache/quota path; reuse lasts only for this invocation. Native-frontier
-   ownership is read before optional discovery. A budget stop preserves unread
+   ownership is read before optional discovery; discovery reserves up to 30
+   seconds for final wait/ownership evidence. A budget stop preserves unread
    evidence and names known skipped discoveries; it never proves availability
    or complete portfolio/milestone ranking. Check the independent coverage
    receipts even when the command exits successfully.

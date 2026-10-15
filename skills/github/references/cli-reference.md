@@ -1228,7 +1228,8 @@ retrying until planning stalls.
 Global `next` bounds network work with `--time-budget SECONDS` (default 180)
 and `--read-workers 1..16` (default 8). Increase the budget for broader evidence;
 one worker is the supported serial route. Native graph ownership runs before
-optional discovery. Invocation-local observations coalesce duplicate GETs;
+optional discovery, which reserves up to 30 seconds for final evidence reads.
+Invocation-local observations coalesce duplicate GETs;
 the first read still contacts the existing authenticated reader, including
 conditional validation, quota reserve and inherited retry deadline. No body
 is reused across invocations without that reader's normal validation.

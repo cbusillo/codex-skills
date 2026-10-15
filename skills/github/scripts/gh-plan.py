@@ -3935,11 +3935,30 @@ def next_wait_context(
         repo, items = group
         return repo, direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete,
                                                       active_label=configs[repo]["labels"]["active"])
-    group_reports = dict(NEXT_READS.map(read_report, list(groups.items())) if NEXT_READS else
-                         [read_report(group) for group in groups.items()])
+    if (NEXT_READS and NEXT_READS.workers > 1
+            and all(len(items) <= direction_audit.MAX_PAGES * 100 for items in groups.values())):
+        # One large repository must not serialize the whole wait-evidence pass.
+        # Keep the existing report/classifier and its shared bounded fetch cache.
+        group_reports: dict[str, dict[str, Any]] = {}
+        individual = [(repo, [item]) for repo, items in groups.items() for item in items]
+        for repo, report in NEXT_READS.map(read_report, individual):
+            if repo not in group_reports:
+                group_reports[repo] = report
+                continue
+            combined = group_reports[repo]
+            combined["complete"] &= report["complete"]
+            combined["checked"] += report["checked"]
+            for field in ("items", "checked_issues", "frozen_issues"):
+                combined[field].extend(report[field])
+            for error in report["unavailable"]:
+                if error not in combined["unavailable"]:
+                    combined["unavailable"].append(error)
+    else:
+        group_reports = dict(read_report(group) for group in groups.items())
     reference_paths = list(dict.fromkeys(
         f"repos/{reference['repo']}/issues/{reference['number']}"
-        for repo, items in groups.items() for item in items
+        for repo, items in groups.items() if group_reports[repo]["repository"]["archived"] is not True
+        for item in items
         for row in github_direction_next.waiting_records(
             {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, configs[repo]),
              **({"structured_wait": structured_waits[(repo.casefold(), item["number"])]}
@@ -4302,7 +4321,11 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         seeds.update({(raw["repo"].casefold(), raw["number"]): raw for raw in scanned})
         evaluated_discoveries = []
         for offset, raw in enumerate(scanned):
-            if NEXT_READS.expired:
+            # Leave time to qualify the rows already read. Spending the entire
+            # budget on more discussions would leave ownership unread for all
+            # discoveries, even when independent source work is available.
+            final_evidence_reserve = min(30, NEXT_READS.seconds / 5)
+            if NEXT_READS.expired or NEXT_READS.remaining_seconds < final_evidence_reserve:
                 break
             prefetch_nodes(scanned[offset:offset + NEXT_READS.workers], ancestry=True)
             ranked["excluded"] = [item for item in ranked["excluded"] if not (item.get("exclusion") == "outside_direction_tracks" and item["repo"].casefold() == raw["repo"].casefold() and item["number"] == raw["number"])]
@@ -4360,11 +4383,11 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                     skipped_counts[raw["repo"]] = skipped_counts.get(raw["repo"], 0) + 1
                 if (raw.get("milestone") or {}).get("title") in titles or raw.get("client_request"):
                     unevaluated_milestones.append(compact_list_issue(raw["repo"], raw))
-            discovery.update(complete=False, capacity_complete=False, evaluated=len(evaluated_discoveries),
+            discovery.update(complete=False, capacity_complete=False, time_budget_limited=True, evaluated=len(evaluated_discoveries),
                 unevaluated_count=sum(skipped_counts.values()),
                 capacity_unevaluated_count=capacity_unevaluated + len(omitted),
                 unevaluated_repositories=[{"repo": name, "issue_count": count} for name, count in sorted(skipped_counts.items())],
-                evaluation_note="Global next time budget exhausted; raise --time-budget to inspect remaining discoveries.")
+                evaluation_note="Global next reserved its remaining time for wait/ownership evidence; raise --time-budget to inspect remaining discoveries.")
     # Marked incidents can be decomposed outside both the ordinary scan and
     # the milestone graph. Their native leaves retain the marker's provenance.
     incident_roots = [compact_list_issue(raw["repo"], raw) for raw in [*seeds.values(), *inventory]
@@ -4413,6 +4436,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
     priority_keys = [(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *discoveries]]
     evidence_keys = dict.fromkeys([*priority_keys, *nodes])
+    NEXT_READS.start_phase("ownership")
+    queue_context = annotate_next_queue(list({(entry["repo"].casefold(), entry["number"]): entry
+        for entry in [*ranked["candidates"], *discoveries]}.values()), args)
+    queue_context.setdefault("repositories", {}).update(graph_queue_context.get("repositories", {}))
     NEXT_READS.start_phase("wait_evidence")
     wait_context = next_wait_context(
         [seeds[key] for key in evidence_keys if key in seeds],
@@ -4437,9 +4464,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     exclude_landed_candidates(discoveries, ranked["excluded"], wait_context)
     queue_items = list({(entry["repo"].casefold(), entry["number"]): entry
                         for entry in [*ranked["candidates"], *discoveries]}.values())
-    NEXT_READS.start_phase("ownership")
-    queue_context = annotate_next_queue(queue_items, args)
-    queue_context.setdefault("repositories", {}).update(graph_queue_context.get("repositories", {}))
     NEXT_READS.start_phase("ranking")
     from skills.direction.scripts import direction_audit
     try:
@@ -4491,7 +4515,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["graph_context"] = graph_coverage
     ranked["discovery_context"] = discovery
     milestone_ranking_complete = bool(graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources
-                                      and not NEXT_READS.expired)
+                                      and not NEXT_READS.expired and not discovery.get("time_budget_limited"))
     candidate_coverage_complete &= not NEXT_READS.expired
     if not incidents["context"]["complete"]:
         coverage_warning = ("Incident-path coverage is partial: a native path was truncated, cyclic or unavailable. "

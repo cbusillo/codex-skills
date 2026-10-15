@@ -3391,7 +3391,57 @@ def test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read() 
             assert result["graph_context"]["complete"]
 
 
-TESTS.extend([test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
+def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() -> None:
+    import time
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 10)
+    optional = global_issue("someone/optional", 20)
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
+        def slow_inventory(*_args, **_kwargs):
+            module.NEXT_READS.deadline = time.time() + 5
+            return [optional], {"complete": True, "repositories": [{"repo": optional["repo"], "direction": DIRECTION}]}
+        module.discover_direction_work = slow_inventory
+        args = next_args()
+        args.time_budget = 50
+        module.cmd_next(args)
+        assert result["discovery_context"]["time_budget_limited"]
+        assert result["discovery_context"]["unevaluated_count"] == 1
+        assert not result["performance"]["deadline_exhausted"]
+        assert not result["candidate_coverage"]["milestone_ranking_complete"]
+        assert result["graph_context"]["complete"]
+        assert any(row["phase"] == "ownership" for row in result["performance"]["phases"])
+
+
+
+def test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence() -> None:
+    rows = [global_issue("someone/project", number, labels=["plan", "plan:waiting"],
+        body="## Current Status\nState: Waiting.\nWaiting for: #99 to complete.\nBlocked by: None.") for number in range(1, 7)]
+    for disposition in (False, True, None):
+        module = load_module()
+        module.load_config = lambda *_: module.DEFAULT_CONFIG
+        def read(_method: str, path: str, **_kwargs: Any) -> Any:
+            if path.rstrip("/") == "/repos/someone/project":
+                if disposition is None:
+                    raise module.PlanError("repository metadata unavailable")
+                return "automation-gh", {"archived": disposition, "default_branch": "main"}
+            if "dependencies/blocked_by" in path:
+                return "automation-gh", []
+            return "automation-gh", {"state": "closed", "state_reason": "completed"}
+        module.api_json = read
+        serial = module.next_wait_context(rows, scan_limit=len(rows), inventory_complete=True)
+        with module.github_next_reads.NextReads(workers=3, seconds=0) as reads:
+            module.NEXT_READS = reads
+            try:
+                parallel = module.next_wait_context(rows, scan_limit=len(rows), inventory_complete=True)
+            finally:
+                module.NEXT_READS = None
+        assert serial == parallel
+
+
+TESTS.extend([test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence,
+              test_global_reserves_final_evidence_time_without_claiming_a_complete_scan,
+              test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
               test_parallel_global_graph_preserves_selection_waits_and_coverage,
               test_global_deadline_preserves_native_frontier_and_names_unread_discoveries])
 

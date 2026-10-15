@@ -49,6 +49,10 @@ class NextReads:
     def expired(self) -> bool:
         return self.deadline is not None and time.time() >= self.deadline
 
+    @property
+    def remaining_seconds(self) -> float:
+        return max(0.0, self.deadline - time.time()) if self.deadline is not None else float("inf")
+
     def __enter__(self) -> NextReads:
         self.previous_deadline = os.environ.get("GITHUB_RETRY_DEADLINE_AT")
         if self.previous_deadline:
