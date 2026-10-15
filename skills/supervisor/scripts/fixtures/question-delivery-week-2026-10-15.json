@@ -1,0 +1,30 @@
+{
+  "description": "Public question headings and original GitHub times from Q346's two missed deliveries; source links are immutable evidence. No credentials or endpoint declarations.",
+  "owner": "cbusillo",
+  "decision_authors": ["shiny-code-app[bot]"],
+  "queue": "cbusillo/codex-skills#1043",
+  "observed_at": "2026-10-15T17:35:24Z",
+  "questions": [
+    {
+      "id": 6193143604,
+      "url": "https://github.com/cbusillo/launchplane/issues/3604#issuecomment-6193143604",
+      "author": "shiny-code-app[bot]",
+      "created_at": "2026-10-15T13:24:24Z",
+      "body": "Owner question: **Q327 — will you enter fresh testing-only values for CM Website's three existing local password bindings in Launchplane? I recommend yes.** You generate/paste them; the agent then checks opaque separation and continues the authorized testing rebuild. No production credential or grant changes."
+    },
+    {
+      "id": 6185106580,
+      "url": "https://github.com/cbusillo/launchplane/issues/3639#issuecomment-6185106580",
+      "author": "shiny-code-app[bot]",
+      "created_at": "2026-10-15T05:25:38Z",
+      "body": "Owner question: Which existing service/admin source should supply the exact private endpoint and applicability for CM Website, SellYourOutboard and VeriReel production? I recommend identifying that source or recording the scoped declarations privately before any enrollment; the current records contain none. Please name the source or owning admin, rather than posting private URLs or credentials here."
+    }
+  ],
+  "decision": {
+    "id": 6198460027,
+    "url": "https://github.com/cbusillo/launchplane/issues/3604#issuecomment-6198460027",
+    "author": "shiny-code-app[bot]",
+    "created_at": "2026-10-15T17:42:30Z",
+    "body": "Director decision: **Q327 = an agent does it**, recorded by the Supervisor. This answers [Q327](https://github.com/cbusillo/launchplane/issues/3604#issuecomment-6193143604)."
+  }
+}
