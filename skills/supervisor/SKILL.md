@@ -317,6 +317,9 @@ including non-dim text, establishes neither its author nor approval.
    Use the [catalog worktree helper and per-host setting](../github/references/worktrees.md).
    For Claude Desktop, start in the trusted repository with automatic worktree
    creation disabled; the worker claims before creating its task worktree.
+   After creation, the worker switches its implementation working directory to
+   the printed task path; edits and scratch must not land in a catalog runtime
+   checkout.
    Desktop folder trust remains a manual Director action as that reference
    explains; IDE trusted roots do not grant it.
    Keep sessions separate for different repositories, different risk or

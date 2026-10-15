@@ -16,6 +16,11 @@ import sys
 
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/codex-skills/worktrees.json")
+GIT_LOCATION_OVERRIDES = {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"}
+
+
+def git_environment() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_OVERRIDES}
 
 
 class Refused(ValueError):
@@ -24,7 +29,8 @@ class Refused(ValueError):
 
 def git(repo: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True,
+        env=git_environment(),
     )
     return result.stdout.strip()
 
@@ -69,7 +75,7 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
         ancestor = ancestor.parent
     probe = subprocess.run(
         ["git", "-C", str(ancestor), "rev-parse", "--git-dir"],
-        capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"},
+        capture_output=True, text=True, env={**git_environment(), "LC_ALL": "C"},
     )
     if probe.returncode == 0:
         raise Refused("The worktree destination must be outside repositories and Git metadata.")
@@ -98,16 +104,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root, helper = configuration()
         if helper:
+            if os.environ.get("DEV_WORKTREE_DELEGATED"):
+                raise Refused("Host helper delegated back to the catalog; configure the actual host executable.")
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
             # The host owns volume identity, locks and retirement; do not mkdir or fall back.
             # Preserve the host's signal traps, including relocking during interrupted retirement.
+            os.environ["DEV_WORKTREE_DELEGATED"] = "1"
             os.execv(str(helper), [str(helper), *args])
         if len(args) != 3 or args[0] == "retire":
             raise Refused("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT. For cleanup follow work-closeout; this portable helper only creates worktrees.")
         print(create(*args, root))
         return 0
-    except (Refused, OSError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
+    except (Refused, OSError, UnicodeError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
         detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         print(f"dev-worktree: {detail}", file=sys.stderr)
         return 1

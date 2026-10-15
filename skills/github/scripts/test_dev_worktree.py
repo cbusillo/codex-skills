@@ -72,6 +72,23 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(self.git("branch", "--show-current", repo=destination), "work/task")
         self.assertEqual(self.git("rev-parse", "HEAD"), self.source_head)
 
+    def test_inherited_git_location_does_not_override_explicit_repository(self):
+        other = self.base / "other"
+        other.mkdir()
+        self.git("init", repo=other)
+        overrides = {
+            "GIT_DIR": str(other / ".git"), "GIT_WORK_TREE": str(other),
+            "GIT_COMMON_DIR": str(other / ".git"), "GIT_INDEX_FILE": str(other / "custom-index"),
+        }
+        self.env.update(overrides)
+        result = self.run_helper(self.repo, "task", self.initial)
+        for key in overrides:
+            del self.env[key]
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD", repo=Path(result.stdout.strip())), self.initial)
+        self.assertEqual(self.git("for-each-ref", repo=other), "")
+        self.assertFalse((other / "custom-index").exists())
+
     def test_configured_root_and_linked_source_keep_main_repo_name(self):
         root = self.base / "work tree root"
         self.settings({"root": str(root)})
@@ -236,6 +253,23 @@ class WorktreeTests(unittest.TestCase):
             with self.subTest(helper=helper):
                 self.settings({"root": str(self.base / "tasks"), "hostHelper": str(helper)})
                 self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
+
+    def test_host_shim_cannot_delegate_back_to_catalog(self):
+        shim = self.base / "shim"
+        receipt = self.base / "visits"
+        # Bound the fixture itself so broken recursion cannot hang the test or leave children.
+        shim.write_text(
+            f"#!{sys.executable}\nimport os, sys\nfrom pathlib import Path\n"
+            f"receipt = Path({str(receipt)!r})\n"
+            "visits = int(receipt.read_text()) + 1 if receipt.exists() else 1\n"
+            "receipt.write_text(str(visits))\n"
+            "if visits >= 3:\n    raise SystemExit(33)\n"
+            f"os.execv({sys.executable!r}, [{sys.executable!r}, {str(SCRIPT)!r}, *sys.argv[1:]])\n"
+        )
+        shim.chmod(0o700)
+        self.settings({"root": str(self.base / "tasks"), "hostHelper": str(shim)})
+        self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
+        self.assertEqual(int(receipt.read_text()), 1)
 
     @unittest.skipUnless(os.name == "posix", "POSIX process-group interrupt behavior")
     def test_interrupt_allows_host_cleanup_to_finish(self):
