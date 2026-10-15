@@ -1240,6 +1240,16 @@ count, including retries. A deadline returns partial evidence, names known
 unevaluated discoveries and withholds complete ranking claims. Unknown sources
 and incomplete discussion, dependencies, waits, ownership and Dependabot
 coverage retain their separate receipts. Stdout remains one JSON envelope.
+`reads` counts first invocation-local REST GET observations; `reused_reads`
+includes cached failures, separately counted in `reused_failures`. Project
+GraphQL and service calls are outside those REST counters. Their elapsed time
+is included in the phase receipts, and service subprocesses honor the inherited
+deadline. `budget_stops` distinguishes retry-deadline refusals (including a
+reset/backoff beyond the remaining budget) from unread requests after expiry.
+Graph read-ahead beyond the logical scan is capped at the worker count and
+reported in `read_ahead_unevaluated`; it does not count as evaluated coverage.
+Parallel reads near the shared wait-read bound may retain a different subset
+of evidence; all unread references and incomplete coverage remain explicit.
 
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
   Rank actionable open plans without mutating labels, relationships, milestones,

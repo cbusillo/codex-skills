@@ -93,6 +93,21 @@ def test_optional_people_helper_absence_does_not_stop_selection() -> None:
         assert client.overlay_client(Path("/fixture/repo"))["status"] == "unavailable"
 
 
+def test_helpers_and_overlay_lookup_honor_inherited_read_deadline() -> None:
+    from types import SimpleNamespace
+    budget = 2.0
+    response = SimpleNamespace(stdout="{}", returncode=0)
+    with patch.object(client.github_api, "remaining_retry_timeout_seconds", return_value=budget), patch.object(
+            client.subprocess, "run", return_value=response) as run:
+        assert client.helper_json(Path("/fixture/helper")) == {}
+        assert run.call_args.kwargs["timeout"] == budget
+    with patch.object(client.github_api, "remaining_retry_timeout_seconds", return_value=0), patch.object(
+            client.subprocess, "run") as run:
+        assert client.helper_json(Path("/fixture/helper")) is None
+        assert client.local_repository(REPO) is None
+        run.assert_not_called()
+
+
 def main() -> None:
     for name, test in list(globals().items()):
         if name.startswith("test_") and callable(test):

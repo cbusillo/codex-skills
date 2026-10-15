@@ -14,7 +14,7 @@ import os
 import sys
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
@@ -37,6 +37,9 @@ class NextReads:
         self.tasks: dict[Any, Future[Any]] = {}
         self.reused = 0
         self.requests = 0
+        self.reused_failures = 0
+        self.budget_stops: dict[str, int] = {}
+        self.read_ahead_unevaluated = 0
         self.phases: list[dict[str, Any]] = []
         self.phase_name = "startup"
         self.stop = threading.Event()
@@ -112,7 +115,17 @@ class NextReads:
             except BaseException as exc:
                 future.set_exception(exc)
         # Consumers may annotate their own copy, never another observation.
-        return copy.deepcopy(future.result())
+        try:
+            return copy.deepcopy(future.result())
+        except BaseException:
+            if not first:
+                with self.lock:
+                    self.reused_failures += 1
+            raise
+
+    def budget_stop(self, cause: str) -> None:
+        with self.lock:
+            self.budget_stops[cause] = self.budget_stops.get(cause, 0) + 1
 
     def submit(self, key: Any, read: Callable[[], T]) -> Future[T]:
         with self.lock:
@@ -121,12 +134,18 @@ class NextReads:
             return self.tasks[key]
 
     def map(self, read: Callable[[T], R], values: list[T]) -> list[R]:
-        # executor.map eagerly queues the entire portfolio. Keep at most one
-        # worker window pending, preserving source order and bounded memory.
-        results = []
-        for offset in range(0, len(values), self.workers):
-            futures = [self.pool.submit(read, value) for value in values[offset:offset + self.workers]]
-            results.extend(future.result() for future in futures)
+        # A slow source occupies one slot, never an entire fixed batch. Keep
+        # at most workers pending, and restore source order in the result.
+        results: list[Any] = [None] * len(values)
+        pending: dict[Future[R], int] = {}
+        offset = 0
+        while offset < len(values) or pending:
+            while offset < len(values) and len(pending) < self.workers:
+                pending[self.pool.submit(read, values[offset])] = offset
+                offset += 1
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                results[pending.pop(future)] = future.result()
         return results
 
     def drain(self) -> None:
@@ -141,4 +160,6 @@ class NextReads:
         return {"elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "time_budget_seconds": self.seconds, "deadline_exhausted": self.expired,
                 "workers": self.workers, "reads": self.requests, "reused_reads": self.reused,
+                "reused_failures": self.reused_failures, "budget_stops": self.budget_stops,
+                "read_ahead_unevaluated": self.read_ahead_unevaluated,
                 "phases": [*self.phases, self._current_phase()]}

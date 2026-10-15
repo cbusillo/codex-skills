@@ -3260,9 +3260,12 @@ def read_next_train_enrollment(repo: str) -> dict[str, Any]:
     """Reuse Launchplane's bounded, public-safe policy projection."""
     helper = SKILL_DIR.parent / "launchplane/scripts/launchplane-write-action.py"
     try:
+        timeout = min(30, github_api_core.remaining_retry_timeout_seconds())
+        if timeout <= 0:
+            return {"source": "launchplane", "status": "unknown", "reason": "read_deadline"}
         result = subprocess.run(
             [str(SKILL_DIR / "scripts/github-python"), str(helper), "merge-train-policy-read", "--repo", repo],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=timeout,
         )
         payload = json.loads(result.stdout)
         summary = payload.get("result", {})
@@ -3698,10 +3701,13 @@ def next_source_error(exc: PlanError) -> str:
     # An App-installation refusal is unread coverage, just like a denied or
     # missing record. Never switch actor to complete an optional selection read.
     # Credential rejection, quota and provider failures retain their stop policy.
-    if NEXT_READS is not None and NEXT_READS.expired and (
-            exc.failure is None or exc.failure.cause == "deadline_exceeded"):
-        return "global next time budget exhausted; evidence unread"
-    if isinstance(exc, ClassifiedPlanError) or (exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found", "identity_refused"}):
+    if isinstance(exc, ClassifiedPlanError):
+        raise exc
+    if NEXT_READS is not None and (isinstance(exc.__cause__, github_next_reads.ReadDeadline)
+                                   or (exc.failure and exc.failure.cause == "deadline_exceeded")):
+        NEXT_READS.budget_stop(exc.failure.cause if exc.failure else "read_budget_exhausted")
+        return "global next read deadline prevents this evidence read"
+    if exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found", "identity_refused"}:
         raise exc
     return github_api_core.redact_string(str(exc))
 
@@ -3958,7 +3964,7 @@ def next_wait_context(
     reference_paths = list(dict.fromkeys(
         f"repos/{reference['repo']}/issues/{reference['number']}"
         for repo, items in groups.items() if group_reports[repo]["repository"]["archived"] is not True
-        for item in items
+        for item in items if str(item.get("state", "")).casefold() == "open"
         for row in github_direction_next.waiting_records(
             {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, configs[repo]),
              **({"structured_wait": structured_waits[(repo.casefold(), item["number"])]}
@@ -4082,6 +4088,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     nodes: dict[tuple[str, int], dict[str, Any]] = {}
     parents: dict[tuple[str, int], dict[str, Any] | None] = {}
     context_lock = threading.Lock()
+    graph_read_ahead: set[tuple[str, int]] = set()
 
     def load_node(issue_repo: str, number: int) -> dict[str, Any]:
         nonlocal actor
@@ -4186,6 +4193,16 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 nodes[key] = load_node(issue_repo, number)
         return nodes[key]
 
+    def prefetch_graph(refs: list[dict[str, Any]]) -> None:
+        for ref in refs:
+            key = (ref["repo"].casefold(), ref["number"])
+            if key in nodes or key in graph_read_ahead:
+                continue
+            if len(graph_read_ahead.difference(nodes)) >= NEXT_READS.workers:
+                break
+            graph_read_ahead.add(key)
+            prefetch_nodes([ref])
+
     def with_ancestry(leaf_item: dict[str, Any]) -> dict[str, Any]:
         ancestors: list[dict[str, Any]] = []
         key = (leaf_item["repo"].casefold(), leaf_item["number"])
@@ -4197,7 +4214,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         for _ in range(10):
             try:
                 if key not in parents:
-                    parent = NEXT_READS.submit(("parent", *key), lambda key=key: parent_observation(key)).result()
+                    parent = (NEXT_READS.submit(("parent", *key), lambda key=key: parent_observation(key)).result()
+                              if NEXT_READS.workers > 1 else parent_observation(key))
                     if isinstance(parent, PlanError):
                         raise parent
                     parents[key] = parent
@@ -4232,8 +4250,12 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         scan_limit=args.scan_limit, completed_milestone_titles=completed_titles,
         agent=github_agent.running_agent(getattr(args, "agent", None)),
         wait_milestone_titles=wait_titles,
-        prefetch_nodes=prefetch_nodes if NEXT_READS.workers > 1 else None,
+        prefetch_nodes=prefetch_graph if NEXT_READS.workers > 1 else None,
     )
+    NEXT_READS.read_ahead_unevaluated = len(graph_read_ahead.difference(nodes))
+    # Settle the bounded graph look-ahead before taking inventory snapshots.
+    for key in graph_read_ahead:
+        NEXT_READS.tasks[("node", *key)].result()
     ranked["dependency_context"]["relationship_limit"] = NEXT_RELATIONSHIP_LIMIT
     graph_evaluation_note = ("Milestone graph evaluation stopped early. Raise --scan-limit to check more linked issues."
                              if ranked["truncated"] else None)
@@ -4327,7 +4349,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             final_evidence_reserve = min(30, NEXT_READS.seconds / 5)
             if NEXT_READS.expired or NEXT_READS.remaining_seconds < final_evidence_reserve:
                 break
-            prefetch_nodes(scanned[offset:offset + NEXT_READS.workers], ancestry=True)
+            if NEXT_READS.workers > 1:
+                prefetch_nodes(scanned[offset:offset + NEXT_READS.workers], ancestry=True)
             ranked["excluded"] = [item for item in ranked["excluded"] if not (item.get("exclusion") == "outside_direction_tracks" and item["repo"].casefold() == raw["repo"].casefold() and item["number"] == raw["number"])]
             seeds[(raw["repo"].casefold(), raw["number"])] = raw
             node = read_node(raw["repo"], raw["number"])
@@ -4390,7 +4413,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 evaluation_note="Global next reserved its remaining time for wait/ownership evidence; raise --time-budget to inspect remaining discoveries.")
     # Marked incidents can be decomposed outside both the ordinary scan and
     # the milestone graph. Their native leaves retain the marker's provenance.
-    incident_roots = [compact_list_issue(raw["repo"], raw) for raw in [*seeds.values(), *inventory]
+    incident_roots = [compact_list_issue(raw["repo"], raw) for raw in [*list(seeds.values()), *inventory]
                       if github_direction_next.is_live_breakage(raw)] if scope is None else []
     def read_incident_node(issue_repo: str, number: int) -> dict[str, Any]:
         incident_node = read_node(issue_repo, number)
@@ -4479,7 +4502,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
         repository_clients=client_records, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
-        reference_repositories={entry["repo"] for entry in seeds.values()} | {entry["repo"] for entry in discovery.get("repositories", [])},
+        reference_repositories={entry["repo"] for entry in list(seeds.values())} | {entry["repo"] for entry in discovery.get("repositories", [])},
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
@@ -4489,7 +4512,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["queue_context"] = queue_context
     ranked["own_project_context"] = own_project_context
     ranked["selection_coverage"] = github_next_queue.coverage(
-        [*seeds.values(), *inventory], [seeds[key] for key in nodes if key in seeds], portfolio)
+        [*list(seeds.values()), *inventory], [seeds[key] for key in nodes if key in seeds], portfolio)
     graph_active = {(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"], *ranked["verification_only"], *ranked["scope_review"]]
                     if entry.get("via") and config["labels"]["active"] in normalize_labels(entry.get("labels"))}
     ranked["selection_coverage"].update(active_in_evaluated_graph_count=len(graph_active),

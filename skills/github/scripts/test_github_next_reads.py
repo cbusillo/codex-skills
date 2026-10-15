@@ -110,6 +110,18 @@ def test_unused_read_ahead_failure_is_not_silently_discarded() -> None:
             raise AssertionError("read-ahead credential failure was hidden")
 
 
+def test_slow_first_source_does_not_idle_other_workers() -> None:
+    third_started = threading.Event()
+    def read(index):
+        if index == 0:
+            assert third_started.wait(3), "one stalled source prevented independent work"
+        if index == 2:
+            third_started.set()
+        return index
+    with NextReads(workers=2, seconds=0) as reads:
+        assert reads.map(read, [0, 1, 2]) == [0, 1, 2]
+
+
 def main() -> None:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:
