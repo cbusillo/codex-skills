@@ -585,6 +585,11 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
                    or c.get("branch") == record["branch"] or c.get("session") == record["session"] for c in conflicts):
                 holders.append({**record, "claim_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{source.get('id')}",
                                 "next_action": "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts"})
+    if not holders:
+        holders = [{"worker": "unknown", "session": c.get("session", "unknown"),
+                    "branch": c.get("branch", "unknown"), "work_record": f"https://github.com/{repo}/issues/{number}",
+                    "next_action": "Identify the artifact's owning native session on the work record and coordinate a handoff; preserve it"}
+                   for c in conflicts]
     return holders
 
 

@@ -98,5 +98,17 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                 await SESSIONS.observe_home(Path(folder), {"holder"})
 
 
+class ObservationMergeTests(unittest.TestCase):
+    def test_live_evidence_wins_across_account_homes(self):
+        async def read(home, _sessions):
+            return [], {"holder": {"state": "live" if home.name == "live" else "ended"}}
+        with patch.object(SESSIONS.shutil, "which", return_value="codex"), \
+                patch.object(SESSIONS, "codex_homes", return_value=[Path("/live"), Path("/ended")]), \
+                patch.object(SESSIONS, "observe_home", side_effect=read), \
+                patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+            _, states = SESSIONS.observe({"holder"})
+        self.assertEqual(states["holder"]["state"], "live")
+
+
 if __name__ == "__main__":
     unittest.main()

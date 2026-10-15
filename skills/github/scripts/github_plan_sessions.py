@@ -107,6 +107,7 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
         if not argv or Path(argv[0]).name != "codex":
             continue
         resumed = {argv[i + 1].strip("\"'") for i, arg in enumerate(argv[:-1]) if arg in {"resume", "--resume", "-r"}}
+        resumed.update(arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume="))
         for session in resumed & sessions:
             peers.append({"sessionId": session, "source": "codex_process", "state": "live"})
     return peers

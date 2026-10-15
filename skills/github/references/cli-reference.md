@@ -778,8 +778,9 @@ missing daemons, unreadable transcripts, age and partial peer coverage cannot.
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;
 the result names them in `retained_artifacts` and leaves them intact. Positive
-live-session evidence overrides a release. Reusing a retained branch or worktree
-is not authorized: use a new task branch. Open PRs keep their separate handoff
+live-session evidence overrides a release. Automatic reconciliation grants no
+artifact adoption: use a new task branch, or the existing explicit `--resume-from`
+source-recovery route. Open PRs keep their separate handoff
 and wait checks. Unreleased or uncertain holders refuse with `coordination`
 entries identifying the worker, native session, branch and work-record contact
 route. No attestation, release command or artifact retirement is required for
