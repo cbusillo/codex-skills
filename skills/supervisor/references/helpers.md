@@ -837,6 +837,8 @@ Use executable paths and explicit exports in launch files for tools that need
 them; interactive-only aliases, functions and directory-change hooks are not
 loaded by that scoped shell. A failed observation returns an unknown dead state,
 never proof that the submitted worker exited.
+Some tmux servers leave both cause fields empty even for a confirmed dead pane;
+the launcher still reports failure with its output, rather than inventing a cause.
 Failure screens can include echoed account-home exports and the private brief;
 keep the raw launch diagnostic private and redact it before public reporting.
 

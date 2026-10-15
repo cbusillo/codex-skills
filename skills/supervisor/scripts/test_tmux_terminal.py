@@ -610,9 +610,15 @@ for line in sys.stdin:
         self.assertEqual(raised.exception.detail["launched"], [])
         self.assertTrue(failed["receipt_written"])
         self.assertTrue(failed["startup"]["dead"])
-        self.assertEqual(failed["startup"]["exit_status"], str(failure_status), json.dumps(failed["startup"]))
         self.assertIn("fixture bootstrap failed", "\n".join(failed["startup"]["screen"]))
-        self.assertTrue(self.terminal.select(failed["session_id"])["dead"])
+        native = self.terminal.read(failed["session_id"])
+        self.assertTrue(native["dead"])
+        # Some native servers expose neither cause even for a definite exit.
+        # The launch must still fail and preserve all metadata they do expose.
+        self.assertEqual(failed["startup"]["exit_status"], native["exit_status"])
+        self.assertEqual(failed["startup"]["exit_signal"], native["exit_signal"])
+        if native["exit_status"]:
+            self.assertEqual(native["exit_status"], str(failure_status))
 
     def test_server_guard_preserves_a_pane_revived_during_close(self):
         row = self.launch()
