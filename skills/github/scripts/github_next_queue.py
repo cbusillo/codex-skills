@@ -34,7 +34,7 @@ def current_status(discussion: dict[str, Any], trusted: set[str], *, body_record
         if str(comment.get("author") or "").casefold() not in trusted:
             continue
         found = github_direction_next.section_map(comment.get("body") or "").get("Current Status")
-        comment_time = timestamp(comment.get("updated_at") or comment.get("created_at"))
+        comment_time = timestamp(comment.get("created_at"))
         # Older status comments are historical once the issue's current body
         # has newer evidence. Unmanaged records without status use comments.
         if found is not None and (not has_body_status or (comment_time is not None and (body_time is None or comment_time >= body_time))):

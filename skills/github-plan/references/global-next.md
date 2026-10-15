@@ -201,8 +201,8 @@ receipt stays visible. Delivered release/recovery follow-through is kept outside
 source queue even when a legacy wait review is still required. None of these
 classifications closes the issue or proves its full finish line.
 
-`milestone_summary` lists source work, `underway` ownership and
-`verification_only` qualification separately. Unreviewed legacy holds appear in
+`milestone_summary` lists source work, `underway` ownership,
+`verification_only` qualification and `scope_review` separately. Unreviewed legacy holds appear in
 `wait_reviews`; they do not label an entire milestone as waiting on a person.
 Qualification work remains visible even when no source candidate is available.
 

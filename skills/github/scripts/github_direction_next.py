@@ -1423,6 +1423,7 @@ def milestone_summary(
     milestone_titles: list[str], *, completed: list[str], candidates: list[dict[str, Any]],
     graph_waits: list[dict[str, Any]], track_next_actions: dict[str, dict[str, Any]],
     underway: list[dict[str, Any]] | None = None, verification_only: list[dict[str, Any]] | None = None,
+    scope_review: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Say, for each open listed milestone, what work it offers or who it waits on.
 
@@ -1445,6 +1446,7 @@ def milestone_summary(
                     or title in (row.get("overall_milestone_context") or {}).get("titles", [])]
         owned = linked(underway or [])
         qualification = linked(verification_only or [])
+        scoped = linked(scope_review or [])
         waits: list[dict[str, Any]] = []
         reviews: list[dict[str, Any]] = []
         for row in graph_waits:
@@ -1453,15 +1455,15 @@ def milestone_summary(
             target = reviews if row.get("source") == "legacy_wait_review" and row.get("plan_status") != "waiting" else waits
             if (row.get("milestone") or {}).get("title") == title and record not in target:
                 target.append(record)
-        for row in qualification:
+        for row in [*qualification, *scoped]:
             if row.get("wait_review_required") and not any((entry["repo"], entry["number"]) == (row["repo"], row["number"]) for entry in reviews):
                 reviews.append({**row, "waiting_for": "Legacy wait review required"})
         track = track_next_actions.get(title) or {}
         summary.append({
             "milestone": title,
             "track": track.get("track"),
-            "state": "work_listed" if work or any(not row.get("wait_review_required") for row in qualification) else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "no_linked_work",
-            "work": work, "underway": owned, "verification_only": qualification, "wait_reviews": reviews,
+            "state": "work_listed" if work or any(not row.get("wait_review_required") for row in qualification) else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "scope_review" if scoped else "no_linked_work",
+            "work": work, "underway": owned, "verification_only": qualification, "scope_review": scoped, "wait_reviews": reviews,
             "waits": waits,
             # Named by the Track's Next action but not reached over native edges.
             "next_action_outside_graph": track.get("references", []),

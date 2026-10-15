@@ -659,6 +659,7 @@ NEXT_PROJECT_ITEM_LIMIT = 1000
 NEXT_RELATIONSHIP_LIMIT = 100
 NEXT_PLAN_INVENTORY_LIMIT = 1000
 NEXT_DEFAULT_SCAN_LIMIT = 500
+NEXT_DELIVERY_REFERENCE_LIMIT = 8
 
 
 def classify_project_error(message: str) -> str:
@@ -3680,13 +3681,14 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
     result: dict[str, Any] = {"complete": True, "merged_prs": [], "completion_proven": False,
                               "scope": "current_status_explicit_pr_references", "all_linked_prs_searched": False}
     discussion = item.get("discussion") or {}
-    body_status = section_map(discussion.get("body") or "").get("Current Status", "")
-    comment_statuses = [section_map(comment.get("body") or "").get("Current Status", "")
+    body_status = re.sub(r"<!--.*?-->", "", section_map(discussion.get("body") or "").get("Current Status", ""), flags=re.S).strip()
+    comment_statuses = [re.sub(r"<!--.*?-->", "", section_map(comment.get("body") or "").get("Current Status", ""), flags=re.S).strip()
                         for comment in discussion.get("comments", [])
                         if str(comment.get("author") or "").casefold() in trusted]
     # Activity time cannot choose between disagreeing authored status records,
     # even when no source PR was named or its implementation link is absent.
-    if body_status and any(status and status != body_status for status in comment_statuses):
+    comment_statuses = [status for status in comment_statuses if status]
+    if body_status and comment_statuses and comment_statuses[-1] != body_status:
         try:
             owner, name = item["repo"].split("/")
             def read_edit() -> tuple[str, Any]:
@@ -3715,12 +3717,12 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
             result["body_edit_error"] = next_source_error(exc)
             return result
     refs = github_next_queue.delivery_references(item, trusted, body_recorded_at=result.get("body_recorded_at"))
-    if len(refs) > 8:
-        result.update(complete=False, omitted_reference_count=len(refs) - 8)
+    if len(refs) > NEXT_DELIVERY_REFERENCE_LIMIT:
+        result.update(complete=False, omitted_reference_count=len(refs) - NEXT_DELIVERY_REFERENCE_LIMIT)
     repositories = repositories if repositories is not None else {}
-    for repo, number in refs[:8]:
+    for repo, number in refs[:NEXT_DELIVERY_REFERENCE_LIMIT]:
         if NEXT_READS is not None and NEXT_READS.expired:
-            result.update(complete=False, unread_reference_count=len(refs[:8]) - refs[:8].index((repo, number)))
+            result.update(complete=False, unread_reference_count=len(refs[:NEXT_DELIVERY_REFERENCE_LIMIT]) - refs[:NEXT_DELIVERY_REFERENCE_LIMIT].index((repo, number)))
             break
         try:
             _, pull = api_json("GET", f"/repos/{repo}/pulls/{number}", bucket="rest_core", failed_step="next_delivery_pull")
@@ -4718,7 +4720,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["milestone_summary"] = github_direction_next.milestone_summary(
         titles, completed=ranked.get("completed_milestones", []), candidates=ranked["candidates"],
         graph_waits=[*graph_waits, *ranked["waiting"], *ranked["recorded_waits"]], track_next_actions=track_next_actions,
-        underway=ranked["underway"], verification_only=ranked["verification_only"],
+        underway=ranked["underway"], verification_only=ranked["verification_only"], scope_review=ranked["scope_review"],
     )
     ranked["candidates"] = ranked["candidates"][:args.limit]
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]

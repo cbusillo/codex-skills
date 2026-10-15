@@ -444,7 +444,7 @@ def test_post_merge_status_comment_stays_current_after_unrelated_issue_activity(
 def test_delivery_bounds_deadlines_and_incomplete_review_never_prove_availability() -> None:
     module = cli.load_module()
     row = item('Evaluate the remaining scope.')
-    row['discussion']['body'] += '\nSources: ' + ' '.join(f'https://github.com/owner/repo/pull/{n}' for n in range(80, 89))
+    row['discussion']['body'] += '\nSources: ' + ' '.join(f'https://github.com/owner/repo/pull/{n}' for n in range(80, 80 + module.NEXT_DELIVERY_REFERENCE_LIMIT + 1))
     with patch.object(module, 'api_json', lambda *_args, **_kwargs: ('bot', {'merged_at': None})):
         row['source_delivery'] = module.next_source_delivery(row, {'owner'})
     assert not row['source_delivery']['complete'] and row['source_delivery']['omitted_reference_count']
@@ -548,6 +548,16 @@ def test_inherited_overall_milestone_orders_work_without_copying_membership() ->
                                           repository_waypoints={'owner/repo': ['First', 'Second', 'Third']})
     assert [row['number'] for row in result['available_candidates']] == [early['number'], later['number']]
     assert result['available_candidates'][0].get('milestone') is None
+
+
+
+def test_scope_review_wait_remains_in_its_matched_milestone_summary() -> None:
+    row = item('An agent writes the remaining deployment guide.', 'Active; first slice merged')
+    row.update(overall_milestone_context={'state': 'matched', 'titles': ['First']}, wait_review_required=True)
+    summary = direction.milestone_summary(['First'], completed=[], candidates=[], graph_waits=[],
+        track_next_actions={}, scope_review=[row])
+    assert summary[0]['state'] == 'wait_review_required'
+    assert summary[0]['scope_review'] and summary[0]['wait_reviews']
 
 
 def main() -> None:
