@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 import github_plan_claim as claim
+import github_plan_termination as termination
 
 COMMENT_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 RELEASE_MARKER = "github-plan:abandoned-release "
@@ -158,7 +159,10 @@ def prepare_release(
     if (evidence.get("user") or {}).get("login") != actor:
         raise ValueError("Session-ended evidence must be authored by the configured automation identity")
     text = evidence.get("body") or ""
-    if text.splitlines()[:1] != [evidence_header(source["id"], record)] or "Safe to exit: yes" not in text.splitlines():
+    terminated = termination.evidence(text, record["session"]) if not legacy else None
+    if terminated is not None and record["branch"] not in {a["branch"] for a in terminated["retained_artifacts"]}:
+        raise ValueError("Termination evidence must retain the claimed source branch")
+    if terminated is None and (text.splitlines()[:1] != [evidence_header(source["id"], record)] or "Safe to exit: yes" not in text.splitlines()):
         raise ValueError("Evidence must be a closed-session attestation naming the exact native session and Safe to exit: yes")
     if legacy and (f"Worker: {record['worker']}" not in text.splitlines()
                    or f"Source branch: {record['branch']}" not in text.splitlines()
@@ -168,6 +172,9 @@ def prepare_release(
     if len(ended) != 1:
         raise ValueError("Closed-session attestation must record the verified Ended at timestamp")
     cutoff = stamp(ended[0])
+    if terminated is not None and (stamp(terminated["ended_at"]) != cutoff
+            or stamp(terminated["checked_at"]) > stamp(evidence["created_at"])):
+        raise ValueError("Termination checks must precede the attestation and match its Ended at time")
     if cutoff > stamp(evidence.get("created_at")):
         raise ValueError("Session-ended timestamp is newer than its attestation")
     check_activity(comments, source, cutoff, record)
@@ -176,6 +183,11 @@ def prepare_release(
            for s in inventory["sessions"]):
         raise ValueError("Source session is still visible in the active native session inventory")
     retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] in {record["branch"], *(retained_branches or set())}}
+    if terminated is not None:
+        artifact_paths = {pathlib.Path(a["worktree"]).resolve() for a in terminated["retained_artifacts"]}
+        if not retained_paths.issubset(artifact_paths):
+            raise ValueError("Termination evidence must name every preserved source/retained worktree")
+        retained_paths.update(artifact_paths)
     peers = [s for s in inventory["sessions"]
              if any(cwd == root or root in cwd.parents
                     for cwd in [pathlib.Path(s.get("cwd") or "/").resolve()] for root in retained_paths)]
@@ -195,10 +207,15 @@ def prepare_release(
                "releaser_session": releaser_session, "retained_prs": retained_prs,
                "checked_prs": checked_prs or [],
                "related_ids": [c["id"] for c in related]}
+    if terminated is not None:
+        receipt["termination"] = terminated
     return (f"Released claim {source['id']}\n\n"
             f"The {role} reconciles the next action on the work record.\n"
             f"[Session-ended evidence]({evidence_url})\n"
             + ("Retained PR handoff: " + ", ".join(retained_prs) + "\n" if retained_prs else "")
+            + ("Retained artifacts (resume; preserve uncommitted work):\n"
+               + "\n".join(f"- {a['worktree']} (branch {a['branch']})" for a in terminated["retained_artifacts"])
+               + "\n" if terminated is not None else "")
             + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
 
 
@@ -250,9 +267,12 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
             f"Native session unavailable: {record['legacy_reason']}")):
         raise ValueError("Legacy evidence no longer attests this source identity")
     ended = re.findall(r"(?m)^Ended at: (\S+)$", text)
+    terminated = termination.evidence(text, record["session"]) if "legacy_reason" not in record else None
+    if terminated != receipt.get("termination"):
+        raise ValueError("Termination evidence no longer matches the release")
     if ((evidence.get("user") or {}).get("login") != author
-            or text.splitlines()[:1] != [evidence_header(receipt["source_id"], receipt["source"])]
-            or "Safe to exit: yes" not in text.splitlines()
+            or (terminated is None and (text.splitlines()[:1] != [evidence_header(receipt["source_id"], receipt["source"])]
+                                       or "Safe to exit: yes" not in text.splitlines()))
             or len(ended) != 1 or stamp(ended[0]) != stamp(receipt["evidence_at"])
             or stamp(evidence.get("updated_at") or evidence.get("created_at")) != stamp(receipt["evidence_updated_at"])):
         raise ValueError("Closed-session evidence changed or no longer attests this release")

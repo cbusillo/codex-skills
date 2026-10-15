@@ -837,6 +837,16 @@ over a final release paragraph.
 
 #### Abandoned automation claims
 
+A session killed by a host or terminal crash uses a `Terminated session
+<native-id>` attestation instead of inventing a safe-exit verdict. Read
+[Supervisor crash recovery](../../supervisor/references/helpers.md#recovery-after-a-host-or-terminal-crash)
+for the private original-session record, read-only attestation generator, and
+`release-claim --termination-record <file>` procedure. This route is available
+to Supervisor and direction sessions, on the recorded source host only. Fresh
+PID/TTY, native transcript and tmux checks refuse live or uncertain identity
+and recent activity. Releases name the preserved worktrees/branches and leave
+them intact. Finished sessions and bare legacy claims keep the routes below.
+
 A direction or Supervisor session may release a finished native session's
 claim through `release-claim`. Keep the same configured automation identity;
 this route cannot release a human or another automation identity's claim.

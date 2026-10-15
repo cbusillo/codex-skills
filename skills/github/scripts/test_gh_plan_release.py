@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from pathlib import Path
 from argparse import Namespace
 from unittest.mock import patch
@@ -190,6 +194,112 @@ class ReleaseTests(ReleaseHarness):
         self.run_release()
         self.successor()
         self.assertEqual(self.f.emitted.call_args.args[0]["claim"]["session"], fixtures.OWNER["session"])
+
+    def termination_setup(self, harness="codex"):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        transcript = root / "session-b.jsonl"
+        at = "2026-10-01T23:59:00Z"
+        rows = ([{"type": "session_meta", "timestamp": at, "payload": {"id": "session-b"}},
+                 {"type": "event_msg", "timestamp": at, "payload": {"type": "agent_message", "message": "Still working"}}]
+                if harness == "codex" else
+                [{"sessionId": "session-b", "timestamp": at, "type": "assistant",
+                  "message": {"content": [{"type": "text", "text": "Still working"}]}}])
+        transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        os.utime(transcript, (release.stamp(at).timestamp(),) * 2)
+        self.termination_record = {
+            "session_id": "session-b", "harness": harness, "pid": 12345, "tty": "ttys123",
+            "host": "source-host", "transcript": str(transcript), "transcript_roots": [str(root)],
+            "tmux_socket": "supervisor", "tmux_pane": "%12",
+            "ended_at": "2026-10-02T00:00:00Z", "cause": "terminal force-quit",
+            "retained_artifacts": [{"branch": fixtures.OTHER["branch"], "worktree": str(root / "preserved")}],
+        }
+        self.termination_path = root / "termination.json"
+        self.args.termination_record = self.termination_path
+        fixed_now = release.stamp("2026-10-02T01:00:00Z")
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_now.astimezone(tz or timezone.utc)
+
+        for mock in (patch.object(release.termination, "datetime", Clock),
+                     patch.object(release.termination.socket, "gethostname", return_value="source-host"),
+                     patch.object(release.termination, "inventory", return_value=[]),
+                     patch.object(release.termination, "run_terminal", return_value=SimpleNamespace(
+                         returncode=1, stdout="", stderr="no server running on /fixture/socket"))):
+            mock.start()
+            self.addCleanup(mock.stop)
+        self.termination_path.write_text(json.dumps(self.termination_record))
+        data = release.termination.verify(self.termination_record, "session-b")
+        self.evidence["body"] = release.termination.body(data)
+        return transcript
+
+    def test_terminated_session_releases_without_verdict_and_successor_can_claim(self):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                self.setUp()
+                self.termination_setup(harness)
+                self.run_release()
+                released = self.f.comments[-1]
+                receipt = release.receipt_for(released)
+                self.assertEqual(receipt["termination"]["retained_artifacts"], self.termination_record["retained_artifacts"])
+                self.assertIn(self.termination_record["retained_artifacts"][0]["worktree"], released["body"])
+                self.successor()
+                self.assertTrue(self.termination_path.exists())
+
+    def test_terminated_session_with_live_process_or_resumed_process_refuses(self):
+        self.termination_setup()
+        for processes in ([(12345, "other", "codex")], [(88, "ttys123", "claude")],
+                          [(88, "other", "codex resume session-b")]):
+            with self.subTest(processes=processes), patch.object(release.termination, "inventory", return_value=processes):
+                with self.assertRaisesRegex(PLAN.PlanError, "running"):
+                    self.run_release()
+                self.f.assert_no_writes()
+
+    def test_terminated_session_recent_or_resumed_transcript_refuses(self):
+        for mode in ("mtime", "native_record", "other_account"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                transcript = self.termination_setup()
+                recent = release.stamp("2026-10-02T00:59:00Z").timestamp()
+                if mode == "mtime":
+                    os.utime(transcript, (recent,) * 2)
+                else:
+                    target = transcript if mode == "native_record" else transcript.with_name("resumed-session-b.jsonl")
+                    target.write_text(transcript.read_text() + json.dumps({"timestamp": "2026-10-02T00:59:00Z", "type": "session_meta", "payload": {"id": "session-b"}}) + "\n")
+                with self.assertRaisesRegex(PLAN.PlanError, "recent|resumed"):
+                    self.run_release()
+                self.f.assert_no_writes()
+
+    def test_terminated_session_uncertain_identity_terminal_or_evidence_refuses(self):
+        for mode in ("pid", "host", "transcript", "pane", "server_error", "missing_record", "artifacts", "source_branch"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                transcript = self.termination_setup()
+                if mode == "pid": self.termination_record["pid"] = None
+                if mode == "host": self.termination_record["host"] = "other-host"
+                if mode == "transcript": transcript.write_text(transcript.read_text().replace("session-b", "different-session"))
+                if mode in {"pane", "server_error"}:
+                    release.termination.run_terminal.return_value = SimpleNamespace(
+                        returncode=0 if mode == "pane" else 1,
+                        stdout="%12\t0\n", stderr="error connecting to /fixture/socket (Permission denied)")
+                if mode == "missing_record": self.args.termination_record = None
+                if mode == "artifacts": self.termination_record["retained_artifacts"] = []
+                if mode == "source_branch": self.termination_record["retained_artifacts"][0]["branch"] = "work/other"
+                self.termination_path.write_text(json.dumps(self.termination_record))
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.f.assert_no_writes()
+
+    def test_terminated_session_dead_pane_and_edited_attestation(self):
+        self.termination_setup()
+        release.termination.run_terminal.return_value = SimpleNamespace(returncode=0, stdout="%12\t1\n", stderr="")
+        self.run_release()
+        self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
+        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
+            self.successor()
 
     def test_launchplane_missing_exact_release_becomes_claimable(self):
         self.run_release()

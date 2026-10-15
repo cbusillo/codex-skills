@@ -271,6 +271,9 @@ active issue labels and continuing background jobs do not lift a hold.
    and fresh activity checks. Read Planning: Claim first; age, a merged PR or
    partial peer coverage never proves closure. This releases ownership only;
    recorded waits, native blockers and retained-artifact gates still apply.
+   A session killed without closeout uses the linked Supervisor crash-recovery
+   route with `--termination-record`, fresh source-host checks and preserved
+   artifacts; it does not need a safe-exit verdict it never wrote.
    For an authorized PR-only conflict refresh of a finished session, claim its
    canonical open planning issue with `--refresh-pr`, `--resume-from`, and
    `--handoff-comment`; read Planning: Claim for the exact released-handoff

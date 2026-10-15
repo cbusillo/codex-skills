@@ -863,6 +863,90 @@ to verify the entire input is empty. Send `/exit` or `/quit` with `send --text`
 only after that check, then wait a bounded time for the matched process to end.
 Update the ledger's handoff URL from the actual issue record.
 
+### Recovery after a host or terminal crash
+
+A session killed without closeout cannot supply its own safe-exit verdict.
+Use the terminated-session route below, from the original source host, as a
+Supervisor or direction session. Leave its worktrees, branches and uncommitted
+files in place. `release_session_claims.py finish` remains the route for a
+session that actually finished and wrote its verdict.
+
+Copy the exact original session identity from the private launch ledger into
+a private JSON object. Preserve its native `session_id`, `harness`, recorded
+`pid`, `tty`, and `transcript`; do not infer identity from a token mentioned in
+someone else's transcript. Add the recorded source `host` (matching that
+host's hostname), original `tmux_socket` name and `tmux_pane` ID, actual
+timezone-qualified `ended_at` and `cause`. Name every preserved worktree and
+branch, including work in other repositories, under `retained_artifacts`.
+The record has this shape (values are illustrative):
+
+```json
+{
+  "session_id": "exact-native-session-id",
+  "harness": "codex",
+  "pid": 12345,
+  "tty": "ttys123",
+  "host": "original-host",
+  "transcript": "/private/sessions/exact-native-session-id.jsonl",
+  "transcript_roots": ["/private/sessions", "/private/archived_sessions"],
+  "tmux_socket": "supervisor",
+  "tmux_pane": "%12",
+  "ended_at": "2026-01-01T20:16:00-05:00",
+  "cause": "terminal force-quit killed the original tmux server",
+  "retained_artifacts": [
+    {"worktree": "/artifacts/worktrees/repo/task", "branch": "work/task"}
+  ]
+}
+```
+
+Supply all known source-account transcript directories on that host, including
+resumed and archived transcripts. Unavailable original identity, host,
+transcripts, or terminal evidence is a refusal, not proof of termination.
+Verify native task status and any remote peers yourself too: an idle desktop
+thread or an ID-less picker may not yet write a new transcript. The existing
+`--confirm-session-ended` attestation includes those unavailable peers.
+
+```sh
+uv run skills/github/scripts/github_plan_termination.py --record <private-termination.json> > <attestation.md>
+skills/github/scripts/gh-comment issue <canonical-issue> --repo OWNER/REPO < <attestation.md>
+uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO release-claim <canonical-issue> --claim-comment <original-claim-comment-id> --evidence-comment <posted-attestation-url> --termination-record <private-termination.json> --role supervisor --session <current-native-id> --confirm-session-ended --dry-run
+```
+
+Generate the attestation, inspect it, and post it through the configured
+automation identity. Use its exact returned comment URL in `release-claim`.
+After inspecting the dry run, repeat without `--dry-run`. For a PR-only claim,
+use its canonical PR URL and post the attestation on that PR. Add every
+verified retained same-repository PR with repeatable `--retained-pr`; the
+ordinary PR link, ownership and commit-activity guards still apply.
+
+The helper freshly checks the recorded PID/TTY and resumed processes, exact
+native transcript identity/activity, and the original dead pane or missing
+server before release and again on readback. It refuses a running process,
+transcript activity within five minutes, activity after the actual termination,
+a live/uncertain pane, or a changed record. PID reuse refuses too. It never
+stops a process or removes a terminal. The release records the retained
+artifacts; claim release does not clear waits, native blockers or retained-work
+ownership gates. Keep the original termination time across retries.
+
+For the successor, **`--resume-from` takes the original claim comment's numeric
+ID after that claim has been released; it never takes a branch**. It is also
+distinct from the release comment's ID. When retained PRs need a handoff, pass
+the new release comment's numeric ID as `--handoff-comment`. Inspect the
+supported route with the helper's help before putting it in a brief:
+
+```sh
+uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch <verified-preserved-branch> --resume-from <original-claim-comment-id> --handoff-comment <release-comment-id> --next-action "Resume the retained work after checking its current state"
+```
+
+Omit `--handoff-comment` when there is no retained-PR handoff. Add the actual
+admission and existing wait-resolution evidence when required. Read
+[Planning: Claim](../../github/references/cli-reference.md#planning-claim)
+for retained PR and conflict-refresh rules; a release grants no new product,
+runtime, or merge authority. Recheck all preserved artifacts before adopting
+them, and preserve uncommitted work.
+
+### Release a verified finished session
+
 Before closing the verified-finished tab, discover and release its remaining
 claims. Read [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
 and its Abandoned automation claims section first. The current Supervisor must
