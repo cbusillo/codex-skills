@@ -703,16 +703,18 @@ async def open_tmux_view(connection, terminal, container, *, window_id=None, win
                 raise ValueError("chosen iTerm window number does not identify one window")
             window_id = matches[0].window_id
         if window_id is None and state_path.exists():
-            window_id = json.loads(state_path.read_text(encoding="utf-8"))["iterm_window_id"]
-            if not isinstance(window_id, str) or not window_id:
-                raise ValueError("remembered iTerm window identity is invalid")
+            try:
+                window_id = json.loads(state_path.read_text(encoding="utf-8"))["iterm_window_id"]
+                if not isinstance(window_id, str) or not window_id:
+                    raise ValueError()
+            except (ValueError, KeyError, TypeError, OSError):
+                raise ValueError("saved iTerm window is unreadable; choose again with --iterm-window-number or --iterm-window-id") from None
         chosen = None
         if window_id is not None:
             matches = [w for w in app.terminal_windows if w.window_id == window_id]
             if len(matches) != 1:
-                raise ValueError("remembered iTerm window is gone; choose another with --iterm-window-number or --iterm-window-id")
+                raise ValueError("chosen or remembered iTerm window is gone; choose another with --iterm-window-number or --iterm-window-id")
             chosen = matches[0]
-            remember_view_window(state_path, chosen.window_id)
         clients = terminal.control_clients(container)
         candidates = sessions(app) + app.buried_sessions
         for session in candidates:
@@ -744,15 +746,15 @@ async def open_tmux_view(connection, terminal, container, *, window_id=None, win
         if chosen is None:
             window = await iterm2.Window.async_create(connection, profile_customizations=profile)
             created = window is not None
-            if created:
-                try:
-                    remember_view_window(state_path, window.window_id)
-                except OSError:
-                    memory_failed = True
         else:
             window = chosen
             tab = await chosen.async_create_tab(profile_customizations=profile, select=False)
             created = tab is not None
+        if created:
+            try:
+                remember_view_window(state_path, window.window_id)
+            except OSError:
+                memory_failed = True
         result = {"status": "opening" if created else "unavailable",
                   "window_id": window.window_id if window else None,
                   "readback_required": True, "restore_windows_as": preference,
@@ -824,6 +826,7 @@ def main():
         terminal = tmux_terminal.Terminal(args.tmux_socket)
         try:
             terminal.verify_container(args.window_id)
+            terminal.require_readonly_view(args.window_id)
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             parser.exit(1, f"refused: {error}\n")
 

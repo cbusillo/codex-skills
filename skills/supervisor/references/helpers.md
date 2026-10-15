@@ -608,13 +608,18 @@ On macOS, `window` starts a missing server through a transient user-login
 launchd service using tmux's foreground `-D` mode, outside the terminal's
 process tree. The job is registered in memory; no LaunchAgent file, login item,
 saved tmux option or iTerm setting is installed or changed. The native `-D`
-mode keeps an empty server alive. An existing server is reused untouched,
+mode keeps an empty server alive. Each agent window explicitly receives the
+launcher's PATH, Code-home, cache/tool roots, locale and SSH-agent socket from
+`LAUNCH_ENVIRONMENT_KEYS`; account roots still come from the selected account.
+Other launcher-only environment is not copied into the launchd server. Put
+additional per-agent environment in its existing launch file. An existing server is reused untouched,
 reported as `server_startup: existing`; this does not prove that a legacy
 server was started independently of iTerm. Never restart or migrate an active
 server just to change its parent. New containers on that server retain its
 current lifecycle until the Supervisor's normal shutdown boundary. A failed
 launchd start refuses without falling back to a terminal-owned server.
-Non-macOS hosts retain native detached startup. Reads and attaches use `-N`,
+Workers need tmux 3.2 or later. Non-macOS hosts retain native detached startup.
+Reads and attaches use `-N`,
 so a missing server is never silently replaced.
 
 **Opening the view is opt-in.** iTerm's native tmux integration can select tabs
@@ -655,7 +660,12 @@ creation; client TTY and pending-command checks prevent a duplicate gateway.
 The receipt reports uncertain or failed creation without relaunching agents.
 
 The explicit attach is `tmux -N -L supervisor -CC attach -r -t <container-id>`.
-The read-only client rejects pane input, including control-mode `send-keys`;
+The running server must be tmux 3.7 or later to enforce read-only control input.
+Older/unknown servers keep working headlessly, and the explicit view refuses
+before connecting to iTerm. Updating just the client does not upgrade a live
+server: wait for the Supervisor's normal server shutdown/update boundary, never
+restart active workers to enable viewing. On supported servers the read-only
+client rejects pane input, including control-mode `send-keys`;
 messaging agents still uses the maintained `send` command. Attachment and
 later native tabs may move focus; the view receipt says so. The helper reads
 [iTerm's restore preference](https://iterm2.com/python-api/preferences.html#iterm2.preferences.PreferenceKey.OPEN_TMUX_WINDOWS_IN)
@@ -674,7 +684,10 @@ backend; migrate by launching fresh tasks, never moving active work.
 
 Tests use throwaway `tmux -L` names in private temporary `TMUX_TMPDIR`
 directories. Teardown stops only its own server and launchd job and removes
-its socket and lock files. It never drives real iTerm or touches existing
+its socket and lock files on normal or exception completion. Abruptly killing
+the test runner can leave its isolated launchd job; retain that exact job/socket
+identity for test-owned cleanup, never sweep a live Supervisor socket.
+Tests never drive real iTerm or touch existing
 Supervisor sockets, clients or lock files. The launchd test kills its own
 simulated terminal process group and proves that its server and worker remain.
 

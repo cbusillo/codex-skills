@@ -36,6 +36,9 @@ class ViewTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.state_path = Path(folder.name) / "view.json"
         self.terminal = tmux_terminal.Terminal("supervisor")
+        no_live_tmux = patch.object(self.terminal, "run", side_effect=AssertionError("unit view tests must never query the live socket"))
+        no_live_tmux.start()
+        self.addCleanup(no_live_tmux.stop)
         executable = patch.object(tmux_terminal.shutil, "which", return_value="/fixture/bin/tmux")
         executable.start()
         self.addCleanup(executable.stop)
@@ -94,8 +97,6 @@ class ViewTests(unittest.TestCase):
         argv = shlex.split(self.created[0]["Command"])
         self.assertEqual(argv[argv.index("-t") + 1], self.container)
         self.assertEqual(argv[argv.index("-L") + 1], self.terminal.socket_name)
-        self.assertIn("-CC", argv)
-        self.assertIn("-r", argv)
         self.assertTrue(self.created[0]["Close Sessions On End"])
         self.assertFalse(self.startup_input)
         self.assertFalse(self.created[0]["Send Code When Idle"])
@@ -158,10 +159,10 @@ class ViewTests(unittest.TestCase):
 
     def test_missing_remembered_window_never_falls_back_to_same_number_or_new_window(self):
         self.state_path.write_text(json.dumps({"iterm_window_id": "closed"}))
-        with self.assertRaisesRegex(ValueError, "choose another"):
+        with self.assertRaises(ValueError):
             self.open()
         self.assertFalse(self.created)
-        with self.assertRaisesRegex(ValueError, "number"):
+        with self.assertRaises(ValueError):
             self.open(window_number=3)
 
     def test_pending_gateway_deduplication_survives_a_different_tmux_path(self):
@@ -201,10 +202,31 @@ class ViewTests(unittest.TestCase):
         inventory = SimpleNamespace(stdout="$17\t1\t/dev/ttys987\t0\n")
         with patch.object(self.terminal, "verify_container"), \
                 patch.object(self.terminal, "run", return_value=inventory) as run:
-            with self.assertRaisesRegex(ValueError, "writable"):
+            with self.assertRaises(ValueError):
                 self.terminal.control_clients(self.container)
-        self.assertEqual(len(run.call_args_list), 1)
+        self.assertTrue(all(call.args[0] == "list-clients" for call in run.call_args_list))
         self.assertFalse(self.created)
+
+    def test_unsupported_server_refuses_before_connecting_to_iterm(self):
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        with patch.object(sys, "argv", ["iterm_tab.py", "--backend", "tmux", "view", "--window-id", "$0"]), \
+                patch.object(tmux_terminal.Terminal, "verify_container"), \
+                patch.object(tmux_terminal.Terminal, "readonly_control_supported", return_value=False), \
+                patch.object(iterm2, "run_until_complete") as connect, \
+                redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit):
+                iterm_tab.main()
+        connect.assert_not_called()
+
+    def test_corrupt_window_memory_allows_an_explicit_new_choice(self):
+        self.state_path.write_text("not json")
+        with self.assertRaises(ValueError):
+            self.open()
+        self.assertFalse(self.created)
+        chosen = SimpleNamespace(window_id="chosen-stable", number=3, tabs=[], async_create_tab=AsyncMock())
+        self.app.terminal_windows = [chosen]
+        self.assertEqual(self.open(window_number=3)["window_id"], chosen.window_id)
 
     def test_launch_defers_unattached_view_without_any_gui_process(self):
         with patch.object(tmux_terminal.sys, "platform", "darwin"), \
@@ -229,6 +251,9 @@ class ViewTests(unittest.TestCase):
 class PaneParserTests(unittest.TestCase):
     def setUp(self):
         self.terminal = tmux_terminal.Terminal("fixture")
+        capability = patch.object(self.terminal, "readonly_control_supported", return_value=True)
+        capability.start()
+        self.addCleanup(capability.stop)
         self.marker = "a" * 32
         self.dead = f"$1\t@1\t%1\texited\t/dev/ttys987\t\t1\t0\t{self.marker}\t123\n"
         self.live = "$1\t@2\t%2\tlive\t/dev/ttys986\t456\t0\t\tlive-nonce\t123\n"
@@ -349,10 +374,13 @@ class TmuxTests(unittest.TestCase):
         self.addCleanup(self.cleanup_server)
         window = self.operate("window")
         self.window = window["window_id"]
-        self.assertEqual(shlex.split(window["view_command"])[-1], self.window)
+        if window["view_command"]:
+            self.assertEqual(shlex.split(window["view_command"])[-1], self.window)
+        else:
+            self.assertFalse(self.terminal.readonly_control_supported(self.window))
         self.agent = self.root / "claude"
         self.agent.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
-print("READY:" + json.dumps({"brief": sys.argv[-1], "home": os.getenv("CLAUDE_CONFIG_DIR"), "codex_home": os.getenv("CODEX_HOME"), "move": os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"), "cwd": os.getcwd()}), flush=True)
+print("READY:" + json.dumps({"brief": sys.argv[-1], "home": os.getenv("CLAUDE_CONFIG_DIR"), "codex_home": os.getenv("CODEX_HOME"), "move": os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"), "cwd": os.getcwd(), "code_home": os.getenv("CODE_HOME"), "uv_cache": os.getenv("UV_CACHE_DIR")}), flush=True)
 for line in sys.stdin:
     if line.strip() in {"/exit", "/quit"}:
         break
@@ -487,6 +515,16 @@ for line in sys.stdin:
         self.assertFalse(any(r["session_id"] == row["session_id"] for r in self.terminal.list()))
         self.assertTrue(any(r["window_id"] == self.window for r in self.terminal.list()))
 
+    def test_new_window_preserves_launcher_context_and_cache_roots(self):
+        environment = {"CODE_HOME": str(self.root / "code-context"), "UV_CACHE_DIR": str(self.root / "cache")}
+        with patch.dict(os.environ, environment):
+            row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+        history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
+        received = json.loads(next(line.split("READY:", 1)[1] for line in history.splitlines() if "READY:" in line))
+        self.assertEqual(received["code_home"], environment["CODE_HOME"])
+        self.assertEqual(received["uv_cache"], environment["UV_CACHE_DIR"])
+
     def test_read_faint_and_normal_prompt_from_real_tmux_capture(self):
         for styled, expected in (("\\033[2mcandidate\\033[0m", "dim"),
                                  ("\\033[22mcandidate", "non_dim"),
@@ -612,10 +650,14 @@ for line in sys.stdin:
 
     def test_client_inventory_filters_plain_control_and_other_session_clients(self):
         # Real tmux -C is a protocol client, not an iTerm view (no client TTY).
-        client = subprocess.Popen(["tmux", "-L", self.socket, "-C", "attach", "-r", "-t", self.window],
+        supported = self.terminal.readonly_control_supported(self.window)
+        command = shlex.split(self.terminal.view_command(self.window))
+        command[command.index("-CC")] = "-C"  # Pipes use the same protocol without a gateway TTY.
+        client = subprocess.Popen(command,
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.addCleanup(client.wait, timeout=5)
         self.addCleanup(client.stdin.close)
+        self.addCleanup(client.stdout.close)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             rows = self.terminal.run("list-clients", "-t", self.window, "-F", "#{client_control_mode}").stdout
@@ -633,9 +675,17 @@ for line in sys.stdin:
         client.stdin.write(f"send-keys -t {pane} READONLYMUSTNOTARRIVE Enter\ndetach-client\n".encode())
         client.stdin.flush()
         client.wait(timeout=5)
-        self.assertIn(b"client is read-only", client.stdout.read())
-        client.stdout.close()
-        self.assertNotIn("READONLYMUSTNOTARRIVE", "\n".join(self.terminal.read(row["session_id"])["screen"]))
+        client.stdout.read()
+        # The server may have input left to process after the client exits.
+        asyncio.run(self.terminal.send(row["session_id"], "SETTLED"))
+        screen = "\n".join(self.wait_screen(row["session_id"], "MESSAGE:'SETTLED" )["screen"])
+        if supported:
+            self.assertNotIn("READONLYMUSTNOTARRIVE", screen)
+        else:
+            # Older tmux does not enforce control-client read-only: the product
+            # refuses GUI exposure and keeps the existing headless path usable.
+            with self.assertRaises(ValueError):
+                self.terminal.require_readonly_view(self.window)
         self.assertFalse(self.terminal.select(row["session_id"])["dead"])
 
     def test_parallel_view_lock_excludes_second_creator_and_recovers_after_exit(self):

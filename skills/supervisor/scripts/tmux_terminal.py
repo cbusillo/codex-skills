@@ -23,6 +23,15 @@ import uuid
 import account_choice
 import iterm_tab
 
+# 3.7 added send-keys enforcement for read-only control clients. Older servers
+# still support headless workers, but must never be exposed as read-only views.
+READONLY_CONTROL_MINIMUM = (3, 7)
+LAUNCH_ENVIRONMENT_KEYS = (
+    "PATH", "CODE_HOME", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_TOOL_DIR",
+    "UV_TOOL_BIN_DIR", "CARGO_HOME", "RUSTUP_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME",
+    "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+)
+
 
 class Terminal:
     def __init__(self, socket_name="supervisor"):
@@ -45,7 +54,19 @@ class Terminal:
         # inherits its read-only restriction, even for this independent command.
         # An explicit empty -c sends only to the verified pane, without a UI
         # client context. The view's own send-keys commands stay read-only.
-        return self.run("send-keys", "-c", "", "-t", pane, *keys)
+        client = ("-c", "") if self.readonly_control_supported(pane) else ()
+        return self.run("send-keys", *client, "-t", pane, *keys)
+
+    def readonly_control_supported(self, target):
+        # Check the running server, which may predate an upgraded client binary.
+        version = self.run("display-message", "-p", "-t", target, "#{version}").stdout.strip()
+        match = re.fullmatch(r"(\d+)\.(\d+)[a-z]?", version)
+        return bool(match and tuple(map(int, match.groups())) >= READONLY_CONTROL_MINIMUM)
+
+    def require_readonly_view(self, container):
+        if not self.readonly_control_supported(container):
+            minimum = ".".join(map(str, READONLY_CONTROL_MINIMUM))
+            raise ValueError(f"read-only views require a tmux {minimum}+ server; keep workers headless until the normal server shutdown/update boundary")
 
     def launchd_target(self):
         # Include the socket directory: isolated tests never share a service.
@@ -86,8 +107,9 @@ class Terminal:
                 loaded = subprocess.run(["launchctl", "print", target], capture_output=True, timeout=10)
                 if loaded.returncode:
                     raise ValueError(f"launchd startup failed; inspect {target}; no terminal-owned fallback")
-        else:
-            subprocess.run(["launchctl", "kickstart", target], capture_output=True, timeout=10, check=True)
+        # No -k: this can start a stopped registration or reuse a concurrent
+        # creator's running process, but never kill/restart a live server.
+        subprocess.run(["launchctl", "kickstart", target], capture_output=True, timeout=10, check=True)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             probe = self.run("list-sessions", check=False)
@@ -123,7 +145,7 @@ class Terminal:
                 raise ValueError("tmux client inventory is malformed")
             if fields[1] == "1" and fields[2]:
                 if fields[3] != "1":
-                    raise ValueError("existing control view is writable; Supervisor must use Detach before opening the read-only view")
+                    raise ValueError("existing control view is writable; the Director may use Shell > tmux > Detach before requesting a read-only view")
                 clients.append(fields[2])
         return clients
 
@@ -314,8 +336,12 @@ async def operate(args):
         else:
             created = terminal.run("new-session", "-d", "-s", name, "-n", "control", "-P", "-F", "#{session_id}")
         window = created.stdout.strip()
-        return {"window_id": window, "backend": "tmux", "tmux_socket": args.tmux_socket,
-                "server_startup": startup, "view_command": terminal.view_command(window)}
+        supported = terminal.readonly_control_supported(window)
+        result = {"window_id": window, "backend": "tmux", "tmux_socket": args.tmux_socket,
+                  "server_startup": startup, "view_command": terminal.view_command(window) if supported else None}
+        if not supported:
+            result["view_warning"] = "Keep workers headless until the normal server shutdown/update boundary; this server cannot enforce read-only control input."
+        return result
 
     terminal.verify_container(args.window_id)
     commands, choices = iterm_tab.prepare_launches(args)
@@ -334,8 +360,10 @@ async def operate(args):
             staged = ("IFS= read -r supervisor_start; "
                       f'[ "$supervisor_start" = {shlex.quote(gate)} ] && '
                       f"exec /bin/zsh -c {shlex.quote(command)}")
+            environment = [argument for key in LAUNCH_ENVIRONMENT_KEYS if key in os.environ
+                           for argument in ("-e", key + "=" + os.environ[key])]
             created = terminal.run("new-window", "-d", "-t", args.window_id + ":", "-n", "agent",
-                                   "-e", "PATH=" + os.environ.get("PATH", ""),
+                                   *environment,
                                    "-P", "-F", "#{window_id}\t#{pane_id}",
                                    "exec /bin/sh -c " + shlex.quote(staged)).stdout.strip().split("\t")
             if len(created) != 2:
@@ -362,7 +390,7 @@ async def operate(args):
             try:
                 result["view"] = terminal.view(args.window_id)
             except Exception as error:
-                result["view"] = {"status": "unavailable", "reason": type(error).__name__,
+                result["view"] = {"status": "unavailable", "reason": str(error) if isinstance(error, ValueError) else type(error).__name__,
                                   "readback_required": True,
                                   "next_action": "Inspect iTerm, then use view --window-id; do not relaunch agents."}
     return results[0] if len(results) == 1 else results
