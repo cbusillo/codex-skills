@@ -2077,6 +2077,9 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 raise PlanError("Related ownership comment is missing or repeats the structured source")
             related_comments.append(related_comment)
         source_branch = github_plan_release.source_record(source, **legacy_options)["branch"]
+        github_plan_release.termination.verify_attestation(
+            getattr(args, "termination_record", None), evidence.get("body") or "",
+            github_plan_release.source_record(source, **legacy_options)["session"])
         # Check source identity, closure and native peers before a retained-PR
         # refusal can be classified as independent issue work.
         if expected_actor is None:
@@ -2178,7 +2181,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
     except github_comment_core.CommentError as exc:
         raise PlanError(str(exc), failure=exc.failure, api_result=exc.api_result,
             payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {})}) from exc
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
         raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {}),
             "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
@@ -5399,6 +5402,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--role", choices=["supervisor", "direction"], required=True)
     p.add_argument("--session", required=True, help="Releasing session's actual native ID")
     p.add_argument("--confirm-session-ended", action="store_true", help="Attest verified closure, including unavailable peer inventory")
+    p.add_argument("--termination-record", type=pathlib.Path, help="Private source-host crash record; freshly verifies process, transcripts and tmux for a Terminated session attestation")
     p.add_argument("--legacy", action="store_true", help="Release a bare legacy claim with no native session identity")
     p.add_argument("--legacy-branch", help="Verified original source branch; requires --legacy")
     p.add_argument("--legacy-reason", help="Why no native session ID exists; must match the legacy attestation")
