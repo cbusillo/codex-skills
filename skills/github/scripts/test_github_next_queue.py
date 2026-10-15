@@ -289,6 +289,94 @@ def test_status_formatting_and_prospective_delivery_do_not_hide_source_work() ->
         assert queue.remaining_work(status)['state'] == 'review'
 
 
+
+def test_clear_discovered_milestone_work_is_available_without_a_caller_snapshot() -> None:
+    row = item()
+    row.update(queue=classify(row), plan_status='active', milestone=cli.milestone_data(1, 'First', created_at='2026-01-01T00:00:00Z'))
+    row['discussion']['ancestry_complete'] = True
+    graph = {'candidates': [], 'excluded': [], 'dependency_context': {'complete': True}}
+    def rank():
+        return direction.rank_portfolio_work(graph, [row], milestone_titles=['First'],
+                                             repository_waypoints={'owner/repo': ['First']})
+    result = rank()
+    assert [entry['number'] for entry in result['available_candidates']] == [row['number']]
+    assert result['available_candidates'][0]['category'] == 'milestone'
+    assert result['available_candidates'][0]['claim_required']
+    row['discussion']['ancestry_complete'] = False
+    assert not rank()['available_candidates']
+    row['discussion']['ancestry_complete'] = True
+    row['queue']['state'] = 'review'
+    row['queue']['reason'] = 'ownership_reads_incomplete'
+    assert not rank()['available_candidates']
+    row['queue'] = classify(item())
+    row['milestone']['state'] = 'closed'
+    assert not rank()['available_candidates']
+
+
+def test_delivered_recovery_and_release_records_are_not_new_source_assignments() -> None:
+    # Sanitized reproductions of the two duplicate-launch current actions.
+    recovery = item("Coordinate #7's isolated testing/gated release prerequisite and an exact bounded recovery plan. Reconcile ID coverage after authorized recovery; do not repeat the landed source repair.",
+                    'Active; source repair landed in PR #80; the data gap is not repaired')
+    release = item("Supervisor reconciles downstream image consumption and accepted-release gates, then delivers and safely verifies process arguments. No duplicate implementation is needed.",
+                   'Active release follow-through; source engineering is complete and landed')
+    for row in [recovery, release]:
+        row['discussion']['body'] = wait.without_records(row['discussion']['body'])
+        result = classify(row)
+        assert result['state'] in {'scope_review', 'verification'}
+        assert result['wait_review_required']  # No wait is silently cleared.
+    for action in ['An executing agent selects the next worthwhile duplicate-code cluster and opens its completing PR.',
+                   'An executing agent selects the next independent test-audit slice and opens its completing PR.']:
+        result = classify(item(action, 'Active; real remaining work, with delivered source preserved'))
+        assert result['state'] == 'available', result
+
+
+def test_verified_merged_source_is_reviewed_but_a_new_source_remainder_can_proceed() -> None:
+    module = cli.load_module()
+    row = item('Implement the export path.')
+    row['discussion']['body'] += '\nEvidence: https://github.com/owner/repo/pull/80'
+    pull = {'number': 80, 'body': 'Refs #1', 'merged_at': '2026-09-01T00:00:00Z', 'base': {'ref': 'main'}}
+    reads = []
+    def read(_method, path, **_kwargs):
+        reads.append(path)
+        if '/pulls/' in path:
+            return 'bot', pull
+        return 'bot', {'default_branch': 'main'}
+    with patch.object(module, 'api_json', read):
+        row['source_delivery'] = module.next_source_delivery(row, {'owner', 'bot'})
+    assert row['source_delivery']['complete']
+    assert row['source_delivery']['merged_prs'][0]['url'].endswith('/pull/80')
+    assert not row['source_delivery']['completion_proven']
+    assert classify(row)['state'] == 'scope_review'
+    # A fresh recorded source remainder is not erased by an earlier merged slice.
+    row['discussion']['updated_at'] = '2026-09-02T00:00:00Z'
+    assert classify(row)['state'] == 'available'
+    row['source_delivery']['complete'] = False
+    assert classify(row)['reason'] == 'source_delivery_reads_incomplete'
+    assert all('/pulls/' in path or path == '/repos/owner/repo' for path in reads)
+
+
+def test_merge_evidence_requires_implementation_association_and_default_destination() -> None:
+    module = cli.load_module()
+    row = item('Review the remaining scope.')
+    row['discussion']['body'] += '\nSource: PR #80 and https://github.com/owner/repo/pull/80'
+    assert queue.delivery_references(row, {'owner'}) == [('owner/repo', 80)]
+    pull = {'number': 80, 'body': 'Refs #1', 'merged_at': '2026-09-01T00:00:00Z', 'base': {'ref': 'main'}}
+    def read(_method, path, **_kwargs):
+        return 'bot', pull if '/pulls/' in path else {'default_branch': 'main'}
+    with patch.object(module, 'api_json', read):
+        row['source_delivery'] = module.next_source_delivery(row, {'owner'})
+        assert classify(row)['state'] == 'scope_review'
+        for key, value in [('body', 'Background context #1'), ('base', {'ref': 'release'}), ('merged_at', None)]:
+            changed = {**pull, key: value}
+            with patch.object(module, 'api_json', lambda _method, path, **_kwargs: ('bot', changed if '/pulls/' in path else {'default_branch': 'main'})):
+                assert not module.next_source_delivery(row, {'owner'})['merged_prs']
+    with patch.object(module, 'api_json', Mock(side_effect=module.PlanError('Unavailable source PR'))):
+        result = module.next_source_delivery(row, {'owner'})
+    assert not result['complete'] and result['unavailable']
+    row['discussion']['comments'] = [{'author': 'stranger', 'body': '## Current Status\nSource: PR #99'}]
+    assert ('owner/repo', 99) not in queue.delivery_references(row, {'owner'})
+
+
 def main() -> None:
     for name, test in sorted(globals().items()):
         if name.startswith('test_'):

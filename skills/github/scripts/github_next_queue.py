@@ -47,6 +47,17 @@ def status_field(status: str, field: str) -> str:
     return match[1].strip() if match else ""
 
 
+def delivery_references(item: dict[str, Any], trusted: set[str]) -> list[tuple[str, int]]:
+    """Read explicit source-PR references in the current status, not its history."""
+    status = current_status(item.get("discussion") or {}, trusted)
+    refs = [(match[1], int(match[2])) for match in re.finditer(
+        r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)(?!\d)", status)]
+    shorthand = re.sub(r"\[[^]\n]*]\(https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*[^)]*\)", "", status)
+    refs.extend((item["repo"], int(match[1])) for match in re.finditer(
+        r"(?i)\bPR\s+#([1-9]\d*)\b", shorthand))
+    return list(dict.fromkeys(refs))
+
+
 def remaining_work(status: str) -> dict[str, Any]:
     """Classify only the recorded current step, never the original title or goal.
 
@@ -59,6 +70,10 @@ def remaining_work(status: str) -> dict[str, Any]:
     if re.match(r"(?:[\w.-]+/[\w.-]+)?#[1-9]\d*\b|https://github[.]com/[\w.-]+/[\w.-]+/issues/[1-9]\d*\b", action):
         return {**result, "state": "scope_review", "reason": "current_action_belongs_to_linked_record"}
     source_action = re.split(r"\b(?:do not|don't|never)\b", action, maxsplit=1, flags=re.I)[0]
+    # A next independent source slice remains work after an earlier slice lands.
+    next_source_slice = bool(re.search(
+        r"\bselects?\s+(?:the\s+)?next\s+(?:(?:independent|worthwhile)\s+)?(?:duplicate-code|test-audit|source|implementation)\b",
+        source_action, re.I))
     source_action = re.sub(r"\b(?:signed|matching|companion|release) (?:\w+ ){0,2}build\b", "artifact", source_action, flags=re.I)
     delivered = bool(re.search(r"\b(?:landed|merged|delivered|source landing confirmed|source engineering is complete|completed .*slices)\b", state, re.I))
     if re.search(r"\b(?:not|never|yet to be|needs to be|must be|will be|to be|awaiting|pending)\s+(?:\w+\s+){0,2}(?:merged|landed|delivered)\b", state, re.I):
@@ -90,17 +105,20 @@ def remaining_work(status: str) -> dict[str, Any]:
                 continue
             return True
         return False
-    engineering = source_step(source_action)
+    engineering = source_step(source_action) or next_source_slice
     qualification = re.search(qualification_words, action, re.I)
     # A conditional future source step after qualification is still a
     # qualification frontier; do not suggest its implementation prematurely.
     conditional = re.search(r"\b(?:once|after|then)\b", source_action, re.I)
     first_action = source_action[:conditional.start()] if conditional else source_action
-    current_engineering = source_step(first_action)
+    current_engineering = source_step(first_action) or next_source_slice
     qualification_frontier = re.search(qualification_words, first_action, re.I) or re.search(r"\b(?:signed .*build|releases?|deploy\w*|publication|image|rollout|install\w*)\b", first_action, re.I)
     if qualification and qualification_frontier and not current_engineering and (delivered or re.search(r"\bqualification\b", state, re.I)):
         waiting_on = "deploy_or_release" if re.search(r"\b(?:deploy\w*|releases?|publication|signed .*build)\b", action, re.I) else "qualification"
         return {**result, "state": "verification", "reason": "recorded_remaining_step_is_qualification", "waiting_on": waiting_on}
+    if (delivered and not engineering and action
+            and not re.search(r"\b(?:source|implementation|code|repair|fix|bug|migration)\b", first_action, re.I)):
+        return {**result, "state": "scope_review", "reason": "delivered_source_has_followthrough"}
     if delivered and not action:
         return {**result, "state": "scope_review", "reason": "delivered_scope_lacks_current_action"}
     if not action:
@@ -117,6 +135,28 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     row = {**work, "claim_required": True, "ownership_complete": False,
            "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {}),
            "observed_ownership_complete": ownership.get("complete") is True}
+    delivery = item.get("source_delivery") or {}
+    if delivery:
+        row["source_delivery"] = delivery
+    if delivery.get("merged_prs") and work["state"] == "review":
+        work = {**work, "state": "scope_review", "reason": "merged_source_needs_finish_line_review"}
+        row.update(work)
+    if delivery.get("merged_prs") and work["state"] == "engineering":
+        try:
+            recorded = datetime.fromisoformat(discussion["updated_at"].replace("Z", "+00:00"))
+            for comment in discussion.get("comments", []):
+                if (str(comment.get("author") or "").casefold() in trusted
+                        and "Current Status" in github_direction_next.section_map(comment.get("body") or "")):
+                    observed = datetime.fromisoformat((comment.get("created_at") or comment.get("updated_at") or "").replace("Z", "+00:00"))
+                    if recorded.tzinfo is not None and observed.tzinfo is not None:
+                        recorded = max(recorded, observed)
+            merged = [datetime.fromisoformat(pr["merged_at"].replace("Z", "+00:00")) for pr in delivery["merged_prs"]]
+            predates = recorded.tzinfo is not None and any(time.tzinfo is not None and recorded < time for time in merged)
+        except (KeyError, TypeError, ValueError):
+            predates = False
+        if predates:
+            work = {**work, "state": "scope_review", "reason": "source_action_predates_merged_pr"}
+            row.update(work)
     complete = discussion.get("complete")
     if not isinstance(complete, bool) or not complete:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
@@ -140,10 +180,14 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
     if wait["state"] == "waiting":
         return {**row, "state": "waiting", "reason": "recorded_wait", "wait": wait}
+    if work["state"] in {"verification", "scope_review"}:
+        return {**row, "wait_review_required": wait["state"] == "review"}
     if wait["state"] == "review":
         return {**row, "state": "review", "reason": "wait_review_required", "wait_review_required": True}
     if work["state"] in {"verification", "scope_review", "review"}:
         return row
+    if delivery and delivery.get("complete") is not True:
+        return {**row, "state": "review", "reason": "source_delivery_reads_incomplete"}
     if not ownership.get("complete"):
         return {**row, "state": "review", "reason": "ownership_reads_incomplete"}
     return {**row, "state": "available", "reason": "source_work_without_observed_conflict",

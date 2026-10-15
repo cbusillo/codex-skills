@@ -3675,6 +3675,41 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
         raise PlanError(f"Invalid selection context: {exc}") from exc
 
 
+def next_source_delivery(item: dict[str, Any], trusted: set[str]) -> dict[str, Any]:
+    """Verify bounded current-status PR links; a merged slice never closes an issue."""
+    refs = github_next_queue.delivery_references(item, trusted)
+    result: dict[str, Any] = {"complete": len(refs) <= 8, "merged_prs": [], "completion_proven": False,
+                              "scope": "current_status_explicit_pr_references", "all_linked_prs_searched": False}
+    if len(refs) > 8:
+        result["omitted_reference_count"] = len(refs) - 8
+    for repo, number in refs[:8]:
+        try:
+            _, pull = api_json("GET", f"/repos/{repo}/pulls/{number}", bucket="rest_core", failed_step="next_delivery_pull")
+            if not isinstance(pull, dict) or "merged_at" not in pull:
+                raise PlanError("Source PR merge evidence unavailable")
+            if not pull["merged_at"]:
+                continue
+            try:
+                merged = datetime.fromisoformat(pull["merged_at"].replace("Z", "+00:00"))
+                if merged.tzinfo is None:
+                    raise ValueError("Merge timestamp lacks timezone")
+            except (TypeError, AttributeError, ValueError) as exc:
+                raise PlanError("Source PR merge timestamp unavailable") from exc
+            _, repository = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="next_delivery_destination")
+            default = repository.get("default_branch") if isinstance(repository, dict) else None
+            if not default or not (pull.get("base") or {}).get("ref"):
+                raise PlanError("Source PR landing destination unavailable")
+            if ((pull.get("base") or {}).get("ref") == default
+                    and github_plan_claim.pr_issue_reference(pull, item["number"], repo=item["repo"],
+                                                            local_references=repo.casefold() == item["repo"].casefold())):
+                result["merged_prs"].append({"url": f"https://github.com/{repo}/pull/{number}",
+                                             "merged_at": pull["merged_at"], "base": default})
+        except PlanError as exc:
+            result["complete"] = False
+            result.setdefault("unavailable", []).append({"repo": repo, "number": number, "reason": next_source_error(exc)})
+    return result
+
+
 def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *, parallel: bool = True) -> dict[str, Any]:
     """Read ownership once per repository; project every evaluated current step."""
     if parallel and NEXT_READS is not None and NEXT_READS.workers > 1:
@@ -3728,6 +3763,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                         observed["coverage"]["local_error"] = str(exc)
             except PlanError as exc:
                 observed["coverage"]["error"] = next_source_error(exc)
+        item["source_delivery"] = next_source_delivery(item, trusted)
         item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted)
     return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,
             "all_active_sessions_searched": False,

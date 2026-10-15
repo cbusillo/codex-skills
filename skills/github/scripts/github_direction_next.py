@@ -824,7 +824,7 @@ def rank_portfolio_work(
         elif not discussion.get("complete"):
             item["review_required"] = "complete_issue_discussion"
         elif review is None or review.get("discussion_digest") != discussion.get("digest"):
-            category = ("milestone" if item.get("via") or item.get("client_request") else
+            category = ("milestone" if item["overall_milestone_context"]["state"] == "matched" else
                         "live_incident" if is_live_breakage(item) else item.get("direction_category"))
             if queue.get("state") == "available" and category in {"milestone", "live_incident", "own_project"}:
                 item.update(availability="available", category=category, claim_required=True)
@@ -839,7 +839,7 @@ def rank_portfolio_work(
         elif review["state"] == "ineligible":
             excluded.append({**item, "exclusion": "outside_owner_direction", "review": review})
             continue
-        elif item.get("wait_review_required") or queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown"}:
+        elif item.get("wait_review_required") or queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown", "source_delivery_reads_incomplete"}:
             item["review_required"] = queue.get("reason") or "wait_review_required"
         elif review["state"] == "waiting":
             item["review_required"] = "invalid_milestone_wait_needs_current_ownership_review"

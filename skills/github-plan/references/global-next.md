@@ -174,7 +174,7 @@ before selection; brief real remaining engineering and record event waits as wai
 The helper's `candidates` are possible source work and may need review. The CLI
 can populate `available_candidates` without a caller snapshot when the current
 step explicitly names source work, bounded ownership reads found no conflict,
-and native milestone/incident evidence or the explicit own-project list in
+and established native or exact listed milestone evidence, incident evidence, or the explicit own-project list in
 overall Order establishes eligibility. That list is read from direction, not
 copied into the helper. This is discovery evidence, not an exclusive lock:
 `queue_context` reports partial session coverage, and Choose Work's full review
@@ -184,6 +184,15 @@ through the existing claim procedure. Unknown reads stay review work.
 Unclassified tooling still requires current caller category/stop evidence and
 the existing capacity admission proof; automatic queue evidence does not
 enable spare-capacity admission or infer a repeated stop.
+
+Current-status PR references also have bounded `source_delivery` evidence:
+the reader verifies merge time, implementation association and the repository's
+default branch. It reports unavailable or omitted references and never claims
+to have searched every linked PR. A source action older than its merged PR
+moves to `scope_review`; a freshly recorded engineering remainder stays
+actionable. Delivered release/recovery follow-through is kept outside the
+source queue even when a legacy wait review is still required. None of these
+classifications closes the issue or proves its full finish line.
 
 `milestone_summary` lists source work, `underway` ownership and
 `verification_only` qualification separately. Unreviewed legacy holds appear in
