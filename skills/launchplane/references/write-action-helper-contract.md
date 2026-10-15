@@ -845,8 +845,11 @@ projected, it exits 1 with `status: "accepted_unverified"`: the comment may
 already have changed. Safe available HTTP status, trace and projection-error
 diagnostics remain in the summary. Retain the original request and idempotency
 key, then run `preview-feedback-remediation --mode dry-run` for the same target
-to read back the comment state before deciding whether to retry apply. An
-invalid dry-run response remains `invalid` and exits 1.
+to read back the comment state. A present comment does not prove whether a
+replacement completed: the dry run can still plan replacement after a successful
+apply. Inspect the original trace and resolve the response verification failure
+before any apply retry; replaying the same key cannot repair a deterministic
+projection mismatch. An invalid dry-run response remains `invalid` and exits 1.
 
 The projected `comment_author_login` and `github_actor_login` accept a bounded
 GitHub login with an optional exact `[bot]` suffix for App actors. Brackets

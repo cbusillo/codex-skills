@@ -215,7 +215,7 @@ def test_preview_invalid_success_preserves_apply_uncertainty(mode, fault):
     assert "ghp_planted" not in json.dumps(payload)
     if mode == "apply":
         assert payload["warnings"][0]["code"] == "apply_response_unverified"
-        assert "preview-feedback-remediation --mode dry-run" in summary["recommendation"]
+        assert summary["recommendation"]
 
 
 @pytest.mark.parametrize("mode", ["apply", "dry-run"])

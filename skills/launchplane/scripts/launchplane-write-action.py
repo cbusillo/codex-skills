@@ -6680,7 +6680,9 @@ def _preview_feedback_response_unverified(
     summary["projection_error_code"] = code
     summary["recommendation"] = (
         "Run preview-feedback-remediation --mode dry-run for the same target to read back "
-        "the comment state before any apply retry; retain the original request and idempotency key."
+        "the comment state. A present comment does not prove whether a replacement completed. "
+        "Inspect the original trace and resolve the response verification failure before any "
+        "apply retry; retain the original request and idempotency key."
     )
     return payload
 
