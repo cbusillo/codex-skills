@@ -193,7 +193,12 @@ class CapabilityTests(unittest.TestCase):
             self.assertIn('github/scripts/new_helper.py', capabilities.source_fingerprints(root))
 
     def test_declared_capability_drives_profile_and_safe_probe(self):
-        capability = dict(self.matrix['capabilities']['actions_write'], probe='actions')
+        capability = {
+            'scope': 'repository', 'permission': 'actions', 'access': 'write',
+            'actor': 'agent', 'read_supported': True, 'probe': 'actions',
+            'degraded_behavior': 'A denied fixture probe remains unavailable.',
+            'documentation': 'https://docs.github.com/en/rest',
+        }
         matrix = {
             'permission_schema_version': self.matrix['permission_schema_version'],
             'capabilities': {'fixture_actions': capability},
@@ -208,7 +213,9 @@ class CapabilityTests(unittest.TestCase):
             capability['permission']: capability['access'],
         })
         result = capabilities.audit_repository(
-            self.reader, 'example/repo', installation=self.installation,
+            self.reader, 'example/repo', installation={
+                'permissions': profile['permissions']['repository'], 'suspended': False,
+            },
             membership={'example/repo'}, capabilities=matrix['capabilities'])
         self.assertEqual(result['capabilities']['fixture_actions']['state'], 'permission_granted')
         self.assertEqual(result['capabilities']['fixture_actions']['write_probe'], 'not_exercised')
