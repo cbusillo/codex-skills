@@ -891,11 +891,8 @@ fi
 # Reader mode is fail-closed even for GraphQL POSTs, conflicting method flags,
 # and unrecognized CLI commands. Classify the complete captured body, never
 # delegate an unverified command to the read-only identity.
-if [ "$reader_app" -eq 1 ] && [ "$check_auth" -ne 1 ]; then
-	if [ -n "$write_actor_repository" ]; then
-		probe_validation_error "read-only App cannot resolve a write actor"
-	fi
-	if ! run_python - "$script_dir" "$stdin_file" "$@" <<'PY'
+verify_read_command() {
+	run_python - "$script_dir" "$stdin_file" "$@" <<'PY'
 import pathlib
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -924,10 +921,15 @@ allowed = bool(args) and (args[0] == "api" or
         ["issue", "view"], ["pr", "list"], ["pr", "view"], ["pr", "checks"],
         ["run", "list"], ["run", "view"], ["search", "issues"], ["search", "prs"]]))
 if context.is_write or not allowed:
-    print("error: read-only GitHub App refuses a write or unverified command before sending", file=sys.stderr)
+    print("error: read-only GitHub authentication refuses a write or unverified command before sending", file=sys.stderr)
     raise SystemExit(1)
 PY
-	then
+}
+if [ "$reader_app" -eq 1 ] && [ "$check_auth" -ne 1 ]; then
+	if [ -n "$write_actor_repository" ]; then
+		probe_validation_error "read-only App cannot resolve a write actor"
+	fi
+	if ! verify_read_command "$@"; then
 		exit 1
 	fi
 	# Missing or failed reader auth never uses an ambient token or personal login.
@@ -1002,6 +1004,17 @@ if [ "$app_variable_count" -gt 0 ] || [ "$client_app" -eq 1 ]; then
 	fi
 	app_auth_status=0
 	app_auth_output=$(app_auth_for_command "$@") || app_auth_status=$?
+	# github_identity.PUBLIC_READ_EXIT_STATUS: GitHub's unauthenticated
+	# repository endpoint proved public visibility; personal auth still needs
+	# the existing per-command opt-in and declared-login verification.
+	if [ "$app_auth_status" -eq 5 ]; then
+		if [ "$reader_app" -eq 1 ] || [ "$check_auth" -eq 1 ] || ! verify_read_command "$@"; then
+			echo "error: public repository fallback accepts ordinary reads only" >&2
+			exit 1
+		fi
+		act_as_own_user "$(target_repository "$@")" "$@"
+		exit $?
+	fi
 	if [ "$app_auth_status" -eq "$contributor_exit_status" ]; then
 		act_as_own_user "${write_actor_repository:-$(target_repository "$@")}" "$@"
 		exit $?

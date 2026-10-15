@@ -53,12 +53,17 @@ class NotInstalledForAutomation(GitHubAppError):
     """The App is not installed on a repository of the account that registered it."""
 
 
+class PublicReadRepository(GitHubAppError):
+    """A missing Client installation may read a GitHub-verified public repository."""
+
+
 # app-auth exits with these statuses so the shell wrappers can tell the cases
 # apart: the person's own login (a ContributorRepository), or a definite
 # refusal in the registering account's repository (NotInstalledForAutomation),
 # as opposed to a failed lookup (1).
 CONTRIBUTOR_EXIT_STATUS = 3
 NOT_INSTALLED_EXIT_STATUS = 4
+PUBLIC_READ_EXIT_STATUS = 5
 
 # Acting as the person's own GitHub user is a stop the agent asks its Director
 # about, so it runs only when the caller sets this for the command; a value in
@@ -725,12 +730,34 @@ def github_app_auth(
             if repository_config is not None:
                 return _mint_and_cache(repository_config, cache_path, current_time)
             if config.require_repository_installation:
+                if not require_installation and repository_is_public(config, repository):
+                    raise PublicReadRepository(
+                        f"the GitHub Client App is not installed on {repository}; "
+                        "GitHub confirms it is public, so reads may use the declared personal "
+                        f"account with {OWN_USER_OPT_IN}=1 on this command"
+                    )
                 raise GitHubAppError(f"the GitHub Client App is not installed on {repository}; reads require its installation on this repository")
     with _locked_cache(config) as cache_path:
         cached = None if refresh else _read_cached_token(cache_path, now=current_time)
         if cached:
             return cached
         return _mint_and_cache(config, cache_path, current_time)
+
+
+def repository_is_public(config: GitHubAppConfig, repository: str) -> bool:
+    """Read visibility from GitHub without credentials, redirects or config hints."""
+    request = urllib.request.Request(
+        f"{config.api_url}/repos/{repository}", method="GET",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "codex-skills-public-read"},
+    )
+    try:
+        payload = _request_json(request, operation="unauthenticated repository lookup")
+    except GitHubAppHTTPError as error:
+        if error.status == 404:
+            return False
+        raise
+    return (isinstance(payload, dict) and payload.get("private") is False
+            and str(payload.get("full_name", "")).casefold() == repository.casefold())
 
 
 def _mint_and_cache(config: GitHubAppConfig, cache_path: pathlib.Path, current_time: int) -> tuple[str, str]:
@@ -799,6 +826,9 @@ def main() -> int:
                 print(login)
             print(token)
             return 0
+    except PublicReadRepository as error:
+        print(f"note: {error}", file=sys.stderr)
+        return PUBLIC_READ_EXIT_STATUS
     except ContributorRepository as error:
         print(f"note: {error}", file=sys.stderr)
         return CONTRIBUTOR_EXIT_STATUS

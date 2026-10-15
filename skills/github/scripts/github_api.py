@@ -2971,6 +2971,11 @@ def request_identity(
                     client_config, repository=repository,
                     require_installation=bool(is_write or "--write-actor-for" in prefix or read_for_writer),
                 )
+            except github_identity.PublicReadRepository:
+                # The wrapper verifies the declared personal login on every call.
+                # Do not scope a body cache or quota record to an App that cannot
+                # read this repository, or turn this read into a writer probe.
+                return None, None, prefix
             except github_identity.ContributorRepository:
                 # The wrapper owns explicit own-user authorization and refusal.
                 # Prerequisite/readback reads retain the already resolved writer,

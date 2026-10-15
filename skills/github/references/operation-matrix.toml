@@ -1442,7 +1442,7 @@ id = "github.gh_with_env_token"
 request_priority = "essential"
 capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]
 permission_mode = "input_dependent"
-permission_note = "Own-user publishing additionally requires the active login to match GH_WITH_ENV_TOKEN_OWN_USER_LOGIN; missing or mismatched declarations refuse locally before mutation. Existing GET /user probes suffice, with no new endpoint, grant or profile impact. The credential check fails explicitly without a configured token, even with active-auth fallback enabled; it accepts no delegated command. No new API probes or grants. Passthrough permissions depend on the exact endpoint, method, owner and token type. These are intentionally supported operation families, not grants required for every invocation. Consult the linked capability before a new caller; unknown APIs are not covered by this profile."
+permission_note = "Own-user publishing additionally requires the active login to match GH_WITH_ENV_TOKEN_OWN_USER_LOGIN; missing or mismatched declarations refuse locally before mutation. Missing Client installations may read a public repository through that same per-command personal opt-in only after unauthenticated GET /repos/{owner}/{repo} confirms public visibility. Unknown/private visibility, reader mode and required-automation mode do not permit this personal-read fallback. No grants or profile expansion. The credential check fails explicitly without a configured token, even with active-auth fallback enabled; it accepts no delegated command. Passthrough permissions depend on the exact endpoint, method, owner and token type. These are intentionally supported operation families, not grants required for every invocation. Consult the linked capability before a new caller; unknown APIs are not covered by this profile."
 entrypoint = "github/scripts/gh-with-env-token <gh-args>"
 intent = "Run gh with configured automation credentials and preserve the selected actor unless active-auth fallback is explicitly authorized."
 current_transport = "gh_cli_wrapper"
@@ -1456,7 +1456,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "fail_closed_write"
 retained_graphql_rationale = "GraphQL depends on the delegated gh command; the wrapper is retained to enforce actor policy across both REST and GraphQL gh operations."
 source_refs = ["github/scripts/gh-with-env-token", "github/scripts/github-own-user.sh:validate_own_user_login"]
-test_refs = ["github/scripts/test_gh_with_env_token.py", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_gh_with_env_token.py", "github/scripts/test_github_client_app.py:test_public_private_installation_and_write_routes", "github/scripts/test_github_client_app.py:test_plan_public_reads_use_personal_actor_without_borrowing_an_app", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.git_commit_as_bot"
@@ -2427,7 +2427,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_capabilities.py" = "bfd1a0a155a783feca5735b870a78709032e878a9011a07034b000e41be97901"
 "github/scripts/github_comment.py" = "7fb0f858d6ecac46fd095ee5c6fa867a69e6cba90ed50f08fb8a5c8ec065d84e"
 "github/scripts/github_direction_next.py" = "7a6f83bd0a764962486fb720f9dc9eca2febb77524565afcba95540711de5eb4"
-"github/scripts/github_identity.py" = "44f8eaaa8a9507865239bdb431bbeccfc35cf7652e80f8ec3928cba5de35d0a1"
+"github/scripts/github_identity.py" = "14843ab393e4d1a811615b871fc879c34037d9eed77bd57bb707bcb3a25faf57"
 "github/scripts/github_issue.py" = "09b3718804c3fbde4d2c97f6fa9edf13eb54aefc77728b87f282555bc325fc62"
 "github/scripts/github_milestone.py" = "08cf5da1e6e93bf6d577b572ea508e71da9e1e0224ef0ebfb588c403bf8f5598"
 "github/scripts/github_read.py" = "b977198cc0b5eb97399cebd3941caaec2de04e37727ea7d93dc8fcca22627c44"

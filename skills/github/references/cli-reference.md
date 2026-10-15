@@ -1795,8 +1795,21 @@ Qualified issue references supply this context even without `--repo`.
 For a bare issue number without `--repo`, the resolved checkout repository
 supplies it.
 
-If the Client App is not installed on the target, reads fail with the missing
-installation named. Writes retain the existing refusal and per-command own-user
+If the Client App is not installed on the target, the helper checks GitHub's
+repository endpoint without authentication. A positive public response permits
+ordinary reads as the declared personal account, with
+`GH_WITH_ENV_TOKEN_OWN_USER=1` on that command and the same active-login
+verification used for own-user writes. No config value declares a repository
+public. Private, missing, moved or unverified repositories retain the clear
+failure; unknown visibility never authorizes fallback. For example, after
+approval to use the declared personal account:
+
+```sh
+GH_WITH_ENV_TOKEN_OWN_USER=1 skills/github/scripts/gh-with-env-token issue list --repo cbusillo/codex-skills --search reminders
+GH_WITH_ENV_TOKEN_OWN_USER=1 uv run skills/github/scripts/gh-plan.py --repo cbusillo/codex-skills search reminders
+```
+
+Writes retain the existing refusal and per-command own-user
 opt-in below, using the declared personal account when approved; no token from the primary App is borrowed. Missing or partial
 Client configuration fails before sending a command. These settings do not
 create an App, install it, change permissions, or authorize outreach or access.
@@ -1804,8 +1817,9 @@ create an App, install it, change permissions, or authorize outreach or access.
 Python write helpers keep prerequisite and reconciliation reads on a previously
 resolved own-user writer when the per-command opt-in is present. They use the
 wrapper's `--require-installation` prefix so a missing installation takes the
-same authorized own-user path. Ordinary Client-App reads still fail clearly;
-required-automation mode still refuses personal authentication.
+same authorized own-user path. Ordinary public reads use the verified public
+route above; required-automation mode still refuses personal authentication,
+and the separate reader App never falls back to a personal account.
 
 ### Primary App and contributor identity
 

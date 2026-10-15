@@ -101,26 +101,33 @@ class PlanCommandContextTests(unittest.TestCase):
 
 class AppHandler(BaseHTTPRequestHandler):
     calls: list[tuple[str, str, str]] = []
+    repositories: dict[str, tuple[int, Any]] = {}
 
     def respond(self, method: str) -> None:
         if method == "POST":
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        jwt = self.headers["Authorization"].split()[1].split(".")[1]
-        app = json.loads(base64.urlsafe_b64decode(jwt + "=" * (-len(jwt) % 4)))["iss"]
+        authorization = self.headers.get("Authorization")
+        app = ""
+        if authorization:
+            jwt = authorization.split()[1].split(".")[1]
+            app = json.loads(base64.urlsafe_b64decode(jwt + "=" * (-len(jwt) % 4)))["iss"]
         type(self).calls.append((method, self.path, app))
         payload = None
+        status = None
         if self.path == "/app":
             payload = {"slug": f"app-{app}", "owner": {"login": "client"}}
         elif self.path.startswith("/app/installations/") and method == "GET":
             payload = {"id": int(app) + 100, "app_id": int(app), "app_slug": f"app-{app}"}
         elif self.path.startswith("/repos/") and self.path.endswith("/installation"):
-            if "/missing/" not in self.path:
+            if not self.path.split("/")[3].startswith("missing"):
                 payload = {"id": int(app) + 100, "app_id": int(app)}
+        elif self.path in type(self).repositories:
+            status, payload = type(self).repositories[self.path]
         elif method == "POST":
             payload = {"token": f"fake-token-{app}", "expires_at": datetime.fromtimestamp(
                 time.time() + 3600, UTC).isoformat()}
         body = json.dumps(payload).encode() if payload else b""
-        self.send_response(200 if payload else 404)
+        self.send_response(status if status is not None else (200 if payload else 404))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -154,6 +161,7 @@ class ClientAppTests(unittest.TestCase):
         self.addCleanup(thread.join)
         self.addCleanup(self.server.shutdown)
         AppHandler.calls = []
+        AppHandler.repositories = {}
         self.env = {
             "HOME": str(self.root), "PATH": os.environ["PATH"],
             "CODEX_SKILLS_ENV_FILE": str(self.root / "missing.env"),
@@ -293,6 +301,74 @@ class ClientAppTests(unittest.TestCase):
             result = self.wrapper(*args, own_user=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("acting as your own GitHub user", result.stderr)
+
+    def public_repository(self, repo: str = "host/missing-public") -> None:
+        AppHandler.repositories[f"/repos/{repo}"] = (200, {"full_name": repo, "private": False})
+
+    def test_public_read_uses_declared_person_only_with_command_opt_in(self) -> None:
+        self.public_repository()
+        args = ("api", "/repos/host/missing-public")
+        result = self.wrapper(*args)
+        self.assertNotEqual(result.returncode, 0)
+        result = self.wrapper(*args, own_user=True)
+        self.assertNotEqual(result.returncode, 0)  # No declared personal login.
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+            result = self.wrapper(*args, own_user=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["login"], "own-user")
+        self.assertIn(("GET", "/repos/host/missing-public", ""), AppHandler.calls)
+        self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
+
+    def test_public_private_installation_and_write_routes(self) -> None:
+        for installed in (False, True):
+            for public in (False, True):
+                repo = f"host/{'product' if installed else 'missing'}-{'public' if public else 'private'}"
+                AppHandler.repositories[f"/repos/{repo}"] = (
+                    200 if public else 404, {"full_name": repo, "private": not public})
+                for write in (False, True):
+                    with self.subTest(installed=installed, public=public, write=write):
+                        AppHandler.calls = []
+                        args = (("api", f"/repos/{repo}") if not write else
+                                ("issue", "comment", "1", "--repo", repo, "--body", "fixture"))
+                        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+                            result = self.wrapper(*args, own_user=True)
+                        self.assertEqual(result.returncode == 0, installed or public or write, result.stderr)
+                        if installed:
+                            self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
+                            response = json.loads(result.stdout)
+                            self.assertEqual(response["login"], "app-2[bot]")
+                        elif not write:
+                            self.assertIn(("GET", f"/repos/{repo}", ""), AppHandler.calls)
+                        else:
+                            self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
+
+    def test_public_read_rejects_unknown_visibility_wrong_login_and_required_automation(self) -> None:
+        repo = "host/missing-public"
+        for status, payload in ((404, None), (403, None), (500, None), (301, None),
+                                (200, {}), (200, {"full_name": repo, "private": True}),
+                                (200, {"full_name": "host/other", "private": False})):
+            with self.subTest(status=status, payload=payload):
+                AppHandler.repositories[f"/repos/{repo}"] = (status, payload)
+                with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+                    result = self.wrapper("api", f"/repos/{repo}", own_user=True)
+                self.assertNotEqual(result.returncode, 0)
+        self.public_repository(repo)
+        for declared, flags in (("other-person", ()), ("own-user", ("--require-automation-auth",))):
+            with self.subTest(declared=declared, flags=flags), patch.dict(
+                    os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": declared}):
+                result = self.wrapper(*flags, "api", f"/repos/{repo}", own_user=True)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_plan_public_reads_use_personal_actor_without_borrowing_an_app(self) -> None:
+        self.public_repository()
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1",
+                                    "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+            for command in (("show", "1"), ("search", "fixture"), ("index",)):
+                with self.subTest(command=command):
+                    result = self.plan("host/missing-public", command=command)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["last_actor"], "own-user")
+        self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
 
     def test_client_route_preserves_explicit_expected_login_override(self) -> None:
         args = ("issue", "comment", "1", "--repo", "host/product", "--body", "fixture")
