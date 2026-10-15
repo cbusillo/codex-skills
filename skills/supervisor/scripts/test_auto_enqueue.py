@@ -848,6 +848,31 @@ class EnqueueTests(unittest.TestCase):
         watch.edit_holds(["--hold-file", str(self.path), "--resume", REPO.upper()])
         self.assertFalse(watch.held(watch.read_holds(self.path), REPO))
 
+    def test_remove_legacy_product_hold_preserves_other_delivery_holds(self):
+        other = "example/shared"
+        watch.edit_holds(["--hold-file", str(self.path), "--coordinated-repo", REPO,
+                          "--coordinated-repo", other, "--pause", REPO,
+                          "--release-ready", other])
+        before = watch.read_holds(self.path)
+        watch.edit_holds(["--hold-file", str(self.path), "--uncoordinate", REPO.upper()])
+        after = watch.read_holds(self.path)
+        self.assertNotIn(REPO, after["coordinated_repositories"])
+        self.assertIn(other, after["coordinated_repositories"])
+        self.assertEqual(after["paused_repositories"], before["paused_repositories"])
+        self.assertEqual(after["client_releases"], before["client_releases"])
+        self.assertTrue(watch.held(after, REPO))
+        watch.edit_holds(["--hold-file", str(self.path), "--resume", REPO])
+        self.assertFalse(watch.held(watch.read_holds(self.path), REPO))
+
+    def test_legacy_hold_removal_uses_shared_lock_and_releases_green_work(self):
+        watch.edit_holds(["--hold-file", str(self.path), "--coordinated-repo", REPO])
+        self.assertTrue(watch.held(watch.read_holds(self.path), REPO))
+        lock = watch.hold_lock
+        with patch.object(watch, "hold_lock", wraps=lock) as serialized:
+            watch.edit_holds(["--hold-file", str(self.path), "--uncoordinate", REPO])
+        serialized.assert_called_once_with(self.path, blocking=True)
+        self.assertFalse(watch.held(watch.read_holds(self.path), REPO))
+
     def test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse(self):
         self.assertTrue(watch.latest_ready(pr(), [comment()], {"engineer"}))
         for entries in (

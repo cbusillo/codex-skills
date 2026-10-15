@@ -262,11 +262,12 @@ Initialization refuses an existing record. Missing or malformed hold state stops
 the watcher. Reuse the same record through takeover; reconcile it with the
 handoff before rearming. Do not maintain another per-session copy.
 
-For an older record, stop its watcher before editing the file. Remove only
-the entries in the legacy `coordinated_repositories` array that held Client
-repositories or shared inputs solely for product batching. Keep the array
-present (empty when no independent hold remains), preserve deliberate pauses
-and other fields, then preview with `--once` before rearming. Clear any manual
+For an older record, remove only legacy product-batching holds with
+`holds --uncoordinate OWNER/CLIENT-REPO` (repeat for shared inputs). The helper
+serializes this edit with enqueue passes and other hold updates; deliberate
+pauses and other fields remain intact. Use `holds --pause OWNER/REPO` for an
+independent hold, then remove that repository's legacy batching entry. Preview
+with `--once` before rearming. Clear any manual
 `client_releases` entries that only duplicated the service's release hold with
 `holds --release-finished OWNER/CLIENT-REPO`. These optional manual pauses
 are not required for a Client release; leave them empty for normal routing.
@@ -345,8 +346,8 @@ matched to their configured App. The shared
 [ready-handoff acceptance rule](../../github/references/cli-reference.md#ready-handoffs)
 decides whether Client acceptance is required; when it is, the watcher reads
 the accepted current-head decision from Launchplane rather than trusting the
-ready comment. Client prose is never emitted. Coordinated repositories remain
-held regardless of acceptance.
+ready comment. Client prose is never emitted. Deliberate manual repository
+pauses remain independent of acceptance.
 
 The oldest eligible PR anchors a group; additional members share at least one
 of its top-level areas. Renames count both source and destination; root files
