@@ -2647,7 +2647,8 @@ class ClaimTests(unittest.TestCase):
             context = {"issues": {"owner/repo#42": selection.reviewed(candidate, category="milestone")}}
             with patch.object(module, "next_selection_context", return_value=context):
                 module.cmd_next(selection.next_args())
-            self.assertEqual([item["number"] for item in result["available_candidates"]], [42])
+            self.assertEqual(result["available_candidates"], [])
+            self.assertEqual([item["number"] for item in result["candidates"]], [42])
         self.issue.update(leaf)
         self.issue["user"] = {"login": TEST_BOT}
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:

@@ -67,10 +67,15 @@ def remaining_work(status: str) -> dict[str, Any]:
     # assignment on this record. It remains open, with its current action.
     if delivered and re.search(r"\b(?:canonical|separately assigned)\b", action, re.I):
         return {**result, "state": "scope_review", "reason": "delivered_slice_has_separate_remaining_scope"}
-    source_verbs = r"\b(?:implement|repair|fix|build|remove|migrate|add|develop|refactor|patch|diagnose|investigate|resolve|correct|update|extend|wire|replace|port|tune|restore)(?:s|es|ing)?\b"
+    source_verbs = r"\b(?:implement|repair|fix|build|remove|migrate|add|develop|refactor|patch|diagnose|investigate|resolve|correct|update|extend|wire|replace|port|tune|restore|complete)(?:s|es|ing)?\b"
     qualification_words = r"\b(?:qualif\w*|verif\w*|observ\w*|confirm\w*|read\w*|proof|evidence|acceptance|test\w*|compares?)\b"
     def source_step(text: str) -> bool:
         for match in re.finditer(source_verbs, text, re.I):
+            if re.fullmatch(r"complete(?:s|ing)?", match[0], re.I):
+                completion = re.split(r"[.;]", text[match.end():], maxsplit=1)[0]
+                if (re.search(qualification_words, completion, re.I) or not re.search(
+                        r"\b(?:source|implementation|migration|contracts|storage|refactor)\b", completion, re.I)):
+                    continue
             prefix = text[:match.start()]
             if re.search(qualification_words, prefix, re.I) and not re.search(r"(?:\b(?:and|or)\s+(?:\w+ly\s+)?|[.;]\s*)$", prefix, re.I):
                 continue
@@ -135,10 +140,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
     if wait["state"] == "waiting":
         return {**row, "state": "waiting", "reason": "recorded_wait", "wait": wait}
-    pending = [record for record in github_direction_next.waiting_records(item, status)
-               if not record["agent_next"] and not record["no_current_wait"]]
-    if pending:
-        return {**row, "state": "waiting", "reason": "current_status_wait_needs_review", "waits": pending}
+    if wait["state"] == "review":
+        return {**row, "state": "review", "reason": "wait_review_required", "wait_review_required": True}
     if work["state"] in {"verification", "scope_review", "review"}:
         return row
     if not ownership.get("complete"):
