@@ -82,6 +82,9 @@ class ReadyTests(unittest.TestCase):
         standing_patch = patch.object(ready_handoff, "director_standing_acceptance", return_value=False)
         self.standing = standing_patch.start()
         self.addCleanup(standing_patch.stop)
+        client_release_patch = patch.object(ready_handoff, "client_release_repository", return_value=False)
+        self.client_release = client_release_patch.start()
+        self.addCleanup(client_release_patch.stop)
         helper.CURRENT_OPERATION = "github.pr.ready"
 
     def post(self):
@@ -91,10 +94,11 @@ class ReadyTests(unittest.TestCase):
         self.assertEqual(self.writer.call_args.kwargs["repo"], REPO)
         return result, {"body": body, "user": {"login": "engineer"}, "id": 1, "created_at": "2026-01-01T00:00:00Z"}
 
-    def refuse(self):
-        with self.assertRaises(helper.PrHelperError):
+    def refuse(self) -> str:
+        with self.assertRaises(helper.PrHelperError) as caught:
             helper.cmd_ready(self.args)
         self.writer.assert_not_called()
+        return str(caught.exception)
 
     def test_posted_body_round_trips_and_push_invalidates(self):
         result, comment = self.post()
@@ -178,7 +182,9 @@ class ReadyTests(unittest.TestCase):
         for heading in ("Client", "Owner"):
             with self.subTest(heading=heading):
                 self.reader.pr["body"] = f"## {heading} test notes\nTry the new feature."
-                self.refuse()
+                message = self.refuse()
+                self.assertIn("--waiting-for-client", message)
+                self.assertIn("Nothing for the Client to test: <reason>", message)
         self.args.waiting_for_client = True
         _, comment = self.post()
         self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
@@ -255,29 +261,100 @@ class ReadyTests(unittest.TestCase):
                 ready = {"body": f"**{READY}**\n\n{head_line}", "user": {"login": "engineer"}, "id": 1, "created_at": "2026-01-01T00:00:00Z"}
                 self.assertFalse(latest_ready(self.reader.pr, [ready], {"engineer"}))
 
-    def test_nothing_to_test_punctuation_variants_preserve_acceptance_gates(self):
+    def test_nothing_to_test_requires_colon_reason_and_preserves_acceptance_gates(self):
         for heading in ("Client", "Owner"):
-            for punctuation in (":", ";", ".", "", ",", " -"):
-                for explanation in ("", " Automated tooling."):
-                    with self.subTest(heading=heading, punctuation=punctuation, explanation=explanation):
-                        self.reader.pr["body"] = f"## {heading} test notes\nNothing for the Client to test{punctuation}{explanation}"
-                        self.reader.pr["labels"] = []
-                        self.post()
-                        self.writer.reset_mock()
-                        self.reader.pr["labels"] = [{"name": "owner-review"}]
-                        self.refuse()
+            with self.subTest(heading=heading):
+                self.reader.pr["body"] = f"## {heading} test notes\nNothing for the Client to test: Automated tooling."
+                self.reader.pr["labels"] = []
+                self.post()
+                self.writer.reset_mock()
+                self.reader.pr["labels"] = [{"name": "owner-review"}]
+                self.assertEqual(
+                    self.refuse(),
+                    "The Client review label requires real Client test notes.",
+                )
+        self.reader.pr["labels"] = []
+        for invalid in (
+            "Nothing for the Client to test",
+            "Nothing for the Client to test:",
+            "Nothing for the Client to test:   ",
+            "Nothing for the Client to test. Documentation-only change.",
+            "Nothing for the Client to test; automated tooling.",
+            "Nothing for the Client to test, automated tooling.",
+            "Nothing for the Client to test in this source-only repair; duplicate tools removed.",
+            "nothing for the client to test: wrong case.",
+        ):
+            with self.subTest(invalid=invalid):
+                self.reader.pr["body"] = f"## Client test notes\n{invalid}"
+                self.assertEqual(
+                    self.refuse(),
+                    "Use Nothing for the Client to test: <reason> with a nonempty reason.",
+                )
 
     def test_legacy_nothing_to_test_marker(self):
-        self.reader.pr["body"] = "## Owner test notes\nNothing for the owner to test"
+        for separator in (":", "."):
+            with self.subTest(separator=separator):
+                self.reader.pr["body"] = f"## Owner test notes\nNothing for the owner to test{separator} Legacy tooling."
+                self.post()
+                self.writer.reset_mock()
+        for invalid in ("Nothing for the owner to test", "Nothing for the owner to test:"):
+            with self.subTest(invalid=invalid):
+                self.reader.pr["body"] = f"## Owner test notes\n{invalid}"
+                self.assertEqual(
+                    self.refuse(),
+                    "Use Nothing for the Client to test: <reason> with a nonempty reason.",
+                )
+
+    def test_inline_client_test_notes_and_missing_client_release_notes_refuse(self):
+        for body in (
+            "Summary\n\nClient test notes: Nothing for the Client to test; this only prepares local gitignore rules.",
+            "Summary\n\nClient testing: none required for this repo-hygiene change.",
+            "Summary\n\nClient test notes: Nothing for the Client to test in this source-only repair.",
+            "Summary\n\n**Client test notes:** Nothing for the Client to test: automated tooling.",
+            "Summary\n\n- Client test notes: Try the new command.",
+            "## Client test notes\n\nNone",
+            "## Client test notes\n\nN/A.",
+            "## Client test notes\n\nNothing for the Client to test - placeholder",
+        ):
+            with self.subTest(body=body):
+                self.reader.pr["body"] = body
+                message = self.refuse()
+                self.assertIn("## Client test notes", message)
+                self.assertIn("Nothing for the Client to test: <reason>", message)
+
+        self.reader.pr["body"] = "Summary without any test notes section."
+        self.client_release.return_value = True
+        message = self.refuse()
+        self.assertIn("## Client test notes", message)
+        self.reader.pr["user"] = {"login": "dependabot[bot]"}
         self.post()
+
+    def test_decorated_no_test_marker_and_fenced_heading_refuse(self):
+        for note in (
+            "- Nothing for the Client to test: bullet list.",
+            "**Nothing for the Client to test:** bold prefix.",
+            "> Nothing for the Client to test: blockquote.",
+        ):
+            with self.subTest(note=note):
+                self.reader.pr["body"] = f"## Client test notes\n{note}"
+                self.assertEqual(
+                    self.refuse(),
+                    "Write Nothing for the Client to test: <reason> as a plain notes line.",
+                )
+        self.reader.pr["body"] = (
+            "```markdown\n## Client test notes\n"
+            "Nothing for the Client to test: inside code fence.\n```\n"
+        )
+        self.client_release.return_value = True
+        self.assertIn("## Client test notes", self.refuse())
 
     def test_no_test_marker_outside_or_after_real_notes_never_exempts(self):
         for body in (
-            "Nothing for the owner to test\n\n## Client test notes\nTry the preview.",
-            "## Client test notes\nTry the preview.\nNothing for the Client to test.",
-            "## Client test notes\nTry the preview.\n\n## History\nNothing for the owner to test",
-            "## Client test notes\n\n## History\nNothing for the Client to test.",
-            "## Client test notes\nNothing for the owner to test\n\n## Owner test notes\nTry the preview.",
+            "Nothing for the owner to test: outside section\n\n## Client test notes\nTry the preview.",
+            "## Client test notes\nTry the preview.\nNothing for the Client to test: second line.",
+            "## Client test notes\nTry the preview.\n\n## History\nNothing for the owner to test: history",
+            "## Client test notes\n\n## History\nNothing for the Client to test: history.",
+            "## Client test notes\nNothing for the owner to test: first section\n\n## Owner test notes\nTry the preview.",
         ):
             with self.subTest(body=body):
                 self.reader.pr["body"] = body

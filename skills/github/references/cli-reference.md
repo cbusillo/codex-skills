@@ -495,7 +495,14 @@ handoff requiring Client acceptance (review label, request check or real Client
 test notes) requires a successful current-head
 `launchplane/owner-review` check. The watcher independently verifies the saved
 Client decision before enqueueing. A completed neutral `launchplane/owner-review` advisory
-does not request acceptance on its own. Real Client test notes use Launchplane's
+does not request acceptance on its own. Before posting a handoff, `ready`
+validates `## Client test notes` (or legacy `## Owner test notes`) with the
+merge train's rules: inline `Client test notes:` or `Client testing:` paragraphs,
+empty or placeholder sections, decorated no-test markers, and `Nothing for the
+Client to test` without `: <reason>` refuse with the exact remedy, and
+repositories that feed a Client release (including pinned Odoo addon sources)
+require a `## Client test notes` section unless authored by `dependabot[bot]`
+without `owner-review`. Real Client test notes use Launchplane's
 repository mapping and scoped product profile: `director_standing` supplies
 standing acceptance. Unknown, unavailable or mismatched profile evidence keeps
 the Client acceptance path. An explicit review label or non-neutral review check
