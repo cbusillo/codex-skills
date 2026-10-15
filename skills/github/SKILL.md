@@ -54,7 +54,7 @@ resources:
     description: Collect bounded read-only cross-repo GitHub work evidence as JSON for planning, readiness, closeout, or LLM-led reporting.
   - path: scripts/gh-rulesets.py
     kind: script
-    description: Plans or explicitly applies the standard repository owner, automation, and direction ruleset pair with active repository owner verification.
+    description: Plans or explicitly applies the standard repository owner, automation, and direction ruleset pair, and optionally the client branch and tag lock, with active repository owner verification.
   - path: scripts/gh-plan.py
     kind: script
     description: Shared planning issue, milestone, Project, and next-work helper used by GitHub planning workflows.
@@ -278,12 +278,12 @@ commands:
     source: skill
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "plan", "--repo", "OWNER/REPO"]
-    purpose: Reads the active repository owner's full ruleset state and reports the idempotent standard-pair changes without writing.
+    purpose: Reads the active repository owner's full ruleset state and reports the idempotent standard-pair and selected client-lock changes without writing.
   - name: github-rulesets-apply
     source: skill
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "apply", "--repo", "OWNER/REPO", "--confirm-owner-admin-write"]
-    purpose: Applies the standard pair only after active repository-owner verification and an explicit repository-admin write acknowledgement.
+    purpose: Applies the standard pair and any selected client lock only after active repository-owner verification and an explicit repository-admin write acknowledgement.
 policy:
   command_policies:
     - id: prefer-gh-pr-create-helper

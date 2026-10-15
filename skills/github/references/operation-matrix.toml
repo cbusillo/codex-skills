@@ -1717,10 +1717,10 @@ capabilities = ["operator_session", "metadata_read"]
 permission_mode = "delegated"
 permission_note = "The ruleset helper deliberately keeps inspection under its verified active owner even where summary metadata is readable by an App."
 entrypoint = "github/scripts/gh-rulesets.py plan|apply"
-intent = "List repository-owned branch rulesets before planning or applying the standard pair."
+intent = "List repository-owned branch and tag rulesets before planning or applying the standard pair and client lock."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/rulesets?includes_parents=false&targets=branch"
+endpoint_or_command = "GET /repos/{repo}/rulesets?includes_parents=false&targets=branch,tag"
 quota_bucket = "rest_core"
 actor_policy = "active_human_required"
 mutation_class = "read"
@@ -1759,7 +1759,7 @@ capabilities = ["protection_write"]
 permission_mode = "delegated"
 permission_note = "Full bypass-actor inspection and protected ruleset mutations retain the verified owner path. Administration read for ordinary diagnostics is not full ruleset-writer evidence."
 entrypoint = "github/scripts/gh-rulesets.py apply --confirm-owner-admin-write"
-intent = "Create one missing standard repository ruleset only after exact-name planning and explicit owner-admin authorization."
+intent = "Create one missing standard or client-lock repository ruleset only after exact-name planning and explicit owner-admin authorization."
 current_transport = "rest_api"
 selected_transport = "rest_api"
 endpoint_or_command = "POST /repos/{repo}/rulesets"
@@ -1771,7 +1771,7 @@ retry_eligibility = "manual"
 reconciliation_strategy = "fail_closed_write"
 retained_graphql_rationale = "No retained GraphQL transport; repository rulesets have a maintained REST create endpoint."
 source_refs = ["github/scripts/github_rulesets.py:RulesetClient", "github/scripts/github_rulesets.py:apply_repository"]
-test_refs = ["github/scripts/test_github_rulesets.py:test_apply_converges_and_second_apply_writes_nothing", "github/scripts/test_github_rulesets.py:test_cli_requires_explicit_write_confirmation"]
+test_refs = ["github/scripts/test_github_rulesets.py:test_apply_converges_and_second_apply_writes_nothing", "github/scripts/test_github_rulesets.py:test_cli_requires_explicit_write_confirmation", "github/scripts/test_github_rulesets.py:test_client_lock_apply_adds_beside_standard_pair_and_converges"]
 
 [[operations]]
 id = "github.rulesets.update"
@@ -2409,7 +2409,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github_issue.py" = "09b3718804c3fbde4d2c97f6fa9edf13eb54aefc77728b87f282555bc325fc62"
 "github/scripts/github_milestone.py" = "08cf5da1e6e93bf6d577b572ea508e71da9e1e0224ef0ebfb588c403bf8f5598"
 "github/scripts/github_read.py" = "b977198cc0b5eb97399cebd3941caaec2de04e37727ea7d93dc8fcca22627c44"
-"github/scripts/github_rulesets.py" = "f87765e84350d958a8b6ef8416f26ffb4144d5ee35abb84f254744eaec256281"
+"github/scripts/github_rulesets.py" = "38b790fcdc1576b1617d71c561173afa1d8724b4d88ddf45ef62c1e47843155f"
 "github/scripts/github_workflow_babysit.py" = "af4836d2d8a1a0214c13c62886978d5facedae3d0c82bfbdd02e199babda80ba"
 "github/scripts/reconcile-runtime-checkout.py" = "8cc6a9806bf57175dfdb898aa0776cfa2bd68f852553beb6648b84e7ab6fe4f3"
 "github-work-rollup/scripts/github_unanswered_comments.py" = "ce6559824341d7baeb996f608553f9f809d2e9341b6aac9f6fd239feb43dc4d8"
