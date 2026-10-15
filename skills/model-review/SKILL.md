@@ -92,10 +92,22 @@ one.
 
 ## When A Run Fails
 
-Exit 0 means a review came back. Exit 1 means the run failed, and exit 2 means
+Exit 0 means a completed review came back. Exit 1 means the run failed, and exit 2 means
 that provider's CLI is not installed. A reviewer that could not read files, or
 returned nothing, is reported as a failure, never as "no findings"; do not
 paper over it by pasting files into the prompt.
+
+The helper requests a provider-neutral JSON completion result internally and
+returns just its report as `response` or the output file. Only `status: completed`
+with a nonempty `review` succeeds; a completed no-findings report may say `none`.
+The `review` field is a string; requests for structured findings are encoded as
+JSON text inside it, so callers still receive that text as their report.
+An explicit `refused` or `incomplete` status fails with that bounded outcome.
+Missing or malformed completion evidence is `unavailable`, even after file reads.
+These failures retain model/account provenance but omit partial or withheld text;
+they do not produce an output file or consume a planted finding. No refusal is
+retried to obtain a different answer. This confirms the reviewer's declared
+completion, not the correctness or coverage of its report; weigh those yourself.
 
 OpenAI runs must show a successful shell command in their JSONL tool evidence;
 an answer without one fails even when the CLI exits 0. This proves tool activity,
@@ -113,7 +125,9 @@ credential-redacted diagnostics; OpenAI's malformed stdout is never excerpted.
 - Google uses `read_file` (`view_file`) for file reads, including
   successive line ranges for large files. If a shell command is refused, the
   helper reads only that run's saved conversation to name the command and
-  retries once with file tools only. `recovery` records the first refusal;
+  retries once with file tools only when the stopped run returned no response.
+  A nonempty response alongside a command denial remains unavailable without a retry.
+  `recovery` records the first refusal;
   a second refusal remains a failure. The timeout applies to each attempt.
   When the conversation is unavailable or
   unreadable, `command_diagnostic` says why the exact command could not be found.

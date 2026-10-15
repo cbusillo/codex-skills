@@ -47,6 +47,39 @@ PREAMBLE = (
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
     "Do not modify, create, or delete anything.\n\n"
 )
+OUTPUT_INSTRUCTIONS = (
+    '\n\nReturn one JSON object, without Markdown fences, with keys "status" and "review". '
+    'Set status to "completed" only when you completed the requested review; review contains your '
+    'findings report as a string (or "none" for a completed review with no findings). '
+    'If the caller requests structured findings, encode them as JSON text inside that string. '
+    'If you refuse the review, set status to "refused". If you stop before completing it, set status '
+    'to "incomplete". For either, leave review empty; do not include withheld content or partial findings. '
+    'A refusal must be preserved, never worked around. These output instructions also apply to file-read probes.'
+)
+
+
+def completed_review(result: dict[str, Any]) -> dict[str, Any]:
+    """Require affirmative completion; never excerpt an unconfirmed or refused report."""
+    if not result["ok"]:
+        return result
+    response = result.pop("response")
+    # Accept one whole-response JSON fence, never scrape a completed object out of
+    # surrounding prose that could itself say the review was refused or interrupted.
+    fenced = re.fullmatch(r"\s*```(?:json)?\s*\n(.*?)\n```\s*", response, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        response = fenced.group(1)
+    try:
+        payload = json.loads(response)
+    except (ValueError, TypeError):
+        payload = None
+    status = payload.get("status") if isinstance(payload, dict) else None
+    if status in ("refused", "incomplete"):
+        return {**result, "ok": False, "outcome": status, "error": f"review {status}"}
+    report = payload.get("review") if isinstance(payload, dict) else None
+    if status == "completed" and isinstance(report, str) and report.strip():
+        return {**result, "response": report}
+    return {**result, "ok": False, "outcome": "unavailable",
+            "error": "review completion unconfirmed" if response else "the reviewer returned nothing"}
 
 
 def agy_rules(read_roots: list[Path]) -> list[str]:
@@ -262,6 +295,11 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
                         conversation_id=payload.get("conversation_id"))
         if diagnostic:
             result["command_diagnostic"] = diagnostic
+        # Preserve command diagnostics, but retry only an empty permission failure,
+        # never a nonempty refusal (including one outside the output contract).
+        if denied == ["command"] and (payload.get("response") or "").strip():
+            result.update(outcome="unavailable",
+                          **agy_model(model or agy_settings().get("model"), payload.get("conversation_id")))
         # A shell refusal is not evidence of missing file access. Do not recommend new grants for it.
         if denied != ["command"]:
             result["hint"] = agy_hint(repo)
@@ -471,10 +509,10 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 account_choice.prepare_launch(choice)
                 receipt = account_choice.record_launch(choice)
                 launch = {"account": account_choice.public(choice), "launch_receipt": str(receipt)}
-                result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch), env)
+                result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout, Path(scratch), env)
             else:
-                result = REVIEWERS[provider](preamble + prompt, repo, model, timeout, Path(scratch))
-            if provider == "google" and result.get("denied") == ["command"]:
+                result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout, Path(scratch))
+            if provider == "google" and result.get("denied") == ["command"] and not result.get("outcome"):
                 refusal = result
                 reminder = (
                     "A previous attempt stopped after a refused command request"
@@ -483,7 +521,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                     "Do not call run_command at all. No permission changes are available.\n\n"
                 )
                 try:
-                    result = review_google(preamble + reminder + prompt, repo, model, timeout, Path(scratch))
+                    result = review_google(preamble + reminder + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout, Path(scratch))
                 except subprocess.TimeoutExpired:
                     result = failed(provider, f"file-tool retry returned no answer within {timeout} seconds")
                 except OSError as exc:
@@ -499,6 +537,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
     if result["ok"] and not result["response"].strip():
         result = {**result, "ok": False, "error": "the reviewer returned nothing"}
         result.pop("response")
+    result = completed_review(result)
     if not result["ok"] and result.get("recovery", {}).get("denied_commands") and not result.get("denied_commands"):
         result["error"] += "; previous refused command: " + "; ".join(result["recovery"]["denied_commands"])
     return {**result, **launch}
@@ -589,7 +628,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     if probe is None:
         print(json.dumps({"ok": False, "error": f"no readable text file to probe in {repo}"}))
         return 1
-    prompt = f"Reply with exactly the first non-empty line of {probe}, and nothing else."
+    prompt = f"Read {probe}; put exactly its first non-empty line in the review field of your result."
     report = []
     for provider in args.provider or sorted(PROVIDERS):
         result = review(provider, prompt, repo, None, args.timeout)
