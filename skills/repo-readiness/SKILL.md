@@ -32,8 +32,13 @@ inspection, browser, CI, deployment, or security gates.
 1. Identify the repo, branch, active task, changed files, and whether a PR/issue
    is in play.
 2. Check `.github/github.json` before inferring gates.
-   If it has a `qualityGate` block, use it for how to run tests, lint/static
-   analysis, format checks, typechecks, builds, and IDE/static inspections. Use
+   If it has a `qualityGate` block, use it for how to run lint/static
+   analysis, format checks, typechecks, builds, and IDE/static inspections.
+   For tests, distinguish `qualityGate.test.local` (focused local command) from
+   `qualityGate.test.ci` (full CI gate); use the legacy `test.default` and
+   repository requirements until both split keys are declared. Read the
+   [test command contract](../github/references/config-schema.md#workflow-metadata)
+   when selecting commands or adopting the split. Use
    `qualityGate.docsRequiredWhen` for docs freshness triggers. If it has a
    `docs` block, prefer `docs.index` and relevant `docs.*` paths as the docs
    entry points. Fall back to repo instructions (`AGENTS.md`, README,
@@ -181,9 +186,20 @@ records and write out only otherwise unrecorded gaps. Use
 - Docs-only: validate links/rendering when practical; do not run full code gates
   unless docs describe executable behavior. Prefer `docs.index` when repo
   metadata provides it.
-- Narrow code change: run targeted tests/checks for touched behavior.
-- Shared contract, deployment, release, or security-sensitive change: run the
-  broader repo gate and any required inspection/security checks.
+- Narrow code change: run targeted tests/checks for touched behavior alongside
+  any explicitly required repository gates.
+- For repositories declaring `test.local` and `test.ci`, run focused local tests for touched behavior plus
+  required lint, type checks and IDE inspection. The full suite runs in CI;
+  before merge or `ready`, verify it passed on the current PR head. Local
+  success alone does not establish PR readiness. Otherwise retain repository
+  requirements, including legacy `test.default`, until adoption under the test
+  command contract above; metadata absence does not opt a repository in.
+- Without the split, shared contract, deployment, release, or security-sensitive
+  changes retain the broader repo gate and any required inspection/security checks.
+- Under the split, safety, authorization, approval-rule, destructive-helper or shared-infrastructure
+  change: also run the full local suite. For shared contracts, deployment or
+  release changes, broaden local coverage for the affected risk and retain any
+  explicit repository gates.
 - Shared agent instructions, approval or safety rules, or a destructive helper:
   nothing executable catches a mistake here, so also get a review by another
   model and weigh it under `../references/model-review.md`.
@@ -195,10 +211,13 @@ records and write out only otherwise unrecorded gaps. Use
 Quality default: all code changes should trend toward zero known lint/static
 analysis and IDE inspection noise. Run narrow gates while iterating, but before
 declaring a code change ready, safe to merge, safe to ship, or ready to hand off,
-run broad practical gates when tooling exists: normally whole-repo lint/static
-analysis and whole-project IDE inspection. Use downstream/related repo gates
+run broad practical static gates when tooling exists: normally whole-repo
+lint/static analysis and whole-project IDE inspection. Use downstream/related repo gates
 when contracts, shared packages, deployment behavior, or cross-repo ownership
-changes.
+changes. This breadth applies to static analysis and inspection; test breadth
+follows the declared local/CI split, full-local exceptions and repository
+requirements above. Under the split, do not rerun the full suite locally merely
+to declare readiness or close out.
 
 If a broad gate is too slow, unavailable, blocked by IDE indexing/tooling,
 likely destructive, or disproportionate for a docs-only change, report it as not

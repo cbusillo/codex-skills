@@ -44,7 +44,8 @@ Repo-local values override workspace defaults.
       ]
     },
     "test": {
-      "default": "npm test"
+      "local": "npm test -- --runTestsByPath <changed-test-paths>",
+      "ci": "npm test -- --ci"
     }
   },
   "importantWorkflows": ["CI"],
@@ -205,6 +206,29 @@ Common top-level keys:
 - `qualityGate`: local and CI commands that establish readiness for this repo.
   `qualityGate.docsRequiredWhen` lists changes that need a docs update; the
   `repo-readiness` skill checks it.
+- `qualityGate.test.local`: focused local test command string. Select the tests
+  covering the changed behavior; replace any documented placeholders before
+  running. Run required lint, type checks and IDE inspection alongside it.
+  Declaring `local` and `ci` adopts the split; a catalog update alone does not
+  migrate repositories. Adopt only when the full-suite CI gate exists.
+- `qualityGate.test.ci`: full-suite command string required in CI before merge
+  or a `ready` handoff. This is not a routine local gate. Safety, authorization,
+  approval-rule, destructive-helper and shared-infrastructure changes still
+  run the full suite locally, using this command or a documented local
+  equivalent when CI requires its own environment. Broaden local tests when
+  risk or missing coverage warrants it. If the full local run cannot execute,
+  record the missing evidence; green CI does not silently waive the exception.
+  Metadata describes the gate; the repository's CI workflow must actually run
+  and require it. Verify passing checks for the current PR head.
+  Use the adopting repository's documented change areas to classify full-local
+  exceptions, rather than classifying every edit by the repository's name.
+- `qualityGate.test.default`: legacy test command, used until both `test.local`
+  and `test.ci` are declared. An incomplete split does not override legacy test
+  requirements. Preserve its declared scope until the repository adopts the split;
+  do not silently reinterpret an existing full gate as focused. To adopt,
+  replace `default` with `local` and `ci` and reconcile repository instructions,
+  testing docs and CI. For unset metadata fields, use repository instructions,
+  docs, CI and manifests; report missing required gates as missing evidence.
 - `importantWorkflows`: GitHub Actions workflows agents should watch closely.
 - `qaLabels`: repo-local QA handoff labels such as `awaiting-qa`. These are for
   concrete implementation or bug work waiting on manual verification, not for
