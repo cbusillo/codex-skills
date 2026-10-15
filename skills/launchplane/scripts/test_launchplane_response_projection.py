@@ -181,6 +181,34 @@ def test_preview_accepts_managed_user_actor_login():
     assert payload["result"]["observation"]["github_actor_login"] == response["result"]["observation"]["token_actor_login"]
 
 
+@pytest.mark.parametrize("mode", ["apply", "dry-run"])
+@pytest.mark.parametrize("fault", ["opposite_mode", "missing_mode", "unknown_mode",
+                                  "rejected", "pending", "missing_status"])
+def test_preview_success_must_match_requested_operation(mode, fault):
+    response = preview_response()
+    response["result"]["mode"] = mode
+    if fault == "opposite_mode":
+        response["result"]["mode"] = "dry-run" if mode == "apply" else "apply"
+    elif fault == "missing_mode":
+        del response["result"]["mode"]
+    elif fault == "unknown_mode":
+        response["result"]["mode"] = "PRIVATE_SENTINEL"
+    elif fault == "missing_status":
+        del response["status"]
+    else:
+        response["status"] = fault
+    code, payload = invoke("preview", response, mode=mode)
+    assert code == 1
+    assert payload["status"] == ("accepted_unverified" if mode == "apply" else "invalid")
+    assert payload["records"] == {} and payload["result"] == {}
+    assert payload["summary"]["http_status"] == 200
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert helper.public_code(payload["summary"]["projection_error_code"])
+    if mode == "apply":
+        assert payload["warnings"][0]["code"] == "apply_response_unverified"
+        assert payload["summary"]["recommendation"]
+
+
 def test_interrupted_apply_response_preserves_uncertainty_and_received_status():
     code, payload = invoke("preview", b"", interrupted=True, mode="apply")
     assert code == 1
