@@ -340,9 +340,7 @@ def test_verified_merged_source_is_reviewed_but_a_new_source_remainder_can_proce
     row = item('Implement the export path.')
     row['discussion']['body'] += '\nEvidence: https://github.com/owner/repo/pull/80'
     pull = {'number': 80, 'body': 'Refs #1', 'merged_at': '2026-09-01T00:00:00Z', 'base': {'ref': 'main'}}
-    reads = []
     def read(_method, path, payload=None, **_kwargs):
-        reads.append(path)
         if path == '/graphql':
             assert payload['variables']['number'] == row['number']
             return 'bot', {'data': {'repository': {'issue': {'createdAt': '2026-08-01T00:00:00Z', 'lastEditedAt': None}}}}
@@ -357,12 +355,14 @@ def test_verified_merged_source_is_reviewed_but_a_new_source_remainder_can_proce
     assert classify(row)['state'] == 'scope_review'
     # A fresh recorded source remainder is not erased by an earlier merged slice.
     row['discussion']['updated_at'] = '2026-09-02T00:00:00Z'
-    row['discussion']['comments'] = [{'author': 'stranger', 'body': 'New comment', 'created_at': row['discussion']['updated_at']}]
+    row['discussion']['comments'] = [{'author': 'owner', 'body': 'Claim release and closeout', 'created_at': row['discussion']['updated_at']}]
     assert classify(row)['state'] == 'scope_review'  # Activity is not a status edit.
     row['source_delivery']['body_recorded_at'] = '2026-09-02T00:00:00Z'
+    assert classify(row)['state'] == 'scope_review'  # An unrelated body edit does not identify a new remainder.
+    row['discussion']['body'] = row['discussion']['body'].replace('Implement the export path.', 'Implement the remaining export parser.')
     assert classify(row)['state'] == 'available'
     row['source_delivery']['complete'] = False
-    assert classify(row)['reason'] == 'source_delivery_reads_incomplete'
+    assert classify(row)['state'] == 'review'
     row['source_delivery']['body_recorded_at'] = '2026-08-01T00:00:00Z'
     row['source_delivery']['complete'] = True
     row['discussion']['comments'] = [{'author': 'owner', 'body': '## Current Status\nState: Active; earlier slice merged\nNext action: Implement the remaining export handler.', 'updated_at': '2026-09-03T00:00:00Z'}]
@@ -417,6 +417,61 @@ def test_current_caller_review_can_establish_a_merged_records_real_remainder() -
     review['discussion_digest'] = 'stale'
     assert not direction.rank_portfolio_work(graph, [row], milestone_titles=[], selection_context=context)['available_candidates']
     assert not module.project_local_queue([row], [], context)['available_candidates']
+
+    followthrough = item('An executing agent writes the remaining README section and opens its PR.', 'Active; first slice merged')
+    followthrough['source_delivery'] = {'complete': True, 'merged_prs': []}
+    followthrough['queue'] = classify(followthrough)
+    assert followthrough['queue']['state'] == 'scope_review'
+    review['discussion_digest'] = followthrough['discussion']['digest']
+    assert module.project_local_queue([followthrough], [], context)['available_candidates']
+
+
+def test_post_merge_status_comment_stays_current_after_unrelated_issue_activity() -> None:
+    row = item('Implement the export handler.')
+    row['source_delivery'] = {'complete': True, 'body_recorded_at': '2026-08-01T00:00:00Z',
+        'merged_prs': [{'merged_at': '2026-09-01T00:00:00Z', 'url': 'https://github.com/owner/repo/pull/80'}]}
+    row['discussion']['updated_at'] = '2026-09-03T00:00:00Z'  # A later comment or label event.
+    row['discussion']['comments'] = [{'author': 'owner', 'created_at': '2026-09-02T00:00:00Z',
+        'body': '## Current Status\nState: Active; source merged\nNext action: Verify deployed export.'}]
+    assert classify(row)['state'] == 'verification'
+    row['discussion']['comments'][0]['body'] = '## Current Status\nState: Active; source merged\nNext action: Implement the remaining parser.'
+    assert classify(row)['state'] == 'available'
+
+
+
+def test_delivery_bounds_deadlines_and_incomplete_review_never_prove_availability() -> None:
+    module = cli.load_module()
+    row = item('Evaluate the remaining scope.')
+    row['discussion']['body'] += '\nSources: ' + ' '.join(f'https://github.com/owner/repo/pull/{n}' for n in range(80, 89))
+    with patch.object(module, 'api_json', lambda *_args, **_kwargs: ('bot', {'merged_at': None})):
+        row['source_delivery'] = module.next_source_delivery(row, {'owner'})
+    assert not row['source_delivery']['complete'] and row['source_delivery']['omitted_reference_count']
+    row['queue'] = classify(row)
+    assert row['queue']['state'] == 'review'
+    review = {'state': 'available', 'ownership_complete': True, 'discussion_digest': row['discussion']['digest']}
+    assert not module.project_local_queue([row], [], {'issues': {'owner/repo#1': review}})['available_candidates']
+    with patch.object(module, 'api_json', Mock(side_effect=AssertionError('Expired reads must not run'))) as api:
+        module.NEXT_READS = Mock(expired=True)
+        bounded = module.next_source_delivery(row, {'owner'})
+        module.NEXT_READS = None
+    assert not bounded['complete'] and bounded['unread_reference_count']
+    api.assert_not_called()
+
+
+def test_delivery_annotation_uses_the_real_adapter_and_preserves_unknown_graphql() -> None:
+    module = cli.load_module()
+    row = item('Implement the remaining handler.')
+    row['discussion']['body'] += '\nSource: PR #80'
+    pull = {'number': 80, 'body': 'Refs #1', 'merged_at': '2026-09-01T00:00:00Z', 'base': {'ref': 'main'}}
+    def read(_method, path, payload=None, **_kwargs):
+        if path == '/graphql':
+            return 'bot', []  # A malformed successful response is unknown, never a crash.
+        return 'bot', pull if '/pulls/' in path else {'default_branch': 'main'}
+    with patch.multiple(module, api_json=read, collect_paged_rest_items=lambda *_a, **_kw: ('bot', [])), patch.multiple(module.pathlib.Path, is_dir=lambda *_: False):
+        context = module.real_annotate_next_queue([row], cli.next_args(repo='owner/repo'))
+    assert context['claim_required']
+    assert row['queue']['state'] == 'scope_review'
+    assert not row['source_delivery']['complete'] and row['source_delivery']['body_edit_error']
 
 
 def main() -> None:

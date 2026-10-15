@@ -439,7 +439,7 @@ def reviewed_remaining_scope(item: dict[str, Any], review: dict[str, Any]) -> bo
     """A fresh caller can establish a real remainder without erasing delivery."""
     queue = item.get("queue") or {}
     discussion = item.get("discussion") or {}
-    return bool(queue.get("reason") in {"merged_source_needs_finish_line_review", "source_action_predates_merged_pr"}
+    return bool(queue.get("reason") in {"merged_source_needs_finish_line_review", "source_action_predates_merged_pr", "delivered_source_has_followthrough"}
                 and discussion.get("complete") is True and review.get("discussion_digest") == discussion.get("digest")
                 and review.get("state") == "available" and review.get("ownership_complete") is True
                 and queue.get("observed_ownership_complete") is True and not queue.get("wait_review_required")
@@ -473,7 +473,7 @@ def overall_milestone_context(
     item: dict[str, Any], graph: dict[str, Any], milestone_titles: list[str],
     repository_milestones: dict[str, list[str] | None],
 ) -> dict[str, Any]:
-    """Explain established waypoint links without changing eligibility or rank."""
+    """Resolve established waypoint links used for eligibility and ranking."""
     if item.get("client_request"):
         return {"state": "matched", "titles": [item["client_request"]["milestone"]], "source": "recorded_product_client", "basis": "client_request"}
     if item.get("via") and (item.get("milestone") or {}).get("title") in milestone_titles:

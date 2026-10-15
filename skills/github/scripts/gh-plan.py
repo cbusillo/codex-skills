@@ -3713,16 +3713,29 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
         except PlanError as exc:
             result["complete"] = False
             result.setdefault("unavailable", []).append({"repo": repo, "number": number, "reason": next_source_error(exc)})
-    if result["merged_prs"] and github_next_queue.remaining_work(github_next_queue.current_status(item.get("discussion") or {}, trusted))["state"] == "engineering":
+    discussion = item.get("discussion") or {}
+    possible_statuses = [github_next_queue.current_status(discussion, trusted)]
+    possible_statuses.extend(section_map(comment.get("body") or "").get("Current Status", "")
+                             for comment in discussion.get("comments", [])
+                             if str(comment.get("author") or "").casefold() in trusted)
+    if result["merged_prs"] and any(github_next_queue.remaining_work(status)["state"] == "engineering" for status in possible_statuses):
         try:
             owner, name = item["repo"].split("/")
             _, edited = api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
                 payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
                       "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
-            issue = ((edited.get("data") or {}).get("repository") or {}).get("issue")
+            data = edited.get("data") if isinstance(edited, dict) else None
+            repository = data.get("repository") if isinstance(data, dict) else None
+            issue = repository.get("issue") if isinstance(repository, dict) else None
             if not isinstance(issue, dict) or "lastEditedAt" not in issue or not issue.get("createdAt"):
                 raise PlanError("Source action body-edit evidence unavailable")
             result["body_recorded_at"] = issue["lastEditedAt"] or issue["createdAt"]
+            try:
+                recorded = datetime.fromisoformat(result["body_recorded_at"].replace("Z", "+00:00"))
+                if recorded.tzinfo is None:
+                    raise ValueError("Body edit timestamp lacks timezone")
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise PlanError("Source action body-edit time unavailable") from exc
         except PlanError as exc:
             result["complete"] = False
             result["body_edit_error"] = next_source_error(exc)
