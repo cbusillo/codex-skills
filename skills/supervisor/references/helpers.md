@@ -1335,6 +1335,8 @@ native session, with both comments authored by the automation actor and dated
 before the recorded closure. When every claim has that evidence, the report says
 `already released by the session` and names the release handoffs without writing
 another release. A verified session that never claimed reports `nothing to release`.
+With `--repo`, these statuses add `in explicit scope` and the session report's
+`coverage` matches the command's scope; claims elsewhere are not accounted for.
 Unresolved ownership retains the existing handoff and release checks; neither
 case relaxes transcript, process-exit or unqualified safe-verdict verification.
 PR-only claims appear in `pr_claim_handoffs`, with exact claim IDs, the verified

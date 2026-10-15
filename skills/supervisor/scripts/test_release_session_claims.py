@@ -156,7 +156,7 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "single timezone"):
             helper.validate_closure({**self.entry, "ended_at": "2026-01-01 00:02:00+00:00"}, "supervisor")
 
-    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body=""):
+    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body="", scoped=False):
         ledger, log = self.root / "ledger.json", self.root / "closed.json"
         ledger.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
         log.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
@@ -169,6 +169,8 @@ class ReleaseTests(unittest.TestCase):
                 "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
                 "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
                 "--verified-handoff", "--handoff-thread", "test/a#2", "--transcript-root", str(self.root), "--apply"]
+        if scoped:
+            argv += ["--repo", "test/a"]
         output = io.StringIO()
         with patch.object(helper.sys, "argv", argv), \
                 patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
@@ -190,15 +192,32 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertFalse(report["needs_reconciliation"])
         session = report["reports"][0]
-        self.assertEqual(session["status"], "already released by the session")
+        self.assertEqual(session["claims"], [])
         self.assertEqual(session["released_claims"][0]["claim_comment"], self.source["id"])
         self.assertEqual(session["handoff_url"], "https://github.com/test/a/issues/1#issuecomment-2")
 
     def test_finish_read_only_session_has_nothing_to_release(self):
         result, report = self.finish_thread([])
         self.assertEqual(result, 0)
-        self.assertEqual(report["reports"][0]["status"], "nothing to release")
+        self.assertEqual(report["reports"][0]["released_claims"], [])
         self.assertFalse(report["needs_reconciliation"])
+
+    def test_finish_self_release_with_session_field_and_progress_note(self):
+        released = self.own_release(body="Released claim 1\n\nSession: source-session\nEngineering handoff")
+        progress = comment(3, "Session: source-session\nProgress: affected tests passed")
+        result, report = self.finish_thread([self.source, released, progress])
+        self.assertEqual(result, 0)
+        self.assertEqual([r["claim_comment"] for r in report["reports"][0]["released_claims"]], [self.source["id"]])
+        self.assertFalse(report["needs_reconciliation"])
+
+    def test_finish_scoped_no_claims_qualifies_its_completion(self):
+        result, unscoped = self.finish_thread([])
+        self.assertEqual(result, 0)
+        result, scoped = self.finish_thread([], scoped=True)
+        self.assertEqual(result, 0)
+        self.assertNotEqual(scoped["reports"][0]["status"], unscoped["reports"][0]["status"])
+        self.assertEqual(scoped["reports"][0]["coverage"], scoped["coverage"])
+        self.assertNotEqual(scoped["coverage"], unscoped["coverage"])
 
     def test_finish_preserves_held_foreign_and_late_claims(self):
         other = comment(3, "Claimed by other\n\n" + helper.claim.marker({**SOURCE, "session": "other-session"}))

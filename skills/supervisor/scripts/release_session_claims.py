@@ -509,7 +509,9 @@ def finished_claims(reader, entry, actor, issues, apply):
     for repo, number in issues:
         issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="finished_claim_issue")
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="finished_claim_history")
-        sources = [c for c in comments if belongs_to_session(c.get("body") or "", entry["session_id"])]
+        sources = [c for c in comments if belongs_to_session(c.get("body") or "", entry["session_id"])
+                   and (claim.records(c.get("body") or "") or re.match(
+                       r"Claimed by:?\s+\S+", claim.ownership_text(c.get("body") or "", strip_quotes=False), re.IGNORECASE))]
         if belongs_to_session(issue.get("body") or "", entry["session_id"]):
             body_records = [r for r in claim.records(issue["body"]) if r["session"] == entry["session_id"]]
             source_records = [r for c in sources for r in claim.records(c.get("body") or "")]
@@ -531,8 +533,12 @@ def finished_claims(reader, entry, actor, issues, apply):
         # and claims held by another identity, even alongside a released source.
         if active_claims(reader, repo, number, entry["session_id"], actor):
             return None
+    scope = entry["_finish_scope"]
+    result_status = "already released by the session" if released else "nothing to release"
+    if scope == "explicit scope":
+        result_status += " in explicit scope"
     return {"session_id": entry["session_id"], "claims": [], "released_claims": released,
-            "status": "already released by the session" if released else "nothing to release",
+            "status": result_status, "coverage": scope,
             "handoff_url": released[-1]["handoff_url"] if released else None,
             "dry_run": not apply, "retained_status_claims": [], "issue_refusals": [],
             "pr_claim_handoffs": [], "closure_evidence": "matched PID/TTY log"}
@@ -785,6 +791,7 @@ def main():
             else:
                 entries = [record_closure(args.closed_log, entries[0], args.supervisor_session, persist=False)]
             entries[0]["_finish"] = True
+            entries[0]["_finish_scope"] = "explicit scope" if args.repo else "accessible repositories under the requested owner"
         else:
             rows = json.loads(args.closed_log.read_text())
             if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "safe_exit_yes" in rows[0]:
