@@ -632,6 +632,8 @@ The `new` GUI attempt is bounded to ten seconds in a separate process. A locked
 screen or unavailable API produces an unavailable view receipt while agents
 keep running. Do not relaunch agents to recover their view. After unlocking,
 inspect iTerm, then retry just the view through the same deduplicating route.
+The receipt includes `retry_command` with the helper path and required backend,
+and a bounded cause such as `timeout`, `exit:<code>`, or `bad_output`.
 A timed-out creation may still appear later; `unavailable` is not proof that
 no window exists. The manual view command uses the normal iTerm API connection:
 

@@ -708,15 +708,21 @@ async def open_tmux_view(connection, terminal, container):
         profile.set_close_sessions_on_end(True)
         previous = app.current_terminal_window
         previous_tab = previous.current_tab if previous else None
+        focus_restore_failed = False
         try:
             window = await iterm2.Window.async_create(connection, profile_customizations=profile)
         finally:
             if previous_tab:
-                await previous_tab.async_select()
+                try:
+                    await previous_tab.async_select()
+                except Exception:
+                    focus_restore_failed = True
         result = {"status": "opening" if window else "unavailable",
                   "window_id": window.window_id if window else None,
                   "readback_required": True, "restore_windows_as": preference,
                   "focus_warning": "iTerm may move keyboard focus when the tmux tabs appear; check the selected tab before typing."}
+        if focus_restore_failed:
+            result["focus_restore_failed"] = True
         if window is None:
             result["next_action"] = "Inspect iTerm, then use view --window-id; do not relaunch agents."
         if type(preference) is not int or preference != 2:
@@ -767,7 +773,9 @@ def main():
             sub.add_argument("--no-submit", action="store_true")
     args = parser.parse_args()
     if args.command == "view":
-        if args.backend != "tmux" or args.tmux_socket != "supervisor":
+        if args.backend != "tmux":
+            parser.error("view requires --backend tmux")
+        if args.tmux_socket != "supervisor":
             print(json.dumps({"status": "skipped", "reason": "not the Supervisor tmux server"}))
             return
         import iterm2

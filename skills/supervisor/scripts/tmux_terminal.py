@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""tmux backend for iterm_tab; no GUI connection or account-choice policy."""
+"""tmux backend for iterm_tab; a bounded child opens the optional iTerm view."""
 
 import asyncio
 from contextlib import contextmanager
@@ -99,6 +99,10 @@ class Terminal:
         if self.socket_name != "supervisor" or sys.platform != "darwin":
             return {"status": "skipped", "reason": "automatic view is macOS Supervisor-only"}
         command = self.view_command(container)
+        retry = shlex.join(["uv", "run", iterm_tab.__file__, "--backend", "tmux",
+                            "view", "--window-id", container])
+        recovery = {"readback_required": True, "retry_command": retry,
+                    "next_action": "Inspect iTerm before running retry_command; do not relaunch agents."}
         # iTerm authentication may block while locked. Bound the GUI attempt in
         # a child so it cannot hold up tmux work or corrupt the launch JSON.
         try:
@@ -110,11 +114,15 @@ class Terminal:
             if result.returncode == 0:
                 view = json.loads(result.stdout)
                 if isinstance(view, dict) and view.get("status") in {"attached", "opening", "pending_elsewhere", "unavailable"}:
-                    return {**view, "view_command": command}
-        except (OSError, ValueError, subprocess.SubprocessError):
-            pass
-        return {"status": "unavailable", "readback_required": True, "view_command": command,
-                "next_action": "After unlocking, inspect iTerm and use view --window-id; do not relaunch agents."}
+                    return {**recovery, **view, "view_command": command}
+            reason = f"exit:{result.returncode}" if result.returncode else "bad_output"
+        except subprocess.TimeoutExpired:
+            reason = "timeout"
+        except ValueError:
+            reason = "bad_output"
+        except (OSError, subprocess.SubprocessError) as error:
+            reason = type(error).__name__
+        return {**recovery, "status": "unavailable", "reason": reason, "view_command": command}
 
     def list(self):
         fields = ("session_id", "window_id", "pane_id", "pane_title", "pane_tty",

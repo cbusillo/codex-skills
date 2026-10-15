@@ -45,7 +45,8 @@ class ViewTests(unittest.TestCase):
         async def create(connection, *, profile_customizations):
             # Decode the actual pinned SDK's wire properties, layering them on
             # a default profile that would otherwise send startup input.
-            properties = {"Initial Text": "source personal-config"}
+            properties = {"Initial Text": "source personal-config", "Send Code When Idle": True,
+                          "Triggers": [{"action": "send-text"}]}
             properties.update({key: json.loads(value) for key, value in profile_customizations.values.items()})
             self.created.append(properties)
             if text := properties.get("Initial Text"):
@@ -84,6 +85,8 @@ class ViewTests(unittest.TestCase):
         self.assertIn("-CC", argv)
         self.assertTrue(self.created[0]["Close Sessions On End"])
         self.assertFalse(self.startup_input)
+        self.assertFalse(self.created[0]["Send Code When Idle"])
+        self.assertFalse(self.created[0]["Triggers"])
         self.assertNotIn("warning", result)
         self.assertTrue(result["focus_warning"])
         self.assertEqual(self.open()["status"], "opening")
@@ -158,13 +161,34 @@ class ViewTests(unittest.TestCase):
         self.assertTrue(result["readback_required"])
         self.assertTrue(result["next_action"])
 
+    def test_focus_restore_failure_keeps_the_created_window_receipt(self):
+        self.app.current_terminal_window = SimpleNamespace(
+            current_tab=SimpleNamespace(async_select=AsyncMock(side_effect=ValueError("tab closed"))))
+        result = self.open()
+        self.assertEqual(result["status"], "opening")
+        self.assertTrue(result["window_id"])
+        self.assertTrue(result["focus_restore_failed"])
+
     def test_gui_timeout_is_reported_without_retry_or_agent_input(self):
         with patch.object(tmux_terminal.sys, "platform", "darwin"), \
                 patch.object(tmux_terminal.subprocess, "run", side_effect=subprocess.TimeoutExpired("view", 10)) as run:
             result = self.terminal.view(self.container)
         self.assertEqual(result["status"], "unavailable")
         self.assertTrue(result["readback_required"])
+        self.assertEqual(result["reason"], "timeout")
+        retry = shlex.split(result["retry_command"])
+        self.assertEqual(retry[retry.index("--backend") + 1], "tmux")
+        self.assertEqual(retry[retry.index("--window-id") + 1], self.container)
         run.assert_called_once()
+
+    def test_gui_child_failure_and_bad_json_report_their_cause(self):
+        for child, reason in ((SimpleNamespace(returncode=1, stdout=""), "exit:1"),
+                              (SimpleNamespace(returncode=0, stdout="not JSON"), "bad_output")):
+            with self.subTest(reason=reason), patch.object(tmux_terminal.sys, "platform", "darwin"), \
+                    patch.object(tmux_terminal.subprocess, "run", return_value=child):
+                result = self.terminal.view(self.container)
+            self.assertEqual(result["reason"], reason)
+            self.assertTrue(result["retry_command"])
 
 
 class PaneParserTests(unittest.TestCase):
