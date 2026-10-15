@@ -281,16 +281,25 @@ class ClientAppTests(unittest.TestCase):
             github_comment.authenticated_actor(gh_cmd=wrapper, operation="github.comment.issue",
                 expected_actor="different[bot]", write_repository="host/product")
 
-    def plan(self, repo: str | None, issue: str = "1") -> subprocess.CompletedProcess[str]:
+    def plan(self, repo: str | None, issue: str = "1", *,
+             checkout_repo: str = "client/product") -> subprocess.CompletedProcess[str]:
         # Reproduce a two-App Client fleet without a separate bulk-reader App.
         env = {name: value for name, value in os.environ.items()
                if not name.startswith("GITHUB_READER_APP_")}
+        checkout = self.root / "checkout"
+        if not checkout.exists():
+            subprocess.run(["git", "init", "--quiet", str(checkout)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin",
+                            f"https://github.com/{checkout_repo}.git"], check=True, capture_output=True)
+        else:
+            subprocess.run(["git", "-C", str(checkout), "remote", "set-url", "origin",
+                            f"https://github.com/{checkout_repo}.git"], check=True, capture_output=True)
         return subprocess.run(
             [sys.executable, str(Path(identity.__file__).with_name("gh-plan.py")),
              *(["--repo", repo] if repo else []), "show", issue],
             env={**env, "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
                  "GH_WITH_ENV_TOKEN_PYTHON": sys.executable},
-            capture_output=True, text=True, timeout=15,
+            cwd=checkout, capture_output=True, text=True, timeout=15,
         )
 
     def test_plan_explicit_repository_selects_app_without_global_context(self) -> None:
@@ -333,6 +342,15 @@ class ClientAppTests(unittest.TestCase):
                     payload = json.loads(result.stdout)
                     self.assertEqual(payload["issue"]["repo"], target)
                     self.assertEqual(payload["last_actor"], self.auth(target)[1])
+
+    def test_plan_inferred_repository_selects_its_owner_app(self) -> None:
+        for repo in ("host/product", "client/product"):
+            with self.subTest(repo=repo):
+                result = self.plan(None, checkout_repo=repo)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["issue"]["repo"], repo)
+                self.assertEqual(payload["last_actor"], self.auth(repo)[1])
 
     def test_python_bulk_reads_use_reader_then_client_when_reader_absent(self) -> None:
         kwargs = dict(operation="github.plan.index", is_write=False, gh_cmd=github_api.DEFAULT_GH,

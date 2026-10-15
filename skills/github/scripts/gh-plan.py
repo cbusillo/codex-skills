@@ -6046,6 +6046,8 @@ def main() -> None:
             # A qualified issue overrides --repo, which is only its default.
             target_repo = (issue_ref(claim_reference(args).issue, args.repo or "")[0]
                            if getattr(args, "issue", None) else args.repo)
+            if not target_repo:
+                target_repo = default_repo()
             # Bind readers, probes and transport before any cache is prepared.
             if target_repo:
                 os.environ["GH_REPO"] = target_repo

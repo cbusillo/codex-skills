@@ -1753,6 +1753,8 @@ command, including reader initialization and actor checks; a qualified issue
 reference supplies its own target instead. The resolved target takes precedence
 over an inherited `GH_REPO`; setting `GH_REPO` separately is unnecessary.
 Qualified issue references supply this context even without `--repo`.
+For a bare issue number without `--repo`, the resolved checkout repository
+supplies it.
 
 If the Client App is not installed on the target, reads fail with the missing
 installation named. Writes retain the existing refusal and per-command own-user
