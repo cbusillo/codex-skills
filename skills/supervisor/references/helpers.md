@@ -802,6 +802,32 @@ The launcher does not read tokens or change account configuration. The check
 proves the socket accepts connections; it cannot
 guarantee that the daemon stays running until the launch command executes.
 
+The launcher then connects through the native Unix WebSocket transport, reads
+all loaded threads with `thread/loaded/list` and metadata-only `thread/read`,
+and counts active threads, including workers with no terminal. It checks
+admission with `thread/resume` using an intentionally invalid native UUID;
+the daemon rejects draining admission before validating that UUID. The normal
+invalid-session-id response proves admission is open without creating a thread,
+running hooks or starting inference. Unknown responses or incomplete reads refuse.
+This protocol check is version-sensitive; an unfamiliar response needs diagnosis,
+not a restart or a fallback that treats the socket as healthy.
+
+Never restart or stop a draining daemon from the launcher. A refusal reports
+the active-thread count when available. Wait for the daemon to finish, or use
+Context Panel's account reader and `--account <name>` to choose another configured
+account explicitly. Before any separately authorized manual restart, freshly
+inspect the daemon's active threads and refuse while one is running or their
+state is unknown. Terminal clients and dead tmux panes cannot prove a worker
+has ended; a remote Codex thread can continue after its terminal disappears.
+
+Both terminal backends observe the first two seconds after submission. A dead
+pane or a Codex bootstrap error returns `launch_failed`, retaining the exact
+terminal identity, any already-written count-only receipt, and the pane's last
+output (tmux also reports exit status). Inspect those terminals before retrying;
+the launcher never replays a batch automatically. This observation catches early
+exit, not full agent readiness or a later failure. iTerm uses its native session
+termination monitor; the tmux backend reads pane state without driving iTerm.
+
 Accounts live only in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under
 `skill-data/supervisor.toml`, or `--account-config`. List each provider's

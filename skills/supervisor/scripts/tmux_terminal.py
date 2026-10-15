@@ -386,6 +386,13 @@ async def operate(args):
                 progress["receipt_written"] = True
             progress.update(submission="unknown", phase="submit_command")
             await terminal.send(sid, gate)
+            progress.update(submission="submitted", phase="verify_startup")
+
+            async def read_startup():
+                snapshot = terminal.read(sid)
+                return {key: snapshot[key] for key in ("dead", "exit_status", "screen")}
+
+            await iterm_tab.verify_startup(read_startup)
             result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}
             if choice:
                 result["account"] = account_choice.public(choice)
