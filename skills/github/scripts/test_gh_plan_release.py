@@ -390,6 +390,33 @@ class ReleaseTests(ReleaseHarness):
         self.run_release()
         self.assertEqual((Path(artifact["worktree"]) / "unfinished.txt").read_text(), self.uncommitted_source)
 
+    def test_crash_recovery_preserves_an_actual_conflicted_rebase(self):
+        self.termination_setup()
+        artifact = self.termination_record["retained_artifacts"][0]
+        path = Path(artifact["worktree"])
+        prefix = ["git", "-C", str(path), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                  "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
+        conflict = path / "conflict.txt"
+        conflict.write_text("base\n")
+        subprocess.run([*prefix, "add", "conflict.txt"], check=True)
+        subprocess.run([*prefix, "commit", "-q", "-m", "base"], check=True)
+        subprocess.run([*prefix, "branch", "upstream"], check=True)
+        conflict.write_text("source\n")
+        subprocess.run([*prefix, "commit", "-q", "-am", "source"], check=True)
+        subprocess.run([*prefix, "checkout", "-q", "upstream"], check=True)
+        conflict.write_text("upstream\n")
+        subprocess.run([*prefix, "commit", "-q", "-am", "upstream"], check=True)
+        subprocess.run([*prefix, "checkout", "-q", artifact["branch"]], check=True)
+        attempted = subprocess.run([*prefix, "rebase", "upstream"], capture_output=True, text=True)
+        self.assertNotEqual(attempted.returncode, 0)
+        state = subprocess.run([*prefix, "rev-parse", "--git-path", "rebase-merge"], capture_output=True, text=True, check=True).stdout.strip()
+        state_path = Path(state) if Path(state).is_absolute() else path / state
+        self.assertTrue(state_path.is_dir())
+        self.run_release()
+        self.assertTrue(state_path.is_dir())
+        self.assertEqual(subprocess.run([*prefix, "branch", "--list", artifact["branch"]],
+                                       capture_output=True, text=True, check=True).stdout.strip(), artifact["branch"])
+
     def test_termination_successor_can_continue_the_preserved_branch(self):
         self.termination_setup()
         self.run_release()

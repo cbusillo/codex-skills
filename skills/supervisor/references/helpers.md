@@ -989,8 +989,10 @@ transcripts, or terminal evidence is a refusal, not proof of termination.
 An unterminated partial final JSONL line is retained byte for byte and may be
 ignored only after matching the complete native identity records and proving
 its file activity predates termination. Interior corruption, complete malformed
-records or missing identity still refuse. A detached worktree is preserved if
-its recorded branch still exists. For a current-repository branch with no local
+records or missing identity still refuse. A detached worktree must have rebase/bisect metadata naming its recorded
+branch or a HEAD descending from that branch. This corroborates Git state;
+use the original ledger to identify the correct worktree. A shared ancestor
+alone cannot prove which session owned a detached checkout. For a current-repository branch with no local
 worktree, record `{"branch": "work/task", "worktree": null}`; release verifies
 the branch in its fresh repository inventory. Use an empty `retained_artifacts`
 array if the worker crashed before creating any branch or worktree; release
