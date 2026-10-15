@@ -11,8 +11,6 @@ from typing import Any
 
 from launchplane_safety import (
     CREDENTIAL_ASSIGNMENT_HEAD_RE,
-    IDENTIFIER_SK_TOKEN_RE,
-    SK_TOKEN_RE,
     TOKEN_PATTERNS,
     LaunchplaneSafetyError,
     is_denied_key,
@@ -27,10 +25,13 @@ def _metadata_text(value: object) -> str:
     if any(ord(character) < 32 for character in value):
         raise LaunchplaneSafetyError("invalid_response")
     for pattern in TOKEN_PATTERNS:
-        if (IDENTIFIER_SK_TOKEN_RE if pattern is SK_TOKEN_RE else pattern).search(
-            value
-        ):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        # Short prefix fragments occur in nanoids and ordinary display names.
+        bounded_pattern = re.compile(
+            r"(?<![A-Za-z0-9])(?:" + pattern.pattern + r")", pattern.flags
+        )
+        for match in bounded_pattern.finditer(value):
+            if match.group().lower().startswith("bearer ") or len(match.group()) >= 32:
+                raise LaunchplaneSafetyError("unsafe_response_shape")
     if any(
         is_denied_key(match[1])
         for match in CREDENTIAL_ASSIGNMENT_HEAD_RE.finditer(value)

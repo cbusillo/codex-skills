@@ -182,6 +182,8 @@ def test_bad_continuation_rejected_before_read():
         "hetzner-fsn1-prod-01",
         "cookie-consent",
         "credential-rotator",
+        "laughs_app",
+        "highs_cache",
         "  Exact  Unicode café  ",
     ],
 )
@@ -204,7 +206,7 @@ def test_preserves_display_names_and_nanoid_alphabet(name):
     "name",
     [
         "PASSWORD=must-not-appear",
-        "ghp_PrivateFixture",
+        "ghp_" + "PrivateFixture" * 8,
         "Bearer PrivateFixture",
         "bad\nname",
     ],
@@ -244,6 +246,38 @@ def test_http_conflict_and_malformed_body_keep_safe_diagnostics():
     )
     assert code == 1
     assert result["summary"]["http_status"] == 200
+
+
+@pytest.mark.parametrize(
+    "identifier", ["ABC_ghs_defghijklmnopq", "_sk-Abcdefghijklmnopqr"]
+)
+def test_random_provider_id_fragments_are_not_credentials(identifier):
+    body = response()
+    body["inventory"]["projects"][0]["project_id"] = identifier
+    code, result, _, _ = invoke(body)
+    assert code == 0
+    assert result["result"] == body["inventory"]
+
+
+@pytest.mark.parametrize(
+    "identifier", ["bad/id", "bad id", "ghp_" + "PrivateFixture" * 8]
+)
+def test_invalid_or_credential_shaped_identifier_rejected(identifier):
+    body = response()
+    body["inventory"]["projects"][0]["project_id"] = identifier
+    code, result, _, _ = invoke(body)
+    assert code == 1
+    assert identifier not in json.dumps(result)
+
+
+@pytest.mark.parametrize("count", ["total_environments", "total_targets"])
+def test_single_complete_page_requires_exact_totals(count):
+    body = response()
+    body["inventory"].update(total_projects=1, next_offset=None)
+    body["inventory"][count] += 1
+    code, result, _, _ = invoke(body)
+    assert code == 1
+    assert result["result"] == {}
 
 
 if __name__ == "__main__":
