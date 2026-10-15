@@ -687,7 +687,7 @@ async def open_tmux_view(connection, terminal, container):
                    for client in clients):
                 return {"status": "attached", "session_id": session.session_id}
             profile = await session.async_get_profile()
-            if profile.command == command:
+            if terminal.view_command_matches(profile.command, command):
                 return {"status": "opening", "session_id": session.session_id,
                         "readback_required": True}
 
@@ -715,7 +715,8 @@ async def open_tmux_view(connection, terminal, container):
                 await previous_tab.async_select()
         result = {"status": "opening" if window else "unavailable",
                   "window_id": window.window_id if window else None,
-                  "readback_required": True, "restore_windows_as": preference}
+                  "readback_required": True, "restore_windows_as": preference,
+                  "focus_warning": "iTerm may move keyboard focus when the tmux tabs appear; check the selected tab before typing."}
         if window is None:
             result["next_action"] = "Inspect iTerm, then use view --window-id; do not relaunch agents."
         if type(preference) is not int or preference != 2:
@@ -772,10 +773,14 @@ def main():
         import iterm2
         import tmux_terminal
 
+        terminal = tmux_terminal.Terminal(args.tmux_socket)
+        try:
+            terminal.verify_container(args.window_id)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            parser.exit(1, f"refused: {error}\n")
+
         async def view_connected(connection):
             try:
-                terminal = tmux_terminal.Terminal(args.tmux_socket)
-                terminal.verify_container(args.window_id)
                 print(json.dumps(await open_tmux_view(connection, terminal, args.window_id)))
             except Exception as error:
                 # A view failure never changes a launch's submission outcome.

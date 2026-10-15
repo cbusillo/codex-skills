@@ -64,6 +64,15 @@ class Terminal:
                 clients.append(fields[2])
         return clients
 
+    @staticmethod
+    def view_command_matches(candidate, command):
+        try:
+            actual, expected = shlex.split(candidate), shlex.split(command)
+        except (TypeError, ValueError):
+            return False
+        # Two launch environments may resolve tmux through different paths.
+        return bool(actual) and os.path.basename(actual[0]) == "tmux" and actual[1:] == expected[1:]
+
     @contextmanager
     def view_lock(self, container):
         self.verify_container(container)

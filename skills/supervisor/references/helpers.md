@@ -619,7 +619,8 @@ gateway still attaching, so another launch does not create a second view.
 The first successful launch's `view` result reports `attached`, `opening`,
 `pending_elsewhere`, `unavailable`, or `skipped`. A lock contender reports
 `pending_elsewhere`; this does not establish that the other opener succeeds.
-On creation it reads iTerm's
+On creation its `focus_warning` reports that iTerm can move focus when restoring
+tmux tabs, even after the earlier tab-selection request. It also reads iTerm's
 [restore preference](https://iterm2.com/python-api/preferences.html#iterm2.preferences.PreferenceKey.OPEN_TMUX_WINDOWS_IN).
 For **tabs in the attaching window** (value 2), later agent windows appear as
 tabs there. Other values, or an unknown value, produce one warning in that
@@ -627,10 +628,12 @@ view receipt, not one per agent or later launch. Tell the Director that the
 setting controls grouping; only they change it. Other sockets never open a
 view automatically.
 
-The GUI attempt is bounded to ten seconds in a separate process. A locked
+The `new` GUI attempt is bounded to ten seconds in a separate process. A locked
 screen or unavailable API produces an unavailable view receipt while agents
 keep running. Do not relaunch agents to recover their view. After unlocking,
-inspect iTerm, then retry just the view through the same deduplicating route:
+inspect iTerm, then retry just the view through the same deduplicating route.
+A timed-out creation may still appear later; `unavailable` is not proof that
+no window exists. The manual view command uses the normal iTerm API connection:
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux view --window-id '<container-id>'

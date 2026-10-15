@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["iterm2==2.25"]
 # ///
 """Exercise the shared launcher against a disposable real tmux server."""
 
@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 import account_choice
+import iterm2
 import close_ttys
 import iterm_tab
 import tmux_terminal
@@ -31,6 +32,9 @@ import tmux_terminal
 class ViewTests(unittest.TestCase):
     def setUp(self):
         self.terminal = tmux_terminal.Terminal("supervisor")
+        executable = patch.object(tmux_terminal.shutil, "which", return_value="/fixture/bin/tmux")
+        executable.start()
+        self.addCleanup(executable.stop)
         self.container = "$17"
         self.command = self.terminal.view_command(self.container)
         self.app = SimpleNamespace(terminal_windows=[], buried_sessions=[], async_refresh=AsyncMock(),
@@ -38,23 +42,15 @@ class ViewTests(unittest.TestCase):
         self.created = []
         self.startup_input = []
 
-        class Profile:
-            USE_CUSTOM_COMMAND_ENABLED = "custom"
-
-            def __init__(self, values=None):
-                self.values = {"Initial Text": "source personal-config"}
-                self.values.update(values or {})
-
-            def __getattr__(self, name):
-                if name.startswith("set_"):
-                    return lambda value: self.values.update({name.removeprefix("set_"): value})
-                raise AttributeError(name)
-
         async def create(connection, *, profile_customizations):
-            self.created.append(profile_customizations.values)
-            if text := profile_customizations.values.get("Initial Text"):
+            # Decode the actual pinned SDK's wire properties, layering them on
+            # a default profile that would otherwise send startup input.
+            properties = {"Initial Text": "source personal-config"}
+            properties.update({key: json.loads(value) for key, value in profile_customizations.values.items()})
+            self.created.append(properties)
+            if text := properties.get("Initial Text"):
                 self.startup_input.append(text)
-            session = self.session("gateway", "/dev/ttys987", profile_customizations.values["command"])
+            session = self.session("gateway", "/dev/ttys987", properties["Command"])
             window = SimpleNamespace(window_id="view-window", tabs=[SimpleNamespace(sessions=[session])])
             self.app.terminal_windows.append(window)
             return window
@@ -63,7 +59,7 @@ class ViewTests(unittest.TestCase):
             async_get_app=AsyncMock(return_value=self.app),
             preferences=SimpleNamespace(async_get_preference=AsyncMock(return_value=2),
                                         PreferenceKey=SimpleNamespace(OPEN_TMUX_WINDOWS_IN="restore")),
-            LocalWriteOnlyProfile=Profile, Profile=Profile,
+            LocalWriteOnlyProfile=iterm2.LocalWriteOnlyProfile, Profile=iterm2.Profile,
             Window=SimpleNamespace(async_create=AsyncMock(side_effect=create)),
         )
 
@@ -82,13 +78,14 @@ class ViewTests(unittest.TestCase):
     def test_no_client_creates_gateway_and_pending_gateway_prevents_second_window(self):
         result = self.open()
         self.assertEqual(result["status"], "opening")
-        argv = shlex.split(self.created[0]["command"])
+        argv = shlex.split(self.created[0]["Command"])
         self.assertEqual(argv[argv.index("-t") + 1], self.container)
         self.assertEqual(argv[argv.index("-L") + 1], self.terminal.socket_name)
         self.assertIn("-CC", argv)
-        self.assertTrue(self.created[0]["close_sessions_on_end"])
+        self.assertTrue(self.created[0]["Close Sessions On End"])
         self.assertFalse(self.startup_input)
         self.assertNotIn("warning", result)
+        self.assertTrue(result["focus_warning"])
         self.assertEqual(self.open()["status"], "opening")
         self.assertEqual(len(self.created), 1)
         self.assertEqual(self.open(["ttys987"])["status"], "attached")
@@ -129,11 +126,29 @@ class ViewTests(unittest.TestCase):
         self.sdk.async_get_app.assert_not_called()
         self.assertFalse(self.created)
 
-    def test_window_creation_restores_the_exact_previously_selected_tab(self):
+    def test_window_creation_requests_the_exact_previously_selected_tab(self):
         previous_tab = SimpleNamespace(async_select=AsyncMock())
         self.app.current_terminal_window = SimpleNamespace(current_tab=previous_tab)
         self.open()
         previous_tab.async_select.assert_awaited_once()
+
+    def test_pending_gateway_deduplication_survives_a_different_tmux_path(self):
+        self.open()
+        with patch.object(tmux_terminal.shutil, "which", return_value="/alternate/bin/tmux"):
+            result = self.open()
+        self.assertEqual(result["status"], "opening")
+        self.assertEqual(len(self.created), 1)
+
+    def test_invalid_container_refuses_before_gui_connection(self):
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        with patch.object(sys, "argv", ["iterm_tab.py", "--backend", "tmux", "view", "--window-id", "invalid"]), \
+                patch.object(iterm2, "run_until_complete") as connect, \
+                redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                iterm_tab.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        connect.assert_not_called()
 
     def test_gateway_ending_during_creation_reports_unavailable(self):
         self.sdk.Window.async_create.side_effect = None
