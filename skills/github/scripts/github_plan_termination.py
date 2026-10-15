@@ -15,10 +15,19 @@ import subprocess
 from subprocess import run as run_terminal
 import sys
 
-# Reuse the native transcript reader; verdicts are deliberately not required.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "supervisor/scripts"))
-import session_record
-from close_ttys import inventory, idle_terminal_command
+def native_helpers():
+    # GitHub reads and historical receipts do not load terminal dependencies.
+    directory = str(Path(__file__).resolve().parents[2] / "supervisor/scripts")
+    if directory not in sys.path:
+        sys.path.append(directory)
+    import session_record
+    import close_ttys
+    return session_record, close_ttys
+
+
+def inventory():
+    return native_helpers()[1].inventory()
+
 
 MARKER = "github-plan:termination "
 QUIET_PERIOD = timedelta(minutes=5)
@@ -41,12 +50,13 @@ def validate(data, session, *, apply_policy=True):
     if not isinstance(data.get("cause"), str) or not data["cause"].strip():
         raise ValueError("Termination evidence requires the cause of termination")
     artifacts = data.get("retained_artifacts")
-    if not isinstance(artifacts, list) or not artifacts:
+    if not isinstance(artifacts, list):
         raise ValueError("Termination evidence must name retained worktrees and branches")
     for artifact in artifacts:
         if (not isinstance(artifact, dict)
                 or not isinstance(artifact.get("branch"), str) or not artifact["branch"].strip()
-                or not isinstance(artifact.get("worktree"), str) or not Path(artifact["worktree"]).is_absolute()):
+                or artifact.get("worktree") is not None and (
+                    not isinstance(artifact["worktree"], str) or not Path(artifact["worktree"]).is_absolute())):
             raise ValueError("Each retained artifact requires a branch and absolute worktree path")
     ended, checked, last = (stamp(data[key]) for key in ("ended_at", "checked_at", "last_activity_at"))
     if last > ended or ended > checked or apply_policy and checked - last < QUIET_PERIOD:
@@ -100,6 +110,37 @@ def terminal_state(record):
     raise ValueError("Original tmux pane is live or its identity is uncertain")
 
 
+def transcript_snapshot(record, path):
+    """Keep a crash-truncated final line intact; never tolerate interior corruption."""
+    reader, _ = native_helpers()
+    before = path.stat()
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    records, truncated = [], False
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            if index == len(lines) - 1 and not line.endswith(("\n", "\r")):
+                truncated = True
+                break
+            raise ValueError("Source transcript has corrupt interior or complete records") from None
+        if not isinstance(row, dict):
+            raise ValueError("Source transcript record is not an object")
+        reader.validate_record(row)
+        records.append(row)
+    identities = ({row.get("payload", {}).get("id") for row in records if row.get("type") == "session_meta"}
+                  if record["harness"] == "codex" else
+                  {row["sessionId"] for row in records if row.get("sessionId")})
+    if identities != {record["session_id"]}:
+        raise ValueError("Source transcript identity is uncertain")
+    after = path.stat()
+    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        raise ValueError("Source transcript changed during termination checks")
+    return records, after.st_mtime_ns, after.st_size, truncated
+
+
 def verify(record, session):
     """Never infer termination from absence alone; caller supplies original identity."""
     if record.get("session_id") != session or record.get("host") != socket.gethostname():
@@ -112,7 +153,7 @@ def verify(record, session):
     tty = tty.removeprefix("/dev/")
     rows = inventory()
     for process, process_tty, command in rows:
-        if process == pid or process_tty == tty and not idle_terminal_command(command):
+        if process == pid or process_tty == tty and not native_helpers()[1].idle_terminal_command(command):
             raise ValueError("Source process or work on its TTY is still running")
         argv = command.split()
         resumed = [argv[i + 1].strip("\"'") for i, arg in enumerate(argv[:-1]) if arg in {"resume", "--resume", "-r"}]
@@ -129,36 +170,47 @@ def verify(record, session):
     ended = stamp(record["ended_at"])
     last = None
     for path in paths:
-        entry = {**record, "transcript": str(path)}
-        before = session_record.session_status(entry)
-        records = session_record.read_jsonl(path)
+        before = transcript_snapshot(record, path)
+        records, mtime_ns, _size, truncated = before
         times = [stamp(row["timestamp"]) for row in records if row.get("timestamp")]
         if not times or max(times) > ended:
             raise ValueError("Source transcript is uncertain or resumed after termination")
-        activity = max(*times, datetime.fromtimestamp(before["mtime"], timezone.utc))
+        modified = datetime.fromtimestamp(mtime_ns / 1e9, timezone.utc)
+        if truncated and modified > ended:
+            raise ValueError("Truncated transcript has activity after termination")
+        activity = max(*times, modified)
         if now - activity < QUIET_PERIOD:
             raise ValueError("Source transcript activity is recent; preserve claims")
-        if session_record.session_status(entry) != before:
+        if transcript_snapshot(record, path) != before:
             raise ValueError("Source transcript changed during termination checks")
         last = max(last, max(times)) if last else max(times)
     data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
     data.update(checked_at=now.isoformat(), last_activity_at=last.isoformat(), terminal_state=terminal_state(record))
     validate(data, session)
     for artifact in data["retained_artifacts"]:
+        if artifact.get("worktree") is None:
+            continue  # Branch-only artifacts are checked against release inventory.
         path = Path(artifact["worktree"]).resolve()
         # Require the worktree root, not an arbitrary directory within a clone.
         root = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"],
                               capture_output=True, text=True, timeout=10, check=True).stdout.strip()
-        branch = subprocess.run(["git", "-C", str(path), "symbolic-ref", "--short", "HEAD"],
-                                capture_output=True, text=True, timeout=10, check=True).stdout.strip()
-        if Path(root).resolve() != path or branch != artifact["branch"]:
+        branch = subprocess.run(["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=10, check=False)
+        if branch.returncode == 1:
+            # A rebase/bisect may leave HEAD detached. Preserve it and prove the
+            # recorded branch still exists; never alter the interrupted operation.
+            subprocess.run(["git", "-C", str(path), "show-ref", "--verify", "--quiet", "refs/heads/" + artifact["branch"]],
+                           capture_output=True, text=True, timeout=10, check=True)
+        elif branch.returncode != 0 or branch.stdout.strip() != artifact["branch"]:
+            raise ValueError("Retained worktree does not match its recorded branch")
+        if Path(root).resolve() != path:
             raise ValueError("Retained worktree does not match its recorded root and branch")
     return data
 
 
 def body(data):
     validate(data, data["session_id"])
-    artifacts = "\n".join(f"- {a['worktree']} (branch {a['branch']})" for a in data["retained_artifacts"])
+    artifacts = "\n".join(f"- {a.get('worktree') or 'no local worktree'} (branch {a['branch']})" for a in data["retained_artifacts"]) or "None; no source branch or worktree was created."
     return (f"Terminated session {data['session_id']}\nEnded at: {data['ended_at']}\n"
             f"Recorded PID: {data['pid']}\nTermination cause: {data['cause']}\n"
             f"Fresh process, transcript and terminal checks: {data['checked_at']}; {data['terminal_state']}.\n"

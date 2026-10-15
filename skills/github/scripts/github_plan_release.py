@@ -160,8 +160,6 @@ def prepare_release(
         raise ValueError("Session-ended evidence must be authored by the configured automation identity")
     text = evidence.get("body") or ""
     terminated = termination.evidence(text, record["session"]) if not legacy else None
-    if terminated is not None and record["branch"] not in {a["branch"] for a in terminated["retained_artifacts"]}:
-        raise ValueError("Termination evidence must retain the claimed source branch")
     if terminated is None and (text.splitlines()[:1] != [evidence_header(source["id"], record)] or "Safe to exit: yes" not in text.splitlines()):
         raise ValueError("Evidence must be a closed-session attestation naming the exact native session and Safe to exit: yes")
     if legacy and (f"Worker: {record['worker']}" not in text.splitlines()
@@ -184,7 +182,13 @@ def prepare_release(
         raise ValueError("Source session is still visible in the active native session inventory")
     retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] in {record["branch"], *(retained_branches or set())}}
     if terminated is not None:
-        artifact_paths = {pathlib.Path(a["worktree"]).resolve() for a in terminated["retained_artifacts"]}
+        observed_branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | (retained_branches or set())
+        observed_branches.update(t["branch"] for t in inventory["worktrees"])
+        if record["branch"] in observed_branches and record["branch"] not in {a["branch"] for a in terminated["retained_artifacts"]}:
+            raise ValueError("Termination evidence must retain the claimed source branch")
+        if any(a["branch"] not in observed_branches for a in terminated["retained_artifacts"] if a.get("worktree") is None):
+            raise ValueError("Branch-only retained artifact is absent from repository inventory")
+        artifact_paths = {pathlib.Path(a["worktree"]).resolve() for a in terminated["retained_artifacts"] if a.get("worktree") is not None}
         if not retained_paths.issubset(artifact_paths):
             raise ValueError("Termination evidence must name every preserved source/retained worktree")
         retained_paths.update(artifact_paths)
@@ -214,7 +218,7 @@ def prepare_release(
             f"[Session-ended evidence]({evidence_url})\n"
             + ("Retained PR handoff: " + ", ".join(retained_prs) + "\n" if retained_prs else "")
             + ("Retained artifacts (resume; preserve uncommitted work):\n"
-               + "\n".join(f"- {a['worktree']} (branch {a['branch']})" for a in terminated["retained_artifacts"])
+               + ("\n".join(f"- {a.get('worktree') or 'no local worktree'} (branch {a['branch']})" for a in terminated["retained_artifacts"]) or "None; no source branch or worktree was created.")
                + "\n" if terminated is not None else "")
             + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
 

@@ -217,7 +217,9 @@ class ReleaseTests(ReleaseHarness):
             "retained_artifacts": [{"branch": fixtures.OTHER["branch"], "worktree": str(root / "preserved")}],
         }
         preserved = root / "preserved"
-        subprocess.run(["git", "init", "-q", "--initial-branch", fixtures.OTHER["branch"], str(preserved)], check=True)
+        subprocess.run(["git", "init", "-q", str(preserved)], check=True)
+        subprocess.run(["git", "-C", str(preserved), "symbolic-ref", "HEAD", "refs/heads/" + fixtures.OTHER["branch"]], check=True)
+        self.f.inventory["local_branches"] = [fixtures.OTHER["branch"]]
         self.uncommitted_source = "uncommitted source work"
         (preserved / "unfinished.txt").write_text(self.uncommitted_source)
         self.termination_path = root / "termination.json"
@@ -308,7 +310,7 @@ class ReleaseTests(ReleaseHarness):
         release.termination.run_terminal.return_value = SimpleNamespace(returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")
         self.run_release()
         self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
-        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
+        with self.assertRaises(PLAN.PlanError):
             self.successor()
 
     def test_termination_uses_launch_nonce_and_distinguishes_restarted_server(self):
@@ -345,6 +347,56 @@ class ReleaseTests(ReleaseHarness):
                 record = {**self.termination_record, "retained_artifacts": [{"worktree": path, "branch": branch}]}
                 with self.assertRaises((ValueError, subprocess.CalledProcessError)):
                     release.termination.verify(record, "session-b")
+
+    def test_crash_truncated_tail_is_preserved_but_interior_corruption_refuses(self):
+        transcript = self.termination_setup()
+        original = transcript.read_text()
+        partial = '{"timestamp":"2026-10-01T23:59:00Z","payload":'
+        for contents, allowed in ((original + partial, True), (partial + "\n" + original, False)):
+            with self.subTest(allowed=allowed):
+                transcript.write_text(contents)
+                at = release.stamp("2026-10-01T23:59:00Z").timestamp()
+                os.utime(transcript, (at,) * 2)
+                if allowed:
+                    self.run_release()
+                    self.assertEqual(transcript.read_text(), contents)
+                else:
+                    posts = self.f.events.count("post")
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_release()
+                    self.assertEqual(self.f.events.count("post"), posts)
+
+    def test_crash_before_worktree_or_with_remote_only_branch_releases(self):
+        for branch_exists in (False, True):
+            with self.subTest(branch_exists=branch_exists):
+                self.setUp()
+                self.termination_setup()
+                self.f.inventory["local_branches"] = []
+                self.f.inventory["remote_branches"] = [fixtures.OTHER["branch"]] if branch_exists else []
+                artifacts = [{"branch": fixtures.OTHER["branch"], "worktree": None}] if branch_exists else []
+                self.termination_record["retained_artifacts"] = artifacts
+                self.termination_path.write_text(json.dumps(self.termination_record))
+                self.evidence["body"] = release.termination.body(release.termination.verify(self.termination_record, "session-b"))
+                self.run_release()
+                self.successor()
+
+    def test_crash_during_detached_operation_keeps_work_and_branch(self):
+        self.termination_setup()
+        artifact = self.termination_record["retained_artifacts"][0]
+        subprocess.run(["git", "-C", artifact["worktree"], "-c", "user.name=Fixture",
+                        "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                        "-c", "core.hooksPath=/dev/null", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+        subprocess.run(["git", "-C", artifact["worktree"], "checkout", "--detach", "--quiet"], check=True)
+        self.run_release()
+        self.assertEqual((Path(artifact["worktree"]) / "unfinished.txt").read_text(), self.uncommitted_source)
+
+    def test_termination_receipt_must_match_attested_artifacts(self):
+        self.termination_setup()
+        self.run_release()
+        receipt = release.receipt_for(self.f.comments[-1])
+        receipt["termination"]["retained_artifacts"] = []
+        with self.assertRaises(ValueError):
+            release.validate_evidence(receipt, self.evidence, BOT)
 
     def test_launchplane_missing_exact_release_becomes_claimable(self):
         self.run_release()

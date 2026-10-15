@@ -903,6 +903,23 @@ The record has this shape (values are illustrative):
 Supply all known source-account transcript directories on that host, including
 resumed and archived transcripts. Unavailable original identity, host,
 transcripts, or terminal evidence is a refusal, not proof of termination.
+An unterminated partial final JSONL line is retained byte for byte and may be
+ignored only after matching the complete native identity records and proving
+its file activity predates termination. Interior corruption, complete malformed
+records or missing identity still refuse. A detached worktree is preserved if
+its recorded branch still exists. For a current-repository branch with no local
+worktree, record `{"branch": "work/task", "worktree": null}`; release verifies
+the branch in its fresh repository inventory. Use an empty `retained_artifacts`
+array if the worker crashed before creating any branch or worktree; release
+checks that no claimed-source artifacts were omitted.
+
+The private input's transcript paths/roots stay local. Generated attestations
+and releases contain the requested source identity and retained paths; inspect
+that publication scope before posting them. A tmux launch nonce is identity,
+not a credential. A busy reused TTY still refuses when current process identity
+cannot establish that the source is ended. Resolve that identity rather than
+assuming terminal reuse proves inactivity.
+
 Verify native task status and any remote peers yourself too: an idle desktop
 thread or an ID-less picker may not yet write a new transcript. The existing
 `--confirm-session-ended` attestation includes those unavailable peers.
@@ -925,7 +942,7 @@ native transcript identity/activity, and the original dead pane or missing
 server before release and again on readback. A replacement server qualifies
 only when its start time is after termination and the original launch nonce
 is absent; reused pane numbers supply no identity evidence. Retained paths
-must still be worktree roots on their recorded branches. It refuses a running process,
+must still be worktree roots with their recorded branches preserved. It refuses a running process,
 transcript activity within five minutes, activity after the actual termination,
 a live/uncertain terminal, or a changed record. PID reuse refuses too. It never
 stops a process or removes a terminal. The release records the retained
@@ -957,7 +974,8 @@ Add the actual admission and existing wait-resolution evidence when required. Re
 [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
 for retained PR and conflict-refresh rules; a release grants no new product,
 runtime, or merge authority. Recheck all preserved artifacts before adopting
-them, and preserve uncommitted work.
+them, and preserve uncommitted work. Listing an extra artifact preserves it;
+it does not transfer another claim or authorize editing a sibling branch.
 
 ### Release a verified finished session
 
