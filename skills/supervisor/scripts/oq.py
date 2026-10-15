@@ -22,14 +22,14 @@ DECISION_PREFIXES = (
 )
 
 
-def questions(comments, owner, decision_authors):
+def questions(comments, owner, decision_authors, related_comments=()):
     results = []
     for i, question in enumerate(comments):
         body = question.get("body", "").strip()
         if not body.lstrip("*").startswith(QUESTION_PREFIXES):
             continue
         answers = []
-        for answer in comments[i + 1 :]:
+        for answer in [*comments[i + 1 :], *related_comments]:
             author = answer.get("author")
             text = answer.get("body", "").lstrip().lstrip("*")
             authorized = author == owner or (
@@ -47,6 +47,7 @@ def questions(comments, owner, decision_authors):
                 "question": body,
                 "status": "answered" if answers else "needs_review",
                 "answers": answers,
+                "created_at": question.get("created_at"),
             }
         )
     return results
@@ -78,10 +79,26 @@ def fetch(item):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("items", nargs="+")
+    parser.add_argument("items", nargs="*")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--decision-author", action="append", default=[])
+    parser.add_argument("--queue", help="Existing Supervisor question discussion, OWNER/REPO#NUMBER")
+    parser.add_argument("--register", action="store_true", help="Register source question links in that queue, with readback")
+    parser.add_argument("--ack", metavar="QUESTION_URL", help="Acknowledge actual presentation to the Director")
+    parser.add_argument("--delivery-url", help="Durable receipt for the presentation, not just queue registration")
     args = parser.parse_args()
+    if args.queue:
+        from question_delivery import run_queue
+        if (args.register and args.ack) or bool(args.ack) != bool(args.delivery_url):
+            parser.error("use either --register or --ack QUESTION_URL --delivery-url RECEIPT_URL")
+        try:
+            print(json.dumps(run_queue(args, fetch)))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            print(json.dumps({"queue": args.queue, "complete": False, "error": str(error)}))
+            return 1
+    if not args.items or args.register or args.ack or args.delivery_url:
+        parser.error("supply source items, or --queue for queue operations")
     failed = False
     for item in args.items:
         try:

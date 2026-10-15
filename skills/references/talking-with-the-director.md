@@ -74,6 +74,26 @@ changes on yes.
   Director to ignore questions. "Later" keeps an item queued; nothing is
   dropped silently. A handoff links the remaining queued questions and names
   who brings the next one; it does not ask them all at once.
+- **Posting is not delivery.** After posting an Owner/Director question, register
+  its original link in the existing Supervisor question discussion with
+  `uv run <supervisor-skill-dir>/scripts/oq.py OWNER/REPO#ITEM --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/REPO#QUEUE --register`.
+  Use the queue discussion named by the brief or current Supervisor handoff;
+  when none is recorded, retain the source link in the handoff and explicitly
+  name who must receive it. Do not silently claim it reached the Director.
+  The helper reads back one registration per source link. Keep the original
+  shared-counter Q ID on repeat presentations; registering does not allocate
+  another number. The original comment owns the question text.
+- At every Supervisor check and takeover, read `oq.py --queue OWNER/REPO#QUEUE
+  --owner OWNER --decision-author TRUSTED_BOT`, including source items from
+  worker handoffs to catch missed registrations. Bring the oldest applicable
+  question under the queue rules above. Only after actually presenting it,
+  acknowledge delivery with `--ack ORIGINAL_QUESTION_URL --delivery-url RECEIPT_URL`;
+  the receipt is the Director-facing Discord message or a durable GitHub record
+  of the presentation. Queue registration itself is not that receipt. A failed
+  or unknown send remains unacknowledged and resurfaces at the next check.
+  Acknowledgement is delivery, never approval: unanswered questions stay queued,
+  including "later". Resolve them only from the linked Director reply or trusted
+  recorded decision. Queue records, not hand-applied labels, own delivery state.
 - Before asking the Director to approve an admin path (deploy, promotion,
   recovery, onboarding, or a permission-gated workflow), walk the whole path
   read-only: each step, the identity that runs it, the permission, environment,

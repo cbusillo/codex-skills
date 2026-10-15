@@ -2,7 +2,9 @@
 
 Read this before rebuilding a ledger, watcher or digest, or sending terminal
 input. Run every Python helper with `uv run` from any directory using its catalog
-path. The status, question and candidate helpers are read-only. iTerm controls
+path. The status, question and candidate helpers are read-only by default;
+the question helper's explicit `--register` and `--ack` write delivery records.
+iTerm controls
 require macOS, iTerm2's Python API enabled and the session's existing authority;
 API connection failure is a stop, not a reason to change personal settings.
 
@@ -172,6 +174,49 @@ for this run. A later reply
 must link a question's URL or comment id to mark it answered; unlinked plain
 answers remain `needs_review` for the Supervisor to reconcile from the exact
 decision record. A script's match does not itself establish what was decided.
+
+### Acknowledged question delivery
+
+Use the existing Supervisor discussion as the durable question queue. Workers
+register question references there; the Supervisor acknowledges actual
+presentation under the shared [question queue rules](../../references/talking-with-the-director.md#decisions-holds-and-work-state).
+These commands use the configured automation identity and read back their writes:
+
+```sh
+uv run skills/supervisor/scripts/oq.py OWNER/PRODUCT#ITEM --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --register
+uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE
+uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
+```
+
+Pass each trusted decision/registration author's login with `--decision-author`.
+The read-only queue view recovers registered source discussions on takeover and
+also accepts source items from the worker ledger/handoffs. It reads full source
+and queue discussions through the paged, quota-aware planning helper, including
+closed issues; no search window expires a question. Scope is explicit: this
+view cannot discover a worker that neither registered nor handed off its source.
+The independent daily stranded-work sweep owns that fleet-wide backstop.
+
+Each source comment URL is the registration identity; `question_id` preserves
+its existing heading's Q ID from the shared counter, if present. Registrations
+store references, not a copy of the question. `director-question:delivery`
+first-line JSON records contain `version: 1`, `event: registered|delivered` and
+`question_url`; `delivered` also carries `delivery_url`. Only the Director and
+explicitly configured trusted authors' records count. Quoted/fenced examples
+do not count. No label is delivery state.
+
+The view reports `queue_length`, position, original age, registration link,
+delivery receipt and `resurface`. An unacknowledged question is emitted every
+check, even after successful registration. A delivery receipt leaves it queued
+until an exact linked answer/decision; "later" never erases it. Source reads
+also reconcile decisions on another supplied discussion or the queue. A failed
+read/write/readback exits nonzero with `complete: false`, never an empty all-clear.
+On an uncertain write, read the queue before retrying; stable bodies, helper
+deduplication and a shared-Code-home lock reconcile a saved registration without
+allocating a new Q ID. This source change configures no destination, daemon or
+Discord transport. Production deploy/stall alerts remain Launchplane's existing
+incident/outbox path.
+
+### Throughput and digest
 For throughput counts and the morning digest, use `fleet_counts.py --owner OWNER`
 once per snapshot, reusing its per-repository rows and fleet totals. Do not run
 per-repository REST/search count loops. The helper uses one GraphQL request per
