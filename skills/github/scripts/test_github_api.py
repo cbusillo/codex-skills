@@ -2295,6 +2295,22 @@ def test_retry_early_cancellation_counts_only_time_actually_waited() -> None:
         assert result.as_dict()["elapsed_wait"] == clock.now() - started
 
 
+def test_retry_keyboard_interrupt_counts_partial_sleep() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        started = clock.now()
+        def sleep(seconds):
+            clock.sleep(seconds / 4)
+            raise KeyboardInterrupt()
+        runtime = _api.RetryRuntime(now=clock.now, sleep=sleep, jitter=lambda _: 0,
+                                   progress=lambda _: None)
+        waited, elapsed, reason = _api._wait_until(started + 60, deadline=started + 120,
+            operation="github.api.rate_limit", cause="rest_primary_rate_limited", attempt=1,
+            policy=retry_policy(Path(temp_dir), wait_slice_seconds=60), runtime=runtime)
+        assert not waited and reason == "cancelled"
+        assert elapsed == clock.now() - started
+
+
 def test_retry_progress_is_periodic_and_stderr_only() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         clock = FakeRetryClock()
@@ -3134,6 +3150,7 @@ def main() -> None:
         test_retry_inherited_deadline_environment_wins,
         test_retry_cancellation_interrupts_wait,
         test_retry_early_cancellation_counts_only_time_actually_waited,
+        test_retry_keyboard_interrupt_counts_partial_sleep,
         test_retry_progress_is_periodic_and_stderr_only,
         test_retry_never_repeats_authentication_failure,
         test_authorized_actor_change_starts_distinct_retry_context,

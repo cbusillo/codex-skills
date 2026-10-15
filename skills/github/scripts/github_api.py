@@ -2051,6 +2051,7 @@ def _wait_until(
         try:
             runtime.sleep(duration)
         except KeyboardInterrupt:
+            elapsed += max(0.0, min(duration, runtime.now() - now))
             return False, elapsed, "cancelled"
         if runtime.cancelled():
             # An interruptible sleep can return before the requested slice.

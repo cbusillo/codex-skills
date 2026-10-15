@@ -829,6 +829,7 @@ def ensure_graphql_budget(
         operation=CURRENT_OPERATION,
         is_write=False,
         bucket="graphql",
+        retry_runtime=NEXT_READS.retry_runtime if NEXT_READS is not None else None,
     )
     attempts_after_nested = CURRENT_RETRY_SUMMARY.attempts if CURRENT_RETRY_SUMMARY is not None else 0
     nested_attempts = max(0, attempts_after_nested - attempts_before)

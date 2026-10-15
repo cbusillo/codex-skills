@@ -57,7 +57,16 @@ def cancellation_fixture(mode: str) -> None:
         retryable=False, fallback_eligible=False, disposition="stop"))
 
     def read():
+        if mode == "preflight":
+            return module.ensure_graphql_budget(recoverable=True)
         return module.api_json("GET", "/repos/fixture/source/issues/1")
+
+    original_json = module.gh_json
+    def gh_json(args, **kwargs):
+        if mode == "preflight":
+            attempted.append("quota preflight")
+            return actor, {"resources": {"graphql": {"remaining": 0, "reset": int(time.time()) + 60}}}
+        return original_json(args, **kwargs)
 
     def fail():
         assert entered.wait(3), "reader did not reach retry wait"
@@ -92,7 +101,7 @@ def cancellation_fixture(mode: str) -> None:
             "GITHUB_RETRY_BASE_BACKOFF_SECONDS": "60", "GITHUB_RETRY_JITTER_SECONDS": "0",
             "GITHUB_RETRY_WAIT_SLICE_SECONDS": "60", "GITHUB_RETRY_DEADLINE_AT": str(time.time() + 180),
             "GH_PLAN_SKIP_BOT": "0", "GH_PLAN_ALLOW_ACTIVE_FIRST": "0"}), patch.multiple(
-                module, EXPECTED_ACTOR=actor, direction_next=direction_next), patch.object(
+                module, EXPECTED_ACTOR=actor, direction_next=direction_next, gh_json=gh_json), patch.object(
                 api, "request_identity", return_value=(actor, actor, [])), patch.object(
                 api, "call_gh", transport), patch.object(api, "RetryRuntime", runtime), patch.object(
                 module.github_identity, "active_auth_fallback_allowed", return_value=False), patch.object(
@@ -117,13 +126,14 @@ def cancellation_fixture(mode: str) -> None:
 
 
 def test_cli_cancellation_and_fatal_reads_interrupt_backoff_and_join_workers() -> None:
-    for mode in ("interrupt", "fatal", "drain"):
+    for mode in ("interrupt", "preflight", "fatal", "drain"):
         proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--cancellation-fixture", mode],
                               capture_output=True, text=True, timeout=20)
-        assert proc.returncode == (130 if mode == "interrupt" else 1), (proc.stdout, proc.stderr)
+        interrupted = mode in {"interrupt", "preflight"}
+        assert proc.returncode == (130 if interrupted else 1), (proc.stdout, proc.stderr)
         payload = json.loads(proc.stdout)
         assert payload["ok"] is False, payload
-        assert payload["error_code"] == ("cancelled" if mode == "interrupt" else "invalid_credentials"), payload
+        assert payload["error_code"] == ("cancelled" if interrupted else "invalid_credentials"), payload
         assert payload["fallback_eligible"] is False, payload
         metrics = json.loads(proc.stderr.splitlines()[-1])
         assert metrics["latency"] < 5, metrics
