@@ -20,9 +20,15 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
     if resume_capacity and state_path is None:
         raise ValueError("capacity resume requires a persistent state path")
     notices = []
-    for entry in load_ledger(ledger):
-        if entry["harness"] != "codex":
-            continue
+    skipped = []
+    entries = load_ledger(ledger, harness="codex", skipped=skipped)
+    for diagnostic in skipped:
+        key = ("skipped", diagnostic["ledger_index"])
+        value = json.dumps(diagnostic, sort_keys=True)
+        if seen.get(key) != value:
+            notices.append(diagnostic)
+            seen[key] = value
+    for entry in entries:
         try:
             status = session_status(entry)
             retry = None

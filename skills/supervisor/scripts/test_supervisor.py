@@ -478,6 +478,37 @@ class LedgerTests(unittest.TestCase):
             with self.assertRaises(TypeError):
                 consumer(self.ledger)
 
+    def test_watch_mixed_ledger_reports_skips_and_keeps_codex_notices(self):
+        others = [{"session_id": "gemini", "harness": "agy"},
+                  {"session_id": "claude-tmux", "harness": "claude", "backend": "tmux"}]
+        for other in others:
+            with self.subTest(other=other):
+                self.ledger.write_text(json.dumps([other, self.entry]))
+                seen = {}
+                results = codex_idle_watch.poll(self.ledger, seen, 90, 1200)
+                skipped = next(r for r in results if r["session_id"] == other["session_id"])
+                self.assertTrue(skipped["skipped"])
+                self.assertIn("reason", skipped)
+                self.assertIsNone(skipped["clean"])
+                notice = next(r for r in results if r["session_id"] == self.entry["session_id"])
+                self.assertEqual(notice["turn_end"], "task_complete")
+                self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
+        self.ledger.write_text(json.dumps([*others, self.entry]))
+        results = codex_idle_watch.poll(self.ledger, {}, 90, 1200)
+        self.assertEqual(len(results), len(others) + 1)
+        # Shared readers that decide completion/closure retain strict validation.
+        with self.assertRaises(ValueError):
+            session_record.load_ledger(self.ledger)
+
+    def test_watch_still_validates_selected_codex_entries(self):
+        for bad in ({"harness": "codex", "session_id": "missing-transcript"},
+                    {**self.entry, "session_id": ""}, self.entry):
+            with self.subTest(bad=bad):
+                self.ledger.write_text(json.dumps([
+                    {"harness": "agy", "session_id": "gemini"}, bad, self.entry]))
+                with self.assertRaises(ValueError):
+                    codex_idle_watch.poll(self.ledger, {}, 90, 1200)
+
     def test_native_agent_message_without_message_field_stays_readable(self):
         self.write([event("reasoning", content=None), event("token_count", info=None),
                     event("token_count", info={"last_token_usage": None, "total_token_usage": None}),

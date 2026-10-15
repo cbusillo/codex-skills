@@ -113,6 +113,13 @@ monitor/scheduler. A new watcher may repeat a notice. `clean: null` means a turn
 ended, not that work succeeded; an abort is also a notice. Use Claude Code's
 `notify_when_idle` when available, not another watcher.
 
+The Codex idle watcher filters a mixed-harness ledger before transcript
+validation. It emits a `skipped: true` diagnostic with the ledger index,
+session id and reason for each non-Codex entry, once per unchanged entry in
+that watch run. Codex entries still require valid, unique native ids and
+transcript paths; malformed ledger structure still refuses. Shared completion
+and closure readers retain their strict ledger validation.
+
 ### Codex provider capacity stops
 
 `status.py` and idle notices report `state: provider_capacity` only for the
@@ -604,6 +611,83 @@ configuration, holds, watch state and logs for takeover or reconciliation.
 
 ## Launching and nudging
 
+### Opt-in Codex GUI work
+
+For an authorized native-app task, put a single standalone declaration in its
+brief's first nonblank line, using the exact app bundle ID, for example
+`GUI task: com.apple.TestFlight`. Examples quoted later in a source-work brief
+do not opt that task into GUI work.
+Launch that brief alone with `--account-provider openai` and a local `codex -C`
+command, without `--remote`. The launcher rejects terminal app targets and adds
+the GUI safety instructions to the worker's prompt. Other briefs keep the
+existing launch path and create no marketplace links or GUI state.
+
+Only one Supervisor GUI worker may run at a time, across account homes and both
+terminal backends. The launcher refuses a locked screen or unavailable lock
+evidence, reserves the shared GUI slot before creating a terminal, and rechecks
+the lock in the worker wrapper before starting Codex. The wrapper holds that
+slot until Codex exits. This coordinates Supervisor launches, not manually
+started GUI workers: check for those before briefing work too.
+
+The worker may use only the named task app. Never target Chris's terminals or
+other windows, synthesize global keys, or use a focus fallback
+([#1753](https://github.com/cbusillo/codex-skills/issues/1753)). Check screen lock
+before every GUI action and stop immediately if locked or unknown. No agent
+unlocks the screen. Missing app approval, Accessibility or Screen Recording
+permission is Chris's action; neither the launcher nor the worker grants it.
+
+During a real GUI launch only, the launcher validates the default home's current
+`~/.codex/.tmp/bundled-marketplaces/openai-bundled` directory and creates the
+selected `CODEX_HOME`'s corresponding path as a symlink to it. A matching link
+is reused; an occupied path, redirected parent or different link target refuses
+without replacement. The link stays after the task ends and is validated again
+on later GUI launches; non-GUI launches neither create nor change it. It also passes the account-relative
+`-c marketplaces.openai-bundled.source="<account-home>/.tmp/bundled-marketplaces/openai-bundled"`
+override to that Codex process. The link alone does not load the marketplace.
+No shared `config.toml`, authentication, permissions or catalog installation is
+changed. Tests use fake homes, console evidence and child processes only.
+
+The paired private GUI launch receipt includes `gui`:
+named app, unlocked preflight, marketplace source/link action, process override,
+reservation token and shared state path. It uses the count receipt's filename
+in `<storage root>/Supervisor GUI Receipts/`; Context Panel's existing
+`Launch Receipts/` record stays count-only and keeps its existing size contract.
+The launcher prunes its own day-old GUI receipts separately. Terminal output
+gives the app, link action and reservation token without account paths. Keep
+receipts private. The link
+follows replacement at the default home's unversioned path; missing or relocated
+targets refuse. CU-T2 established discovery and one Node/Sky state screenshot,
+not arbitrary-directory input or remote app-server qualification. If runtime
+startup fails, preserve the exact terminal outcome and report it; do not change
+working directory, account, executable registration or grants to get around it.
+
+A partial/uncertain terminal submission or killed wrapper retains the GUI
+reservation and blocks another launch. Inspect the receipt, exact terminal,
+native thread and child processes first; do not replay. After proving the worker
+and any submitted descendants have ended, release that exact token:
+
+```sh
+uv run skills/supervisor/scripts/gui_launch.py release --token <receipt-token> --verified-worker-ended
+```
+
+The release refuses while a worker wrapper holds the lock or when the token
+differs. This is recovery after verified shutdown, never a way to make room for
+a second GUI worker. Keep a pending reservation's token from the launch failure
+output too. The state lives at `~/.code/skill-data/supervisor-gui.json`, across
+account homes. Failures known to occur before command submission release the
+slot automatically, including receipt failures; a send whose outcome is unknown
+retains it. The wrapper uses the launcher's resolved Python interpreter, without
+creating a second environment for the worker. The full command and brief are
+staged in a mode-0600 file beside the reservation, so nested terminal quoting
+does not expand the brief into tmux's message limit. Normal exit or verified
+release removes that file. A killed wrapper retains it for recovery. If a
+launcher is interrupted before printing a token, inspect the shared state file
+and exact terminal inventory before the same verified-shutdown release. At
+wrapper startup, a short bounded lock wait tolerates a concurrent reservation
+check; a pending or live worker still blocks a second GUI launch.
+
+### Terminal launches
+
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py window
 uv run skills/supervisor/scripts/iterm_tab.py new --window-id <dedicated-window-id> --command-file <private-launch-file> --brief-file <private-brief-file> --account-provider openai
@@ -782,7 +866,8 @@ permission and input checks first. Read the exact pane, clear only verified
 input if needed, then read back that the entire agent input is empty. Send
 `/quit` for Codex or `/exit` for Claude with `send --verified-target`. Wait at
 most 60 seconds, reading `read` for `dead: true` and checking that the matched
-agent PID and all processes on its TTY have exited. Preserve a running or
+agent PID and processes belonging to that pane have exited. If its TTY was
+reused, use the close preview's ownership proof below. Preserve a running or
 uncertain pane. Record/release native session claims under the existing
 finished-session procedure before removing the terminal.
 
@@ -800,6 +885,12 @@ pane, conditional on its launch nonce and dead state still matching inside
 the server. A dead pane has no input consumer; a live shell cannot qualify
 from its screen appearance. Read back disappearance once. An uncertain close
 is retained for reconciliation rather than retried.
+
+If the dead pane's old TTY has been reused, close proceeds only when tmux
+identifies a different live pane on that TTY and process ancestry proves every
+current job there belongs to that new pane's PID tree. Unattributed jobs,
+missing ancestry, and either recorded PID still present preserve the dead
+pane. The live pane is never a close target, and no process is killed.
 
 For the locked-screen acceptance proof, the Supervisor arranges a short test
 with the Director. Prepare one harmless real Codex or Claude launch with an

@@ -314,6 +314,14 @@ including non-dim text, establishes neither its author nor approval.
    items as native sub-issues. Move already parented items one at a time with
    `unlink` and `link`; after readback of a failed move, restore any missing
    original link. Verify both parents with `deps` before creating the worktree.
+   Use the [catalog worktree helper and per-host setting](../github/references/worktrees.md).
+   For Claude Desktop, start in the trusted repository with automatic worktree
+   creation disabled; the worker claims before creating its task worktree.
+   After creation, the worker switches its implementation working directory to
+   the printed task path; edits and scratch must not land in a catalog runtime
+   checkout.
+   Desktop folder trust remains a manual Director action as that reference
+   explains; IDE trusted roots do not grant it.
    Keep sessions separate for different repositories, different risk or
    approval levels (such as production data, credentials, recovery or Client
    acceptance), and truly independent work where parallel wall-clock time
