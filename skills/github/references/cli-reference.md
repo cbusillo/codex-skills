@@ -1210,10 +1210,11 @@ competitor's record.
   landing, every page of GitHub's closing issue references and cross-reference
   timeline, explicit source references, and each source's direct native parent
   and dependents (up to 100 issues; an incomplete read refuses reconciliation).
-  It does not traverse a parent's other dependents. The default is
+  It does not expand timeline-only mentions or traverse a parent's other dependents. The default is
   read-only. Apply repairs already-closed automation-owned planning issues
   through the existing close relationship/Project/label/comment path, updates
-  Current Status, and verifies state, labels and status with fresh readback.
+  Current Status's state while preserving existing evidence/custody text,
+  and verifies state, labels and status with fresh readback.
   Reference-only completed records retain their original Current Status and
   evidence/custody pointers; they receive no replacement status or close comment.
   Completion comes from the issue's confirmed completed closure, never `Refs`,
@@ -1230,11 +1231,16 @@ competitor's record.
   all current native blockers and the authoritative structured wait. It preserves
   their body, finish line, wait records and relationship edges, and reports that
   any prose naming an old blocker needs review against the new observation.
+  A waiting label beside a clear record is an ambiguous legacy hold; reconciliation
+  preserves it for review. Record real waits through `wait`; after verifying a
+  resolution, an authorized execution uses `claim --wait-resolved` with its evidence.
+  Deliberately unstatused plans and closed related issues stay unchanged.
   Unverified target planning configuration refuses writes. Stale/done labels
-  on open records require review. Cross-repository source closures, other owners'
+  on open records require scope review before that same explicit claim recovery.
+  Cross-repository source closures, another account's
   records and reporter acceptance remain owning-agent review work. Each outcome
   identifies its source/related role and whether it was a closing reference;
-  Informational reference-only open sources set `review_required: true` without
+  Informational reference-only open sources and timeline-only mentions set `review_required: true` without
   failing an otherwise successful receipt; closing-reference or related metadata
   failures still return nonzero and retain successful partial receipts.
   Unavailable reads and partial reconciliation remain failures.

@@ -18,10 +18,10 @@
   "lp3525": {
     "evidence": "https://github.com/cbusillo/launchplane/issues/3525#issuecomment-6193154507",
     "repo": "cbusillo/launchplane", "number": 3525, "pr": 3518,
-    "state": "closed", "reference": "Closes #3493.", "cross_reference": true,
+    "state": "closed", "reference": "", "cross_reference": true,
     "status": "State: Complete; conflict refresh and separate refusal report delivered.\nNext action: #3493 retains activation/monitor acceptance.",
     "finish_line": "Resolve #3518 conflict and record the separate claim-helper refusal.",
-    "expected": "reconciled"
+    "expected": "review_reference_only"
   },
   "opw218": {
     "evidence": "https://github.com/cbusillo/odoo-tenant-opw/issues/218#issuecomment-6198616447",

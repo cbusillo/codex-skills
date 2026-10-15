@@ -271,6 +271,62 @@ class LandingTests(unittest.TestCase):
             self.assertEqual(self.issue["state"], "open")
         self.state.assert_not_called()
 
+    def test_clear_record_does_not_clear_legacy_waiting_label(self) -> None:
+        self.issue["state"] = "open"
+        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "waiting")]
+        self.issue["body"] += "\nWaiting for: Director's hands-on test\n"
+        original = copy.deepcopy(self.issue)
+        entry = {}
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+        self.assertEqual(entry["status"], "review_wait_record")
+        self.assertIn("next_action", entry)
+        self.assertEqual(self.issue, original)
+        self.labels.assert_not_called()
+        self.state.assert_not_called()
+
+    def test_closed_and_deliberately_unstatused_related_plans_stay_unchanged(self) -> None:
+        original = copy.deepcopy(self.issue)
+        self.issue["body"] += "\n" + github_plan_wait.PREFIX + "malformed -->"
+        closed_body = self.issue["body"]
+        entry = {}
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+        self.assertEqual(entry["status"], "unchanged")
+        self.assertEqual(self.issue["body"], closed_body)
+        self.issue.update(original)
+        self.issue["state"] = "open"
+        self.issue["labels"] = [{"name": self.config["labels"]["plan"]}]
+        original = copy.deepcopy(self.issue)
+        entry = {}
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+        self.assertTrue(entry["informational"])
+        self.assertEqual(self.issue, original)
+        self.labels.assert_not_called()
+        self.state.assert_not_called()
+
+    def test_keyword_closure_retains_custody_and_other_status_fields(self) -> None:
+        custody = "Evidence: https://github.com/fixture/catalog/issues/7#issuecomment-123\nRetained artifacts: /fixture/retained/task\nNext action: Supervisor adopts retained artifacts."
+        self.issue["body"] += custody
+        self.assertTrue(self.run_landing()["ok"])
+        self.assertIn(custody, self.issue["body"])
+        after = self.issue["body"]
+        self.assertTrue(self.run_landing()["ok"])
+        self.assertEqual(self.issue["body"], after)
+
+    def test_timeline_only_mentions_are_informational_and_do_not_expand_graph(self) -> None:
+        self.reader.graphql_json.return_value.body = graph()
+        PLAN.collect_paged_rest_items.side_effect = lambda path, **_: ("fixture-bot", [
+            {"event": "cross-referenced", "source": {"issue": copy.deepcopy(self.issue)}}]
+            if path.endswith("timeline") else [])
+        self.issue["state"] = "open"
+        original = copy.deepcopy(self.issue)
+        result = self.run_landing()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["review_required"])
+        self.assertEqual(result["issues"][0]["status"], "review_reference_only")
+        PLAN.read_issue_relationships.assert_not_called()
+        self.assertEqual(self.issue, original)
+        self.labels.assert_not_called()
+
     def test_related_readback_mismatch_and_concurrent_wait_fail(self) -> None:
         self.issue["state"] = "open"
         self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "blocked")]
@@ -305,6 +361,7 @@ class LandingTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in PLAN.read_issue_relationships.call_args_list], [REPO, REPO])
 
     def test_unverified_target_config_and_non_plan_labels_never_write(self) -> None:
+        self.issue["state"] = "open"
         PLAN.load_config.side_effect = lambda *_args, **_kwargs: self.config
         entry = {}
         landing.reconcile_related(PLAN, "fixture/product", 7, apply=True, entry=entry)

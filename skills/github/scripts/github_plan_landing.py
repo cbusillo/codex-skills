@@ -89,13 +89,14 @@ def captured(command: Any, args: argparse.Namespace) -> dict[str, Any]:
     return json.loads(output.getvalue())
 
 
-def source_references(plan: Any, repo: str, number: int, pull: dict[str, Any]) -> list[tuple[str, int]]:
+def source_references(plan: Any, repo: str, number: int, pull: dict[str, Any]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
     """References discover review work; they never attest completion."""
     text = (pull.get("title") or "") + "\n" + (pull.get("body") or "")
     refs = [(match[1] or match[2] or repo, int(match[3])) for match in re.finditer(
         r"(?:https://github[.]com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)([1-9]\d*)\b", text)]
     refs = [(target, issue) for target, issue in refs if plan.github_plan_claim.pr_issue_reference(
         pull, issue, repo=target, local_references=target.casefold() == repo.casefold())]
+    timeline = []
     _, events = plan.collect_paged_rest_items(
         f"/repos/{repo}/issues/{number}/timeline", query={}, bucket="rest_core", step_prefix="landing_timeline")
     for event in events:
@@ -106,8 +107,8 @@ def source_references(plan: Any, repo: str, number: int, pull: dict[str, Any]) -
             raise ValueError("Cross-reference source unavailable")
         if "pull_request" not in issue:
             ref = plan.compact_relationship_issue(issue, "cross_reference")
-            refs.append((ref["repo"], ref["number"]))
-    return list(dict.fromkeys(refs))
+            timeline.append((ref["repo"], ref["number"]))
+    return list(dict.fromkeys(refs)), list(dict.fromkeys(timeline))
 
 
 def neighborhood(plan: Any, landing_repo: str, sources: list[tuple[str, int]]) -> list[tuple[str, int]]:
@@ -161,6 +162,10 @@ def comment_attention(repo: str, number: int) -> bool:
 
 
 def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: dict[str, Any]) -> None:
+    _, initial = plan.get_issue(str(number), repo)
+    if initial.get("state") == "closed":
+        entry["status"] = "unchanged"
+        return
     discovery: dict[str, Any] = {}
     plan.load_config(repo, discovery=discovery)
     entry["planning_config"] = discovery
@@ -175,7 +180,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
         entry["status"] = "review_reporter_acceptance"
         return
     if issue.get("state") != "open":
-        entry["status"] = "review_related_finish_line"
+        entry["status"] = "unchanged" if issue.get("state") == "closed" else "review_related_finish_line"
         return
     if wait["state"] == "review":
         entry["status"] = "review_wait_record"
@@ -187,9 +192,16 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
                  finish_line="preserved; related landing does not prove completion",
                  current_status_review="Body preserved; review any prose naming the old blocker against these current machine observations")
     names = set(plan.normalize_labels(issue.get("labels")))
+    if wait["state"] == "clear" and config["labels"]["waiting"] in names:
+        entry.update(status="review_wait_record", next_action="Review the legacy waiting label and full discussion. Record any real hold with wait; after verified resolution use claim --wait-resolved with that evidence. Reconciliation never clears this ambiguous hold.")
+        return
+    if not names.intersection(config["labels"][key] for key in ("active", "blocked", "waiting", "stale", "done")):
+        entry.update(status="review_related_finish_line", informational=True,
+                     next_action="Preserve deliberate absence of a status; owning agent reviews whether this plan should be activated")
+        return
     # Stale/done on an open issue needs scope review, not automatic activation.
     if names.intersection(config["labels"][key] for key in ("stale", "done")):
-        entry["status"] = "review_related_finish_line"
+        entry.update(status="review_related_finish_line", next_action="Review remaining scope; an authorized new execution can use claim --wait-resolved with verified resolution evidence")
         return
     wanted = config["labels"][key]
     remove = [config["labels"][key] for key in ("active", "blocked", "waiting")
@@ -225,8 +237,10 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
 
 def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
     pull, references = closing_references(reader, repo, number)
-    sources = list(dict.fromkeys([*references, *source_references(plan, repo, number, pull)]))
-    related = neighborhood(plan, repo, sources)
+    explicit, timeline = source_references(plan, repo, number, pull)
+    roots = list(dict.fromkeys([*references, *explicit]))
+    sources = list(dict.fromkeys([*roots, *timeline]))
+    related = neighborhood(plan, repo, roots)
     outcomes: list[dict[str, Any]] = []
     for issue_repo, issue_number in dict.fromkeys([*sources, *related]):
         # A timeline reference may also be a native dependent. Reconcile its
@@ -236,6 +250,10 @@ def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: in
                                  "role": "source" if is_source else "related",
                                  "closing_reference": (issue_repo, issue_number) in references}
         outcomes.append(entry)
+        if (issue_repo, issue_number) not in roots and (issue_repo, issue_number) not in related:
+            entry.update(status="review_reference_only", informational=True,
+                         next_action="Timeline mention is context only; owning agent reviews its relevance. No finish line or neighborhood inferred.")
+            continue
         # Cross-repository references require their own owning session.
         if (is_source and issue_repo.casefold() != repo.casefold()
                 or issue_repo.split("/")[0].casefold() != repo.split("/")[0].casefold()):
@@ -299,10 +317,15 @@ def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any
     if not result.get("ok") or (result.get("project") or {}).get("warning"):
         entry["status"] = "reconciliation_incomplete"
         return
-    status = (f"State: Complete; issue already closed as completed. Related default-branch landing: {pull['url']} at {pull['mergeCommit']['oid']}.\n"
-              "Next action: None for this deliverable; parent issues retain their own finish lines.\n"
-              "Blocked by: None.\nWaiting for: None.\n"
-              f"Evidence and retained artifact custody: {pull['url']} and its source handoff.\n")
+    status = plan.issue_plan_sections(issue).get("Current Status", "").strip()
+    complete = "State: Complete; issue already closed as completed."
+    if re.search(r"(?m)^State:", status):
+        status = re.sub(r"(?m)^State:.*$", complete, status, count=1)
+    else:
+        status = complete + "\n" + status
+    receipt = f"Landing reconciliation: {pull['url']} at {pull['mergeCommit']['oid']}. Original evidence and retained artifact custody above are preserved."
+    if receipt not in status.splitlines():
+        status = status.rstrip() + "\n" + receipt + "\n"
     if closing:
         entry["section"] = captured(plan.cmd_update_section, argparse.Namespace(
             repo=repo, issue=str(issue_number), section="Current Status", body=status, body_file=None))
