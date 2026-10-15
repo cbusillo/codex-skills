@@ -1,0 +1,35 @@
+{
+  "description": "Reduced pre-recovery replay facts from STUCK-R1. Issue states are held at their stranding point and aged to the replay clock; this is not a live snapshot or a claim that recovered incidents remain open.",
+  "sources": [
+    "https://github.com/cbusillo/codex-skills/issues/1917#issuecomment-6201098794",
+    "https://github.com/cbusillo/launchplane/issues/3604#issuecomment-6193143604",
+    "https://github.com/cbusillo/launchplane/issues/3639#issuecomment-6185106580",
+    "https://github.com/cbusillo/launchplane/issues/3678#issuecomment-6198539059",
+    "https://github.com/cbusillo/odoo-tenant-opw/issues/218#issuecomment-6198616447",
+    "https://github.com/cbusillo/codex-skills/issues/1791#issuecomment-6147074270"
+  ],
+  "now": "2026-10-16T12:00:00Z",
+  "records": [
+    {"repo": "cbusillo/launchplane", "item": {"number": 3604, "state": "open", "user": {"login": "shiny-code-app[bot]"}}, "comments": [
+      {"id": 6193143604, "user": {"login": "shiny-code-app[bot]"}, "created_at": "2026-10-15T13:24:24Z", "body": "Owner question: **Q327 — will you enter fresh testing-only values for CM Website's three existing local password bindings in Launchplane? I recommend yes.**", "html_url": "https://github.com/cbusillo/launchplane/issues/3604#issuecomment-6193143604"}
+    ]},
+    {"repo": "cbusillo/launchplane", "item": {"number": 3639, "state": "open", "user": {"login": "shiny-code-app[bot]"}}, "comments": [
+      {"id": 6185106580, "user": {"login": "shiny-code-app[bot]"}, "created_at": "2026-10-15T05:25:38Z", "body": "Owner question: Which existing service/admin source should supply the exact private endpoint and applicability for CM Website, SellYourOutboard and VeriReel production?", "html_url": "https://github.com/cbusillo/launchplane/issues/3639#issuecomment-6185106580"}
+    ]},
+    {"repo": "cbusillo/launchplane", "default_branch": "main", "item": {"number": 3678, "state": "open", "user": {"login": "shiny-code-app[bot]"}}, "comments": [], "linked_pulls": [
+      {"number": 3687, "merged_at": "2026-10-15T17:23:15Z", "base": {"ref": "main"}, "body": "Refs cbusillo/launchplane#3678", "html_url": "https://github.com/cbusillo/launchplane/pull/3687"}
+    ]},
+    {"repo": "cbusillo/odoo-tenant-opw", "item": {"number": 218, "state": "open", "user": {"login": "shiny-code-app[bot]"}, "labels": [{"name": "plan:blocked"}], "body": "<!-- github-plan:wait {\"version\":1,\"state\":\"clear\",\"evidence\":\"Prerequisite closed and the recorded wait is clear.\",\"waits\":[]} -->"}, "comments": [], "blockers": [
+      {"number": 3702, "state": "closed", "state_reason": "completed", "closed_at": "2026-10-15T17:43:00Z", "html_url": "https://github.com/cbusillo/launchplane/issues/3702"}
+    ]},
+    {"repo": "cbusillo/codex-skills", "item": {"number": 1791, "state": "closed", "user": {"login": "shiny-code-app[bot]"}}, "comments": [
+      {"id": 6147074270, "created_at": "2026-10-13T13:55:00Z", "user": {"login": "shiny-code-app[bot]"}, "body": "Director decision, recorded by the Supervisor. **Q249: yes**, as clarified.\n\n**Measured after one day:** CI-caught defects after the PR is opened, fix-up commits, ready-to-merge time, and host load. The comparison is posted here for Chris.", "html_url": "https://github.com/cbusillo/codex-skills/issues/1791#issuecomment-6147074270"}
+    ]},
+    {"repo": "cbusillo/codex-skills", "item": {"number": 1632, "state": "open", "labels": [], "pull_request": {}}, "pull": {"head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, "comments": [
+      {"id": 6103959141, "user": {"login": "shiny-code-app[bot]"}, "created_at": "2026-10-11T00:55:00Z", "body": "Ready for the merge train\n\nHead: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "html_url": "https://github.com/cbusillo/codex-skills/pull/1632#issuecomment-6103959141"}
+    ]},
+    {"repo": "cbusillo/launchplane", "item": {"number": 3693, "state": "open", "labels": [{"name": "merge-blocked"}], "pull_request": {}}, "pull": {"head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}, "comments": [], "timeline": [
+      {"event": "labeled", "label": {"name": "merge-blocked"}, "created_at": "2026-10-15T16:07:00Z"}
+    ]}
+  ]
+}

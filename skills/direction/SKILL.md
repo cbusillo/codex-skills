@@ -16,10 +16,18 @@ resources:
   - path: scripts/director_waits.py
     kind: script
     description: Lists every visible open Director wait independently of labels or posted questions, with age and stale-verification evidence.
+  - path: references/stranded-work.md
+    kind: reference
+    description: Daily read-only stranded-work sweep, coverage limits and reuse of existing Supervisor Discord delivery.
   - path: scripts/question_id.py
     kind: script
     description: Allocates unique Director question IDs from one shared locked counter, seeded from current GitHub discussions.
 commands:
+  - name: direction-stranded-work
+    source: skill
+    resource_path: scripts/direction_audit.py
+    example_argv: ["uv", "run", "scripts/direction_audit.py", "--stranded-work-only", "--repo", "OWNER/REPO"]
+    purpose: Report aged questions, handoffs, merged links, status mismatches, promises and train holds without changing GitHub or audit markers.
   - name: direction-audit
     source: skill
     resource_path: scripts/direction_audit.py
@@ -444,6 +452,14 @@ and every reported closure still needs full-thread review.
 The report bounds issue checks by the existing inventory size and native
 blocker reads to two pages, skips known-empty native relationships, and caches
 reference reads; any limit or unread evidence keeps `complete` false.
+
+For the daily stranded-work digest, read [stranded work](references/stranded-work.md)
+and run the same audit with `--stranded-work-only`. It reports existing records
+past an age threshold with evidence, next actor and explicit coverage gaps,
+without stamping a turn or audit. Reuse the Supervisor's existing daily
+scheduler and Director Discord helper/destination; record scheduler and receiver
+evidence before calling delivery active. Labels remain helper-managed views,
+never hand-applied state. Findings do not clear real waits or authorize writes.
 
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull
