@@ -289,12 +289,24 @@ class Live:
                 request={"repository": repo}, provider_payload=payload
             )["result"]
             for target in projected["targets"]:
+                configured = next(
+                    item for item in policies
+                    if item["repository"].casefold() == repo.casefold()
+                    and item["base_branch"] == target["baseBranch"]
+                )
+                scheduler = configured.get("scheduler") or {}
                 targets.append(
                     {
                         "repo": repo,
                         "base": target["baseBranch"],
                         "label": target["readyLabel"],
                         "policy": projected["policy"],
+                        "scheduler_drives_train": (
+                            isinstance(scheduler, dict)
+                            and scheduler.get("enabled") is True
+                            and scheduler.get("mutate") is True
+                            and scheduler.get("runner_mode") == "controller"
+                        ),
                     }
                 )
         return targets
@@ -418,9 +430,11 @@ class Live:
                 timeout=min(180, remaining),
             )
         except urllib.error.HTTPError as error:
-            if error.code in {401, 403}:
+            denied = error.code in {401, 403}
+            error.close()
+            if denied:
                 raise WatchError("queue read rejected") from None
-            raise
+            raise LaunchplaneReadError("queue read unavailable") from None
         result = payload.get("result") or {}
         dry = result.get("dry_run_result")
         if (
@@ -623,7 +637,11 @@ def run_pass(io, args, emit, *, state=None):
                 if other["repo"].casefold() == repo.casefold() and other != target
             ]
             responses = [response] + [io.train(other) for other in others]
-            staging = staging_candidate(response) if not others else None
+            staging = (
+                staging_candidate(response)
+                if not others and target.get("scheduler_drives_train") is True
+                else None
+            )
             if any(not idle(value) for value in responses) and not staging:
                 busy_result = response.get("result") or {}
                 emit(
@@ -689,6 +707,14 @@ def run_pass(io, args, emit, *, state=None):
                     for label in pr["labels"]
                 )
             }
+            if staging and any(
+                pr["number"] not in staging[3]
+                and target["label"] in {label["name"] for label in pr["labels"]}
+                and pr["number"] not in held_labels
+                for pr in pulls
+            ):
+                emit("busy", {"repository": repo})
+                continue
             candidates = []
             if getattr(args, "batch_read", False):
                 diagnostic = io.batch(repo, [item["number"] for item in pulls if item["number"] in author_allowed])
@@ -817,10 +843,7 @@ def run_pass(io, args, emit, *, state=None):
                 ):
                     emit("batch_stopped", {"repository": repo, "labeled": own})
                     break
-                if staging and (
-                    target not in io.policies(args.owner)
-                    or held(read_holds(args.hold_file), repo)
-                ):
+                if staging and target not in io.policies(args.owner):
                     raise WatchError("policy or hold changed")
                 if continuing:
                     record = (fresh.get("records") or {}).get(

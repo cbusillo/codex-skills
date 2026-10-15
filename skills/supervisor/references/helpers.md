@@ -368,8 +368,10 @@ Candidate observations can omit the queue: unchanged policy, selected head and
 PR labels retain the scan's author admission while every write still reads
 current readiness.
 
-While a published candidate is checking, a later pass can stage one capped group
-for the next candidate. It reads the full author-policy queue through the
+On a target whose controller scheduler is explicitly enabled and mutating,
+while a published candidate is checking, a later pass can stage one capped group
+for the next candidate. Targets driven locally keep their existing handoff.
+Staging reads the full author-policy queue through the
 existing Level 1 run-once service path with `mutate: false`; that path writes
 only its normal diagnostic evidence, never a branch, label or merge. Every
 staged label requires the same published candidate ref, SHA, base and complete
@@ -377,7 +379,9 @@ membership, a fresh author-policy queue and current-head readiness. Unknown
 label authors, incomplete labeled-PR inventory, another enrolled base,
 failed/uncertain evidence, a release hold, or a candidate transition stop
 staging. A queued group outside the active candidate blocks further groups,
-including on repeat passes, preserving the cap and existing routing custody.
+including on repeat passes, preserving the per-pass cap and existing routing custody.
+If the running candidate later fails or changes, Launchplane may combine its
+remaining members with that queue under its own policy cap and recovery rules.
 The current candidate keeps its membership; Launchplane selects the queued
 group only at its next candidate boundary. Staging emits `next_batch_queued`
 without a local-driver handoff, since the active scheduler continues the train.

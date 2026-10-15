@@ -30,6 +30,7 @@ TARGET = {
     "base": "trunk",
     "label": "enqueue-from-policy",
     "policy": {"record_id": "revision"},
+    "scheduler_drives_train": True,
 }
 
 
@@ -190,6 +191,7 @@ class Fake:
         for row in dry["queue"]:
             if row["number"] in self.ineligible:
                 row["ineligible_reasons"] = self.ineligible[row["number"]]
+        dry["queue_order"] = [row["number"] for row in dry["queue"] if not row["ineligible_reasons"]]
         return dry
 
     def label(self, _target, number):
@@ -353,29 +355,29 @@ class EnqueueTests(unittest.TestCase):
                 self.run_pass(fake)
                 self.assertEqual(fake.writes, [])
 
-    def test_staging_rechecks_holds_and_policy_after_queue_read(self):
-        for change in ("hold", "policy"):
-            with self.subTest(change=change):
+    def test_staging_rechecks_policy_after_queue_read(self):
+        fake = self.staging_fake()
+        original = fake.queue
+        reads = []
+
+        def queue(target):
+            reads.append(target)
+            if len(reads) > 1:
+                fake.targets[0]["policy"] = {"record_id": "new-policy"}
+            return original(target)
+
+        fake.queue = queue
+        with self.assertRaises(watch.WatchError):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+
+    def test_staging_requires_a_live_mutating_scheduler(self):
+        for value in (False, None):
+            with self.subTest(value=value):
                 fake = self.staging_fake()
-                original = fake.queue
-                reads = []
-
-                def queue(target):
-                    reads.append(target)
-                    if len(reads) > 1:
-                        if change == "hold":
-                            self.holds["paused_repositories"] = [REPO]
-                            self.save()
-                        else:
-                            fake.targets[0]["policy"] = {"record_id": "new-policy"}
-                    return original(target)
-
-                fake.queue = queue
-                with self.assertRaises(watch.WatchError):
-                    self.run_pass(fake)
+                fake.targets[0]["scheduler_drives_train"] = value
+                self.run_pass(fake)
                 self.assertEqual(fake.writes, [])
-                self.holds["paused_repositories"] = []
-                self.save()
 
     def test_staging_unavailable_queue_or_another_enrolled_base_never_writes(self):
         fake = self.staging_fake()
@@ -1281,6 +1283,29 @@ class QueueReadTests(unittest.TestCase):
                     with self.assertRaises(watch.WatchError) as refused:
                         self.live.queue(TARGET)
                     self.assertNotIsInstance(refused.exception, watch.LaunchplaneReadError)
+
+    def test_snapshot_refusals_allow_a_fresh_read_without_stopping_the_watcher(self):
+        for status in (400, 409, 500, 503):
+            with self.subTest(status=status):
+                error = urllib.error.HTTPError("https://control.example", status, "unavailable", {}, None)
+                with patch.object(watch.operator, "request_launchplane", side_effect=error):
+                    with self.assertRaises(watch.LaunchplaneReadError) as refused:
+                        self.live.queue(TARGET)
+                self.assertTrue(watch.transient_read_error(refused.exception))
+
+    def test_policy_read_requires_explicit_controller_scheduler_mutation_for_staging(self):
+        scheduler = {"enabled": True, "mutate": True, "runner_mode": "controller"}
+        for changes in ({}, {"enabled": False}, {"mutate": False}, {"runner_mode": "level1"}):
+            with self.subTest(changes=changes):
+                raw = {"repository": REPO, "base_branch": TARGET["base"],
+                       "enqueue_label": TARGET["label"], "scheduler": {**scheduler, **changes}}
+                payload = {"status": "ok", "trace_id": "fixture", "record": {
+                    "status": "active", "record_id": "fixture-policy",
+                    "updated_at": "2026-01-01T00:00:00Z", "policy_sha256": "a" * 64,
+                    "policy": {"policies": [raw]}}}
+                with patch.object(watch.operator, "request_launchplane_read", return_value=payload):
+                    target = self.live.policies("example")[0]
+                self.assertEqual(target["scheduler_drives_train"], not changes)
 
 
 def api_result(certainty=None):
