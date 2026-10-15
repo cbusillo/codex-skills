@@ -266,6 +266,23 @@ class ViewTests(unittest.TestCase):
         self.assertNotIn("retry_command", result)
 
 
+class ProcessAncestryTests(unittest.TestCase):
+    def test_reads_process_tree_and_rejects_unproven_membership(self):
+        with patch.object(tmux_terminal.subprocess, "run", return_value=SimpleNamespace(
+                stdout=" 456 123\n 999 456\n 1000 999\n 1001 1\n")):
+            parents = tmux_terminal.process_parents()
+        self.assertTrue(tmux_terminal.belongs_to(1000, 456, parents))
+        self.assertFalse(tmux_terminal.belongs_to(1001, 456, parents))
+        self.assertFalse(tmux_terminal.belongs_to(1000, 789, parents))
+
+    def test_missing_malformed_or_duplicate_process_inventory_refuses(self):
+        for output in ("", "unavailable", "1", "1 2 3", "1 x", "0 1", "1 0\n1 2\n"):
+            with self.subTest(output=output), patch.object(tmux_terminal.subprocess, "run",
+                    return_value=SimpleNamespace(stdout=output)):
+                with self.assertRaises(ValueError):
+                    tmux_terminal.process_parents()
+
+
 class PaneParserTests(unittest.TestCase):
     @staticmethod
     def pane_line(values):
@@ -340,6 +357,66 @@ class PaneParserTests(unittest.TestCase):
             self.assertEqual(caught.exception.detail["submission"], "not_attempted")
             self.assertTrue(keys.called)
             self.assertFalse(any(call.args[-1] == "Enter" for call in keys.call_args_list))
+
+    def test_dead_close_allows_only_processes_proven_to_belong_to_new_tty_owner(self):
+        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
+        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
+        processes = [(456, "ttys987", "new-worker"), (999, "ttys987", "worker-child")]
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            ledger.write_text(json.dumps([entry]))
+            with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                    returncode=0, stdout=self.dead + live)) as calls, \
+                    patch.object(close_ttys, "inventory", return_value=processes), \
+                    patch.object(tmux_terminal, "process_parents", return_value={456: 123, 999: 456}):
+                self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
+                mutations = [c.args for c in calls.call_args_list if c.args[0] != "list-panes"]
+                self.assertEqual(len(mutations), 1)
+                self.assertEqual(mutations[0][0], "if-shell")
+                self.assertEqual(mutations[0][-1], "kill-pane -t %1")
+
+    def test_reused_tty_with_unattributed_or_old_process_is_preserved(self):
+        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
+        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
+        for parents, jobs in (({456: 123, 999: 1}, [(999, "ttys987", "orphan")]),
+                              ({456: 123, 999: 789}, [(999, "ttys987", "old-child")]),
+                              ({456: 123}, [(789, "other-tty", "reused-pid")]),
+                              ({456: 123, 999: 999}, [(999, "ttys987", "uncertain-tree")]),
+                              ({999: 456}, [(999, "ttys987", "missing-root")])):
+            with self.subTest(parents=parents, jobs=jobs), tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                ledger.write_text(json.dumps([entry]))
+                with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=self.dead + live)) as calls, \
+                        patch.object(close_ttys, "inventory", return_value=[(456, "ttys987", "new-worker"), *jobs]), \
+                        patch.object(tmux_terminal, "process_parents", return_value=parents):
+                    with self.assertRaises(ValueError):
+                        self.terminal.close(self.identity, ledger)
+                    self.assertFalse(any(c.args[0] != "list-panes" for c in calls.call_args_list))
+
+    def test_tty_ancestry_failure_or_activity_between_checks_never_closes(self):
+        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
+        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
+        for parents, inventories in ((OSError("ps unavailable"), [[(456, "ttys987", "new-worker")]]),
+                                      ({456: 123}, [[(456, "ttys987", "new-worker")],
+                                                   [(456, "ttys987", "new-worker"), (999, "ttys987", "old-job")]])):
+            with self.subTest(parents=parents), tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                ledger.write_text(json.dumps([entry]))
+                with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=self.dead + live)) as calls, \
+                        patch.object(close_ttys, "inventory", side_effect=inventories), \
+                        patch.object(tmux_terminal, "process_parents") as ancestry:
+                    if isinstance(parents, Exception):
+                        ancestry.side_effect = parents
+                    else:
+                        ancestry.return_value = parents
+                    with self.assertRaises((ValueError, OSError)):
+                        self.terminal.close(self.identity, ledger)
+                    self.assertFalse(any(c.args[0] != "list-panes" for c in calls.call_args_list))
 
     def test_cli_refusal_is_json_on_stdout_failure_on_stderr_and_nonzero(self):
         from contextlib import redirect_stdout, redirect_stderr

@@ -6,6 +6,7 @@
     "executionScope": "skills/references/execution-scope.md",
     "githubSkill": "skills/github/SKILL.md",
     "githubWorkflow": "skills/github/references/repo-workflow.md",
+    "taskWorktrees": "skills/github/references/worktrees.md",
     "githubPostMergeCheckouts": "skills/github/references/post-merge-checkouts.md",
     "backgroundReviewReporting": "skills/references/background-review-reporting.md",
     "executionEnvironment": "skills/github/references/execution-environment.md",
@@ -104,7 +105,7 @@
     },
     "syntax": {
       "python": "uv run --python 3.12 python -m compileall -q skills scripts hooks evals",
-      "shell": "bash -n skills/github/scripts/github-repo-snapshot.sh skills/github/scripts/gh-with-env-token skills/github/scripts/git-commit-as-bot skills/github/scripts/git-push-as-bot skills/github/scripts/gh-issue skills/github/scripts/gh-comment skills/google-seo/scripts/google-cloud-inventory.sh scripts/validate-skills.sh"
+      "shell": "bash -n skills/github/scripts/dev-worktree skills/github/scripts/github-repo-snapshot.sh skills/github/scripts/gh-with-env-token skills/github/scripts/git-commit-as-bot skills/github/scripts/git-push-as-bot skills/github/scripts/gh-issue skills/github/scripts/gh-comment skills/google-seo/scripts/google-cloud-inventory.sh scripts/validate-skills.sh"
     }
   },
   "importantWorkflows": [

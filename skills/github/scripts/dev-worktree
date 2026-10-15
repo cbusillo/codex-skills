@@ -1,0 +1,3 @@
+#!/bin/sh
+# Invoke from the catalog; no installation into a host's PATH is required.
+exec uv run --no-project "$(dirname "$0")/dev_worktree.py" "$@"

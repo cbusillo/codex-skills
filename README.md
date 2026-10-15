@@ -20,6 +20,12 @@ benefits from more than a single instruction file.
 
 ## Install
 
+For task branches in linked worktrees, the catalog also ships
+[`dev-worktree`](skills/github/references/worktrees.md). Call it directly from
+the checkout; its private per-host setting selects a root outside repositories
+or an existing guarded host helper. That reference also covers Claude Desktop
+folder trust. No separate PATH installation is required.
+
 Clone this repository somewhere durable, then install once on each machine:
 
 ```sh
