@@ -33,6 +33,7 @@ def load_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.real_api_json = module.api_json
     # Every test starts offline; fixtures opt into the API evidence they own.
     module.api_json = Mock(side_effect=module.PlanError("offline fixture record unavailable"))
     module.real_next_dependabot_work = module.next_dependabot_work
@@ -786,7 +787,10 @@ def test_global_next_implicit_repository_and_explicit_repository_match() -> None
         implicit = dict(result)
         result.clear()
         module.cmd_next(next_args())
-        assert result == implicit
+        # Runtime observations vary; repository resolution must preserve the
+        # selection and coverage, independently of elapsed phase timings.
+        assert {k: v for k, v in result.items() if k != "performance"} == {
+            k: v for k, v in implicit.items() if k != "performance"}
         assert result["scope"]["kind"] == "direction"
         assert result["scope"]["owner"] == "someone"
     assert module.github_direction_next.is_direction_repository("Other/Direction")
@@ -3325,6 +3329,290 @@ def test_local_identity_refused_relationships_degrade_and_credentials_stop() -> 
 
 TESTS.extend([test_identity_refused_graph_node_keeps_other_milestone_candidates,
               test_local_identity_refused_relationships_degrade_and_credentials_stop])
+
+
+
+def test_parallel_global_graph_preserves_selection_waits_and_coverage() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaves = [global_issue("someone/MyProject", number) for number in range(10, 18)]
+    edges = {("someone/direction", 1): relationships(sub_issues=leaves)}
+    with global_fixture(roots, leaves, edges, clear_waits=leaves) as (module, result, _reads):
+        args = next_args()
+        module.cmd_next(args)
+        serial = {key: value for key, value in result.items() if key != "performance"}
+        result.clear()
+        args.read_workers = 3
+        module.cmd_next(args)
+        parallel = {key: value for key, value in result.items() if key != "performance"}
+        assert serial == parallel
+        assert module.NEXT_READS is None
+
+
+def test_global_deadline_preserves_native_frontier_and_names_unread_discoveries() -> None:
+    import time
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 10)
+    optional = global_issue("someone/optional", 20, milestone=roots[0]["milestone"])
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
+        def stalled_inventory(*_args, **_kwargs):
+            module.NEXT_READS.deadline = time.time() - 1
+            return [optional], {"complete": True, "inventory_count": 1, "repositories": [
+                {"repo": optional["repo"], "direction": DIRECTION, "issue_count": 1}]}
+        module.discover_direction_work = stalled_inventory
+        module.cmd_next(next_args())
+        assert result["graph_context"]["complete"]
+        assert any(row["number"] == leaf["number"] for row in result["candidates"])
+        assert result["performance"]["deadline_exhausted"]
+        assert not result["candidate_coverage"]["complete"]
+        assert not result["candidate_coverage"]["milestone_ranking_complete"]
+        assert result["discovery_context"]["evaluated"] == 0
+        assert result["discovery_context"]["unevaluated_count"] == 1
+        assert result["candidate_coverage"]["unevaluated_repositories"] == [
+            {"repo": optional["repo"], "issue_count": 1}]
+        assert result["selection_coverage"]["active_unevaluated_count"] == 1
+
+
+def test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 10)
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    for count in (0, None, "0", False, -1, 1):
+        leaf["comments"] = count
+        with global_fixture(roots, [leaf], edges) as (module, result, _reads):
+            collect = module.collect_paged_rest_items
+            comment_reads = []
+            def observed(path: str, **kwargs: Any) -> Any:
+                if path.endswith(f"/{leaf['number']}/comments"):
+                    comment_reads.append(path)
+                return collect(path, **kwargs)
+            module.collect_paged_rest_items = observed
+            module.cmd_next(next_args())
+            assert bool(comment_reads) is not (type(count) is int and count == 0)
+            assert result["graph_context"]["complete"]
+
+
+def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() -> None:
+    import time
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 10)
+    optional = global_issue("someone/optional", 20)
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
+        def slow_inventory(*_args, **_kwargs):
+            module.NEXT_READS.deadline = time.time() + module.NEXT_READS.final_evidence_reserve / 2
+            return [optional], {"complete": True, "repositories": [{"repo": optional["repo"], "direction": DIRECTION}]}
+        module.discover_direction_work = slow_inventory
+        def observed_ownership(items: list[dict[str, Any]], _args: Any) -> dict[str, Any]:
+            for item in items:
+                item["queue"] = {"state": "review", "claim_required": True}
+            return {"repositories": {}}
+        module.annotate_next_queue = observed_ownership
+        args = next_args()
+        args.time_budget = 50
+        module.cmd_next(args)
+        assert result["discovery_context"]["time_budget_limited"]
+        assert result["discovery_context"]["unevaluated_count"] == 1
+        assert not result["performance"]["deadline_exhausted"]
+        assert not result["candidate_coverage"]["milestone_ranking_complete"]
+        assert result["graph_context"]["complete"]
+        reported = next(row for row in result["candidates"] if row["number"] == leaf["number"])
+        assert reported["queue"]["claim_required"]
+
+
+
+def test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence() -> None:
+    rows = [global_issue("someone/project", number, labels=["plan", "plan:waiting"],
+        body="## Current Status\nState: Waiting.\nWaiting for: #99 to complete.\nBlocked by: None.") for number in range(1, 7)]
+    for disposition in (False, True, None):
+        module = load_module()
+        module.load_config = lambda *_: module.DEFAULT_CONFIG
+        def read(_method: str, path: str, **_kwargs: Any) -> Any:
+            if path.rstrip("/") == "/repos/someone/project":
+                if disposition is None:
+                    raise module.PlanError("repository metadata unavailable")
+                return "automation-gh", {"archived": disposition, "default_branch": "main"}
+            if "dependencies/blocked_by" in path:
+                return "automation-gh", []
+            return "automation-gh", {"state": "closed", "state_reason": "completed"}
+        module.api_json = read
+        serial = module.next_wait_context(rows, scan_limit=len(rows), inventory_complete=True)
+        with module.github_next_reads.NextReads(workers=3, seconds=0) as reads:
+            module.NEXT_READS = reads
+            try:
+                parallel = module.next_wait_context(rows, scan_limit=len(rows), inventory_complete=True)
+            finally:
+                module.NEXT_READS = None
+        assert serial == parallel
+
+
+def test_global_read_wrapper_coalesces_gets_and_classifies_actual_deadlines() -> None:
+    import time
+    module = load_module()
+    module.api_json = module.real_api_json
+    transport = Mock(return_value=("automation-gh", {"state": "open"}))
+    module.api_json_uncached = transport
+    with module.github_next_reads.NextReads(workers=1, seconds=60) as reads:
+        module.NEXT_READS = reads
+        try:
+            module.api_json("GET", "/observed", failed_step="first")
+            module.api_json("GET", "/observed", failed_step="another_phase")
+            assert transport.call_count == 1
+            # A reset/backoff beyond the parent deadline refuses immediately,
+            # before the wall clock actually expires.
+            failure = module.github_api_core.FailureDetail(cause="deadline_exceeded", message="reset beyond deadline",
+                retryable=False, fallback_eligible=False, disposition="stop")
+            refused = module.PlanError(failure.message, failure=failure, api_result={
+                "retry_exhausted_reason": "deadline_exceeded", "effective_deadline": reads.deadline,
+                "retry_at": reads.deadline + 60})
+            module.next_source_error(refused)
+            module.next_source_error(refused)
+            assert not reads.expired
+            assert reads.receipt()["budget_stops"][failure.cause] == 1
+            assert reads.receipt()["budget_context"][0]["retry_at"] > reads.deadline
+            network_timeout = module.PlanError("TLS handshake timeout", failure=failure,
+                api_result={"retry_exhausted_reason": "attempt_budget"})
+            try:
+                module.next_source_error(network_timeout)
+            except module.PlanError as exc:
+                assert exc is network_timeout
+            else:
+                raise AssertionError("network failure was mislabeled as a budget refusal")
+            reads.deadline = time.time() - 1
+            try:
+                module.api_json("GET", "/unread")
+            except module.PlanError as exc:
+                assert isinstance(exc.__cause__, module.github_next_reads.ReadDeadline)
+                module.next_source_error(exc)
+            else:
+                raise AssertionError("expired wrapper issued a new request")
+            assert transport.call_count == 1
+            malformed = module.PlanError("malformed response")
+            assert module.next_source_error(malformed) == str(malformed)
+            classified = module.ClassifiedPlanError("rate_limited", "quota refused")
+            try:
+                module.next_source_error(classified)
+            except module.ClassifiedPlanError as exc:
+                assert exc is classified
+            else:
+                raise AssertionError("classified quota failure was disguised as deadline")
+        finally:
+            module.NEXT_READS = None
+    with module.github_next_reads.NextReads(workers=1, seconds=60) as reads:
+        module.NEXT_READS = reads
+        try:
+            module.api_json("GET", "/observed")
+            assert transport.call_count == 2
+        finally:
+            module.NEXT_READS = None
+
+
+def test_one_worker_discovery_reads_each_discussion_once() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    optional = global_issue("someone/optional", 20)
+    with global_fixture(roots, [], {}, discovered=[optional]) as (module, _result, _reads):
+        collect = module.collect_paged_rest_items
+        comment_reads = []
+        def observed(path: str, **kwargs: Any) -> Any:
+            if path.endswith(f"/{optional['number']}/comments"):
+                comment_reads.append(path)
+            return collect(path, **kwargs)
+        module.collect_paged_rest_items = observed
+        args = next_args()
+        args.read_workers = 1
+        module.cmd_next(args)
+        assert len(comment_reads) == 1
+
+
+def test_graph_read_ahead_is_bounded_beyond_a_deep_scan_frontier() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    chain = [global_issue("someone/project", number) for number in range(10, 16)]
+    siblings = [global_issue("someone/project", number) for number in range(100, 120)]
+    edges = {("someone/direction", 1): relationships(sub_issues=[chain[0], *siblings])}
+    for parent, child in zip(chain, chain[1:]):
+        edges[(parent["repo"], parent["number"])] = relationships(sub_issues=[child])
+    with global_fixture(roots, [*chain, *siblings], edges, clear_waits=[*chain, *siblings]) as (module, result, _reads):
+        collect = module.collect_paged_rest_items
+        comment_reads = set()
+        def observed(path: str, **kwargs: Any) -> Any:
+            if path.endswith("/comments"):
+                comment_reads.add(path)
+            return collect(path, **kwargs)
+        module.collect_paged_rest_items = observed
+        args = next_args(scan_limit=3)
+        args.read_workers = 2
+        module.cmd_next(args)
+        assert result["graph_context"]["truncated"]
+        assert len(comment_reads) <= result["graph_context"]["evaluated"] + args.read_workers
+        assert result["performance"]["read_ahead_unevaluated"] <= args.read_workers
+
+
+def test_enrollment_helper_does_not_launch_after_inherited_deadline() -> None:
+    module = load_module()
+    with patch.object(module.github_api_core, "remaining_retry_timeout_seconds", return_value=0), patch.object(
+            module.subprocess, "run") as run:
+        result = module.real_read_next_train_enrollment("someone/project")
+        assert result["status"] == "unknown"
+        run.assert_not_called()
+
+
+
+def test_unused_provider_read_ahead_keeps_partial_result_and_credentials_still_stop() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    leaf = global_issue("someone/project", 10)
+    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
+    for cause in ("network_provider_failure", "invalid_credentials"):
+        with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
+            failure = module.github_api_core.FailureDetail(cause=cause, message="fixture rejected",
+                retryable=False, fallback_eligible=False, disposition="stop")
+            error = module.PlanError(failure.message, failure=failure)
+            collect = module.collect_paged_rest_items
+            def observed(path: str, **kwargs: Any) -> Any:
+                if path.endswith("/2/comments"):
+                    raise error
+                return collect(path, **kwargs)
+            module.collect_paged_rest_items = observed
+            args = next_args(scan_limit=2)
+            args.read_workers = 2
+            if cause == "invalid_credentials":
+                try:
+                    module.cmd_next(args)
+                except module.PlanError as exc:
+                    assert exc is error
+                else:
+                    raise AssertionError("unused credential failure was hidden")
+            else:
+                module.cmd_next(args)
+                assert result["graph_context"]["truncated"]
+                assert not result["candidate_coverage"]["complete"]
+                assert result["performance"]["read_ahead_failures"][cause] == 1
+
+
+def test_global_milestone_backend_receipt_contributes_actual_attempts() -> None:
+    import time
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    with global_fixture(roots, [], {}) as (module, _result, _reads):
+        backend = module.github_api_core.RetrySummary(attempts=3, elapsed_wait=0.5, retry_eligible=True,
+            last_actor="automation-gh", last_bucket="rest_core", outcome_certainty="confirmed",
+            reconciliation=None, recommended_next_action="none", effective_deadline=time.time()+60)
+        module.github_milestone_core.list_milestones = lambda *_a, **_kw: {
+            "milestones": [root["milestone"] for root in roots], **backend.as_dict()}
+        module.cmd_next(next_args())
+        assert module.CURRENT_RETRY_SUMMARY.attempts == backend.attempts
+        assert module.CURRENT_RETRY_SUMMARY.elapsed_wait == backend.elapsed_wait
+
+
+TESTS.extend([test_unused_provider_read_ahead_keeps_partial_result_and_credentials_still_stop,
+              test_global_milestone_backend_receipt_contributes_actual_attempts,
+              test_graph_read_ahead_is_bounded_beyond_a_deep_scan_frontier,
+              test_enrollment_helper_does_not_launch_after_inherited_deadline,
+              test_global_read_wrapper_coalesces_gets_and_classifies_actual_deadlines,
+              test_one_worker_discovery_reads_each_discussion_once,
+              test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence,
+              test_global_reserves_final_evidence_time_without_claiming_a_complete_scan,
+              test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
+              test_parallel_global_graph_preserves_selection_waits_and_coverage,
+              test_global_deadline_preserves_native_frontier_and_names_unread_discoveries])
 
 
 def main() -> None:

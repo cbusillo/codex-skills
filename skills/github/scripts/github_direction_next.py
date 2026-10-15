@@ -1239,6 +1239,7 @@ def rank_direction_work(
     completed_milestone_titles: list[str] | None = None,
     agent: str | None = None,
     wait_milestone_titles: list[str] | None = None,
+    prefetch_nodes: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> dict[str, Any]:
     """Walk ordered Track issues through native blockers and sub-issues.
 
@@ -1278,6 +1279,12 @@ def rank_direction_work(
         (root, root["milestone"], [], True) for root in reversed(tracks)
     ]
     while pending:
+        if prefetch_nodes is not None:
+            # Read ahead only within the remaining ordinary allowance. Logical
+            # DFS order, assignment allowances and coverage stay unchanged.
+            refs = [entry[0] for entry in reversed(pending)
+                    if (entry[0]["repo"].casefold(), entry[0]["number"]) not in seen]
+            prefetch_nodes(refs[:max(0, scan_limit - ordinary_evaluated)])
         ref, milestone, path, tracking = pending.pop()
         key = (ref["repo"].casefold(), ref["number"])
         step = {"repo": ref["repo"], "number": ref["number"], "url": ref["url"]}
