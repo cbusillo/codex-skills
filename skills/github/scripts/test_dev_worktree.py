@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -125,6 +127,27 @@ class WorktreeTests(unittest.TestCase):
                 self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
                 self.assertFalse(root.exists())
 
+    def test_root_containing_source_or_a_same_named_clone_refuses(self):
+        for task, root in (("source", self.repo.parent), ("clone", self.base / "other")):
+            with self.subTest(root=root):
+                if root != self.repo.parent:
+                    clone = root / self.repo.name
+                    clone.mkdir(parents=True)
+                    self.git("init", repo=clone)
+                self.settings({"root": str(root)})
+                self.assert_refused(self.run_helper(self.repo, task, "HEAD"), task)
+                self.assertFalse((root / self.repo.name / task).exists())
+
+    def test_root_inside_git_metadata_or_bare_repository_refuses(self):
+        bare = self.base / "bare.git"
+        bare.mkdir()
+        self.git("init", "--bare", repo=bare)
+        for root in (self.repo / ".git/tasks", bare / "tasks"):
+            with self.subTest(root=root):
+                self.settings({"root": str(root)})
+                self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
+                self.assertFalse(root.exists())
+
     def test_symlink_into_source_and_symlink_parent_refuse(self):
         alias = self.base / "alias"
         alias.symlink_to(self.repo, target_is_directory=True)
@@ -178,8 +201,46 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse(root.parent.exists())
 
     def test_self_delegation_refuses(self):
-        self.settings({"root": str(self.base / "tasks"), "hostHelper": str(SCRIPT)})
-        self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
+        for helper in (SCRIPT, SCRIPT.with_name("dev-worktree")):
+            with self.subTest(helper=helper):
+                self.settings({"root": str(self.base / "tasks"), "hostHelper": str(helper)})
+                self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group interrupt behavior")
+    def test_interrupt_allows_host_cleanup_to_finish(self):
+        host = self.base / "interrupt host"
+        ready = self.base / "ready"
+        cleaned = self.base / "cleaned"
+        host.write_text(
+            f"#!{sys.executable}\n"
+            "import signal, time\nfrom pathlib import Path\n"
+            "def cleanup(_signal, _frame):\n"
+            "    time.sleep(0.6)\n"
+            f"    Path({str(cleaned)!r}).touch()\n"
+            "    raise SystemExit(130)\n"
+            "signal.signal(signal.SIGINT, cleanup)\n"
+            f"Path({str(ready)!r}).touch()\n"
+            "while True:\n    time.sleep(0.05)\n"
+        )
+        host.chmod(0o700)
+        self.settings({"root": str(self.base / "tasks"), "hostHelper": str(host)})
+        process = subprocess.Popen(
+            [sys.executable, str(SCRIPT), "retire", "fixture"], env=self.env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "host did not reach its interrupt handler")
+            os.killpg(process.pid, signal.SIGINT)
+            process.communicate(timeout=5)
+            self.assertTrue(cleaned.exists(), "host cleanup was killed before completion")
+            self.assertEqual(process.returncode, 130)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
 
 
 if __name__ == "__main__":

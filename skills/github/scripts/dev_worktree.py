@@ -57,15 +57,16 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
     root = root.resolve()
     if root.is_relative_to(main) or root.is_relative_to(repo):
         raise Refused("The worktree root must be outside the source repository.")
-    ancestor = root
-    while not ancestor.exists():
-        ancestor = ancestor.parent
-    probe = subprocess.run(["git", "-C", str(ancestor), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
-    if probe.returncode == 0 and probe.stdout.strip() == "true":
-        raise Refused("The worktree root must be outside repositories.")
     parent = root / main.name
     if parent.is_symlink():
         raise Refused("The repository worktree parent must not be a symlink.")
+    # A root outside repositories can still contain an existing same-named checkout.
+    ancestor = parent
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    probe = subprocess.run(["git", "-C", str(ancestor), "rev-parse", "--git-dir"], capture_output=True, text=True)
+    if probe.returncode == 0:
+        raise Refused("The worktree destination must be outside repositories and Git metadata.")
     destination = parent / task
     if os.path.lexists(destination):
         raise Refused(f"Destination already exists: {destination}")
@@ -91,7 +92,8 @@ def main(argv: list[str] | None = None) -> int:
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
             # The host owns volume identity, locks and retirement; do not mkdir or fall back.
-            return subprocess.run([str(helper), *args], check=False).returncode
+            # Preserve the host's signal traps, including relocking during interrupted retirement.
+            os.execv(str(helper), [str(helper), *args])
         if len(args) != 3 or args[0] == "retire":
             raise Refused("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT. For cleanup follow work-closeout; this portable helper only creates worktrees.")
         print(create(*args, root))

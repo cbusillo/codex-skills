@@ -45,8 +45,12 @@ A host with its own storage, lock and retirement policy can configure
 `hostHelper` with an explicit `root`. The catalog command delegates its arguments
 to that executable, preserves its exit status and output, and creates no
 directories itself. A failure never falls back to portable creation. The host
-helper owns enforcement of the configured root: use the root that it actually
-implements. This setting selects an existing trusted host executable; it does
+helper owns enforcement of the root: in this mode `root` is an informational
+location for agents, not a second enforcement check. Set it to the location the
+host helper actually implements and keep it aligned during storage migrations.
+The catalog command replaces its process with the host executable, preserving
+its signal handling, including cleanup traps during interrupted retirement.
+This setting selects an existing trusted host executable; it does
 not install, replace or edit one.
 
 Chris-Studio keeps its existing host-local helper and external-volume checks
@@ -95,6 +99,9 @@ worktree with the catalog helper and host setting. If Desktop asks to trust
 that worktree when opening or using it, the Director reviews the exact folder
 and accepts the prompt manually. The helper neither grants trust nor promises
 that a trusted main checkout or parent worktree root covers its children.
+Launching in a trusted repository also does not establish access to a path
+outside the session's launch directory; verify the worker can use the configured
+worktree before planning unattended work there.
 Before unattended Desktop launches into worktrees, verify that Desktop's own
 location and trust controls support the chosen root; no unattended trust path
 has been established here.

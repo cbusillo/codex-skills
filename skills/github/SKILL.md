@@ -767,6 +767,8 @@ how existing approval and task boundaries apply.
    open a PR.
    For linked worktrees, read [task worktrees](references/worktrees.md) and use
    this catalog's `scripts/dev-worktree` with the documented per-host setting.
+   A host with a guarded helper keeps that command until its `hostHelper`
+   setting is provisioned; never use the portable default to bypass host policy.
 3. **Verify**: Run the local pre-push gates selected by
    [repo-readiness](../repo-readiness/SKILL.md#gate-selection), diagnose CI
    failures, and address review feedback. Hand repeated CI, review, or

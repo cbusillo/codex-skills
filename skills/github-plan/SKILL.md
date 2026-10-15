@@ -256,6 +256,8 @@ active issue labels and continuing background jobs do not lift a hold.
    private per-host root setting and host integration, then
    [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for refusal, partial recovery, or release. Continue only on confirmed success;
+   on a host with a guarded helper, keep its current command until `hostHelper`
+   is provisioned rather than using the portable default.
    preserve competing or uncertain ownership for the Director to decide. Keep
    Current Status current through handoff or completion.
    Claim waits come only from native blockers, labels and the structured wait
