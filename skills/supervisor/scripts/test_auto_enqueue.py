@@ -864,13 +864,27 @@ class EnqueueTests(unittest.TestCase):
         watch.edit_holds(["--hold-file", str(self.path), "--resume", REPO])
         self.assertFalse(watch.held(watch.read_holds(self.path), REPO))
 
-    def test_legacy_hold_removal_uses_shared_lock_and_releases_green_work(self):
+    def test_legacy_hold_removal_waits_for_shared_lock(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
         watch.edit_holds(["--hold-file", str(self.path), "--coordinated-repo", REPO])
         self.assertTrue(watch.held(watch.read_holds(self.path), REPO))
-        lock = watch.hold_lock
-        with patch.object(watch, "hold_lock", wraps=lock) as serialized:
+        started, finished = Event(), Event()
+
+        def remove():
+            started.set()
             watch.edit_holds(["--hold-file", str(self.path), "--uncoordinate", REPO])
-        serialized.assert_called_once_with(self.path, blocking=True)
+            finished.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with watch.hold_lock(self.path):
+                edit = pool.submit(remove)
+                self.assertTrue(started.wait(timeout=2))
+                self.assertFalse(finished.wait(timeout=0.1))
+                self.assertTrue(watch.held(watch.read_holds(self.path), REPO))
+            edit.result(timeout=2)
+        self.assertTrue(finished.is_set())
         self.assertFalse(watch.held(watch.read_holds(self.path), REPO))
 
     def test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse(self):
