@@ -76,7 +76,7 @@ changes on yes.
   who brings the next one; it does not ask them all at once.
 - **Posting is not delivery.** After posting an Owner/Director question, register
   its original link in the existing Supervisor question discussion with
-  `uv run <supervisor-skill-dir>/scripts/oq.py OWNER/REPO#ITEM --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/REPO#QUEUE --register`.
+  `uv run <supervisor-skill-dir>/scripts/oq.py ORIGINAL_QUESTION_URL --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/REPO#QUEUE --register`.
   Use the queue discussion named by the brief or current Supervisor handoff;
   when none is recorded, retain the source link in the handoff and explicitly
   name who must receive it. Do not silently claim it reached the Director.
@@ -92,8 +92,11 @@ changes on yes.
   of the presentation. Queue registration itself is not that receipt. A failed
   or unknown send remains unacknowledged and resurfaces at the next check.
   Acknowledgement is delivery, never approval: unanswered questions stay queued,
-  including "later". Resolve them only from the linked Director reply or trusted
-  recorded decision. Queue records, not hand-applied labels, own delivery state.
+  including "later". A linked reply is a candidate for the Supervisor to
+  reconcile; the queue resolves only an explicit linked Owner/Director decision,
+  authored by the Director or a trusted recorder. Read the entire oldest-first
+  unresolved queue, including acknowledged items; `resurface` only identifies
+  missing delivery receipts. Queue records, not hand-applied labels, own delivery state.
 - Before asking the Director to approve an admin path (deploy, promotion,
   recovery, onboarding, or a permission-gated workflow), walk the whole path
   read-only: each step, the identity that runs it, the permission, environment,

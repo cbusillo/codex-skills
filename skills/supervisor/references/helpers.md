@@ -183,7 +183,7 @@ presentation under the shared [question queue rules](../../references/talking-wi
 These commands use the configured automation identity and read back their writes:
 
 ```sh
-uv run skills/supervisor/scripts/oq.py OWNER/PRODUCT#ITEM --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --register
+uv run skills/supervisor/scripts/oq.py ORIGINAL_QUESTION_URL --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --register
 uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE
 uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
 ```
@@ -196,7 +196,9 @@ closed issues; no search window expires a question. Scope is explicit: this
 view cannot discover a worker that neither registered nor handed off its source.
 The independent daily stranded-work sweep owns that fleet-wide backstop.
 
-Each source comment URL is the registration identity; `question_id` preserves
+Registration accepts exact original question URLs so an old discussion's other
+questions are never enqueued incidentally. Each source comment URL is the
+registration identity; `question_id` preserves
 its existing heading's Q ID from the shared counter, if present. Registrations
 store references, not a copy of the question. `director-question:delivery`
 first-line JSON records contain `version: 1`, `event: registered|delivered` and
@@ -207,9 +209,17 @@ do not count. No label is delivery state.
 The view reports `queue_length`, position, original age, registration link,
 delivery receipt and `resurface`. An unacknowledged question is emitted every
 check, even after successful registration. A delivery receipt leaves it queued
-until an exact linked answer/decision; "later" never erases it. Source reads
+until an explicit linked Owner/Director decision from the Director or trusted
+recorder; plain replies remain candidates for Supervisor reconciliation and
+"later" never erases it. Read acknowledged unanswered rows too: `resurface`
+means missing delivery acknowledgement, not the only questions to present. Source reads
 also reconcile decisions on another supplied discussion or the queue. A failed
 read/write/readback exits nonzero with `complete: false`, never an empty all-clear.
+Deleted/edited source questions stay visible as `missing_source`, with their
+original URL, while other rows remain usable; restore the original source or
+reconcile its disposition with the Director. Unconfigured question/queue authors
+are reported as incomplete coverage, not silently filtered. Configure verified
+trusted logins and reread; do not grant authority from an unknown record.
 On an uncertain write, read the queue before retrying; stable bodies, helper
 deduplication and a shared-Code-home lock reconcile a saved registration without
 allocating a new Q ID. This source change configures no destination, daemon or

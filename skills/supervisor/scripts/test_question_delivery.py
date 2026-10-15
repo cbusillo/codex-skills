@@ -42,11 +42,11 @@ class DeliveryTests(unittest.TestCase):
                               "author": self.authors[0],
                               "url": f"https://github.com/{self.queue.replace('#', '/issues/')}#issuecomment-{len(self.comments) + 1}",
                               "created_at": "2026-10-15T17:35:24Z"})
-        return {"ok": True, "outcome_certainty": "confirmed"}
+        return self.comments[-1]
 
     def run_queue(self, **overrides):
         args = SimpleNamespace(queue=self.queue, owner=self.owner, decision_author=self.authors,
-                               items=list(self.sources), register=False, ack=None, delivery_url=None)
+                               items=[q["url"] for q in self.questions], register=False, ack=None, delivery_url=None)
         vars(args).update(overrides)
         now = datetime.fromisoformat(self.fixture["observed_at"].replace("Z", "+00:00"))
         with patch.object(delivery, "post", side_effect=self.post), patch.object(delivery, "datetime") as clock:
@@ -91,6 +91,11 @@ class DeliveryTests(unittest.TestCase):
         # "Later" or a receipt from the owner must not become a decision.
         self.comments[-1]["author"] = self.owner
         self.assertEqual(self.run_queue(items=[])["queue_length"], len(self.questions))
+        for body, author in ((f"Q327 later: {target}", self.owner),
+                             (f"Director decision: Q327 = later; {target}", self.authors[0])):
+            self.sources[delivery.source_item(target)].append({"author": author, "body": body, "url": "later",
+                                                               "created_at": self.fixture["observed_at"]})
+            self.assertEqual(self.run_queue(items=[])["queue_length"], len(self.questions))
         self.sources[delivery.source_item(target)].append(self.fixture["decision"])
         self.assertEqual([q["url"] for q in self.run_queue(items=[])["questions"]], [self.questions[1]["url"]])
 
@@ -121,7 +126,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_failed_write_readback_and_retry_preserve_registration_identity(self):
         args = SimpleNamespace(queue=self.queue, owner=self.owner, decision_author=self.authors,
-                               items=list(self.sources), register=True, ack=None, delivery_url=None)
+                               items=[q["url"] for q in self.questions], register=True, ack=None, delivery_url=None)
         def lost_reply(queue, body):
             self.post(queue, body)
             raise ValueError("unknown write outcome")
@@ -138,15 +143,17 @@ class DeliveryTests(unittest.TestCase):
     def test_missing_source_or_failed_paged_read_cannot_report_empty_queue(self):
         self.run_queue(register=True)
         self.sources[delivery.source_item(self.questions[0]["url"])] = []
-        with self.assertRaises(ValueError):
-            self.run_queue(items=[])
+        partial = self.run_queue(items=[])
+        self.assertFalse(partial["complete"])
+        self.assertEqual(partial["missing_sources"], [self.questions[0]["url"]])
+        self.assertEqual({q["url"] for q in partial["questions"]}, {q["url"] for q in self.questions})
         with patch.object(delivery, "records", side_effect=ValueError("page unavailable")), self.assertRaises(ValueError):
             self.run_queue()
 
     def test_two_workers_serialize_registration_using_shared_counter_home(self):
         with ThreadPoolExecutor(max_workers=2) as pool, patch.object(delivery, "post", side_effect=self.post):
             args = SimpleNamespace(queue=self.queue, owner=self.owner, decision_author=self.authors,
-                                   items=list(self.sources), register=True, ack=None, delivery_url=None)
+                                   items=[q["url"] for q in self.questions], register=True, ack=None, delivery_url=None)
             results = list(pool.map(lambda _: delivery.run_queue(args, self.fetch), range(2)))
         self.assertEqual(len(self.comments), len(self.questions))
         self.assertEqual([q["url"] for q in results[0]["questions"]],
@@ -162,11 +169,46 @@ class DeliveryTests(unittest.TestCase):
                 self.run_queue(ack=row["url"], delivery_url=receipt)
 
     def test_writes_use_automation_helper_dedupe_and_preserve_unknown_outcome(self):
-        with patch.object(delivery.github_comment, "comment", return_value={"ok": True, "outcome_certainty": "confirmed"}) as post:
+        repo, number = self.queue.split("#")
+        # Generate the real library result; do not invent its CLI envelope.
+        for action in ("created", "existing"):
+            result = delivery.github_comment._comment_payload(
+                {"id": 1, "html_url": f"https://github.com/{repo}/issues/{number}#issuecomment-1",
+                 "user": {"login": self.authors[0]}},
+                operation="github.comment.issue", kind="issue", repo=repo, number=int(number),
+                actor=self.authors[0], expected_actor=self.authors[0], comment_action=action, completed_steps=[])
+            for certainty in (None, "confirmed", "reconciled_applied"):
+                payload = {**result, **({"outcome_certainty": certainty} if certainty else {})}
+                with patch.object(delivery.github_comment, "comment", return_value=payload):
+                    self.assertEqual(delivery.post(self.queue, "reference"), payload)
+        with patch.object(delivery.github_comment, "comment", return_value={**result, "outcome_certainty": "unknown"}), self.assertRaises(ValueError):
             delivery.post(self.queue, "reference")
-            self.assertTrue(post.call_args.kwargs["dedupe_body"])
-        with patch.object(delivery.github_comment, "comment", return_value={"ok": True, "outcome_certainty": "unknown"}), self.assertRaises(ValueError):
-            delivery.post(self.queue, "reference")
+
+    def test_register_selects_one_exact_question_not_the_whole_discussion(self):
+        target = self.questions[0]
+        old = {**target, "id": 2, "url": target["url"].split("#")[0] + "#issuecomment-2",
+               "body": "Owner question: older request?"}
+        self.sources[delivery.source_item(target["url"])].insert(0, old)
+        self.run_queue(items=[target["url"]], register=True)
+        self.assertEqual([r["question_url"] for r in delivery.records(self.comments, {self.authors[0]})], [target["url"]])
+        with self.assertRaises(ValueError):
+            self.run_queue(items=[delivery.source_item(target["url"])], register=True)
+
+    def test_unknown_question_author_stays_visible_and_case_does_not_change_authority(self):
+        self.questions[0]["author"] = "new-bot"
+        report = self.run_queue()
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["untrusted_sources"], [self.questions[0]["url"]])
+        self.assertEqual(report["queue_length"], len(self.questions))
+        self.questions[0]["author"] = self.authors[0].upper()
+        self.sources[delivery.source_item(self.questions[0]["url"])].append(self.fixture["decision"])
+        self.assertEqual(self.run_queue(owner=self.owner.upper(), decision_author=[a.upper() for a in self.authors])["queue_length"], len(self.questions) - 1)
+
+    def test_omitted_queue_author_is_unknown_coverage_not_an_empty_all_clear(self):
+        self.run_queue(register=True)
+        report = self.run_queue(items=[], decision_author=[])
+        self.assertFalse(report["complete"])
+        self.assertEqual({r["url"] for r in report["untrusted_records"]}, {c["url"] for c in self.comments})
 
 
 if __name__ == "__main__":

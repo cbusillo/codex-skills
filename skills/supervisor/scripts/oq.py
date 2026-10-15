@@ -22,7 +22,9 @@ DECISION_PREFIXES = (
 )
 
 
-def questions(comments, owner, decision_authors, related_comments=()):
+def questions(comments, owner, decision_authors, related_comments=(), *, recorded_decisions_only=False):
+    owner = owner.casefold()
+    decision_authors = {author.casefold() for author in decision_authors}
     results = []
     for i, question in enumerate(comments):
         body = question.get("body", "").strip()
@@ -30,11 +32,21 @@ def questions(comments, owner, decision_authors, related_comments=()):
             continue
         answers = []
         for answer in [*comments[i + 1 :], *related_comments]:
-            author = answer.get("author")
+            author = (answer.get("author") or "").casefold()
             text = answer.get("body", "").lstrip().lstrip("*")
+            recorded = text.startswith(DECISION_PREFIXES)
             authorized = author == owner or (
-                author in decision_authors and text.startswith(DECISION_PREFIXES)
+                author in decision_authors and recorded
             )
+            # The queue needs a recorded decision, not merely a linked owner
+            # reply. Keep the legacy classifier's candidate behavior for callers.
+            if recorded_decisions_only and not recorded:
+                continue
+            content = re.sub(r"^(?:Director|Owner) decision(?:\s*\([^)]*\))?[, :*]*", "", text)
+            content = content.replace("*", "").strip()
+            content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
+            if re.match(r"(?i)(?:later|not now|defer|park|hold|keep (?:it )?queued)\b", content):
+                continue
             # Later unrelated replies never resolve a question. Require its id or URL.
             linked = question["url"] in text or re.search(
                 rf"(?<!\d){question['id']}(?!\d)", text
@@ -83,7 +95,7 @@ def main():
     parser.add_argument("--owner", required=True)
     parser.add_argument("--decision-author", action="append", default=[])
     parser.add_argument("--queue", help="Existing Supervisor question discussion, OWNER/REPO#NUMBER")
-    parser.add_argument("--register", action="store_true", help="Register source question links in that queue, with readback")
+    parser.add_argument("--register", action="store_true", help="Register exact positional question URLs in that queue, with readback")
     parser.add_argument("--ack", metavar="QUESTION_URL", help="Acknowledge actual presentation to the Director")
     parser.add_argument("--delivery-url", help="Durable receipt for the presentation, not just queue registration")
     args = parser.parse_args()
@@ -92,8 +104,9 @@ def main():
         if (args.register and args.ack) or bool(args.ack) != bool(args.delivery_url):
             parser.error("use either --register or --ack QUESTION_URL --delivery-url RECEIPT_URL")
         try:
-            print(json.dumps(run_queue(args, fetch)))
-            return 0
+            report = run_queue(args, fetch)
+            print(json.dumps(report))
+            return 0 if report["complete"] else 1
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
             print(json.dumps({"queue": args.queue, "complete": False, "error": str(error)}))
             return 1

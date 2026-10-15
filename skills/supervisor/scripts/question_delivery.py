@@ -94,7 +94,12 @@ def post(queue, body):
         result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True)
     except github_comment.CommentError as error:
         raise ValueError(str(error)) from error
-    if result.get("ok") is not True or result.get("outcome_certainty") != "confirmed":
+    # Library payloads have no CLI `ok` envelope. A created/reused comment plus
+    # the subsequent full readback proves delivery, including reconciled writes.
+    if (result.get("comment_action") not in {"created", "existing"}
+            or not isinstance(result.get("url"), str)
+            or source_item(result["url"]) != queue
+            or result.get("outcome_certainty") not in {None, "confirmed", "reconciled_applied", "not_applicable"}):
         raise ValueError("question delivery write is unconfirmed; read queue before retrying")
     return result
 
@@ -114,6 +119,11 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     now = now or datetime.now(timezone.utc)
     trusted = {author.casefold() for author in [owner, *decision_authors]}
     entries = records(queue_comments, trusted)
+    untrusted_records = []
+    for comment in queue_comments:
+        lines = (comment.get("body") or "").strip().splitlines()
+        if lines and MARKER.fullmatch(lines[0]) and (comment.get("author") or "").casefold() not in trusted:
+            untrusted_records.append({"url": comment["url"], "author": comment.get("author")})
     registrations, acknowledgements = {}, {}
     for record in entries:
         if record["event"] == "registered":
@@ -129,12 +139,12 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
         return result
 
     source_comments = sorted(without_receipts(source_comments), key=lambda c: c.get("created_at") or "")
-    source_comments = [c for c in source_comments if c.get("author", "").casefold() in trusted]
     answers = without_receipts(queue_comments)
     rows = []
     # Source URL is immutable identity. A repeat presentation keeps its Q ID;
     # registration never allocates a second number from the shared counter.
-    found = oq.questions(source_comments, owner, decision_authors, answers)
+    found = oq.questions(source_comments, owner, decision_authors, answers, recorded_decisions_only=True)
+    source_authors = {c["url"]: (c.get("author") or "") for c in source_comments}
     for question in found:
         if question["status"] == "answered":
             continue
@@ -149,17 +159,26 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
             age = max(0, (now - parsed).total_seconds())
         receipt = acknowledgements.get(url)
         rows.append({**question, "question_id": question_id(question["question"]),
+                     "source_author": source_authors[url],
+                     "author_trusted": source_authors[url].casefold() in trusted,
                      "registration_url": registrations.get(url),
                      "delivery": "acknowledged" if receipt else "unacknowledged",
                      "delivery_url": receipt["delivery_url"] if receipt else None,
                      "resurface": receipt is None, "age_seconds": age})
     known = {row["url"] for row in found}
-    if set(registrations) - known:
-        raise ValueError("registered question missing from source reads; queue coverage incomplete")
+    missing = sorted(set(registrations) - known)
+    for url in missing:
+        rows.append({"url": url, "status": "missing_source", "question": None,
+                     "created_at": None, "question_id": None, "age_seconds": None,
+                     "registration_url": registrations[url], "resurface": True,
+                     "delivery": "unknown", "delivery_url": None})
     rows.sort(key=lambda row: (row.get("created_at") or "", row["url"]))
     for position, row in enumerate(rows, 1):
         row["position"] = position
-    return {"complete": True, "queue_length": len(rows), "questions": rows,
+    untrusted = [q["url"] for q in rows if q.get("author_trusted") is False]
+    return {"complete": not (missing or untrusted or untrusted_records), "queue_length": len(rows), "questions": rows,
+            "missing_sources": missing, "untrusted_sources": untrusted,
+            "untrusted_records": untrusted_records,
             "unacknowledged_count": sum(row["resurface"] for row in rows)}
 
 
@@ -178,9 +197,11 @@ def reconcile(args, fetch):
     trusted = {author.casefold() for author in [args.owner, *args.decision_author]}
     queue_comments = fetch(args.queue)
     existing = records(queue_comments, trusted)
-    items = list(dict.fromkeys([*args.items, *(source_item(r["question_url"]) for r in existing)]))
-    if any(item.split("/")[0].casefold() != args.owner.casefold() for item in items):
-        raise ValueError("source discussions must belong to the configured Director")
+    targets = {value for value in args.items if COMMENT_URL.fullmatch(value)}
+    if args.register and not targets:
+        raise ValueError("registration requires exact original question URLs, not whole discussions")
+    items = list(dict.fromkeys([*(source_item(value) if value in targets else value for value in args.items),
+                               *(source_item(r["question_url"]) for r in existing)]))
     comments_by_url = {}
     for item in items:
         for comment in fetch(item):
@@ -189,8 +210,14 @@ def reconcile(args, fetch):
     report = inventory(comments, queue_comments, args.owner, args.decision_author)
     writes = []
     if args.register:
+        for target in targets:
+            source = comments_by_url.get(target)
+            if not source or not oq.questions([source], args.owner, args.decision_author):
+                raise ValueError(f"registration source is not an explicit question: {target}")
+            if (source.get("author") or "").casefold() not in trusted:
+                raise ValueError(f"question author needs review: {target}")
         for question in report["questions"]:
-            if not question["registration_url"]:
+            if question["url"] in targets and not question["registration_url"]:
                 writes.append(marker_body("registered", question["url"]))
     if args.ack:
         validate_receipt(args.delivery_url)
