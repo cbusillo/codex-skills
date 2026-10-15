@@ -6040,6 +6040,11 @@ def main() -> None:
     )
     if args.command == "wait" and not args.clear and not args.waiting_for:
         CURRENT_IS_WRITE = False
+    previous_repo = os.environ.get("GH_REPO")
+    if args.repo:
+        # Reader construction and repository-less probes must select the same
+        # App as the explicit target, before any request or cache is prepared.
+        os.environ["GH_REPO"] = args.repo
     try:
         args.func(args)
     except ClassifiedPlanError as exc:
@@ -6078,6 +6083,12 @@ def main() -> None:
             write_outcome="unknown" if CURRENT_IS_WRITE else None,
         )
         die("Interrupted", code=130, error_code="cancelled", failure=failure)
+    finally:
+        if args.repo:
+            if previous_repo is None:
+                os.environ.pop("GH_REPO", None)
+            else:
+                os.environ["GH_REPO"] = previous_repo
 
 
 if __name__ == "__main__":
