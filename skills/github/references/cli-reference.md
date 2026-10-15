@@ -1795,8 +1795,43 @@ Qualified issue references supply this context even without `--repo`.
 For a bare issue number without `--repo`, the resolved checkout repository
 supplies it.
 
-If the Client App is not installed on the target, reads fail with the missing
-installation named. Writes retain the existing refusal and per-command own-user
+If the Client App is not installed on the target, the helper checks GitHub's
+repository endpoint without authentication. A positive public response permits
+ordinary reads as the declared personal account, with
+`GH_WITH_ENV_TOKEN_OWN_USER=1` on that command and the same active-login
+verification used for own-user writes. No config value declares a repository
+public. Private, missing, moved or unverified repositories retain the clear
+failure; unknown visibility never authorizes fallback. For example, after
+approval to use the declared personal account:
+
+```sh
+GH_WITH_ENV_TOKEN_OWN_USER=1 skills/github/scripts/gh-with-env-token issue list --repo cbusillo/codex-skills --search reminders
+GH_WITH_ENV_TOKEN_OWN_USER=1 uv run skills/github/scripts/gh-plan.py --repo cbusillo/codex-skills search reminders
+```
+
+The anonymous probe runs at the wrapper boundary only when the command opted
+in. It follows no redirects and caches no visibility verdict, so a repository
+that becomes private cannot keep using an earlier public result. GitHub's
+anonymous API quota applies; rate limits or unavailable visibility keep the
+missing-installation refusal. Repo-scoped issue, PR and run CLI reads and REST
+`repos/OWNER/REPO` reads use this route. REST issue searches must be qualified
+only to that verified repository; `gh-plan search` supplies this qualifier for
+an unscoped query. Raw GraphQL and global CLI searches cannot use the public
+fallback; use the repo-scoped commands above. Existing own-user writer and
+readback routes retain their existing rules.
+On REST reads, put query parameters in the endpoint URL rather than using
+`-f`, `-F` or `--input`; those forms retain the wrapper's conservative write
+classification. CLI list `--search` values must also stay within the verified
+repository. Use separate or long flags for searches; bundled search shorthand
+and `user:`, `org:` or `owner:` scopes cannot use this single-repository route.
+For view/check commands, use `--repo OWNER/REPO` and a number or branch operand;
+URL operands cannot select this public-read route. The public check and scope
+validation happen before delegation. GitHub CLI retains its redirect behavior,
+so a transferred issue may follow a destination visible to the approved personal
+account; this route does not add response-content filtering. Direct private or
+unverified repository targets still refuse.
+
+Writes retain the existing refusal and per-command own-user
 opt-in below, using the declared personal account when approved; no token from the primary App is borrowed. Missing or partial
 Client configuration fails before sending a command. These settings do not
 create an App, install it, change permissions, or authorize outreach or access.
@@ -1804,8 +1839,9 @@ create an App, install it, change permissions, or authorize outreach or access.
 Python write helpers keep prerequisite and reconciliation reads on a previously
 resolved own-user writer when the per-command opt-in is present. They use the
 wrapper's `--require-installation` prefix so a missing installation takes the
-same authorized own-user path. Ordinary Client-App reads still fail clearly;
-required-automation mode still refuses personal authentication.
+same authorized own-user path. Ordinary public reads use the verified public
+route above; required-automation mode still refuses personal authentication,
+and the separate reader App never falls back to a personal account.
 
 ### Primary App and contributor identity
 
