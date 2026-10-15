@@ -113,7 +113,8 @@ class StrandedTests(unittest.TestCase):
         row = next(r for r in self.report()["findings"] if r["number"] == 1632)
         self.assertEqual(row["kind"], "ready_handoff_unrouted")
         record["item"]["labels"] = [{"name": "ship-this"}]
-        self.assertNotIn(1632, {r["number"] for r in self.report()["findings"]})
+        row = next(r for r in self.report()["findings"] if r["number"] == 1632)
+        self.assertEqual(row["kind"], "aged_ready_handoff")
         record["pull"]["base"]["ref"] = "unregistered"
         row = next(r for r in self.report()["findings"] if r["number"] == 1632)
         self.assertEqual(row["kind"], "ready_handoff_routing_unknown")

@@ -43,6 +43,8 @@ unknown), next actor and review requirement:
 - Current-head Ready handoffs without the base branch's enqueue view from the
   existing active train policy helper. Unavailable policy or an absent target
   is routing unknown, never proof that a PR is unrouted or enqueued.
+  An aged Ready remains a candidate when its enqueue view is set: a label alone
+  cannot prove that a receiver is running or the train is making progress.
 - Open issues with a merged linked PR, aggregated to one candidate per issue
   with the newest explicit completing merge preferred over incidental Refs.
   Explicit closing scope is distinguished

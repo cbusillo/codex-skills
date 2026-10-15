@@ -151,6 +151,9 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 elif target["readyLabel"].casefold() not in labels(item):
                     add("ready_handoff_unrouted", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
                         "Supervisor", "Current-head Ready has no enqueue view; verify existing train custody before routing.")
+                else:
+                    add("aged_ready_handoff", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
+                        "Supervisor / train recovery owner", "Current-head Ready remains open with its enqueue view set; that view does not prove an active receiver or train progress.")
             if "merge-blocked" in labels(item):
                 events = [e for e in record.get("timeline", []) if e.get("event") == "labeled" and
                           (e.get("label") or {}).get("name") == "merge-blocked"]
