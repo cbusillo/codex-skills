@@ -3679,7 +3679,7 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
     """Verify bounded current-status PR links; a merged slice never closes an issue."""
     refs = github_next_queue.delivery_references(item, trusted)
     result: dict[str, Any] = {"complete": len(refs) <= 8, "merged_prs": [], "completion_proven": False,
-                              "scope": "current_status_explicit_pr_references", "all_linked_prs_searched": False}
+                              "scope": "candidate_status_explicit_pr_references", "all_linked_prs_searched": False}
     if len(refs) > 8:
         result["omitted_reference_count"] = len(refs) - 8
     repositories = repositories if repositories is not None else {}
@@ -3721,9 +3721,15 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
     if result["merged_prs"] and any(github_next_queue.remaining_work(status)["state"] == "engineering" for status in possible_statuses):
         try:
             owner, name = item["repo"].split("/")
-            _, edited = api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
-                payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
-                      "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
+            def read_edit() -> tuple[str, Any]:
+                return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
+                    payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
+                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
+            try:
+                _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read_edit)
+                             if NEXT_READS is not None else read_edit())
+            except github_next_reads.ReadDeadline as exc:
+                raise PlanError(str(exc)) from exc
             data = edited.get("data") if isinstance(edited, dict) else None
             repository = data.get("repository") if isinstance(data, dict) else None
             issue = repository.get("issue") if isinstance(repository, dict) else None

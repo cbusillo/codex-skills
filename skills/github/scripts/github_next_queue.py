@@ -50,8 +50,13 @@ def status_field(status: str, field: str) -> str:
 
 
 def delivery_references(item: dict[str, Any], trusted: set[str]) -> list[tuple[str, int]]:
-    """Read explicit source-PR references in the current status, not its history."""
-    status = current_status(item.get("discussion") or {}, trusted)
+    """Read candidate statuses before edit metadata can select the current one."""
+    discussion = item.get("discussion") or {}
+    statuses = [github_direction_next.section_map(discussion.get("body") or "").get("Current Status", "")]
+    statuses.extend(github_direction_next.section_map(comment.get("body") or "").get("Current Status", "")
+                    for comment in discussion.get("comments", [])
+                    if str(comment.get("author") or "").casefold() in trusted)
+    status = "\n".join(statuses)
     refs = [(match[1], int(match[2])) for match in re.finditer(
         r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)(?!\d)", status)]
     shorthand = re.sub(r"\[[^]\n]*]\(https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*[^)]*\)", "", status)
@@ -146,10 +151,12 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         row.update(work)
     if delivery.get("merged_prs") and work["state"] == "engineering":
         recorded_times = []
-        values = [delivery.get("body_recorded_at")]
-        values.extend(comment.get("updated_at") or comment.get("created_at") for comment in discussion.get("comments", [])
-                      if str(comment.get("author") or "").casefold() in trusted
-                      and "Current Status" in github_direction_next.section_map(comment.get("body") or ""))
+        # A body edit can change an evidence link or marker while leaving a
+        # stale action intact. Only a newly posted matching status establishes
+        # an automatic post-merge remainder; a caller can review body-only work.
+        values = [comment.get("created_at") for comment in discussion.get("comments", [])
+                  if str(comment.get("author") or "").casefold() in trusted
+                  and re.sub(r"<!--.*?-->", "", github_direction_next.section_map(comment.get("body") or "").get("Current Status", ""), flags=re.S).strip() == status]
         for value in values:
             try:
                 recorded = datetime.fromisoformat(value.replace("Z", "+00:00"))

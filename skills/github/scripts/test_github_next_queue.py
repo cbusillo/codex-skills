@@ -360,12 +360,14 @@ def test_verified_merged_source_is_reviewed_but_a_new_source_remainder_can_proce
     row['source_delivery']['body_recorded_at'] = '2026-09-02T00:00:00Z'
     assert classify(row)['state'] == 'scope_review'  # An unrelated body edit does not identify a new remainder.
     row['discussion']['body'] = row['discussion']['body'].replace('Implement the export path.', 'Implement the remaining export parser.')
+    assert classify(row)['state'] == 'scope_review'  # Body-only remainder still needs a current review.
+    row['discussion']['comments'].append({'author': 'owner', 'created_at': '2026-09-02T00:01:00Z', 'body': '## Current Status\nState: Active\nNext action: Implement the remaining export parser.\nWaiting for: None.\nEvidence: https://github.com/owner/repo/pull/80'})
     assert classify(row)['state'] == 'available'
     row['source_delivery']['complete'] = False
     assert classify(row)['state'] == 'review'
     row['source_delivery']['body_recorded_at'] = '2026-08-01T00:00:00Z'
     row['source_delivery']['complete'] = True
-    row['discussion']['comments'] = [{'author': 'owner', 'body': '## Current Status\nState: Active; earlier slice merged\nNext action: Implement the remaining export handler.', 'updated_at': '2026-09-03T00:00:00Z'}]
+    row['discussion']['comments'] = [{'author': 'owner', 'body': '## Current Status\nState: Active; earlier slice merged\nNext action: Implement the remaining export handler.', 'created_at': '2026-09-03T00:00:00Z', 'updated_at': '2026-09-03T00:00:00Z'}]
     assert classify(row)['state'] == 'available'
 
 
@@ -451,9 +453,8 @@ def test_delivery_bounds_deadlines_and_incomplete_review_never_prove_availabilit
     review = {'state': 'available', 'ownership_complete': True, 'discussion_digest': row['discussion']['digest']}
     assert not module.project_local_queue([row], [], {'issues': {'owner/repo#1': review}})['available_candidates']
     with patch.object(module, 'api_json', Mock(side_effect=AssertionError('Expired reads must not run'))) as api:
-        module.NEXT_READS = Mock(expired=True)
-        bounded = module.next_source_delivery(row, {'owner'})
-        module.NEXT_READS = None
+        with patch.object(module, 'NEXT_READS', Mock(expired=True)):
+            bounded = module.next_source_delivery(row, {'owner'})
     assert not bounded['complete'] and bounded['unread_reference_count']
     api.assert_not_called()
 
@@ -472,6 +473,25 @@ def test_delivery_annotation_uses_the_real_adapter_and_preserves_unknown_graphql
     assert context['claim_required']
     assert row['queue']['state'] == 'scope_review'
     assert not row['source_delivery']['complete'] and row['source_delivery']['body_edit_error']
+
+
+
+def test_real_reader_finds_merged_pr_in_status_comment_after_later_activity() -> None:
+    module = cli.load_module()
+    row = item('Implement the export parser.')
+    row['discussion']['updated_at'] = '2026-09-03T00:00:00Z'
+    row['discussion']['comments'] = [{'author': 'owner', 'created_at': '2026-09-02T00:00:00Z',
+        'body': '## Current Status\nState: Active; parser merged in PR #80\nNext action: Verify deployed export.'}]
+    def read(_method, path, payload=None, **_kwargs):
+        if path == '/graphql':
+            return 'bot', {'data': {'repository': {'issue': {'createdAt': '2026-08-01T00:00:00Z', 'lastEditedAt': None}}}}
+        if '/pulls/' in path:
+            return 'bot', {'number': 80, 'body': 'Refs #1', 'merged_at': '2026-09-01T00:00:00Z', 'base': {'ref': 'main'}}
+        return 'bot', {'default_branch': 'main'}
+    with patch.multiple(module, api_json=read, collect_paged_rest_items=lambda *_a, **_kw: ('bot', [])), patch.multiple(module.pathlib.Path, is_dir=lambda *_: False):
+        module.real_annotate_next_queue([row], cli.next_args(repo='owner/repo'))
+    assert row['source_delivery']['merged_prs']
+    assert row['queue']['state'] == 'verification'
 
 
 def main() -> None:
