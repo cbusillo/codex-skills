@@ -83,8 +83,8 @@ changes on yes.
   The helper reads back one registration per source link. Keep the original
   shared-counter Q ID on repeat presentations; registering does not allocate
   another number. The original comment owns the question text.
-- At every Supervisor check and takeover, read `oq.py --queue OWNER/REPO#QUEUE
-  --owner OWNER --decision-author TRUSTED_BOT`, including source items from
+- At every Supervisor check and takeover, read
+  `oq.py --queue OWNER/REPO#QUEUE --owner OWNER --decision-author TRUSTED_BOT`, including source items from
   worker handoffs to catch missed registrations. Bring the oldest applicable
   question under the queue rules above. Only after actually presenting it,
   acknowledge delivery with `--ack ORIGINAL_QUESTION_URL --delivery-url RECEIPT_URL`;
