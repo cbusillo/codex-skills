@@ -1,5 +1,6 @@
 // EventKit supplies scheduling; Reminders' native URL field supplies the visible attachment.
-// Reads a JSON request on stdin. Never requests permissions or opens the terminal URL.
+// Reads a JSON request line on stdin, prints the exact list's items as a lookup line,
+// then reads reminder_save.py's target decision line. Never requests permissions or opens the terminal URL.
 import AppKit
 import ApplicationServices
 import EventKit
@@ -17,6 +18,12 @@ struct Request: Decodable {
     let update_id: String?
     let delete_id: String?
     let preserve_existing: Bool?
+}
+
+// reminder_save.py decides the target from the lookup; this writer only rechecks it.
+struct Decision: Decodable {
+    let action: String
+    let id: String?
 }
 
 // Compare preserved fields after both EventKit saving and the native URL edit.
@@ -159,7 +166,7 @@ func saveAttachment(_ request: Request, app: NSRunningApplication) -> Bool {
 
 guard #available(macOS 14.0, *) else { finish("manual_required", "Native saving requires macOS 14+") }
 do {
-    let request = try JSONDecoder().decode(Request.self, from: FileHandle.standardInput.readDataToEndOfFile())
+    let request = try JSONDecoder().decode(Request.self, from: Data((readLine() ?? "").utf8))
     let preserveExisting = request.preserve_existing == true
     guard !preserveExisting || (request.update_id != nil && request.delete_id == nil) else {
         finish("refused", "Preservation requires an explicit update ID; no mutation")
@@ -185,10 +192,24 @@ do {
         reminder.url?.absoluteString == request.url ||
         (reminder.notes ?? "").components(separatedBy: .newlines).contains(request.marker)
     }
-    let matches = reminders.filter { !$0.isCompleted && sameTarget($0) }
-    guard matches.count <= 1 else { finish("refused", "Duplicate incomplete session reminders; no mutation") }
-    if let deleteID = request.delete_id {
-        guard let reminder = matches.first, reminder.calendarItemIdentifier == deleteID else {
+    let lookup: [[String: Any]] = reminders.map {
+        ["id": $0.calendarItemIdentifier, "completed": $0.isCompleted,
+         "same_target": sameTarget($0), "title": $0.title ?? ""]
+    }
+    if let data = try? JSONSerialization.data(withJSONObject: ["status": "lookup", "reminders": lookup]) {
+        print(String(decoding: data, as: UTF8.self))
+    }
+    fflush(stdout)
+    guard let line = readLine(),
+          let decision = try? JSONDecoder().decode(Decision.self, from: Data(line.utf8)) else {
+        finish("refused", "No target decision; no mutation")
+    }
+    // Recheck the decision: only the requested incomplete session item is ever changed.
+    let target = reminders.first {
+        !$0.isCompleted && sameTarget($0) && $0.calendarItemIdentifier == decision.id
+    }
+    if decision.action == "delete" {
+        guard let reminder = target, let deleteID = request.delete_id, decision.id == deleteID else {
             finish("refused", "Delete ID must match the incomplete session in the exact list")
         }
         itemID = deleteID
@@ -200,22 +221,14 @@ do {
         finish("deleted", "Owned reminder removed with absence readback")
     }
     let reminder: EKReminder
-    if let existing = matches.first {
+    if decision.action == "update", let existing = target, request.update_id == decision.id {
         itemID = existing.calendarItemIdentifier
-        guard request.update_id == itemID else {
-            finish("refused", "Existing reminder found; explicit update ID and write authority required")
-        }
         reminder = existing
-    } else {
-        guard request.update_id == nil else { finish("refused", "Update target not found; no replacement created") }
-        guard !reminders.contains(where: { $0.isCompleted && sameTarget($0) }) else {
-            finish("refused", "Completed session reminder exists; no reactivation or replacement")
-        }
+    } else if decision.action == "create", request.update_id == nil, request.delete_id == nil {
         reminder = EKReminder(eventStore: store)
+    } else {
+        finish("refused", "Target decision does not match the request; no mutation")
     }
-    guard !reminders.contains(where: {
-        !$0.isCompleted && $0.calendarItemIdentifier != reminder.calendarItemIdentifier && $0.title == request.title
-    }) else { finish("refused", "Title is not unique in the target list; no UI edit") }
     guard !preserveExisting || reminder.title == request.title else {
         finish("refused", "Repair title must match the existing reminder; no mutation")
     }
@@ -244,7 +257,7 @@ do {
           request.repeat_days == nil || request.repeat_days! > 0 else {
         finish("refused", "Invalid due date or recurrence")
     }
-    created = matches.isEmpty
+    created = itemID == nil
     reminder.notes = request.notes
     reminder.url = url // Lookup identity only; this does not prove a visible attachment.
     if !preserveExisting {
