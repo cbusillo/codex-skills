@@ -1598,7 +1598,17 @@ def test_opw_sourced_seven_day_hand_count_matches_reporting_map() -> None:
     folder = SCRIPT.parent / "fixtures" / "opw-week-2026-10-08"
     week = json.loads((folder / "week.json").read_text())
     direction = (folder / "DIRECTION.md").read_text()
-    result, _calls = opw_fixture_capacity(module)
+    assigned: dict[tuple[str, int], str | None] = {}
+    classify = module.direction_reporting.classify
+
+    def record_kind(rules: Any, pull: dict[str, Any], **kwargs: Any) -> Any:
+        attribution = classify(rules, pull, **kwargs)
+        assigned[pull["repo"], pull["number"]] = attribution[0]
+        return attribution
+
+    with patch.object(module.direction_reporting, "classify", side_effect=record_kind):
+        result, _calls = opw_fixture_capacity(module)
+    assert assigned == {(pull["repo"], pull["number"]): pull["kind"] for pull in week["pulls"]}
     report = result["reporting"]
     assert report["status"] == "complete" and not report["unresolved"]
     assert report["merged_total"] == result["merged_total"] == len(week["pulls"])

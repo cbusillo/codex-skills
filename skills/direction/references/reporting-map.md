@@ -80,6 +80,9 @@ to `unresolved`, which includes conflicts. Shares divide named-kind counts by
 as settled or renormalize it over classified PRs.
 Merge timestamps include the window's start and exclude its end. A merge
 exactly at the ending timestamp belongs to the following window.
+This boundary applies to both legacy capacity merge counts and mapped counts,
+including Directors without a map. Other activity keeps its existing interval
+behavior.
 
 ## Output and validation
 

@@ -17,6 +17,8 @@ evidence, not an independently retrieved GitHub inventory. The test sends it
 through the real capacity reader with an offline fetch function; it never
 runs the weekly audit or writes a marker. Separate synthetic boundary cases
 are not part of Mike's hand count.
+Matching that six-repository scope in a future real weekly check requires the
+supported `--include-archived` option; the default omits archived repositories.
 
 Expected result: one merge, Direction 100%, all other kinds 0%, no unresolved
 PRs. This week proves direction-only attribution and zero counts. It cannot
