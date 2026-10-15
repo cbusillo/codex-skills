@@ -75,6 +75,18 @@ The selected queue's trusted registration markers recover original discussions
 even when outside the repository/history selection. Missing/deleted sources and
 untrusted records retain their exact URLs in coverage evidence; budget limits
 remain explicit rather than becoming permanent unexplained queue failures.
+Queue registration/source recovery runs before the general inventory and closed
+history. Only trusted in-scope questions and registered URLs enter its delivery
+view. Registered unresolved questions outside the open inventory remain visible;
+unread sources are distinguished from missing sources. Records with unread
+comments are not evaluated from an older body marker. Unread repositories and
+states are grouped in one coverage entry.
+
+Closed-record discovery is limited to `--history-days`: an outstanding promise
+on an older, untouched closed issue can be missed. This is outside selected
+coverage, even when that selected scope is complete. Explicit closing keywords
+are a review heuristic; the sweep does not replace GitHub's native closing-link
+authority or prove that a linked PR completed an issue.
 
 ## Daily delivery and maintenance
 

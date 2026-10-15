@@ -22,8 +22,11 @@ import oq
 
 UTC = dt.timezone.utc
 QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")
-PREFIXES = ("Owner question:", "Director question:")
-DECISION = re.compile(r"^\s*\**(?:Director|Owner) decision\b", re.I)
+PREFIXES = oq.QUESTION_PREFIXES
+
+
+def is_decision(body: str) -> bool:
+    return body.startswith(oq.DECISION_PREFIXES)
 DUE = re.compile(r"(?im)^\s*(?:[-*] )?\**Due\**:\s*(\d{4}-\d{2}-\d{2}T[^\s*]+)")
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:https://github.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b", re.I)
 
@@ -64,7 +67,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             if row["url"] not in question_view or row["status"] == "answered":
                 question_view[row["url"]] = row
     decisions = [c for c in comments if login(c) in owners or
-                 (login(c) in trusted and DECISION.match(question_body(c)))]
+                 (login(c) in trusted and is_decision(question_body(c)))]
     deliveries = {row["url"]: row for row in (delivery_view or {}).get("questions", [])}
     if delivery_view is not None and delivery_view.get("complete") is not True:
         gaps.append({"source": "question_delivery", "reason": "queue_view_incomplete",
@@ -112,7 +115,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             # Read existing explicit due fields, and the retained Q249 relative-date promise.
             due = DUE.search(body)
             due_at = stamp(due[1]) if due else None
-            if DECISION.match(body) and re.search(r"Measured after one day", body, re.I):
+            if is_decision(body) and re.search(r"Measured after one day", body, re.I):
                 start = stamp(comment.get("created_at"))
                 due_at = start + dt.timedelta(days=1) if start else None
             if due or due_at:
@@ -196,6 +199,17 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                     "Linked PR merged while issue remains open; Refs/partial scope is not proof of completion. Review the existing finish line.",
                     evidence=[pull.get("html_url"), {"wait_state": wait["state"], "waits": wait["waits"]}])
 
+    reported_questions = {row["url"] for row in findings if row["kind"] == "unanswered_question"}
+    for row in deliveries.values():
+        if not row.get("registration_url") or row["url"] in reported_questions or row.get("status") == "unread_source":
+            continue
+        target = re.fullmatch(r"https://github.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)#issuecomment-\d+", row["url"])
+        if target:
+            context = {"repo": target[1], "item": {"number": int(target[2])}}
+            add("registered_question", context, row["url"], row.get("created_at"),
+                "Supervisor / Director", "Registered question remains unresolved outside the selected open-record inventory.",
+                evidence=[{"registration_url": row["registration_url"], "delivery": row.get("delivery"),
+                           "delivery_url": row.get("delivery_url"), "resurface": row.get("resurface")}])
     findings.sort(key=lambda row: (row["since"] or "", row["repo"], row["number"], row["kind"]))
     return {"read_only": True, "sampled_at": now.isoformat(), "age_threshold_hours": age_hours,
             "complete": not gaps, "findings": findings, "coverage_gaps": gaps,
@@ -280,10 +294,48 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     offset = now.date().toordinal() % len(repos) if repos else 0
     ordered_repos = repos[offset:] + repos[:offset]
     since = (now - dt.timedelta(days=history_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    delivery_view = None
+    question_delivery = None
+    registered = []
+    unread_registered = set()
+    related_comments = []
+    if question_queue:
+        question_queue = question_queue.casefold()
+        queue_repo, queue_number = question_queue.split("#")
+        queue = listing(f"repos/{queue_repo}/issues/{queue_number}/comments")
+        try:
+            from skills.supervisor.scripts import question_delivery
+
+            normalize = lambda c: {**c, "author": login(c), "url": c.get("html_url") or c.get("url")}
+            normalized_queue = [normalize(c) for c in queue]
+            bots = set(github_identity.configured_bot_logins())
+            queue_director = director or queue_repo.split("/")[0]
+            registered = sorted({r["question_url"] for r in question_delivery.records(
+                normalized_queue, bots | {queue_director})})
+            # A fleet-wide queue can reference a closed or out-of-scope source.
+            # Recover its original discussion using the sibling's existing markers.
+            recovery_sources = [url for url in registered if not question_delivery.settled(
+                url, normalized_queue, queue_director, bots)]
+            for index, original in enumerate(recovery_sources):
+                if reads >= budget:
+                    unread_registered.update(recovery_sources[index:])
+                    gaps.append({"source": question_queue, "reason": "unread_registered_sources", "count": len(recovery_sources) - index})
+                    break
+                source_repo, source_number = question_delivery.source_item(original).split("#")
+                related_comments.extend(listing(f"repos/{source_repo.casefold()}/issues/{source_number}/comments"))
+        except ImportError:
+            gaps.append({"source": question_queue, "reason": "question_delivery_view_unavailable"})
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
+            question_delivery = None
+            gaps.append({"source": question_queue, "reason": "question_delivery_contract_error", "error_type": type(error).__name__})
+    else:
+        gaps.append({"source": "question_delivery", "reason": "question_queue_not_selected"})
+    unread_scopes = []
+    attempted_records = 0
     for state in ("open", "closed"):
         for repo in ordered_repos:
             if reads >= budget:
-                gaps.append({"source": repo, "reason": "request_or_quota_budget_exhausted"})
+                unread_scopes.append({"repo": repo, "state": state})
                 continue
             metadata = one(f"repos/{repo}")
             if metadata.get("archived") is True:
@@ -316,9 +368,13 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     gaps.append({"source": f"{repo}#{number}", "reason": "inventory_changed_during_pagination"})
                     continue
                 seen.add(number)
+                attempted_records += 1
+                before_comments = len(gaps)
                 record = {"repo": repo, "item": item, "default_branch": metadata["default_branch"],
                           "train_policy": policy,
                           "comments": [] if item.get("comments") == 0 else listing(f"repos/{repo}/issues/{number}/comments")}
+                if len(gaps) != before_comments:
+                    continue
                 valid_comments = [c for c in record["comments"] if type(c.get("id")) is int
                                   and isinstance(c.get("html_url"), str) and isinstance(c.get("created_at"), str)]
                 if len(valid_comments) != len(record["comments"]):
@@ -354,48 +410,35 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                             pull["_default_branch"] = source_metadata.get("default_branch")
                             record["linked_pulls"].append(pull)
                 records.append(record)
-    delivery_view = None
-    related_comments = []
-    if question_queue:
-        question_queue = question_queue.casefold()
-        queue_repo, queue_number = question_queue.split("#")
-        queue = listing(f"repos/{queue_repo}/issues/{queue_number}/comments")
+    if unread_scopes:
+        gaps.append({"source": "repository_inventory", "reason": "unread_repository_scopes", "scopes": unread_scopes})
+    if question_delivery is not None:
         try:
-            from skills.supervisor.scripts import question_delivery
-
-            normalize = lambda c: {**c, "author": login(c), "url": c.get("html_url") or c.get("url")}
-            normalized_queue = [normalize(c) for c in queue]
-            bots = set(github_identity.configured_bot_logins())
-            queue_director = director or queue_repo.split("/")[0]
-            registered = sorted({r["question_url"] for r in question_delivery.records(
-                normalized_queue, bots | {queue_director})})
-            # A fleet-wide queue can reference a closed or out-of-scope source.
-            # Recover its original discussion using the sibling's existing markers.
-            for index, original in enumerate(registered):
-                if reads >= budget:
-                    gaps.append({"source": question_queue, "reason": "unread_registered_sources", "count": len(registered) - index})
-                    break
-                if question_delivery.settled(original, normalized_queue, queue_director, bots):
-                    continue
-                source_repo, source_number = question_delivery.source_item(original).split("#")
-                related_comments.extend(listing(f"repos/{source_repo.casefold()}/issues/{source_number}/comments"))
             source_comments = [c for r in records for c in r["comments"]] + related_comments
             sources = {c.get("html_url"): normalize(c) for c in source_comments}
+            scope = set(registered) | {c["url"] for c in sources.values()
+                                      if c["author"] in bots | {queue_director}
+                                      and question_body(c).startswith(PREFIXES)}
             delivery_view = question_delivery.inventory(
-                list(sources.values()), normalized_queue, queue_director, bots, now=now,
+                list(sources.values()), normalized_queue, queue_director, bots, now=now, question_urls=scope,
             )
-        except ImportError:
-            gaps.append({"source": question_queue, "reason": "question_delivery_view_unavailable"})
+            delivery_view = {**delivery_view,
+                "missing_sources": [url for url in delivery_view.get("missing_sources", []) if url not in unread_registered],
+                "questions": [{**row, "status": "unread_source"} if row["url"] in unread_registered else row
+                              for row in delivery_view.get("questions", [])]}
+            if (not delivery_view["missing_sources"] and not delivery_view.get("untrusted_sources")
+                    and not delivery_view.get("untrusted_records") and unread_registered):
+                # The separate unread-source gap remains authoritative; these
+                # records are unexamined, not evidence that a source was deleted.
+                delivery_view["complete"] = True
         except (ValueError, TypeError, KeyError, AttributeError) as error:
             gaps.append({"source": question_queue, "reason": "question_delivery_contract_error", "error_type": type(error).__name__})
-    else:
-        gaps.append({"source": "question_delivery", "reason": "question_queue_not_selected"})
     result = report(records, now=now, age_hours=age_hours,
                     trusted=set(github_identity.configured_bot_logins()),
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
                     gaps=gaps, director_names=director_names, delivery_view=delivery_view,
                     related_comments=related_comments)
-    result.update({"repositories": repos, "checked_records": len(records), "requests": reads,
+    result.update({"repositories": repos, "checked_records": len(records), "attempted_records": attempted_records, "requests": reads,
                    "history_days": history_days, "quota_reserve": quota_reserve, "policy_reads": policy_reads})
     return result
 
@@ -431,6 +474,11 @@ def markdown(result: dict) -> str:
     for gap in result["coverage_gaps"]:
         count = f" ({gap['count']} records)" if "count" in gap else ""
         lines.append(f"- Coverage gap: {gap['source']} — {gap['reason']}{count}")
+        if gap.get("scopes"):
+            grouped = {}
+            for scope in gap["scopes"]:
+                grouped.setdefault(scope["repo"], []).append(scope["state"])
+            lines.append("  Unread: " + "; ".join(f"{repo} ({','.join(states)})" for repo, states in grouped.items()))
         for field in ("missing_sources", "untrusted_sources", "untrusted_records"):
             if gap.get(field):
                 urls = [r.get("url", "unknown") if isinstance(r, dict) else r for r in gap[field]]

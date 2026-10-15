@@ -188,10 +188,10 @@ class InventoryTests(unittest.TestCase):
                             and "since" in parse_qs(urlsplit(p).query) for p in self.reader.paths))
 
     def test_quota_reserve_and_request_limit_expose_unread_repositories(self):
-        self.reader.remaining = 250
+        self.reader.remaining = 0
         report = self.collect()
         self.assertFalse(report["complete"])
-        self.assertTrue(any(g["source"] == "test/repo" for g in report["coverage_gaps"]))
+        self.assertTrue(any(s["repo"] == "test/repo" for g in report["coverage_gaps"] for s in g.get("scopes", [])))
         self.assertEqual(self.reader.paths, ["rate_limit"])
         self.reader.remaining = 1000
         self.reader.paths.clear()
@@ -228,7 +228,7 @@ class InventoryTests(unittest.TestCase):
             with patch.object(audit, "owner_repositories", return_value=({"test/other": {}, "test/repo": {}}, False)):
                 # A one-read budget exposes the first repository without live metadata.
                 result = sweep.collect([], reader=reader, owner="test", now=self.now + dt.timedelta(days=day), max_requests=1)
-            sources = [g["source"] for g in result["coverage_gaps"] if g["source"].startswith("test/")]
+            sources = [s["repo"] for g in result["coverage_gaps"] for s in g.get("scopes", [])]
             if day == 0:
                 first = sources[0]
             else:
@@ -240,7 +240,7 @@ class InventoryTests(unittest.TestCase):
         result = self.collect(max_requests=4)
         unread = [g for g in result["coverage_gaps"] if g.get("count")]
         self.assertEqual(len(unread), 1)
-        self.assertEqual(unread[0]["count"] + result["checked_records"],
+        self.assertEqual(unread[0]["count"] + result["attempted_records"],
                          len(self.reader.pages[("repos/test/repo/issues", 1, "open")]))
         self.assertLess(len(result["coverage_gaps"]), 5)
 
@@ -269,7 +269,7 @@ class InventoryTests(unittest.TestCase):
     def test_queue_adapter_normalizes_rest_comments_without_host_state(self):
         fixture = json.loads(Path(__file__).with_name("fixtures").joinpath("stranded-week-2026-10-15.json").read_text())
         question = fixture["records"][0]["comments"][0]
-        def inventory(source, queue, owner, authors, now=None):
+        def inventory(source, queue, owner, authors, now=None, *, question_urls=None):
             self.assertEqual(queue[0]["url"], question["html_url"])
             self.assertEqual(queue[0]["author"], question["user"]["login"])
             return {"complete": True, "questions": []}
@@ -283,6 +283,9 @@ class InventoryTests(unittest.TestCase):
             with self.subTest(cause=cause):
                 reader = FakeReader()
                 reader.pages[("repos/test/repo/issues", 1, "open")] = [{"number": n, "state": "open"} for n in range(1, 50)]
+                reader.pages[("repos/test/repo/issues", 1, "open")][0].update({
+                    "user": {"login": "test"}, "body": sweep.github_plan_wait.marker(sweep.github_plan_wait.reviewed(
+                        evidence="A later comment may clear this body marker", waiting_for="Supervisor", ends_when="Reply recorded"))})
                 original = reader.get_json
                 def read(path, *, step):
                     if "/comments?" in path:
@@ -296,6 +299,7 @@ class InventoryTests(unittest.TestCase):
                 self.assertTrue(any(g.get("count", 0) > 40 for g in result["coverage_gaps"]))
                 self.assertLess(len(reader.paths), 8)
                 self.assertLess(len(result["coverage_gaps"]), 8)
+                self.assertFalse(any(row["kind"] == "aged_structured_wait" for row in result["findings"]))
 
     def test_all_repositories_open_work_precedes_closed_history(self):
         self.reader.repositories["repos/test/other"] = {"archived": False, "default_branch": "main"}
@@ -308,6 +312,49 @@ class InventoryTests(unittest.TestCase):
         self.reader.pages[("repos/test/repo/issues", 1, "open")] = [{"number": 1, "state": "open", "comments": 0}]
         self.collect()
         self.assertFalse(any("/comments" in p for p in self.reader.paths))
+
+    def test_many_unread_repositories_have_one_gap_with_both_states(self):
+        reader = FakeReader()
+        reader.remaining = 0
+        repos = [f"test/repo{n}" for n in range(40)]
+        result = sweep.collect(repos, reader=reader, now=self.now)
+        scope_gaps = [g for g in result["coverage_gaps"] if g.get("scopes")]
+        self.assertEqual(len(scope_gaps), 1)
+        self.assertEqual(len(scope_gaps[0]["scopes"]), len(repos) * 2)
+        self.assertLess(len(result["coverage_gaps"]), 4)
+
+    def test_queue_recovery_precedes_history_and_unread_is_not_missing(self):
+        urls = [f"https://github.com/test/repo/issues/{n}#issuecomment-{n}" for n in (1, 2, 3)]
+        def inventory(source, queue, owner, authors, now=None, *, question_urls=None):
+            known = {c["url"] for c in source}
+            missing = [u for u in urls[:2] if u not in known]
+            rows = [{"url": u, "status": "needs_review" if u in known else "missing_source",
+                     "created_at": "2026-10-14T00:00:00Z", "registration_url": "https://github.com/test/repo/issues/123#issuecomment-100",
+                     "delivery": "unacknowledged", "resurface": True} for u in urls[:2]]
+            self.assertEqual(question_urls, set(urls))
+            return {"complete": not missing, "questions": rows, "missing_sources": missing}
+        module = SimpleNamespace(inventory=inventory, records=lambda *_: [{"question_url": u} for u in urls],
+                                 settled=lambda url, *_: url == urls[-1],
+                                 source_item=lambda url: "test/repo#" + url.split("/issues/")[1].split("#")[0])
+        for budget in (800, 3):
+            reader = FakeReader()
+            for n, url in enumerate(urls[:2], 1):
+                reader.pages[(f"repos/test/repo/issues/{n}/comments", 1, None)] = [{"id": n, "html_url": url,
+                    "created_at": "2026-10-14T00:00:00Z", "body": "Owner question: Should we continue?", "user": {"login": "test"}}]
+            with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": module}):
+                result = sweep.collect(["test/repo"], reader=reader, now=self.now,
+                                       question_queue="test/repo#123", max_requests=budget)
+            self.assertTrue(any(row["kind"] == "registered_question" for row in result["findings"]))
+            self.assertFalse(any("/issues/3/comments" in path for path in reader.paths))
+            if budget == 800:
+                self.assertTrue(result["complete"], result)
+                queue_index = next(i for i, path in enumerate(reader.paths) if "/issues/123/comments" in path)
+                history_index = next(i for i, path in enumerate(reader.paths) if "state=closed" in path)
+                self.assertLess(queue_index, history_index)
+            else:
+                self.assertTrue(any(g["reason"] == "unread_registered_sources" for g in result["coverage_gaps"]))
+                self.assertFalse(any(g.get("missing_sources") for g in result["coverage_gaps"]))
+                self.assertFalse(any(row["url"] == urls[1] for row in result["findings"]))
 
     def test_sweep_reserve_agrees_with_the_shared_transport(self):
         self.reader.limit = 8000
