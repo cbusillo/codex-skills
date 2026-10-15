@@ -1,8 +1,66 @@
-# Native session reminders
+# Native reminders
 
-Read when the Director asks for a reminder to return to a repository or session.
+Read when the Director asks for a plain reminder or a reminder to return to a repository or session.
 `work-closeout` owns this workflow for both Codex and Claude Code. A scheduled
 human check-in is separate from an unattended watcher or a harness queue.
+
+## Plain reminders
+
+Use the shared helper for ordinary reminders too; do not substitute one-off
+AppleScript or EventKit writers. Prepare a dry run with the exact chosen list:
+
+```bash
+uv run <skill-dir>/scripts/reminder_save.py --plain \
+  --title "Open the weekly motor report and assign this week's 3 dismantles" \
+  --notes 'Review the report before assigning work' --list 'Your exact list name' \
+  --due 2026-10-19T08:00 --timezone America/New_York \
+  --repeat weekly --weekday monday
+```
+
+Plain mode needs no harness, directory or session ID. Use `--notes` for ordinary
+notes and optionally `--url https://example.com/report` for a web attachment;
+`--link` stays reserved for session issue/PR notes. For international domains,
+use the browser-copied ASCII/punycode hostname; raw Unicode hostnames are refused
+rather than converted to a potentially different site. Unicode paths are escaped. Choose `--repeat daily`,
+`weekdays`, `weekly --weekday monday` (any full lowercase weekday), or `monthly`;
+omit it for a one-off. The first due date must match the weekly day or fall on a
+weekday for `weekdays`. Monthly repeats use the first due date's day with native
+calendar recurrence; choose a day present in every month if every month must fire.
+Session recurrence options remain unchanged.
+
+Use `--repo /original/repository` instead of `--list` to resolve a privately
+configured list as described below. Review the prepared fields, then add `--apply`
+only under existing reminder-write authority. A dry run never opens or queries
+Reminders; apply performs the exact-list lookup and duplicate checks before saving.
+
+Plain reminder identity is the exact title in the selected list, rather than the
+optional link (several different tasks can share one report). The shared writer
+refuses duplicate incomplete matches. When attaching a link, titles must also be
+unique among completed items so the native UI can select one row. Plain reminders
+without links may reuse completed titles and update a live item beside completed
+occurrences. For a linked repeating reminder, completed same-title occurrences
+therefore require the visible manual workflow for later updates. An existing
+incomplete match needs its explicit `--update-id` and update
+authority; the same title is required. The same ID-based repair and deletion
+rules below apply. A renamed title is a different target, so do not rename to
+bypass an existing-item refusal.
+
+A plain reminder without a link uses EventKit alone and needs existing Reminders
+access, but no Accessibility access or open Reminders window. When a link is
+requested, the visible attachment must also be verified through the shared native
+UI adapter. The `saved` receipt requires saved-field readback in both cases;
+`visible_url_verified` is false when no URL was requested. Removing an existing
+link requires the visible manual workflow; a no-link update to an item with an
+EventKit URL refuses before writing, because EventKit absence alone cannot prove
+that the native attachment disappeared. A `saved` receipt without a requested URL
+verifies no EventKit URL; it does not prove the absence of a UI-only attachment
+on an item created outside this helper. Use the visible manual workflow to remove
+those attachments. Never recreate after
+`partial`, a timeout or an uncertain receipt: inspect the same item first. For
+manual fallback, check the exact title in the unique list and use the dry-run
+fields. Terminal confirmation below applies only to session links.
+
+The sections below describe the session path and the shared list/write rules.
 
 ## Prepare
 
@@ -91,12 +149,12 @@ issue. The fallback command and machine marker are dry-run fields, not visible n
 Add `--apply` under existing write authority. `--due` is an explicit local date and
 time; `--timezone` is a named timezone. Ambiguous/nonexistent daylight-saving times
 are refused. Omit `--repeat-days` for a one-off; use `--repeat-days 2` only for a
-requested every-two-days recurrence. Other repeat patterns use the manual workflow;
+requested every-two-days recurrence. Other session repeat patterns use the manual workflow;
 do not approximate them or invent a recurrence.
 
 The writer resolves the same private configuration as `reminder_link.py`, including
 `--list` and `--repo`. It requires exactly one writable list and existing Reminders
-and Accessibility access; it never requests permissions. Open one Reminders list
+access, plus Accessibility access when saving a URL; it never requests permissions. Open one Reminders list
 window with the sidebar visible before applying (Settings can stay open).
 It schedules through EventKit, selects the exact list through Accessibility,
 sets the native URL field and verifies the resulting `AXLink` on that reminder.
@@ -115,12 +173,12 @@ are validated but are not applied in this mode. Ordinary updates keep their
 explicit schedule behavior.
 Missing update targets, duplicate incomplete matches and colliding titles are refused.
 Completed matches are never changed or reactivated and do not block a new reminder,
-but a completed item's title still collides: pass a distinct `--title`. A `saved` receipt confirms list,
+but for session or linked reminders a completed item's title still collides: pass a distinct `--title`. A `saved` receipt confirms list,
 title, schedule, alarm, recurrence, short notes and the exact visible URL. A `partial`
 receipt includes the created/updated ID and missing proof: do not claim completion
 or repeat creation. Finish that same item with its ID or, under removal authority,
 use the same target arguments with `--delete-id <id> --apply`. Deletion verifies
-absence and accepts only the intended incomplete session reminder in the exact list.
+absence and accepts only the intended incomplete reminder in the exact list.
 A timeout or missing receipt is uncertain: read back before retrying.
 
 ### Visible manual fallback
@@ -164,3 +222,4 @@ the most recent thread; use a separately requested fresh-session reminder instea
 - [iTerm2 command URL and confirmation](https://iterm2.com/documentation-url-scheme.html)
 - [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) and installed `codex resume --help`
 - [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+- [Apple EventKit recurrence rules](https://developer.apple.com/documentation/eventkit/ekrecurrencerule)
