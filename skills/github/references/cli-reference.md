@@ -1822,7 +1822,8 @@ readback routes retain their existing rules.
 On REST reads, put query parameters in the endpoint URL rather than using
 `-f`, `-F` or `--input`; those forms retain the wrapper's conservative write
 classification. CLI list `--search` values must also stay within the verified
-repository.
+repository. Use separate or long flags for searches; bundled search shorthand
+and `user:`, `org:` or `owner:` scopes cannot use this single-repository route.
 For view/check commands, use `--repo OWNER/REPO` and a number or branch operand;
 URL operands cannot select this public-read route. The public check and scope
 validation happen before delegation. GitHub CLI retains its redirect behavior,

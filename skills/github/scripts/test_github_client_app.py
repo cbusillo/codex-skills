@@ -58,6 +58,9 @@ class PublicReadScopeTests(unittest.TestCase):
             ("/search/issues?q=repo:host/public%22suffix%22+is:private", False),
             ("/search/issues?q=don%27t+repo:host/public", True),
             ("/search/issues?q=repo:host/public+repo:host/private", False),
+            ("/search/issues?q=repo:host/public+org:host", False),
+            ("/search/issues?q=repo:host/public+user:host", False),
+            ("/search/issues?q=repo:host/public+owner:host", False),
             ("/search/issues?q=repo:host/public+OR(repo:host/private)", False),
             ("/search/issues?q=repo:host/public+OR+is:private", False),
             ("graphql", False),
@@ -66,6 +69,12 @@ class PublicReadScopeTests(unittest.TestCase):
                 self.assertEqual(github_api.public_read_command_is_scoped(
                     ["api", "--method", "GET", "--include", "-H", "Accept: application/json", endpoint],
                     "host/public"), allowed)
+
+    def test_bundled_search_flags_cannot_bypass_repository_scope(self) -> None:
+        for flag in ("-dS", "-dSrepo:host/private", "-wdS=repo:host/private"):
+            with self.subTest(flag=flag):
+                self.assertFalse(github_api.public_read_command_is_scoped(
+                    ["pr", "list", "--repo", "host/public", flag, "repo:host/private"], "host/public"))
 
     def test_cli_search_keeps_its_implicit_repository_scope(self) -> None:
         for command in ("issue", "pr"):
@@ -383,6 +392,9 @@ class ClientAppTests(unittest.TestCase):
                          ("search", "issues", "repo:host/private"),
                          ("issue", "list", "--repo", "host/missing-public", "--search", "repo:host/private"),
                          ("pr", "list", "--repo", "host/missing-public", "-Srepo:host/private"),
+                         ("pr", "list", "--repo", "host/missing-public", "-dS", "repo:host/private"),
+                         ("issue", "list", "--repo", "host/missing-public", "--search", "org:host"),
+                         ("api", "/search/issues?q=repo:host/missing-public+owner:host"),
                          ("issue", "view", "http://github.com/host/private/issues/1", "--repo", "host/missing-public"),
                          ("pr", "view", "https://www.github.com/host/private/pull/1", "--repo", "host/missing-public"),
                          ("pr", "checks", "https://GitHub.com/host/private/pull/1", "--repo", "host/missing-public"),

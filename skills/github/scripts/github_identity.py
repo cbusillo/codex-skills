@@ -58,9 +58,12 @@ class PublicReadRepository(GitHubAppError):
 
     def __init__(self, repository: str) -> None:
         self.repository = repository
-        super().__init__(
+        self.installation_message = (
             f"the GitHub Client App is not installed on {repository}; reads require "
-            "its installation on this repository, or a verified public repository "
+            "its installation on this repository"
+        )
+        super().__init__(
+            f"{self.installation_message}, or a verified public repository "
             f"with {OWN_USER_OPT_IN}=1 for the declared personal account on this command"
         )
 
@@ -834,14 +837,18 @@ def main() -> int:
         # The CLI is the credential boundary. In-process identity selection
         # defers here, avoiding a second anonymous lookup for every Python read.
         automation_only = str(configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") or "").casefold() in {"1", "true", "yes"}
-        if own_user_opted_in() and not automation_only and not getattr(args, "no_personal_read", False):
+        automation_only = automation_only or getattr(args, "no_personal_read", False)
+        if own_user_opted_in() and not automation_only:
             try:
                 if repository_is_public(config, error.repository):
                     print(f"note: GitHub confirms {error.repository} is public", file=sys.stderr)
                     return PUBLIC_READ_EXIT_STATUS
+                print(f"note: GitHub does not report {error.repository} as public", file=sys.stderr)
             except GitHubAppError as probe_error:
-                print(f"note: public visibility could not be verified: {probe_error}", file=sys.stderr)
-        print(f"error: GitHub App authentication failed before gh invocation: {error}", file=sys.stderr)
+                detail = str(probe_error).removeprefix("GitHub App ")
+                print(f"note: public visibility could not be verified: {detail}", file=sys.stderr)
+        message = error.installation_message if automation_only or own_user_opted_in() else str(error)
+        print(f"error: GitHub App authentication failed before gh invocation: {message}", file=sys.stderr)
         return 1
     except ContributorRepository as error:
         print(f"note: {error}", file=sys.stderr)

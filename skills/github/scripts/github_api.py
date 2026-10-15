@@ -2947,6 +2947,8 @@ def public_read_command_is_scoped(args: list[str], repository: str) -> bool:
                 return False
         if args[:2] in [["issue", "list"], ["pr", "list"]]:
             for index, token in enumerate(args):
+                if token.startswith("-") and not token.startswith(("--", "-S")) and "S" in token:
+                    return False  # Use separate/long flags instead of bundled search shorthand.
                 if token in {"--search", "-S"}:
                     if index + 1 == len(args):
                         return False
@@ -3003,6 +3005,7 @@ def public_read_command_is_scoped(args: list[str], repository: str) -> bool:
     tokens = unquoted.split()
     scopes = [token.casefold() for token in tokens if token.casefold().startswith("repo:")]
     return (bool(scopes) and all(scope == f"repo:{repository}".casefold() for scope in scopes)
+            and not any(token.casefold().startswith(("user:", "org:", "owner:")) for token in tokens)
             and not any(token.upper() == "OR" for token in tokens))
 
 
