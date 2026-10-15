@@ -23,6 +23,10 @@ questions with no Q number. The request budget and deadline cover the whole
 run, with 250 core requests reserved for other work. Shared transport handles
 quota, retries and conditional response caching. Use `GITHUB_READ_CACHE_DIR`
 for a private task cache when runtime/account directories must stay untouched.
+Repository order rotates by UTC date without storing a second inventory; when
+the budget ends, unread records are counted together instead of flooding the
+digest. Repeated limited runs on one day keep the same order. The budget counts
+logical read calls; shared transport owns bounded HTTP retry attempts.
 
 Findings include the original evidence link, recorded event age (or explicit
 unknown), next actor and review requirement:
@@ -31,7 +35,9 @@ unknown), next actor and review requirement:
   shared `oq.questions` view supplies classification; the shared question
   delivery inventory supplies registration, acknowledgement and resurfacing
   evidence when `--question-queue` is selected and available.
-- Current-head Ready handoffs without the existing enqueue view.
+- Current-head Ready handoffs without the base branch's enqueue view from the
+  existing active train policy helper. Unavailable policy or an absent target
+  is routing unknown, never proof that a PR is unrouted or enqueued.
 - Open issues with a merged linked PR. Explicit closing scope is distinguished
   from Refs/partial scope; neither authorizes automatic closure. Real waits
   remain in the evidence for the landing reconciler's review.
@@ -43,6 +49,9 @@ unknown), next actor and review requirement:
   from a trusted receiver does.
 - Existing train blocked views, aged from their label event, plus structured
   waits naming the Supervisor, Director, owner login or supplied aliases.
+  Body-only waits have unknown age because unrelated issue activity must not
+  reset their clock. `--owner` identifies a Director whose login differs from
+  the repository owner.
 
 The collector emits JSON by default. Markdown is a delivery payload, including
 coverage warnings even with zero candidates. Exit 0 means complete within the
@@ -51,6 +60,10 @@ completed. Page caps, budget exhaustion, unreadable records and unavailable
 question-delivery views are explicit gaps. Decisions outside selected
 repositories/history, promises without a parseable due time, and service-only
 train custody are not an all-clear. No production/deploy conclusion is drawn.
+Full delivery coverage requires `--question-queue` and the question-delivery
+helper from the sibling change; an omitted queue or an older catalog remains
+explicitly incomplete. A malformed delivery contract has its own error reason,
+distinct from a missing helper. JSON retains registration and receiver receipts.
 
 ## Daily delivery and maintenance
 

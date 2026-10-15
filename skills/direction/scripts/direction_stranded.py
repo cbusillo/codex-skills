@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import json
+import subprocess
+import time
 from typing import Any
 
 import direction_audit as audit
@@ -130,7 +133,13 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 latest = max(handoffs, key=lambda c: (c.get("updated_at") or c["created_at"], c["id"]))
                 # Current-head ready is a routing request. The enqueue view is evidence only;
                 # the sweep cannot infer service custody from GitHub alone.
-                if "ready-to-merge" not in labels(item):
+                policy = record.get("train_policy") or {}
+                target = next((t for t in policy.get("targets", [])
+                               if t.get("baseBranch") == (pull.get("base") or {}).get("ref")), None)
+                if target is None:
+                    add("ready_handoff_routing_unknown", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
+                        "Supervisor", "Current-head Ready remains open; its active train target is unavailable or absent. No routing conclusion is inferred.")
+                elif target["readyLabel"].casefold() not in labels(item):
                     add("ready_handoff_unrouted", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
                         "Supervisor", "Current-head Ready has no enqueue view; verify existing train custody before routing.")
             if "merge-blocked" in labels(item):
@@ -154,8 +163,8 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 source = next((s for s in reversed(sources) if login(s) in trusted
                                and github_plan_wait.records(s.get("body") or "")), item)
                 add("aged_structured_wait", record, source.get("html_url") or url,
-                    source.get("updated_at") or source.get("created_at"), "; ".join(receivers),
-                    "Recorded receiver still has an unresolved wait. Age uses the wait source's last update as a conservative lower bound.",
+                    None if source is item else source.get("updated_at") or source.get("created_at"), "; ".join(receivers),
+                    "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
         blockers = record.get("blockers")
         if ("plan:blocked" in labels(item) and wait["state"] == "clear" and blockers
@@ -166,8 +175,9 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 evidence=[b.get("html_url") for b in blockers])
         for pull in record.get("linked_pulls", []):
             # Explicit closing scope is a review candidate; even this does not settle real waits.
-            refs = {(m[1] or m[2] or repo, int(m[3])) for m in CLOSING.finditer(pull.get("body") or "")}
-            if pull.get("merged_at") and pull.get("base", {}).get("ref") == record.get("default_branch"):
+            refs = {(m[1] or m[2] or pull.get("_repository", repo), int(m[3])) for m in CLOSING.finditer(pull.get("body") or "")}
+            default_branch = pull.get("_default_branch", record.get("default_branch"))
+            if pull.get("merged_at") and default_branch and (pull.get("base") or {}).get("ref") == default_branch:
                 completing = (repo, item["number"]) in refs
                 add("open_after_completing_merge" if completing else "merged_link_needs_review", record, url,
                     pull["merged_at"], "Supervisor / landing reconciler",
@@ -186,7 +196,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
 def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             history_days: int = 30, max_requests: int = 800, max_pages: int = 20,
             quota_reserve: int = 250, owner: str | None = None, director_names: tuple[str, ...] = (),
-            question_queue: str | None = None) -> dict:
+            question_queue: str | None = None, policy_reader=None, director: str | None = None) -> dict:
     """Reuse the direction audit's paged inventory with one global bounded read budget."""
     gaps: list[dict] = []
     records: list[dict] = []
@@ -244,8 +254,13 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 gaps.append({"source": owner, "reason": "repository_page_limit"})
         except audit.AuditError as exc:
             gaps.append({"source": owner, "reason": str(exc)})
+    repos = list(dict.fromkeys(repos))
+    # Stateless daily rotation prevents a bounded run from always skipping the
+    # same alphabetically later repositories. Open records stay ahead of closed.
+    offset = now.date().toordinal() % len(repos) if repos else 0
+    ordered_repos = repos[offset:] + repos[:offset]
     since = (now - dt.timedelta(days=history_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for repo in dict.fromkeys(repos):
+    for repo in ordered_repos:
         if reads >= budget:
             gaps.append({"source": repo, "reason": "request_or_quota_budget_exhausted"})
             continue
@@ -258,8 +273,19 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         issues = listing(f"repos/{repo}/issues?state=open")
         # Closed records matter: Q249 was promised on an already-completed research issue.
         issues += listing(f"repos/{repo}/issues?state=closed&since={since}")
+        policy = None
+        if any("pull_request" in item and item.get("state") == "open" for item in issues):
+            if policy_reader and reads < budget:
+                reads += 1
+                policy = policy_reader(repo)
+            if not isinstance(policy, dict) or policy.get("status") not in {"enrolled", "not_enrolled"}:
+                gaps.append({"source": repo, "reason": "train_policy_unavailable"})
+                policy = None
         seen = set()
-        for item in issues:
+        for index, item in enumerate(issues):
+            if reads >= budget:
+                gaps.append({"source": repo, "reason": "unread_records_after_budget", "count": len(issues) - index})
+                break
             if not isinstance(item, dict) or type(item.get("number")) is not int:
                 gaps.append({"source": repo, "reason": "invalid_issue"})
                 continue
@@ -269,6 +295,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 continue
             seen.add(number)
             record = {"repo": repo, "item": item, "default_branch": metadata["default_branch"],
+                      "train_policy": policy,
                       "comments": listing(f"repos/{repo}/issues/{number}/comments")}
             valid_comments = [c for c in record["comments"] if type(c.get("id")) is int
                               and isinstance(c.get("html_url"), str) and isinstance(c.get("created_at"), str)]
@@ -287,11 +314,23 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 else:
                     if "plan:blocked" in labels(item):
                         record["blockers"] = listing(f"repos/{repo}/issues/{number}/dependencies/blocked_by")
-                    linked = {(event.get("source") or {}).get("issue", {}).get("number") for event in record["timeline"]
-                              if event.get("event") == "cross-referenced" and
-                              (event.get("source") or {}).get("issue", {}).get("pull_request") and
-                              (event.get("source") or {}).get("issue", {}).get("repository_url") == f"https://api.github.com/repos/{repo}"}
-                    record["linked_pulls"] = [one(f"repos/{repo}/pulls/{n}") for n in sorted(linked) if type(n) is int]
+                    linked = set()
+                    for event in record["timeline"]:
+                        source = (event.get("source") or {}).get("issue") or {}
+                        if event.get("event") != "cross-referenced" or not source.get("pull_request"):
+                            continue
+                        match = re.fullmatch(r"https://api.github.com/repos/([\w.-]+/[\w.-]+)", source.get("repository_url") or "")
+                        if not match or type(source.get("number")) is not int:
+                            gaps.append({"source": f"{repo}#{number}", "reason": "linked_pull_identity_unknown"})
+                            continue
+                        linked.add((match[1], source["number"]))
+                    record["linked_pulls"] = []
+                    for source_repo, n in sorted(linked):
+                        pull = one(f"repos/{source_repo}/pulls/{n}")
+                        source_metadata = one(f"repos/{source_repo}") if source_repo != repo else metadata
+                        pull["_repository"] = source_repo
+                        pull["_default_branch"] = source_metadata.get("default_branch")
+                        record["linked_pulls"].append(pull)
             records.append(record)
     delivery_view = None
     if question_queue:
@@ -303,20 +342,44 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             normalize = lambda c: {**c, "author": login(c), "url": c.get("html_url") or c.get("url")}
             delivery_view = question_delivery.inventory(
                 [normalize(c) for r in records for c in r["comments"]],
-                [normalize(c) for c in queue], queue_repo.split("/")[0],
+                [normalize(c) for c in queue], director or queue_repo.split("/")[0],
                 set(github_identity.configured_bot_logins()), now=now,
             )
-        except (ImportError, ValueError, TypeError, KeyError):
+        except ImportError:
             gaps.append({"source": question_queue, "reason": "question_delivery_view_unavailable"})
+        except (ValueError, TypeError, KeyError) as error:
+            gaps.append({"source": question_queue, "reason": "question_delivery_contract_error", "error_type": type(error).__name__})
     else:
         gaps.append({"source": "question_delivery", "reason": "question_queue_not_selected"})
     result = report(records, now=now, age_hours=age_hours,
                     trusted=set(github_identity.configured_bot_logins()),
-                    owners={r.split('/')[0] for r in repos} | ({owner} if owner else set()),
+                    owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
                     gaps=gaps, director_names=director_names, delivery_view=delivery_view)
     result.update({"repositories": repos, "checked_records": len(records), "requests": reads,
                    "history_days": history_days, "quota_reserve": quota_reserve})
     return result
+
+
+def train_policy(repo: str, *, deadline_at: float) -> dict | None:
+    """Read only the existing scoped active-policy projection, never saved topology."""
+    remaining = deadline_at - time.time()
+    if remaining <= 0:
+        return None
+    helper = audit.REPO_ROOT / "skills/launchplane/scripts/launchplane-write-action.py"
+    try:
+        result = subprocess.run(["uv", "run", str(helper), "merge-train-policy-read", "--repo", repo],
+                                capture_output=True, text=True, timeout=min(30, remaining))
+        payload = json.loads(result.stdout)
+        policy = payload.get("result")
+        if (result.returncode or payload.get("status") != "available" or not isinstance(policy, dict)
+                or policy.get("status") not in {"enrolled", "not_enrolled"}
+                or not isinstance(policy.get("targets"), list)
+                or any(not isinstance(t, dict) or not isinstance(t.get("baseBranch"), str)
+                       or not isinstance(t.get("readyLabel"), str) or not t["readyLabel"] for t in policy["targets"])):
+            return None
+        return policy
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
 
 
 def markdown(result: dict) -> str:
@@ -326,6 +389,7 @@ def markdown(result: dict) -> str:
         age = f"{row['age_hours']:g}h" if row["age_hours"] is not None else "age unknown"
         lines.append(f"- {row['kind']} ({age}): {row['url']} — {row['next_actor']}. {row['detail']}")
     for gap in result["coverage_gaps"]:
-        lines.append(f"- Coverage gap: {gap['source']} — {gap['reason']}")
+        count = f" ({gap['count']} records)" if "count" in gap else ""
+        lines.append(f"- Coverage gap: {gap['source']} — {gap['reason']}{count}")
     lines.extend(result["scope_notes"])
     return "\n".join(lines) + "\n"

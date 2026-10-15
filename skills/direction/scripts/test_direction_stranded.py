@@ -10,6 +10,9 @@ import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
+from types import SimpleNamespace
+import sys
 
 import direction_audit as audit
 import direction_stranded as sweep
@@ -66,6 +69,7 @@ class StrandedTests(unittest.TestCase):
         rows = [r for r in self.report()["findings"] if r["number"] == 218]
         self.assertFalse(any(r["kind"] == "stale_blocked_view" for r in rows))
         self.assertTrue(any(r["next_actor"] == "Director" for r in rows))
+        self.assertTrue(all(r["age_hours"] is None for r in rows))
 
     def test_refs_and_partial_scope_are_review_only_and_other_branch_is_not_completion(self):
         record = self.records[2]
@@ -98,8 +102,31 @@ class StrandedTests(unittest.TestCase):
         self.records = []
         report = self.report(gaps=[{"source": "comments", "reason": "unavailable"}])
         self.assertFalse(report["complete"])
-        self.assertIn("INCOMPLETE", sweep.markdown(report))
-        self.assertIn("comments", sweep.markdown(report))
+        rendered = sweep.markdown(report)
+        self.assertIn(report["coverage_gaps"][0]["source"], rendered)
+        self.assertIn(report["coverage_gaps"][0]["reason"], rendered)
+
+    def test_policy_label_is_read_from_the_prs_actual_base_target(self):
+        record = self.records[5]
+        record["pull"]["base"] = {"ref": "integration"}
+        record["train_policy"] = {"targets": [{"baseBranch": "integration", "readyLabel": "ship-this"}]}
+        row = next(r for r in self.report()["findings"] if r["number"] == 1632)
+        self.assertEqual(row["kind"], "ready_handoff_unrouted")
+        record["item"]["labels"] = [{"name": "ship-this"}]
+        self.assertNotIn(1632, {r["number"] for r in self.report()["findings"]})
+        record["pull"]["base"]["ref"] = "unregistered"
+        row = next(r for r in self.report()["findings"] if r["number"] == 1632)
+        self.assertEqual(row["kind"], "ready_handoff_routing_unknown")
+
+    def test_delivery_view_evidence_is_preserved_and_contract_failure_stays_visible(self):
+        url = self.records[0]["comments"][0]["html_url"]
+        delivery = {"url": url, "delivery": "acknowledged", "registration_url": url + "-registration",
+                    "delivery_url": "https://discord.com/channels/1/2/3", "resurface": False}
+        result = self.report(delivery_view={"complete": True, "questions": [delivery]})
+        row = next(r for r in result["findings"] if r["number"] == 3604)
+        self.assertEqual(row["evidence"][0]["delivery_url"], delivery["delivery_url"])
+        self.assertFalse(row["evidence"][0]["resurface"])
+        self.assertFalse(self.report(delivery_view={"complete": False, "questions": []})["complete"])
 
 
 class FakeReader:
@@ -114,7 +141,15 @@ class FakeReader:
             return {"resources": {"core": {"remaining": self.remaining}}}
         if path == "repos/test/repo":
             return {"archived": False, "default_branch": "main"}
-        return copy.deepcopy(self.pages.get(path, []))
+        parsed = urlsplit(path)
+        query = parse_qs(parsed.query)
+        key = (parsed.path, int(query.get("page", [1])[0]), query.get("state", [None])[0])
+        if key in self.pages:
+            return copy.deepcopy(self.pages[key])
+        if (parsed.path.startswith("repos/") and
+                (parsed.path.endswith(("/issues", "/comments", "/timeline", "/blocked_by")))):
+            return []
+        raise AssertionError(f"unconfigured fake read: {path}")
 
 
 class InventoryTests(unittest.TestCase):
@@ -126,24 +161,25 @@ class InventoryTests(unittest.TestCase):
         return sweep.collect(["test/repo"], reader=self.reader, now=self.now, **kwargs)
 
     def test_second_comment_page_is_read_and_closed_history_inventoried(self):
-        self.reader.pages["repos/test/repo/issues?state=open&per_page=100&page=1"] = [
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = [
             {"number": 1, "state": "open", "user": {"login": "test"}}]
         path = "repos/test/repo/issues/1/comments"
-        self.reader.pages[path + "?per_page=100&page=1"] = [
+        self.reader.pages[(path, 1, None)] = [
             {"id": n, "body": "", "created_at": "2026-10-14T00:00:00Z", "user": {"login": "test"},
              "html_url": f"https://github.com/test/repo/issues/1#issuecomment-{n}"} for n in range(100)]
-        self.reader.pages[path + "?per_page=100&page=2"] = [
+        self.reader.pages[(path, 2, None)] = [
             {"id": 101, "body": "Owner question: Q100 Should this continue?", "created_at": "2026-10-14T01:00:00Z", "user": {"login": "test"}, "html_url": "https://github.com/test/repo/issues/1#issuecomment-101"}]
         report = self.collect()
-        self.assertEqual(report["coverage_gaps"], [{"source": "question_delivery", "reason": "question_queue_not_selected"}])
+        self.assertFalse([gap for gap in report["coverage_gaps"] if gap["source"] != "question_delivery"])
         self.assertEqual(len(report["findings"]), 1)
-        self.assertIn(path + "?per_page=100&page=2", self.reader.paths)
+        self.assertTrue(any(urlsplit(p).path == path and parse_qs(urlsplit(p).query).get("page") == ["2"] for p in self.reader.paths))
         self.assertTrue(any("state=closed&since=" in p for p in self.reader.paths))
 
     def test_quota_reserve_and_request_limit_expose_unread_repositories(self):
         self.reader.remaining = 250
         report = self.collect()
         self.assertFalse(report["complete"])
+        self.assertTrue(any(g["source"] == "test/repo" for g in report["coverage_gaps"]))
         self.assertEqual(self.reader.paths, ["rate_limit"])
         self.reader.remaining = 1000
         self.reader.paths.clear()
@@ -152,20 +188,83 @@ class InventoryTests(unittest.TestCase):
         self.assertLessEqual(len(self.reader.paths), 2)
 
     def test_page_cap_and_malformed_page_cannot_report_complete(self):
-        path = "repos/test/repo/issues?state=open&per_page=100&page=1"
+        path = ("repos/test/repo/issues", 1, "open")
         self.reader.pages[path] = [{"number": n, "state": "open"} for n in range(1, 101)]
         report = self.collect(max_pages=1)
         self.assertFalse(report["complete"])
         self.assertTrue(any(g["reason"] == "page_limit" for g in report["coverage_gaps"]))
         self.reader.pages[path] = {"unexpected": "object"}
-        self.assertFalse(self.collect()["complete"])
+        result = self.collect()
+        self.assertTrue(any(g["source"].startswith(path[0]) for g in result["coverage_gaps"]))
 
     def test_audit_mode_reuses_collector_and_does_not_stamp_direction(self):
         with patch.object(sweep, "collect", return_value={"complete": True}) as collect, \
+                patch.object(audit.github_read, "GitHubReader"), \
                 patch.object(audit, "record_audit") as mark, patch("builtins.print"):
             self.assertEqual(audit.main(["--stranded-work-only", "--repo", "test/repo"]), 0)
         collect.assert_called_once()
         mark.assert_not_called()
+
+    def test_owner_discovery_uses_existing_inventory_and_rotates_daily(self):
+        with patch.object(audit, "owner_repositories", return_value=({"test/repo": {}}, False)) as discover:
+            result = sweep.collect([], reader=self.reader, owner="test", now=self.now)
+        discover.assert_called_once()
+        self.assertEqual(result["repositories"], ["test/repo"])
+        self.assertFalse(any(g["source"] == "test" for g in result["coverage_gaps"]))
+        for day in (0, 1):
+            reader = FakeReader()
+            with patch.object(audit, "owner_repositories", return_value=({"test/other": {}, "test/repo": {}}, False)):
+                # A one-read budget exposes the first repository without live metadata.
+                result = sweep.collect([], reader=reader, owner="test", now=self.now + dt.timedelta(days=day), max_requests=1)
+            sources = [g["source"] for g in result["coverage_gaps"] if g["source"].startswith("test/")]
+            if day == 0:
+                first = sources[0]
+            else:
+                self.assertNotEqual(sources[0], first)
+
+    def test_budget_aggregates_unread_records_instead_of_flooding_digest(self):
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = [
+            {"number": n, "state": "open"} for n in range(1, 60)]
+        result = self.collect(max_requests=4)
+        unread = [g for g in result["coverage_gaps"] if g.get("count")]
+        self.assertEqual(len(unread), 1)
+        self.assertEqual(unread[0]["count"], 59)
+        self.assertLess(len(result["coverage_gaps"]), 5)
+        self.assertEqual(result["checked_records"], 0)
+
+    def test_cross_repo_merged_pr_is_checked_against_its_own_default_branch(self):
+        original = self.reader.get_json
+        def read(path, *, step):
+            if path == "repos/source/repo":
+                return {"archived": False, "default_branch": "integration"}
+            if path == "repos/source/repo/pulls/2":
+                return {"body": "Fixes test/repo#1", "merged_at": "2026-10-14T01:00:00Z",
+                        "base": {"ref": "integration"}, "html_url": "https://github.com/source/repo/pull/2"}
+            return original(path, step=step)
+        self.reader.get_json = read
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = [{"number": 1, "state": "open"}]
+        self.reader.pages[("repos/test/repo/issues/1/timeline", 1, None)] = [{"event": "cross-referenced", "source": {
+            "issue": {"number": 2, "pull_request": {"url": "https://api.github.com/repos/source/repo/pulls/2"}, "repository_url": "https://api.github.com/repos/source/repo"}}}]
+        result = self.collect()
+        self.assertEqual(len(result["findings"]), 1)
+        self.assertEqual(result["findings"][0]["kind"], "open_after_completing_merge")
+
+    def test_expired_policy_read_does_not_launch_a_helper(self):
+        with patch.object(sweep.subprocess, "run") as run:
+            self.assertIsNone(sweep.train_policy("test/repo", deadline_at=0))
+        run.assert_not_called()
+
+    def test_queue_adapter_normalizes_rest_comments_without_host_state(self):
+        fixture = json.loads(Path(__file__).with_name("fixtures").joinpath("stranded-week-2026-10-15.json").read_text())
+        question = fixture["records"][0]["comments"][0]
+        def inventory(source, queue, owner, authors, now=None):
+            self.assertEqual(queue[0]["url"], question["html_url"])
+            self.assertEqual(queue[0]["author"], question["user"]["login"])
+            return {"complete": True, "questions": []}
+        self.reader.pages[("repos/test/repo/issues/123/comments", 1, None)] = [question]
+        with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": SimpleNamespace(inventory=inventory)}):
+            result = self.collect(question_queue="test/repo#123")
+        self.assertTrue(result["complete"], result)
 
 
 if __name__ == "__main__":

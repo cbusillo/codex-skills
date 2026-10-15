@@ -2442,3 +2442,24 @@ reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "GraphQL GitHub closingIssuesReferences is the authoritative relationship for keyword/manual PR closing links; prose and merged prerequisites never establish completion."
 source_refs = ["github/scripts/gh-plan.py:cmd_reconcile_landing", "github/scripts/github_plan_landing.py:closing_references", "github/scripts/github_plan_landing.py:reconcile", "launchplane/scripts/launchplane-train-drive.py:_with_runtime_reconciliation"]
 test_refs = ["github/scripts/test_github_plan_landing.py:LandingTests", "launchplane/scripts/test_launchplane_train_drive.py:TrainDriveTests"]
+
+[[operations]]
+id = "github.direction.stranded_work"
+request_priority = "bulk"
+capabilities = ["metadata_read", "issues_read", "pull_requests_read"]
+permission_mode = "delegated"
+permission_note = "Read-only sweep under existing metadata, issue and pull-request read grants. Partial inventory, queue and policy reads remain explicit coverage gaps; no mutation, claim release or new grant."
+entrypoint = "direction/scripts/direction_audit.py --stranded-work-only"
+intent = "Report aged questions, handoffs, merged links, status mismatches, promises and train holds from existing records."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "Paged GET repository inventories, issues, comments, timelines, dependencies and pull requests; GET /rate_limit"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "degraded_snapshot"
+retained_graphql_rationale = "No GraphQL is required; the existing audit's REST inventory supplies bounded evidence."
+source_refs = ["direction/scripts/direction_stranded.py:collect", "direction/scripts/direction_audit.py:main"]
+test_refs = ["direction/scripts/test_direction_stranded.py"]

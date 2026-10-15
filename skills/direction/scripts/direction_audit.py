@@ -1864,15 +1864,18 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--question-queue requires OWNER/REPO#NUMBER")
         import direction_stranded
 
+        deadline_at = time.time() + args.deadline_seconds
         reader = github_read.GitHubReader(
             gh_cmd=args.gh, operation="github.direction.stranded_work", strict_actor=True,
-            cache_enabled=True, deadline_at=time.time() + args.deadline_seconds,
+            cache_enabled=True, deadline_at=deadline_at,
         )
         result = direction_stranded.collect(
             repos, reader=reader, now=dt.datetime.now(dt.timezone.utc), age_hours=args.age_hours,
             history_days=args.history_days, max_requests=args.max_requests,
             owner=args.stranded_owner, director_names=tuple(args.director_name),
             question_queue=args.question_queue,
+            policy_reader=lambda repo: direction_stranded.train_policy(repo, deadline_at=deadline_at),
+            director=args.owner,
         )
         print(direction_stranded.markdown(result) if args.stranded_format == "markdown" else json.dumps(result, indent=2))
         return 0 if result["complete"] else 3
