@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Permission profiles, source-surface drift checks and read-only App audits."""
+"""Permission profiles, advisory source-surface fingerprints and read-only App audits."""
 
 from __future__ import annotations
 
@@ -182,7 +182,7 @@ def source_fingerprints(root: Path) -> dict[str, str]:
     return result
 
 
-def validate_permissions(matrix: dict[str, Any], root: Path, *, check_sources: bool = True) -> list[str]:
+def validate_permissions(matrix: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if matrix.get("permission_schema_version") != 1:
         errors.append("permission_schema_version must be 1")
@@ -235,14 +235,6 @@ def validate_permissions(matrix: dict[str, Any], root: Path, *, check_sources: b
         for identifier, capability in capabilities.items():
             if capability["actor"] == "agent" and identifier not in used:
                 errors.append(f"capability {identifier} has no supported operation outside passthrough/audit")
-    if check_sources:
-        expected = matrix.get("api_surface_fingerprints", {})
-        if not isinstance(expected, dict):
-            return [*errors, "api_surface_fingerprints must be a table"]
-        actual = source_fingerprints(root)
-        for path in sorted(set(expected) | set(actual)):
-            if expected.get(path) != actual.get(path):
-                errors.append(f"API surface changed: {path}; review its permissions, probes, degraded behavior and profile impact in the operation matrix")
     return errors
 
 

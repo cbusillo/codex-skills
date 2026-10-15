@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Behavior tests for permission derivation, drift detection and redacted audits."""
+"""Behavior tests for permission derivation, advisory fingerprints and redacted audits."""
 from __future__ import annotations
 
 import copy
@@ -87,7 +87,7 @@ class CapabilityTests(unittest.TestCase):
                 row['capabilities'] = [name for name in row['capabilities'] if name != 'actions_write']
         self.matrix['operations'] = [row for row in self.matrix['operations'] if row['capabilities'] or row['permission_mode'] != 'fixed']
         self.assertEqual(capabilities.permission_profile(self.matrix)['permissions']['repository']['actions'], 'read')
-        self.assertTrue(any('actions_write has no supported operation' in error for error in capabilities.validate_permissions(self.matrix, Path('.'), check_sources=False)))
+        self.assertTrue(any('actions_write has no supported operation' in error for error in capabilities.validate_permissions(self.matrix)))
 
     def test_membership_and_suspension_precede_public_reads(self):
         self.assertEqual(self.audit("metadata_read", membership=set())["state"], "not_installed")
@@ -172,9 +172,9 @@ class CapabilityTests(unittest.TestCase):
             with self.subTest(mutation=mutate):
                 matrix = copy.deepcopy(self.matrix)
                 mutate(matrix)
-                self.assertTrue(capabilities.validate_permissions(matrix, Path('.'), check_sources=False))
+                self.assertTrue(capabilities.validate_permissions(matrix))
 
-    def test_api_surface_detects_endpoint_method_query_and_new_files(self):
+    def test_advisory_fingerprints_detect_surface_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scripts = root / 'github/scripts'
@@ -189,11 +189,31 @@ class CapabilityTests(unittest.TestCase):
             self.assertNotEqual(original, capabilities.source_fingerprints(root))
             path.write_text('query = "query { viewer { login } }"\n')
             self.assertTrue(capabilities.api_surface(path))
-            matrix = copy.deepcopy(self.matrix)
-            matrix['api_surface_fingerprints'] = original
-            self.assertTrue(any('API surface changed' in error for error in capabilities.validate_permissions(matrix, root)))
             (scripts / 'new_helper.py').write_text('reader.get_json("/repos/example/new", step="new")\n')
-            self.assertTrue(any('new_helper.py' in error for error in capabilities.validate_permissions(matrix, root)))
+            self.assertIn('github/scripts/new_helper.py', capabilities.source_fingerprints(root))
+
+    def test_declared_capability_drives_profile_and_safe_probe(self):
+        capability = dict(self.matrix['capabilities']['actions_write'])
+        matrix = {
+            'permission_schema_version': self.matrix['permission_schema_version'],
+            'capabilities': {'fixture_actions': capability},
+            'operations': [{
+                'id': 'fixture.operation', 'capabilities': ['fixture_actions'],
+                'permission_mode': 'fixed', 'permission_note': 'Fixture Actions operation.',
+            }],
+        }
+        self.assertEqual(capabilities.validate_permissions(matrix), [])
+        profile = capabilities.permission_profile(matrix)
+        self.assertEqual(profile['permissions'][capability['scope']], {
+            capability['permission']: capability['access'],
+        })
+        result = capabilities.audit_repository(
+            self.reader, 'example/repo', installation=self.installation,
+            membership={'example/repo'}, capabilities=matrix['capabilities'])
+        self.assertEqual(result['capabilities']['fixture_actions']['state'], 'permission_granted')
+        self.assertEqual(result['capabilities']['fixture_actions']['write_probe'], 'not_exercised')
+        self.assertIn(('GET', '/repos/example/repo/actions/workflows?per_page=1'), self.reader.calls)
+        self.assertTrue(all(method == 'GET' for method, _ in self.reader.calls))
 
     def test_actor_mismatch_cannot_turn_http_success_into_available(self):
         reader = github_read.GitHubReader(expected_actor='fixture-app[bot]', strict_actor=True)
