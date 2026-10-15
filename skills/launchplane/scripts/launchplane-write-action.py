@@ -7003,6 +7003,7 @@ def execute_dokploy_inventory_read(*, args: argparse.Namespace) -> int:
     query = {"offset": str(args.offset), "limit": str(args.limit)}
     if args.inventory_digest:
         query["inventory_digest"] = args.inventory_digest
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"], path=helper_command_path(operation),
@@ -7019,9 +7020,11 @@ def execute_dokploy_inventory_read(*, args: argparse.Namespace) -> int:
     except urllib.error.HTTPError as exc:
         emit_http_error_payload(operation=operation, request=request, exc=exc)
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(operation=operation, request=request, timeout=args.timeout, exc=exc)
+    except ServiceResponseError as exc:
+        emit_safety_error_payload(operation=operation, request=request, exc=LaunchplaneSafetyError("invalid_response"), provider_payload=exc)
     except (ValueError, json.JSONDecodeError):
         emit_invalid_response(operation=operation, request=request)
     return 1
@@ -10045,7 +10048,7 @@ def main(argv: list[str]) -> int:
                 expected_candidate_policy_digest=candidate_digest,
             )
         if args.command == "dokploy-inventory-read":
-            if args.offset < 0 or not 1 <= args.limit <= 100 or (args.offset and not args.inventory_digest) or (args.inventory_digest and not re.fullmatch(r"[a-f0-9]{64}", args.inventory_digest)):
+            if not 0 <= args.offset <= 2000 or not 1 <= args.limit <= 100 or (args.offset and not args.inventory_digest) or (args.inventory_digest and not re.fullmatch(r"[a-f0-9]{64}", args.inventory_digest)):
                 raise ValueError("invalid_inventory_page")
             return execute_dokploy_inventory_read(args=args)
         if args.command == "repository-inventory-read":

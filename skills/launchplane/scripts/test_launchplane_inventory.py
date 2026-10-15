@@ -8,6 +8,7 @@
 import copy
 import io
 import json
+import urllib.error
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
@@ -58,7 +59,7 @@ def response():
     }
 
 
-def invoke(body, *arguments):
+def invoke(body, *arguments, error=None):
     output = io.StringIO()
     with (
         patch.object(
@@ -66,7 +67,9 @@ def invoke(body, *arguments):
             "prepare_operator_settings",
             return_value={"service_url": "https://plane.example.invalid"},
         ),
-        patch.object(helper, "request_launchplane_read", return_value=body) as read,
+        patch.object(
+            helper, "request_launchplane_read", return_value=body, side_effect=error
+        ) as read,
         patch.object(helper, "request_launchplane") as post,
         redirect_stdout(output),
     ):
@@ -167,6 +170,80 @@ def test_bad_continuation_rejected_before_read():
     assert code == 2
     read.assert_not_called()
     post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "task-runner",
+        "disk-backup",
+        "helpdesk-worker",
+        "odoo-production-2024",
+        "hetzner-fsn1-prod-01",
+        "cookie-consent",
+        "credential-rotator",
+        "  Exact  Unicode café  ",
+    ],
+)
+def test_preserves_display_names_and_nanoid_alphabet(name):
+    body = response()
+    project = body["inventory"]["projects"][0]
+    environment = project["environments"][0]
+    target = environment["targets"][0]
+    project.update(project_id="_project", name=name)
+    environment.update(environment_id="-environment", name=name)
+    target.update(target_id="_target", name=name)
+    target["placement"].update(server_id="-server", server_name=name)
+    code, result, _, post = invoke(body)
+    assert code == 0
+    assert result["result"] == body["inventory"]
+    post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "PASSWORD=must-not-appear",
+        "ghp_PrivateFixture",
+        "Bearer PrivateFixture",
+        "bad\nname",
+    ],
+)
+def test_sensitive_or_control_text_names_fail_without_echo(name):
+    body = response()
+    body["inventory"]["projects"][0]["name"] = name
+    code, result, _, _ = invoke(body)
+    assert code == 1
+    assert name not in json.dumps(result)
+    assert result["summary"]["trace_id"] == body["trace_id"]
+
+
+def test_http_conflict_and_malformed_body_keep_safe_diagnostics():
+    body = {
+        "status": "rejected",
+        "trace_id": "launchplane_req_conflict",
+        "error": {
+            "code": "dokploy_inventory_changed",
+            "message": "PASSWORD=must-not-appear",
+        },
+    }
+    error = urllib.error.HTTPError(
+        "https://plane.example.invalid",
+        409,
+        "Conflict",
+        {},
+        io.BytesIO(json.dumps(body).encode()),
+    )
+    code, result, _, post = invoke({}, error=error)
+    assert code == 1
+    assert result["summary"]["trace_id"] == body["trace_id"]
+    assert "must-not-appear" not in json.dumps(result)
+    post.assert_not_called()
+    code, result, _, _ = invoke(
+        {}, error=helper.ServiceResponseError({"http_status": 200})
+    )
+    assert code == 1
+    assert result["summary"]["http_status"] == 200
 
 
 if __name__ == "__main__":

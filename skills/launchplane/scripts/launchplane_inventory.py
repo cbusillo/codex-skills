@@ -10,12 +10,40 @@ import re
 from typing import Any
 
 from launchplane_safety import (
+    CREDENTIAL_ASSIGNMENT_HEAD_RE,
+    IDENTIFIER_SK_TOKEN_RE,
+    SK_TOKEN_RE,
+    TOKEN_PATTERNS,
     LaunchplaneSafetyError,
-    assert_public_safe_shape,
-    public_identifier,
-    public_operator_text,
+    is_denied_key,
     public_trace_id,
 )
+
+
+def _metadata_text(value: object) -> str:
+    """Keep display metadata exact; prose redactors change legitimate names."""
+    if not isinstance(value, str) or not value.strip() or len(value) > 256:
+        raise LaunchplaneSafetyError("invalid_response")
+    if any(ord(character) < 32 for character in value):
+        raise LaunchplaneSafetyError("invalid_response")
+    for pattern in TOKEN_PATTERNS:
+        if (IDENTIFIER_SK_TOKEN_RE if pattern is SK_TOKEN_RE else pattern).search(
+            value
+        ):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+    if any(
+        is_denied_key(match[1])
+        for match in CREDENTIAL_ASSIGNMENT_HEAD_RE.finditer(value)
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    return value
+
+
+def _identifier(value: object) -> str:
+    text = _metadata_text(value)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", text):
+        raise LaunchplaneSafetyError("invalid_response")
+    return text
 
 
 def _object(value: object, fields: set[str]) -> dict[str, Any]:
@@ -83,7 +111,7 @@ def project_inventory(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     target_ids: set[tuple[str, str]] = set()
     for raw_project in _list(source["projects"], result["limit"]):
         project = _object(raw_project, {"project_id", "name", "environments"})
-        project_id = public_identifier(project["project_id"])
+        project_id = _identifier(project["project_id"])
         if project_id in project_ids:
             raise LaunchplaneSafetyError("invalid_response")
         project_ids.add(project_id)
@@ -94,7 +122,7 @@ def project_inventory(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
             environment = _object(
                 raw_environment, {"environment_id", "name", "targets"}
             )
-            environment_id = public_identifier(environment["environment_id"])
+            environment_id = _identifier(environment["environment_id"])
             if environment_id in environment_ids:
                 raise LaunchplaneSafetyError("invalid_response")
             environment_ids.add(environment_id)
@@ -115,7 +143,7 @@ def project_inventory(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
                     "libsql",
                 }:
                     raise LaunchplaneSafetyError("invalid_response")
-                target_id = public_identifier(target["target_id"])
+                target_id = _identifier(target["target_id"])
                 if (category, target_id) in target_ids:
                     raise LaunchplaneSafetyError("invalid_response")
                 target_ids.add((category, target_id))
@@ -125,10 +153,8 @@ def project_inventory(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
                 if placement["kind"] == "server":
                     placement = {
                         "kind": "server",
-                        "server_id": public_identifier(placement["server_id"]),
-                        "server_name": public_operator_text(
-                            placement["server_name"], max_length=256
-                        ),
+                        "server_id": _identifier(placement["server_id"]),
+                        "server_name": _metadata_text(placement["server_name"]),
                     }
                 elif placement != {
                     "kind": "dokploy_host",
@@ -140,21 +166,21 @@ def project_inventory(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
                     {
                         "target_id": target_id,
                         "category": category,
-                        "name": public_operator_text(target["name"], max_length=256),
+                        "name": _metadata_text(target["name"]),
                         "placement": placement,
                     }
                 )
             environments.append(
                 {
                     "environment_id": environment_id,
-                    "name": public_operator_text(environment["name"], max_length=256),
+                    "name": _metadata_text(environment["name"]),
                     "targets": targets,
                 }
             )
         projects.append(
             {
                 "project_id": project_id,
-                "name": public_operator_text(project["name"], max_length=256),
+                "name": _metadata_text(project["name"]),
                 "environments": environments,
             }
         )
@@ -180,5 +206,4 @@ def project_inventory(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     ):
         raise LaunchplaneSafetyError("invalid_response")
     result.update(projects=projects, next_offset=expected_next)
-    assert_public_safe_shape(result)
     return result, public_trace_id(payload["trace_id"])
