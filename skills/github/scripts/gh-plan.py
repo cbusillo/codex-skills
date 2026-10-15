@@ -2901,7 +2901,7 @@ def wait_once(args: argparse.Namespace) -> None:
     if not args.issue:
         raise PlanError("Choose an issue or --all for the read-only legacy review inventory")
     args = claim_reference(args)
-    issue, status, comments, _ = claim_snapshot(args.issue, repo)
+    issue, status, comments, _ = claim_snapshot(args.issue, repo, allow_closed=True)
     current = issue["claim_wait"]
     if not args.clear and not args.waiting_for:
         if args.ends_when or args.evidence:
@@ -2922,14 +2922,14 @@ def wait_once(args: argparse.Namespace) -> None:
     # replacing anyone's prose. Later status edits do not erase the record.
     actor, gh_cmd, expected_actor = comment_route()
     kind = "pr" if "pull_request" in issue else "issue"
-    latest_issue, _, latest_comments, _ = claim_snapshot(args.issue, repo)
+    latest_issue, _, latest_comments, _ = claim_snapshot(args.issue, repo, allow_closed=True)
     if latest_issue["claim_wait"] != current or latest_issue.get("body") != issue.get("body") or latest_comments != comments:
         raise PlanError("Wait evidence changed before the review write; read the new record and discussion")
     result = github_comment_core.comment(kind, issue["number"],
         "Structured wait review\n\n" + github_plan_wait.marker(wait), repo=issue["repo"],
         gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION, dedupe_body=True)
     try:
-        observed, _, _, _ = claim_snapshot(args.issue, repo)
+        observed, _, _, _ = claim_snapshot(args.issue, repo, allow_closed=True)
         if observed["claim_wait"] != wait:
             raise PlanError("Structured wait changed or was not visible on readback; preserve the newer record")
     except (PlanError, ValueError, OSError) as exc:

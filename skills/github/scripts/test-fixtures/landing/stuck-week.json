@@ -27,7 +27,7 @@
     "evidence": "https://github.com/cbusillo/odoo-tenant-opw/issues/218#issuecomment-6198616447",
     "repo": "cbusillo/odoo-tenant-opw", "number": 218, "source": 3702,
     "source_repo": "cbusillo/launchplane", "pr": 3704,
-    "state": "open", "labels": ["plan", "plan:blocked"],
+    "state": "open", "label_keys": ["plan", "blocked"],
     "status": "State: Active; rebuild proof remains unmet.\nNext action: Supported fresh-copy continuation after source landing.",
     "finish_line": "Actual governed restore and isolation, healthy exact runtime, modules/login/checklist and full credential proof.",
     "expected": "reconciled"

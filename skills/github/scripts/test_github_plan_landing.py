@@ -54,7 +54,7 @@ class LandingTests(unittest.TestCase):
         self.labels = Mock(side_effect=self.edit_labels)
         self.body = Mock(side_effect=self.edit_body)
         self.comments = Mock(return_value={"actor": "fixture-bot"})
-        patches = [patch.multiple(PLAN, load_config=Mock(return_value=self.config),
+        patches = [patch.multiple(PLAN, load_config=Mock(side_effect=self.load_config),
                                   get_issue=Mock(side_effect=lambda *_: ("fixture-bot", copy.deepcopy(self.issue))),
                                   close_relationship_preflight=Mock(return_value=("fixture-bot", {"result": "passed"})),
                                   comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
@@ -70,6 +70,11 @@ class LandingTests(unittest.TestCase):
         for context in patches:
             context.start()
             self.addCleanup(context.stop)
+
+    def load_config(self, *_args, discovery=None, **_kwargs):
+        if discovery is not None:
+            discovery.update(status="discovered")
+        return self.config
 
     def edit_labels(self, _number: int, **kwargs) -> dict:
         names = set(PLAN.normalize_labels(self.issue["labels"]))
@@ -202,7 +207,7 @@ class LandingTests(unittest.TestCase):
         response["data"]["repository"]["pullRequest"]["body"] = "Refs #7; source partial, acceptance remains here."
         self.reader.graphql_json.return_value.body = response
         result = self.run_landing()
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
         self.assertTrue(result["review_required"])
         self.assertFalse(result["issues"][0]["closing_reference"])
         self.assertEqual(result["issues"][0]["status"], "review_open_finish_line")
@@ -220,7 +225,7 @@ class LandingTests(unittest.TestCase):
                 self.issue["body"] = (PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(
                     github_plan_wait.reviewed(evidence=fixture["evidence"])) + "\n\n## Finish Line\n\n"
                     + fixture["finish_line"] + "\n\n## Current Status\n\n" + fixture["status"])
-                self.issue["labels"] = [{"name": label} for label in fixture.get("labels", ["plan", "plan:active"])]
+                self.issue["labels"] = [{"name": self.config["labels"][key]} for key in fixture.get("label_keys", ["plan", "active"])]
                 original_body = self.issue["body"]
                 response = graph()
                 pull = response["data"]["repository"]["pullRequest"]
@@ -246,6 +251,7 @@ class LandingTests(unittest.TestCase):
                     entry = next(item for item in result["issues"] if item["number"] == number)
                     self.assertFalse(entry["closing_reference"])
                     self.assertEqual(self.issue["state"], fixture["state"])
+                    self.assertEqual(self.issue["body"], original_body)
                 self.assertEqual(entry["status"], fixture["expected"])
         self.state.assert_not_called()
 
@@ -284,10 +290,29 @@ class LandingTests(unittest.TestCase):
         target = {"repo": "fixture/product", "number": 8, "state": "open"}
         PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [target]})
         PLAN.read_next_parent.return_value = target
-        self.assertEqual(landing.neighborhood(PLAN, [(REPO, 7)]), [(target["repo"], target["number"])])
-        PLAN.read_next_parent.side_effect = lambda repo, number: {"repo": repo, "number": number + 1}
+        self.assertEqual(landing.neighborhood(PLAN, REPO, [(REPO, 7)]), [(target["repo"], target["number"])])
+        self.assertEqual(PLAN.read_issue_relationships.call_count, 1)
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [
+            {"repo": REPO, "number": number} for number in range(100, 201)]})
         with self.assertRaises(ValueError):
-            landing.neighborhood(PLAN, [(REPO, 7)])
+            landing.neighborhood(PLAN, REPO, [(REPO, 7)])
+
+    def test_foreign_first_source_cannot_change_neighborhood_owner(self) -> None:
+        target = {"repo": REPO, "number": 8, "state": "open"}
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [target]})
+        related = landing.neighborhood(PLAN, REPO, [("foreign/product", 2), (REPO, 7), (REPO, 8)])
+        self.assertEqual(related, [(REPO, 8)])
+        self.assertEqual([call.args[0] for call in PLAN.read_issue_relationships.call_args_list], [REPO, REPO])
+
+    def test_unverified_target_config_and_non_plan_labels_never_write(self) -> None:
+        PLAN.load_config.side_effect = lambda *_args, **_kwargs: self.config
+        entry = {}
+        landing.reconcile_related(PLAN, "fixture/product", 7, apply=True, entry=entry)
+        self.assertEqual(entry["status"], "review_planning_config")
+        self.labels.assert_not_called()
+        for key in ("audit", "own_project"):
+            issue = {**self.issue, "labels": [{"name": self.config["labels"][key]}]}
+            self.assertFalse(landing.planning_issue(PLAN, issue, self.config))
 
     def test_incomplete_discovery_and_relationships_never_write(self) -> None:
         PLAN.collect_paged_rest_items.side_effect = PLAN.PlanError("Timeline unavailable")
@@ -316,6 +341,11 @@ class LandingTests(unittest.TestCase):
         PLAN.read_issue_relationships.side_effect = relationships
         PLAN.read_next_parent.side_effect = lambda repo, number: ({"repo": product, "number": 8, "state": "open"}
                                                                  if repo == REPO else None)
+        # The dependent also mentioned the PR; timeline discovery must not
+        # suppress its native-dependent label repair.
+        PLAN.collect_paged_rest_items.side_effect = lambda path, **_: ("fixture-bot", [
+            {"event": "cross-referenced", "source": {"issue": copy.deepcopy(dependent)}}]
+            if path.endswith("timeline") else [])
         def labels(number, **kwargs):
             issue = records[kwargs["repo"], number]
             names = set(PLAN.normalize_labels(issue["labels"]))

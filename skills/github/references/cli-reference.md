@@ -1208,11 +1208,14 @@ competitor's record.
 
 - `reconcile-landing --pr N [--apply]`: Read a confirmed default-branch
   landing, every page of GitHub's closing issue references and cross-reference
-  timeline, explicit source references, and native ancestors/dependents (up to
-  100 issues; an incomplete read refuses reconciliation). The default is
+  timeline, explicit source references, and each source's direct native parent
+  and dependents (up to 100 issues; an incomplete read refuses reconciliation).
+  It does not traverse a parent's other dependents. The default is
   read-only. Apply repairs already-closed automation-owned planning issues
   through the existing close relationship/Project/label/comment path, updates
   Current Status, and verifies state, labels and status with fresh readback.
+  Reference-only completed records retain their original Current Status and
+  evidence/custody pointers; they receive no replacement status or close comment.
   Completion comes from the issue's confirmed completed closure, never `Refs`,
   cross-references or a merged prerequisite. Open source issues return
   `review_open_finish_line`: review every finish-line item and the full discussion,
@@ -1220,14 +1223,20 @@ competitor's record.
   source work, parents' acceptance and real waits stay open. A missing, malformed
   or unresolved structured wait record also requires review; use the supported
   `wait` command to record existing evidence, never a hand-applied status label.
+  Single-issue `wait` can review and record waits on closed issues without
+  reopening or claiming them; a real wait is never automatically cleared.
   For open automation-owned native parents/dependents in the same repository
   owner's account, apply derives `blocked`, `waiting` or `active` labels from
   all current native blockers and the authoritative structured wait. It preserves
-  their body, finish line, wait records and relationship edges. Stale/done labels
+  their body, finish line, wait records and relationship edges, and reports that
+  any prose naming an old blocker needs review against the new observation.
+  Unverified target planning configuration refuses writes. Stale/done labels
   on open records require review. Cross-repository source closures, other owners'
   records and reporter acceptance remain owning-agent review work. Each outcome
   identifies its source/related role and whether it was a closing reference;
-  `review_required` and nonzero exit retain any successful partial receipts.
+  Informational reference-only open sources set `review_required: true` without
+  failing an otherwise successful receipt; closing-reference or related metadata
+  failures still return nonzero and retain successful partial receipts.
   Unavailable reads and partial reconciliation remain failures.
   The train driver includes separate planning receipts for every confirmed
   landed batch member. A failed planning receipt does not undo a landing;
