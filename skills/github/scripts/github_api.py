@@ -2319,7 +2319,7 @@ def run_with_retry(
         limit, remaining, reset = (quota.get(name) for name in ("limit", "remaining", "reset"))
         if not all(isinstance(value, int) and not isinstance(value, bool) for value in (limit, remaining, reset)):
             return None
-        reserve = math.ceil(limit * 0.25)
+        reserve = github_request_usage.bulk_read_reserve(limit)
         if limit <= 0 or remaining < 0 or remaining >= reserve or reset <= runtime.now():
             return None
         message = f"Bulk GitHub reads yield below reserve {reserve}/{limit}: remaining={remaining}; reset={time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(reset))}"

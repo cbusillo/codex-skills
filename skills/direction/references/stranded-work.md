@@ -20,13 +20,18 @@ scope. Repository discovery excludes archived repositories. Open records have no
 age cutoff; recently updated closed records are also read for outstanding
 promises (30 days by default). Full discussion pages are read, including
 questions with no Q number. The request budget and deadline cover the whole
-run, with 250 core requests reserved for other work. Shared transport handles
+run, reserving the larger of 250 core requests and the shared transport's
+bulk-read reserve for other work. Shared transport handles
 quota, retries and conditional response caching. Use `GITHUB_READ_CACHE_DIR`
 for a private task cache when runtime/account directories must stay untouched.
-Repository order rotates by UTC date without storing a second inventory; when
-the budget ends, unread records are counted together instead of flooding the
-digest. Repeated limited runs on one day keep the same order. The budget counts
-logical read calls; shared transport owns bounded HTTP retry attempts.
+Repository order rotates by UTC date without storing a second inventory. All
+repositories' open work precedes closed history, and zero-comment records skip
+comment reads. Budget, quota-reserve and deadline stops count unread records
+together instead of flooding the digest. Repeated limited runs on one day keep
+the same order. The GitHub budget counts logical read calls; shared transport
+owns bounded HTTP retry attempts. Scoped Launchplane policy reads are counted
+separately and use the same deadline and existing private admin configuration;
+no new grant is requested.
 
 Findings include the original evidence link, recorded event age (or explicit
 unknown), next actor and review requirement:
@@ -38,7 +43,9 @@ unknown), next actor and review requirement:
 - Current-head Ready handoffs without the base branch's enqueue view from the
   existing active train policy helper. Unavailable policy or an absent target
   is routing unknown, never proof that a PR is unrouted or enqueued.
-- Open issues with a merged linked PR. Explicit closing scope is distinguished
+- Open issues with a merged linked PR, aggregated to one candidate per issue
+  with the newest explicit completing merge preferred over incidental Refs.
+  Explicit closing scope is distinguished
   from Refs/partial scope; neither authorizes automatic closure. Real waits
   remain in the evidence for the landing reconciler's review.
 - A blocked view whose native prerequisites all completed and whose structured
@@ -64,6 +71,10 @@ Full delivery coverage requires `--question-queue` and the question-delivery
 helper from the sibling change; an omitted queue or an older catalog remains
 explicitly incomplete. A malformed delivery contract has its own error reason,
 distinct from a missing helper. JSON retains registration and receiver receipts.
+The selected queue's trusted registration markers recover original discussions
+even when outside the repository/history selection. Missing/deleted sources and
+untrusted records retain their exact URLs in coverage evidence; budget limits
+remain explicit rather than becoming permanent unexplained queue failures.
 
 ## Daily delivery and maintenance
 

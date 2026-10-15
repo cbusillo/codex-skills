@@ -128,19 +128,30 @@ class StrandedTests(unittest.TestCase):
         self.assertFalse(row["evidence"][0]["resurface"])
         self.assertFalse(self.report(delivery_view={"complete": False, "questions": []})["complete"])
 
+    def test_umbrella_merged_refs_are_one_candidate_per_issue(self):
+        record = self.records[2]
+        newer = {**record["linked_pulls"][0], "merged_at": "2026-10-15T20:00:00Z",
+                 "html_url": "https://github.com/cbusillo/launchplane/pull/3700"}
+        record["linked_pulls"].append(newer)
+        rows = [r for r in self.report()["findings"] if r["number"] == 3678]
+        self.assertEqual(len(rows), 1)
+        self.assertIn(newer["html_url"], rows[0]["evidence"])
+
 
 class FakeReader:
     def __init__(self):
         self.paths = []
         self.remaining = 1000
+        self.limit = None
         self.pages = {}
+        self.repositories = {"repos/test/repo": {"archived": False, "default_branch": "main"}}
 
     def get_json(self, path, *, step):
         self.paths.append(path)
         if path == "rate_limit":
-            return {"resources": {"core": {"remaining": self.remaining}}}
-        if path == "repos/test/repo":
-            return {"archived": False, "default_branch": "main"}
+            return {"resources": {"core": {"remaining": self.remaining, "limit": self.limit}}}
+        if path in self.repositories:
+            return self.repositories[path]
         parsed = urlsplit(path)
         query = parse_qs(parsed.query)
         key = (parsed.path, int(query.get("page", [1])[0]), query.get("state", [None])[0])
@@ -173,7 +184,8 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse([gap for gap in report["coverage_gaps"] if gap["source"] != "question_delivery"])
         self.assertEqual(len(report["findings"]), 1)
         self.assertTrue(any(urlsplit(p).path == path and parse_qs(urlsplit(p).query).get("page") == ["2"] for p in self.reader.paths))
-        self.assertTrue(any("state=closed&since=" in p for p in self.reader.paths))
+        self.assertTrue(any(parse_qs(urlsplit(p).query).get("state") == ["closed"]
+                            and "since" in parse_qs(urlsplit(p).query) for p in self.reader.paths))
 
     def test_quota_reserve_and_request_limit_expose_unread_repositories(self):
         self.reader.remaining = 250
@@ -228,9 +240,9 @@ class InventoryTests(unittest.TestCase):
         result = self.collect(max_requests=4)
         unread = [g for g in result["coverage_gaps"] if g.get("count")]
         self.assertEqual(len(unread), 1)
-        self.assertEqual(unread[0]["count"], 59)
+        self.assertEqual(unread[0]["count"] + result["checked_records"],
+                         len(self.reader.pages[("repos/test/repo/issues", 1, "open")]))
         self.assertLess(len(result["coverage_gaps"]), 5)
-        self.assertEqual(result["checked_records"], 0)
 
     def test_cross_repo_merged_pr_is_checked_against_its_own_default_branch(self):
         original = self.reader.get_json
@@ -262,9 +274,48 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(queue[0]["author"], question["user"]["login"])
             return {"complete": True, "questions": []}
         self.reader.pages[("repos/test/repo/issues/123/comments", 1, None)] = [question]
-        with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": SimpleNamespace(inventory=inventory)}):
+        with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": SimpleNamespace(inventory=inventory, records=lambda *_: [])}):
             result = self.collect(question_queue="test/repo#123")
         self.assertTrue(result["complete"], result)
+
+    def test_transport_quota_or_deadline_stop_is_aggregated_immediately(self):
+        for cause in ("quota_reserve", "deadline_exceeded"):
+            with self.subTest(cause=cause):
+                reader = FakeReader()
+                reader.pages[("repos/test/repo/issues", 1, "open")] = [{"number": n, "state": "open"} for n in range(1, 50)]
+                original = reader.get_json
+                def read(path, *, step):
+                    if "/comments?" in path:
+                        reader.paths.append(path)
+                        raise sweep.github_read.GitHubReadError("Stopped bulk read", result=SimpleNamespace(
+                            failure=SimpleNamespace(cause=cause)), diagnostics={})
+                    return original(path, step=step)
+                reader.get_json = read
+                result = sweep.collect(["test/repo"], reader=reader, now=self.now)
+                self.assertTrue(any(g["reason"] == cause for g in result["coverage_gaps"]))
+                self.assertTrue(any(g.get("count", 0) > 40 for g in result["coverage_gaps"]))
+                self.assertLess(len(reader.paths), 8)
+                self.assertLess(len(result["coverage_gaps"]), 8)
+
+    def test_all_repositories_open_work_precedes_closed_history(self):
+        self.reader.repositories["repos/test/other"] = {"archived": False, "default_branch": "main"}
+        result = sweep.collect(["test/repo", "test/other"], reader=self.reader, now=self.now)
+        states = [parse_qs(urlsplit(p).query)["state"][0] for p in self.reader.paths if "state=" in p]
+        self.assertEqual(states, ["open", "open", "closed", "closed"])
+        self.assertEqual(result["checked_records"], 0)
+
+    def test_zero_comment_records_skip_comment_reads(self):
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = [{"number": 1, "state": "open", "comments": 0}]
+        self.collect()
+        self.assertFalse(any("/comments" in p for p in self.reader.paths))
+
+    def test_sweep_reserve_agrees_with_the_shared_transport(self):
+        self.reader.limit = 8000
+        reserve = sweep.github_request_usage.bulk_read_reserve(self.reader.limit)
+        self.reader.remaining = reserve
+        result = self.collect()
+        self.assertEqual(result["quota_reserve"], reserve)
+        self.assertEqual(self.reader.paths, ["rate_limit"])
 
 
 if __name__ == "__main__":

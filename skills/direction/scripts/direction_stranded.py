@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 import direction_audit as audit
-from skills.github.scripts import github_identity, github_plan_wait, github_read, ready_handoff
+from skills.github.scripts import github_identity, github_plan_wait, github_read, ready_handoff, github_request_usage
 
 # The existing Supervisor helpers use sibling imports when called as scripts.
 sys.path.insert(0, str(audit.REPO_ROOT / "skills/supervisor/scripts"))
@@ -47,13 +47,13 @@ def question_body(row: dict) -> str:
 
 def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: set[str],
            owners: set[str], gaps: list[dict] | None = None, director_names: tuple[str, ...] = (),
-           delivery_view: dict | None = None) -> dict:
+           delivery_view: dict | None = None, related_comments: list[dict] | None = None) -> dict:
     """Interpret retained API facts. A finding requests review, never authorizes a write."""
     findings: list[dict] = []
     gaps = list(gaps or [])
     trusted = {name.casefold() for name in trusted} | {name.casefold() for name in owners}
     owners = {name.casefold() for name in owners}
-    comments = [c for r in records for c in r.get("comments", [])]
+    comments = [c for r in records for c in r.get("comments", [])] + (related_comments or [])
     question_comments = sorted(
         [{**c, "author": login(c), "url": c.get("html_url") or c.get("url")} for c in comments],
         key=lambda c: (c.get("created_at") or "", c["id"]),
@@ -67,7 +67,8 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                  (login(c) in trusted and DECISION.match(question_body(c)))]
     deliveries = {row["url"]: row for row in (delivery_view or {}).get("questions", [])}
     if delivery_view is not None and delivery_view.get("complete") is not True:
-        gaps.append({"source": "question_delivery", "reason": "queue_view_incomplete"})
+        gaps.append({"source": "question_delivery", "reason": "queue_view_incomplete",
+                     **{k: delivery_view.get(k, []) for k in ("missing_sources", "untrusted_sources", "untrusted_records")}})
 
     def add(kind, record, source, since, actor, detail, *, evidence=None):
         since = stamp(since)
@@ -142,7 +143,8 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                                if t.get("baseBranch") == (pull.get("base") or {}).get("ref")), None)
                 if target is None:
                     add("ready_handoff_routing_unknown", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
-                        "Supervisor", "Current-head Ready remains open; its active train target is unavailable or absent. No routing conclusion is inferred.")
+                        "Supervisor", "Current-head Ready remains open; active policy confirms no target for this base branch. Supervisor resolves routing." if policy.get("status") in {"enrolled", "not_enrolled"} else
+                        "Current-head Ready remains open; active train policy is unavailable. No routing conclusion is inferred.")
                 elif target["readyLabel"].casefold() not in labels(item):
                     add("ready_handoff_unrouted", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
                         "Supervisor", "Current-head Ready has no enqueue view; verify existing train custody before routing.")
@@ -177,13 +179,18 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             add("stale_blocked_view", record, url, closed, "Supervisor / landing reconciler",
                 "Blocked view remains after all recorded native blockers completed and structured wait is clear.",
                 evidence=[b.get("html_url") for b in blockers])
+        merged_links = []
         for pull in record.get("linked_pulls", []):
             # Explicit closing scope is a review candidate; even this does not settle real waits.
-            refs = {(m[1] or m[2] or pull.get("_repository", repo), int(m[3])) for m in CLOSING.finditer(pull.get("body") or "")}
+            refs = {((m[1] or m[2] or pull.get("_repository", repo)).casefold(), int(m[3])) for m in CLOSING.finditer(pull.get("body") or "")}
             default_branch = pull.get("_default_branch", record.get("default_branch"))
             if pull.get("merged_at") and default_branch and (pull.get("base") or {}).get("ref") == default_branch:
-                completing = (repo, item["number"]) in refs
-                add("open_after_completing_merge" if completing else "merged_link_needs_review", record, url,
+                completing = (repo.casefold(), item["number"]) in refs
+                merged_links.append((completing, pull))
+        if merged_links:
+            # One candidate per issue instead of one permanent alert per Refs PR.
+            completing, pull = max(merged_links, key=lambda pair: (pair[0], pair[1]["merged_at"]))
+            add("open_after_completing_merge" if completing else "merged_link_needs_review", record, url,
                     pull["merged_at"], "Supervisor / landing reconciler",
                     "Linked PR merged while issue remains open; completing scope is explicit." if completing else
                     "Linked PR merged while issue remains open; Refs/partial scope is not proof of completion. Review the existing finish line.",
@@ -207,9 +214,13 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     cache: dict[str, Any] = {}
     budget = max_requests
     reads = 0
+    policy_reads = 0
+    policies = {}
+    director = director.casefold() if director else None
+    repos = [repo.casefold() for repo in repos]
 
     def fetch(args):
-        nonlocal reads
+        nonlocal reads, budget
         path = args[1]
         if path not in cache:
             if reads >= budget:
@@ -218,7 +229,10 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             try:
                 cache[path] = reader.get_json(path, step="stranded_inventory")
             except (github_read.GitHubReadError, github_read.GitHubReadShapeError, TimeoutError) as exc:
-                raise audit.AuditError(type(exc).__name__) from exc
+                cause = getattr(getattr(getattr(exc, "result", None), "failure", None), "cause", None)
+                if cause in {"quota_reserve", "deadline_exceeded", "cancelled"} or isinstance(exc, TimeoutError):
+                    budget = reads
+                raise audit.AuditError(cause or type(exc).__name__) from exc
         return cache[path]
 
     def listing(path):
@@ -245,6 +259,8 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
 
     quota = one("rate_limit").get("resources", {}).get("core", {})
     remaining = quota.get("remaining")
+    if type(quota.get("limit")) is int:
+        quota_reserve = max(quota_reserve, github_request_usage.bulk_read_reserve(quota["limit"]))
     if type(remaining) is not int:
         gaps.append({"source": "rate_limit", "reason": "quota_unavailable"})
         budget = reads
@@ -264,103 +280,123 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     offset = now.date().toordinal() % len(repos) if repos else 0
     ordered_repos = repos[offset:] + repos[:offset]
     since = (now - dt.timedelta(days=history_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for repo in ordered_repos:
-        if reads >= budget:
-            gaps.append({"source": repo, "reason": "request_or_quota_budget_exhausted"})
-            continue
-        metadata = one(f"repos/{repo}")
-        if metadata.get("archived") is True:
-            continue
-        if metadata.get("archived") is not False or not metadata.get("default_branch"):
-            gaps.append({"source": repo, "reason": "repository_state_unavailable"})
-            continue
-        issues = listing(f"repos/{repo}/issues?state=open")
-        # Closed records matter: Q249 was promised on an already-completed research issue.
-        issues += listing(f"repos/{repo}/issues?state=closed&since={since}")
-        policy = None
-        if any("pull_request" in item and item.get("state") == "open" for item in issues):
-            if policy_reader and reads < budget:
-                reads += 1
-                policy = policy_reader(repo)
-            if not isinstance(policy, dict) or policy.get("status") not in {"enrolled", "not_enrolled"}:
-                gaps.append({"source": repo, "reason": "train_policy_unavailable"})
-                policy = None
-        seen = set()
-        for index, item in enumerate(issues):
+    for state in ("open", "closed"):
+        for repo in ordered_repos:
             if reads >= budget:
-                gaps.append({"source": repo, "reason": "unread_records_after_budget", "count": len(issues) - index})
-                break
-            if not isinstance(item, dict) or type(item.get("number")) is not int:
-                gaps.append({"source": repo, "reason": "invalid_issue"})
+                gaps.append({"source": repo, "reason": "request_or_quota_budget_exhausted"})
                 continue
-            number = item["number"]
-            if number in seen:
-                gaps.append({"source": f"{repo}#{number}", "reason": "inventory_changed_during_pagination"})
+            metadata = one(f"repos/{repo}")
+            if metadata.get("archived") is True:
                 continue
-            seen.add(number)
-            record = {"repo": repo, "item": item, "default_branch": metadata["default_branch"],
-                      "train_policy": policy,
-                      "comments": listing(f"repos/{repo}/issues/{number}/comments")}
-            valid_comments = [c for c in record["comments"] if type(c.get("id")) is int
-                              and isinstance(c.get("html_url"), str) and isinstance(c.get("created_at"), str)]
-            if len(valid_comments) != len(record["comments"]):
-                gaps.append({"source": f"{repo}#{number}/comments", "reason": "invalid_comment"})
-            record["comments"] = valid_comments
-            if item.get("state") == "open":
-                gap_count = len(gaps)
-                record["timeline"] = listing(f"repos/{repo}/issues/{number}/timeline")
-                record["timeline_complete"] = len(gaps) == gap_count
-                if "pull_request" in item:
-                    record["pull"] = one(f"repos/{repo}/pulls/{number}")
-                    if not re.fullmatch(r"[0-9a-f]{40}", str((record["pull"].get("head") or {}).get("sha") or "")):
-                        gaps.append({"source": f"{repo}#{number}", "reason": "pull_head_unavailable"})
-                        record["pull"] = None
-                else:
-                    if "plan:blocked" in labels(item):
-                        record["blockers"] = listing(f"repos/{repo}/issues/{number}/dependencies/blocked_by")
-                    linked = set()
-                    for event in record["timeline"]:
-                        source = (event.get("source") or {}).get("issue") or {}
-                        if event.get("event") != "cross-referenced" or not source.get("pull_request"):
-                            continue
-                        match = re.fullmatch(r"https://api.github.com/repos/([\w.-]+/[\w.-]+)", source.get("repository_url") or "")
-                        if not match or type(source.get("number")) is not int:
-                            gaps.append({"source": f"{repo}#{number}", "reason": "linked_pull_identity_unknown"})
-                            continue
-                        linked.add((match[1], source["number"]))
-                    record["linked_pulls"] = []
-                    for source_repo, n in sorted(linked):
-                        pull = one(f"repos/{source_repo}/pulls/{n}")
-                        source_metadata = one(f"repos/{source_repo}") if source_repo != repo else metadata
-                        pull["_repository"] = source_repo
-                        pull["_default_branch"] = source_metadata.get("default_branch")
-                        record["linked_pulls"].append(pull)
-            records.append(record)
+            if metadata.get("archived") is not False or not metadata.get("default_branch"):
+                gaps.append({"source": repo, "reason": "repository_state_unavailable"})
+                continue
+            suffix = "state=open" if state == "open" else f"state=closed&since={since}"
+            issues = listing(f"repos/{repo}/issues?{suffix}")
+            policy = None
+            if any("pull_request" in item and item.get("state") == "open" for item in issues):
+                if policy_reader and reads < budget:
+                    if repo not in policies:
+                        policies[repo] = policy_reader(repo)
+                        policy_reads += 1
+                    policy = policies[repo]
+                if not isinstance(policy, dict) or policy.get("status") not in {"enrolled", "not_enrolled"}:
+                    gaps.append({"source": repo, "reason": "train_policy_unavailable"})
+                    policy = None
+            seen = set()
+            for index, item in enumerate(issues):
+                if reads >= budget:
+                    gaps.append({"source": repo, "reason": "unread_records_after_budget", "count": len(issues) - index})
+                    break
+                if not isinstance(item, dict) or type(item.get("number")) is not int:
+                    gaps.append({"source": repo, "reason": "invalid_issue"})
+                    continue
+                number = item["number"]
+                if number in seen:
+                    gaps.append({"source": f"{repo}#{number}", "reason": "inventory_changed_during_pagination"})
+                    continue
+                seen.add(number)
+                record = {"repo": repo, "item": item, "default_branch": metadata["default_branch"],
+                          "train_policy": policy,
+                          "comments": [] if item.get("comments") == 0 else listing(f"repos/{repo}/issues/{number}/comments")}
+                valid_comments = [c for c in record["comments"] if type(c.get("id")) is int
+                                  and isinstance(c.get("html_url"), str) and isinstance(c.get("created_at"), str)]
+                if len(valid_comments) != len(record["comments"]):
+                    gaps.append({"source": f"{repo}#{number}/comments", "reason": "invalid_comment"})
+                record["comments"] = valid_comments
+                if item.get("state") == "open":
+                    gap_count = len(gaps)
+                    record["timeline"] = listing(f"repos/{repo}/issues/{number}/timeline")
+                    record["timeline_complete"] = len(gaps) == gap_count
+                    if "pull_request" in item:
+                        record["pull"] = one(f"repos/{repo}/pulls/{number}")
+                        if not re.fullmatch(r"[0-9a-f]{40}", str((record["pull"].get("head") or {}).get("sha") or "")):
+                            gaps.append({"source": f"{repo}#{number}", "reason": "pull_head_unavailable"})
+                            record["pull"] = None
+                    else:
+                        if "plan:blocked" in labels(item):
+                            record["blockers"] = listing(f"repos/{repo}/issues/{number}/dependencies/blocked_by")
+                        linked = set()
+                        for event in record["timeline"]:
+                            source = (event.get("source") or {}).get("issue") or {}
+                            if event.get("event") != "cross-referenced" or not source.get("pull_request"):
+                                continue
+                            match = re.fullmatch(r"https://api.github.com/repos/([\w.-]+/[\w.-]+)", source.get("repository_url") or "")
+                            if not match or type(source.get("number")) is not int:
+                                gaps.append({"source": f"{repo}#{number}", "reason": "linked_pull_identity_unknown"})
+                                continue
+                            linked.add((match[1].casefold(), source["number"]))
+                        record["linked_pulls"] = []
+                        for source_repo, n in sorted(linked):
+                            pull = one(f"repos/{source_repo}/pulls/{n}")
+                            source_metadata = one(f"repos/{source_repo}") if source_repo != repo else metadata
+                            pull["_repository"] = source_repo
+                            pull["_default_branch"] = source_metadata.get("default_branch")
+                            record["linked_pulls"].append(pull)
+                records.append(record)
     delivery_view = None
+    related_comments = []
     if question_queue:
+        question_queue = question_queue.casefold()
         queue_repo, queue_number = question_queue.split("#")
         queue = listing(f"repos/{queue_repo}/issues/{queue_number}/comments")
         try:
             from skills.supervisor.scripts import question_delivery
 
             normalize = lambda c: {**c, "author": login(c), "url": c.get("html_url") or c.get("url")}
+            normalized_queue = [normalize(c) for c in queue]
+            bots = set(github_identity.configured_bot_logins())
+            queue_director = director or queue_repo.split("/")[0]
+            registered = sorted({r["question_url"] for r in question_delivery.records(
+                normalized_queue, bots | {queue_director})})
+            # A fleet-wide queue can reference a closed or out-of-scope source.
+            # Recover its original discussion using the sibling's existing markers.
+            for index, original in enumerate(registered):
+                if reads >= budget:
+                    gaps.append({"source": question_queue, "reason": "unread_registered_sources", "count": len(registered) - index})
+                    break
+                if question_delivery.settled(original, normalized_queue, queue_director, bots):
+                    continue
+                source_repo, source_number = question_delivery.source_item(original).split("#")
+                related_comments.extend(listing(f"repos/{source_repo.casefold()}/issues/{source_number}/comments"))
+            source_comments = [c for r in records for c in r["comments"]] + related_comments
+            sources = {c.get("html_url"): normalize(c) for c in source_comments}
             delivery_view = question_delivery.inventory(
-                [normalize(c) for r in records for c in r["comments"]],
-                [normalize(c) for c in queue], director or queue_repo.split("/")[0],
-                set(github_identity.configured_bot_logins()), now=now,
+                list(sources.values()), normalized_queue, queue_director, bots, now=now,
             )
         except ImportError:
             gaps.append({"source": question_queue, "reason": "question_delivery_view_unavailable"})
-        except (ValueError, TypeError, KeyError) as error:
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
             gaps.append({"source": question_queue, "reason": "question_delivery_contract_error", "error_type": type(error).__name__})
     else:
         gaps.append({"source": "question_delivery", "reason": "question_queue_not_selected"})
     result = report(records, now=now, age_hours=age_hours,
                     trusted=set(github_identity.configured_bot_logins()),
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
-                    gaps=gaps, director_names=director_names, delivery_view=delivery_view)
+                    gaps=gaps, director_names=director_names, delivery_view=delivery_view,
+                    related_comments=related_comments)
     result.update({"repositories": repos, "checked_records": len(records), "requests": reads,
-                   "history_days": history_days, "quota_reserve": quota_reserve})
+                   "history_days": history_days, "quota_reserve": quota_reserve, "policy_reads": policy_reads})
     return result
 
 
@@ -395,5 +431,9 @@ def markdown(result: dict) -> str:
     for gap in result["coverage_gaps"]:
         count = f" ({gap['count']} records)" if "count" in gap else ""
         lines.append(f"- Coverage gap: {gap['source']} — {gap['reason']}{count}")
+        for field in ("missing_sources", "untrusted_sources", "untrusted_records"):
+            if gap.get(field):
+                urls = [r.get("url", "unknown") if isinstance(r, dict) else r for r in gap[field]]
+                lines.append(f"  {field}: " + ", ".join(urls))
     lines.extend(result["scope_notes"])
     return "\n".join(lines) + "\n"
