@@ -1215,6 +1215,8 @@ competitor's record.
   through the existing close relationship/Project/label/comment path, updates
   Current Status's state while preserving existing evidence/custody text,
   and verifies state, labels and status with fresh readback.
+  Other retained source status fields are historical; the completed closure and
+  reconciliation receipt are the current machine observation.
   Reference-only completed records retain their original Current Status and
   evidence/custody pointers; they receive no replacement status or close comment.
   Completion comes from the issue's confirmed completed closure, never `Refs`,
@@ -1231,6 +1233,7 @@ competitor's record.
   all current native blockers and the authoritative structured wait. It preserves
   their body, finish line, wait records and relationship edges, and reports that
   any prose naming an old blocker needs review against the new observation.
+  Concurrent structured waits and open native blockers retain both label views.
   A waiting label beside a clear record is an ambiguous legacy hold; reconciliation
   preserves it for review. Record real waits through `wait`; after verifying a
   resolution, an authorized execution uses `claim --wait-resolved` with its evidence.
@@ -1243,6 +1246,9 @@ competitor's record.
   Informational reference-only open sources and timeline-only mentions set `review_required: true` without
   failing an otherwise successful receipt; closing-reference or related metadata
   failures still return nonzero and retain successful partial receipts.
+  Related review work that is preserved without writes is also informational;
+  it is never reported as reconciled. Explicit source references retain their
+  finish-line review even when they are also native parents or dependents.
   Unavailable reads and partial reconciliation remain failures.
   The train driver includes separate planning receipts for every confirmed
   landed batch member. A failed planning receipt does not undo a landing;

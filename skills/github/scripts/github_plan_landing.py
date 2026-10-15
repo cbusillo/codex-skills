@@ -183,7 +183,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
         entry["status"] = "unchanged" if issue.get("state") == "closed" else "review_related_finish_line"
         return
     if wait["state"] == "review":
-        entry["status"] = "review_wait_record"
+        entry.update(status="review_wait_record", next_action="Review full discussion and record actual waits or verified absence through gh-plan.py wait, then rerun")
         return
     _, relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
     blockers = [item for item in relationships["blocked_by"] if item["state"] == "open"]
@@ -203,10 +203,13 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     if names.intersection(config["labels"][key] for key in ("stale", "done")):
         entry.update(status="review_related_finish_line", next_action="Review remaining scope; an authorized new execution can use claim --wait-resolved with verified resolution evidence")
         return
-    wanted = config["labels"][key]
+    wanted = {config["labels"][key]}
+    if blockers and wait["state"] == "waiting":
+        wanted.add(config["labels"]["waiting"])
+    entry["derived_labels"] = sorted(wanted)
     remove = [config["labels"][key] for key in ("active", "blocked", "waiting")
-              if config["labels"][key] != wanted and config["labels"][key] in names]
-    if wanted in names and not remove:
+              if config["labels"][key] not in wanted and config["labels"][key] in names]
+    if wanted <= names and not remove:
         entry["status"] = "unchanged"
         return
     if not apply:
@@ -223,11 +226,11 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     _, gh_cmd, expected = plan.comment_route()
     entry["writes_started"] = True
     entry["labels"] = plan.github_issue_core.edit_issue(
-        number, repo=repo, add_labels=[wanted] if wanted not in names else None, remove_labels=remove or None,
+        number, repo=repo, add_labels=sorted(wanted - names) or None, remove_labels=remove or None,
         gh_cmd=gh_cmd, expected_actor=expected, operation=plan.CURRENT_OPERATION)
     verified, _, verified_wait = snapshot(plan, repo, number)
     _, verified_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    expected_names = (names - set(remove)) | {wanted}
+    expected_names = (names - set(remove)) | wanted
     if (set(plan.normalize_labels(verified.get("labels"))) != expected_names
             or verified.get("state") != "open" or verified.get("body") != issue.get("body")
             or verified_wait != wait or verified_relationships != relationships):
@@ -242,10 +245,11 @@ def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: in
     sources = list(dict.fromkeys([*roots, *timeline]))
     related = neighborhood(plan, repo, roots)
     outcomes: list[dict[str, Any]] = []
-    for issue_repo, issue_number in dict.fromkeys([*sources, *related]):
-        # A timeline reference may also be a native dependent. Reconcile its
-        # labels as a dependent unless GitHub explicitly lists a closing link.
-        is_source = (issue_repo, issue_number) not in related or (issue_repo, issue_number) in references
+    tasks = [(key, True) for key in sources if key in roots or key not in related]
+    tasks.extend((key, False) for key in related)
+    for (issue_repo, issue_number), is_source in tasks:
+        # Explicit roots retain source review alongside independent native
+        # label work; timeline-only neighbors need only their related outcome.
         entry: dict[str, Any] = {"repo": issue_repo, "number": issue_number,
                                  "role": "source" if is_source else "related",
                                  "closing_reference": (issue_repo, issue_number) in references}
@@ -272,6 +276,10 @@ def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: in
         # not failed metadata writes. Closing links and related drift still fail.
         if is_source and not entry["closing_reference"] and entry["status"] in {
                 "review_open_finish_line", "review_cross_repository", "review_reporter_acceptance"}:
+            entry["informational"] = True
+        if not is_source and entry["status"].startswith("review_"):
+            # Report preserved, unmodified review work without turning every
+            # child landing into a failed write receipt on a human-owned epic.
             entry["informational"] = True
     return {"ok": all(item.get("informational") or item["status"] in {"reconciled", "would_reconcile", "not_planning_issue", "unchanged"} for item in outcomes),
             "coverage": "complete", "review_required": any(item["status"].startswith(("review_", "reconciliation_")) for item in outcomes),

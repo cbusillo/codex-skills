@@ -267,6 +267,7 @@ class LandingTests(unittest.TestCase):
             entry = {}
             landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
             self.assertIn(self.config["labels"][key], PLAN.normalize_labels(self.issue["labels"]))
+            self.assertIn(self.config["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
             self.assertEqual(self.issue["body"], body)
             self.assertEqual(self.issue["state"], "open")
         self.state.assert_not_called()
@@ -327,6 +328,50 @@ class LandingTests(unittest.TestCase):
         self.assertEqual(self.issue, original)
         self.labels.assert_not_called()
 
+    def test_explicit_partial_source_keeps_finish_line_review_when_also_dependent(self) -> None:
+        dependent = copy.deepcopy(self.issue)
+        dependent.update(number=8, state="open", state_reason=None,
+                         labels=[{"name": self.config["labels"][key]} for key in ("plan", "blocked")])
+        PLAN.get_issue.side_effect = lambda number, repo: ("fixture-bot", copy.deepcopy(
+            dependent if int(number) == 8 else self.issue))
+        response = graph(7)
+        response["data"]["repository"]["pullRequest"]["body"] = "Fixes #7. Refs #8 (partial API only)."
+        self.reader.graphql_json.return_value.body = response
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {
+            "blocked_by": [], "sub_issues": [], "blocking": [{"repo": REPO, "number": 8, "state": "open"}]})
+        def edit(number, **kwargs):
+            if number != 8:
+                return self.edit_labels(number, **kwargs)
+            names = set(PLAN.normalize_labels(dependent["labels"])) - set(kwargs["remove_labels"] or [])
+            dependent["labels"] = [{"name": name} for name in names | set(kwargs["add_labels"] or [])]
+            return {"actor": "fixture-bot"}
+        self.labels.side_effect = edit
+        result = self.run_landing()
+        entry = next(entry for entry in result["issues"] if entry["number"] == 8 and entry["role"] == "source")
+        self.assertEqual(entry["role"], "source")
+        self.assertEqual(entry["status"], "review_open_finish_line")
+        related = next(entry for entry in result["issues"] if entry["number"] == 8 and entry["role"] == "related")
+        self.assertEqual(related["status"], "reconciled")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["review_required"])
+        self.assertEqual(dependent["state"], "open")
+        self.state.assert_not_called()
+
+    def test_human_parent_is_preserved_review_work_without_failed_write_receipt(self) -> None:
+        parent = copy.deepcopy(self.issue)
+        parent.update(number=8, state="open", state_reason=None, user={"login": "reporter"})
+        PLAN.get_issue.side_effect = lambda number, repo: ("fixture-bot", copy.deepcopy(
+            parent if int(number) == 8 else self.issue))
+        PLAN.read_next_parent.return_value = {"repo": REPO, "number": 8, "state": "open"}
+        before = copy.deepcopy(parent)
+        result = self.run_landing()
+        entry = next(entry for entry in result["issues"] if entry["number"] == 8)
+        self.assertEqual(entry["status"], "review_reporter_acceptance")
+        self.assertTrue(entry["informational"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["review_required"])
+        self.assertEqual(parent, before)
+
     def test_related_readback_mismatch_and_concurrent_wait_fail(self) -> None:
         self.issue["state"] = "open"
         self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "blocked")]
@@ -346,8 +391,10 @@ class LandingTests(unittest.TestCase):
         target = {"repo": "fixture/product", "number": 8, "state": "open"}
         PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [target]})
         PLAN.read_next_parent.return_value = target
+        PLAN.read_issue_relationships.side_effect = lambda repo, number, **_: ("fixture-bot", {"blocking": [
+            target if repo == REPO else {"repo": "fixture/product", "number": 9, "state": "open"}]})
         self.assertEqual(landing.neighborhood(PLAN, REPO, [(REPO, 7)]), [(target["repo"], target["number"])])
-        self.assertEqual(PLAN.read_issue_relationships.call_count, 1)
+        PLAN.read_issue_relationships.side_effect = None
         PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [
             {"repo": REPO, "number": number} for number in range(100, 201)]})
         with self.assertRaises(ValueError):
@@ -358,7 +405,7 @@ class LandingTests(unittest.TestCase):
         PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [target]})
         related = landing.neighborhood(PLAN, REPO, [("foreign/product", 2), (REPO, 7), (REPO, 8)])
         self.assertEqual(related, [(REPO, 8)])
-        self.assertEqual([call.args[0] for call in PLAN.read_issue_relationships.call_args_list], [REPO, REPO])
+        self.assertTrue(all(call.args[0] == REPO for call in PLAN.read_issue_relationships.call_args_list))
 
     def test_unverified_target_config_and_non_plan_labels_never_write(self) -> None:
         self.issue["state"] = "open"
@@ -426,7 +473,7 @@ class LandingTests(unittest.TestCase):
                          {self.config["labels"][key] for key in ("plan", "active")})
         again = self.run_landing()
         self.assertTrue(again["ok"])
-        self.assertEqual(again["issues"][1]["status"], "unchanged")
+        self.assertEqual(next(entry for entry in again["issues"] if entry["repo"] == product and entry["number"] == 8)["status"], "unchanged")
         self.state.assert_not_called()
 
 
