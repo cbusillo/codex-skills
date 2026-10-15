@@ -3676,12 +3676,47 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositories: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Verify bounded current-status PR links; a merged slice never closes an issue."""
-    refs = github_next_queue.delivery_references(item, trusted)
-    result: dict[str, Any] = {"complete": len(refs) <= 8, "merged_prs": [], "completion_proven": False,
-                              "scope": "candidate_status_explicit_pr_references", "all_linked_prs_searched": False}
+    """Resolve the current status before verifying its bounded source-PR links."""
+    result: dict[str, Any] = {"complete": True, "merged_prs": [], "completion_proven": False,
+                              "scope": "current_status_explicit_pr_references", "all_linked_prs_searched": False}
+    discussion = item.get("discussion") or {}
+    body_status = section_map(discussion.get("body") or "").get("Current Status", "")
+    comment_statuses = [section_map(comment.get("body") or "").get("Current Status", "")
+                        for comment in discussion.get("comments", [])
+                        if str(comment.get("author") or "").casefold() in trusted]
+    # Activity time cannot choose between disagreeing authored status records,
+    # even when no source PR was named or its implementation link is absent.
+    if body_status and any(status and status != body_status for status in comment_statuses):
+        try:
+            owner, name = item["repo"].split("/")
+            def read_edit() -> tuple[str, Any]:
+                return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
+                    payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
+                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
+            try:
+                _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read_edit)
+                             if NEXT_READS is not None else read_edit())
+            except github_next_reads.ReadDeadline as exc:
+                raise PlanError(str(exc)) from exc
+            data = edited.get("data") if isinstance(edited, dict) else None
+            repository = data.get("repository") if isinstance(data, dict) else None
+            issue = repository.get("issue") if isinstance(repository, dict) else None
+            if not isinstance(issue, dict) or "lastEditedAt" not in issue or not issue.get("createdAt"):
+                raise PlanError("Source action body-edit evidence unavailable")
+            result["body_recorded_at"] = issue["lastEditedAt"] or issue["createdAt"]
+            try:
+                recorded = datetime.fromisoformat(result["body_recorded_at"].replace("Z", "+00:00"))
+                if recorded.tzinfo is None:
+                    raise ValueError("Body edit timestamp lacks timezone")
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise PlanError("Source action body-edit time unavailable") from exc
+        except PlanError as exc:
+            result["complete"] = False
+            result["body_edit_error"] = next_source_error(exc)
+            return result
+    refs = github_next_queue.delivery_references(item, trusted, body_recorded_at=result.get("body_recorded_at"))
     if len(refs) > 8:
-        result["omitted_reference_count"] = len(refs) - 8
+        result.update(complete=False, omitted_reference_count=len(refs) - 8)
     repositories = repositories if repositories is not None else {}
     for repo, number in refs[:8]:
         if NEXT_READS is not None and NEXT_READS.expired:
@@ -3713,40 +3748,7 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
         except PlanError as exc:
             result["complete"] = False
             result.setdefault("unavailable", []).append({"repo": repo, "number": number, "reason": next_source_error(exc)})
-    discussion = item.get("discussion") or {}
-    possible_statuses = [github_next_queue.current_status(discussion, trusted)]
-    possible_statuses.extend(section_map(comment.get("body") or "").get("Current Status", "")
-                             for comment in discussion.get("comments", [])
-                             if str(comment.get("author") or "").casefold() in trusted)
-    if result["merged_prs"] and any(github_next_queue.remaining_work(status)["state"] == "engineering" for status in possible_statuses):
-        try:
-            owner, name = item["repo"].split("/")
-            def read_edit() -> tuple[str, Any]:
-                return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
-                    payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
-                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
-            try:
-                _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read_edit)
-                             if NEXT_READS is not None else read_edit())
-            except github_next_reads.ReadDeadline as exc:
-                raise PlanError(str(exc)) from exc
-            data = edited.get("data") if isinstance(edited, dict) else None
-            repository = data.get("repository") if isinstance(data, dict) else None
-            issue = repository.get("issue") if isinstance(repository, dict) else None
-            if not isinstance(issue, dict) or "lastEditedAt" not in issue or not issue.get("createdAt"):
-                raise PlanError("Source action body-edit evidence unavailable")
-            result["body_recorded_at"] = issue["lastEditedAt"] or issue["createdAt"]
-            try:
-                recorded = datetime.fromisoformat(result["body_recorded_at"].replace("Z", "+00:00"))
-                if recorded.tzinfo is None:
-                    raise ValueError("Body edit timestamp lacks timezone")
-            except (AttributeError, TypeError, ValueError) as exc:
-                raise PlanError("Source action body-edit time unavailable") from exc
-        except PlanError as exc:
-            result["complete"] = False
-            result["body_edit_error"] = next_source_error(exc)
     return result
-
 
 def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *, parallel: bool = True) -> dict[str, Any]:
     """Read ownership once per repository; project every evaluated current step."""

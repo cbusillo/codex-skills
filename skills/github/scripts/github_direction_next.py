@@ -439,11 +439,11 @@ def reviewed_remaining_scope(item: dict[str, Any], review: dict[str, Any]) -> bo
     """A fresh caller can establish a real remainder without erasing delivery."""
     queue = item.get("queue") or {}
     discussion = item.get("discussion") or {}
-    return bool(queue.get("reason") in {"merged_source_needs_finish_line_review", "source_action_predates_merged_pr", "delivered_source_has_followthrough"}
+    return bool(queue.get("reason") in {"merged_source_needs_finish_line_review", "source_action_predates_merged_pr", "delivered_source_has_followthrough", "source_delivery_reads_incomplete"}
                 and discussion.get("complete") is True and review.get("discussion_digest") == discussion.get("digest")
                 and review.get("state") == "available" and review.get("ownership_complete") is True
                 and queue.get("observed_ownership_complete") is True and not queue.get("wait_review_required")
-                and (item.get("source_delivery") or {}).get("complete") is True)
+                and bool(review.get("reason")) and bool(review.get("evidence")))
 
 
 def include_parent_context(
@@ -850,7 +850,7 @@ def rank_portfolio_work(
         elif review["state"] == "ineligible":
             excluded.append({**item, "exclusion": "outside_owner_direction", "review": review})
             continue
-        elif item.get("wait_review_required") or queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown", "source_delivery_reads_incomplete"}:
+        elif item.get("wait_review_required") or queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown"} or (queue.get("reason") == "source_delivery_reads_incomplete" and not reviewed_remaining_scope(item, review)):
             item["review_required"] = queue.get("reason") or "wait_review_required"
         elif review["state"] == "waiting":
             item["review_required"] = "invalid_milestone_wait_needs_current_ownership_review"
@@ -883,7 +883,8 @@ def rank_portfolio_work(
     priority = {"live_incident": 0, "milestone": 1, "repeated_stop_tooling": 2, "own_project": 3}
     candidates.sort(key=lambda candidate: (
         0 if is_live_breakage(candidate) else (4 if candidate.get("tooling_admission_rule") in {"all_milestones_waiting_on_people", "all_milestones_staffed_or_waiting"} else priority.get(candidate.get("category"), 1 if candidate.get("via") or candidate.get("client_request") else 5)),
-        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (candidate["rank"] if candidate.get("via") or candidate.get("client_request") or candidate.get("category") == "milestone" else candidate.get("repository_rank", candidate["rank"])),
+        -candidate.get("recorded_stop_count", 0) if capacity["admitted"] and candidate.get("category") == "repeated_stop_tooling" and not is_live_breakage(candidate) else (min((milestone_titles.index(title) for title in candidate["overall_milestone_context"]["titles"] if title in milestone_titles), default=len(milestone_titles)) if candidate.get("category") == "milestone" and not is_live_breakage(candidate) else candidate.get("repository_rank", candidate["rank"])),
+        -len(candidate.get("blocking") or []) if candidate.get("category") == "milestone" else 0,
         str(candidate.get("created_at") or ""), candidate["repo"].casefold(), candidate["number"],
     ))
     for rank, item in enumerate(candidates, 1):
@@ -1438,7 +1439,8 @@ def milestone_summary(
                 if (item.get("via") and (item.get("milestone") or {}).get("title") == title)
                 or title in (item.get("overall_milestone_context") or {}).get("titles", [])]
         def linked(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            return [{"repo": row["repo"], "number": row["number"], "url": row["url"]}
+            return [{"repo": row["repo"], "number": row["number"], "url": row["url"],
+                     **({"wait_review_required": True} if row.get("wait_review_required") else {})}
                     for row in rows if (row.get("via") and (row.get("milestone") or {}).get("title") == title)
                     or title in (row.get("overall_milestone_context") or {}).get("titles", [])]
         owned = linked(underway or [])
@@ -1451,11 +1453,14 @@ def milestone_summary(
             target = reviews if row.get("source") == "legacy_wait_review" and row.get("plan_status") != "waiting" else waits
             if (row.get("milestone") or {}).get("title") == title and record not in target:
                 target.append(record)
+        for row in qualification:
+            if row.get("wait_review_required") and not any((entry["repo"], entry["number"]) == (row["repo"], row["number"]) for entry in reviews):
+                reviews.append({**row, "waiting_for": "Legacy wait review required"})
         track = track_next_actions.get(title) or {}
         summary.append({
             "milestone": title,
             "track": track.get("track"),
-            "state": "work_listed" if work or qualification else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "no_linked_work",
+            "state": "work_listed" if work or any(not row.get("wait_review_required") for row in qualification) else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "no_linked_work",
             "work": work, "underway": owned, "verification_only": qualification, "wait_reviews": reviews,
             "waits": waits,
             # Named by the Track's Next action but not reached over native edges.

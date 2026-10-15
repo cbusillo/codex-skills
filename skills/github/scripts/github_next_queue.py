@@ -49,14 +49,9 @@ def status_field(status: str, field: str) -> str:
     return match[1].strip() if match else ""
 
 
-def delivery_references(item: dict[str, Any], trusted: set[str]) -> list[tuple[str, int]]:
-    """Read candidate statuses before edit metadata can select the current one."""
-    discussion = item.get("discussion") or {}
-    statuses = [github_direction_next.section_map(discussion.get("body") or "").get("Current Status", "")]
-    statuses.extend(github_direction_next.section_map(comment.get("body") or "").get("Current Status", "")
-                    for comment in discussion.get("comments", [])
-                    if str(comment.get("author") or "").casefold() in trusted)
-    status = "\n".join(statuses)
+def delivery_references(item: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None) -> list[tuple[str, int]]:
+    """Read only the selected current status; historical slices are not blockers."""
+    status = current_status(item.get("discussion") or {}, trusted, body_recorded_at=body_recorded_at)
     refs = [(match[1], int(match[2])) for match in re.finditer(
         r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)(?!\d)", status)]
     shorthand = re.sub(r"\[[^]\n]*]\(https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*[^)]*\)", "", status)
