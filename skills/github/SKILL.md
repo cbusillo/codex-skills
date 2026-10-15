@@ -4,6 +4,12 @@ description: "Comprehensive GitHub Expert persona for repository execution and h
 metadata:
   short-description: Execute GitHub repo workflows
 resources:
+  - path: scripts/dev-worktree
+    kind: script
+    description: Portable task worktree creation with private per-host root and existing host-helper integration.
+  - path: references/worktrees.md
+    kind: reference
+    description: Read before task worktree creation or host-root configuration; includes Claude Desktop trust and cleanup.
   - path: scripts/github_app_setup.py
     kind: script
     description: Director-run manifest registration and private configuration for a separate automation App.
@@ -83,6 +89,11 @@ resources:
     kind: reference
     description: Machine-readable transport, quota, actor, retry, and reconciliation decisions for GitHub helper operations.
 commands:
+  - name: dev-worktree
+    source: skill
+    resource_path: scripts/dev-worktree
+    example_argv: ["scripts/dev-worktree", "/absolute/repository", "task-slug", "origin/main"]
+    purpose: Creates the claimed work/task-slug branch in a new linked worktree under the configured per-host root.
   - name: github-app-guided-setup
     source: skill
     resource_path: scripts/github_app_setup.py
@@ -754,6 +765,8 @@ how existing approval and task boundaries apply.
 2. **Act**: On a default, shared, release, or production branch, create a
    focused task branch before editing. Commit and push with the bot helpers and
    open a PR.
+   For linked worktrees, read [task worktrees](references/worktrees.md) and use
+   this catalog's `scripts/dev-worktree` with the documented per-host setting.
 3. **Verify**: Run the local pre-push gates selected by
    [repo-readiness](../repo-readiness/SKILL.md#gate-selection), diagnose CI
    failures, and address review feedback. Hand repeated CI, review, or

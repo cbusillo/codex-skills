@@ -251,7 +251,10 @@ active issue labels and continuing background jobs do not lift a hold.
    be), a `repeat-stop` with both occurrences, or `spare-capacity`. Name the
    real kind: work that clears a milestone blocker is milestone work once
    linked, not spare capacity. Claim using exactly the branch the worktree helper will create
-   (`work/<task-slug>` for `dev-worktree`). Read [Planning: Claim](../github/references/cli-reference.md#planning-claim)
+   (`work/<task-slug>` for the catalog's `github/scripts/dev-worktree`). Read
+   [task worktrees](../github/references/worktrees.md) for its callable path,
+   private per-host root setting and host integration, then
+   [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for refusal, partial recovery, or release. Continue only on confirmed success;
    preserve competing or uncertain ownership for the Director to decide. Keep
    Current Status current through handoff or completion.

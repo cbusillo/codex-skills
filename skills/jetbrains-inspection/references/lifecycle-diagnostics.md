@@ -290,10 +290,15 @@ Example shared configuration:
 ```json
 {
   "jetbrains": {
-    "trustedAutoOpenRoots": ["/Users/me/Developer", "/Users/me/.code/working"]
+    "trustedAutoOpenRoots": ["/Users/me/Developer", "/Users/me/Developer/worktrees"]
   }
 }
 ```
+
+These are IDE trust examples, not worktree location settings. Use the
+[catalog worktree helper and per-host root](../../github/references/worktrees.md)
+for creation. Neither this configuration nor that helper grants Claude Desktop
+folder trust; the linked reference describes the manual trust step.
 
 If an exact worktree is not already open and is outside those roots,
 `open-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` must fail
