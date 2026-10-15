@@ -225,6 +225,7 @@ class ReleaseTests(unittest.TestCase):
             [self.source],
             [self.source, other, self.own_release(body="Released claim 3")],
             [self.source, self.own_release(user={"login": "foreign[bot]"})],
+            [self.source, self.own_release(body="Released claim 1\n\nSession: other-session")],
             [{**self.source, "user": {"login": "foreign[bot]"}}, self.own_release()],
             [self.source, self.own_release(created_at="2026-01-01T00:03:00Z", updated_at="2026-01-01T00:03:00Z")],
             [self.source, self.own_release(updated_at="2026-01-01T00:03:00Z")],
@@ -236,6 +237,7 @@ class ReleaseTests(unittest.TestCase):
                 result, report = self.finish_thread(comments)
                 self.assertEqual(result, 1)
                 self.assertTrue(report["needs_reconciliation"])
+                self.assertIn("no authored handoff", report["reports"][0]["error"])
 
     def test_finish_status_only_ownership_is_not_a_read_only_session(self):
         result, report = self.finish_thread([], body="Claimed by trial\nSession: source-session")
