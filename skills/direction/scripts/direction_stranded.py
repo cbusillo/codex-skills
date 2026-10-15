@@ -86,13 +86,16 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                          "review_required": True})
 
     def answered(question, candidates):
-        qids = set(QUESTION.findall(question_body(question)))
+        heading = question_body(question).splitlines()[0]
+        own_id = (QUESTION.match(heading.partition(":")[2].strip().lstrip("*"))
+                  if heading.startswith(PREFIXES) else QUESTION.search(heading))
+        qids = {own_id[0]} if own_id else set()
         url = question.get("html_url") or question.get("url")
         asked = stamp(question.get("created_at"))
         return any(stamp(c.get("created_at")) and asked and stamp(c["created_at"]) > asked
                    and not question_body(c).startswith(PREFIXES)
                    and ((url and url in (c.get("body") or "")) or
-                        bool(qids & set(QUESTION.findall(c.get("body") or "")))) for c in candidates)
+                        bool(qids & set(QUESTION.findall(question_body(c).splitlines()[0])[:1]))) for c in candidates)
 
     for record in records:
         item, repo = record["item"], record["repo"]

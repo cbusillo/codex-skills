@@ -59,6 +59,13 @@ class StrandedTests(unittest.TestCase):
             "html_url": "https://github.com/cbusillo/codex-skills/issues/1791#issuecomment-100"})
         self.assertNotIn(1791, {r["number"] for r in self.report()["findings"]})
 
+    def test_unnumbered_question_context_does_not_borrow_another_question_id(self):
+        self.records[1]["comments"][0]["body"] += "\n\nQ319 is a separate browser-sign-in question."
+        self.records[0]["comments"].append({"id": 101, "created_at": "2026-10-15T18:00:00Z",
+            "user": {"login": "shiny-code-app[bot]"}, "body": "Director decision: Q319 yes",
+            "html_url": "https://github.com/cbusillo/launchplane/issues/3604#issuecomment-101"})
+        self.assertIn(3639, {r["number"] for r in self.report()["findings"]})
+
     def test_valid_new_blocker_and_person_wait_preserve_blocked_view(self):
         record = self.records[3]
         record["blockers"].append({"state": "open"})
