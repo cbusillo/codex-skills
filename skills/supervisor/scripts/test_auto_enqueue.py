@@ -382,13 +382,44 @@ class EnqueueTests(unittest.TestCase):
     def test_staging_unavailable_queue_or_another_enrolled_base_never_writes(self):
         fake = self.staging_fake()
         fake.queue = Mock(side_effect=watch.LaunchplaneReadError("queue unavailable"))
-        with self.assertRaises(watch.LaunchplaneReadError):
-            self.run_pass(fake)
+        self.run_pass(fake)
         self.assertEqual(fake.writes, [])
         fake = self.staging_fake()
         fake.targets.append({**TARGET, "base": "release"})
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
+
+    def test_staging_read_failure_before_writes_does_not_starve_other_repositories(self):
+        fake = self.staging_fake()
+        other = {**TARGET, "repo": "example/other"}
+        fake.targets.append(other)
+        visited = []
+        original = fake.train
+
+        def train(target):
+            visited.append(target["repo"])
+            if target == other:
+                return response([pr()])
+            return original(target)
+
+        fake.train = train
+        fake.queue = Mock(side_effect=watch.LaunchplaneReadError("queue unavailable"))
+        self.run_pass(fake)
+        self.assertIn(other["repo"], visited)
+
+    def test_staging_read_failure_after_a_label_stops_without_replay(self):
+        fake = self.staging_fake()
+        original = fake.queue
+
+        def queue(target):
+            if fake.writes:
+                raise watch.LaunchplaneReadError("queue unavailable")
+            return original(target)
+
+        fake.queue = queue
+        with self.assertRaises(watch.LaunchplaneReadError):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [1])
 
     def test_capped_area_group_and_repeat_does_not_extend_queued_batch(self):
         fake = Fake()
@@ -1292,6 +1323,19 @@ class QueueReadTests(unittest.TestCase):
                     with self.assertRaises(watch.LaunchplaneReadError) as refused:
                         self.live.queue(TARGET)
                 self.assertTrue(watch.transient_read_error(refused.exception))
+
+    def test_malformed_or_truncated_queue_response_is_a_bounded_read_failure(self):
+        for error in (watch.operator.ServiceResponseError({}),
+                      watch.http.client.IncompleteRead(b"", 100)):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(watch.operator, "request_launchplane", side_effect=error):
+                    with self.assertRaises(watch.LaunchplaneReadError):
+                        self.live.queue(TARGET)
+        payload = copy.deepcopy(self.payload)
+        payload["result"]["dry_run_result"]["queue_order"] = [0]
+        with patch.object(watch.operator, "request_launchplane", return_value=payload):
+            with self.assertRaises(watch.LaunchplaneReadError):
+                self.live.queue(TARGET)
 
     def test_policy_read_requires_explicit_controller_scheduler_mutation_for_staging(self):
         scheduler = {"enabled": True, "mutate": True, "runner_mode": "controller"}

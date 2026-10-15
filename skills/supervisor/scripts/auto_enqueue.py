@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import importlib.util
+import http.client
 import json
 import math
 import re
@@ -429,25 +430,30 @@ class Live:
                       "mutate": False},
                 timeout=min(180, remaining),
             )
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                raise LaunchplaneReadError("queue read unavailable")
+            dry = result.get("dry_run_result")
+            if (
+                payload.get("status") != "accepted"
+                or result.get("mode") != "dry-run"
+                or result.get("repository") != target["repo"]
+                or result.get("base_branch") != target["base"]
+                or not isinstance(dry, dict)
+                or not isinstance(dry.get("queue"), list)
+                or not isinstance(dry.get("queue_order"), list)
+            ):
+                raise LaunchplaneReadError("queue read unavailable")
+            return operator._project_merge_train_dry_run(dry)
         except urllib.error.HTTPError as error:
             denied = error.code in {401, 403}
             error.close()
             if denied:
                 raise WatchError("queue read rejected") from None
             raise LaunchplaneReadError("queue read unavailable") from None
-        result = payload.get("result") or {}
-        dry = result.get("dry_run_result")
-        if (
-            payload.get("status") != "accepted"
-            or result.get("mode") != "dry-run"
-            or result.get("repository") != target["repo"]
-            or result.get("base_branch") != target["base"]
-            or not isinstance(dry, dict)
-            or not isinstance(dry.get("queue"), list)
-            or not isinstance(dry.get("queue_order"), list)
-        ):
-            raise LaunchplaneReadError("queue read unavailable")
-        return operator._project_merge_train_dry_run(dry)
+        except (operator.ServiceResponseError, operator.LaunchplaneSafetyError,
+                http.client.HTTPException):
+            raise LaunchplaneReadError("queue read unavailable") from None
 
     def qualified(self, target, pr, extra_trusted, agent_review_required=False):
         repo, number = target["repo"], pr["number"]
@@ -618,6 +624,16 @@ def needs_ready_handoff(row, target):
     }
 
 
+def read_staging_queue(io, target, state, emit):
+    try:
+        return io.queue(target)
+    except (OSError, LaunchplaneReadError, subprocess.TimeoutExpired) as error:
+        if state.write_started or not transient_read_error(error):
+            raise
+        emit("busy", {"repository": target["repo"], "reason": "queue_read_unavailable"})
+        return None
+
+
 def run_pass(io, args, emit, *, state=None):
     state = PassState() if state is None else state
     targets = io.policies(args.owner)
@@ -654,7 +670,10 @@ def run_pass(io, args, emit, *, state=None):
                 )
                 continue
             if staging:
-                response["result"]["dry_run_result"] = io.queue(target)
+                staged_queue = read_staging_queue(io, target, state, emit)
+                if staged_queue is None:
+                    continue
+                response["result"]["dry_run_result"] = staged_queue
                 if not own_queue(response["result"]["dry_run_result"], staging[3]):
                     emit("busy", {"repository": repo})
                     continue
@@ -791,7 +810,10 @@ def run_pass(io, args, emit, *, state=None):
                 continuing = own_candidate(fresh, own, candidate_records)
                 staging_current = bool(staging and staging_candidate(fresh) == staging)
                 if staging_current:
-                    fresh["result"]["dry_run_result"] = io.queue(target)
+                    staged_queue = read_staging_queue(io, target, state, emit)
+                    if staged_queue is None:
+                        break
+                    fresh["result"]["dry_run_result"] = staged_queue
                     staging_current = own_queue(
                         fresh["result"]["dry_run_result"], (*staging[3], *own)
                     )

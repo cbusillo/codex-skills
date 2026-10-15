@@ -353,7 +353,8 @@ The oldest eligible PR anchors a group; additional members share at least one
 of its top-level areas. Renames count both source and destination; root files
 form one area. `--max-batch-size` defaults to four. Area grouping is a routing
 heuristic; Launchplane's combined candidate checks still prove compatibility.
-Reconciliation, landing, or a preexisting next queue preserves
+An active candidate normally preserves its batch; scheduler-backed staging below
+is the bounded exception. Reconciliation, landing, or a preexisting next queue preserves
 that repository's batch. Each write rechecks policy, pauses, train state, current
 head and readiness. A behind-base single-member queue awaiting the train's
 branch update can still accumulate this watcher's group before any stored
@@ -373,7 +374,10 @@ while a published candidate is checking, a later pass can stage one capped group
 for the next candidate. Targets driven locally keep their existing handoff.
 Staging reads the full author-policy queue through the
 existing Level 1 run-once service path with `mutate: false`; that path writes
-only its normal diagnostic evidence, never a branch, label or merge. Every
+only its normal diagnostic evidence, never a branch, label or merge. An
+unavailable queue read before any write leaves that repository busy for this
+pass and lets other repositories proceed; authorization denials still stop.
+After a write begins, the existing no-replay stop remains. Every
 staged label requires the same published candidate ref, SHA, base and complete
 membership, a fresh author-policy queue and current-head readiness. Unknown
 label authors, incomplete labeled-PR inventory, another enrolled base,
