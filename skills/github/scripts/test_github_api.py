@@ -2272,6 +2272,29 @@ def test_retry_cancellation_interrupts_wait() -> None:
         assert payload["recommended_next_action"] == "rerun_when_ready", payload
 
 
+def test_retry_early_cancellation_counts_only_time_actually_waited() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = FakeRetryClock()
+        started = clock.now()
+        cancelled = False
+        def sleep(seconds):
+            nonlocal cancelled
+            clock.sleep(seconds / 4)
+            cancelled = True
+        calls = []
+        def attempt():
+            calls.append(True)
+            return retry_failure("rest_primary_rate_limited", retryable=True, reset=int(started + 60))
+        runtime = _api.RetryRuntime(now=clock.now, sleep=sleep, jitter=lambda _: 0,
+                                    cancelled=lambda: cancelled, progress=lambda _: None)
+        result = _api.run_with_retry(attempt, operation="github.api.rate_limit", is_write=False,
+            actor="fixture-automation", bucket="rest_core", retry_runtime=runtime,
+            retry_policy=retry_policy(Path(temp_dir), max_wait_seconds=120, wait_slice_seconds=60))
+        assert result.failure.cause == "cancelled"
+        assert len(calls) == 1
+        assert result.as_dict()["elapsed_wait"] == clock.now() - started
+
+
 def test_retry_progress_is_periodic_and_stderr_only() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         clock = FakeRetryClock()
@@ -3110,6 +3133,7 @@ def main() -> None:
         test_retry_timeout_callback_receives_remaining_deadline,
         test_retry_inherited_deadline_environment_wins,
         test_retry_cancellation_interrupts_wait,
+        test_retry_early_cancellation_counts_only_time_actually_waited,
         test_retry_progress_is_periodic_and_stderr_only,
         test_retry_never_repeats_authentication_failure,
         test_authorized_actor_change_starts_distinct_retry_context,
