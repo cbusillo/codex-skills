@@ -12,6 +12,7 @@ import collections
 import fcntl
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -22,6 +23,11 @@ from typing import Any
 
 import github_identity
 import github_agent
+
+
+def bulk_read_reserve(limit: int) -> int:
+    """The shared REST bulk-read reserve, also used to bound read-only audits."""
+    return math.ceil(limit * 0.25)
 
 
 def state_dir() -> pathlib.Path:

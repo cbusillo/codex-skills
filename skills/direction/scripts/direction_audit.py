@@ -17,6 +17,7 @@ import argparse
 import datetime as dt
 import fnmatch
 import json
+import math
 import os
 import pathlib
 import re
@@ -24,6 +25,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any, Callable
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -1829,12 +1831,55 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--automation", help="automation login allowed to create milestones; defaults to the wrapper's account")
     parser.add_argument("--gh", default=str(WRAPPER), help="gh-compatible command used for reads")
     parser.add_argument("--stale-waits-only", action="store_true", help="read parked waits without running or stamping a direction audit")
+    parser.add_argument("--stranded-work-only", action="store_true", help="read aged question, handoff, merge, status, promise and train records without stamping an audit")
+    parser.add_argument("--stranded-repo", action="append", default=[], metavar="OWNER/REPO", help="additional repository for the stranded sweep; repeat per repository")
+    parser.add_argument("--stranded-owner", help="discover this owner's visible non-archived repositories with the existing inventory")
+    parser.add_argument("--director-name", action="append", default=[], help="known Director alias for structured wait receiver matching")
+    parser.add_argument("--question-queue", help="existing Supervisor discussion as OWNER/REPO#NUMBER for the shared delivery view")
+    parser.add_argument("--age-hours", type=float, default=2, help="minimum recorded-event age for stranded candidates")
+    parser.add_argument("--history-days", type=int, default=30, help="closed-record discovery window; open records have no age cutoff")
+    parser.add_argument("--max-requests", type=int, default=800, help="stranded sweep's global request budget")
+    parser.add_argument("--deadline-seconds", type=float, default=600, help="stranded sweep's total read deadline")
+    parser.add_argument("--stranded-format", choices=("json", "markdown"), default="json")
     parser.add_argument("--prune-unadopted", action="store_true", help="preview removal of archived or unadopted repositories from the local marker")
     parser.add_argument("--apply-prune", action="store_true", help="apply the pruning preview with a recoverable backup")
     parser.add_argument("--remove-missing-repo", action="append", default=[], metavar="OWNER/REPO",
                         help="owner-approved marker removal when this exact repository returns HTTP 404; repeat per repository")
     args = parser.parse_args(argv)
 
+    if (args.stranded_owner or args.stranded_repo or args.question_queue) and not args.stranded_work_only:
+        parser.error("stranded inventory scope requires --stranded-work-only")
+    if args.stranded_work_only:
+        if args.stale_waits_only or args.prune_unadopted or args.apply_prune or args.remove_missing_repo:
+            parser.error("--stranded-work-only cannot run another audit mode")
+        if (not math.isfinite(args.age_hours) or args.age_hours < 0 or args.history_days < 1
+                or args.max_requests < 1 or not math.isfinite(args.deadline_seconds) or args.deadline_seconds <= 0):
+            parser.error("stranded sweep requires nonnegative finite age and positive bounds")
+        repos = [args.repo] if args.repo else []
+        repos.extend(args.stranded_repo)
+        if ((not repos and not args.stranded_owner)
+                or any(not re.fullmatch(r"[\w.-]+/[\w.-]+", value) for value in repos)
+                or (args.stranded_owner and not re.fullmatch(r"[\w.-]+", args.stranded_owner))):
+            parser.error("stranded sweep requires explicit --repo / --stranded-repo OWNER/REPO")
+        if args.question_queue and not re.fullmatch(r"[\w.-]+/[\w.-]+#[1-9][0-9]*", args.question_queue):
+            parser.error("--question-queue requires OWNER/REPO#NUMBER")
+        import direction_stranded
+
+        deadline_at = time.time() + args.deadline_seconds
+        reader = github_read.GitHubReader(
+            gh_cmd=args.gh, operation="github.direction.stranded_work", strict_actor=True,
+            cache_enabled=True, deadline_at=deadline_at,
+        )
+        result = direction_stranded.collect(
+            repos, reader=reader, now=dt.datetime.now(dt.timezone.utc), age_hours=args.age_hours,
+            history_days=args.history_days, max_requests=args.max_requests,
+            owner=args.stranded_owner, director_names=tuple(args.director_name),
+            question_queue=args.question_queue,
+            policy_reader=lambda repo: direction_stranded.train_policy(repo, deadline_at=deadline_at),
+            director=args.owner,
+        )
+        print(direction_stranded.markdown(result) if args.stranded_format == "markdown" else json.dumps(result, indent=2))
+        return 0 if result["complete"] else 3
     if args.stale_waits_only and (args.prune_unadopted or args.apply_prune or args.remove_missing_repo):
         parser.error("--stale-waits-only cannot prune audit markers")
     if args.apply_prune and not args.prune_unadopted:
