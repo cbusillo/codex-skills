@@ -186,7 +186,9 @@ records and write out only otherwise unrecorded gaps. Use
 - Docs-only: validate links/rendering when practical; do not run full code gates
   unless docs describe executable behavior. Prefer `docs.index` when repo
   metadata provides it.
-- Routine code change under a declared local/CI split: run focused local tests for touched behavior plus
+- Narrow code change: run targeted tests/checks for touched behavior alongside
+  any explicitly required repository gates.
+- For repositories declaring `test.local` and `test.ci`, run focused local tests for touched behavior plus
   required lint, type checks and IDE inspection. The full suite runs in CI;
   before merge or `ready`, verify it passed on the current PR head. Local
   success alone does not establish PR readiness. Otherwise retain repository

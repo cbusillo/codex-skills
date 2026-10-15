@@ -220,6 +220,8 @@ Common top-level keys:
   record the missing evidence; green CI does not silently waive the exception.
   Metadata describes the gate; the repository's CI workflow must actually run
   and require it. Verify passing checks for the current PR head.
+  Use the adopting repository's documented change areas to classify full-local
+  exceptions, rather than classifying every edit by the repository's name.
 - `qualityGate.test.default`: legacy test command, used when `test.local` is
   absent. Preserve its declared scope until the repository adopts the split;
   do not silently reinterpret an existing full gate as focused. To adopt,

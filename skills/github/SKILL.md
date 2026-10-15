@@ -866,7 +866,7 @@ contract, read its CLI reference section; skip unrelated recipes.
 
 Use PRs for all non-trivial changes.
 
-- **Pre-push quality**: For repositories adopting the local/CI split, run
+- **Pre-push quality**: For repositories declaring `test.local` and `test.ci`, run
   focused local tests plus required lint and type checks, selecting
   `qualityGate.test.local` rather than the full `qualityGate.test.ci` gate under the
   [test command contract](references/config-schema.md#workflow-metadata).
