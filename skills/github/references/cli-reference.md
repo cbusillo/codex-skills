@@ -383,7 +383,7 @@ profile, `profile --read-only` for its read-only projection, and `audit --repo
 OWNER/REPO` or `audit --all-installed` for safe current capability evidence.
 After an accepted App update, `audit --refresh-token --repo OWNER/REPO` renews the
 same App token. See [permission coverage](github-permissions.md) for caller roles,
-result meanings and the API surface drift check. No audit performs repository
+result meanings and review of changed API surfaces. No audit performs repository
 writes or changes account grants.
 
 ### Execution: PRs And Rate Limits

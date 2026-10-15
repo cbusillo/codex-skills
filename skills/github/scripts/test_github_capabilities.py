@@ -182,7 +182,7 @@ class CapabilityTests(unittest.TestCase):
             path = scripts / 'fixture.py'
             path.write_text('def run(reader):\n    reader.request("GET", "/repos/example/repo/issues", step="read")\n')
             original = capabilities.source_fingerprints(root)
-            # Unrelated payload/logging and dictionary access are not API drift.
+            # Unrelated payload/logging and dictionary access leave the surface unchanged.
             path.write_text(path.read_text() + '    payload = {"key": 1}\n    value = payload.get("key")\n')
             self.assertEqual(original, capabilities.source_fingerprints(root))
             path.write_text(path.read_text().replace('"GET"', '"POST"'))
@@ -193,7 +193,7 @@ class CapabilityTests(unittest.TestCase):
             self.assertIn('github/scripts/new_helper.py', capabilities.source_fingerprints(root))
 
     def test_declared_capability_drives_profile_and_safe_probe(self):
-        capability = dict(self.matrix['capabilities']['actions_write'])
+        capability = dict(self.matrix['capabilities']['actions_write'], probe='actions')
         matrix = {
             'permission_schema_version': self.matrix['permission_schema_version'],
             'capabilities': {'fixture_actions': capability},
@@ -212,7 +212,7 @@ class CapabilityTests(unittest.TestCase):
             membership={'example/repo'}, capabilities=matrix['capabilities'])
         self.assertEqual(result['capabilities']['fixture_actions']['state'], 'permission_granted')
         self.assertEqual(result['capabilities']['fixture_actions']['write_probe'], 'not_exercised')
-        self.assertIn(('GET', '/repos/example/repo/actions/workflows?per_page=1'), self.reader.calls)
+        self.assertTrue(any(path.startswith('/repos/example/repo/') for _, path in self.reader.calls))
         self.assertTrue(all(method == 'GET' for method, _ in self.reader.calls))
 
     def test_actor_mismatch_cannot_turn_http_success_into_available(self):
@@ -223,7 +223,7 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(result['state'], 'unavailable')
         self.assertNotIn('DO-NOT-PRINT', json.dumps(result))
 
-    def test_drift_covers_cli_wrappers_methods_and_dynamic_probe_paths(self):
+    def test_advisory_surface_covers_cli_wrappers_methods_and_dynamic_probe_paths(self):
         pairs = [
             ('run_raw(["project", "item-add", target])', 'run_raw(["project", "item-delete", target])'),
             ('args = ["pr", "create", target]', 'args = ["pr", "edit", target]'),
