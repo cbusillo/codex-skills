@@ -1058,6 +1058,7 @@ def enrich_milestone_waits(
         item["repo"] = repo
     incomplete = False
     configs: dict[str, dict[str, Any]] = {}
+    wait_helpers = runpy.run_path(str(GITHUB_SCRIPTS / "gh-plan.py"))
 
     def config(target_repo: str) -> dict[str, Any]:
         if target_repo not in configs:
@@ -1087,8 +1088,16 @@ def enrich_milestone_waits(
                     refs.append({"repo": match.group(1), "number": int(match.group(2)),
                                  "url": url, "state": value["state"]})
                 relations[field] = refs
+            comments, cut = fetch_paginated(f"repos/{target_repo}/issues/{number}/comments", fetch=fetch, max_pages=2)
+            incomplete |= cut
+            try:
+                wait = wait_helpers["current_wait"](raw, comments, target_repo) if not cut else None
+            except (ValueError, KeyError, TypeError, wait_helpers["PlanError"]):
+                wait = None
+            if wait is None:
+                wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
             return github_direction_next.evaluate_direction_node({**raw, "repo": target_repo}, config=config(target_repo),
-                                                                  focus=None, relationships=relations)
+                                                                  focus=None, relationships=relations, structured_wait=wait)
         except AuditError:
             incomplete = True
             return {"item": {"repo": target_repo, "number": number,

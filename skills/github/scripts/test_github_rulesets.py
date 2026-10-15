@@ -75,6 +75,9 @@ def args(command: str, **overrides: Any) -> argparse.Namespace:
         "owner": None,
         "confirm_owner_admin_write": False,
         "confirm_repository_count": None,
+        "client_lock": False,
+        "client_lock_tags": False,
+        "bypass_integration_id": [],
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -409,6 +412,111 @@ def test_missing_standard_rulesets_requires_active_branch_rulesets() -> None:
         {"name": names[1], "target": "branch", "enforcement": "disabled"},
     ]
     assert github_rulesets.missing_standard_rulesets(current) == [names[1]]
+
+
+def lock_bypass(spec: github_rulesets.RulesetSpec) -> set[tuple[str, int]]:
+    return {(actor["actor_type"], actor["actor_id"]) for actor in spec.payload["bypass_actors"]}
+
+
+def test_client_lock_stops_every_ref_change_except_admin_and_apps() -> None:
+    branches, tags = github_rulesets.client_lock_specs(77, branches=True, tags=True, extra_integration_ids=[29110])
+    for spec, target in ((branches, "branch"), (tags, "tag")):
+        assert spec.payload["target"] == target
+        assert spec.payload["enforcement"] == "active"
+        assert spec.payload["conditions"]["ref_name"]["include"] == [github_rulesets.ALL_REFS]
+        assert spec.payload["conditions"]["ref_name"]["exclude"] == []
+        assert {rule["type"] for rule in spec.payload["rules"]} == {"creation", "update", "deletion"}
+        assert lock_bypass(spec) == {
+            ("RepositoryRole", github_rulesets.ADMIN_REPOSITORY_ROLE_ID),
+            ("Integration", 77),
+            ("Integration", 29110),
+        }
+    assert branches.name != tags.name
+    assert {spec.name for spec in (branches, tags)}.isdisjoint(github_rulesets.required_ruleset_names())
+
+
+def test_client_lock_tag_and_branch_specs_are_selected_separately() -> None:
+    assert github_rulesets.client_lock_specs(77, branches=False, tags=False) == ()
+    (only_branches,) = github_rulesets.client_lock_specs(77, branches=True, tags=False)
+    (only_tags,) = github_rulesets.client_lock_specs(77, branches=False, tags=True)
+    assert only_branches.payload["target"] == "branch"
+    assert only_tags.payload["target"] == "tag"
+    # Repeating the App or an extra id never duplicates a bypass actor.
+    (spec,) = github_rulesets.client_lock_specs(77, branches=True, tags=False, extra_integration_ids=[77, 9, 9])
+    assert sorted(actor["actor_id"] for actor in spec.payload["bypass_actors"]) == sorted(
+        [github_rulesets.ADMIN_REPOSITORY_ROLE_ID, 77, 9])
+
+
+def test_client_lock_refuses_without_app_or_with_stray_or_invalid_ids() -> None:
+    cli = load_cli()
+    scenarios = [
+        (args("plan", client_lock=True), None, "unconfigured_identity"),
+        (args("plan", client_lock_tags=True), None, "unconfigured_identity"),
+        (args("plan", bypass_integration_id=[29110]), 77, "validation_error"),
+        (args("plan", client_lock=True, bypass_integration_id=[0]), 77, "validation_error"),
+    ]
+    for request, app_id, cause in scenarios:
+        client = FakeClient({"owner/repo": []})
+        with patch.object(github_rulesets.github_identity, "github_app_config", return_value=None):
+            try:
+                cli.run(request, client=client, app_id=app_id)
+            except github_rulesets.RulesetError as exc:
+                assert exc.cause == cause
+            else:
+                raise AssertionError(f"missing refusal: {cause}")
+        assert client.actor is None
+        assert client.writes == []
+
+
+def test_client_lock_apply_adds_beside_standard_pair_and_converges() -> None:
+    cli = load_cli()
+    standard = github_rulesets.standard_specs(77)
+    current = [response_ruleset(spec, index) for index, spec in enumerate(standard, 1)]
+    client = FakeClient({"owner/repo": current})
+    request = {"client_lock": True, "client_lock_tags": True, "bypass_integration_id": [29110]}
+    plan = cli.run(args("plan", **request), client=client, app_id=77)
+    assert [(item["key"], item["action"]) for item in plan["repositories"][0]["changes"]] == [
+        ("landing", "none"), ("direction", "none"), ("client_branches", "create"), ("client_tags", "create")]
+    assert plan["client_lock"] == {"branches": True, "tags": True, "bypass_integration_ids": [29110]}
+    assert client.writes == []
+    try:
+        cli.run(args("apply", **request), client=client, app_id=77)
+    except github_rulesets.RulesetError as exc:
+        assert exc.cause == "authorization_required"
+    else:
+        raise AssertionError("apply without confirmation must fail")
+    assert client.writes == []
+    applied = cli.run(args("apply", confirm_owner_admin_write=True, **request), client=client, app_id=77)
+    assert applied["repositories"][0]["verified"] is True
+    assert client.writes == [("create", "client_branches", None), ("create", "client_tags", None)]
+    assert client.repos["owner/repo"][:2] == current
+    assert not cli.run(args("plan", **request), client=client, app_id=77)["changed"]
+    # The standard pair alone does not see the lock rulesets as its own.
+    assert not cli.run(args("plan"), client=client, app_id=77)["changed"]
+
+
+def test_client_lock_plan_names_bypass_actors_a_rerun_would_remove() -> None:
+    (with_dependabot,) = github_rulesets.client_lock_specs(77, branches=True, tags=False, extra_integration_ids=[29110])
+    (without,) = github_rulesets.client_lock_specs(77, branches=True, tags=False)
+    (change,) = github_rulesets.plan_changes([response_ruleset(with_dependabot, 4)], (without,))
+    assert change.action == "update"
+    assert change.as_dict()["bypass_removed"] == [
+        {"actor_type": "Integration", "actor_id": 29110, "bypass_mode": "always"}]
+    assert "bypass_added" not in change.as_dict()
+
+
+def test_client_lock_drift_in_rules_or_targets_is_detected() -> None:
+    (spec,) = github_rulesets.client_lock_specs(77, branches=True, tags=False)
+    live = response_ruleset(spec, 3)
+    assert github_rulesets.ruleset_matches(live, spec)
+    missing_deletion = copy.deepcopy(live)
+    missing_deletion["rules"] = [rule for rule in live["rules"] if rule["type"] != "deletion"]
+    default_only = copy.deepcopy(live)
+    default_only["conditions"] = {"ref_name": {"include": [github_rulesets.DEFAULT_REF], "exclude": []}}
+    write_role = copy.deepcopy(live)
+    write_role["bypass_actors"].append({"actor_id": 4, "actor_type": "RepositoryRole", "bypass_mode": "always"})
+    for drifted in (missing_deletion, default_only, write_role):
+        assert not github_rulesets.ruleset_matches(drifted, spec)
 
 
 def main() -> int:

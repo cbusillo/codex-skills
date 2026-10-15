@@ -210,7 +210,7 @@ class AgentTests(unittest.TestCase):
             tool = next_tests.global_issue("someone/tools", 20, labels=[f"agent:{family}"])
             edges = {(root["repo"], root["number"]): next_tests.relationships(sub_issues=[leaf])
                      for root, leaf in zip(roots, leaves)}
-            with next_tests.global_fixture(roots, leaves, edges, discovered=[tool]) as (module, result, _):
+            with next_tests.global_fixture(roots, leaves, edges, discovered=[tool], clear_waits=[tool]) as (module, result, _):
                 args = next_tests.next_args(scan_limit=3)
                 args.agent = family
                 module.cmd_next(args)

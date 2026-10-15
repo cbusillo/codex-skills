@@ -3572,12 +3572,11 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
 
 def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
     """Read ownership once per repository; project every evaluated current step."""
-    bots = {login.casefold() for login in github_identity.configured_bot_logins()}
     evidence: dict[str, dict[str, Any]] = {}
     comment_limit = getattr(args, "comment_limit", None) or 100
     for item in items:
         repo = item["repo"]
-        trusted = bots | {repo.split("/")[0].casefold()}
+        trusted = {login.casefold() for login in wait_authors(repo)}
         if not item.get("discussion"):
             try:
                 _, raw = get_issue(str(item["number"]), repo)
@@ -3832,6 +3831,8 @@ def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[d
 
 def next_wait_context(
     issues: list[dict[str, Any]], *, scan_limit: int, inventory_complete: bool,
+    reference_repositories: set[str] | None = None,
+    structured_waits: dict[tuple[str, int], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Reuse the direction audit's stale report within the already-read scope."""
     root = str(pathlib.Path(__file__).resolve().parents[3])
@@ -3859,10 +3860,12 @@ def next_wait_context(
             raise cache[path]
         return cache[path]
 
+    known_repos = {item["repo"] for item in issues} | (reference_repositories or set())
     configs = {item["repo"]: load_config(item["repo"]) for item in issues}
     unique = {(item["repo"].casefold(), item["number"]): item for item in issues
               if set(normalize_labels(item.get("labels"))).intersection(
-                  configs[item["repo"]]["labels"][key] for key in ("active", "waiting", "blocked"))}
+                  configs[item["repo"]]["labels"][key] for key in ("active", "waiting", "blocked"))
+              or (structured_waits or {}).get((item["repo"].casefold(), item["number"]), {}).get("state") == "waiting"}
     groups: dict[str, list[dict[str, Any]]] = {}
     selected = list(unique.values())[:scan_limit]
     for item in selected:
@@ -3898,7 +3901,10 @@ def next_wait_context(
                 continue
             status = section_map(item.get("body") or "").get("Current Status", "")
             own = {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, config)}
-            for row in github_direction_next.waiting_records(own, status):
+            wait = (structured_waits or {}).get((repo.casefold(), item["number"]))
+            if wait is not None:
+                own["structured_wait"] = wait
+            for row in github_direction_next.waiting_records(own, status, reference_repositories=known_repos):
                 for reference in row["references"]:
                     url = reference["url"]
                     if url in references:
@@ -3997,6 +4003,22 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             }
             if raw_issue.get("pull_request") is not None:
                 return {"item": {**base, "exclusion": "pull_request"}}
+            comment_limit = getattr(args, "comment_limit", None) or 100
+            _, comments = collect_paged_rest_items(
+                f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
+                step_prefix="next_issue_comments", limit=comment_limit + 1,
+            )
+            complete = len(comments) <= comment_limit
+            try:
+                wait = current_wait(raw_issue, comments[:comment_limit], issue_repo) if complete else None
+            except (ValueError, KeyError, TypeError):
+                wait = None
+            except PlanError as exc:
+                if exc.failure is not None:
+                    raise
+                wait = None
+            if wait is None:
+                wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
             static = next_static_exclusion(raw_issue, config=target_config, focus=focus)
             if static:
                 evaluated_node = {"item": static}
@@ -4005,15 +4027,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 actor = relation_actor or actor
                 evaluated_node = github_direction_next.evaluate_direction_node(
                     raw_issue, config=target_config, focus=focus, relationships=relationships,
-                    truncated_relationships=truncated,
+                    truncated_relationships=truncated, structured_wait=wait,
                 )
-            comment_limit = getattr(args, "comment_limit", None) or 100
-            _, comments = collect_paged_rest_items(
-                f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
-                step_prefix="next_issue_comments", limit=comment_limit + 1,
-            )
             evaluated_node["item"]["discussion"] = github_direction_next.discussion_snapshot(
-                raw_issue, comments[:comment_limit], complete=len(comments) <= comment_limit,
+                raw_issue, comments[:comment_limit], complete=complete,
             )
             nodes[key] = evaluated_node
             return evaluated_node
@@ -4177,9 +4194,11 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 ranked["excluded"].append(item)
                 reports = node.get("waiting") or []
                 ranked["waiting"].extend(reports)
-                if item["exclusion"] in {"waiting", "parent_waiting"} and not reports:
+                if item["exclusion"] in {"waiting", "wait_review_required", "parent_waiting"} and not reports:
                     ranked["waiting"].append({
                         "repo": item["repo"], "number": item["number"], "url": item["url"],
+                        **({"source": "legacy_wait_review"} if item["exclusion"] == "wait_review_required" else {}),
+                        "milestone": item.get("milestone"),
                         "waiting_for": item.get("waiting_on_parent") or node.get("status_text") or "Waiting party or condition not recorded",
                         "reported_by": item["url"], "reported_at": item.get("updated_at"),
                     })
@@ -4242,6 +4261,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         [seeds[key] for key in evidence_keys if key in seeds],
         scan_limit=args.scan_limit * 2,
         inventory_complete=candidate_coverage_complete,
+        reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
+        structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]},
     )
     stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
     checked_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["checked_issues"]}
@@ -4274,6 +4295,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
         repository_clients=client_records, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
+        reference_repositories={entry["repo"] for entry in seeds.values()} | {entry["repo"] for entry in discovery.get("repositories", [])},
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
@@ -4301,7 +4323,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     github_agent.filter_selection(ranked, github_agent.running_agent(getattr(args, "agent", None)))
     ranked["milestone_summary"] = github_direction_next.milestone_summary(
         titles, completed=ranked.get("completed_milestones", []), candidates=ranked["candidates"],
-        graph_waits=graph_waits, track_next_actions=track_next_actions,
+        graph_waits=[*graph_waits, *ranked["waiting"], *ranked["recorded_waits"]], track_next_actions=track_next_actions,
+        underway=ranked["underway"], verification_only=ranked["verification_only"],
     )
     ranked["candidates"] = ranked["candidates"][:args.limit]
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]

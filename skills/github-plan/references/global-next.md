@@ -107,9 +107,22 @@ and marked-incident handling. Other source bounds/failures remain in
 `discovery_context.repositories`; omitted counts are not a complete portfolio
 inventory when those sources are truncated or inaccessible.
 
-The `waiting` list identifies each open issue labeled waiting by its own
-Current Status. References in that text stay in `references`, resolved relative
-to that issue's repository, with closed/unavailable targets flagged for review.
+Global selection reads the bounded discussion before classifying the node and
+uses the claim helper's authorized structured wait resolver. A current `clear`
+record takes precedence over status prose; a pending structured person/event
+wait, status label or native dependency still holds work. Service callers of
+`evaluate_direction_node` supply the resolved `structured_wait` from the same
+complete discussion and trusted authors; missing, malformed or incomplete
+records require the supported wait review before availability. Legacy prose is
+retained as review evidence, with active prose-only holds identified as
+`wait_review_required`, rather than a confirmed person wait. Selection changes
+no record and grants no claim or live-operation authority.
+
+The `waiting` list identifies current wait reports. References in that text stay
+in `references`, resolved relative to the reporting issue: `repo#N` uses its
+account only for a repository in the observed inventory; bare `#N` uses its repository. Adjacent shorthand references do not
+supply an account for each other. Closed/unavailable targets remain flagged for
+review.
 `last_verified` comes from the issue's own field; `reported_at` is its separate
 GitHub update time. Active issues with recorded partial holds appear in
 `recorded_waits`; children excluded by an ancestor hold do not inherit its prose
@@ -159,6 +172,11 @@ through the existing claim procedure. Unknown reads stay review work.
 Unclassified tooling still requires current caller category/stop evidence and
 the existing capacity admission proof; automatic queue evidence does not
 enable spare-capacity admission or infer a repeated stop.
+
+`milestone_summary` lists source work, `underway` ownership and
+`verification_only` qualification separately. Unreviewed legacy holds appear in
+`wait_reviews`; they do not label an entire milestone as waiting on a person.
+Qualification work remains visible even when no source candidate is available.
 
 `selection_coverage` counts inventoried/evaluated active issues and exclusion
 reasons. Graph, repository, discussion and ownership bounds remain independent;
