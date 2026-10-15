@@ -1252,6 +1252,14 @@ uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <priv
 ```
 
 Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
+For `finish`, discovery also checks original claim comments after their release.
+An exact `Released claim <id>` directive binds the handoff through that source's
+native session, with both comments authored by the automation actor and dated
+before the recorded closure. When every claim has that evidence, the report says
+`already released by the session` and names the release handoffs without writing
+another release. A verified session that never claimed reports `nothing to release`.
+Unresolved ownership retains the existing handoff and release checks; neither
+case relaxes transcript, process-exit or unqualified safe-verdict verification.
 PR-only claims appear in `pr_claim_handoffs`, with exact claim IDs, the verified
 closure's `attestation_body`, the checkout, and dry-run/apply argv. They stay owned until that
 route succeeds; an empty automatic `claims` list does not mean all ownership

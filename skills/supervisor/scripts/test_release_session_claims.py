@@ -156,6 +156,85 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "single timezone"):
             helper.validate_closure({**self.entry, "ended_at": "2026-01-01 00:02:00+00:00"}, "supervisor")
 
+    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body=""):
+        ledger, log = self.root / "ledger.json", self.root / "closed.json"
+        ledger.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
+        log.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[1]["payload"]["message"] = "Finished.\n" + verdict
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        self.reader.paged_json.side_effect = lambda path, **_kw: comments if path.endswith("/issues/1/comments") else []
+        self.reader.get_json.side_effect = lambda path, **_kw: {"body": body, "number": 1}
+        argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
+                "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
+                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
+                "--verified-handoff", "--handoff-thread", "test/a#2", "--transcript-root", str(self.root), "--apply"]
+        output = io.StringIO()
+        with patch.object(helper.sys, "argv", argv), \
+                patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                patch.object(helper, "GitHubReader", return_value=self.reader), \
+                patch.object(helper, "discover", return_value=([("test/a", 1)], ["test/a"])), \
+                patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run, \
+                contextlib.redirect_stdout(output):
+            result = helper.main()
+        write.assert_not_called()
+        run.assert_not_called()
+        return result, json.loads(output.getvalue())
+
+    def own_release(self, **changes):
+        return {**comment(2, "Released claim 1\n\nEngineering handed to Supervisor."),
+                "created_at": "2026-01-01T00:01:00Z", "updated_at": "2026-01-01T00:01:00Z", **changes}
+
+    def test_finish_recognizes_self_released_claim_from_its_original_comment(self):
+        result, report = self.finish_thread([self.source, self.own_release()], body=self.source["body"])
+        self.assertEqual(result, 0)
+        self.assertFalse(report["needs_reconciliation"])
+        session = report["reports"][0]
+        self.assertEqual(session["status"], "already released by the session")
+        self.assertEqual(session["released_claims"][0]["claim_comment"], self.source["id"])
+        self.assertEqual(session["handoff_url"], "https://github.com/test/a/issues/1#issuecomment-2")
+
+    def test_finish_read_only_session_has_nothing_to_release(self):
+        result, report = self.finish_thread([])
+        self.assertEqual(result, 0)
+        self.assertEqual(report["reports"][0]["status"], "nothing to release")
+        self.assertFalse(report["needs_reconciliation"])
+
+    def test_finish_preserves_held_foreign_and_late_claims(self):
+        other = comment(3, "Claimed by other\n\n" + helper.claim.marker({**SOURCE, "session": "other-session"}))
+        cases = [
+            [self.source],
+            [self.source, other, self.own_release(body="Released claim 3")],
+            [self.source, self.own_release(user={"login": "foreign[bot]"})],
+            [{**self.source, "user": {"login": "foreign[bot]"}}, self.own_release()],
+            [self.source, self.own_release(created_at="2026-01-01T00:03:00Z", updated_at="2026-01-01T00:03:00Z")],
+            [self.source, self.own_release(updated_at="2026-01-01T00:03:00Z")],
+            [self.source, self.own_release(created_at=self.source["created_at"])],
+            [self.source, self.own_release(), comment(4, "Claimed by trial\n\n" + helper.claim.marker(SOURCE))],
+        ]
+        for comments in cases:
+            with self.subTest(comments=comments):
+                result, report = self.finish_thread(comments)
+                self.assertEqual(result, 1)
+                self.assertTrue(report["needs_reconciliation"])
+
+    def test_finish_status_only_ownership_is_not_a_read_only_session(self):
+        result, report = self.finish_thread([], body="Claimed by trial\nSession: source-session")
+        self.assertEqual(result, 1)
+        self.assertTrue(report["needs_reconciliation"])
+        result, report = self.finish_thread([self.source, self.own_release()],
+            body=helper.claim.marker({**SOURCE, "branch": "work/unreleased"}))
+        self.assertEqual(result, 1)
+        self.assertTrue(report["needs_reconciliation"])
+
+    def test_finish_noop_paths_keep_the_unqualified_verdict_gate(self):
+        for comments in ([], [self.source, self.own_release()]):
+            for verdict in ("Safe to exit: yes, if checks pass", "Safe to exit: yes.\nOne more line"):
+                with self.subTest(comments=comments, verdict=verdict):
+                    result, report = self.finish_thread(comments, verdict=verdict)
+                    self.assertEqual(result, 1)
+                    self.assertFalse(report["ok"])
+
     def test_handoff_discovery_uses_native_comment_write_not_shared_bot_read(self):
         receipt = json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})
         records = helper.session_record.read_jsonl(self.transcript)

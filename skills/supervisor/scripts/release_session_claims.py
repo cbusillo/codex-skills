@@ -460,6 +460,12 @@ def run_release(repo, number, source_id, related, prs, evidence_url, supervisor_
 def release_session(reader, entry, actor, supervisor_session, issues, checkout_root, apply):
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     status = validate_closure(entry, supervisor_session)
+    if entry.get("_finish"):
+        completed = finished_claims(reader, entry, actor, issues, apply)
+        if completed is not None:
+            if validate_closure(entry, supervisor_session) != status:
+                raise ValueError("source transcript changed; preserve claims")
+            return completed
     if entry.get("handoff_url"):
         handoff_record = handoff(reader, entry, actor)
     else:
@@ -490,6 +496,46 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         return apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, apply, report, reader)
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, CommentError) as error:
         raise PartialRelease(error, report) from error
+
+
+def finished_claims(reader, entry, actor, issues, apply):
+    """Recognize completed ownership from original claims, including released ones.
+
+    Only finish's complete discovery can establish that a session never claimed.
+    Anything without an exact authored release retains the existing handoff path.
+    """
+    released = []
+    ended = release.stamp(entry["ended_at"])
+    for repo, number in issues:
+        issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="finished_claim_issue")
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="finished_claim_history")
+        sources = [c for c in comments if belongs_to_session(c.get("body") or "", entry["session_id"])]
+        if belongs_to_session(issue.get("body") or "", entry["session_id"]):
+            body_records = [r for r in claim.records(issue["body"]) if r["session"] == entry["session_id"]]
+            source_records = [r for c in sources for r in claim.records(c.get("body") or "")]
+            if not body_records or any(r not in source_records for r in body_records):
+                return None  # Status-only ownership is not a read-only session.
+        exact = {comments[i]["id"]: comments[j] for i, record, j in claim.exact_released_sources(comments)
+                 if record["session"] == entry["session_id"]}
+        for source in sources:
+            parsed = claim.records(source.get("body") or "")
+            evidence = exact.get(source["id"])
+            if (len(parsed) != 1 or parsed[0]["session"] != entry["session_id"]
+                    or (source.get("user") or {}).get("login") != actor or evidence is None
+                    or not release.related_sessions_match(evidence.get("body") or "", entry["session_id"])
+                    or release.stamp(evidence.get("updated_at") or evidence.get("created_at")) > ended):
+                return None
+            released.append({"repository": repo, "issue": number, "claim_comment": source["id"],
+                             "handoff_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}"})
+        # Keep the existing classifier's refusal for unresolved legacy follow-ups
+        # and claims held by another identity, even alongside a released source.
+        if active_claims(reader, repo, number, entry["session_id"], actor):
+            return None
+    return {"session_id": entry["session_id"], "claims": [], "released_claims": released,
+            "status": "already released by the session" if released else "nothing to release",
+            "handoff_url": released[-1]["handoff_url"] if released else None,
+            "dry_run": not apply, "retained_status_claims": [], "issue_refusals": [],
+            "pr_claim_handoffs": [], "closure_evidence": "matched PID/TTY log"}
 
 
 def verified_release_checkout(checkout_root, repo):
@@ -738,6 +784,7 @@ def main():
                 entries = [record_closure(args.closed_log, entries[0], args.supervisor_session)]
             else:
                 entries = [record_closure(args.closed_log, entries[0], args.supervisor_session, persist=False)]
+            entries[0]["_finish"] = True
         else:
             rows = json.loads(args.closed_log.read_text())
             if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "safe_exit_yes" in rows[0]:
