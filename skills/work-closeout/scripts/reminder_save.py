@@ -78,8 +78,10 @@ def decide(request: dict, reminders: list[dict]) -> dict:
                       reminder_id=existing)
     if existing is None and request.get("update_id"):
         raise refusal("Update target not found; no replacement created")
-    if any(not r["completed"] and r["id"] != existing and r["title"] == request["title"] for r in reminders):
-        raise refusal("Title is not unique in the target list; no UI edit")
+    # The visible URL step finds the row by title, and a shown completed row would match too.
+    if any(r["id"] != existing and r["title"] == request["title"] for r in reminders):
+        raise refusal("Title is not unique in the target list, counting completed items; "
+                      "pass a distinct --title. No UI edit")
     return {"action": "update", "id": existing} if existing else {"action": "create", "id": None}
 
 

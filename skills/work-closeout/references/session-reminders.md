@@ -114,7 +114,8 @@ priority, completion, alarms and recurrence. The required dry-run schedule field
 are validated but are not applied in this mode. Ordinary updates keep their
 explicit schedule behavior.
 Missing update targets, duplicate incomplete matches and colliding titles are refused.
-Completed matches are never changed or reactivated; they do not block a new reminder. A `saved` receipt confirms list,
+Completed matches are never changed or reactivated and do not block a new reminder,
+but a completed item's title still collides: pass a distinct `--title`. A `saved` receipt confirms list,
 title, schedule, alarm, recurrence, short notes and the exact visible URL. A `partial`
 receipt includes the created/updated ID and missing proof: do not claim completion
 or repeat creation. Finish that same item with its ID or, under removal authority,

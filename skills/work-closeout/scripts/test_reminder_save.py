@@ -137,8 +137,8 @@ class ReminderSaveTests(unittest.TestCase):
         return [writer.sent[1:] for writer in self.writers]
 
     def test_completed_session_reminder_does_not_block_a_new_one(self):
-        done = self.item("done", completed=True)
-        receipt = self.save([done, self.item("done-too", completed=True)])
+        done = self.item("done", completed=True, title="earlier check-in")
+        receipt = self.save([done, self.item("done-too", completed=True, title="older check-in")])
         self.assertTrue(receipt["created"])
         self.assertEqual(self.decisions(), [[{"action": "create", "id": None}]])
         for overrides in ({"update_id": "done"}, {"delete_id": "done"}):
@@ -147,7 +147,7 @@ class ReminderSaveTests(unittest.TestCase):
             self.assertEqual(self.decisions(), [[]])
 
     def test_incomplete_match_is_still_found_beside_completed_ones(self):
-        reminders = [self.item("done", completed=True), self.item("open", completed=False),
+        reminders = [self.item("done", completed=True, title="earlier check-in"), self.item("open", completed=False),
                      self.item("other", completed=False, same_target=False, title="other")]
         with self.assertRaises(ValueError) as refused:
             self.save(reminders)
@@ -164,6 +164,8 @@ class ReminderSaveTests(unittest.TestCase):
                 ([self.item("a", False), self.item("b", False)], {}),
                 ([self.item("a", False), self.item("b", False)], {"update_id": "a"}),
                 ([self.item("other", False, same_target=False, title=title)], {}),
+                ([self.item("done", True, title=title)], {}),
+                ([self.item("done", True, title=title), self.item("open", False)], {"update_id": "open"}),
                 ([self.item("done", True)], {"update_id": "missing"})):
             with self.subTest(reminders=reminders, overrides=overrides), self.assertRaises(ValueError):
                 self.save(reminders, **overrides)
