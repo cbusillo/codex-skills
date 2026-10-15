@@ -1528,6 +1528,154 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
     else:
         raise AssertionError("both listings failed")
 
+REPORT_RULES = [
+    {"name": "direction", "evidence": "direction-only"},
+    {"name": "live fix", "labels": ["live-fix"]},
+    {"name": "milestone", "evidence": "milestone"},
+    {"name": "sales", "labels": ["sales-channel"]},
+    {"name": "personal", "evidence": "own-project"},
+    {"name": "tools", "labels": ["tooling"]},
+]
+
+
+def mapped_direction(rules: Any = REPORT_RULES) -> str:
+    return OWN_DIRECTION + '\n## Capacity\nReport only; a quarter is context.\n\n## Reporting map\n```json\n' + json.dumps(rules) + '\n```\n'
+
+
+def test_reporting_map_rejects_malformed_rules_instead_of_guessing() -> None:
+    module = load()
+    parser = module.direction_reporting.reporting_map
+    assert parser(OWN_DIRECTION) is None
+    assert parser(mapped_direction()) == REPORT_RULES
+    for rules in ([], {}, REPORT_RULES[1:], [REPORT_RULES[1], REPORT_RULES[0]],
+                  [REPORT_RULES[0], REPORT_RULES[0]],
+                  [REPORT_RULES[0], {"name": "bad", "labels": []}],
+                  [REPORT_RULES[0], {"name": "bad", "evidence": []}],
+                  [REPORT_RULES[0], {"name": "bad", "labels": ["bug"], "limit": 0.25}],
+                  [REPORT_RULES[0], {"name": "DIRECTION", "labels": ["bug"]}]):
+        try:
+            parser(mapped_direction(rules))
+        except ValueError:
+            continue
+        raise AssertionError(f"Invalid reporting map accepted: {rules}")
+    for block in ('```json\n[{"name":"a","name":"b","evidence":"direction-only"}]\n```',
+                  '```json\nnot JSON\n```', '```yaml\n[]\n```', ''):
+        try:
+            parser(OWN_DIRECTION + '\n## Reporting map\n' + block)
+        except ValueError:
+            continue
+        raise AssertionError("Malformed reporting declaration was ignored")
+
+
+def reporting_fetch(module: Any, direction: str, pulls: list[dict[str, Any]], calls: list[str]) -> Any:
+    import base64
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        calls.append(path)
+        if "/contents/" in path:
+            return {"content": base64.b64encode(direction.encode()).decode()}
+        if path.startswith("installation/repositories"):
+            return {"repositories": [{"full_name": "o/live", "owner": {"login": "o"}, "pushed_at": stamp(NOW)}]}
+        if path.startswith("repos/o/live/pulls?"):
+            return pulls
+        if match := re.match(r"repos/o/live/pulls/(\d+)/files", path):
+            number = int(match[1])
+            return [{"filename": "DIRECTION.md" if number in {14, 15} else "app.py"}]
+        if path == "repos/o/live/issues/50":
+            return {"labels": [{"name": "LIVE-FIX"}]}
+        if path == "repos/o/milestone/issues/1":
+            return {"labels": []}
+        if path == "graphql" and any("REOPENED_EVENT" in arg for arg in args):
+            return reopened_page([])
+        if path == "graphql":
+            number = int(next(arg.split("=", 1)[1] for arg in args if arg.startswith("number=")))
+            return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
+                "nodes": [{"number": 50, "repository": {"nameWithOwner": "o/live"}}] if number in {9, 10} else [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }}}}}
+        return []
+    return fetch
+
+
+def test_reporting_week_split_uses_native_labels_and_keeps_legacy_output() -> None:
+    module = load()
+    # Illustrative 15-PR week; this is not OPW policy or their real hand count.
+    pulls = [{**merged_pull(n, NOW), "labels": []} for n in range(1, 16)]
+    for pull in pulls[:8]:
+        pull["body"] = "Refs o/milestone#1"
+    pulls[10]["labels"] = [{"name": "sales-channel"}]
+    for pull in pulls[11:13]:
+        pull["labels"] = [{"name": "tooling"}]
+    calls: list[str] = []
+    graph = ({("o/milestone", 1)}, [])
+    with patch.object(module, "tracked_capacity_issues", return_value=graph):
+        result, errors = module.fetch_capacity("o/direction", SINCE, NOW,
+                                               fetch=reporting_fetch(module, mapped_direction(), pulls, calls))
+    assert not errors
+    report = result["reporting"]
+    assert report["status"] == "complete" and not report["unresolved"]
+    assert report["merged_by_kind"] == {"direction": 2, "live fix": 2, "milestone": 8, "sales": 1, "personal": 0, "tools": 2}
+    assert report["merged_total"] == result["merged_total"] == sum(report["merged_by_kind"].values())
+    assert report["share_by_kind"]["live fix"] == round(2 / 15, 3)
+    assert report["capacity"] == module.github_direction_next.section_map(mapped_direction())["Capacity"].strip()
+    assert calls.count("repos/o/live/issues/50") == 1
+    legacy_calls: list[str] = []
+    with patch.object(module, "tracked_capacity_issues", return_value=graph):
+        legacy, errors = module.fetch_capacity("o/direction", SINCE, NOW,
+                                               fetch=reporting_fetch(module, OWN_DIRECTION, pulls, legacy_calls))
+    assert not errors and "reporting" not in legacy
+    assert legacy["merged_by_rank"] == result["merged_by_rank"]
+    assert legacy["by_repository"] == result["by_repository"]
+    assert not any("/files" in path for path in legacy_calls)
+
+
+def test_reporting_precedence_conflicts_and_direction_changes_count_once() -> None:
+    module = load()
+    rules = module.direction_reporting.reporting_map(mapped_direction())
+    def row(number: int, labels: set[str], *, milestone: bool = False, own: bool = False,
+            files: Any = None) -> tuple[str, dict[str, Any], bool, bool]:
+        pull = {**merged_pull(number, NOW), "_report_files": files if files is not None else [{"filename": "app.py"}],
+                "_report_labels": labels, "_report_links_complete": True}
+        return "o/live", pull, milestone, own
+    rows = [row(1, {"live-fix"}, milestone=True), row(2, {"sales-channel", "tooling"}, milestone=True),
+            row(3, {"tooling"}, own=True), row(4, {"live-fix", "sales-channel"}), row(5, set()),
+            row(6, {"live-fix"}, files=[{"filename": "DIRECTION.md"}]),
+            row(7, {"tooling"}, files=[{"filename": "DIRECTION.md"}, {"filename": "app.py"}]),
+            row(8, set(), files=[{"filename": "policy.md", "previous_filename": "DIRECTION.md"}])]
+    report = module.direction_reporting.report(rules, rows, capacity="No alarms.", source="fixture", incomplete=False)
+    assert report["merged_by_kind"] == {"direction": 1, "live fix": 1, "milestone": 1, "sales": 0, "personal": 1, "tools": 0}
+    assert {item["number"]: item["reason"] for item in report["unresolved"]} == {
+        4: "conflicting_labels", 5: "unmatched", 7: "mixed_direction_change", 8: "mixed_direction_change"}
+    assert report["unresolved"][0]["matching_kinds"] == ["live fix", "sales"]
+    assert sum(report["merged_by_kind"].values()) + len(report["unresolved"]) == len(rows)
+    assert report["status"] == "needs_review"
+    assert report["share_by_kind"]["live fix"] == 1 / len(rows)
+
+
+def test_reporting_missing_evidence_and_invalid_map_keep_window_open() -> None:
+    module = load()
+    pulls = [{**merged_pull(1, NOW, body="Refs #50"), "labels": []}]
+    for failure in ("files", "labels", "links", "map"):
+        direction = mapped_direction([]) if failure == "map" else mapped_direction()
+        fetch = reporting_fetch(module, direction, pulls, [])
+        def unavailable(args: list[str]) -> Any:
+            if ((failure == "files" and "/files" in args[1])
+                    or (failure == "labels" and args[1] == "repos/o/live/issues/50")
+                    or (failure == "links" and args[1] == "graphql")):
+                raise module.AuditError("HTTP 403")
+            return fetch(args)
+        result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=unavailable)
+        assert errors and result["reporting"]["status"] == ("invalid" if failure == "map" else "unknown")
+        assert len(result["reporting"]["unresolved"]) == 1
+        audited = run(module, capacity=result, truncated=errors)
+        assert "coverage_incomplete" in kinds(audited)
+    empty, errors = module.fetch_capacity("o/direction", SINCE, NOW,
+                                         fetch=reporting_fetch(module, mapped_direction(), [], []))
+    assert not errors and empty["reporting"]["status"] == "no_merges"
+    assert all(value is None for value in empty["reporting"]["share_by_kind"].values())
+
+
 def test_only_the_direction_repository_audit_counts_capacity() -> None:
     module = load()
     windows: list[tuple[str, dt.datetime]] = []
