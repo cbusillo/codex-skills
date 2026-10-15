@@ -418,7 +418,7 @@ def test_current_caller_review_can_establish_a_merged_records_real_remainder() -
     assert not direction.rank_portfolio_work(graph, [row], milestone_titles=[], selection_context=context)['available_candidates']
     assert not module.project_local_queue([row], [], context)['available_candidates']
 
-    followthrough = item('An executing agent writes the remaining README section and opens its PR.', 'Active; first slice merged')
+    followthrough = item('An executing agent writes the remaining deployment guide and opens its PR.', 'Active; first slice merged')
     followthrough['source_delivery'] = {'complete': True, 'merged_prs': []}
     followthrough['queue'] = classify(followthrough)
     assert followthrough['queue']['state'] == 'scope_review'

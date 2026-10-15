@@ -37,7 +37,7 @@ def current_status(discussion: dict[str, Any], trusted: set[str], *, body_record
         comment_time = timestamp(comment.get("updated_at") or comment.get("created_at"))
         # Older status comments are historical once the issue's current body
         # has newer evidence. Unmanaged records without status use comments.
-        if found is not None and (not has_body_status or (comment_time is not None and body_time is not None and comment_time >= body_time)):
+        if found is not None and (not has_body_status or (comment_time is not None and (body_time is None or comment_time >= body_time))):
             status = found
             body_time = comment_time
             has_body_status = True
