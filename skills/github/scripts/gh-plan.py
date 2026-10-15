@@ -659,6 +659,7 @@ NEXT_PROJECT_ITEM_LIMIT = 1000
 NEXT_RELATIONSHIP_LIMIT = 100
 NEXT_PLAN_INVENTORY_LIMIT = 1000
 NEXT_DEFAULT_SCAN_LIMIT = 500
+NEXT_DELIVERY_REFERENCE_LIMIT = 8
 
 
 def classify_project_error(message: str) -> str:
@@ -3675,6 +3676,82 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
         raise PlanError(f"Invalid selection context: {exc}") from exc
 
 
+def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositories: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve the current status before verifying its bounded source-PR links."""
+    result: dict[str, Any] = {"complete": True, "merged_prs": [], "completion_proven": False,
+                              "scope": "current_status_explicit_pr_references", "all_linked_prs_searched": False}
+    discussion = item.get("discussion") or {}
+    body_status = re.sub(r"<!--.*?-->", "", section_map(discussion.get("body") or "").get("Current Status", ""), flags=re.S).strip()
+    comment_statuses = [re.sub(r"<!--.*?-->", "", section_map(comment.get("body") or "").get("Current Status", ""), flags=re.S).strip()
+                        for comment in discussion.get("comments", [])
+                        if str(comment.get("author") or "").casefold() in trusted]
+    # Activity time cannot choose between disagreeing authored status records,
+    # even when no source PR was named or its implementation link is absent.
+    comment_statuses = [status for status in comment_statuses if status]
+    if body_status and comment_statuses and comment_statuses[-1] != body_status:
+        try:
+            owner, name = item["repo"].split("/")
+            def read_edit() -> tuple[str, Any]:
+                return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
+                    payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
+                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
+            try:
+                _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read_edit)
+                             if NEXT_READS is not None else read_edit())
+            except github_next_reads.ReadDeadline as exc:
+                raise PlanError(str(exc)) from exc
+            data = edited.get("data") if isinstance(edited, dict) else None
+            repository = data.get("repository") if isinstance(data, dict) else None
+            issue = repository.get("issue") if isinstance(repository, dict) else None
+            if not isinstance(issue, dict) or "lastEditedAt" not in issue or not issue.get("createdAt"):
+                raise PlanError("Source action body-edit evidence unavailable")
+            result["body_recorded_at"] = issue["lastEditedAt"] or issue["createdAt"]
+            try:
+                recorded = datetime.fromisoformat(result["body_recorded_at"].replace("Z", "+00:00"))
+                if recorded.tzinfo is None:
+                    raise ValueError("Body edit timestamp lacks timezone")
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise PlanError("Source action body-edit time unavailable") from exc
+        except PlanError as exc:
+            result["complete"] = False
+            result["body_edit_error"] = next_source_error(exc)
+            return result
+    refs = github_next_queue.delivery_references(item, trusted, body_recorded_at=result.get("body_recorded_at"))
+    if len(refs) > NEXT_DELIVERY_REFERENCE_LIMIT:
+        result.update(complete=False, omitted_reference_count=len(refs) - NEXT_DELIVERY_REFERENCE_LIMIT)
+    repositories = repositories if repositories is not None else {}
+    for repo, number in refs[:NEXT_DELIVERY_REFERENCE_LIMIT]:
+        if NEXT_READS is not None and NEXT_READS.expired:
+            result.update(complete=False, unread_reference_count=len(refs[:NEXT_DELIVERY_REFERENCE_LIMIT]) - refs[:NEXT_DELIVERY_REFERENCE_LIMIT].index((repo, number)))
+            break
+        try:
+            _, pull = api_json("GET", f"/repos/{repo}/pulls/{number}", bucket="rest_core", failed_step="next_delivery_pull")
+            if not isinstance(pull, dict) or "merged_at" not in pull:
+                raise PlanError("Source PR merge evidence unavailable")
+            if not pull["merged_at"]:
+                continue
+            try:
+                merged = datetime.fromisoformat(pull["merged_at"].replace("Z", "+00:00"))
+                if merged.tzinfo is None:
+                    raise ValueError("Merge timestamp lacks timezone")
+            except (TypeError, AttributeError, ValueError) as exc:
+                raise PlanError("Source PR merge timestamp unavailable") from exc
+            if repo.casefold() not in repositories:
+                _, repositories[repo.casefold()] = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="next_delivery_destination")
+            repository = repositories[repo.casefold()]
+            default = repository.get("default_branch") if isinstance(repository, dict) else None
+            if not default or not (pull.get("base") or {}).get("ref"):
+                raise PlanError("Source PR landing destination unavailable")
+            if ((pull.get("base") or {}).get("ref") == default
+                    and github_plan_claim.pr_issue_reference(pull, item["number"], repo=item["repo"],
+                                                            local_references=repo.casefold() == item["repo"].casefold())):
+                result["merged_prs"].append({"url": f"https://github.com/{repo}/pull/{number}",
+                                             "merged_at": pull["merged_at"], "base": default})
+        except PlanError as exc:
+            result["complete"] = False
+            result.setdefault("unavailable", []).append({"repo": repo, "number": number, "reason": next_source_error(exc)})
+    return result
+
 def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *, parallel: bool = True) -> dict[str, Any]:
     """Read ownership once per repository; project every evaluated current step."""
     if parallel and NEXT_READS is not None and NEXT_READS.workers > 1:
@@ -3686,6 +3763,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                 "all_active_sessions_searched": False,
                 "repositories": {repo: value for result in results for repo, value in result["repositories"].items()}}
     evidence: dict[str, dict[str, Any]] = {}
+    delivery_repositories: dict[str, Any] = {}
     comment_limit = getattr(args, "comment_limit", None) or 100
     for item in items:
         if item.get("queue"):
@@ -3728,6 +3806,9 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                         observed["coverage"]["local_error"] = str(exc)
             except PlanError as exc:
                 observed["coverage"]["error"] = next_source_error(exc)
+        preliminary = github_next_queue.classify(item, evidence[repo], trusted=trusted)
+        if preliminary.get("state") not in {"underway", "waiting"} and (item.get("discussion") or {}).get("complete") is True:
+            item["source_delivery"] = next_source_delivery(item, trusted, repositories=delivery_repositories)
         item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted)
     return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,
             "all_active_sessions_searched": False,
@@ -3740,9 +3821,10 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
     for item in candidates:
         hold = github_direction_next.repository_hold(context, item["repo"])
         state = (item.get("queue") or {}).get("state", "review")
+        review = reviews.get(f"{item['repo']}#{item['number']}".casefold(), {})
         if hold:
             groups["excluded"].append({**item, "exclusion": "repository_held", "review": hold})
-        elif state in {"underway", "verification", "scope_review"}:
+        elif state in {"underway", "verification", "scope_review"} and not (state == "scope_review" and github_direction_next.reviewed_remaining_scope(item, review)):
             groups[{"verification": "verification_only"}.get(state, state)].append(item)
         elif state == "waiting":
             groups["excluded"].append({**item, "exclusion": "recorded_wait"})
@@ -3761,7 +3843,8 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
             if (isinstance(complete, bool) and complete and review.get("discussion_digest") == discussion.get("digest")
                     and review.get("state") == "available" and review.get("ownership_complete") is True
                     and (item.get("queue") or {}).get("observed_ownership_complete") is True
-                    and (item.get("queue") or {}).get("reason") in {"current_scope_needs_review", "current_action_not_recorded"}):
+                    and ((item.get("queue") or {}).get("reason") in {"current_scope_needs_review", "current_action_not_recorded"}
+                         or github_direction_next.reviewed_remaining_scope(item, review))):
                 row.update(availability="available", review=review)
             groups["candidates"].append(row)
             if row["availability"] == "available":
@@ -4637,7 +4720,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["milestone_summary"] = github_direction_next.milestone_summary(
         titles, completed=ranked.get("completed_milestones", []), candidates=ranked["candidates"],
         graph_waits=[*graph_waits, *ranked["waiting"], *ranked["recorded_waits"]], track_next_actions=track_next_actions,
-        underway=ranked["underway"], verification_only=ranked["verification_only"],
+        underway=ranked["underway"], verification_only=ranked["verification_only"], scope_review=ranked["scope_review"],
     )
     ranked["candidates"] = ranked["candidates"][:args.limit]
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
