@@ -530,9 +530,17 @@ projection and the exact live domain set. Output verifies those agreements and
 `applied: false`, retaining scope, counts, trace and a private-material review
 digest with helper apply eligibility. The tracked domain set
 can differ: correcting that authority is what this planner describes.
-Inspect currently omits `provider_evidence`; its empty schema default is sent
-when omitted. A nonempty current record that is not visible to inspect is
-refused by the service's projection comparison, never guessed or bypassed.
+Complete canonical/empty `provider_evidence` is carried privately. For hidden
+noncanonical evidence, inspection supplies `comparison_fingerprint`; the helper
+validates it and sends `expected_current_provider_target_fingerprint`, then
+requires the same fingerprint and visible target identity in the plan response.
+The service compares its lane-bound keyed commitment to the entire current
+reference and returns no arbitrary evidence. Fingerprints and evidence stay out
+of public receipts. Missing comparison input keeps the precise service
+prerequisite and trace. Drift or key rotation requires fresh inspection.
+Fingerprint plans are not apply-eligible: this capability is dry-run only, and
+the separate apply path still requires the complete private reference and all
+existing gates. Existing canonical/empty plans retain their apply eligibility.
 
 `ingress-route-dry-run --payload-file <private-file>` takes an explicit local
 JSON file outside the repository (no stdin) with only `product`, `context`,

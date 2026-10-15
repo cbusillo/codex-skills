@@ -19,7 +19,7 @@ import pytest
 
 from test_launchplane_inert_planners import (
     DOMAINS, DOMAIN_COMMAND, INGRESS_COMMAND, assert_private_dropped,
-    domain_response, ingress_input, ingress_reads, ingress_response, inspection,
+    domain_response, ingress_input, ingress_reads, ingress_response, inspection, fingerprint_fixture,
 )
 from test_launchplane_helpers import write_action as h
 
@@ -109,6 +109,21 @@ def domain_readback():
     record = inspection()
     record["inspect"]["tracked_target"]["domains"] = DOMAINS
     return record
+
+
+def test_fingerprint_plan_cannot_be_promoted_to_apply():
+    observed, response = fingerprint_fixture()
+    code, evidence, _, _ = run(DOMAIN_COMMAND, [observed], [response])
+    assert code == 0 and evidence["result"]["apply_eligible"] is False
+    code, _, get, post = run("dokploy-target-repair-domain-authority-apply", [], [], evidence)
+    assert code != 0
+    get.assert_not_called()
+    post.assert_not_called()
+    # A caller cannot turn an old canonical receipt into fingerprint apply either.
+    code, _, _, post = run("dokploy-target-repair-domain-authority-apply",
+                          [observed], [response], domain_plan())
+    assert code != 0 and post.call_count == 1
+    assert post.call_args.kwargs["body"]["mode"] == "dry-run"
 
 
 def test_domain_apply_rechecks_reviewed_exact_domains_then_reads_back():

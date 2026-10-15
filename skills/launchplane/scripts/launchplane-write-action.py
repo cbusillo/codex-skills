@@ -9801,15 +9801,21 @@ def _domain_authority_plan_body(
     expected = {key: provider[key] for key in (
         "provider_id", "target_category", "target_id", "display_name", "provider_target_type",
     )}
-    # Inspect currently omits provider_evidence; an enriched response must retain it
-    # privately. The service compares this projection to current authority again.
+    # Complete canonical evidence stays private. Noncanonical evidence uses the
+    # service's keyed full-reference comparison instead of exporting its values.
     expected["provider_evidence"] = provider.get("provider_evidence", {})
-    return {
+    body = {
         "product": "launchplane", "context": args.context, "instance": args.instance,
         "operation": "repair-domain-authority", "mode": "dry-run",
         "target_type": target_type, "target_id": target_id, "domains": domains,
         "expected_current_provider_target": expected, "reason": args.reason,
     }
+    if "comparison_fingerprint" in provider:
+        fingerprint = provider["comparison_fingerprint"]
+        if not isinstance(fingerprint, str) or not 1 <= len(fingerprint) <= 256:
+            raise LaunchplaneSafetyError("invalid_response")
+        body["expected_current_provider_target_fingerprint"] = fingerprint
+    return body
 
 
 def _ingress_plan_body(body: dict[str, Any], read: Any) -> dict[str, Any]:
@@ -9876,6 +9882,12 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
         setup = _require_dict(result.get("setup"))
         if setup.keys() - {"applied", "target_record", "target_id_record", "provider_target_record", "requested_domains", "live_provider_domains", "warnings"}:
             raise LaunchplaneSafetyError("unsafe_response_shape")
+        expected_provider = dict(body["expected_current_provider_target"])
+        if body.get("expected_current_provider_target_fingerprint"):
+            expected_provider.pop("provider_evidence", None)
+            expected_provider["comparison_fingerprint"] = body["expected_current_provider_target_fingerprint"]
+            if "provider_evidence" in _require_dict(setup.get("provider_target_record")):
+                raise LaunchplaneSafetyError("invalid_response")
         if (setup.get("applied") is not False
             or set(_plan_domains(setup.get("requested_domains"))) != set(body["domains"])
             or set(_plan_domains(setup.get("live_provider_domains"))) != set(body["domains"])
@@ -9883,7 +9895,7 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
             or _require_dict(setup.get("target_record")).get("target_type") != body["target_type"]
             or set(_plan_domains(_require_dict(setup.get("target_record")).get("domains"))) != set(body["domains"])
             or any(_require_dict(setup.get("provider_target_record")).get(key) != value
-                   for key, value in body["expected_current_provider_target"].items())):
+                   for key, value in expected_provider.items())):
             raise LaunchplaneSafetyError("invalid_response")
         return {"mode": "dry-run", "applied": False, "domain_count": len(body["domains"]),
                 "exact_domains_verified": True, "target_identity_verified": True}
