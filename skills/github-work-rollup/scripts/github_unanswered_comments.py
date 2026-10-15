@@ -126,6 +126,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo", action="append", default=[], help="OWNER/REPO. May be repeated.")
     parser.add_argument("--repo-owner", action="append", default=[], help="Owner whose repos should be scanned, excluding archives by default.")
     parser.add_argument("--thread", action="append", default=[], help="Full-history OWNER/REPO#NUMBER or GitHub issue/PR URL.")
+    parser.add_argument("--outbound", action="store_true", help="Find replies after your last activity in repositories you do not own.")
     parser.add_argument("--self-login", action="append", default=[], help="Human owner login whose reactions and replies count.")
     parser.add_argument("--bot-login", action="append", default=[], help="Automation login whose targeted replies count.")
     parser.add_argument(
@@ -152,7 +153,8 @@ def resolve_settings(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     threads = unique_threads(parse_thread_reference(value) for value in args.thread)
-    explicit_scope = bool(args.repo or args.repo_owner or threads)
+    outbound = bool(getattr(args, "outbound", False))
+    explicit_scope = bool(args.repo or args.repo_owner or threads or outbound)
     repositories = rollup.unique(args.repo if explicit_scope else rollup.as_str_list(config.get("repositories")))
     repo_owners = rollup.unique(args.repo_owner if explicit_scope else rollup.as_str_list(config.get("repo_owners")))
     configured_self = rollup.as_str_list(config.get("comment_self_logins"))
@@ -186,6 +188,7 @@ def resolve_settings(
         "repo_owners": repo_owners,
         "threads": threads,
         "scan_repository_scope": bool(repositories or repo_owners or not explicit_scope),
+        "outbound": outbound,
         "explicit_scope": explicit_scope,
         "self_logins": self_logins,
         "bot_logins": bot_logins,
@@ -311,6 +314,8 @@ def resolve_repositories(settings: dict[str, Any]) -> list[str]:
             visible_repositories
         )
     if not repositories:
+        if settings.get("outbound") and not settings["scan_repository_scope"]:
+            return []
         if settings["explicit_scope"] or settings["repositories"] or settings["repo_owners"]:
             raise rollup.RollupError("The explicit repository scope resolved to no repositories; use --include-archived for archived repositories.")
         repositories.append(current_repository())
@@ -837,6 +842,37 @@ def targeted_response_for(
     return None
 
 
+def director_awareness_for(
+    external: Comment,
+    comments: list[Comment],
+    trusted_logins: set[str],
+    until: datetime,
+) -> Comment | None:
+    """Question/decision records cover links, or the preceding interval for 'above'."""
+    records = sorted(
+        (
+            comment for comment in comments
+            if comment.kind == "issue_comment"
+            and normalize_login(comment.author) in trusted_logins
+            and comment_timestamp(comment.created_at) <= until
+            and re.search(r"^Director (?:question|decision):", comment.body, re.IGNORECASE | re.MULTILINE)
+        ),
+        key=event_sort_key,
+    )
+    previous = None
+    for record in records:
+        if response_is_after(record, external, until):
+            if exact_comment_reference(record, external):
+                return record
+            # A linked record has an explicit scope; 'above' must not broaden it.
+            has_link = re.search(r"https?://|(?:issuecomment-|discussion_r|pullrequestreview-)\d+", record.body)
+            in_interval = previous is None or event_sort_key(external) > event_sort_key(previous)
+            if not has_link and re.search(r"\babove\b", record.body, re.IGNORECASE) and in_interval:
+                return record
+        previous = record
+    return None
+
+
 def owner_reaction_for(
     external: Comment,
     reactions: list[Reaction],
@@ -901,6 +937,7 @@ def comment_states_for_thread(
             owner_logins,
             effective_until,
         )
+        awareness = director_awareness_for(comment, comments, owner_logins | bot_logins, effective_until)
         if owner_response is not None:
             owner_seen: bool | None = True
             owner_seen_evidence = {
@@ -917,6 +954,14 @@ def comment_states_for_thread(
                 "content": owner_reaction.content,
                 "created_at": owner_reaction.created_at,
             }
+        elif awareness is not None:
+            owner_seen = True
+            owner_seen_evidence = {
+                "kind": "director_record",
+                "actor": awareness.author,
+                "url": awareness.url,
+                "created_at": awareness.created_at,
+            }
         elif reaction_coverage_known:
             owner_seen = False
             owner_seen_evidence = None
@@ -927,7 +972,12 @@ def comment_states_for_thread(
         public_response = owner_response or bot_response
         publicly_addressed = public_response is not None
         public_response_actor = "owner" if owner_response is not None else "bot" if bot_response is not None else None
-        if owner_seen is None:
+        closed_at = rollup.parse_timestamp(str(thread.get("closed_at") or ""))
+        closed_after = closed_at is not None and comment_activity_through(comment, effective_until) < closed_at <= effective_until
+        handled_closed = thread.get("state") == "closed" and (publicly_addressed or closed_after)
+        if handled_closed:
+            attention_state = "handled"
+        elif owner_seen is None:
             attention_state = "coverage_unknown"
         elif not owner_seen and public_response_actor == "bot":
             attention_state = "bot_answered_needs_your_eyes"
@@ -962,6 +1012,7 @@ def comment_states_for_thread(
                 "public_response_actor": public_response_actor,
                 "public_response_url": public_response.url if public_response is not None else None,
                 "attention_state": attention_state,
+                "handled_reason": "closed_after_comment" if handled_closed and closed_after else "closed_with_response" if handled_closed else None,
             }
         )
     return results
@@ -1093,6 +1144,81 @@ def merge_candidate_ids(
         target.setdefault(thread_key, set()).update(comment_ids)
 
 
+def outbound_threads(
+    self_logins: set[str], settings: dict[str, Any],
+) -> tuple[list[tuple[str, int]], list[dict[str, str]]]:
+    """Search participation, then verify it from full thread activity."""
+    threads: list[tuple[str, int]] = []
+    errors: list[dict[str, str]] = []
+    if not self_logins:
+        return [], [{"repo": "-", "lane": "outbound_search", "error": "Outbound scanning requires a human --self-login or configured subject."}]
+    for login in sorted(self_logins):
+        query = repository_scope.search_query(
+            f"involves:{login} " + " ".join(f"-user:{owner}" for owner in sorted(self_logins))
+            + f" updated:>={format_api_timestamp(settings['since'])}",
+            include_archived=settings.get("include_archived", False),
+        )
+        fetched = 0
+        try:
+            for page in range(1, 11):
+                endpoint = "search/issues?" + urlencode({"q": query, "per_page": 100, "page": page})
+                payload = run_json([GH, "api", endpoint])
+                if (
+                    not isinstance(payload, dict) or not isinstance(payload.get("items"), list)
+                    or not isinstance(payload.get("total_count"), int)
+                ):
+                    raise rollup.RollupError("Invalid outbound search response.")
+                entries = payload["items"]
+                fetched += len(entries)
+                for item in entries:
+                    repo = rollup.repo_from_search_url(item.get("repository_url"))
+                    number = item.get("number")
+                    if not repo or not isinstance(number, int):
+                        raise rollup.RollupError("Outbound search returned a thread without repository/number.")
+                    if normalize_login(repo.split("/", 1)[0]) not in self_logins:
+                        threads.append((repo, number))
+                if payload.get("incomplete_results") or (fetched < payload["total_count"] and (len(entries) < 100 or page == 10)):
+                    errors.append({"repo": login, "lane": "outbound_search", "error": "Outbound search coverage is incomplete (GitHub search limit or partial results)."})
+                if len(entries) < 100 or fetched >= payload["total_count"]:
+                    break
+        except rollup.RollupError as exc:
+            errors.append({"repo": login, "lane": "outbound_search", "error": rollup.trim(str(exc))})
+    return unique_threads(threads), errors
+
+
+def outbound_states_for_thread(
+    thread: dict[str, Any], comments: list[Comment], self_logins: set[str],
+    bot_logins: set[str], settings: dict[str, Any], automation: dict[str, str],
+) -> list[dict[str, Any]]:
+    own_activity = [comment for comment in comments if normalize_login(comment.author) in self_logins]
+    if not own_activity:
+        return []  # Search also matches mentions and assignments.
+    latest = max(comment_activity_through(comment, settings["until"]) for comment in own_activity)
+    results = []
+    for comment in sorted(comments, key=event_sort_key):
+        if (
+            not is_external_comment(comment, self_logins, bot_logins)
+            or not comment_in_window(comment, settings["since"], settings["until"])
+            or comment_activity_through(comment, settings["until"]) <= latest
+        ):
+            continue
+        kind, automation_for = author_class(comment.author, automation)
+        results.append({
+            "repo": comment.repo, "number": comment.number,
+            "thread_kind": "pull_request" if isinstance(thread.get("pull_request"), dict) else "issue",
+            "title": str(thread.get("title") or ""), "state": str(thread.get("state") or ""),
+            "thread_url": str(thread.get("html_url") or ""),
+            "comment_kind": comment.kind, "comment_id": comment.comment_id, "comment_url": comment.url,
+            "author": comment.author, "author_class": kind, "automation_for": automation_for,
+            "created_at": comment.created_at, "updated_at": comment.updated_at,
+            "body_excerpt": compact_body(comment.body), "last_self_activity_at": format_api_timestamp(latest),
+            "attention_state": "outbound_reply", "owner_seen": None, "owner_seen_evidence": None,
+            "publicly_addressed": False, "public_response_actor": None, "public_response_url": None,
+            "handled_reason": None,
+        })
+    return results
+
+
 def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     self_logins = {normalize_login(login) for login in settings["self_logins"] if normalize_login(login)}
     bot_logins = {normalize_login(login) for login in settings["bot_logins"] if normalize_login(login)}
@@ -1146,6 +1272,14 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     full_history_threads = set(settings["threads"])
     for thread_key in full_history_threads:
         candidate_ids.setdefault(thread_key, set())
+    outbound_scope: set[tuple[str, int]] = set()
+    if settings.get("outbound"):
+        found, outbound_errors = outbound_threads(self_logins, settings)
+        coverage_errors.extend(outbound_errors)
+        outbound_scope.update(found)
+        for thread_key in outbound_scope:
+            candidate_ids.setdefault(thread_key, set())
+        repositories = rollup.unique([*repositories, *(repo for repo, _ in found)])
 
     collected_threads: list[tuple[dict[str, Any], list[Comment], set[tuple[str, int]]]] = []
     reaction_candidates: list[Comment] = []
@@ -1179,7 +1313,12 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             reaction_candidates.extend(
                 comment
                 for comment in comments_through_until
-                if comment.key in effective_ids and is_external_comment(comment, self_logins, bot_logins)
+                if (
+                    (repo, number) in outbound_scope and comment.kind in (OPENING_POST, "review")
+                ) or (
+                    (repo, number) not in outbound_scope and comment.key in effective_ids
+                    and is_external_comment(comment, self_logins, bot_logins)
+                )
             )
 
     reactions_by_global_key, last_edits_by_global_key, reaction_errors = collect_candidate_reactions(
@@ -1195,6 +1334,11 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             else comment
             for comment in comments
         ]
+        if comments and comments[0].thread_key in outbound_scope:
+            comment_states.extend(outbound_states_for_thread(
+                thread, enriched_comments, self_logins, bot_logins, settings, people["automation"],
+            ))
+            continue
         reactions_by_comment = {
             comment.key: reactions_by_global_key.get(comment.global_key)
             for comment in enriched_comments
@@ -1226,6 +1370,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "seen_unanswered",
             "coverage_unknown",
             "handled",
+            "outbound_reply",
         )
     }
     coverage_errors.sort(key=lambda item: (item.get("repo") or "", item.get("lane") or "", item.get("error") or ""))
@@ -1243,6 +1388,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "until": format_api_timestamp(settings["until"]),
         },
         "repositories": repositories,
+        "outbound": bool(settings.get("outbound")),
         "excluded_archived_repositories": rollup.unique(settings.get("excluded_archived_repositories", [])),
         "self_logins": sorted(self_logins),
         "bot_logins": sorted(bot_logins),
@@ -1256,6 +1402,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         "counts": {
             "external_comments": len(comment_states),
             "attention": len(attention),
+            "handled_closed": sum(1 for item in comment_states if item.get("handled_reason")),
             **state_counts,
             "unasked_director_waits": len(decisions),
             "unasked_director_holds": len(unasked_waits) - len(decisions),
@@ -1278,7 +1425,9 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "Only configured automation is excluded; people-index automation accounts (contacts.github.bot_usernames) are labeled with who they act for, and unlisted logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open plan:waiting issues whose current Waiting for step names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "Any owner reaction after the current comment version proves personal acknowledgement; owner replies require an exact permalink or an inline-review thread with one eligible external comment.",
-            "A targeted automation reply may also use an unambiguous single-author mention, but it never proves the owner saw the comment.",
+            "A targeted automation reply may also use an unambiguous single-author mention. Trusted Director question: or Director decision: records prove awareness of linked comments, or, when they say 'above' without a link, external comments preceding them since the previous such record in the thread; awareness alone is not a public response.",
+            "Closed threads are handled when a comment has a targeted public response or closure followed its latest version by the scan end; this does not imply personal acknowledgement. Open threads retain separate awareness and response rules.",
+            "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Automation does not advance that cutoff. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
             "External comments outside the configured lookback window are not included.",
         ],
     }
@@ -1296,6 +1445,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Repositories scanned: {payload['coverage']['repository_count']}",
         f"- Messages needing attention: {counts['attention']}",
         f"- Handled messages: {counts['handled']}",
+        f"- Handled messages on closed threads: {counts.get('handled_closed', 0)}",
         f"- Waits on you with no open question: {counts.get('unasked_director_waits', 0)}"
         f" (plus {counts.get('unasked_director_holds', 0)} worded as a hold)",
     ]
@@ -1307,6 +1457,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         ("bot_answered_needs_your_eyes", "Bot Answered — Needs Your Eyes"),
         ("seen_unanswered", "Seen — No Public Response"),
         ("coverage_unknown", "Acknowledgement Coverage Unknown"),
+        ("outbound_reply", "Outside Repositories — Replies After Your Last Activity"),
     )
     for state, heading in sections:
         items = [item for item in payload["attention"] if item["attention_state"] == state]
