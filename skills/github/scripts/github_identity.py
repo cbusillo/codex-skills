@@ -800,6 +800,8 @@ def main() -> int:
             f"exit {CONTRIBUTOR_EXIT_STATUS} when the account that registered the App does not own --repo."
         ),
     )
+    app_auth.add_argument("--no-personal-read", action="store_true",
+                          help="Keep missing-Client reads on the automation-only refusal path.")
     app_check = subparsers.add_parser("app-check", help="Verify the configured App installation and print its bot login.")
     app_check.add_argument("--repo", help="Verify the installation on OWNER/REPO.")
     subparsers.add_parser("app-token", help="Mint or reuse a GitHub App installation token.")
@@ -831,7 +833,8 @@ def main() -> int:
     except PublicReadRepository as error:
         # The CLI is the credential boundary. In-process identity selection
         # defers here, avoiding a second anonymous lookup for every Python read.
-        if own_user_opted_in() and str(configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") or "").casefold() not in {"1", "true", "yes"}:
+        automation_only = str(configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") or "").casefold() in {"1", "true", "yes"}
+        if own_user_opted_in() and not automation_only and not getattr(args, "no_personal_read", False):
             try:
                 if repository_is_public(config, error.repository):
                     print(f"note: GitHub confirms {error.repository} is public", file=sys.stderr)

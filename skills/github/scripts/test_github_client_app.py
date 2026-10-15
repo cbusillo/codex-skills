@@ -43,6 +43,8 @@ class PublicReadScopeTests(unittest.TestCase):
             ("/search/issues?q=fixture+repo:host/public", True),
             ("/search/issues?q=%22repo:host/private%22+repo:host/public", True),
             ("/search/issues?q=%22repo:host/public%22+is:private", False),
+            ("/search/issues?q=repo:host/public%22suffix%22+is:private", False),
+            ("/search/issues?q=don%27t+repo:host/public", True),
             ("/search/issues?q=repo:host/public+repo:host/private", False),
             ("/search/issues?q=repo:host/public+OR(repo:host/private)", False),
             ("/search/issues?q=repo:host/public+OR+is:private", False),
@@ -52,6 +54,18 @@ class PublicReadScopeTests(unittest.TestCase):
                 self.assertEqual(github_api.public_read_command_is_scoped(
                     ["api", "--method", "GET", "--include", "-H", "Accept: application/json", endpoint],
                     "host/public"), allowed)
+
+    def test_cli_search_keeps_its_implicit_repository_scope(self) -> None:
+        for command in ("issue", "pr"):
+            for flag in ("--search", "-S", "--search=", "-Sattached", "-S="):
+                for query, allowed in (("reminders", True), ("don't", True),
+                                       ("repo:host/private", False), ("OR is:private", False),
+                                       ('"repo:host/private"', True)):
+                    argv = ([flag + query] if flag in {"--search=", "-S="} else ["-S" + query]
+                            if flag == "-Sattached" else [flag, query])
+                    with self.subTest(command=command, flag=flag, query=query):
+                        self.assertEqual(github_api.public_read_command_is_scoped(
+                            [command, "list", "--repo", "host/public", *argv], "host/public"), allowed)
 
 
 class PlanCommandContextTests(unittest.TestCase):
@@ -355,6 +369,8 @@ class ClientAppTests(unittest.TestCase):
             for args in (("api", "/search/issues?q=repo:host/private"),
                          ("api", "/search/issues?q=repo:host/missing-public+OR+is:private"),
                          ("search", "issues", "repo:host/private"),
+                         ("issue", "list", "--repo", "host/missing-public", "--search", "repo:host/private"),
+                         ("pr", "list", "--repo", "host/missing-public", "-Srepo:host/private"),
                          ("repo", "view", "host/private")):
                 with self.subTest(args=args):
                     result = self.wrapper(*args, own_user=True)
@@ -401,9 +417,12 @@ class ClientAppTests(unittest.TestCase):
         for declared, flags in (("other-person", ()), ("own-user", ("--require-automation-auth",))):
             with self.subTest(declared=declared, flags=flags), patch.dict(
                     os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": declared}):
+                AppHandler.calls = []
                 result = self.wrapper(*flags, "api", f"/repos/{repo}", own_user=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(any(f"/repos/{repo}" in args for args in self.gh_calls()))
+                if flags:
+                    self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
 
     def test_plan_public_reads_use_personal_actor_without_borrowing_an_app(self) -> None:
         self.public_repository()

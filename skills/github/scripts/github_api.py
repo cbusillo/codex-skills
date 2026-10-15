@@ -34,7 +34,6 @@ import os
 import pathlib
 import random
 import re
-import shlex
 import secrets
 import subprocess
 import sys
@@ -2939,6 +2938,21 @@ def public_read_command_is_scoped(args: list[str], repository: str) -> bool:
     """
     if args[:2] in [["issue", "list"], ["issue", "view"], ["pr", "list"],
                     ["pr", "view"], ["pr", "checks"], ["run", "list"], ["run", "view"]]:
+        if args[:2] in [["issue", "list"], ["pr", "list"]]:
+            for index, token in enumerate(args):
+                if token in {"--search", "-S"}:
+                    if index + 1 == len(args):
+                        return False
+                    search = args[index + 1]
+                elif token.startswith("--search="):
+                    search = token.split("=", 1)[1]
+                elif token.startswith("-S"):
+                    search = token[2:].removeprefix("=")
+                else:
+                    continue
+                query = urllib.parse.urlencode({"q": f"repo:{repository} {search}"})
+                if not public_read_command_is_scoped(["api", f"/search/issues?{query}"], repository):
+                    return False
         return True
     if not args or args[0] != "api":
         return False
@@ -2974,12 +2988,10 @@ def public_read_command_is_scoped(args: list[str], repository: str) -> bool:
     queries = urllib.parse.parse_qs(parsed.query).get("q", [])
     if len(queries) != 1:
         return False
-    try:
-        shlex.split(queries[0])  # Refuse malformed quoting before interpreting scope.
-    except ValueError:
-        return False
-    unquoted = re.sub(r'"(?:\\.|[^"\\])*"', ' ', queries[0])
-    if any(character in unquoted for character in "()\\'"):
+    # Keep quoted fragments attached to neighboring tokens; deleting them
+    # would turn repo:public"suffix" into a different apparent qualifier.
+    unquoted = re.sub(r'"(?:\\.|[^"\\])*"', '__quoted__', queries[0])
+    if any(character in unquoted for character in '"()\\'):
         return False
     tokens = unquoted.split()
     scopes = [token.casefold() for token in tokens if token.casefold().startswith("repo:")]

@@ -1819,6 +1819,10 @@ only to that verified repository; `gh-plan search` supplies this qualifier for
 an unscoped query. Raw GraphQL and global CLI searches cannot use the public
 fallback; use the repo-scoped commands above. Existing own-user writer and
 readback routes retain their existing rules.
+On REST reads, put query parameters in the endpoint URL rather than using
+`-f`, `-F` or `--input`; those forms retain the wrapper's conservative write
+classification. CLI list `--search` values must also stay within the verified
+repository.
 
 Writes retain the existing refusal and per-command own-user
 opt-in below, using the declared personal account when approved; no token from the primary App is borrowed. Missing or partial

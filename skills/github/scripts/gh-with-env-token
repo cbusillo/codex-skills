@@ -847,6 +847,9 @@ app_auth_for_command() {
 	if [ -n "$require_installation" ]; then
 		set -- "$@" --require-installation
 	fi
+	if [ "$require_automation_auth" -eq 1 ] || [ "$check_auth" -eq 1 ]; then
+		set -- "$@" --no-personal-read
+	fi
 	if [ -n "$python_command" ]; then
 		$python_command "$identity_helper" "$@"
 	else
@@ -921,7 +924,10 @@ allowed = bool(args) and (args[0] == "api" or
         ["issue", "view"], ["pr", "list"], ["pr", "view"], ["pr", "checks"],
         ["run", "list"], ["run", "view"], ["search", "issues"], ["search", "prs"]]))
 if context.is_write or not allowed:
-    print("error: read-only GitHub authentication refuses a write or unverified command before sending", file=sys.stderr)
+    message = "error: read-only GitHub authentication refuses a write or unverified command before sending"
+    if sys.argv[3]:
+        message += "; for REST GET reads, put parameters in the endpoint query string"
+    print(message, file=sys.stderr)
     raise SystemExit(1)
 if sys.argv[3] and not github_api.public_read_command_is_scoped(args, sys.argv[3]):
     print("error: public repository fallback needs a read scoped to the verified repository; use repo-scoped issue/pr/run commands or REST repos/{owner}/{repo} and a repo-qualified REST issue search", file=sys.stderr)
