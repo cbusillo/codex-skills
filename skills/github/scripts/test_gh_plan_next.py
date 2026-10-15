@@ -917,7 +917,7 @@ def test_global_whole_parent_wait_does_not_select_its_children_or_dependencies()
         if body:
             assert result["candidates"] == []
             assert reads == [("someone/product", 3)]
-            assert any(node.get("number") == 3 and node["exclusion"] == "waiting" for node in result["excluded"])
+            assert any(node.get("number") == 3 and node["exclusion"] == "wait_review_required" for node in result["excluded"])
         else:
             assert [item["number"] for item in result["candidates"]] == [4]
             assert reads == [("someone/product", 3), ("someone/product", 4)]
@@ -982,7 +982,8 @@ def test_global_service_consumer_uses_the_same_classification_and_sort_as_cli() 
                 name: [module.compact_relationship_issue(item, name) for item in items]
                 for name, items in edges.get((repo, number), relationships()).items()
             }
-            classified = shared.evaluate_direction_node(node, config=module.DEFAULT_CONFIG, focus=None, relationships=relations)
+            classified = shared.evaluate_direction_node(node, config=module.DEFAULT_CONFIG, focus=None, relationships=relations,
+                                                        structured_wait=module.current_wait(node, [], repo))
             classified["item"]["discussion"] = shared.discussion_snapshot(node, [], complete=True)
             return classified
 
@@ -2363,7 +2364,7 @@ def test_global_unowned_authorization_holds_never_become_candidates_or_stale() -
         with global_fixture([], [], {}, discovered=[item]) as (module, result, _reads):
             module.cmd_next(next_args())
         assert result["candidates"] == []
-        assert next(row for row in result["excluded"] if row["number"] == 10)["exclusion"] == "waiting"
+        assert next(row for row in result["excluded"] if row["number"] == 10)["exclusion"] == ("waiting" if labels else "wait_review_required")
         assert result["stale_wait_report"]["items"] == []
         assert result["unowned"][0]["number"] == 10
 
@@ -2417,7 +2418,7 @@ def test_global_adjacent_notes_preserve_absence_and_pending_clauses() -> None:
         module.cmd_next(next_args())
     assert result["candidates"] == []
     assert result["unowned"][0]["waiting_for"] == "provider capacity"
-    assert result["excluded"][0]["exclusion"] == "waiting"
+    assert result["excluded"][0]["exclusion"] == "wait_review_required"
     # The Supervisor acting next is agent work, offered with the step it names.
     raw = global_issue("someone/product", 2, labels=[], body="## Current Status\nWaiting for: Supervisor to route the PR.")
     with global_fixture([], [], {}, discovered=[raw]) as (module, result, _reads):
@@ -2928,7 +2929,7 @@ def test_blocked_wait_and_unknown_start_do_not_become_available_or_dated() -> No
     with global_fixture(roots, [leaf], edges) as (module, result, _reads):
         module.cmd_next(next_args())
         assert not result["candidates"]
-        assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "waiting"
+        assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "wait_review_required"
         assert result["dependency_context"]["complete"]
         assert result["candidate_coverage"]["complete"]
         for value in ("unknown", "TBD", "2026-99-99"):
@@ -3061,7 +3062,7 @@ def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
         with global_fixture([root], [raw], {(root["repo"], 1): relationships(sub_issues=[raw])}) as (module, result, _reads):
             module.cmd_next(next_args())
         assert result["candidates"] == [], reason
-        assert next(item for item in result["excluded"] if item["number"] == 2)["exclusion"] == "waiting"
+        assert next(item for item in result["excluded"] if item["number"] == 2)["exclusion"] == "wait_review_required"
 
 
 TESTS.extend([test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first,

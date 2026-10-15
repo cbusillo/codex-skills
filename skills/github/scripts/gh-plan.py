@@ -3572,12 +3572,11 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
 
 def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
     """Read ownership once per repository; project every evaluated current step."""
-    bots = {login.casefold() for login in github_identity.configured_bot_logins()}
     evidence: dict[str, dict[str, Any]] = {}
     comment_limit = getattr(args, "comment_limit", None) or 100
     for item in items:
         repo = item["repo"]
-        trusted = bots | {repo.split("/")[0].casefold()}
+        trusted = {login.casefold() for login in wait_authors(repo)}
         if not item.get("discussion"):
             try:
                 _, raw = get_issue(str(item["number"]), repo)
@@ -3997,6 +3996,18 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
             }
             if raw_issue.get("pull_request") is not None:
                 return {"item": {**base, "exclusion": "pull_request"}}
+            comment_limit = getattr(args, "comment_limit", None) or 100
+            _, comments = collect_paged_rest_items(
+                f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
+                step_prefix="next_issue_comments", limit=comment_limit + 1,
+            )
+            complete = len(comments) <= comment_limit
+            try:
+                wait = current_wait(raw_issue, comments[:comment_limit], issue_repo) if complete else None
+            except (ValueError, KeyError, TypeError):
+                wait = None
+            if wait is None:
+                wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
             static = next_static_exclusion(raw_issue, config=target_config, focus=focus)
             if static:
                 evaluated_node = {"item": static}
@@ -4005,15 +4016,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 actor = relation_actor or actor
                 evaluated_node = github_direction_next.evaluate_direction_node(
                     raw_issue, config=target_config, focus=focus, relationships=relationships,
-                    truncated_relationships=truncated,
+                    truncated_relationships=truncated, structured_wait=wait,
                 )
-            comment_limit = getattr(args, "comment_limit", None) or 100
-            _, comments = collect_paged_rest_items(
-                f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
-                step_prefix="next_issue_comments", limit=comment_limit + 1,
-            )
             evaluated_node["item"]["discussion"] = github_direction_next.discussion_snapshot(
-                raw_issue, comments[:comment_limit], complete=len(comments) <= comment_limit,
+                raw_issue, comments[:comment_limit], complete=complete,
             )
             nodes[key] = evaluated_node
             return evaluated_node
@@ -4302,6 +4308,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["milestone_summary"] = github_direction_next.milestone_summary(
         titles, completed=ranked.get("completed_milestones", []), candidates=ranked["candidates"],
         graph_waits=graph_waits, track_next_actions=track_next_actions,
+        underway=ranked["underway"], verification_only=ranked["verification_only"],
     )
     ranked["candidates"] = ranked["candidates"][:args.limit]
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]

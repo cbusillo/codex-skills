@@ -17,6 +17,7 @@ import test_gh_plan_next as cli
 def item(action: str = "Implement the missing export path.", state: str = "Active", number: int = 1) -> dict:
     raw = cli.issue(number)
     raw['body'] = f"## Current Status\nState: {state}\nNext action: {action}\nWaiting for: None.\n"
+    raw['body'] += "\n" + wait.marker(wait.reviewed(evidence="Fixture request reviewed; no current holds"))
     raw['user'] = {'login': 'owner'}
     return {**direction.compact_list_issue('owner/repo', raw),
             'discussion': direction.discussion_snapshot(raw, [], complete=True)}
@@ -36,7 +37,7 @@ def test_source_work_is_visible_without_caller_snapshot_but_requires_claim() -> 
     assert result['state'] == 'available'
     assert result['claim_required'] and not result['ownership_complete']
     assert result['ownership_coverage']['sessions'] == 'partial'
-    assert result['wait_review_required']
+    assert not result['wait_review_required']
     observed = evidence()
     observed['complete'] = False
     assert classify(item(), observed)['state'] == 'review'
@@ -129,7 +130,7 @@ def test_current_waits_and_authorized_status_override_prevent_false_availability
     assert classify(row)['state'] == 'verification'
     row = item()
     row['discussion']['body'] = row['discussion']['body'].replace('Waiting for: None.', 'Waiting for: Owner must approve the migration.')
-    assert classify(row)['state'] == 'waiting'
+    assert classify(row)['state'] == 'available'  # Structured clear is authoritative over stale prose.
 
 
 def test_existing_artifacts_and_partial_reads_stay_out_of_start_queue() -> None:
@@ -225,6 +226,7 @@ def test_default_global_cli_discovers_source_without_caller_review_and_splits_de
     delivered = cli.global_issue('someone/product', 4, body='## Current Status\nState: Active; source merged\nNext action: Verify deployed export.\nWaiting for: None.')
     for raw in [root, source, owned, delivered]:
         raw['user'] = {'login': 'someone'}
+        raw['body'] = (raw.get('body') or '') + '\n' + wait.marker(wait.reviewed(evidence='Fixture request reviewed'))
     holder = {'worker': 'worker', 'session': 'native-worker', 'branch': 'work/export', 'claimed_at': '2026-10-01T00:00:00Z'}
     comments = {(owned['repo'], owned['number']): [{'id': 1, 'user': {'login': 'bot'}, 'body': claim.marker(holder)}]}
     edges = {(root['repo'], root['number']): cli.relationships(sub_issues=[source, owned, delivered])}
