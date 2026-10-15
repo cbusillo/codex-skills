@@ -442,6 +442,7 @@ async def operate(args):
                 result["account"] = account_choice.public(choice)
             results.append(result)
         except Exception as error:
+            iterm_tab.cancel_unsubmitted_gui(choice, progress)
             raise iterm_tab.LaunchFailure(results, progress, error) from error
         if len(results) == 1:
             try:

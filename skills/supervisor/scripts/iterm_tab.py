@@ -16,12 +16,14 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
 from pathlib import Path
 
 import account_choice
+import gui_launch
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
@@ -760,6 +762,20 @@ def prepare_launches(args):
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
+    apps = [gui_launch.declared_app(brief) for brief in briefs]
+    if any(apps):
+        if len(files) != 1 or getattr(args, "account_provider", None) != "openai":
+            raise ValueError("GUI tasks require one local Codex launch with --account-provider openai")
+        words = launch_words(command_texts[0])
+        if (Path(words[0]).name != "codex" or "--" in words
+                or any(word == "--remote" or word.startswith("--remote=") for word in words)):
+            raise ValueError("GUI tasks need a local Codex invocation without --remote or a prompt")
+        gui_launch.require_unlocked()
+        briefs[0] += ("\n\nGUI safety: Use only the named app " + apps[0] +
+                      ". Never target Chris's terminals or other windows. Check screen lock "
+                      "before each GUI action and stop if locked or unknown; never unlock. "
+                      "Use app-scoped computer-use operations, never global keyboard/focus fallbacks. "
+                      "Missing permissions or app approvals require Chris; do not change them.\n")
     choices = [None] * len(files)
     if getattr(args, "account_provider", None):
         if len(files) == 1:
@@ -770,6 +786,13 @@ def prepare_launches(args):
             )
         for text, choice in zip(command_texts, choices):
             check_codex_project(text, choice)
+        if apps[0]:
+            home = Path(choices[0]["env"]["CODEX_HOME"]).expanduser()
+            if not home.is_absolute() or not home.is_dir():
+                raise ValueError("GUI launch needs the selected account's existing absolute CODEX_HOME")
+            source_path = home / gui_launch.BUNDLED_MARKETPLACE
+            override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
+            command_texts[0] += " -c " + shlex.quote(override)
         command_texts = [with_account(text, choice, brief)
                          for text, choice, brief in zip(command_texts, choices, briefs)]
     elif getattr(args, "account", None):
@@ -784,7 +807,38 @@ def prepare_launches(args):
         for choice in choices:
             check_codex_daemon(choice)
         account_choice.prepare_launch(choices[0])
+    if apps[0]:
+        reservation = gui_launch.reserve(apps[0])
+        try:
+            market = gui_launch.marketplace(home, Path.home() / ".codex")
+            choices[0]["gui"] = {**reservation, "marketplace": market,
+                                  "override": override, "screen": "unlocked"}
+            command_file = gui_launch.stage_command(reservation, command_texts[0])
+            command_texts[0] = shlex.join([
+                sys.executable, str(Path(gui_launch.__file__).resolve()), "run",
+                "--state", reservation["state_path"], "--token", reservation["token"],
+                "--command-file", str(command_file),
+            ])
+        except Exception as error:
+            try:
+                gui_launch.release(Path(reservation["state_path"]), reservation["token"])
+            except (OSError, ValueError) as rollback:
+                reason = str(error) if isinstance(error, ValueError) else type(error).__name__
+                raise ValueError(f"GUI preparation failed: {reason}; reservation {reservation['token']} "
+                                 f"retained after rollback failed ({type(rollback).__name__}); "
+                                 "inspect shared GUI state before release") from error
+            raise
     return command_texts, choices
+
+
+def cancel_unsubmitted_gui(choice, progress):
+    if choice and "gui" in choice and progress["submission"] == "not_attempted":
+        gui = choice["gui"]
+        try:
+            gui_launch.release(Path(gui["state_path"]), gui["token"])
+            progress["gui_reservation"] = "released_unsubmitted"
+        except (OSError, ValueError) as error:
+            progress["gui_reservation"] = "retained; inspect before release: " + str(error)
 
 
 async def close_session(app, session_id, ledger):
@@ -924,6 +978,7 @@ async def operate(app, args):
                 await submit_iterm_launch(app, session, command_text)
                 progress.update(submission="submitted", phase="startup_observed")
             except Exception as error:
+                cancel_unsubmitted_gui(choice, progress)
                 if isinstance(error, StartupFailure):
                     progress.update(submission="submitted", phase="verify_startup")
                 raise LaunchFailure(results, progress, error) from error

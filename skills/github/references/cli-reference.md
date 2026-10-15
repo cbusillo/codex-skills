@@ -692,7 +692,11 @@ explicit Director exception. Both creation helpers accept `--agent` as an
 assignment.
 
 Claim the exact branch that the worktree helper will create. For
-`dev-worktree <repo> <task-slug> <start>`, that is `work/<task-slug>`.
+`<catalog>/skills/github/scripts/dev-worktree <repo> <task-slug> <start>`,
+that is `work/<task-slug>`. Read [task worktrees](worktrees.md) before creation:
+the helper reads the private per-host `~/.config/codex-skills/worktrees.json`
+setting, with a portable root outside repositories and an existing-host-helper
+integration for stricter storage policies. No PATH installation is needed.
 Verify holds and recorded waits under Choose Work before invoking claim.
 Claim preflight reads waits and holds only from native `blocked-by` links,
 status labels and the machine-readable `github-plan:wait` record. Current
