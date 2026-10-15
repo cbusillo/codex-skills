@@ -339,6 +339,8 @@ def record_launch(choice, now=None):
     prune_receipts(directory, now)
     receipt = {"schemaVersion": 1, "provider": provider,
                "accountID": account_id, "launchedAt": now.isoformat(timespec="seconds").replace("+00:00", "Z")}
+    if "gui" in choice:
+        receipt["gui"] = choice["gui"]
     target = directory / f"{now:%Y%m%dT%H%M%SZ}-supervisor-{uuid.uuid4().hex}.json"
     temporary = None
     try:

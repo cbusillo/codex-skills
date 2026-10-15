@@ -22,6 +22,7 @@ import tomllib
 from pathlib import Path
 
 import account_choice
+import gui_launch
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
@@ -760,6 +761,20 @@ def prepare_launches(args):
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
+    apps = [gui_launch.declared_app(brief) for brief in briefs]
+    if any(apps):
+        if len(files) != 1 or getattr(args, "account_provider", None) != "openai":
+            raise ValueError("GUI tasks require one local Codex launch with --account-provider openai")
+        words = launch_words(command_texts[0])
+        if (Path(words[0]).name != "codex" or "--" in words
+                or any(word == "--remote" or word.startswith("--remote=") for word in words)):
+            raise ValueError("GUI tasks need a local Codex invocation without --remote or a prompt")
+        gui_launch.require_unlocked()
+        briefs[0] += ("\n\nGUI safety: Use only the named app " + apps[0] +
+                      ". Never target Chris's terminals or other windows. Check screen lock "
+                      "before each GUI action and stop if locked or unknown; never unlock. "
+                      "Use app-scoped computer-use operations, never global keyboard/focus fallbacks. "
+                      "Missing permissions or app approvals require Chris; do not change them.\n")
     choices = [None] * len(files)
     if getattr(args, "account_provider", None):
         if len(files) == 1:
@@ -770,6 +785,13 @@ def prepare_launches(args):
             )
         for text, choice in zip(command_texts, choices):
             check_codex_project(text, choice)
+        if apps[0]:
+            home = Path(choices[0]["env"]["CODEX_HOME"]).expanduser()
+            if not home.is_absolute() or not home.is_dir():
+                raise ValueError("GUI launch needs the selected account's existing absolute CODEX_HOME")
+            source_path = home / ".tmp/bundled-marketplaces/openai-bundled"
+            override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
+            command_texts[0] += " -c " + shlex.quote(override)
         command_texts = [with_account(text, choice, brief)
                          for text, choice, brief in zip(command_texts, choices, briefs)]
     elif getattr(args, "account", None):
@@ -784,6 +806,20 @@ def prepare_launches(args):
         for choice in choices:
             check_codex_daemon(choice)
         account_choice.prepare_launch(choices[0])
+    if apps[0]:
+        reservation = gui_launch.reserve(apps[0])
+        try:
+            market = gui_launch.marketplace(home, Path.home() / ".codex")
+            choices[0]["gui"] = {**reservation, "marketplace": market,
+                                  "override": override, "screen": "unlocked"}
+            command_texts[0] = shlex.join([
+                "uv", "run", "--no-cache", str(Path(gui_launch.__file__).resolve()), "run",
+                "--state", reservation["state_path"], "--token", reservation["token"],
+                "--command", command_texts[0],
+            ])
+        except Exception:
+            gui_launch.release(Path(reservation["state_path"]), reservation["token"])
+            raise
     return command_texts, choices
 
 
