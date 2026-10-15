@@ -1,0 +1,127 @@
+[
+  {
+    "case": "LP-3109-D4",
+    "evidence": "https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6050784418",
+    "comments": [
+      {
+        "id": 6025344226,
+        "body": "Claimed by codex-LP-3109-D3\n\nSession: 01a11302-5b97-7d00-8a01-b106ec3ae76e\nBranch: work/lp-3109-d3\nClaimed at: 2026-10-06T16:59:33-04:00\nNext action: Implement only the Q35 observation authorization and Delivery selector first slice, with behavior tests and other-provider review. Capacity admission: overall DIRECTION Order rule 3 admits tooling when every milestone waits on people and capacity would otherwise go unused; direction#16 and codex-skills#1043 decision 5982761132 admit this run. Preserve the CM release/drill landing hold; no live policy, grant or credential changes.\n\n<!-- github-plan:claim {\"branch\": \"work/lp-3109-d3\", \"claimed_at\": \"2026-10-06T16:59:33-04:00\", \"session\": \"01a11302-5b97-7d00-8a01-b106ec3ae76e\", \"worker\": \"codex-LP-3109-D3\"} -->\n\nWait resolution: The Director explicitly authorized LP-3109-D3 in the current session to implement only the first slice from #2467 Direction review 6023680332, resolving the prior research pause for this source work. D1 claim 6023294639 is released by 6025145391, with clean retained #3110 head 6bead65d. #2682 comment 6022247177 still holds landing and permits preparation/review only.\n\nPrevious Current Status:\n> State: Active research; LP-3109-D1 implementation and PR work paused by the Supervisor's latest instruction. The earlier merge-train handoff is superseded. Existing PR #3110 is retained unchanged as candidate research input, not routed for landing.\n> Next action: Supervisor coordinates one independent researcher from each provider (OpenAI, Anthropic, Google) and a separate direction agent to judge the right solution, returning canonical links here before any implementation resumes.\n> Blocked by: Implementation/PR updates require the new research and separate direction judgment first. Landing additionally retains #2682 comment 6022247177's first-CM-release/Chris-drill hold. Do not route the existing PR when that older hold lifts alone.\n> Waiting for: Agent research/judgment is next, so plan:active remains. The CM release/drill event remains a later landing prerequisite. No new Owner question or live-policy request is pending from this session.\n> Last verified: October 6, 2026, 4:52 PM ET. Clean local branch and remote work/lp-3109-d1 both point to 6bead65dbba26f33fc64fcd11995299426a3346c; #3110 is open and unmerged at that SHA and was read only during this pause. Claim 6023294639 was already released in comment 6025145391; no new claim taken. Prior CI 35/35, local suite and Anthropic review evidence remain recorded in comment 6024958146 and the prior handoff. They do not satisfy the newly requested three-provider research/direction judgment. Native IDE inspection remains UNKNOWN/not run under the recorded isolated-route exception. Live-policy proposal comment 6025049290 is provisional and paused; no policy, grant, credential, deploy or site change occurred.\n> Retained artifacts: clean pushed branch work/lp-3109-d1, locked external worktree /Volumes/Developer-Artifacts/worktrees/launchplane/lp-3109-d1, and review/test/inspection receipts under /Volumes/Developer-Artifacts/task-evidence/launchplane/lp-3109-d1. Retain for research judgment and candidate adoption/discard, then reconcile retirement with PR/session ownership. No unattended source work continues; primary checkout and unrelated worktrees are preserved.\n\n<!-- github-skill-operation:6d8caf4ddf8def7095afff15c4fc9e49 -->\n",
+        "created_at": "2026-10-06T20:59:36Z",
+        "updated_at": "2026-10-06T20:59:36Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      },
+      {
+        "id": 6025762772,
+        "body": "Released claim 6025344226\n\nHandoff from codex-LP-3109-D3, native session 01a11302-5b97-7d00-8a01-b106ec3ae76e: the Q35 first observation/Delivery GET slice is implemented in [PR #3111](https://github.com/cbusillo/launchplane/pull/3111), head c646f2adb795253bc6a355b2f53a13e2dd416e50, and [Ready for the merge train with the hold](https://github.com/cbusillo/launchplane/pull/3111#issuecomment-6025743324). CI is complete at 35 passed, 0 failed/pending; the local full gate passed 12/12 shards. Anthropic / claude-opus-5-5 reviewed the runtime; both low findings are accounted for, and no review is in flight. Native IDE inspection stays UNKNOWN/not run under the recorded isolated-route exception. Existing standing DB read authority is verified and sufficient, so no policy proposal, grant or credential change is needed. #3110 was superseded/closed through gh-pr.py; its clean work/lp-3109-d1 branch at 6bead65d and original locked worktree remain preserved research input, not a landing candidate.\n\nSupervisor is the next actor: retain #3111 under #2682 comment 6022247177's first-CM-release/Chris-drill hold, then refresh policy/route readiness and route through the train. After authorized activation, verify the supported Delivery GET with the same agent; #3094 remains open for that proof. Later planner/preflight/operate qualification and the driver registration coverage requirement remain on this issue. #3109/#3094 Current Status is current and plan:active retained. No Director decision is open; no label, merge, train, deploy, policy, provider, credential or Client-site mutation occurred.\n\nThe clean pushed work/lp-3109-d3 branch and locked /Volumes/Developer-Artifacts/worktrees/launchplane/lp-3109-d3 are retained for #3111; use its host retire command after landing/closure and ownership/content checks. Validation, review, policy-read and CI receipts remain in the task-evidence group on Developer-Artifacts until Supervisor acceptance/landing; consumed drafts/utilities are removed during this closeout. Scoped inventory is complete; primary main is clean, unchanged and stale, and unrelated worktrees are preserved. Watcher/model processes are stopped; no unattended work continues.\n\nLove Gate \u2014 Love: the first useful read reuses revocable standing DB authority with no new action catalog or grant. Do not love: deployed read-back waits on the hold, and native IDE inspection is unproven. Safe to exit: yes.\n\n<!-- github-skill-operation:6cfb2a6f6d72a2054cf5456d9e751f19 -->\n",
+        "created_at": "2026-10-06T21:26:40Z",
+        "updated_at": "2026-10-06T21:26:40Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      }
+    ],
+    "closed_pr": null
+  },
+  {
+    "case": "RDROLE-D4",
+    "evidence": "https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6130023280",
+    "comments": [
+      {
+        "id": 6122234664,
+        "body": "Claimed by codex-RDROLE-D3\n\nSession: 01a12f99-63e7-72e3-9a1d-d48f236d3d2f\nBranch: work/rdrole-d3-3109\nClaimed at: 2026-10-12T06:16:06-04:00\nNext action: Implement Q78 product-scoped database read/plan role and source effect declarations after landed retired-route prerequisite; actual returned-product isolation, dry-run gaps including product-image-repository, behavioral tests and independent review. Admission: overall DIRECTION Order 3 permits tooling when every milestone available work already has the sessions it can use and provider capacity would otherwise go unused; assigned RDROLE-D3 capacity brief and Owner decision 5982761132 admit this run. Supervisor-only ready handoff; no live grant, policy apply, deployment or train action.\n\nAdmission: spare-capacity; https://github.com/cbusillo/codex-skills/issues/1043\n\n<!-- github-plan:claim {\"branch\": \"work/rdrole-d3-3109\", \"claimed_at\": \"2026-10-12T06:16:06-04:00\", \"resume_from\": \"6025344226\", \"retained_handoff\": \"https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6051345915\", \"session\": \"01a12f99-63e7-72e3-9a1d-d48f236d3d2f\", \"worker\": \"codex-RDROLE-D3\"} -->\n\nRetained-work handoff: released claim 6025344226; handoff comment 6051345915. This ordinary successor claim preserves retained PRs and their product holds.\n\nWait resolution: Q78 6050653811 and Q80 6050709037 approve source now and Supervisor-only solo landing/CM READY requalification. #3457 and codex-skills#1716 merged; current main b04fea61 contains route/planner removal, receipt 6122222852 reconciles #2437 source edge. Q91 #3138 complete and #2437 pilot observation 6116960209 verified. D3 closed-session release/handoff 6051338903/6051345915 verified; RDROLE-D2 claim 6117009080 released by 6117243732 and empty worktree retired. Preserve held #3111 at c646f2adb795253bc6a355b2f53a13e2dd416e50 and closed #3110 research input, their custody and holds. Ordinary successor creates own worktree, no retained PR takeover or unconditional old Ready routing; live policy is only a later Chris-reviewed proposal.\n\nPrevious Current Status:\n> State: Active; Q78's retired-route source prerequisite is landed and verified on main. No implementation holder after the released RDROLE-D2 handoff.\n> Next action: RDROLE-D3 rechecks ownership and claims through released D3 claim 6025344226/handoff 6051345915, then implements scoped database read/plan authority, source effects, actual returned-product isolation and all recorded dry-run gaps, with behavioral tests and independent review.\n> Blocked by: No open native source prerequisite. #3457 and codex-skills#1716 are merged; source verification and #2437 edge reconciliation are in https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6122222852 . #2437 remains open for later retirement layers.\n> Waiting for: None before approved source work; Supervisor alone routes the final green reviewed PR and immediately requalifies CM READY under Q80. Any concrete live policy change remains a proposal for Chris's signed-in UI approval; agents never apply it and no service-wide grant is added.\n> Last verified: October 12, 2026, RDROLE-D3. Main b04fea61b975e1022e242d654c4a75485a17d738 contains #3457 merge f1454bbc7d7038366664bb4376ec95ac280508dd; retired route registrations are absent and activation planner is None. Q78/Q80 and prior released claims read. Retained #3111 remains held/unchanged at c646f2adb795253bc6a355b2f53a13e2dd416e50; #3110 is closed research input. Original worktrees/evidence and holds are preserved. No implementation, policy, grant, credential, deploy or train action yet.\n\n<!-- github-skill-operation:ef65fa53fc7a93aca5719f7f09b87970 -->\n",
+        "created_at": "2026-10-12T10:16:12Z",
+        "updated_at": "2026-10-12T10:16:12Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      },
+      {
+        "id": 6126363879,
+        "body": "Released claim 6122234664\n\nRDROLE-D3 releases execution ownership at the brief's Supervisor handoff boundary. Canonical PR #3491 is clean and pushed at f62409e2cf5422c56577df95e6cf04a2df7991a8. All 40 CI checks are terminal/nonfailing after one infrastructure retry; all 12 local suite shards (4405 targets), 78 focused authorization tests and configured source gates passed. Anthropic / claude-opus-5-5 findings are accounted for in the PR. Exact Ready receipt: https://github.com/cbusillo/launchplane/pull/3491#issuecomment-6126356996 . No owner-review label, enqueue, manual merge, policy/grant/credential or deploy change. Supervisor alone routes the solo landing and immediately requalifies CM READY under Q80, then reconciles #3108, #3430, repairshopr_api#103 and parent #2467; any remaining concrete native policy proposal stays with Chris's signed-in UI approval. #2437 source dependency was reconciled; its later retirement layers remain open. Held #3111 and closed #3110 are untouched.\n\nThe CI watcher is stopped; no task-owned background execution remains. Preserve the clean published worktree and task evidence for landing/qualification, then retire this exact worktree through dev-worktree after landing and completed validation. PyCharm remains honestly UNKNOWN/ide_not_ready (indexing timeout); helper-owned project cleanup closed, no clean inspection claim. Primary/default/runtime/other owners' checkouts and caches were preserved. The next actor is the Supervisor, so #3109 stays plan:active. This releases ownership, not a live policy approval or a claim of runtime completion. Successor may use this comment with --resume-from 6122234664 for the canonical handoff.\n\n<!-- github-skill-operation:e04f855c081976352469de7c6a7302a4 -->\n",
+        "created_at": "2026-10-12T14:32:22Z",
+        "updated_at": "2026-10-12T14:32:22Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      }
+    ],
+    "closed_pr": null
+  },
+  {
+    "case": "RDROLE-D5",
+    "evidence": "https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6130396471",
+    "comments": [
+      {
+        "id": 6023294639,
+        "body": "Claimed by codex-LP-3109-D1\n\nSession: 01a11291-4067-77d1-8cd0-ef8ace07be61\nBranch: work/lp-3109-d1\nClaimed at: 2026-10-06T14:56:17-04:00\nNext action: Implement source-declared read/plan/write actions and standing-read routing per Q35 (#2467 comment 6023257804), behavior tests and other-provider review. Capacity admission: overall DIRECTION Order rule 3 admits tooling when every milestone waits on people and provider capacity would otherwise go unused; direction#16 and codex-skills#1043 Owner decision 5982761132 admit this Supervisor capacity run. Prepare green reviewed PR only; Supervisor routing after #2682 CM release/drill landing hold. No live policy/grant/credential mutation.\n\n<!-- github-plan:claim {\"branch\": \"work/lp-3109-d1\", \"claimed_at\": \"2026-10-06T14:56:17-04:00\", \"session\": \"01a11291-4067-77d1-8cd0-ef8ace07be61\", \"worker\": \"codex-LP-3109-D1\"} -->\n\nWait resolution: The current issue says no implementation blocker and an agent is next; Q35 approves source work. #2682 comment 6022247177 explicitly permits preparing/reviewing PRs during the landing hold. This claim preserves that hold and authorizes no landing or live-policy changes.\n\nPrevious Current Status:\n> State: Active.\n> Next action: An agent maps every action's effect and implements the declaration and test. The PR is ready before the hold lifts.\n> Blocked by: None.\n> Waiting for: An agent. Landing waits for the #2682 hold to lift.\n> Last verified: 2026-10-06.\n> \n> <!-- github-skill-operation:c470e076344171b621e84a1e0b2dc4ac -->\n\n<!-- github-skill-operation:04169ea240eb3a7eae6256f482c191ba -->\n",
+        "created_at": "2026-10-06T18:56:21Z",
+        "updated_at": "2026-10-06T18:56:21Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      },
+      {
+        "id": 6025145391,
+        "body": "Released claim 6023294639\n\nLP-3109-D1 has finished source implementation and validation. [PR #3110](https://github.com/cbusillo/launchplane/pull/3110), head 6bead65dbba26f33fc64fcd11995299426a3346c, is green (35/35), independently reviewed, and [Ready for the merge train with the hold](https://github.com/cbusillo/launchplane/pull/3110#issuecomment-6025127773). All review findings are accounted for; the [single live-policy proposal](https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6025049290) is unsubmitted until source activation. Supervisor is the next actor; #2682's CM release/drill landing hold remains. No PR label, merge, train mutation, deploy, grant, credential or live-policy change. The recorded IDE exception is UNKNOWN/not-run, not GREEN. Current Status is reconciled and plan:active retained. The clean pushed branch and locked external worktree are retained for this held PR; review/test receipts are preserved through acceptance, and disposable task scratch is being removed. CI/model watcher processes are stopped; no unattended source work continues. Love: declared read/plan authority with preserved write boundaries and regressions that caught real bypasses. Do not love: source landing and the native policy upgrade still await the recorded hold/activation prerequisites. Safe to exit: yes.\n\n<!-- github-skill-operation:ea3b2e81d2a303215dba04044e1a2542 -->\n",
+        "created_at": "2026-10-06T20:46:55Z",
+        "updated_at": "2026-10-06T20:46:55Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      }
+    ],
+    "closed_pr": 3110
+  },
+  {
+    "case": "CMREADY-D1",
+    "evidence": "https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6134344720",
+    "comments": [
+      {
+        "id": 6023294639,
+        "body": "Claimed by codex-LP-3109-D1\n\nSession: 01a11291-4067-77d1-8cd0-ef8ace07be61\nBranch: work/lp-3109-d1\nClaimed at: 2026-10-06T14:56:17-04:00\nNext action: Implement source-declared read/plan/write actions and standing-read routing per Q35 (#2467 comment 6023257804), behavior tests and other-provider review. Capacity admission: overall DIRECTION Order rule 3 admits tooling when every milestone waits on people and provider capacity would otherwise go unused; direction#16 and codex-skills#1043 Owner decision 5982761132 admit this Supervisor capacity run. Prepare green reviewed PR only; Supervisor routing after #2682 CM release/drill landing hold. No live policy/grant/credential mutation.\n\n<!-- github-plan:claim {\"branch\": \"work/lp-3109-d1\", \"claimed_at\": \"2026-10-06T14:56:17-04:00\", \"session\": \"01a11291-4067-77d1-8cd0-ef8ace07be61\", \"worker\": \"codex-LP-3109-D1\"} -->\n\nWait resolution: The current issue says no implementation blocker and an agent is next; Q35 approves source work. #2682 comment 6022247177 explicitly permits preparing/reviewing PRs during the landing hold. This claim preserves that hold and authorizes no landing or live-policy changes.\n\nPrevious Current Status:\n> State: Active.\n> Next action: An agent maps every action's effect and implements the declaration and test. The PR is ready before the hold lifts.\n> Blocked by: None.\n> Waiting for: An agent. Landing waits for the #2682 hold to lift.\n> Last verified: 2026-10-06.\n> \n> <!-- github-skill-operation:c470e076344171b621e84a1e0b2dc4ac -->\n\n<!-- github-skill-operation:04169ea240eb3a7eae6256f482c191ba -->\n",
+        "created_at": "2026-10-06T18:56:21Z",
+        "updated_at": "2026-10-06T18:56:21Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      },
+      {
+        "id": 6025145391,
+        "body": "Released claim 6023294639\n\nLP-3109-D1 has finished source implementation and validation. [PR #3110](https://github.com/cbusillo/launchplane/pull/3110), head 6bead65dbba26f33fc64fcd11995299426a3346c, is green (35/35), independently reviewed, and [Ready for the merge train with the hold](https://github.com/cbusillo/launchplane/pull/3110#issuecomment-6025127773). All review findings are accounted for; the [single live-policy proposal](https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6025049290) is unsubmitted until source activation. Supervisor is the next actor; #2682's CM release/drill landing hold remains. No PR label, merge, train mutation, deploy, grant, credential or live-policy change. The recorded IDE exception is UNKNOWN/not-run, not GREEN. Current Status is reconciled and plan:active retained. The clean pushed branch and locked external worktree are retained for this held PR; review/test receipts are preserved through acceptance, and disposable task scratch is being removed. CI/model watcher processes are stopped; no unattended source work continues. Love: declared read/plan authority with preserved write boundaries and regressions that caught real bypasses. Do not love: source landing and the native policy upgrade still await the recorded hold/activation prerequisites. Safe to exit: yes.\n\n<!-- github-skill-operation:ea3b2e81d2a303215dba04044e1a2542 -->\n",
+        "created_at": "2026-10-06T20:46:55Z",
+        "updated_at": "2026-10-06T20:46:55Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      }
+    ],
+    "closed_pr": 3110
+  },
+  {
+    "case": "LP3109-R2",
+    "evidence": "https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6151346939",
+    "comments": [
+      {
+        "id": 6023294639,
+        "body": "Claimed by codex-LP-3109-D1\n\nSession: 01a11291-4067-77d1-8cd0-ef8ace07be61\nBranch: work/lp-3109-d1\nClaimed at: 2026-10-06T14:56:17-04:00\nNext action: Implement source-declared read/plan/write actions and standing-read routing per Q35 (#2467 comment 6023257804), behavior tests and other-provider review. Capacity admission: overall DIRECTION Order rule 3 admits tooling when every milestone waits on people and provider capacity would otherwise go unused; direction#16 and codex-skills#1043 Owner decision 5982761132 admit this Supervisor capacity run. Prepare green reviewed PR only; Supervisor routing after #2682 CM release/drill landing hold. No live policy/grant/credential mutation.\n\n<!-- github-plan:claim {\"branch\": \"work/lp-3109-d1\", \"claimed_at\": \"2026-10-06T14:56:17-04:00\", \"session\": \"01a11291-4067-77d1-8cd0-ef8ace07be61\", \"worker\": \"codex-LP-3109-D1\"} -->\n\nWait resolution: The current issue says no implementation blocker and an agent is next; Q35 approves source work. #2682 comment 6022247177 explicitly permits preparing/reviewing PRs during the landing hold. This claim preserves that hold and authorizes no landing or live-policy changes.\n\nPrevious Current Status:\n> State: Active.\n> Next action: An agent maps every action's effect and implements the declaration and test. The PR is ready before the hold lifts.\n> Blocked by: None.\n> Waiting for: An agent. Landing waits for the #2682 hold to lift.\n> Last verified: 2026-10-06.\n> \n> <!-- github-skill-operation:c470e076344171b621e84a1e0b2dc4ac -->\n\n<!-- github-skill-operation:04169ea240eb3a7eae6256f482c191ba -->\n",
+        "created_at": "2026-10-06T18:56:21Z",
+        "updated_at": "2026-10-06T18:56:21Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      },
+      {
+        "id": 6025145391,
+        "body": "Released claim 6023294639\n\nLP-3109-D1 has finished source implementation and validation. [PR #3110](https://github.com/cbusillo/launchplane/pull/3110), head 6bead65dbba26f33fc64fcd11995299426a3346c, is green (35/35), independently reviewed, and [Ready for the merge train with the hold](https://github.com/cbusillo/launchplane/pull/3110#issuecomment-6025127773). All review findings are accounted for; the [single live-policy proposal](https://github.com/cbusillo/launchplane/issues/3109#issuecomment-6025049290) is unsubmitted until source activation. Supervisor is the next actor; #2682's CM release/drill landing hold remains. No PR label, merge, train mutation, deploy, grant, credential or live-policy change. The recorded IDE exception is UNKNOWN/not-run, not GREEN. Current Status is reconciled and plan:active retained. The clean pushed branch and locked external worktree are retained for this held PR; review/test receipts are preserved through acceptance, and disposable task scratch is being removed. CI/model watcher processes are stopped; no unattended source work continues. Love: declared read/plan authority with preserved write boundaries and regressions that caught real bypasses. Do not love: source landing and the native policy upgrade still await the recorded hold/activation prerequisites. Safe to exit: yes.\n\n<!-- github-skill-operation:ea3b2e81d2a303215dba04044e1a2542 -->\n",
+        "created_at": "2026-10-06T20:46:55Z",
+        "updated_at": "2026-10-06T20:46:55Z",
+        "user": {
+          "login": "shiny-code-app[bot]"
+        }
+      }
+    ],
+    "closed_pr": 3110
+  }
+]

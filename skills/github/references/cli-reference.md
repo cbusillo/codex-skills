@@ -766,10 +766,24 @@ add links. Admission records why the work was taken; it grants no authority.
 The command checks Current Status and the complete discussion, unresolved
 native blockers, registered worktrees, local branches, live remote heads, open
 PRs, and Claude's native `claude agents --json` session inventory when available.
-Codex CLI peer coverage is reported unavailable; a caller's supported session
-tools can add evidence but cannot turn partial coverage into a clear inventory.
-Known holders and ambiguous or stale records cause a nonzero refusal with the
-competing evidence. Age never expires a claim. Do not bypass a refusal by
+Codex uses the stock app-server read protocol on existing daemon sockets in the current
+and configured Supervisor account homes. It reads loaded threads and exact
+claim session IDs without starting or resuming them. Active threads and observed
+native CLI resumes refuse, including a different session using a retained
+worktree. A completed native transcript ending with an unqualified safe-exit
+verdict, verified against the exact idle/unloaded thread and rechecked for
+activity, can establish ended ownership without a release write. Idle alone,
+missing daemons, unreadable transcripts, age and partial peer coverage cannot.
+
+An exact authored release also establishes ended claim ownership. Its retained
+branches, worktrees and closed-PR artifacts no longer block an independent claim;
+the result names them in `retained_artifacts` and leaves them intact. Positive
+live-session evidence overrides a release. Reusing a retained branch or worktree
+is not authorized: use a new task branch. Open PRs keep their separate handoff
+and wait checks. Unreleased or uncertain holders refuse with `coordination`
+entries identifying the worker, native session, branch and work-record contact
+route. No attestation, release command or artifact retirement is required for
+already proved ended ownership. Do not bypass a refusal by
 changing the worker, tool, or identity; ask the Director about ambiguous ownership
 and continue independent work.
 
@@ -808,9 +822,9 @@ session, and branch can resume its existing claim without another comment;
 unknown comment writes remain governed by the shared retry policy. Never erase
 a competing claim to recover. On completion or verified handoff, reconcile
 Current Status and post `Released claim <claim-comment-id>` through the same bot
-identity. Release affects that exact comment, not another worker's
-record or retained branch/worktree evidence; those still need ordinary
-ownership and preservation review.
+identity. Release affects that exact comment, not another worker's record.
+Retained artifacts stay preserved and reported; positive live activity and an
+open PR's handoff/waits remain independent checks.
 The release directive is an unquoted, unindented line exactly
 `Released claim <id>` (an ending period and trailing whitespace are allowed).
 It must be the first line or a standalone final paragraph, optionally followed
