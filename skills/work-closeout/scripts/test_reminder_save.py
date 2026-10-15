@@ -247,7 +247,10 @@ class PlainReminderTests(unittest.TestCase):
                 with self.subTest(repeat=repeat, url=url):
                     fields = self.plain(repeat=repeat, weekday="monday" if repeat == "weekly" else None, url=url)
                     self.assertEqual(fields["repeat"], repeat)
-                    self.assertEqual(fields["url"], url or "")
+                    if url:
+                        self.assertEqual(fields["url"], url)
+                    else:
+                        self.assertFalse(fields.get("url"))
                     self.assertEqual(fields["notes"], "Assign this week's 3 dismantles\nReview report")
                     self.assertNotIn("fallback", fields)
         # Every selected weekday is accepted only with its matching first occurrence.
@@ -263,7 +266,7 @@ class PlainReminderTests(unittest.TestCase):
                           {"weekday": "tuesday"}, {"repeat": "daily"},
                           {"repeat": "weekdays", "weekday": None, "due": "2026-10-24T08:00"},
                           {"due": "2026-03-08T02:30"}, {"due": "2026-11-01T01:30"}):
-            with self.subTest(overrides=overrides), self.assertRaises((ValueError, KeyError)):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 self.plain(**overrides)
 
     def test_plain_duplicate_and_explicit_target_decisions_use_shared_writer(self):
@@ -274,7 +277,7 @@ class PlainReminderTests(unittest.TestCase):
         unrelated = self.item("other", False, same_target=False, title="Another report")
         with patch.object(reminder_save.sys, "platform", "darwin"):
             for items, flags in (([existing], {}), ([existing, dict(existing, id="other")], {}),
-                                 ([completed], {}), ([], {"update_id": "missing"}),
+                                 ([], {"update_id": "missing"}),
                                  ([completed], {"delete_id": "done"})):
                 with self.subTest(items=items, flags=flags), self.writer(items), self.assertRaises(ValueError):
                     reminder_save.native({**request, **flags})
@@ -287,6 +290,35 @@ class PlainReminderTests(unittest.TestCase):
                 with self.writer(items, final=receipt):
                     reminder_save.native({**request, **flags})
                 self.assertEqual(self.decisions()[0][0]["action"], action)
+
+    def test_completed_titles_allow_no_link_creation_and_updates_but_not_ui_edits(self):
+        completed = self.item("done", True, title=self.plain()["title"])
+        live = self.item("open", False, title=self.plain()["title"])
+        for url in (None, "https://example.com/report"):
+            for items, flags, action in (([completed], {}, "create"),
+                                        ([completed, live], {"update_id": "open"}, "update")):
+                with self.subTest(url=url, flags=flags), patch.object(reminder_save.sys, "platform", "darwin"):
+                    final = {"status": "saved", "saved_fields_verified": True, "visible_url_verified": False}
+                    with self.writer(items, final=final):
+                        if url:
+                            with self.assertRaises(ValueError):
+                                reminder_save.native({**self.plain(url=url), **flags})
+                            self.assertEqual(self.decisions(), [[]])
+                        else:
+                            reminder_save.native({**self.plain(), **flags})
+                            self.assertEqual(self.decisions()[0][0]["action"], action)
+
+    def test_web_links_are_normalized_before_writer_and_dry_run(self):
+        url = "https://bücher.example/wiki/Köln?q=é#résumé"
+        fields = self.plain(url=url)
+        self.assertTrue(fields["url"].isascii())
+        self.assertEqual(urlsplit(fields["url"]).hostname, "bücher.example".encode("idna").decode("ascii"))
+        from urllib.parse import unquote
+        self.assertEqual(unquote(urlsplit(fields["url"]).path), urlsplit(url).path)
+        with patch.object(reminder_save.sys, "platform", "darwin"), self.writer([], final={
+                "status": "saved", "saved_fields_verified": True, "visible_url_verified": True}):
+            reminder_save.native(fields)
+        self.assertEqual(self.writers[0].sent[0]["url"], fields["url"])
 
     def test_plain_receipts_require_fields_and_requested_visible_link(self):
         with patch.object(reminder_save.sys, "platform", "darwin"):
@@ -318,7 +350,7 @@ class PlainReminderTests(unittest.TestCase):
             backend.assert_not_called()
             dry = json.loads(output.getvalue())
             self.assertEqual(dry["notes"], "Assign dismantles")
-            self.assertEqual(dry["url"], "")
+            self.assertFalse(dry.get("url"))
             backend.return_value = {"status": "saved", "saved_fields_verified": True}
             with patch.object(reminder_save.sys, "argv", argv + ["--apply"]), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(reminder_save.main(), 0)

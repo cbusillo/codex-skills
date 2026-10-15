@@ -302,6 +302,25 @@ do {
             [EKRecurrenceRule(recurrenceWith: .daily, interval: $0, end: nil)]
         } ?? []
     }
+    // Compare scheduling meaning, allowing EventKit to fill implicit calendar defaults.
+    func recurrenceMatches(_ back: EKReminder) -> Bool {
+        if !plain { return back.recurrenceRules?.first?.interval == request.repeat_days }
+        let actual = back.recurrenceRules ?? []
+        guard actual.count == recurrence.count else { return false }
+        guard let expected = recurrence.first, let rule = actual.first else { return true }
+        guard rule.frequency == expected.frequency, rule.interval == expected.interval,
+              rule.recurrenceEnd == nil,
+              (rule.monthsOfTheYear ?? []).isEmpty, (rule.weeksOfTheYear ?? []).isEmpty,
+              (rule.daysOfTheYear ?? []).isEmpty, (rule.setPositions ?? []).isEmpty else { return false }
+        let actualDays = rule.daysOfTheWeek ?? []
+        let expectedDays = expected.daysOfTheWeek ?? []
+        guard actualDays.allSatisfy({ $0.weekNumber == 0 }),
+              actualDays.map({ $0.dayOfTheWeek.rawValue }).sorted() ==
+                expectedDays.map({ $0.dayOfTheWeek.rawValue }).sorted() else { return false }
+        let monthDays = rule.daysOfTheMonth ?? []
+        return monthDays.isEmpty || (request.repeat == "monthly" &&
+            monthDays == [NSNumber(value: calendar.component(.day, from: due))])
+    }
     created = itemID == nil
     reminder.notes = request.notes
     reminder.url = url // Lookup identity only; this does not prove a visible attachment.
@@ -336,7 +355,8 @@ do {
         guard back.dueDateComponents?.date == due,
           back.timeZone?.identifier == timezone.identifier,
           back.alarms?.count == 1, back.alarms?.first?.absoluteDate == due,
-          (back.recurrenceRules ?? []) == recurrence,
+          (!plain || back.startDateComponents?.date == due),
+          recurrenceMatches(back),
           !back.isCompleted else { finish("partial", "Saved-field readback failed; do not recreate") }
     }
     finish("saved", "Saved fields and any requested visible URL attachment verified", extra: ["saved_fields_verified": true, "visible_url_verified": hasURL, "preserved_existing": preserveExisting])

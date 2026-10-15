@@ -16,7 +16,7 @@ import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -53,6 +53,14 @@ def plain_plan(title: str, notes: str, url: str | None, list_name: str,
         if (parsed.scheme not in ("https", "http") or not parsed.hostname
                 or any(c.isspace() or ord(c) < 32 for c in url)):
             raise ValueError("Plain reminder URL must be an absolute HTTP or HTTPS URL")
+        # Match Foundation's escaped URL representation before dry run, lookup and UI save.
+        host = parsed.hostname.encode("idna").decode("ascii")
+        if ":" in host:
+            host = f"[{host}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        userinfo = parsed.netloc.rpartition("@")[0] + "@" if "@" in parsed.netloc else ""
+        url = quote(parsed._replace(netloc=userinfo + host + port).geturl(),
+                    safe=":/?#[]@!$&'()*+,;=%")
     if repeat not in (None, "daily", "weekdays", "weekly", "monthly"):
         raise ValueError("Unsupported repeat pattern")
     if repeat == "weekly":
@@ -114,8 +122,11 @@ def decide(request: dict, reminders: list[dict]) -> dict:
                       reminder_id=existing)
     if existing is None and request.get("update_id"):
         raise refusal("Update target not found; no replacement created")
-    # The visible URL step finds the row by title, and a shown completed row would match too.
-    if any(r["id"] != existing and r["title"] == request["title"] for r in reminders):
+    # A URL edit finds the row by title, including shown completed rows. Plain
+    # reminders without a link use only the exact EventKit ID and can reuse completed titles.
+    title_lookup = request.get("kind") != "plain" or bool(request.get("url"))
+    if any(r["id"] != existing and r["title"] == request["title"]
+           and (title_lookup or not r["completed"]) for r in reminders):
         raise refusal("Title is not unique in the target list, counting completed items; "
                       "pass a distinct --title. No UI edit")
     return {"action": "update", "id": existing} if existing else {"action": "create", "id": None}
@@ -193,7 +204,7 @@ def main() -> int:
                         help="With --update-id, change only Notes and URL; preserve scheduling and other fields")
     mutation = parser.add_mutually_exclusive_group()
     mutation.add_argument("--update-id", help="Explicitly authorized existing reminder ID; otherwise never edit existing items")
-    mutation.add_argument("--delete-id", help="Remove only this exact incomplete session reminder under removal authority")
+    mutation.add_argument("--delete-id", help="Remove only this exact incomplete reminder under removal authority")
     args = parser.parse_args()
     try:
         if args.preserve_existing and not args.update_id:

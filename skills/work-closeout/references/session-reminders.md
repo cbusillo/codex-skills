@@ -33,8 +33,10 @@ Reminders; apply performs the exact-list lookup and duplicate checks before savi
 
 Plain reminder identity is the exact title in the selected list, rather than the
 optional link (several different tasks can share one report). The shared writer
-refuses duplicate incomplete matches and title collisions including completed
-items. An existing incomplete match needs its explicit `--update-id` and update
+refuses duplicate incomplete matches. When attaching a link, titles must also be
+unique among completed items so the native UI can select one row. Plain reminders
+without links may reuse completed titles and update a live item beside completed
+occurrences. An existing incomplete match needs its explicit `--update-id` and update
 authority; the same title is required. The same ID-based repair and deletion
 rules below apply. A renamed title is a different target, so do not rename to
 bypass an existing-item refusal.
@@ -161,7 +163,7 @@ are validated but are not applied in this mode. Ordinary updates keep their
 explicit schedule behavior.
 Missing update targets, duplicate incomplete matches and colliding titles are refused.
 Completed matches are never changed or reactivated and do not block a new reminder,
-but a completed item's title still collides: pass a distinct `--title`. A `saved` receipt confirms list,
+but for session or linked reminders a completed item's title still collides: pass a distinct `--title`. A `saved` receipt confirms list,
 title, schedule, alarm, recurrence, short notes and the exact visible URL. A `partial`
 receipt includes the created/updated ID and missing proof: do not claim completion
 or repeat creation. Finish that same item with its ID or, under removal authority,
