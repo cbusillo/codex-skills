@@ -15,6 +15,9 @@ import subprocess
 import sys
 
 
+DEFAULT_CONFIG_RELATIVE = Path(".config/codex-skills/worktrees.json")
+
+
 class Refused(ValueError):
     """The request cannot safely create a new task worktree."""
 
@@ -28,7 +31,7 @@ def git(repo: Path, *args: str) -> str:
 
 def configuration() -> tuple[Path, Path | None]:
     explicit = os.environ.get("DEV_WORKTREE_CONFIG")
-    config = Path(explicit).expanduser() if explicit else Path.home() / ".config/codex-skills/worktrees.json"
+    config = Path(explicit).expanduser() if explicit else Path.home() / DEFAULT_CONFIG_RELATIVE
     settings = json.loads(config.read_text()) if explicit or os.path.lexists(config) else {}
     if not isinstance(settings, dict) or set(settings) - {"root", "hostHelper"}:
         raise Refused("Expected a JSON object with root and optional hostHelper.")
@@ -64,14 +67,20 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
     ancestor = parent
     while not ancestor.exists():
         ancestor = ancestor.parent
-    probe = subprocess.run(["git", "-C", str(ancestor), "rev-parse", "--git-dir"], capture_output=True, text=True)
+    probe = subprocess.run(
+        ["git", "-C", str(ancestor), "rev-parse", "--git-dir"],
+        capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"},
+    )
     if probe.returncode == 0:
         raise Refused("The worktree destination must be outside repositories and Git metadata.")
+    if "not a git repository" not in probe.stderr:
+        raise Refused("Cannot verify that the destination is outside repositories; inspect the Git probe failure.")
     destination = parent / task
     if os.path.lexists(destination):
         raise Refused(f"Destination already exists: {destination}")
     commit = git(repo, "rev-parse", "--verify", "--end-of-options", f"{start}^{{commit}}")
     branch = f"work/{task}"
+    git(repo, "check-ref-format", "--branch", branch)
     refs = git(repo, "for-each-ref", "--format=%(refname)", f"refs/heads/{branch}").splitlines()
     if f"refs/heads/{branch}" in refs:
         raise Refused(f"Branch already exists: {branch}; choose a new task slug.")
@@ -84,7 +93,7 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args in (["--help"], ["-h"]):
-        print("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT\nConfig: ~/.config/codex-skills/worktrees.json (override: DEV_WORKTREE_CONFIG)\nSee skills/github/references/worktrees.md for host integration and cleanup.")
+        print(f"Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT\nConfig: ~/{DEFAULT_CONFIG_RELATIVE} (override: DEV_WORKTREE_CONFIG)\nA configured hostHelper also receives: retire [--dry-run] PATH\nSee skills/github/references/worktrees.md for host integration and cleanup.")
         return 0
     try:
         root, helper = configuration()

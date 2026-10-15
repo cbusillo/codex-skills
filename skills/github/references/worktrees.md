@@ -48,8 +48,11 @@ directories itself. A failure never falls back to portable creation. The host
 helper owns enforcement of the root: in this mode `root` is an informational
 location for agents, not a second enforcement check. Set it to the location the
 host helper actually implements and keep it aligned during storage migrations.
-The catalog command replaces its process with the host executable, preserving
-its signal handling, including cleanup traps during interrupted retirement.
+The Python layer replaces its process with the host executable, avoiding a
+Python subprocess timeout that could kill cleanup during interrupted retirement.
+The outer `uv` launcher remains its parent. The POSIX process-group interrupt
+fixture exercises the shipped wrapper too; other signal and harness delivery
+paths have not been qualified here.
 This setting selects an existing trusted host executable; it does
 not install, replace or edit one.
 

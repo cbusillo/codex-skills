@@ -11,11 +11,14 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+
+from dev_worktree import DEFAULT_CONFIG_RELATIVE
 
 
 SCRIPT = Path(__file__).with_name("dev_worktree.py")
@@ -48,9 +51,9 @@ class WorktreeTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)], env=self.env, capture_output=True, text=True)
 
     def settings(self, value):
-        path = self.home / ".config/codex-skills/worktrees.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path = self.base / "settings.json"
         path.write_text(json.dumps(value))
+        self.env["DEV_WORKTREE_CONFIG"] = str(path)
         return path
 
     def assert_refused(self, result, task="task"):
@@ -88,6 +91,15 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(Path(result.stdout.strip()), self.home / "tasks" / self.repo.name / "task")
 
+    def test_default_host_config_is_discovered(self):
+        root = self.base / "host tasks"
+        config = self.home / DEFAULT_CONFIG_RELATIVE
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"root": str(root)}))
+        result = self.run_helper(self.repo, "task", "HEAD")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), root / self.repo.name / "task")
+
     def test_existing_destination_file_directory_and_dangling_link_are_preserved(self):
         root = self.base / "tasks"
         self.settings({"root": str(root)})
@@ -113,7 +125,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "work/task"), self.initial)
 
     def test_traversal_and_option_like_slugs_and_starts_refuse(self):
-        for task, start in (("../escape", "HEAD"), ("nested/task", "HEAD"), ("-bad", "HEAD"), ("task", "--help"), ("task", "missing")):
+        for task, start in (("../escape", "HEAD"), ("nested/task", "HEAD"), ("-bad", "HEAD"), ("x.lock", "HEAD"), ("x.", "HEAD"), ("task", "--help"), ("task", "missing")):
             with self.subTest(task=task, start=start):
                 self.assert_refused(self.run_helper(self.repo, task, start), task)
 
@@ -160,6 +172,26 @@ class WorktreeTests(unittest.TestCase):
         self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
         self.assertFalse((self.home / "task").exists())
 
+    def test_unknown_git_probe_failure_does_not_create_a_worktree(self):
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        bin_dir = self.base / "bin"
+        bin_dir.mkdir()
+        standin = bin_dir / "git"
+        standin.write_text(
+            f"#!{sys.executable}\nimport os, sys\n"
+            "if sys.argv[-1] == '--git-dir':\n"
+            "    sys.stderr.write('fixture probe unavailable')\n"
+            "    raise SystemExit(17)\n"
+            f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n"
+        )
+        standin.chmod(0o700)
+        self.env["PATH"] = str(bin_dir) + os.pathsep + self.env["PATH"]
+        root = self.base / "tasks"
+        self.settings({"root": str(root)})
+        self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
+        self.assertFalse(root.exists())
+
     def test_missing_explicit_and_malformed_config_do_not_fall_back(self):
         self.env["DEV_WORKTREE_CONFIG"] = str(self.base / "missing.json")
         self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
@@ -171,7 +203,6 @@ class WorktreeTests(unittest.TestCase):
         config = self.settings({})
         config.write_text("invalid json")
         self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
-        self.assertFalse((self.home / "Developer").exists())
 
     def test_host_helper_receives_literal_creation_and_retirement_args(self):
         host = self.base / "host helper"
@@ -208,6 +239,15 @@ class WorktreeTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX process-group interrupt behavior")
     def test_interrupt_allows_host_cleanup_to_finish(self):
+        self.check_interrupt([sys.executable, str(SCRIPT)])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group interrupt behavior")
+    def test_shipped_wrapper_allows_host_interrupt_cleanup_to_finish(self):
+        # Use this test runner's interpreter and a temporary uv cache; never download Python.
+        self.env.update(UV_PYTHON=sys.executable, UV_PYTHON_DOWNLOADS="never", UV_CACHE_DIR=str(self.base / "uv-cache"))
+        self.check_interrupt([str(SCRIPT.with_name("dev-worktree"))])
+
+    def check_interrupt(self, entrypoint):
         host = self.base / "interrupt host"
         ready = self.base / "ready"
         cleaned = self.base / "cleaned"
@@ -225,7 +265,7 @@ class WorktreeTests(unittest.TestCase):
         host.chmod(0o700)
         self.settings({"root": str(self.base / "tasks"), "hostHelper": str(host)})
         process = subprocess.Popen(
-            [sys.executable, str(SCRIPT), "retire", "fixture"], env=self.env,
+            [*entrypoint, "retire", "fixture"], env=self.env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
         )
         try:
