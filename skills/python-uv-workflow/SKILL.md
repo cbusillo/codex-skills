@@ -32,7 +32,11 @@ scripts, dependencies, packaging, release, or runtime commands are involved.
 - Run scripts: `uv run <script-name>` when `[project.scripts]` provides one.
 - One-off Python: `uv run python <script.py>`.
 - Tests: prefer repo wrappers such as `uv run test`, `uv run mcp-test`,
-  `uv run platform ...`, or documented `uv run pytest ...` commands.
+  `uv run platform ...`, or documented `uv run pytest ...` commands. Select
+  focused tests covering the change; a wrapper's full-suite default is not a
+  reason to run the full suite locally. Follow the repository's local/CI
+  commands and the full-local exceptions in
+  [repo-readiness](../repo-readiness/SKILL.md#gate-selection).
 - Formatting/linting/type checks: use documented uv commands and respect the
   user's linting constraints. Do not run broad lint unless requested or scoped
   to changed files.
@@ -82,7 +86,7 @@ explicitly asks.
 
 Repository-specific execution details—such as custom test commands, lockfile policies, or platform-specific entrypoints—should be managed via repository metadata:
 
-- **`.github/github.json`**: Use the `qualityGate` block to define canonical commands; `metadataFreshness` lists events that should trigger a metadata review.
+- **`.github/github.json`**: Use `qualityGate.test.local` for focused local tests and `qualityGate.test.ci` for the full CI suite, retaining `test.default` as a legacy fallback when `local` is absent. The [test command contract](../github/references/config-schema.md#workflow-metadata) owns adoption and full-local execution; keep required lint, type checks and IDE inspection. `metadataFreshness` lists events that should trigger a metadata review.
 - **`AGENTS.md`**: Refer to this file for behavioral quirks, lockfile consistency requirements, or stewardship rules specific to the repository.
 - **Environment Variables**: Use repository-documented environment variables for gating live tests or providing necessary credentials.
 

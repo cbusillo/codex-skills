@@ -23,6 +23,7 @@
 
 ## Tests
 
+- Run focused local tests for the changed behavior plus required lint, type checks, and IDE inspection; the full suite runs in CI before merge, and `ready` needs green CI for the current head. Safety, authorization, approval-rule, destructive-helper, and shared-infrastructure changes still run the full local suite. Respect explicit repository requirements; reconcile conflicting test commands and instructions when adopting a local/CI split.
 - Keep a test only if it fails when the product breaks and passes when someone makes an intended change.
 - Never assert a literal defined elsewhere, such as a version, toolchain, hash, policy id, or instruction wording. Assert agreement with the one source of truth, or assert nothing.
 - Never assert workflow or config text. Enforce the rule where it runs: in the workflow, in a helper with its own tests, or in a linter.

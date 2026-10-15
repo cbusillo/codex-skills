@@ -754,8 +754,9 @@ how existing approval and task boundaries apply.
 2. **Act**: On a default, shared, release, or production branch, create a
    focused task branch before editing. Commit and push with the bot helpers and
    open a PR.
-3. **Verify**: Run the pre-push quality gate, diagnose CI failures, and address
-   review feedback. Hand repeated CI, review, or mergeability follow-through to
+3. **Verify**: Run the local pre-push gates selected by
+   [repo-readiness](../repo-readiness/SKILL.md#gate-selection), diagnose CI
+   failures, and address review feedback. Hand repeated CI, review, or mergeability follow-through to
    `babysit-pr`.
 4. **Land**: Merge only as described in [Merging](#merging).
 5. **Close**: Complete [After A Merge](#after-a-merge), then use `github-plan`
@@ -865,7 +866,16 @@ contract, read its CLI reference section; skip unrelated recipes.
 
 Use PRs for all non-trivial changes.
 
-- **Pre-push quality**: For code changes with an available IDE project, run
+- **Pre-push quality**: Run focused local tests plus required lint and type
+  checks, selecting `qualityGate.test.local` rather than the full
+  `qualityGate.test.ci` gate under the
+  [test command contract](references/config-schema.md#workflow-metadata).
+  Preserve legacy `test.default` requirements until the repository adopts the
+  split. Safety, authorization, approval-rule, destructive-helper and
+  shared-infrastructure changes still run the full local suite. Full CI must
+  pass for the current head before `ready` or merge; pushing opens that CI
+  feedback loop and does not require it to have run locally.
+  For code changes with an available IDE project, run
   `jetbrains-inspection` on the changed files before pushing or updating a PR.
   If `.github/github.json` defines `qualityGate.inspection`, PR creation and
   updates, ready-to-merge claims, and merges carry that evidence or an explicit
