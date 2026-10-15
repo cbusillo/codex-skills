@@ -2084,11 +2084,17 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
     completed = []
     result = {}
     release_state = "not_started"
-    recovery_action = (
-        "Read the exact release_comment and cited evidence before recovery. A pending record does not release ownership; "
-        "resolve the refusal and refresh the --evidence-comment closure attestation before another release. If confirmation was attempted, "
-        "inspect whether that exact comment is pending or confirmed; never replay an unknown write. "
-        "Preserve other claims, retained artifacts and recorded waits.")
+    def recovery_action():
+        if release_state == "confirmed":
+            return ("The source release is confirmed. Preserve its unchanged attestation. Inspect the failed related "
+                    "record and transport reconciliation before retrying; after resolving any unknown outcome, "
+                    "rerun the same command with unchanged arguments to reuse the source and deduplicate related releases.")
+        if release_state == "not_started":
+            return "No release write was started. Resolve the preflight refusal and inspect a fresh --dry-run before releasing."
+        return ("Read the exact release_comment, cited evidence and transport reconciliation before recovery; "
+                "never replay an unknown write. If confirmed, rerun with unchanged arguments to reuse it. "
+                "A pending record does not release ownership: resolve the refusal, freshly verify closure and post a new "
+                "--evidence-comment attestation before another --dry-run and release. Preserve other claims, retained artifacts and waits.")
     # Fresh-read before writing and again after posting. Native peer coverage
     # stays explicit; the caller attests closure for hosts without peer APIs.
     def preflight():
@@ -2209,6 +2215,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                     raise PlanError("Prior pending attempt requires freshly verified closure and a refreshed --evidence-comment attestation")
         if args.dry_run:
             emit({"ok": True, "dry_run": True, "release_body": body, "related_ids": args.related_claim_comment,
+                  "release_state": "confirmed" if existing is not None else "not_started",
+                  "release_comment": comment_result(existing)["comment"] if existing is not None else {},
                   "session_coverage": inventory.get("session_coverage"), "completed_steps": completed})
             return
         if existing is not None:
@@ -2248,15 +2256,15 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
               "completed_steps": completed, "exclusive_lock": False})
     except PlanError as exc:
         exc.payload.update(completed_steps=completed, release_comment=result.get("comment", {}),
-                           release_state=release_state, release_recovery_action=recovery_action)
+                           release_state=release_state, release_recovery_action=recovery_action())
         raise
     except github_comment_core.CommentError as exc:
         raise PlanError(str(exc), failure=exc.failure, api_result=exc.api_result,
             payload={**exc.payload, "completed_steps": completed, "release_comment": result.get("comment", {}),
-                     "release_state": release_state, "release_recovery_action": recovery_action}) from exc
+                     "release_state": release_state, "release_recovery_action": recovery_action()}) from exc
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
         raise PlanError(str(exc), payload={"completed_steps": completed, "release_comment": result.get("comment", {}),
-            "release_state": release_state, "release_recovery_action": recovery_action,
+            "release_state": release_state, "release_recovery_action": recovery_action(),
             "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 

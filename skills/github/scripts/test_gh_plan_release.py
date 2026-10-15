@@ -56,7 +56,7 @@ class ReleaseHarness(unittest.TestCase):
 
     def api(self, method, path, **_kwargs):
         self.assertEqual(method, "GET")
-        if "issues/comments/88" in path:
+        if path.endswith(f"issues/comments/{self.evidence['id']}"):
             if self.evidence_failure:
                 raise PLAN.PlanError("Evidence unavailable", api_result={"status": self.evidence_failure})
             return "bot", copy.deepcopy(self.evidence)
@@ -74,8 +74,11 @@ class ReleaseHarness(unittest.TestCase):
         if kwargs.get("edit_comment") is not None:
             self.f.events.append("confirm_release")
             c = next(c for c in self.f.comments if c["id"] == kwargs["edit_comment"])
-            self.assertEqual(c["body"], kwargs["expected_body"])
-            self.assertEqual(c["updated_at"], kwargs["expected_updated_at"])
+            guards = [(kwargs.get("expected_body"), c["body"]), (kwargs.get("expected_updated_at"), c["updated_at"])]
+            self.assertTrue(any(expected is not None for expected, _ in guards))
+            for expected, observed in guards:
+                if expected is not None:
+                    self.assertEqual(observed, expected)
             if not self.confirmation_failure or self.confirmation_applied:
                 c["body"] = body
             if self.confirmation_failure:
@@ -875,22 +878,44 @@ class ReleaseTests(ReleaseHarness):
         self.run_release()
         self.assertEqual(self.f.emitted.call_args.args[0]["release_comment"]["id"], result["release_comment"]["id"])
         self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
+        self.args.dry_run = True
+        self.run_release()
+        self.assertEqual(self.f.emitted.call_args.args[0]["release_comment"]["id"], result["release_comment"]["id"])
+        self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
 
     def test_failed_pending_attempt_requires_fresh_closure_evidence_before_recovery(self):
-        self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
-        with self.assertRaises(PLAN.PlanError):
-            self.run_release()
-        writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
-        self.f.inventory["sessions"] = []
-        self.race = lambda: None
-        with self.assertRaises(PLAN.PlanError):
-            self.run_release()
-        self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
-        self.assert_source_still_owned()
-        # The existing attestation route supplies the supported recovery.
-        self.evidence["updated_at"] = "2026-10-04T01:00:00Z"
-        self.run_release()
-        self.successor()
+        for route in ("finished", "terminated"):
+            with self.subTest(route=route):
+                self.setUp()
+                if route == "terminated":
+                    self.termination_setup()
+                self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
+                self.f.inventory["sessions"] = []
+                self.race = lambda: None
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
+                self.assert_source_still_owned()
+                # The existing attestation route supplies the supported recovery.
+                self.evidence["id"] = 89
+                self.args.evidence_comment = self.args.evidence_comment.rsplit("-", 1)[0] + "-89"
+                if route == "terminated":
+                    fresh_now = release.stamp("2026-10-04T01:00:00Z")
+                    class Clock(datetime):
+                        @classmethod
+                        def now(cls, tz=None):
+                            return fresh_now.astimezone(tz or timezone.utc)
+                    with patch.object(release.termination, "datetime", Clock):
+                        self.evidence["body"] = release.termination.body(release.termination.verify(self.termination_record, "session-b"))
+                        self.evidence.update(created_at=fresh_now.isoformat(), updated_at=fresh_now.isoformat())
+                        self.run_release()
+                else:
+                    self.evidence.update(created_at="2026-10-04T01:00:00Z", updated_at="2026-10-04T01:00:00Z")
+                    self.run_release()
+                self.successor()
 
     def test_uncertain_confirmation_preserves_exact_record_and_never_replays(self):
         for route in ("finished", "terminated"):
