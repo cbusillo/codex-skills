@@ -628,7 +628,8 @@ later restoration. No launch tries to correct keyboard focus after the fact.
 This uses the issue's allowed explicit-view fallback. The first successful
 launch's `view` receipt reports `deferred` and the explicit command when no
 control-mode client is attached, `attached` when one is already present, or
-`skipped` on other sockets. It never starts a GUI child. If a view is attached,
+`skipped` on other sockets. An older/unknown server reports `unsupported`
+without a retry command that would refuse. It never starts a GUI child. If a view is attached,
 later tmux windows are surfaced by iTerm itself; detach before background
 launches if its focus behavior interferes with typing.
 
@@ -645,9 +646,11 @@ remembers its stable `window_id` in private Code-home
 uses that identity even when window numbers change. `--iterm-window-id` selects
 an exact identity instead. A closed or missing remembered window refuses with
 instructions to choose again; it never falls back to the current window or
-another window that reused the number. With no previous choice and no target,
-an explicit view creates and remembers one dedicated **Supervised agents**
-window. These paths create only a new gateway session and never type into any
+another window that reused the number. To start a fresh dedicated window after the remembered one closes, use the
+existing `iterm_tab.py window` command, then pass its returned ID to
+`view --iterm-window-id`; deleting the memory file is unnecessary. With no
+previous choice and no target, an explicit view creates and remembers one
+dedicated **Supervised agents** window. These paths create only a new gateway session and never type into any
 existing session. Tests use fake iTerm objects, never the real app.
 
 For an existing chosen window the helper uses

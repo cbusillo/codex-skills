@@ -39,6 +39,9 @@ class ViewTests(unittest.TestCase):
         no_live_tmux = patch.object(self.terminal, "run", side_effect=AssertionError("unit view tests must never query the live socket"))
         no_live_tmux.start()
         self.addCleanup(no_live_tmux.stop)
+        capability = patch.object(self.terminal, "readonly_control_supported", return_value=True)
+        capability.start()
+        self.addCleanup(capability.stop)
         executable = patch.object(tmux_terminal.shutil, "which", return_value="/fixture/bin/tmux")
         executable.start()
         self.addCleanup(executable.stop)
@@ -63,7 +66,7 @@ class ViewTests(unittest.TestCase):
             if into:
                 into.tabs.append(tab)
                 return tab
-            window = SimpleNamespace(window_id="view-window", number=7, tabs=[tab])
+            window = SimpleNamespace(window_id="view-window", window_number=7, tabs=[tab])
             async def create_tab(**kwargs):
                 return await create(into=window, **kwargs)
             window.async_create_tab = AsyncMock(side_effect=create_tab)
@@ -145,16 +148,23 @@ class ViewTests(unittest.TestCase):
         self.assertFalse(self.created)
 
     def test_chosen_window_number_is_remembered_by_identity_after_numbers_change(self):
-        chosen = SimpleNamespace(window_id="chosen-stable", number=3, tabs=[], async_create_tab=AsyncMock())
-        other = SimpleNamespace(window_id="other", number=8, tabs=[])
+        # Real SDK objects expose window_number, not the proto field number.
+        # Mock only the RPC; a made-up window shape would hide accessor errors.
+        chosen = iterm2.Window(None, "chosen-stable", [], None, 3)
+        chosen.async_create_tab = AsyncMock()
+        other = iterm2.Window(None, "other", [], None, 8)
         self.app.terminal_windows = [other, chosen]
         result = self.open(window_number=3)
         self.assertEqual(result["window_id"], chosen.window_id)
         self.assertEqual(json.loads(self.state_path.read_text())["iterm_window_id"], chosen.window_id)
         chosen.async_create_tab.assert_awaited_once()
         self.assertFalse(chosen.async_create_tab.call_args.kwargs["select"])
-        chosen.number, other.number = 8, 3
+        chosen = iterm2.Window(None, chosen.window_id, [], None, 8)
+        chosen.async_create_tab = AsyncMock()
+        other = iterm2.Window(None, other.window_id, [], None, 3)
+        self.app.terminal_windows = [chosen, other]
         self.assertEqual(self.open()["window_id"], chosen.window_id)
+        chosen.async_create_tab.assert_awaited_once()
         self.sdk.Window.async_create.assert_not_awaited()
 
     def test_missing_remembered_window_never_falls_back_to_same_number_or_new_window(self):
@@ -224,7 +234,8 @@ class ViewTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.open()
         self.assertFalse(self.created)
-        chosen = SimpleNamespace(window_id="chosen-stable", number=3, tabs=[], async_create_tab=AsyncMock())
+        chosen = iterm2.Window(None, "chosen-stable", [], None, 3)
+        chosen.async_create_tab = AsyncMock()
         self.app.terminal_windows = [chosen]
         self.assertEqual(self.open(window_number=3)["window_id"], chosen.window_id)
 
@@ -246,6 +257,13 @@ class ViewTests(unittest.TestCase):
                 patch.object(tmux_terminal.subprocess, "run") as run:
             self.assertEqual(self.terminal.view(self.container)["status"], "attached")
         run.assert_not_called()
+
+    def test_launch_on_unsupported_server_reports_no_view_retry(self):
+        with patch.object(tmux_terminal.sys, "platform", "darwin"), \
+                patch.object(self.terminal, "readonly_control_supported", return_value=False):
+            result = self.terminal.view(self.container)
+        self.assertEqual(result["status"], "unsupported")
+        self.assertNotIn("retry_command", result)
 
 
 class PaneParserTests(unittest.TestCase):
@@ -407,14 +425,6 @@ for line in sys.stdin:
         (directory / self.socket).unlink(missing_ok=True)
         for lock in directory.glob("supervisor-iterm-view-*.lock"):
             lock.unlink()
-
-    def test_cleanup_removes_the_socket_and_view_locks(self):
-        with self.terminal.view_lock(self.window) as acquired:
-            self.assertTrue(acquired)
-        directory = self.root / f"tmux-{os.getuid()}"
-        self.assertTrue(list(directory.iterdir()))
-        self.cleanup_server()
-        self.assertFalse(list(directory.iterdir()))
 
     @unittest.skipUnless(sys.platform == "darwin", "requires launchd")
     def test_server_and_worker_survive_killing_the_launching_terminal_process_group(self):

@@ -65,8 +65,12 @@ class Terminal:
 
     def require_readonly_view(self, container):
         if not self.readonly_control_supported(container):
-            minimum = ".".join(map(str, READONLY_CONTROL_MINIMUM))
-            raise ValueError(f"read-only views require a tmux {minimum}+ server; keep workers headless until the normal server shutdown/update boundary")
+            raise ValueError(self.readonly_view_requirement())
+
+    @staticmethod
+    def readonly_view_requirement():
+        minimum = ".".join(map(str, READONLY_CONTROL_MINIMUM))
+        return f"read-only views require a tmux {minimum}+ server; keep workers headless until the normal server shutdown/update boundary"
 
     def launchd_target(self):
         # Include the socket directory: isolated tests never share a service.
@@ -183,6 +187,8 @@ class Terminal:
     def view(self, container):
         if self.socket_name != "supervisor" or sys.platform != "darwin":
             return {"status": "skipped", "reason": "automatic view is macOS Supervisor-only"}
+        if not self.readonly_control_supported(container):
+            return {"status": "unsupported", "reason": self.readonly_view_requirement()}
         retry = shlex.join(["uv", "run", iterm_tab.__file__, "--backend", "tmux",
                             "view", "--window-id", container])
         clients = self.control_clients(container)
@@ -340,7 +346,7 @@ async def operate(args):
         result = {"window_id": window, "backend": "tmux", "tmux_socket": args.tmux_socket,
                   "server_startup": startup, "view_command": terminal.view_command(window) if supported else None}
         if not supported:
-            result["view_warning"] = "Keep workers headless until the normal server shutdown/update boundary; this server cannot enforce read-only control input."
+            result["view_warning"] = terminal.readonly_view_requirement()
         return result
 
     terminal.verify_container(args.window_id)

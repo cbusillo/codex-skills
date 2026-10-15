@@ -698,7 +698,7 @@ async def open_tmux_view(connection, terminal, container, *, window_id=None, win
         await app.async_refresh()
         state_path = state_path or view_state_path()
         if window_number is not None:
-            matches = [w for w in app.terminal_windows if w.number == window_number]
+            matches = [w for w in app.terminal_windows if w.window_number == window_number]
             if len(matches) != 1:
                 raise ValueError("chosen iTerm window number does not identify one window")
             window_id = matches[0].window_id
