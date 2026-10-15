@@ -1100,6 +1100,16 @@ uv run skills/github/scripts/gh-rulesets.py apply \
   --confirm-owner-admin-write
 ```
 
+On a repository where Clients or their staff are collaborators, add
+`--client-lock` to also manage a ruleset that stops anyone except the admin role
+and the configured App from creating, updating or deleting any branch, and
+`--client-lock-tags` for the same lock on every tag. Repeat
+`--bypass-integration-id APP_ID` for another App that must keep pushing, such as
+Dependabot (`29110`). The lock refuses without a configured App, because it would
+also stop the automation that lands work. Leave tags unlocked where a workflow
+creates tags or releases with the Actions token, which cannot bypass a ruleset.
+A plan that would drop an existing bypass actor lists it under `bypass_removed`.
+
 Use `--all-owned --owner OWNER` for a complete non-archived inventory. Plan and
 pilot first; do not use a broad apply as a discovery command. Multi-repository
 apply is sequential: a later refusal can leave earlier repositories updated,

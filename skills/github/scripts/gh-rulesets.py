@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Plan or explicitly apply the standard ruleset pair to owned repositories."""
+"""Plan or explicitly apply the standard ruleset pair, and optionally the client lock, to owned repositories."""
 
 from __future__ import annotations
 
@@ -37,6 +37,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help="Include every non-archived repository owned by --owner.",
         )
         sub.add_argument("--owner", help="Expected active GitHub owner; required with --all-owned.")
+        sub.add_argument(
+            "--client-lock",
+            action="store_true",
+            help="Also manage a ruleset that stops anyone but the admin role and bypass Apps "
+                 "from creating, updating or deleting any branch.",
+        )
+        sub.add_argument(
+            "--client-lock-tags",
+            action="store_true",
+            help="Also manage the same lock for every tag.",
+        )
+        sub.add_argument(
+            "--bypass-integration-id",
+            action="append",
+            type=int,
+            default=[],
+            help="Extra GitHub App id that bypasses the client lock (for example Dependabot); repeatable.",
+        )
         if command == "apply":
             sub.add_argument(
                 "--confirm-owner-admin-write",
@@ -63,13 +81,22 @@ def run(
 ) -> dict[str, Any]:
     client = client or github_rulesets.RulesetClient()
     app_id = github_rulesets.configured_app_id() if app_id is None else app_id
+    lock_branches = bool(getattr(args, "client_lock", False))
+    lock_tags = bool(getattr(args, "client_lock_tags", False))
+    extra_integration_ids = list(getattr(args, "bypass_integration_id", None) or [])
+    lock_specs = github_rulesets.client_lock_specs(
+        app_id,
+        branches=lock_branches,
+        tags=lock_tags,
+        extra_integration_ids=extra_integration_ids,
+    )
     owner, repositories = github_rulesets.resolve_repositories(
         client=client,
         repos=args.repo,
         all_owned=args.all_owned,
         owner=args.owner,
     )
-    specs = github_rulesets.standard_specs(app_id)
+    specs = (*github_rulesets.standard_specs(app_id), *lock_specs)
     if args.command == "apply":
         if not args.confirm_owner_admin_write:
             raise github_rulesets.RulesetError(
@@ -110,6 +137,11 @@ def run(
             "detail": "No GitHub App is configured; only repository administrators can update the default branch. "
                       "The direction rule still has no bypass; an owner-authored PR needs another eligible code owner.",
         }],
+        "client_lock": {
+            "branches": lock_branches,
+            "tags": lock_tags,
+            "bypass_integration_ids": sorted(set(extra_integration_ids)) if lock_specs else [],
+        },
         "repository_count": len(repositories),
         "changed": any(result["changed"] for result in results),
         "repositories": results,

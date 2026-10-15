@@ -3,10 +3,11 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Plan and apply the catalog's standard repository ruleset pair."""
+"""Plan and apply the catalog's standard repository ruleset pair and the opt-in client lock."""
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import shutil
@@ -22,8 +23,11 @@ RULESET_API_VERSION = "2026-03-10"
 LANDING_RULESET_NAME = "Only the owner and automation update the default branch"
 LANDING_RULESET_ALIASES = frozenset({"Only the administrator updates the default branch"})
 DIRECTION_RULESET_NAME = "Code-owner review for DIRECTION.md"
+CLIENT_BRANCH_LOCK_NAME = "Only the owner and automation change branches"
+CLIENT_TAG_LOCK_NAME = "Only the owner and automation change tags"
 ADMIN_REPOSITORY_ROLE_ID = 5
 DEFAULT_REF = "~DEFAULT_BRANCH"
+ALL_REFS = "~ALL"
 PER_PAGE = 100
 MAX_PAGES = 100
 ACTIVE_GH = os.environ.get("GH_RULESETS_ACTIVE_GH") or shutil.which("gh") or "gh"
@@ -58,6 +62,8 @@ class RulesetChange:
     name: str
     ruleset_id: int | None
     current_name: str | None = None
+    bypass_added: tuple[dict[str, Any], ...] = ()
+    bypass_removed: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -68,6 +74,10 @@ class RulesetChange:
         }
         if self.current_name and self.current_name != self.name:
             payload["current_name"] = self.current_name
+        if self.bypass_added:
+            payload["bypass_added"] = list(self.bypass_added)
+        if self.bypass_removed:
+            payload["bypass_removed"] = list(self.bypass_removed)
         return payload
 
 
@@ -114,6 +124,19 @@ def _pull_request_parameters(*, code_owner_review: bool, dismiss_stale: bool) ->
     }
 
 
+def _owner_and_app_bypass(app_id: int | None, extra_integration_ids: Sequence[int] = ()) -> list[dict[str, Any]]:
+    integration_ids: list[int] = []
+    for value in ([app_id] if app_id is not None else []) + list(extra_integration_ids):
+        parsed = positive_int(value, "bypass Integration id")
+        if parsed not in integration_ids:
+            integration_ids.append(parsed)
+    return [
+        {"actor_id": ADMIN_REPOSITORY_ROLE_ID, "actor_type": "RepositoryRole", "bypass_mode": "always"},
+        *({"actor_id": integration_id, "actor_type": "Integration", "bypass_mode": "always"}
+          for integration_id in integration_ids),
+    ]
+
+
 def standard_specs(app_id: int | None) -> tuple[RulesetSpec, RulesetSpec]:
     if app_id is not None:
         app_id = positive_int(app_id, "GitHub App id")
@@ -126,15 +149,7 @@ def standard_specs(app_id: int | None) -> tuple[RulesetSpec, RulesetSpec]:
             "name": LANDING_RULESET_NAME,
             "target": "branch",
             "enforcement": "active",
-            "bypass_actors": [
-                {
-                    "actor_id": ADMIN_REPOSITORY_ROLE_ID,
-                    "actor_type": "RepositoryRole",
-                    "bypass_mode": "always",
-                },
-                *([{"actor_id": app_id, "actor_type": "Integration", "bypass_mode": "always"}]
-                  if app_id is not None else []),
-            ],
+            "bypass_actors": _owner_and_app_bypass(app_id),
             "conditions": conditions,
             "rules": [
                 {"type": "update", "parameters": {"update_allows_fetch_and_merge": False}},
@@ -170,6 +185,60 @@ def standard_specs(app_id: int | None) -> tuple[RulesetSpec, RulesetSpec]:
         },
     )
     return landing, direction
+
+
+def client_lock_specs(
+    app_id: int | None,
+    *,
+    branches: bool,
+    tags: bool,
+    extra_integration_ids: Sequence[int] = (),
+) -> tuple[RulesetSpec, ...]:
+    """Rulesets that stop collaborators from creating, updating or deleting any branch or tag.
+
+    Only the admin role, the configured App and the named extra Integrations
+    bypass them. Without an App the lock would also stop the automation that
+    lands work, so it is refused rather than applied owner-only.
+    """
+    if not branches and not tags:
+        if extra_integration_ids:
+            raise RulesetError(
+                "--bypass-integration-id only applies with --client-lock or --client-lock-tags",
+                cause="validation_error",
+            )
+        return ()
+    if app_id is None:
+        raise RulesetError(
+            "the client lock needs the configured GitHub App as a bypass actor, or it would also stop "
+            "the automation that pushes branches; configure the App and rerun plan",
+            cause="unconfigured_identity",
+            payload={"failed_step": "client_lock_app_bypass", "write_attempted": False},
+        )
+    bypass = _owner_and_app_bypass(positive_int(app_id, "GitHub App id"), extra_integration_ids)
+    conditions = {"ref_name": {"include": [ALL_REFS], "exclude": []}}
+    specs: list[RulesetSpec] = []
+    selected = (
+        (branches, "client_branches", CLIENT_BRANCH_LOCK_NAME, "branch",
+         {"type": "update", "parameters": {"update_allows_fetch_and_merge": False}}),
+        (tags, "client_tags", CLIENT_TAG_LOCK_NAME, "tag", {"type": "update"}),
+    )
+    for enabled, key, name, target, update_rule in selected:
+        if not enabled:
+            continue
+        specs.append(RulesetSpec(
+            key=key,
+            name=name,
+            aliases=frozenset(),
+            payload={
+                "name": name,
+                "target": target,
+                "enforcement": "active",
+                "bypass_actors": copy.deepcopy(bypass),
+                "conditions": copy.deepcopy(conditions),
+                "rules": [{"type": "creation"}, update_rule, {"type": "deletion"}],
+            },
+        ))
+    return tuple(specs)
 
 
 def required_ruleset_names() -> tuple[str, str]:
@@ -236,6 +305,13 @@ def ruleset_matches(ruleset: Mapping[str, Any], spec: RulesetSpec) -> bool:
     return True
 
 
+def _actor_dicts(actors: Iterable[tuple[str, int | None, str]]) -> tuple[dict[str, Any], ...]:
+    return tuple(
+        {"actor_type": actor_type, "actor_id": actor_id, "bypass_mode": bypass_mode}
+        for actor_type, actor_id, bypass_mode in sorted(actors, key=lambda item: (item[0], item[1] or 0, item[2]))
+    )
+
+
 def plan_changes(
     rulesets: Sequence[Mapping[str, Any]],
     specs: Sequence[RulesetSpec],
@@ -268,6 +344,8 @@ def plan_changes(
                          "failed_step": "existing_app_bypass", "write_attempted": False},
             )
         action = "none" if ruleset_matches(current, spec) else "update"
+        current_actors = {_normalized_actor(actor) for actor in current.get("bypass_actors") or []}
+        desired_actors = {_normalized_actor(actor) for actor in spec.payload.get("bypass_actors") or []}
         changes.append(
             RulesetChange(
                 spec.key,
@@ -275,6 +353,8 @@ def plan_changes(
                 spec.name,
                 ruleset_id,
                 current_name=str(current.get("name") or ""),
+                bypass_added=_actor_dicts(desired_actors - current_actors),
+                bypass_removed=_actor_dicts(current_actors - desired_actors),
             )
         )
     return changes
@@ -375,7 +455,7 @@ class RulesetClient:
         raise RulesetError("owned repository listing hit the page cap", cause="coverage_incomplete")
 
     def list_rulesets(self, repo: str) -> list[dict[str, Any]]:
-        path = f"/repos/{repo_path(repo)}/rulesets?includes_parents=false&targets=branch&per_page={PER_PAGE}"
+        path = f"/repos/{repo_path(repo)}/rulesets?includes_parents=false&targets=branch,tag&per_page={PER_PAGE}"
         body = self.request("GET", path, operation="github.rulesets.list")
         if not isinstance(body, list):
             raise RulesetError("ruleset listing returned an invalid response", cause="invalid_response")

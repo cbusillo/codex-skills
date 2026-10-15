@@ -1204,6 +1204,20 @@ class TabCloseTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def setUp(self):
+        # These cases exercise selection/input mechanics. Protocol and startup
+        # observation have their own fake-adapter regressions.
+        daemon = patch.object(iterm_tab, "inspect_codex_daemon")
+        daemon.start()
+        self.addCleanup(daemon.stop)
+
+        async def submit(app, session, command):
+            await iterm_tab.send(session, command, allow_tabs=True)
+
+        startup = patch.object(iterm_tab, "submit_iterm_launch", side_effect=submit)
+        startup.start()
+        self.addCleanup(startup.stop)
+
     def assert_file_settings_argument(self, command, path, brief):
         args = shlex.split(command)
         separator = args.index("--")
