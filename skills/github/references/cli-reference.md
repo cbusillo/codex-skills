@@ -1765,6 +1765,10 @@ used.
 `GH_COMMENT_GH` provides the equivalent test-only override for
 `scripts/gh-comment`.
 
+Issue create, edit, close and reopen resolve the write actor for the target
+repository before writing. On an authorized own-user route, results expect the
+declared personal login, as timeline comments do.
+
 `scripts/gh-issue` and `scripts/gh-comment` emit the same single terminal JSON
 envelope contract as the Python helpers. Comment results report
 `comment_action` (`created` or `updated`), the authenticated `actor`, normalized
