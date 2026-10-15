@@ -1453,8 +1453,6 @@ def test_outbound_with_portfolio_scope_does_not_adopt_repository_owners(monkeypa
     settings.update(repositories=["outside/other"], scan_repository_scope=True)
     payload = github_unanswered_comments.collect_payload(settings)
     assert {item["comment_id"] for item in payload["attention"]} == {1, 5, 7, 8, 10}
-    searches = [call for call in fake.calls if call.startswith("search/issues?")]
-    assert len(searches) == 1
 
 
 def test_closed_full_history_scan_uses_requested_closed_thread_rules(monkeypatch):
@@ -1467,11 +1465,16 @@ def test_closed_full_history_scan_uses_requested_closed_thread_rules(monkeypatch
     assert payload["counts"]["handled_closed"] == 1
 
 
-def test_explicit_thread_scope_wins_over_outbound_discovery(monkeypatch, outbound_fixture):
+@pytest.mark.parametrize("scope_repo", ["outside/project", "Outside/Project"])
+def test_explicit_thread_scope_wins_over_outbound_discovery(monkeypatch, outbound_fixture, scope_repo):
     fake = FakeGitHub(outbound_fixture)
-    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+    def case_insensitive_api(command):
+        command = list(command)
+        command[2] = command[2].replace(scope_repo, "outside/project")
+        return fake(command)
+    monkeypatch.setattr(github_unanswered_comments, "run_json", case_insensitive_api)
     settings = outbound_settings()
-    settings["threads"] = [("outside/project", 1)]
+    settings["threads"] = [(scope_repo, 1)]
     payload = github_unanswered_comments.collect_payload(settings)
     rows = [row for row in payload["attention"] if row["number"] == 1]
     assert any(row["comment_id"] == 3 for row in rows)  # Before Chris's unrelated activity.

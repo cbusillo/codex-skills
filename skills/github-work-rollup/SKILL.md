@@ -223,6 +223,9 @@ indexing and its 1,000-result cap limit discovery; detected partial results are
 degraded coverage. It uses the same attention and exit-code contract.
 Outbound human identities come from `--self-login`, configured comment subjects,
 or the authenticated human account; repository owners are not inferred for it.
+Use `--outbound` alone for outside repositories; explicit `--repo` and
+`--repo-owner` scopes retain portfolio rules, which infer their owners as
+Director identities.
 
 Portfolio scans cover issues and PRs opened in the window, conversation
 comments and inline-review comments; `--thread` includes the opening post,

@@ -1307,8 +1307,12 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     if settings.get("outbound"):
         found, outbound_errors = outbound_threads(outbound_self, settings)
         coverage_errors.extend(outbound_errors)
-        inbound_repositories = set(repositories) if settings["scan_repository_scope"] else set()
-        outbound_scope.update(key for key in found if key not in full_history_threads and key[0] not in inbound_repositories)
+        inbound_repositories = {repo.casefold() for repo in repositories} if settings["scan_repository_scope"] else set()
+        full_history_keys = {(repo.casefold(), number) for repo, number in full_history_threads}
+        outbound_scope.update(
+            (repo, number) for repo, number in found
+            if (repo.casefold(), number) not in full_history_keys and repo.casefold() not in inbound_repositories
+        )
         for thread_key in outbound_scope:
             candidate_ids.setdefault(thread_key, set())
         repositories = rollup.unique([*repositories, *(repo for repo, _ in found)])
