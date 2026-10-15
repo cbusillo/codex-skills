@@ -137,9 +137,11 @@ once under **Settings → Plugins → ⚙ → Manage Plugin Repositories**. The 
 offers full-build updates through its normal update checks; the user applies
 the update and restarts when requested. Check that the feed and its linked zip
 are published before recommending installation. Marketplace Stable approval and
-an `agents` channel upload are separate from a usable GitHub build. Verify the
-installed version and clean source fingerprint through a fresh route after the
-restart; a release or feed alone does not prove the running IDE was updated.
+an `agents` channel upload are separate from a usable GitHub build. After the
+restart, use `resolve-route --repo "$PWD"` and require the installed
+`plugin_version` and `plugin_build_fingerprint` to match the chosen release's
+version and clean source commit. A release or feed alone does not prove the
+running IDE was updated.
 
 ## Before The First Inspection
 
