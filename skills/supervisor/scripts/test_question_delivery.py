@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 import question_delivery as delivery
+from github_fixture_support import api_success, with_call_stub
 
 
 class DeliveryTests(unittest.TestCase):
@@ -164,23 +165,30 @@ class DeliveryTests(unittest.TestCase):
             self.run_queue(ack=self.questions[0]["url"], delivery_url="https://discord.com/channels/1/2/3")
         report = self.run_queue(register=True)
         row = report["questions"][0]
-        for receipt in (row["url"], row["registration_url"], "https://private.test/secret", "not a URL"):
+        for receipt in (row["url"], row["registration_url"], row["url"].split("#")[0],
+                        "https://github.com/cbusillo/codex-skills/issues/1043", "https://private.test/secret", "not a URL"):
             with self.subTest(receipt=receipt), self.assertRaises(ValueError):
                 self.run_queue(ack=row["url"], delivery_url=receipt)
 
     def test_writes_use_automation_helper_dedupe_and_preserve_unknown_outcome(self):
         repo, number = self.queue.split("#")
-        # Generate the real library result; do not invent its CLI envelope.
-        for action in ("created", "existing"):
-            result = delivery.github_comment._comment_payload(
-                {"id": 1, "html_url": f"https://github.com/{repo}/issues/{number}#issuecomment-1",
-                 "user": {"login": self.authors[0]}},
-                operation="github.comment.issue", kind="issue", repo=repo, number=int(number),
-                actor=self.authors[0], expected_actor=self.authors[0], comment_action=action, completed_steps=[])
-            for certainty in (None, "confirmed", "reconciled_applied"):
-                payload = {**result, **({"outcome_certainty": certainty} if certainty else {})}
-                with patch.object(delivery.github_comment, "comment", return_value=payload):
-                    self.assertEqual(delivery.post(self.queue, "reference"), payload)
+        saved = []
+        def api(method, path, body, **_kwargs):
+            if method == "POST":
+                saved.append({"id": 1, "html_url": f"https://github.com/{repo}/issues/{number}#issuecomment-1",
+                              "user": {"login": self.authors[0]}, "body": body["body"]})
+                return api_success(saved[-1], operation="github.comment.issue")
+            return api_success(saved, operation="github.comment.issue")
+        results = []
+        def exercise(calls):
+            with patch.object(delivery.github_comment, "authenticated_actor", return_value=self.authors[0]):
+                results.append(delivery.post(self.queue, "reference"))
+                results.append(delivery.post(self.queue.upper(), "reference"))
+            self.assertEqual(sum(c["method"] == "POST" for c in calls), 1)
+        with_call_stub(api, exercise)
+        result = results[0]
+        with patch.object(delivery.github_comment, "comment", return_value={**result, "outcome_certainty": "reconciled_applied"}):
+            self.assertEqual(delivery.post(self.queue, "reference")["url"], result["url"])
         with patch.object(delivery.github_comment, "comment", return_value={**result, "outcome_certainty": "unknown"}), self.assertRaises(ValueError):
             delivery.post(self.queue, "reference")
 
@@ -189,7 +197,9 @@ class DeliveryTests(unittest.TestCase):
         old = {**target, "id": 2, "url": target["url"].split("#")[0] + "#issuecomment-2",
                "body": "Owner question: older request?"}
         self.sources[delivery.source_item(target["url"])].insert(0, old)
-        self.run_queue(items=[target["url"]], register=True)
+        report = self.run_queue(items=[target["url"]], register=True)
+        self.assertEqual([q["url"] for q in report["questions"]], [target["url"]])
+        self.assertEqual([q["url"] for q in self.run_queue(items=[])["questions"]], [target["url"]])
         self.assertEqual([r["question_url"] for r in delivery.records(self.comments, {self.authors[0]})], [target["url"]])
         with self.assertRaises(ValueError):
             self.run_queue(items=[delivery.source_item(target["url"])], register=True)
@@ -204,11 +214,41 @@ class DeliveryTests(unittest.TestCase):
         self.sources[delivery.source_item(self.questions[0]["url"])].append(self.fixture["decision"])
         self.assertEqual(self.run_queue(owner=self.owner.upper(), decision_author=[a.upper() for a in self.authors])["queue_length"], len(self.questions) - 1)
 
-    def test_omitted_queue_author_is_unknown_coverage_not_an_empty_all_clear(self):
+    def test_untrusted_queue_records_warn_without_poisoning_trusted_delivery(self):
         self.run_queue(register=True)
-        report = self.run_queue(items=[], decision_author=[])
+        self.comments.append({**self.comments[0], "author": None, "url": "unknown"})
+        report = self.run_queue(items=[])
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["untrusted_records"], [{"url": "unknown", "author": None}])
+        self.assertEqual(report["queue_length"], len(self.questions))
+
+    def test_unavailable_source_retains_other_rows_and_recorded_disposition_clears_it(self):
+        self.run_queue(register=True)
+        target = self.questions[0]["url"]
+        del self.sources[delivery.source_item(target)]
+        report = self.run_queue(items=[])
         self.assertFalse(report["complete"])
-        self.assertEqual({r["url"] for r in report["untrusted_records"]}, {c["url"] for c in self.comments})
+        self.assertEqual(report["missing_sources"], [target])
+        self.assertEqual(len(report["source_errors"]), 1)
+        self.assertEqual({q["url"] for q in report["questions"]}, {q["url"] for q in self.questions})
+        self.comments.append({"author": self.owner, "body": f"Director decision: withdraw this obsolete question: {target}", "url": "disposition"})
+        report = self.run_queue(items=[])
+        self.assertTrue(report["complete"])
+        self.assertEqual([q["url"] for q in report["questions"]], [self.questions[1]["url"]])
+
+    def test_real_decision_words_are_not_deferrals_and_plain_replies_are_candidates(self):
+        self.run_queue(register=True)
+        target = self.questions[0]["url"]
+        source = self.sources[delivery.source_item(target)]
+        source.append({"author": self.owner, "body": f"Yes to {target}", "url": "candidate",
+                       "created_at": self.fixture["observed_at"]})
+        row = next(q for q in self.run_queue(items=[])["questions"] if q["url"] == target)
+        self.assertEqual(row["candidate_answers"], ["candidate"])
+        for answer in ("defer to your recommendation", "hold the rebuild"):
+            source.append({"author": self.authors[0], "body": f"Director decision: {answer}; {target}",
+                           "url": "decision", "created_at": self.fixture["observed_at"]})
+            self.assertEqual(self.run_queue(items=[])["queue_length"], len(self.questions) - 1)
+            source.pop()
 
 
 if __name__ == "__main__":

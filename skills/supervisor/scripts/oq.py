@@ -45,7 +45,8 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
             content = re.sub(r"^(?:Director|Owner) decision(?:\s*\([^)]*\))?[, :*]*", "", text)
             content = content.replace("*", "").strip()
             content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
-            if re.match(r"(?i)(?:later|not now|defer|park|hold|keep (?:it )?queued)\b", content):
+            content = re.sub(r"https://\S+", "", content).strip()
+            if recorded_decisions_only and re.fullmatch(r"(?i)(?:later|not now)[\s.;!—-]*", content):
                 continue
             # Later unrelated replies never resolve a question. Require its id or URL.
             linked = question["url"] in text or re.search(

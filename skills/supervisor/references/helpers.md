@@ -190,7 +190,10 @@ uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_B
 
 Pass each trusted decision/registration author's login with `--decision-author`.
 The read-only queue view recovers registered source discussions on takeover and
-also accepts source items from the worker ledger/handoffs. It reads full source
+also accepts source items from the worker ledger/handoffs. Normal queue reads
+select registered URLs; explicit question URLs select just those questions,
+while explicit discussion IDs request that discussion's wider candidate inventory.
+It reads full source
 and queue discussions through the paged, quota-aware planning helper, including
 closed issues; no search window expires a question. Scope is explicit: this
 view cannot discover a worker that neither registered nor handed off its source.
@@ -210,16 +213,22 @@ The view reports `queue_length`, position, original age, registration link,
 delivery receipt and `resurface`. An unacknowledged question is emitted every
 check, even after successful registration. A delivery receipt leaves it queued
 until an explicit linked Owner/Director decision from the Director or trusted
-recorder; plain replies remain candidates for Supervisor reconciliation and
+recorder; `candidate_answers` preserves plain replies for Supervisor reconciliation and
 "later" never erases it. Read acknowledged unanswered rows too: `resurface`
 means missing delivery acknowledgement, not the only questions to present. Source reads
 also reconcile decisions on another supplied discussion or the queue. A failed
 read/write/readback exits nonzero with `complete: false`, never an empty all-clear.
 Deleted/edited source questions stay visible as `missing_source`, with their
-original URL, while other rows remain usable; restore the original source or
-reconcile its disposition with the Director. Unconfigured question/queue authors
-are reported as incomplete coverage, not silently filtered. Configure verified
-trusted logins and reread; do not grant authority from an unknown record.
+original URL, while other rows remain usable. An inaccessible discussion is a
+per-source error, preserving the other rows too. Restore the original source or
+record the Director's actual disposition as an explicit linked decision on the
+queue; that existing decision format also resolves a missing source and stops
+refetching it. Do not invent a disposition. Unconfigured source-question authors
+remain visible as incomplete coverage. Untrusted queue records are warnings and
+never control state or make a successful acknowledgement fail. Review those
+warnings and the configured-author scope before claiming an all-clear; configure
+verified trusted logins and reread rather than granting authority from a record.
+Presentation receipts must name an exact GitHub comment or Discord message.
 On an uncertain write, read the queue before retrying; stable bodies, helper
 deduplication and a shared-Code-home lock reconcile a saved registration without
 allocating a new Q ID. This source change configures no destination, daemon or

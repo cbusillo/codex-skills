@@ -13,6 +13,7 @@ import fcntl
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 import oq
@@ -48,7 +49,7 @@ def records(comments, trusted):
     """Only standalone first-line records from configured trusted authors count."""
     result = []
     for comment in comments:
-        if comment.get("author", "").casefold() not in trusted:
+        if (comment.get("author") or "").casefold() not in trusted:
             continue
         first = (comment.get("body") or "").strip().splitlines()
         match = MARKER.fullmatch(first[0]) if first else None
@@ -68,9 +69,8 @@ def records(comments, trusted):
 def validate_receipt(url):
     # Public-safe references only; private destinations and arbitrary text never
     # enter an issue comment. A receipt records presentation, never approval.
-    if not isinstance(url, str) or not re.fullmatch(
-        r"https://(?:github\.com/[A-Za-z0-9_./#-]+|(?:discord\.com|discordapp\.com)/channels/[0-9]+/[0-9]+/[0-9]+)", url
-    ):
+    if not isinstance(url, str) or not (COMMENT_URL.fullmatch(url) or re.fullmatch(
+        r"https://(?:discord\.com|discordapp\.com)/channels/[0-9]+/[0-9]+/[0-9]+", url)):
         raise ValueError("delivery receipt must be a GitHub or Discord message URL")
 
 
@@ -98,7 +98,7 @@ def post(queue, body):
     # the subsequent full readback proves delivery, including reconciled writes.
     if (result.get("comment_action") not in {"created", "existing"}
             or not isinstance(result.get("url"), str)
-            or source_item(result["url"]) != queue
+            or source_item(result["url"]).casefold() != queue.casefold()
             or result.get("outcome_certainty") not in {None, "confirmed", "reconciled_applied", "not_applicable"}):
         raise ValueError("question delivery write is unconfirmed; read queue before retrying")
     return result
@@ -114,7 +114,14 @@ def queue_lock():
         yield
 
 
-def inventory(source_comments, queue_comments, owner, decision_authors, now=None):
+def settled(url, queue_comments, owner, decision_authors):
+    """An explicit linked decision can dispose of even a deleted source."""
+    reference = {"id": int(COMMENT_URL.fullmatch(url)[3]), "url": url, "body": "Owner question: unavailable source"}
+    answers = [c for c in queue_comments if not (c.get("body") or "").lstrip().startswith("<!-- director-question:delivery ")]
+    return oq.questions([reference], owner, decision_authors, answers, recorded_decisions_only=True)[0]["status"] == "answered"
+
+
+def inventory(source_comments, queue_comments, owner, decision_authors, now=None, *, question_urls=None):
     """Read-only view; a delivery receipt never removes an unanswered question."""
     now = now or datetime.now(timezone.utc)
     trusted = {author.casefold() for author in [owner, *decision_authors]}
@@ -144,11 +151,14 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     # Source URL is immutable identity. A repeat presentation keeps its Q ID;
     # registration never allocates a second number from the shared counter.
     found = oq.questions(source_comments, owner, decision_authors, answers, recorded_decisions_only=True)
+    candidates = {q["url"]: q["answers"] for q in oq.questions(source_comments, owner, decision_authors, answers)}
     source_authors = {c["url"]: (c.get("author") or "") for c in source_comments}
     for question in found:
         if question["status"] == "answered":
             continue
         url = question["url"]
+        if question_urls is not None and url not in question_urls:
+            continue
         source_item(url)
         created = question.get("created_at")
         age = None
@@ -159,6 +169,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
             age = max(0, (now - parsed).total_seconds())
         receipt = acknowledgements.get(url)
         rows.append({**question, "question_id": question_id(question["question"]),
+                     "candidate_answers": candidates[url],
                      "source_author": source_authors[url],
                      "author_trusted": source_authors[url].casefold() in trusted,
                      "registration_url": registrations.get(url),
@@ -166,7 +177,8 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
                      "delivery_url": receipt["delivery_url"] if receipt else None,
                      "resurface": receipt is None, "age_seconds": age})
     known = {row["url"] for row in found}
-    missing = sorted(set(registrations) - known)
+    missing = sorted(url for url in set(registrations) - known
+                     if not settled(url, queue_comments, owner, decision_authors))
     for url in missing:
         rows.append({"url": url, "status": "missing_source", "question": None,
                      "created_at": None, "question_id": None, "age_seconds": None,
@@ -176,9 +188,10 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     for position, row in enumerate(rows, 1):
         row["position"] = position
     untrusted = [q["url"] for q in rows if q.get("author_trusted") is False]
-    return {"complete": not (missing or untrusted or untrusted_records), "queue_length": len(rows), "questions": rows,
+    return {"complete": not (missing or untrusted), "queue_length": len(rows), "questions": rows,
             "missing_sources": missing, "untrusted_sources": untrusted,
             "untrusted_records": untrusted_records,
+            "coverage": "Configured trusted queue authors; untrusted queue records are warnings only",
             "unacknowledged_count": sum(row["resurface"] for row in rows)}
 
 
@@ -200,14 +213,30 @@ def reconcile(args, fetch):
     targets = {value for value in args.items if COMMENT_URL.fullmatch(value)}
     if args.register and not targets:
         raise ValueError("registration requires exact original question URLs, not whole discussions")
+    active = {r["question_url"] for r in existing
+              if not settled(r["question_url"], queue_comments, args.owner, args.decision_author)}
     items = list(dict.fromkeys([*(source_item(value) if value in targets else value for value in args.items),
-                               *(source_item(r["question_url"]) for r in existing)]))
+                               *(source_item(url) for url in sorted(active))]))
+    selected = {r["question_url"] for r in existing} | targets
+    explicit_discussions = set(args.items) - targets
     comments_by_url = {}
+    errors = []
     for item in items:
-        for comment in fetch(item):
+        try:
+            source_comments = fetch(item)
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            errors.append({"item": item, "error": str(error)})
+            continue
+        for comment in source_comments:
             comments_by_url[comment["url"]] = comment
+            if item in explicit_discussions:
+                selected.add(comment["url"])
     comments = list(comments_by_url.values())
-    report = inventory(comments, queue_comments, args.owner, args.decision_author)
+    recognized = {q["url"] for q in oq.questions(comments, args.owner, args.decision_author)}
+    for target in sorted(targets - recognized):
+        if not settled(target, queue_comments, args.owner, args.decision_author):
+            errors.append({"question_url": target, "error": "explicit source question missing or edited"})
+    report = inventory(comments, queue_comments, args.owner, args.decision_author, question_urls=selected)
     writes = []
     if args.register:
         for target in targets:
@@ -234,7 +263,8 @@ def reconcile(args, fetch):
         # unacknowledged rather than being optimistically hidden.
         queue_comments = fetch(args.queue)
         if not any(c.get("body", "").strip().startswith(body.strip())
-                   and c.get("author", "").casefold() in trusted for c in queue_comments):
+                   and (c.get("author") or "").casefold() in trusted for c in queue_comments):
             raise ValueError("question delivery record readback failed")
-    return {"queue": args.queue, "scope": items,
-            **inventory(comments, queue_comments, args.owner, args.decision_author)}
+    report = inventory(comments, queue_comments, args.owner, args.decision_author, question_urls=selected)
+    return {"queue": args.queue, "scope": items, **report,
+            "source_errors": errors, "complete": report["complete"] and not errors}
