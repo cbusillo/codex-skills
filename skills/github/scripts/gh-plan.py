@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "PyYAML==6.0.3",
+#     "aiohttp==3.14.5",
 # ]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""
@@ -2363,8 +2364,25 @@ def claim_once(args: argparse.Namespace) -> None:
     previous_wait_labels: set[str] = set()
     previous_wait = ""
     planned_wait = ""
+    ended_owners: list[dict[str, Any]] = []
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
+
+    def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
+        nonlocal inventory, ended_owners
+        inventory = github_plan_claim.observe_sessions(
+            github_plan_claim.local_inventory(target_repo, number), current_comments)
+        ended_owners = github_plan_claim.ended_ownership(current_comments, inventory)
+        branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
+        if any(entry["branch"] == claim["branch"] and entry["branch"] in branches and entry["claim_id"] != args.resume_from for entry in ended_owners):
+            raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
+        conflicts, owned = github_plan_claim.discussion_evidence(
+            current_status, current_comments, claim, resume_from=args.resume_from,
+            ended_claims={entry["claim_id"] for entry in ended_owners})
+        if inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
+            conflicts.extend({"source": "native_session_inventory", "branch": entry["branch"], "certainty": "incomplete"}
+                             for entry in ended_owners if entry["branch"] in branches)
+        return conflicts, owned
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
         wait = waiting_issue["claim_wait"]
@@ -2414,11 +2432,15 @@ def claim_once(args: argparse.Namespace) -> None:
             source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
             issue_repo=issue_repo, issue_number=number, target_repo=target_repo,
         )
+        for ended in ended_owners:
+            ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
+                                      if (p.get("head") or {}).get("ref") == ended["branch"]]
         if claim["branch"] in permitted:
             raise PlanError("Retained handoff requires a new task branch, separate from every retained PR/source branch")
         source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
         observed_waits = {}
         released_target_sessions = set()
+        target_session_comments = list(source_comments)
         for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
@@ -2434,6 +2456,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
                 bucket="rest_core", step_prefix="refresh_comments",
             )
+            target_session_comments.extend(target_comments)
             # PR status may name the canonical issue being claimed. Keep its
             # holder prose conservative rather than applying issue exclusions.
             competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
@@ -2453,8 +2476,15 @@ def claim_once(args: argparse.Namespace) -> None:
             if retained_waits is not None and observed_waits != retained_waits:
                 raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
             retained_waits = observed_waits
-        target_inventory = github_plan_claim.local_inventory(target_repo, target_number)
+        target_inventory = github_plan_claim.observe_sessions(
+            github_plan_claim.local_inventory(target_repo, target_number), target_session_comments)
         source_session = github_plan_claim.records(next(c for c in source_comments if c.get("id") == args.resume_from)["body"])[0]["session"]
+        if target_inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
+            present = set(target_inventory["local_branches"]) | set(target_inventory["remote_branches"]) | {t["branch"] for t in target_inventory["worktrees"]}
+            uncertain = [{"source": "native_session_inventory", "branch": branch, "session": source_session, "certainty": "incomplete"}
+                         for branch in sorted(permitted & present)]
+            if uncertain:
+                refuse(uncertain)
         live_sources = [{"source": "source_session", "session": peer["sessionId"],
                          "certainty": "visible_in_native_inventory"}
                         for peer in target_inventory["sessions"]
@@ -2467,6 +2497,8 @@ def claim_once(args: argparse.Namespace) -> None:
             competing = github_plan_claim.artifact_evidence(
                 target_inventory, target_pulls, checked_number, claim, own_record=bool(own_comments),
                 retained_branches=permitted, retained_repo=target_repo, repo=checked_repo,
+                ended_branches=github_plan_claim.ended_artifact_branches(ended_owners, source_comments, target_pulls)
+                if checked_repo.casefold() == issue_repo.casefold() else set(),
                 inventory_repo=target_repo,
                 recorded_branches=github_plan_claim.recorded_claim_branches(source_status, source_comments)
                 if checked_repo.casefold() == issue_repo.casefold() and checked_number == number else None,
@@ -2515,14 +2547,15 @@ def claim_once(args: argparse.Namespace) -> None:
     def refuse(competing_claims: list[dict[str, Any]]) -> None:
         raise ClassifiedPlanError(
             "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
-            payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery()},
+            payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery(),
+                     "coordination": github_plan_claim.coordination(competing_claims, comments, issue_repo, number)},
         )
 
     def check_status_peers(status_comments: list[dict[str, Any]]) -> None:
         sessions = {record["session"] for _, record, _ in github_plan_claim.exact_released_sources(status_comments)}
         if not sessions:
             return
-        fresh_inventory = github_plan_claim.local_inventory(target_repo, number)
+        fresh_inventory = inventory
         peers = [{"source": "claude_session", "session": peer.get("sessionId"),
                   "certainty": "visible_in_native_inventory"}
                  for peer in fresh_inventory["sessions"]
@@ -2594,6 +2627,7 @@ def claim_once(args: argparse.Namespace) -> None:
         raise ClassifiedPlanError(
             "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
             payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery(),
+                     "coordination": github_plan_claim.coordination(competing_claims, route_comments, issue_repo, number),
                      **({"successor_route": {"resume_from": route[0], "handoff_comment": route[1]}} if route else {})},
         )
 
@@ -2608,15 +2642,13 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Claim requires resolved native blockers; preserve blocked planning state")
 
     def check_pr_artifacts(status_to_check: str, current_comments: list[dict[str, Any]]) -> None:
-        if record_kind != "pr":
-            return
-        fresh_inventory = github_plan_claim.local_inventory(target_repo, number)
+        fresh_inventory = inventory
         _, fresh_pulls = collect_paged_rest_items(
             f"/repos/{target_repo}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="claim_pr_readback",
         )
         subject = next((p for p in fresh_pulls if p["number"] == number), None)
-        if subject is not None:
+        if record_kind == "pr" and subject is not None:
             text = (subject.get("title") or "") + "\n" + (subject.get("body") or "")
             links = re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)|(?<![\w/])([\w.-]+/[\w.-]+)#([1-9]\d*)|(?<![\w/])#([1-9]\d*)", text)
             for url_repo, url_number, qualified_repo, qualified_number, bare_number in links:
@@ -2635,7 +2667,11 @@ def claim_once(args: argparse.Namespace) -> None:
         _, own = github_plan_claim.discussion_evidence("", current_comments, claim)
         conflicts = github_plan_claim.artifact_evidence(
             fresh_inventory, fresh_pulls, number, claim, own_record=bool(own), repo=issue_repo,
-            subject_pr=number, retained=retained,
+            subject_pr=number if record_kind == "pr" else None, retained=retained,
+            retained_branches=retained_branches, retained_repo=target_repo if handoff_id else None,
+            inventory_repo=target_repo,
+            ended_branches=github_plan_claim.ended_artifact_branches(ended_owners, current_comments, fresh_pulls),
+            status_sessions={entry["session"] for entry in ended_owners},
             recorded_branches=github_plan_claim.recorded_claim_branches(status_to_check, current_comments),
         )
         if conflicts:
@@ -2650,7 +2686,7 @@ def claim_once(args: argparse.Namespace) -> None:
         previous_wait = github_plan_wait.marker(issue["claim_wait"])
         previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
-        conflicts, owned = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from)
+        conflicts, owned = ownership_snapshot(status, comments)
         if conflicts:
             refuse_or_route(conflicts, comments)
         check_wait(issue, status)
@@ -2661,7 +2697,6 @@ def claim_once(args: argparse.Namespace) -> None:
         retained = github_plan_claim.retained_branch(comments, args.resume_from) if args.resume_from else None
         check_native_blockers()
         retained_branches = handoff_preflight(comments, status)
-        inventory = github_plan_claim.local_inventory(target_repo, number)
         _, pulls = collect_paged_rest_items(
             f"/repos/{target_repo}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="claim_open_prs",
@@ -2672,6 +2707,7 @@ def claim_once(args: argparse.Namespace) -> None:
                                                        retained_branches=retained_branches,
                                                        retained_repo=target_repo if handoff_id else None,
                                                        inventory_repo=target_repo,
+                                                       ended_branches=github_plan_claim.ended_artifact_branches(ended_owners, comments, pulls),
                                                        recorded_branches=github_plan_claim.recorded_claim_branches(status, comments),
                                                        status_sessions={record["session"] for _, record, _ in github_plan_claim.exact_released_sources(comments)})
         if conflicts:
@@ -2711,7 +2747,7 @@ def claim_once(args: argparse.Namespace) -> None:
         # Check the discussion again before touching status or labels.
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         check_agent(issue)
-        conflicts, observed = github_plan_claim.discussion_evidence(status, comments, claim, resume_from=args.resume_from)
+        conflicts, observed = ownership_snapshot(status, comments)
         if conflicts:
             refuse(conflicts)
         check_status_peers(comments)
@@ -2763,8 +2799,9 @@ def claim_once(args: argparse.Namespace) -> None:
             completed.append("update_labels")
             actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
+        comments = final_comments
         check_agent(final)
-        conflicts, observed = github_plan_claim.discussion_evidence(final_status, final_comments, claim, resume_from=args.resume_from)
+        conflicts, observed = ownership_snapshot(final_status, final_comments)
         if conflicts:
             refuse(conflicts)
         check_status_peers(final_comments)
@@ -2812,6 +2849,8 @@ def claim_once(args: argparse.Namespace) -> None:
     emit({"ok": True, "actor": actor, "record_kind": record_kind, "claim": claim, "claim_comment": claim_comment, "issue": compact_issue(final),
           "current_status_location": "issue_body" if can_update else "claim_comment",
           "previous_current_status": previous_status,
+          "retained_artifacts": [entry for entry in ended_owners if entry.get("worktrees") or entry.get("pull_requests")
+                                 or entry["branch"] in inventory["local_branches"] or entry["branch"] in inventory["remote_branches"]],
           "session_coverage": inventory["session_coverage"], "exclusive_lock": False,
           "completed_steps": completed})
 

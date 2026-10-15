@@ -266,7 +266,10 @@ active issue labels and continuing background jobs do not lift a hold.
    preserve all unresolved entries when replacing the whole record. Read
    [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for the format, authorship and existing-resolution contract.
-   For an abandoned automation claim held by a closed session, a direction or
+   Claims automatically account for exact authored releases and native verified
+   ended ownership, reporting preserved leftovers in `retained_artifacts`.
+   Positive live activity still refuses; unknown state is not proof of closure.
+   For an abandoned automation claim without that proof, a direction or
    Supervisor session uses `release-claim`, with a closed-session attestation
    and fresh activity checks. Read Planning: Claim first; age, a merged PR or
    partial peer coverage never proves closure. This releases ownership only;

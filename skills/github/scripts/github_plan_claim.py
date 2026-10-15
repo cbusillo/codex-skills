@@ -435,6 +435,7 @@ def released_explanatory_note(
 
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
+    ended_claims: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Old claims remain ambiguous until explicitly released; age is never a lease."""
     from github_plan_release import effective_comments
@@ -450,7 +451,11 @@ def discussion_evidence(
     owned = []
     status = resumed_status(status, comments, resume_from)
     status_records = records(status)
+    ended_records = [record for c in comments if c.get("id") in (ended_claims or set())
+                     for record in records(c.get("body") or "")]
     for record in status_records:
+        if record in ended_records:
+            continue
         if same_owner(record, claim):
             owned.append(record)
         else:
@@ -496,6 +501,8 @@ def discussion_evidence(
             released_ids[release_id, author] = index
     for index, comment in enumerate(comments):
         text = comment.get("body") or ""
+        if comment.get("id") in (ended_claims or set()):
+            continue
         parsed = records(text)
         author = (comment.get("user") or {}).get("login", "")
         comment_id = comment.get("id")
@@ -525,6 +532,85 @@ def discussion_evidence(
                 conflicts.append({"source": "comment", "id": comment.get("id"), "record": record,
                                   "certainty": "current_or_stale"})
     return conflicts, owned
+
+
+def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
+    from github_plan_sessions import observe
+    ids = {r["session"] for c in comments for r in records(c.get("body") or "")}
+    released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
+    proof_ids = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
+    peers, states, coverage = observe(ids, proof_ids)
+    return {**inventory, "sessions": [*inventory["sessions"], *peers], "session_states": states,
+            "session_coverage": {**inventory.get("session_coverage", {}), "codex_claims": {
+                **coverage,
+                "scope": "exact claimed sessions and observed active daemon threads; partial global coverage"}}}
+
+
+def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ended ownership is evidence about an exact claim, never artifact disposal."""
+    from github_plan_release import effective_comments, stamp
+    comments = effective_comments(comments)
+    released = {comments[i]["id"]: comments[j]["id"] for i, _, j in exact_released_sources(comments)}
+    ended = []
+    for source in comments:
+        parsed = records(source.get("body") or "")
+        if len(parsed) != 1 or not isinstance(source.get("id"), int):
+            continue
+        record = parsed[0]
+        native = inventory.get("session_states", {}).get(record["session"], {})
+        paths = [pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] == record["branch"]]
+        if native.get("state") == "live" or any(
+            peer.get("sessionId") == record["session"]
+            or any(pathlib.Path(peer.get("cwd") or "/").resolve().is_relative_to(path) for path in paths)
+            for peer in inventory["sessions"]
+        ):
+            continue
+        proof = "authored_release" if source["id"] in released else None
+        if not proof and native.get("state") == "ended":
+            try:
+                if stamp(native["ended_at"]) > max(stamp(record["claimed_at"]), stamp(source.get("updated_at") or source.get("created_at"))):
+                    proof = "native_session_ended"
+            except (KeyError, TypeError, ValueError):
+                pass
+        if proof:
+            ended.append({"claim_id": source["id"], **record, "evidence": proof,
+                          **({"release_id": released[source["id"]]} if source["id"] in released else {}),
+                          "worktrees": [str(path) for path in paths]})
+    return ended
+
+
+def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], repo: str, number: int) -> list[dict[str, Any]]:
+    holders = []
+    released_ids = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
+    for source in comments:
+        for record in records(source.get("body") or ""):
+            if any(c.get("id") == source.get("id") or c.get("record") == record
+                   or c.get("session") == record["session"] or (
+                       c.get("branch") == record["branch"] and source.get("id") not in released_ids) for c in conflicts):
+                holders.append({**record, "claim_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{source.get('id')}",
+                                "next_action": "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts"})
+    if not holders:
+        holders = [{"worker": "unknown", "session": c.get("session", "unknown"),
+                    "branch": c.get("branch", "unknown"), "work_record": f"https://github.com/{repo}/issues/{number}",
+                    "next_action": "Identify the artifact's owning native session on the work record and coordinate a handoff; preserve it"}
+                   for c in conflicts]
+    return holders
+
+
+def ended_artifact_branches(ended: list[dict[str, Any]], comments: list[dict[str, Any]], pulls: list[dict[str, Any]]) -> set[str]:
+    ended_ids = {entry["claim_id"] for entry in ended}
+    branches = {entry["branch"] for entry in ended}
+    for source in comments:
+        for record in records(source.get("body") or ""):
+            if source.get("id") not in ended_ids:
+                branches.discard(record["branch"])
+    for pull in pulls:
+        branch = (pull.get("head") or {}).get("ref")
+        authors = {(c.get("user") or {}).get("login") for c in comments
+                   if c.get("id") in ended_ids and any(r["branch"] == branch for r in records(c.get("body") or ""))}
+        if pull.get("state") != "closed" or (pull.get("user") or {}).get("login") not in authors:
+            branches.discard(branch)
+    return branches
 
 
 def run_read(argv: list[str], *, cwd: pathlib.Path | None = None, deadline_at: float | None = None) -> str:
@@ -735,6 +821,7 @@ def artifact_evidence(
     recorded_branches: set[str] | None = None,
     status_sessions: set[str] | None = None,
     subject_pr: int | None = None,
+    ended_branches: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     conflicts = []
     local_references = inventory_repo is None or inventory_repo.casefold() == repo.casefold()
@@ -763,17 +850,20 @@ def artifact_evidence(
 
     for source in ("local_branches", "remote_branches"):
         for branch in inventory[source]:
-            if (local_references and (references_issue(branch, number) or (subject_pr is not None and branch in (recorded_branches or set()))) and not permitted(branch)
+            if (local_references and (references_issue(branch, number) or (subject_pr is not None and branch in (recorded_branches or set()))) and not permitted(branch) and branch not in (ended_branches or set())
                     and not (subject_pr is not None and source == "remote_branches" and branch == subject_branch)):
                 conflicts.append({"source": source, "branch": branch, "certainty": "current_or_stale"})
     for tree in inventory["worktrees"]:
         if local_references and (references_issue(tree["branch"] + "/" + pathlib.Path(tree["path"]).name, number)
                                 or subject_pr is not None and tree["branch"] in (recorded_branches or set())):
-            if not permitted(tree["branch"]):
+            if not permitted(tree["branch"]) and tree["branch"] not in (ended_branches or set()):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
     paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]}
     retained_paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]
                       if t["branch"] == retained or t["branch"] in (retained_branches or set())
+                      or t["branch"] in (ended_branches or set())
+                      or local_references and (t["branch"] in (recorded_branches or set())
+                          or references_issue(t["branch"] + "/" + pathlib.Path(t["path"]).name, number))
                       or subject_pr is not None and t["branch"] == subject_branch}
     for session in inventory["sessions"]:
         if session.get("sessionId") == claim["session"]:
@@ -782,7 +872,9 @@ def artifact_evidence(
         if (session.get("sessionId") in (status_sessions or set())
                 or any(cwd == path or pathlib.Path(cwd).is_relative_to(path) for path in retained_paths)
                 or (local_references and cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number))):
-            conflicts.append({"source": "claude_session", "session": session.get("sessionId"),
+            conflicts.append({"source": session.get("source", "claude_session"), "session": session.get("sessionId"),
+                              "branch": next((t["branch"] for t in inventory["worktrees"]
+                                              if pathlib.Path(cwd).is_relative_to(pathlib.Path(t["path"]).resolve())), None),
                               "state": session.get("state") or session.get("status")})
     for pull in pulls:
         if pull["number"] == subject_pr:
@@ -798,7 +890,7 @@ def artifact_evidence(
                 present = branch in inventory["local_branches"] or branch in inventory["remote_branches"] or any(
                     tree["branch"] == branch for tree in inventory["worktrees"]
                 )
-                if present and not permitted(branch):
+                if present and not permitted(branch) and branch not in (ended_branches or set()):
                     conflicts.append({"source": "closed_pr_artifacts", "number": pull["number"], "branch": branch})
                 continue
             same_repo = not retained_repo or all(
