@@ -785,6 +785,8 @@ def edit_holds(argv):
     parser.add_argument("--hold-file", required=True, type=Path)
     parser.add_argument("--init", action="store_true")
     parser.add_argument("--coordinated-repo", action="append", default=[])
+    parser.add_argument("--uncoordinate", action="append", default=[],
+                        help="remove a legacy product-batching hold; leaves other pauses intact")
     parser.add_argument("--pause", action="append", default=[])
     parser.add_argument("--resume", action="append", default=[])
     parser.add_argument("--release-ready", action="append", default=[])
@@ -792,6 +794,7 @@ def edit_holds(argv):
     args = parser.parse_args(argv)
     names = (
         args.coordinated_repo
+        + args.uncoordinate
         + args.pause
         + args.resume
         + args.release_ready
@@ -810,8 +813,10 @@ def edit_holds(argv):
             }
         else:
             data = read_holds(args.hold_file)
+        removed = {name.casefold() for name in args.uncoordinate}
         data["coordinated_repositories"] = sorted(
-            set(data["coordinated_repositories"] + args.coordinated_repo)
+            name for name in set(data["coordinated_repositories"] + args.coordinated_repo)
+            if name.casefold() not in removed
         )
         pauses = {
             name.casefold(): name for name in data["paused_repositories"] + args.pause
