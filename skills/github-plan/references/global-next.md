@@ -120,7 +120,7 @@ no record and grants no claim or live-operation authority.
 
 The `waiting` list identifies current wait reports. References in that text stay
 in `references`, resolved relative to the reporting issue: `repo#N` uses its
-account, and bare `#N` uses its repository. Adjacent shorthand references do not
+account only for a repository in the observed inventory; bare `#N` uses its repository. Adjacent shorthand references do not
 supply an account for each other. Closed/unavailable targets remain flagged for
 review.
 `last_verified` comes from the issue's own field; `reported_at` is its separate

@@ -3831,6 +3831,8 @@ def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[d
 
 def next_wait_context(
     issues: list[dict[str, Any]], *, scan_limit: int, inventory_complete: bool,
+    reference_repositories: set[str] | None = None,
+    structured_waits: dict[tuple[str, int], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Reuse the direction audit's stale report within the already-read scope."""
     root = str(pathlib.Path(__file__).resolve().parents[3])
@@ -3858,6 +3860,7 @@ def next_wait_context(
             raise cache[path]
         return cache[path]
 
+    known_repos = {item["repo"] for item in issues} | (reference_repositories or set())
     configs = {item["repo"]: load_config(item["repo"]) for item in issues}
     unique = {(item["repo"].casefold(), item["number"]): item for item in issues
               if set(normalize_labels(item.get("labels"))).intersection(
@@ -3897,7 +3900,10 @@ def next_wait_context(
                 continue
             status = section_map(item.get("body") or "").get("Current Status", "")
             own = {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, config)}
-            for row in github_direction_next.waiting_records(own, status):
+            wait = (structured_waits or {}).get((repo.casefold(), item["number"]))
+            if wait is not None:
+                own["structured_wait"] = wait
+            for row in github_direction_next.waiting_records(own, status, reference_repositories=known_repos):
                 for reference in row["references"]:
                     url = reference["url"]
                     if url in references:
@@ -4187,9 +4193,10 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
                 ranked["excluded"].append(item)
                 reports = node.get("waiting") or []
                 ranked["waiting"].extend(reports)
-                if item["exclusion"] in {"waiting", "parent_waiting"} and not reports:
+                if item["exclusion"] in {"waiting", "wait_review_required", "parent_waiting"} and not reports:
                     ranked["waiting"].append({
                         "repo": item["repo"], "number": item["number"], "url": item["url"],
+                        **({"source": "legacy_wait_review"} if item["exclusion"] == "wait_review_required" else {}),
                         "waiting_for": item.get("waiting_on_parent") or node.get("status_text") or "Waiting party or condition not recorded",
                         "reported_by": item["url"], "reported_at": item.get("updated_at"),
                     })
@@ -4252,6 +4259,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         [seeds[key] for key in evidence_keys if key in seeds],
         scan_limit=args.scan_limit * 2,
         inventory_complete=candidate_coverage_complete,
+        reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
+        structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]},
     )
     stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
     checked_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["checked_issues"]}
@@ -4284,6 +4293,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
         coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
         repository_clients=client_records, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
+        reference_repositories={entry["repo"] for entry in seeds.values()} | {entry["repo"] for entry in discovery.get("repositories", [])},
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
         repository_waypoints={source["repo"]: repository_direction_milestones(source) for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
     )
@@ -4311,7 +4321,7 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
     github_agent.filter_selection(ranked, github_agent.running_agent(getattr(args, "agent", None)))
     ranked["milestone_summary"] = github_direction_next.milestone_summary(
         titles, completed=ranked.get("completed_milestones", []), candidates=ranked["candidates"],
-        graph_waits=graph_waits, track_next_actions=track_next_actions,
+        graph_waits=[*graph_waits, *ranked["waiting"], *ranked["recorded_waits"]], track_next_actions=track_next_actions,
         underway=ranked["underway"], verification_only=ranked["verification_only"],
     )
     ranked["candidates"] = ranked["candidates"][:args.limit]

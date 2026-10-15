@@ -131,10 +131,10 @@ def test_clear_record_does_not_override_native_wait_or_blocker_or_parent_hold() 
 def test_adjacent_reference_boundaries_preserve_supported_context_and_numeric_names() -> None:
     item = {'repo': 'cbusillo/direction', 'number': 52, 'url': 'https://github.com/cbusillo/direction/issues/52'}
     text = 'discord-blue#206/launchplane#2792'
-    references = direction.waiting_records(item, 'Waiting for: ' + text)[0]['references']
+    references = direction.waiting_records(item, 'Waiting for: ' + text, reference_repositories={'cbusillo/discord-blue', 'cbusillo/launchplane'})[0]['references']
     assert {(row['repo'], row['number']) for row in references} == {('cbusillo/discord-blue', 206), ('cbusillo/launchplane', 2792)}
     ordinary = 'owner/project#12 https://github.com/other/project/pull/13 206/123#14 123#15 #16'
-    refs = direction.waiting_records(item, 'Waiting for: ' + ordinary)[0]['references']
+    refs = direction.waiting_records(item, 'Waiting for: ' + ordinary, reference_repositories={'cbusillo/123'})[0]['references']
     assert {(row['repo'], row['number']) for row in refs} == {('owner/project', 12), ('other/project', 13), ('206/123', 14), ('cbusillo/123', 15), ('cbusillo/direction', 16)}
     # Track next-action prose has no established shorthand context.
     assert direction.next_action_references('Next action: owner/project#12')[0]['repo'] == 'owner/project'
@@ -155,10 +155,15 @@ def test_structured_wait_text_is_data_even_when_it_looks_like_status_fields() ->
 
 
 def test_milestone_qualification_is_visible_even_without_source_work() -> None:
-    row = {'repo': 'owner/repo', 'number': 1, 'url': 'https://github.com/owner/repo/issues/1', 'milestone': {'title': 'First'}}
+    row = {'repo': 'owner/repo', 'number': 1, 'url': 'https://github.com/owner/repo/issues/1', 'milestone': {'title': 'First'}, 'overall_milestone_context': {'titles': ['First']}}
     summary = direction.milestone_summary(['First'], completed=[], candidates=[], graph_waits=[], track_next_actions={}, verification_only=[row])[0]
     assert summary['state'] == 'work_listed' and summary['verification_only']
     assert not summary['waits']
+
+
+    unlinked = {key: value for key, value in row.items() if key != 'overall_milestone_context'}
+    summary = direction.milestone_summary(['First'], completed=[], candidates=[], graph_waits=[], track_next_actions={}, underway=[unlinked], verification_only=[unlinked])[0]
+    assert not summary['underway'] and not summary['verification_only']
 
 
 def test_caller_review_cannot_override_a_required_wait_review() -> None:
@@ -193,7 +198,7 @@ def test_completing_qualification_is_not_source_implementation() -> None:
 
 
 def test_paths_and_pull_request_prose_do_not_invent_repositories() -> None:
-    assert not direction.issue_references('PR#2792 https://docs.example.com/runbook/page#3 path/to/file#12', repo='cbusillo/direction')
+    assert not direction.issue_references('PR#2792 Zendesk#48213 ticket#88 build#412 INC#552 https://docs.example.com/runbook/page#3 path/to/file#12', repo='cbusillo/direction')
     assert direction.issue_references('owner/PR#12', repo='cbusillo/direction')[0]['repo'] == 'owner/PR'
 
 
@@ -204,6 +209,55 @@ def test_malformed_contributor_envelope_requires_wait_review() -> None:
     assert not result['available_candidates']
     row = next(row for row in result['excluded'] if row['number'] == raw['number'])
     assert row['exclusion'] == 'wait_review_required'
+
+
+def test_wait_review_blocks_availability_but_preserves_conservative_caller_states() -> None:
+    row = queue_tests.item()
+    row.update(queue={'state': 'review', 'reason': 'wait_review_required'}, via=[{'repo': 'owner/direction', 'number': 1}], milestone={'title': 'First'}, plan_status='active')
+    for state in ['underway', 'waiting', 'ineligible']:
+        result = direction.rank_portfolio_work({'candidates': [row], 'excluded': []}, [], milestone_titles=['First'],
+            selection_context={'issues': {'owner/repo#1': cli.reviewed(row, state, ownership_complete=True)}})
+        assert not result['available_candidates']
+        if state == 'underway':
+            assert result['underway'] and not result['candidates']
+        else:
+            assert result['excluded'] and not result['candidates']
+
+
+def test_unspecified_state_only_holds_remain_visible_for_wait_review() -> None:
+    for state in ['Parked.', 'Waiting.', 'Waiting — Director to confirm']:
+        raw, comments = source(cases()[2])
+        raw['body'] = '## Current Status\nState: ' + state
+        result = run_global(raw, comments)
+        assert not result['available_candidates']
+        assert result['milestone_summary'][0]['wait_reviews'], result['milestone_summary']
+
+
+def test_structured_wait_references_are_read_and_genuine_unknowns_stay_unknown() -> None:
+    module = cli.load_module()
+    raw, _ = source(cases()[0])
+    record = wait.reviewed(evidence='Current event', waiting_for='Recorded decision on #99', ends_when='Full external/repo#100 records closure')
+    paths = []
+    def fetch(method, path, **kwargs):
+        paths.append(path)
+        if path.endswith('/99'):
+            return 'bot', {'state': 'closed'}
+        if path.endswith('/100'):
+            raise module.PlanError('unavailable genuine reference')
+        return 'bot', {'archived': False}
+    with patch.multiple(module, api_json=fetch, load_config=lambda *_: module.DEFAULT_CONFIG):
+        report = module.next_wait_context([raw], scan_limit=5, inventory_complete=True,
+            structured_waits={(raw['repo'].casefold(), raw['number']): record})
+    assert report['references']['https://github.com/cbusillo/launchplane/issues/99']['state'] == 'closed'
+    assert report['references']['https://github.com/external/repo/issues/100']['state'] == 'unknown'
+    assert not report['complete']
+    assert any('/external/repo/' in path for path in paths)
+
+
+def test_short_references_need_observed_repository_identity() -> None:
+    known = {'cbusillo/launchplane', 'cbusillo/123'}
+    refs = direction.issue_references('launchplane#2792 123#15 Zendesk#48213', repo='cbusillo/direction', known_repositories=known)
+    assert {(ref['repo'], ref['number']) for ref in refs} == {('cbusillo/launchplane', 2792), ('cbusillo/123', 15)}
 
 
 if __name__ == '__main__':
