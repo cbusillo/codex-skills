@@ -1748,6 +1748,13 @@ Commands naming a listed account's repository use the Client App. Other accounts
 and commands with no target repository keep the existing primary credential
 selection. The separate bulk reader App still serves bulk reads when configured.
 With no Client routing configured, existing fleet behavior is unchanged.
+`gh-plan.py --repo OWNER/REPO` supplies that repository context for the entire
+command, including reader initialization and actor checks; a qualified issue
+reference supplies its own target instead. The resolved target takes precedence
+over an inherited `GH_REPO`; setting `GH_REPO` separately is unnecessary.
+Qualified issue references supply this context even without `--repo`.
+For a bare issue number without `--repo`, the resolved checkout repository
+supplies it.
 
 If the Client App is not installed on the target, reads fail with the missing
 installation named. Writes retain the existing refusal and per-command own-user

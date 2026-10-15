@@ -6040,7 +6040,17 @@ def main() -> None:
     )
     if args.command == "wait" and not args.clear and not args.waiting_for:
         CURRENT_IS_WRITE = False
+    previous_repo = os.environ.get("GH_REPO")
     try:
+        if args.repo or getattr(args, "issue", None):
+            # A qualified issue overrides --repo, which is only its default.
+            target_repo = (issue_ref(claim_reference(args).issue, args.repo or "")[0]
+                           if getattr(args, "issue", None) else args.repo)
+            if not target_repo:
+                target_repo = default_repo()
+            # Bind readers, probes and transport before any cache is prepared.
+            if target_repo:
+                os.environ["GH_REPO"] = target_repo
         args.func(args)
     except ClassifiedPlanError as exc:
         die(
@@ -6078,6 +6088,12 @@ def main() -> None:
             write_outcome="unknown" if CURRENT_IS_WRITE else None,
         )
         die("Interrupted", code=130, error_code="cancelled", failure=failure)
+    finally:
+        if args.repo or getattr(args, "issue", None):
+            if previous_repo is None:
+                os.environ.pop("GH_REPO", None)
+            else:
+                os.environ["GH_REPO"] = previous_repo
 
 
 if __name__ == "__main__":
