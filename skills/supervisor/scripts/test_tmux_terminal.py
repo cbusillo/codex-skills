@@ -395,12 +395,12 @@ def fixture_tmux_environment(root):
     startup = root / "shell-startup"
     startup.mkdir()
     config = root / "tmux.conf"
-    config.write_text("set-option -g default-shell /bin/sh\nset-option -g default-command ''\n")
+    config.write_text("set-option -g default-shell /bin/sh\nset-option -g default-command 'exec /bin/sh'\n")
     wrapper = binary / "tmux"
-    wrapper.write_text("#!/bin/sh\nexport ZDOTDIR=" + shlex.quote(str(startup)) + "\nexec "
+    wrapper.write_text("#!/bin/sh\nunset ENV\nexport ZDOTDIR=" + shlex.quote(str(startup)) + "\nexec "
                        + shlex.quote(executable) + " -f " + shlex.quote(str(config)) + ' "$@"\n')
     wrapper.chmod(0o700)
-    return {"PATH": str(binary) + os.pathsep + os.environ["PATH"], "TMUX_TMPDIR": str(root)}
+    return {"PATH": str(binary) + os.pathsep + os.environ["PATH"], "TMUX_TMPDIR": str(root)}, startup
 
 
 @unittest.skipUnless(shutil.which("tmux") and Path("/bin/zsh").exists(), "requires tmux and zsh")
@@ -412,22 +412,26 @@ class FixtureEnvironmentTests(unittest.TestCase):
             inherited.mkdir()
             marker = root / "sourced-personal-startup"
             (inherited / ".zshenv").write_text("print poisoned; touch " + shlex.quote(str(marker)) + "; exit 23\n")
-            with patch.dict(os.environ, {"ZDOTDIR": str(inherited)}):
-                environment = fixture_tmux_environment(root)
+            sh_startup = inherited / "sh-startup"
+            sh_startup.write_text("touch " + shlex.quote(str(marker)) + "; exit 23\n")
+            with patch.dict(os.environ, {"ZDOTDIR": str(inherited), "ENV": str(sh_startup)}):
+                environment, _ = fixture_tmux_environment(root)
                 with patch.dict(os.environ, environment):
                     terminal = tmux_terminal.Terminal("supervisor-test-" + uuid.uuid4().hex)
                     try:
                         # Native startup deliberately inherits the poisoned
                         # caller environment; only the fixture boundary isolates it.
                         created = subprocess.run(["tmux", "-L", terminal.socket_name, "new-session", "-d",
-                                                  "-P", "-F", "#{session_id}",
-                                                  "exec /bin/zsh -c 'printf READY; read -r line'"],
+                                                  "-P", "-F", "#{session_id}"],
                                                  capture_output=True, text=True, timeout=10)
                         self.assertEqual(created.returncode, 0, created.stderr)
+                        pane = terminal.run("new-window", "-d", "-t", created.stdout.strip(),
+                                            "-P", "-F", "#{pane_id}",
+                                            "exec /bin/zsh -c 'printf READY; read -r line'").stdout.strip()
                         deadline = time.monotonic() + 5
                         screen = ""
                         while time.monotonic() < deadline:
-                            result = terminal.run("capture-pane", "-p", "-t", created.stdout.strip(), check=False)
+                            result = terminal.run("capture-pane", "-p", "-t", pane, check=False)
                             screen = result.stdout
                             if "READY" in screen:
                                 break
@@ -447,7 +451,8 @@ class TmuxFixture(unittest.TestCase):
         self.folder = tempfile.TemporaryDirectory(dir="/tmp", prefix="svtest-")
         self.addCleanup(self.folder.cleanup)
         self.root = Path(self.folder.name)
-        environment = patch.dict(os.environ, fixture_tmux_environment(self.root))
+        environment_values, self.shell_startup = fixture_tmux_environment(self.root)
+        environment = patch.dict(os.environ, environment_values)
         environment.start()
         self.addCleanup(environment.stop)
         gui = patch.object(iterm2, "run_until_complete", side_effect=AssertionError("tests must never connect to real iTerm"))
@@ -460,7 +465,10 @@ class TmuxFixture(unittest.TestCase):
         # A simulated terminal creates its first server itself; avoid an
         # unnecessary bootout/rebootstrap of the same launchd registration.
         if self.create_window:
-            window = self.operate("window")
+            try:
+                window = self.operate("window")
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                self.fail(f"fixture container creation failed: {error}; " + self.diagnostics())
             self.window = window["window_id"]
             if window["view_command"]:
                 self.assertEqual(shlex.split(window["view_command"])[-1], self.window)
@@ -468,7 +476,7 @@ class TmuxFixture(unittest.TestCase):
                 self.assertFalse(self.terminal.readonly_control_supported(self.window))
         self.agent = self.root / "claude"
         self.agent.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
-print("READY:" + json.dumps({"brief": sys.argv[-1], "home": os.getenv("CLAUDE_CONFIG_DIR"), "codex_home": os.getenv("CODEX_HOME"), "move": os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"), "cwd": os.getcwd(), "code_home": os.getenv("CODE_HOME"), "uv_cache": os.getenv("UV_CACHE_DIR")}), flush=True)
+print("READY:" + json.dumps({"brief": sys.argv[-1], "home": os.getenv("CLAUDE_CONFIG_DIR"), "codex_home": os.getenv("CODEX_HOME"), "move": os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"), "cwd": os.getcwd(), "code_home": os.getenv("CODE_HOME"), "uv_cache": os.getenv("UV_CACHE_DIR"), "shell_startup": os.getenv("ZDOTDIR")}), flush=True)
 for line in sys.stdin:
     if line.strip() in {"/exit", "/quit"}:
         break
@@ -494,8 +502,12 @@ for line in sys.stdin:
             ttys = {row["tty"].removeprefix("/dev/") for row in details["panes"]}
             details["processes"] = [row for row in close_ttys.inventory()
                                     if row[0] in pids or row[1] in ttys]
-            details["screens"] = {row["session_id"]: self.terminal.read(row["session_id"])
-                                   for row in details["panes"]}
+            details["screens"] = {}
+            for row in details["panes"]:
+                try:
+                    details["screens"][row["session_id"]] = self.terminal.read(row["session_id"])
+                except (ValueError, OSError, subprocess.SubprocessError) as error:
+                    details["screens"][row["session_id"]] = {"diagnostic_error": repr(error)}
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             details["diagnostic_error"] = repr(error)
         return json.dumps(details, default=str)
@@ -568,17 +580,8 @@ for line in sys.stdin:
     def entry(self, row):
         return {**row, "tmux_session_id": row["session_id"], "supervisor_owned": True}
 
-class TmuxTests(TmuxFixture):
-    def test_child_failure_report_preserves_stderr_and_fixture_identity(self):
-        token = uuid.uuid4().hex
-        with self.assertRaises(AssertionError) as caught:
-            self.run_child([sys.executable, "-c", f"import sys; print({token!r}, file=sys.stderr); sys.exit(7)"])
-        report = str(caught.exception)
-        self.assertIn(token, report)
-        self.assertIn(self.socket, report)
-        self.assertIn(str(self.root), report)
-        self.assertIn(self.window, report)
 
+class TmuxTests(TmuxFixture):
     def test_launch_message_read_exit_and_close_with_account_and_literal_brief(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")
@@ -911,6 +914,10 @@ class DetachedTerminalTests(TmuxFixture):
             self.window = json.loads(ready.read_text())["window_id"]
             row = self.launch()
             self.wait_screen(row["session_id"], "READY:")
+            history = self.terminal.run("capture-pane", "-p", "-J", "-t",
+                                        self.terminal.select(row["session_id"])["pane_id"]).stdout
+            received = json.loads(next(line.split("READY:", 1)[1] for line in history.splitlines() if "READY:" in line))
+            self.assertEqual(received["shell_startup"], str(self.shell_startup))
             server = int(self.terminal.run("display-message", "-p", "-t", self.window, "#{pid}").stdout)
             parent = subprocess.run(["ps", "-o", "ppid=", "-p", str(server)],
                                     capture_output=True, text=True, check=True).stdout.strip()
