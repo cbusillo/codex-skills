@@ -36,7 +36,7 @@ resources:
     description: Read open issue and PR counts per visible non-archived repository in the selected account and fleet totals with one paginated GraphQL query.
   - path: scripts/oq.py
     kind: script
-    description: Read all Director questions through the paged GitHub helper.
+    description: Read all Director questions and the acknowledged queue; explicit register/ack writes use the GitHub helper.
   - path: scripts/finished_map.py
     kind: script
     description: Find transcript close-out candidates for Supervisor verification.
@@ -79,7 +79,7 @@ commands:
     source: skill
     resource_path: scripts/oq.py
     example_argv: ["uv", "run", "scripts/oq.py", "OWNER/REPO#NUMBER", "--owner", "<owner-login>", "--decision-author", "<recording-automation-login>"]
-    purpose: Gather Director questions from the whole discussion.
+    purpose: Gather Director questions from the whole discussion; see helpers for explicit queue registration and presentation acknowledgement.
   - name: supervisor-foreign-watch
     source: skill
     resource_path: scripts/foreign_watch.py
