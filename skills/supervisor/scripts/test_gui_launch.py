@@ -5,6 +5,8 @@
 """GUI launch behavior using temporary account homes and fake console/agents."""
 
 import argparse
+import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -14,11 +16,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
 import gui_launch
 import iterm_tab
+import tmux_terminal
 
 
 class GuiLaunchTests(unittest.TestCase):
@@ -29,7 +33,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.home = self.root / "owner"
         self.account = self.root / "account with spaces"
         self.account.mkdir()
-        self.source = self.home / ".codex/.tmp/bundled-marketplaces/openai-bundled"
+        self.source = self.home / ".codex" / gui_launch.BUNDLED_MARKETPLACE
         self.source.mkdir(parents=True)
         self.state = self.root / "private/gui.json"
         self.addCleanup(patch.stopall)
@@ -92,6 +96,67 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertEqual(commands[0], iterm_tab.with_account(self.command.read_text(), self.choice,
                                                             self.brief.read_text()))
         self.assertNotIn("gui", json.loads(account_choice.record_launch(self.choice).read_text()))
+
+    def test_source_brief_quoting_gui_header_does_not_opt_in(self):
+        self.brief.write_text("Implement launcher behavior for this example:\nGUI task: com.example.Task")
+        _, choices = iterm_tab.prepare_launches(self.args)
+        self.assertNotIn("gui", choices[0])
+        self.unlocked.assert_not_called()
+
+    def test_output_redacts_account_paths_but_retains_recovery_token(self):
+        _, choices = iterm_tab.prepare_launches(self.args)
+        public = account_choice.public(choices[0])
+        self.assertEqual(public["gui"]["token"], choices[0]["gui"]["token"])
+        self.assertEqual(public["gui"]["app"], choices[0]["gui"]["app"])
+        for private_path in (str(self.account), str(self.state), str(self.source)):
+            self.assertNotIn(private_path, json.dumps(public))
+
+    def test_unsubmitted_backend_failures_release_slot_and_preserve_token(self):
+        self.args.command = "new"
+        self.args.window_id = "fixture"
+        self.args.tmux_socket = "fixture"
+        window = SimpleNamespace(window_id="fixture", async_create_tab=AsyncMock(side_effect=OSError("fake failure")))
+        app = SimpleNamespace(current_terminal_window=None, terminal_windows=[window])
+        terminal = Mock()
+        terminal.run.side_effect = OSError("fake failure")
+        for backend in ("iterm", "tmux"):
+            with self.subTest(backend=backend), patch.dict(sys.modules, {"iterm2": SimpleNamespace()}), \
+                    patch.object(tmux_terminal, "Terminal", return_value=terminal):
+                with self.assertRaises(iterm_tab.LaunchFailure) as raised:
+                    asyncio.run(iterm_tab.operate(app, self.args) if backend == "iterm"
+                                else tmux_terminal.operate(self.args))
+                failure = raised.exception.detail["failed_launch"]
+                self.assertEqual(failure["gui_reservation"], "released_unsubmitted")
+                self.assertTrue(failure["account"]["gui"]["token"])
+                self.assertFalse(self.state.exists())
+
+    def test_uncertain_submission_retains_slot(self):
+        _, choices = iterm_tab.prepare_launches(self.args)
+        iterm_tab.cancel_unsubmitted_gui(choices[0], {"submission": "unknown"})
+        self.assertTrue(self.state.exists())
+        with self.assertRaises(ValueError):
+            gui_launch.reserve("com.example.Other")
+
+    def test_long_gui_receipt_is_pruned_after_retention(self):
+        _, choices = iterm_tab.prepare_launches(self.args)
+        choices[0]["gui"]["marketplace"]["path"] = "/fixture/" + "long-home/" * 200
+        then = datetime.now(timezone.utc) - timedelta(days=2)
+        receipt = account_choice.record_launch(choices[0], now=then)
+        account_choice.prune_receipts(receipt.parent, datetime.now(timezone.utc))
+        self.assertFalse(receipt.exists())
+
+    def test_release_cli_requires_verified_shutdown_and_shared_path(self):
+        reserved = gui_launch.reserve("com.example.Task")
+        for extra in ([], ["--state", str(self.root / "other"), "--verified-worker-ended"]):
+            with patch.object(sys, "argv", ["gui_launch.py", "release", "--token", reserved["token"], *extra]):
+                with self.assertRaises(SystemExit) as raised:
+                    gui_launch.main()
+                self.assertNotEqual(raised.exception.code, 0)
+                self.assertTrue(self.state.exists())
+        with patch.object(sys, "argv", ["gui_launch.py", "release", "--token", reserved["token"],
+                                        "--verified-worker-ended"]):
+            gui_launch.main()
+        self.assertFalse(self.state.exists())
 
     def test_locked_preflight_refuses_before_daemon_link_and_receipt(self):
         self.unlocked.side_effect = ValueError("locked")
@@ -165,7 +230,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertEqual((link / "fresh").read_text(), "updated bundle")
 
     def test_missing_or_occupied_marketplace_preserves_data_and_releases_preparation(self):
-        link = self.account / ".tmp/bundled-marketplaces/openai-bundled"
+        link = self.account / gui_launch.BUNDLED_MARKETPLACE
         link.mkdir(parents=True)
         sentinel = link / "owner-data"
         sentinel.write_text("preserve")
@@ -195,6 +260,7 @@ class GuiLaunchTests(unittest.TestCase):
 class ConsoleTests(unittest.TestCase):
     def test_real_parser_with_fake_ioreg_evidence(self):
         for data, allowed in (([{"IOConsoleUsers": [{"CGSSessionScreenIsLocked": False}]}], True),
+                              ([{"IOConsoleLocked": False}], True),
                               ([{"IOConsoleLocked": True}], False), ([], False),
                               ([{"IOConsoleLocked": "No"}], False),
                               ([{"IOConsoleLocked": False, "CGSSessionScreenIsLocked": True}], False)):

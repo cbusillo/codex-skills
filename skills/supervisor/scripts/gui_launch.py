@@ -15,8 +15,12 @@ import re
 import subprocess
 import uuid
 
+BUNDLED_MARKETPLACE = Path(".tmp/bundled-marketplaces/openai-bundled")
+
 
 def declared_app(brief):
+    if not brief.lstrip().startswith("GUI task:"):
+        return None
     lines = re.findall(r"^GUI task:\s*(.*?)\s*$", brief, re.MULTILINE)
     if not lines:
         return None
@@ -101,8 +105,7 @@ def release(path, token):
 
 
 def marketplace(home, default_home):
-    relative = Path(".tmp/bundled-marketplaces/openai-bundled")
-    source, link = default_home / relative, home / relative
+    source, link = default_home / BUNDLED_MARKETPLACE, home / BUNDLED_MARKETPLACE
     if not source.is_dir():
         raise ValueError("default bundled marketplace is missing; restore it through Codex before GUI launch")
     if home.resolve() == default_home.resolve():
@@ -141,7 +144,7 @@ def run(path, token, command):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("run", "release"))
-    parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--state", type=Path, default=state_path())
     parser.add_argument("--token", required=True)
     parser.add_argument("--verified-worker-ended", action="store_true")
     parser.add_argument("--command")

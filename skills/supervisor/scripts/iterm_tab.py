@@ -16,6 +16,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -789,7 +790,7 @@ def prepare_launches(args):
             home = Path(choices[0]["env"]["CODEX_HOME"]).expanduser()
             if not home.is_absolute() or not home.is_dir():
                 raise ValueError("GUI launch needs the selected account's existing absolute CODEX_HOME")
-            source_path = home / ".tmp/bundled-marketplaces/openai-bundled"
+            source_path = home / gui_launch.BUNDLED_MARKETPLACE
             override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
             command_texts[0] += " -c " + shlex.quote(override)
         command_texts = [with_account(text, choice, brief)
@@ -813,7 +814,7 @@ def prepare_launches(args):
             choices[0]["gui"] = {**reservation, "marketplace": market,
                                   "override": override, "screen": "unlocked"}
             command_texts[0] = shlex.join([
-                "uv", "run", "--no-cache", str(Path(gui_launch.__file__).resolve()), "run",
+                sys.executable, str(Path(gui_launch.__file__).resolve()), "run",
                 "--state", reservation["state_path"], "--token", reservation["token"],
                 "--command", command_texts[0],
             ])
@@ -821,6 +822,16 @@ def prepare_launches(args):
             gui_launch.release(Path(reservation["state_path"]), reservation["token"])
             raise
     return command_texts, choices
+
+
+def cancel_unsubmitted_gui(choice, progress):
+    if choice and "gui" in choice and progress["submission"] == "not_attempted":
+        gui = choice["gui"]
+        try:
+            gui_launch.release(Path(gui["state_path"]), gui["token"])
+            progress["gui_reservation"] = "released_unsubmitted"
+        except (OSError, ValueError) as error:
+            progress["gui_reservation"] = "retained; inspect before release: " + str(error)
 
 
 async def close_session(app, session_id, ledger):
@@ -960,6 +971,7 @@ async def operate(app, args):
                 await submit_iterm_launch(app, session, command_text)
                 progress.update(submission="submitted", phase="startup_observed")
             except Exception as error:
+                cancel_unsubmitted_gui(choice, progress)
                 if isinstance(error, StartupFailure):
                     progress.update(submission="submitted", phase="verify_startup")
                 raise LaunchFailure(results, progress, error) from error

@@ -363,7 +363,7 @@ def prune_receipts(directory, now):
         if not OWN_RECEIPT.fullmatch(path.name) or path.is_symlink() or not path.is_file():
             continue
         try:
-            if path.stat().st_size > 1024:
+            if path.stat().st_size > 16 * 1024:
                 continue
             data = json.loads(path.read_text(encoding="utf-8"))
             launched = parse_time(data.get("launchedAt")) if isinstance(data, dict) else None
@@ -375,8 +375,13 @@ def prune_receipts(directory, now):
 
 def public(choice):
     """Launch output contains environment names, never private paths."""
-    return {**{k: v for k, v in choice.items() if k not in {"env", "storage_root"}},
-            "env_keys": sorted(choice["env"])}
+    result = {**{k: v for k, v in choice.items() if k not in {"env", "storage_root", "gui"}},
+              "env_keys": sorted(choice["env"])}
+    if "gui" in choice:
+        gui = choice["gui"]
+        result["gui"] = {key: gui[key] for key in ("app", "token", "phase", "screen")}
+        result["gui"]["marketplace_link"] = gui["marketplace"]["link"]
+    return result
 
 
 def main():

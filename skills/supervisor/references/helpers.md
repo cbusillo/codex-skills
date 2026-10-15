@@ -607,7 +607,9 @@ configuration, holds, watch state and logs for takeover or reconciliation.
 ### Opt-in Codex GUI work
 
 For an authorized native-app task, put a single standalone declaration in its
-brief, using the exact app bundle ID, for example `GUI task: com.apple.TestFlight`.
+brief's first nonblank line, using the exact app bundle ID, for example
+`GUI task: com.apple.TestFlight`. Examples quoted later in a source-work brief
+do not opt that task into GUI work.
 Launch that brief alone with `--account-provider openai` and a local `codex -C`
 command, without `--remote`. The launcher rejects terminal app targets and adds
 the GUI safety instructions to the worker's prompt. Other briefs keep the
@@ -631,15 +633,17 @@ During a real GUI launch only, the launcher validates the default home's current
 `~/.codex/.tmp/bundled-marketplaces/openai-bundled` directory and creates the
 selected `CODEX_HOME`'s corresponding path as a symlink to it. A matching link
 is reused; an occupied path, redirected parent or different link target refuses
-without replacement. It also passes the account-relative
+without replacement. The link stays after the task ends and is validated again
+on later GUI launches; non-GUI launches neither create nor change it. It also passes the account-relative
 `-c marketplaces.openai-bundled.source="<account-home>/.tmp/bundled-marketplaces/openai-bundled"`
 override to that Codex process. The link alone does not load the marketplace.
 No shared `config.toml`, authentication, permissions or catalog installation is
 changed. Tests use fake homes, console evidence and child processes only.
 
-The account's private Launch Receipt and terminal launch output include `gui`:
+The account's private Launch Receipt includes `gui`:
 named app, unlocked preflight, marketplace source/link action, process override,
-reservation token and shared state path. Keep these receipts private. The link
+reservation token and shared state path. Terminal output gives the app, link
+action and reservation token without account paths. Keep receipts private. The link
 follows replacement at the default home's unversioned path; missing or relocated
 targets refuse. CU-T2 established discovery and one Node/Sky state screenshot,
 not arbitrary-directory input or remote app-server qualification. If runtime
@@ -652,13 +656,17 @@ native thread and child processes first; do not replay. After proving the worker
 and any submitted descendants have ended, release that exact token:
 
 ```sh
-uv run skills/supervisor/scripts/gui_launch.py release --state <receipt-state-path> --token <receipt-token> --verified-worker-ended
+uv run skills/supervisor/scripts/gui_launch.py release --token <receipt-token> --verified-worker-ended
 ```
 
 The release refuses while a worker wrapper holds the lock or when the token
 differs. This is recovery after verified shutdown, never a way to make room for
 a second GUI worker. Keep a pending reservation's token from the launch failure
-output too; before-terminal failures during preparation release it automatically.
+output too. The state lives at `~/.code/skill-data/supervisor-gui.json`, across
+account homes. Failures known to occur before command submission release the
+slot automatically, including receipt failures; a send whose outcome is unknown
+retains it. The wrapper uses the launcher's resolved Python interpreter, without
+creating a second environment for the worker.
 
 ### Terminal launches
 
