@@ -597,7 +597,7 @@ for line in sys.stdin:
         self.assertEqual(raised.exception.detail["launched"], [])
         self.assertTrue(failed["receipt_written"])
         self.assertTrue(failed["startup"]["dead"])
-        self.assertEqual(failed["startup"]["exit_status"], "1")
+        self.assertEqual(failed["startup"]["exit_status"], "1", json.dumps(failed["startup"]))
         self.assertIn("fixture bootstrap failed", "\n".join(failed["startup"]["screen"]))
         self.assertTrue(self.terminal.select(failed["session_id"])["dead"])
 

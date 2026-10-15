@@ -203,7 +203,7 @@ class Terminal:
 
     def list(self):
         fields = ("session_id", "window_id", "pane_id", "pane_title", "pane_tty",
-                  "pane_pid", "pane_dead", "pane_dead_status", "@supervisor_identity", "pid")
+                  "pane_pid", "pane_dead", "pane_dead_status", "pane_dead_signal", "@supervisor_identity", "pid")
         result = self.run("list-panes", "-a", "-F", "\t".join("#{" + f + "}" for f in fields), check=False)
         if result.returncode:
             # A missing server is empty; other failures are uncertain inventory.
@@ -215,7 +215,7 @@ class Terminal:
             values = line.split("\t")
             if len(values) != len(fields):
                 raise ValueError("tmux inventory is malformed")
-            window, tab, pane, title, tty, pid, dead, status, identity, server = values
+            window, tab, pane, title, tty, pid, dead, status, death_signal, identity, server = values
             if not pid and dead != "1":
                 raise ValueError("live tmux pane has no PID; inventory unavailable")
             identity = identity or f"{server}:{pane}"
@@ -223,6 +223,7 @@ class Terminal:
                          "session_id": f"tmux:{self.socket_name}:{identity}",
                          "title": title, "tty": tty, "pane_id": pane,
                          "pid": int(pid) if pid else None, "dead": dead == "1", "exit_status": status,
+                         "exit_signal": death_signal,
                          "backend": "tmux", "tmux_socket": self.socket_name})
         return rows
 
@@ -394,7 +395,7 @@ async def operate(args):
                 except (ValueError, OSError, subprocess.SubprocessError) as error:
                     raise iterm_tab.StartupFailure({"dead": None, "screen": [],
                                                    "observation_error": type(error).__name__}) from error
-                return {key: snapshot[key] for key in ("dead", "exit_status", "screen")}
+                return {key: snapshot[key] for key in ("dead", "exit_status", "exit_signal", "screen")}
 
             await iterm_tab.verify_startup(read_startup)
             result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}

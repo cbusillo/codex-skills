@@ -162,7 +162,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         terminal.run.return_value.stdout = "@1\t%1"
         terminal.select.return_value = row
         terminal.send = AsyncMock()
-        terminal.read.return_value = {"dead": True, "exit_status": "1", "screen": ["thread/start failed"]}
+        terminal.read.return_value = {"dead": True, "exit_status": "1", "exit_signal": "", "screen": ["thread/start failed"]}
         args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
         choice = {"provider": "openai", "env": {}}
         with (patch.object(tmux_terminal, "Terminal", return_value=terminal),
