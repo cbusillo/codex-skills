@@ -95,23 +95,27 @@ inference or grant merge rights to every installed App.
 ## Keeping the profile current
 
 The normal catalog validation runs `validate-operation-matrix.py`. New public
-commands need operation rows. Maintained GitHub helper API signatures, endpoint
-strings and GraphQL documents are fingerprinted across the GitHub, rollup,
-babysitter and direction helper directories. A new or changed surface fails
-validation until its operation declaration, permission, safe probe, degraded
-behavior and profile impact are reviewed together. Dynamic passthrough input
-and arbitrary untracked code remain outside this static check.
+commands need operation rows. Validation checks command coverage, source/test
+references, capability declarations, supported safe probes, separate actors and
+profile impact. Review changed API calls against their operation's declared
+capabilities, actor, safe probe, degraded behavior and default-profile impact.
+API changes inside an existing command rely on review and fixture tests;
+static declarations alone do not prove an endpoint's runtime behavior.
 The `gh-with-env-token` passthrough is covered by
 `test_gh_with_env_token.py` and `validate-gh-issue.sh`, which execute its
 credential selection, actor verification and refusal paths with fixture credentials. Its shell text is
 not fingerprinted.
 
-After reviewing the change, print candidate hashes with `github-capabilities.py
-fingerprints` and update the matrix's fingerprint table in the same PR. The
-command never writes or blesses the catalog itself. Add a behavioral probe test
-when a new capability/probe is introduced; do not satisfy drift by copying a hash
-without inspecting the permission boundary. Keep real account/repository/App
-identities and live audit reports in ignored local state, not this catalog.
+`github-capabilities.py fingerprints` remains an optional diagnostic that prints
+per-file API-source hashes. Run it in base and head checkouts to compare them;
+read the source diff for endpoint/method changes. Its hashes are advisory:
+they are neither stored in the
+matrix nor checked by validation. Source changes are not artifacts or immutable
+evidence under the [shared test policy](https://github.com/cbusillo/codex-skills/blob/main/instructions/global.md#tests).
+Add a behavioral probe test when a new capability/probe is introduced, covering
+actor routing and unavailable/denied results as applicable. Keep real
+account/repository/App identities and live audit reports in ignored local state,
+not this catalog.
 
 Primary references: [App permissions](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps),
 [installation token scope](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app),
