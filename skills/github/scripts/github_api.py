@@ -34,6 +34,7 @@ import os
 import pathlib
 import random
 import re
+import shlex
 import secrets
 import subprocess
 import sys
@@ -2930,6 +2931,62 @@ def reader_request_is_write(method: str, path: str, body: Any = None) -> bool:
     return False
 
 
+def public_read_command_is_scoped(args: list[str], repository: str) -> bool:
+    """Keep the personal public-read route on the repository GitHub verified.
+
+    Repo-scoped CLI reads may use GraphQL internally. Raw GraphQL and global
+    searches cannot establish that scope; use a scoped REST search instead.
+    """
+    if args[:2] in [["issue", "list"], ["issue", "view"], ["pr", "list"],
+                    ["pr", "view"], ["pr", "checks"], ["run", "list"], ["run", "view"]]:
+        return True
+    if not args or args[0] != "api":
+        return False
+    endpoint = ""
+    index = 1
+    value_options = {"-X", "--method", "-H", "--header", "-q", "--jq", "-t", "--template",
+                     "-p", "--preview", "--hostname", "--cache"}
+    while index < len(args):
+        token = args[index]
+        if token in value_options:
+            index += 2
+            continue
+        if not token.startswith("-"):
+            if endpoint:
+                return False
+            endpoint = token
+        index += 1
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme or parsed.netloc or parsed.fragment:
+        return False
+    path = urllib.parse.unquote(parsed.path).strip("/")
+    # Refuse encoded separators and traversal rather than letting the CLI or
+    # server reinterpret a path outside the verified repository.
+    if "%" in path or any(part in {".", ".."} for part in path.split("/")):
+        return False
+    target = f"repos/{repository}".casefold()
+    if path.casefold() == target or path.casefold().startswith(target + "/"):
+        return True
+    if path in {"user", "rate_limit"}:
+        return True  # Existing actor and quota probes, not repository data.
+    if path != "search/issues":
+        return False
+    queries = urllib.parse.parse_qs(parsed.query).get("q", [])
+    if len(queries) != 1:
+        return False
+    try:
+        shlex.split(queries[0])  # Refuse malformed quoting before interpreting scope.
+    except ValueError:
+        return False
+    unquoted = re.sub(r'"(?:\\.|[^"\\])*"', ' ', queries[0])
+    if any(character in unquoted for character in "()\\'"):
+        return False
+    tokens = unquoted.split()
+    scopes = [token.casefold() for token in tokens if token.casefold().startswith("repo:")]
+    return (bool(scopes) and all(scope == f"repo:{repository}".casefold() for scope in scopes)
+            and not any(token.upper() == "OR" for token in tokens))
+
+
 def request_identity(
     *, operation: str, is_write: bool, gh_cmd: str, gh_prefix_args: Optional[list[str]],
     actor: Optional[str], expected_actor: Optional[str], repository: Optional[str] = None,
@@ -2975,7 +3032,9 @@ def request_identity(
                 # The wrapper verifies the declared personal login on every call.
                 # Do not scope a body cache or quota record to an App that cannot
                 # read this repository, or turn this read into a writer probe.
-                return None, None, prefix
+                if github_identity.own_user_opted_in():
+                    return None, None, prefix
+                raise
             except github_identity.ContributorRepository:
                 # The wrapper owns explicit own-user authorization and refusal.
                 # Prerequisite/readback reads retain the already resolved writer,

@@ -54,7 +54,15 @@ class NotInstalledForAutomation(GitHubAppError):
 
 
 class PublicReadRepository(GitHubAppError):
-    """A missing Client installation may read a GitHub-verified public repository."""
+    """A missing Client installation needs a public-read check in the wrapper."""
+
+    def __init__(self, repository: str) -> None:
+        self.repository = repository
+        super().__init__(
+            f"the GitHub Client App is not installed on {repository}; reads require "
+            "its installation on this repository, or a verified public repository "
+            f"with {OWN_USER_OPT_IN}=1 for the declared personal account on this command"
+        )
 
 
 # app-auth exits with these statuses so the shell wrappers can tell the cases
@@ -730,13 +738,7 @@ def github_app_auth(
             if repository_config is not None:
                 return _mint_and_cache(repository_config, cache_path, current_time)
             if config.require_repository_installation:
-                if not require_installation and repository_is_public(config, repository):
-                    raise PublicReadRepository(
-                        f"the GitHub Client App is not installed on {repository}; "
-                        "GitHub confirms it is public, so reads may use the declared personal "
-                        f"account with {OWN_USER_OPT_IN}=1 on this command"
-                    )
-                raise GitHubAppError(f"the GitHub Client App is not installed on {repository}; reads require its installation on this repository")
+                raise PublicReadRepository(repository)
     with _locked_cache(config) as cache_path:
         cached = None if refresh else _read_cached_token(cache_path, now=current_time)
         if cached:
@@ -827,8 +829,17 @@ def main() -> int:
             print(token)
             return 0
     except PublicReadRepository as error:
-        print(f"note: {error}", file=sys.stderr)
-        return PUBLIC_READ_EXIT_STATUS
+        # The CLI is the credential boundary. In-process identity selection
+        # defers here, avoiding a second anonymous lookup for every Python read.
+        if own_user_opted_in() and str(configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") or "").casefold() not in {"1", "true", "yes"}:
+            try:
+                if repository_is_public(config, error.repository):
+                    print(f"note: GitHub confirms {error.repository} is public", file=sys.stderr)
+                    return PUBLIC_READ_EXIT_STATUS
+            except GitHubAppError:
+                pass  # Unavailable visibility never changes the missing-installation refusal.
+        print(f"error: GitHub App authentication failed before gh invocation: {error}", file=sys.stderr)
+        return 1
     except ContributorRepository as error:
         print(f"note: {error}", file=sys.stderr)
         return CONTRIBUTOR_EXIT_STATUS

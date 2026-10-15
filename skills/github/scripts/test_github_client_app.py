@@ -32,6 +32,28 @@ from test_github_identity import test_private_key
 from test_gh_plan_sections import PLAN
 
 
+class PublicReadScopeTests(unittest.TestCase):
+    def test_only_the_verified_repository_can_supply_personal_read_scope(self) -> None:
+        for endpoint, allowed in (
+            ("/repos/host/public/issues", True),
+            ("/repos/host/private/issues", False),
+            ("/repos/host/public/../private/issues", False),
+            ("/repos/host/public/%2e%2e/private/issues", False),
+            ("/repos/host/publicity/issues", False),
+            ("/search/issues?q=fixture+repo:host/public", True),
+            ("/search/issues?q=%22repo:host/private%22+repo:host/public", True),
+            ("/search/issues?q=%22repo:host/public%22+is:private", False),
+            ("/search/issues?q=repo:host/public+repo:host/private", False),
+            ("/search/issues?q=repo:host/public+OR(repo:host/private)", False),
+            ("/search/issues?q=repo:host/public+OR+is:private", False),
+            ("graphql", False),
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(github_api.public_read_command_is_scoped(
+                    ["api", "--method", "GET", "--include", "-H", "Accept: application/json", endpoint],
+                    "host/public"), allowed)
+
+
 class PlanCommandContextTests(unittest.TestCase):
     def run_context(self, argv: tuple[str, ...], checkout: str | None, *,
                     inherited: str | None = None, fail: bool = False) -> list[str | None]:
@@ -234,6 +256,7 @@ class ClientAppTests(unittest.TestCase):
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
             "args = sys.argv[1:]\n"
+            "with open(os.path.join(os.environ['HOME'], 'gh-calls.jsonl'), 'a') as log: log.write(json.dumps(args) + '\\n')\n"
             "if args[:2] == ['auth', 'status']: raise SystemExit(0)\n"
             "if args[:2] == ['auth', 'token']: print('fake-user-token'); raise SystemExit(0)\n"
             "token = os.environ.get('GH_TOKEN', '')\n"
@@ -305,11 +328,17 @@ class ClientAppTests(unittest.TestCase):
     def public_repository(self, repo: str = "host/missing-public") -> None:
         AppHandler.repositories[f"/repos/{repo}"] = (200, {"full_name": repo, "private": False})
 
+    def gh_calls(self) -> list[list[str]]:
+        path = self.root / "gh-calls.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
     def test_public_read_uses_declared_person_only_with_command_opt_in(self) -> None:
         self.public_repository()
         args = ("api", "/repos/host/missing-public")
         result = self.wrapper(*args)
         self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
+        self.assertEqual(self.gh_calls(), [])
         result = self.wrapper(*args, own_user=True)
         self.assertNotEqual(result.returncode, 0)  # No declared personal login.
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
@@ -318,6 +347,19 @@ class ClientAppTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["login"], "own-user")
         self.assertIn(("GET", "/repos/host/missing-public", ""), AppHandler.calls)
         self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
+
+    def test_public_fallback_rejects_cross_repository_search_before_personal_auth(self) -> None:
+        self.public_repository()
+        with patch.dict(os.environ, {"GH_REPO": "host/missing-public",
+                                    "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
+            for args in (("api", "/search/issues?q=repo:host/private"),
+                         ("api", "/search/issues?q=repo:host/missing-public+OR+is:private"),
+                         ("search", "issues", "repo:host/private"),
+                         ("repo", "view", "host/private")):
+                with self.subTest(args=args):
+                    result = self.wrapper(*args, own_user=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.gh_calls(), [])
 
     def test_public_private_installation_and_write_routes(self) -> None:
         for installed in (False, True):
@@ -344,20 +386,24 @@ class ClientAppTests(unittest.TestCase):
 
     def test_public_read_rejects_unknown_visibility_wrong_login_and_required_automation(self) -> None:
         repo = "host/missing-public"
-        for status, payload in ((404, None), (403, None), (500, None), (301, None),
+        for status, payload in ((404, None), (403, None), (429, None), (500, None), (301, None),
                                 (200, {}), (200, {"full_name": repo, "private": True}),
                                 (200, {"full_name": "host/other", "private": False})):
             with self.subTest(status=status, payload=payload):
+                AppHandler.calls = []
                 AppHandler.repositories[f"/repos/{repo}"] = (status, payload)
                 with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"}):
                     result = self.wrapper("api", f"/repos/{repo}", own_user=True)
                 self.assertNotEqual(result.returncode, 0)
+                self.assertIn(("GET", f"/repos/{repo}", ""), AppHandler.calls)
+                self.assertEqual(self.gh_calls(), [])
         self.public_repository(repo)
         for declared, flags in (("other-person", ()), ("own-user", ("--require-automation-auth",))):
             with self.subTest(declared=declared, flags=flags), patch.dict(
                     os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": declared}):
                 result = self.wrapper(*flags, "api", f"/repos/{repo}", own_user=True)
                 self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(f"/repos/{repo}" in args for args in self.gh_calls()))
 
     def test_plan_public_reads_use_personal_actor_without_borrowing_an_app(self) -> None:
         self.public_repository()
@@ -369,6 +415,16 @@ class ClientAppTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual(json.loads(result.stdout)["last_actor"], "own-user")
         self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
+
+    def test_python_identity_defers_public_probe_to_the_wrapper(self) -> None:
+        self.public_repository()
+        wrapper = str(Path(identity.__file__).with_name("gh-with-env-token"))
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1", "GH_REPO": "host/missing-public"}):
+            actor, expected, _ = github_api.request_identity(
+                operation="github.read", is_write=False, gh_cmd=wrapper, gh_prefix_args=None,
+                actor="app-1[bot]", expected_actor="app-1[bot]")
+        self.assertEqual((actor, expected), (None, None))
+        self.assertFalse(any(app == "" for _, _, app in AppHandler.calls))
 
     def test_client_route_preserves_explicit_expected_login_override(self) -> None:
         args = ("issue", "comment", "1", "--repo", "host/product", "--body", "fixture")

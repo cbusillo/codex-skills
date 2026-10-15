@@ -892,12 +892,12 @@ fi
 # and unrecognized CLI commands. Classify the complete captured body, never
 # delegate an unverified command to the read-only identity.
 verify_read_command() {
-	run_python - "$script_dir" "$stdin_file" "$@" <<'PY'
+	run_python - "$script_dir" "$stdin_file" "${public_read_repository:-}" "$@" <<'PY'
 import pathlib
 import sys
 sys.path.insert(0, sys.argv[1])
 import github_api
-args = sys.argv[3:]
+args = sys.argv[4:]
 body = pathlib.Path(sys.argv[2]).read_text()
 context = github_api.infer_gh_command_context(args, input_text=body)
 if args and args[0] == "api" and context.bucket == "graphql":
@@ -922,6 +922,9 @@ allowed = bool(args) and (args[0] == "api" or
         ["run", "list"], ["run", "view"], ["search", "issues"], ["search", "prs"]]))
 if context.is_write or not allowed:
     print("error: read-only GitHub authentication refuses a write or unverified command before sending", file=sys.stderr)
+    raise SystemExit(1)
+if sys.argv[3] and not github_api.public_read_command_is_scoped(args, sys.argv[3]):
+    print("error: public repository fallback needs a read scoped to the verified repository; use repo-scoped issue/pr/run commands or REST repos/{owner}/{repo} and a repo-qualified REST issue search", file=sys.stderr)
     raise SystemExit(1)
 PY
 }
@@ -1008,6 +1011,7 @@ if [ "$app_variable_count" -gt 0 ] || [ "$client_app" -eq 1 ]; then
 	# repository endpoint proved public visibility; personal auth still needs
 	# the existing per-command opt-in and declared-login verification.
 	if [ "$app_auth_status" -eq 5 ]; then
+		public_read_repository=$(target_repository "$@")
 		if [ "$reader_app" -eq 1 ] || [ "$check_auth" -eq 1 ] || ! verify_read_command "$@"; then
 			echo "error: public repository fallback accepts ordinary reads only" >&2
 			exit 1

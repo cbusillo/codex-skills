@@ -1455,7 +1455,7 @@ idempotency = "delegated"
 retry_eligibility = "conditional"
 reconciliation_strategy = "fail_closed_write"
 retained_graphql_rationale = "GraphQL depends on the delegated gh command; the wrapper is retained to enforce actor policy across both REST and GraphQL gh operations."
-source_refs = ["github/scripts/gh-with-env-token", "github/scripts/github-own-user.sh:validate_own_user_login"]
+source_refs = ["github/scripts/gh-with-env-token", "github/scripts/github-own-user.sh:validate_own_user_login", "github/scripts/github_identity.py:repository_is_public", "github/scripts/github_api.py:public_read_command_is_scoped"]
 test_refs = ["github/scripts/test_gh_with_env_token.py", "github/scripts/test_github_client_app.py:test_public_private_installation_and_write_routes", "github/scripts/test_github_client_app.py:test_plan_public_reads_use_personal_actor_without_borrowing_an_app", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
@@ -2423,7 +2423,7 @@ documentation = "https://docs.github.com/en/apps/sharing-github-apps/registering
 "github/scripts/github-ci-diagnose.py" = "aa0acdfc3dfe28caa16b4fff851341eb34e65c4264ff3c1402b8e96d2116f27a"
 "github/scripts/github-repo-snapshot.sh" = "16162c41247a610e5d7093fd649053c79f6a4708b14d812368dee8753fd1a9fd"
 "github/scripts/github-work-evidence.py" = "eef884893d5bedce8a539587e7f7fd93e109ef1a17aedf887575a144340977a6"
-"github/scripts/github_api.py" = "027b2f40738eda08a7d79f3f5025a575468996b89e7a70802b7a14da7b59bb48"
+"github/scripts/github_api.py" = "080371a4a246def21793ada4cf5801f27e0715cac8d0bbdb46fd84a7e5298678"
 "github/scripts/github_capabilities.py" = "bfd1a0a155a783feca5735b870a78709032e878a9011a07034b000e41be97901"
 "github/scripts/github_comment.py" = "7fb0f858d6ecac46fd095ee5c6fa867a69e6cba90ed50f08fb8a5c8ec065d84e"
 "github/scripts/github_direction_next.py" = "7a6f83bd0a764962486fb720f9dc9eca2febb77524565afcba95540711de5eb4"

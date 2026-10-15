@@ -1809,6 +1809,17 @@ GH_WITH_ENV_TOKEN_OWN_USER=1 skills/github/scripts/gh-with-env-token issue list 
 GH_WITH_ENV_TOKEN_OWN_USER=1 uv run skills/github/scripts/gh-plan.py --repo cbusillo/codex-skills search reminders
 ```
 
+The anonymous probe runs at the wrapper boundary only when the command opted
+in. It follows no redirects and caches no visibility verdict, so a repository
+that becomes private cannot keep using an earlier public result. GitHub's
+anonymous API quota applies; rate limits or unavailable visibility keep the
+missing-installation refusal. Repo-scoped issue, PR and run CLI reads and REST
+`repos/OWNER/REPO` reads use this route. REST issue searches must be qualified
+only to that verified repository; `gh-plan search` supplies this qualifier for
+an unscoped query. Raw GraphQL and global CLI searches cannot use the public
+fallback; use the repo-scoped commands above. Existing own-user writer and
+readback routes retain their existing rules.
+
 Writes retain the existing refusal and per-command own-user
 opt-in below, using the declared personal account when approved; no token from the primary App is borrowed. Missing or partial
 Client configuration fails before sending a command. These settings do not
