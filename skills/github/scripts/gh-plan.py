@@ -2086,7 +2086,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
     release_state = "not_started"
     recovery_action = (
         "Read the exact release_comment and cited evidence before recovery. A pending record does not release ownership; "
-        "resolve the refusal and freshly verify closure before another release. If confirmation was attempted, "
+        "resolve the refusal and refresh the --evidence-comment closure attestation before another release. If confirmation was attempted, "
         "inspect whether that exact comment is pending or confirmed; never replay an unknown write. "
         "Preserve other claims, retained artifacts and recorded waits.")
     # Fresh-read before writing and again after posting. Native peer coverage
@@ -2186,30 +2186,55 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
     try:
         issue, comments, inventory, body, related = preflight()
         completed.append("release_preflight")
+        receipt = github_plan_release.receipt_for({"body": body})
+        if receipt is None:
+            raise PlanError("Prepared release has no valid receipt")
+        existing = next((c for c in reversed(comments)
+                         if (prior := github_plan_release.receipt_for(c)) is not None
+                         and all(prior.get(k) == v for k, v in receipt.items() if k not in {"role", "releaser_session"})
+                         and (c.get("user") or {}).get("login") == expected_actor
+                         and github_plan_claim.released_claim_id(c.get("body") or "") == args.claim_comment), None)
+        def comment_result(comment):
+            return {"comment": {"id": comment["id"], "url": comment.get("html_url")}}
+        if existing is None:
+            for comment in comments:
+                if ((comment.get("user") or {}).get("login") != expected_actor
+                        or (comment.get("body") or "").splitlines()[:1] != [f"Pending release of claim {args.claim_comment}"]):
+                    continue
+                prior = github_plan_release.pending_receipt_for(comment)
+                if prior is None or (prior["evidence_url"] == receipt["evidence_url"]
+                                     and prior["evidence_updated_at"] == receipt["evidence_updated_at"]):
+                    result = comment_result(comment)
+                    release_state = "pending"
+                    raise PlanError("Prior pending attempt requires freshly verified closure and a refreshed --evidence-comment attestation")
         if args.dry_run:
             emit({"ok": True, "dry_run": True, "release_body": body, "related_ids": args.related_claim_comment,
                   "session_coverage": inventory.get("session_coverage"), "completed_steps": completed})
             return
-        pending_body = github_plan_release.pending_body(body)
-        release_state = "pending"
-        result = github_comment_core.comment("issue", issue["number"], pending_body, repo=issue["repo"],
-            gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor, completed_steps=completed, failed_step="post_release", dedupe_body=True)
-        completed.append("post_release")
-        issue, comments, inventory, fresh_body, related = preflight()
-        release_id = result["comment"]["id"]
-        pending = next((c for c in comments if c.get("id") == release_id), None)
-        if pending is None or not (pending.get("body") or "").startswith(pending_body) or fresh_body != body:
-            raise PlanError("Release readback changed; preserve records and inspect before any retry")
-        completed.append("release_readback")
-        # The full post-write liveness/ownership check passed while the record
-        # was inert. Publish authority only now, with the maintained exact-comment
-        # edit's author/body/timestamp guards and single-attempt PATCH semantics.
-        release_state = "confirmation_unconfirmed"
-        result = github_comment_core.comment("issue", issue["number"], body, repo=issue["repo"],
-            edit_comment=release_id, expected_body=pending["body"], expected_updated_at=pending["updated_at"],
-            gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
-            completed_steps=completed, failed_step="confirm_release")
-        completed.append("confirm_release")
+        if existing is not None:
+            result = comment_result(existing)
+            completed.append("reuse_confirmed_release")
+        else:
+            pending_body = github_plan_release.pending_body(body)
+            release_state = "pending_unconfirmed"
+            result = github_comment_core.comment("issue", issue["number"], pending_body, repo=issue["repo"],
+                gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor, completed_steps=completed, failed_step="post_release", dedupe_body=True)
+            release_state = "pending"
+            completed.append("post_release")
+            issue, comments, inventory, fresh_body, related = preflight()
+            release_id = result["comment"]["id"]
+            pending = next((c for c in comments if c.get("id") == release_id), None)
+            if pending is None or not (pending.get("body") or "").startswith(pending_body) or fresh_body != body:
+                raise PlanError("Release readback changed; preserve records and inspect before any retry")
+            completed.append("release_readback")
+            # Publish authority only after full post-write preflight, through
+            # the maintained guarded, single-attempt exact-comment PATCH.
+            release_state = "confirmation_unconfirmed"
+            result = github_comment_core.comment("issue", issue["number"], body, repo=issue["repo"],
+                edit_comment=release_id, expected_body=pending["body"], expected_updated_at=pending["updated_at"],
+                gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
+                completed_steps=completed, failed_step="confirm_release")
+            completed.append("confirm_release")
         release_state = "confirmed"
         related_results = []
         for comment in related:

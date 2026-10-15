@@ -226,8 +226,25 @@ def prepare_release(
 
 def pending_body(body: str) -> str:
     """Stage preservation evidence without an operative release or receipt."""
-    return body.replace("Released claim ", "Pending release of claim ", 1).replace(
+    pending = body.replace("Released claim ", "Pending release of claim ", 1).replace(
         "<!-- " + RELEASE_MARKER, "<!-- " + PENDING_MARKER)
+    if receipt_for(pending_comment := {"body": pending}) is not None or claim.released_claim_id(pending):
+        raise ValueError("Pending release must contain no operative release authority")
+    if pending_receipt_for(pending_comment) != receipt_for({"body": body}):
+        raise ValueError("Pending release must preserve its exact proposed receipt")
+    return pending
+
+
+def pending_receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:
+    """Read staging evidence for recovery only; this is never release authority."""
+    body = comment.get("body") or ""
+    header = re.match(r"Pending release of claim ([1-9]\d*)\n", body)
+    if header is None:
+        return None
+    proposed = body.replace(header[0], f"Released claim {header[1]}\n", 1).replace(
+        "<!-- " + PENDING_MARKER, "<!-- " + RELEASE_MARKER)
+    receipt = receipt_for({"body": proposed})
+    return receipt if receipt is not None and receipt["source_id"] == int(header[1]) else None
 
 
 def receipt_for(comment: dict[str, Any]) -> dict[str, Any] | None:

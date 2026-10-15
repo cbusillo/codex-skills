@@ -866,7 +866,30 @@ uv run <skill-dir>/scripts/gh-plan.py release-claim <issue> \
 ```
 
 Inspect the returned release body, then repeat without `--dry-run`. The helper
-reads back its recorded exact-ID release. `--related-claim-comment <id>` may
+first posts a pending record with no operative release directive or receipt,
+then repeats the source, evidence, liveness and retained-work preflight. Only
+after that readback passes does it confirm the same authored comment, guarded
+by its observed body and timestamp, through a single-attempt edit. Existing
+confirmed receipts retain their contract; a matching confirmed release is
+reused rather than posted again. This narrows the race and supplies no
+exclusive lock or new source of closure authority.
+
+On refusal, inspect `release_comment`, `release_state`, `completed_steps` and
+`release_recovery_action`. A pending record cannot support `--resume-from` or
+`--handoff-comment`, even if the activity that caused refusal disappears.
+Preserve it, resolve the refusal, and freshly verify closure. Use the same
+attestation procedure above to post new evidence or refresh the verified
+attestation, then inspect `--dry-run` with that `--evidence-comment` before
+releasing again; unchanged evidence cannot confirm a prior pending attempt.
+An unconfirmed write may have landed with its response lost: read that exact
+comment and its cited evidence before recovery, never replay an unknown write.
+`pending_unconfirmed` names the initial write attempt, not proof that a comment
+exists; preserve its transport reconciliation evidence. A confirmed source
+release with a failed related-release write remains confirmed for that source
+only; reconcile each named follow-up separately. Other claims, retained
+artifacts, waits and blockers remain independent.
+
+`--related-claim-comment <id>` may
 name an unstructured `Claimed by <same-worker>` ownership follow-up on that
 issue; it cannot release another structured claim. Partial writes preserve the
 posted records and completed steps: read them before any recovery, never switch

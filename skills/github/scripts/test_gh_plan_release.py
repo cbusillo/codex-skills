@@ -811,7 +811,7 @@ class ReleaseTests(ReleaseHarness):
 
     def test_post_write_resumption_or_evidence_change_leaves_no_usable_release(self):
         for route in ("finished", "terminated"):
-            for mode in ("session", "evidence"):
+            for mode in ("session", "evidence", *(("process",) if route == "terminated" else ())):
                 with self.subTest(route=route, mode=mode):
                     self.setUp()
                     if route == "terminated":
@@ -819,6 +819,8 @@ class ReleaseTests(ReleaseHarness):
                     def resume():
                         if mode == "session":
                             self.f.inventory["sessions"] = [{"sessionId": fixtures.OTHER["session"]}]
+                        elif mode == "process":
+                            release.termination.inventory.return_value = [(12345, "other", "codex")]
                         else:
                             self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
                     self.race = resume
@@ -831,6 +833,8 @@ class ReleaseTests(ReleaseHarness):
                     self.assertNotIn("confirm_release", self.f.events)
                     # A transient process disappearing must not revive the failed release.
                     self.f.inventory["sessions"] = []
+                    if mode == "process":
+                        release.termination.inventory.return_value = []
                     self.assert_source_still_owned()
                     posts = self.f.events.count("post")
                     self.f.args.resume_from = self.args.claim_comment
@@ -855,9 +859,38 @@ class ReleaseTests(ReleaseHarness):
         self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
         with self.assertRaises(PLAN.PlanError):
             self.run_release()
-        self.assertEqual(self.f.wait, original_wait)
-        self.assertIn(sibling, self.f.comments)
+        effective = release.effective_comments(self.f.comments)
+        conflicts, _ = CLAIM.discussion_evidence("", effective, fixtures.OWNER)
+        self.assertEqual({c["id"] for c in conflicts}, {self.args.claim_comment, sibling["id"]})
+        with patch.object(PLAN, "wait_authors", return_value={BOT}):
+            observed_wait = PLAN.current_wait(self.f.issue, [
+                {"user": {"login": BOT}, "body": fixtures.wait_record.marker(self.f.wait)}, *effective], "owner/repo")
+        self.assertEqual(observed_wait, original_wait)
+
+    def test_confirmed_release_rerun_reuses_exact_receipt_without_new_writes(self):
+        self.run_release()
+        result = self.f.emitted.call_args.args[0]
+        writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
+        self.args.session = "successor-supervisor-session"
+        self.run_release()
+        self.assertEqual(self.f.emitted.call_args.args[0]["release_comment"]["id"], result["release_comment"]["id"])
+        self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
+
+    def test_failed_pending_attempt_requires_fresh_closure_evidence_before_recovery(self):
+        self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
+        with self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
+        self.f.inventory["sessions"] = []
+        self.race = lambda: None
+        with self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
         self.assert_source_still_owned()
+        # The existing attestation route supplies the supported recovery.
+        self.evidence["updated_at"] = "2026-10-04T01:00:00Z"
+        self.run_release()
+        self.successor()
 
     def test_uncertain_confirmation_preserves_exact_record_and_never_replays(self):
         for route in ("finished", "terminated"):
@@ -885,6 +918,17 @@ class ReleaseTests(ReleaseHarness):
                     else:
                         self.assertIsNone(release.receipt_for(posted))
                         self.assert_source_still_owned()
+                    # Fresh readback recovers an applied confirmation; an inert
+                    # attempt cannot silently revive under the old evidence.
+                    self.confirmation_failure = None
+                    writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
+                    if applied:
+                        self.run_release()
+                        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+                    else:
+                        with self.assertRaises(PLAN.PlanError):
+                            self.run_release()
+                    self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
 
     def test_retained_pr_updates_after_closure_refuse_before_post(self):
         self.refresh_setup()
