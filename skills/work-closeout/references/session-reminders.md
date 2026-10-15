@@ -46,7 +46,10 @@ A plain reminder without a link uses EventKit alone and needs existing Reminders
 access, but no Accessibility access or open Reminders window. When a link is
 requested, the visible attachment must also be verified through the shared native
 UI adapter. The `saved` receipt requires saved-field readback in both cases;
-`visible_url_verified` is false when no URL was requested. Never recreate after
+`visible_url_verified` is false when no URL was requested. Removing an existing
+link requires the visible manual workflow; a no-link update to an item with an
+EventKit URL refuses before writing, because EventKit absence alone cannot prove
+that the native attachment disappeared. Never recreate after
 `partial`, a timeout or an uncertain receipt: inspect the same item first. For
 manual fallback, check the exact title in the unique list and use the dry-run
 fields. Terminal confirmation below applies only to session links.

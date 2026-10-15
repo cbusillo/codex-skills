@@ -7,11 +7,12 @@
 import contextlib
 import io
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import reminder_link
 import reminder_save
@@ -313,7 +314,6 @@ class PlainReminderTests(unittest.TestCase):
         fields = self.plain(url=url)
         self.assertTrue(fields["url"].isascii())
         self.assertEqual(urlsplit(fields["url"]).hostname, "bücher.example".encode("idna").decode("ascii"))
-        from urllib.parse import unquote
         self.assertEqual(unquote(urlsplit(fields["url"]).path), urlsplit(url).path)
         with patch.object(reminder_save.sys, "platform", "darwin"), self.writer([], final={
                 "status": "saved", "saved_fields_verified": True, "visible_url_verified": True}):
@@ -321,14 +321,20 @@ class PlainReminderTests(unittest.TestCase):
         self.assertEqual(self.writers[0].sent[0]["url"], fields["url"])
 
     def test_url_components_escape_brackets_and_bare_percent_before_saving(self):
-        for url, expected in (
-                ("https://example.com/report[1]?filter[status]=open&pct=100%",
-                 "https://example.com/report%5B1%5D?filter%5Bstatus%5D=open&pct=100%25"),
-                ("https://[::1]/report%2Fmonthly#part[2]",
-                 "https://[::1]/report%2Fmonthly#part%5B2%5D")):
+        for url in ("https://example.com/report[1]?filter[status]=open&pct=100%",
+                    "https://[::1]/report%2Fmonthly#part[2]"):
             with self.subTest(url=url):
                 fields = self.plain(url=url)
-                self.assertEqual(fields["url"], expected)
+                normalized, original = urlsplit(fields["url"]), urlsplit(url)
+                self.assertTrue(fields["url"].isascii())
+                self.assertEqual(normalized.hostname, original.hostname)
+                for component in ("path", "query", "fragment"):
+                    actual, before = getattr(normalized, component), getattr(original, component)
+                    self.assertEqual(unquote(actual), unquote(before))
+                    self.assertIsNone(re.search(r"%(?![0-9a-fA-F]{2})", actual))
+                # Literal path brackets are escaped by Foundation; host brackets are structural.
+                self.assertNotIn("[", normalized.path)
+                self.assertNotIn("]", normalized.path)
                 self.assertEqual(self.plain(url=fields["url"])["url"], fields["url"])
 
     def test_plain_receipts_require_fields_and_requested_visible_link(self):

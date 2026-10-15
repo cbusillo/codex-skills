@@ -240,6 +240,10 @@ do {
     guard !preserveExisting || reminder.title == request.title else {
         finish("refused", "Repair title must match the existing reminder; no mutation")
     }
+    // EventKit URL absence alone cannot prove removal of the native attachment.
+    if plain && !hasURL && reminder.url != nil {
+        finish("manual_required", "Remove the existing visible link through the manual workflow; no mutation")
+    }
     let preserved = preserveExisting ? PreservedFields(reminder) : nil
     var app: NSRunningApplication?
     if hasURL {
