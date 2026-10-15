@@ -1764,8 +1764,8 @@ def fetch_capacity(
                     linked_labels[ref] = _labels(issue) if isinstance(issue, dict) else None
                 except AuditError:
                     linked_labels[ref] = None
-                if linked_labels[ref] is None:
-                    truncated.append(f"capacity_issue_labels:{ref[0]}#{ref[1]}")
+            if linked_labels[ref] is None:
+                truncated.append(f"capacity_issue_labels:{ref[0]}#{ref[1]}")
             if own_label.casefold() in (linked_labels[ref] or set()):
                 own_issues.add(ref)
                 return

@@ -97,6 +97,14 @@ check can recount the entire window. Optional reporting failures change the
 new report's status, while the legacy own-share status still depends only on
 its existing evidence. The shared audit window deliberately waits for both
 reports; while it is open the dates and counts can span more than a week.
+For permanent failures (an inaccessible/deleted linked issue or a PR exceeding
+the bounded changed-file listing), repeating the check cannot settle the
+window. Correct an inaccurate PR link through the normal PR editing path when
+appropriate. Otherwise the Director can correct or remove the optional map
+in a normal direction-only PR; removing the section restores the existing
+report on the retained window, without the optional reads. Keep the unresolved
+PR evidence in the owning report or issue for a person's reconciliation. Do not
+manually advance the audit marker or invent a fallback kind.
 Classification questions with complete reads are reporting work for a person,
 not capacity alarms or admission refusals. The weekly check still stamps its
 normal local audit marker, so use fixtures when testing implementation and

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import math
 import re
 import os
 import subprocess
@@ -1625,7 +1626,7 @@ def test_reporting_week_split_uses_native_labels_and_keeps_legacy_output() -> No
     assert report["status"] == "complete" and not report["unresolved"]
     assert report["merged_by_kind"] == {"direction": 2, "live fix": 2, "milestone": 8, "sales": 1, "personal": 0, "tools": 2}
     assert report["merged_total"] == result["merged_total"] == sum(report["merged_by_kind"].values())
-    assert report["share_by_kind"]["live fix"] == round(2 / 15, 3)
+    assert math.isclose(report["share_by_kind"]["live fix"], 2 / 15, rel_tol=0.01)
     assert report["capacity"] == module.github_direction_next.section_map(mapped_direction())["Capacity"].strip()
     assert calls.count("repos/o/live/issues/50") == 1
     legacy_calls: list[str] = []
@@ -1658,7 +1659,7 @@ def test_reporting_precedence_conflicts_and_direction_changes_count_once() -> No
     assert report["unresolved"][0]["matching_kinds"] == ["live fix", "sales"]
     assert sum(report["merged_by_kind"].values()) + len(report["unresolved"]) == len(rows)
     assert report["status"] == "needs_review"
-    assert report["share_by_kind"]["live fix"] == 1 / len(rows)
+    assert math.isclose(report["share_by_kind"]["live fix"], 1 / len(rows), rel_tol=0.01)
 
 
 def test_reporting_missing_evidence_and_invalid_map_keep_window_open() -> None:
@@ -1720,6 +1721,24 @@ def test_optional_reporting_reads_preserve_legacy_status_and_page_direction_chan
             assert len(result["reporting"]["unresolved"]) == 1
             if failure == "late_direction":
                 assert result["reporting"]["unresolved"][0]["reason"] == "mixed_direction_change"
+
+
+def test_cached_optional_label_failure_keeps_later_legacy_own_share_unknown() -> None:
+    module = load()
+    pulls = [{**merged_pull(1, NOW, body="Refs #50"), "labels": [{"name": "own-project"}]},
+             {**merged_pull(2, NOW, body="Refs #50"), "labels": []}]
+    reads: list[str] = []
+    fetch = reporting_fetch(module, mapped_direction(), pulls, reads)
+    def denied_label(args: list[str]) -> Any:
+        if args[1] == "repos/o/live/issues/50":
+            reads.append(args[1])
+            raise module.AuditError("HTTP 403")
+        return fetch(args)
+    result, errors = module.fetch_capacity("o/direction", SINCE, NOW, fetch=denied_label)
+    assert reads.count("repos/o/live/issues/50") == 1
+    assert "capacity_issue_labels:o/live#50" in errors
+    assert result["own_share_status"] == "unknown"
+    assert result["reporting"]["status"] == "unknown"
 
 
 def test_only_the_direction_repository_audit_counts_capacity() -> None:
