@@ -152,6 +152,24 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(iterm_tab.StartupFailure):
             await iterm_tab.verify_startup(read, timeout=0)
 
+    async def test_signal_death_reports_cause_without_waiting_for_exit_code(self):
+        snapshot = {"dead": True, "exit_status": "", "exit_signal": "TERM", "screen": ["last output"]}
+        with patch.object(iterm_tab.asyncio, "sleep", new_callable=AsyncMock) as sleep:
+            with self.assertRaises(iterm_tab.StartupFailure) as raised:
+                await iterm_tab.verify_startup(AsyncMock(return_value=snapshot))
+        self.assertEqual(raised.exception.snapshot, snapshot)
+        sleep.assert_not_awaited()
+
+    async def test_later_read_failure_preserves_confirmed_death_and_output(self):
+        snapshot = {"dead": True, "exit_status": "", "screen": ["last output"]}
+        read = AsyncMock(side_effect=[snapshot, ValueError("pane unavailable")])
+        with patch.object(iterm_tab.asyncio, "sleep", new_callable=AsyncMock):
+            with self.assertRaises(iterm_tab.StartupFailure) as raised:
+                await iterm_tab.verify_startup(read)
+        self.assertTrue(raised.exception.snapshot["dead"])
+        self.assertEqual(raised.exception.snapshot["screen"], snapshot["screen"])
+        self.assertIn("observation_error", raised.exception.snapshot)
+
     async def test_alive_after_observation_passes(self):
         await iterm_tab.verify_startup(AsyncMock(return_value={"dead": False, "screen": ["ready"]}), timeout=0)
 

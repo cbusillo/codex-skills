@@ -267,14 +267,24 @@ class ViewTests(unittest.TestCase):
 
 
 class PaneParserTests(unittest.TestCase):
+    @staticmethod
+    def pane_line(values):
+        return "\t".join(values.get(field, "") for field in tmux_terminal.PANE_FIELDS) + "\n"
+
     def setUp(self):
         self.terminal = tmux_terminal.Terminal("fixture")
         capability = patch.object(self.terminal, "readonly_control_supported", return_value=True)
         capability.start()
         self.addCleanup(capability.stop)
         self.marker = "a" * 32
-        self.dead = f"$1\t@1\t%1\texited\t/dev/ttys987\t\t1\t0\t\t{self.marker}\t123\n"
-        self.live = "$1\t@2\t%2\tlive\t/dev/ttys986\t456\t0\t\t\tlive-nonce\t123\n"
+        common = {"session_id": "$1", "pid": "123"}
+        self.dead = self.pane_line({**common, "window_id": "@1", "pane_id": "%1", "pane_title": "exited",
+                                    "pane_tty": "/dev/ttys987", "pane_dead": "1", "pane_dead_status": "0",
+                                    "@supervisor_identity": self.marker})
+        self.live_fields = {**common, "window_id": "@2", "pane_id": "%2", "pane_title": "live",
+                            "pane_tty": "/dev/ttys986", "pane_pid": "456", "pane_dead": "0",
+                            "@supervisor_identity": "live-nonce"}
+        self.live = self.pane_line(self.live_fields)
         self.identity = "tmux:fixture:" + self.marker
 
     def test_empty_dead_pid_does_not_block_inventory_read_or_live_send(self):
@@ -296,7 +306,7 @@ class PaneParserTests(unittest.TestCase):
 
     def test_empty_live_pid_is_uncertain_inventory(self):
         with patch.object(self.terminal, "run", return_value=SimpleNamespace(
-                returncode=0, stdout=self.live.replace("\t456\t0", "\t\t0"))):
+                returncode=0, stdout=self.pane_line({**self.live_fields, "pane_pid": ""}))):
             with self.assertRaises(ValueError):
                 self.terminal.list()
 
@@ -590,14 +600,17 @@ for line in sys.stdin:
         self.assertEqual(received["brief"], self.brief_text)
 
     def test_early_worker_exit_reports_dead_pane_and_last_output(self):
-        self.agent.write_text(f"#!{sys.executable}\nprint('fixture bootstrap failed', flush=True)\nraise SystemExit(1)\n")
+        failure_status = 17
+        # Exercise process exit directly, without an interpreter's teardown
+        # closing its PTY before the process itself has finished.
+        self.agent.write_text(f"#!{sys.executable}\nimport os\nprint('fixture bootstrap failed', flush=True)\nos._exit({failure_status})\n")
         with self.assertRaises(iterm_tab.LaunchFailure) as raised:
             self.launch()
         failed = raised.exception.detail["failed_launch"]
         self.assertEqual(raised.exception.detail["launched"], [])
         self.assertTrue(failed["receipt_written"])
         self.assertTrue(failed["startup"]["dead"])
-        self.assertEqual(failed["startup"]["exit_status"], "1", json.dumps(failed["startup"]))
+        self.assertEqual(failed["startup"]["exit_status"], str(failure_status), json.dumps(failed["startup"]))
         self.assertIn("fixture bootstrap failed", "\n".join(failed["startup"]["screen"]))
         self.assertTrue(self.terminal.select(failed["session_id"])["dead"])
 

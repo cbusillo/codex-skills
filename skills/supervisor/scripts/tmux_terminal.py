@@ -31,6 +31,8 @@ LAUNCH_ENVIRONMENT_KEYS = (
     "UV_TOOL_BIN_DIR", "CARGO_HOME", "RUSTUP_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME",
     "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
 )
+PANE_FIELDS = ("session_id", "window_id", "pane_id", "pane_title", "pane_tty",
+               "pane_pid", "pane_dead", "pane_dead_status", "pane_dead_signal", "@supervisor_identity", "pid")
 
 
 class Terminal:
@@ -202,8 +204,7 @@ class Terminal:
                 "next_action": "Open view on request; choose the iTerm window once with --iterm-window-number."}
 
     def list(self):
-        fields = ("session_id", "window_id", "pane_id", "pane_title", "pane_tty",
-                  "pane_pid", "pane_dead", "pane_dead_status", "pane_dead_signal", "@supervisor_identity", "pid")
+        fields = PANE_FIELDS
         result = self.run("list-panes", "-a", "-F", "\t".join("#{" + f + "}" for f in fields), check=False)
         if result.returncode:
             # A missing server is empty; other failures are uncertain inventory.

@@ -823,7 +823,7 @@ has ended; a remote Codex thread can continue after its terminal disappears.
 Both terminal backends observe the first two seconds after submission. An early
 exit, including a failed Codex bootstrap, returns `launch_failed`, retaining the exact
 terminal identity, any already-written count-only receipt, and available last
-output (tmux also reports exit status). An iTerm profile that immediately closes
+output (tmux also reports available exit status or termination signal). An iTerm profile that immediately closes
 the exited session can make its final screen unavailable. Inspect those terminals before retrying;
 the launcher never replays a batch automatically. This observation catches early
 exit, not full agent readiness or a later failure. iTerm replaces the interactive

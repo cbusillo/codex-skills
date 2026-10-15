@@ -152,14 +152,23 @@ class StartupFailure(ValueError):
 async def verify_startup(read, timeout=2.0):
     """Observe immediate exit; this is not full agent readiness."""
     deadline = time.monotonic() + timeout
+    last_dead = None
     while True:
-        snapshot = await read()
+        try:
+            snapshot = await read()
+        except Exception as error:
+            if last_dead is not None:
+                raise StartupFailure({**last_dead, "observation_error": type(error).__name__}) from error
+            raise
+        if snapshot["dead"]:
+            last_dead = snapshot
         # tmux can observe PTY EOF before SIGCHLD supplies the exit status.
         # Keep the failure, but use the remaining window to collect its cause.
-        awaiting_status = snapshot["dead"] and snapshot.get("exit_status") == ""
-        if snapshot["dead"] and (not awaiting_status or time.monotonic() >= deadline):
-            raise StartupFailure(snapshot)
-        if not snapshot["dead"] and time.monotonic() >= deadline:
+        awaiting_status = (last_dead is not None and last_dead.get("exit_status") == ""
+                           and not last_dead.get("exit_signal"))
+        if last_dead is not None and (not awaiting_status or time.monotonic() >= deadline):
+            raise StartupFailure(last_dead)
+        if last_dead is None and time.monotonic() >= deadline:
             return
         await asyncio.sleep(min(0.2, max(0, deadline - time.monotonic())))
 
