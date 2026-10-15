@@ -830,6 +830,11 @@ shell with the launch command in a scoped zsh process, so an agent exit ends
 that exact session even if the launch file omitted `exec`. It uses the native
 session termination monitor; tmux reads pane state without driving iTerm. Brief
 text and echoed commands are never treated as startup-error evidence.
+Both backends use non-interactive zsh and inherit the exported environment.
+Use executable paths and explicit exports in launch files for tools that need
+them; interactive-only aliases, functions and directory-change hooks are not
+loaded by that scoped shell. A failed observation returns an unknown dead state,
+never proof that the submitted worker exited.
 
 Accounts live only in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under

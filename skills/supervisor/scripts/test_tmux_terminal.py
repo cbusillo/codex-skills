@@ -589,6 +589,18 @@ for line in sys.stdin:
         self.assertEqual(received["codex_home"], self.choice["env"]["CODEX_HOME"])
         self.assertEqual(received["brief"], self.brief_text)
 
+    def test_early_worker_exit_reports_dead_pane_and_last_output(self):
+        self.agent.write_text(f"#!{sys.executable}\nprint('fixture bootstrap failed', flush=True)\nraise SystemExit(1)\n")
+        with self.assertRaises(iterm_tab.LaunchFailure) as raised:
+            self.launch()
+        failed = raised.exception.detail["failed_launch"]
+        self.assertEqual(raised.exception.detail["launched"], [])
+        self.assertTrue(failed["receipt_written"])
+        self.assertTrue(failed["startup"]["dead"])
+        self.assertEqual(failed["startup"]["exit_status"], "1")
+        self.assertIn("fixture bootstrap failed", "\n".join(failed["startup"]["screen"]))
+        self.assertTrue(self.terminal.select(failed["session_id"])["dead"])
+
     def test_server_guard_preserves_a_pane_revived_during_close(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")

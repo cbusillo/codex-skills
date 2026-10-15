@@ -389,7 +389,11 @@ async def operate(args):
             progress.update(submission="submitted", phase="verify_startup")
 
             async def read_startup():
-                snapshot = terminal.read(sid)
+                try:
+                    snapshot = terminal.read(sid)
+                except (ValueError, OSError, subprocess.SubprocessError) as error:
+                    raise iterm_tab.StartupFailure({"dead": None, "screen": [],
+                                                   "observation_error": type(error).__name__}) from error
                 return {key: snapshot[key] for key in ("dead", "exit_status", "screen")}
 
             await iterm_tab.verify_startup(read_startup)

@@ -188,7 +188,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.snapshot["screen"], ["last output"])
         context.__aexit__.assert_awaited_once()
 
-    async def test_iterm_agent_exit_without_exec_ends_the_launch_shell(self):
+    async def test_iterm_agent_exit_replaces_interactive_shell_without_exec_in_file(self):
         queue = asyncio.Queue()
         context = Mock()
         context.__aenter__ = AsyncMock(return_value=SimpleNamespace(async_get=queue.get))
@@ -200,7 +200,10 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                               terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[session])])])
 
         async def send(target, text, **kwargs):
-            result = subprocess.run(["/bin/zsh", "-c", text], capture_output=True, text=True, timeout=2)
+            # The trailing command would run if the interactive shell returned
+            # after the worker exited. -f excludes the host's startup files.
+            result = subprocess.run(["/bin/zsh", "-fic", text + "; printf SHELL_RESUMED"],
+                                    capture_output=True, text=True, timeout=2)
             self.assertEqual(result.returncode, 7)
             output.append(result.stdout.strip())
             queue.put_nowait(target.session_id)
@@ -217,6 +220,45 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(iterm_tab.StartupFailure):
                     await iterm_tab.submit_iterm_launch(app, session, command)
         self.assertEqual(output, ["brief mentioning Server is draining"])
+
+    async def test_unrelated_termination_does_not_fail_live_iterm_launch(self):
+        queue = asyncio.Queue()
+        queue.put_nowait("unrelated")
+        monitor = SimpleNamespace(async_get=queue.get)
+        context = Mock()
+        context.__aenter__ = AsyncMock(return_value=monitor)
+        context.__aexit__ = AsyncMock(return_value=False)
+        screen = SimpleNamespace(number_of_lines=0)
+        session = SimpleNamespace(session_id="exact", async_get_screen_contents=AsyncMock(return_value=screen))
+        app = SimpleNamespace(connection=object(), async_refresh=AsyncMock(),
+                              terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[session])])])
+        original = iterm_tab.verify_startup
+
+        async def observe(read):
+            await asyncio.sleep(0)
+            return await original(read, timeout=0)
+
+        with (patch.dict("sys.modules", {"iterm2": SimpleNamespace(SessionTerminationMonitor=Mock(return_value=context))}),
+              patch.object(iterm_tab, "send", new_callable=AsyncMock),
+              patch.object(iterm_tab, "verify_startup", side_effect=observe)):
+            await iterm_tab.submit_iterm_launch(app, session, "fake-agent")
+
+    async def test_failed_iterm_monitor_reports_unknown_and_never_dead(self):
+        context = Mock()
+        context.__aenter__ = AsyncMock(return_value=SimpleNamespace(async_get=AsyncMock(side_effect=OSError)))
+        context.__aexit__ = AsyncMock(return_value=False)
+        session = SimpleNamespace(session_id="exact")
+        app = SimpleNamespace(connection=object(), async_refresh=AsyncMock(),
+                              terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[session])])])
+
+        async def send(*args, **kwargs):
+            await asyncio.sleep(0)
+
+        with (patch.dict("sys.modules", {"iterm2": SimpleNamespace(SessionTerminationMonitor=Mock(return_value=context))}),
+              patch.object(iterm_tab, "send", side_effect=send)):
+            with self.assertRaises(iterm_tab.StartupFailure) as raised:
+                await iterm_tab.submit_iterm_launch(app, session, "fake-agent")
+        self.assertIsNone(raised.exception.snapshot["dead"])
 
 
 if __name__ == "__main__":

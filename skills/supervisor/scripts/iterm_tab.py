@@ -144,7 +144,9 @@ class LaunchFailure(ValueError):
 class StartupFailure(ValueError):
     def __init__(self, snapshot):
         self.snapshot = snapshot
-        super().__init__("terminal exited during startup; inspect its last output before retrying")
+        super().__init__("terminal exited during startup; inspect its last output before retrying"
+                         if snapshot["dead"] else
+                         "startup observation unavailable; submitted agent may be running; inspect before retrying")
 
 
 async def verify_startup(read, timeout=2.0):
@@ -178,6 +180,8 @@ async def submit_iterm_launch(app, session, command):
                 nonlocal last_screen
                 await app.async_refresh()
                 matches = [s for s in sessions(app) if s.session_id == session.session_id]
+                if termination.done() and termination.exception() is not None:
+                    raise ValueError("iTerm termination monitor failed")
                 dead = termination.done() or len(matches) != 1
                 if matches:
                     try:
@@ -188,7 +192,13 @@ async def submit_iterm_launch(app, session, command):
                             raise
                 return {"dead": dead, "screen": last_screen}
 
-            await verify_startup(read)
+            try:
+                await verify_startup(read)
+            except StartupFailure:
+                raise
+            except Exception as error:
+                raise StartupFailure({"dead": None, "screen": last_screen,
+                                      "observation_error": type(error).__name__}) from error
         finally:
             termination.cancel()
             await asyncio.gather(termination, return_exceptions=True)
