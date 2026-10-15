@@ -110,6 +110,103 @@ def test_create_preserves_fields_and_emits_operation_marker() -> None:
     with_call_stub(callback, run)
 
 
+def test_own_user_create_reports_success_without_duplicate_retry() -> None:
+    personal_login = "fixture-contributor"
+
+    def callback(method: str, path: str, body: Any, **kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            assert kwargs["gh_prefix_args"] == ["--write-actor-for", "owner/repo"], kwargs
+            result = success({"login": personal_login})
+        elif method == "GET":
+            return success([])
+        else:
+            assert method == "POST", method
+            assert body["assignees"] == [personal_login], body
+            result = success(issue_body(actor=personal_login), status=201)
+        # The wrapper has authorized the declared personal login for this repo.
+        result.actor = personal_login
+        result.expected_actor = None
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        with (
+            patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}),
+            patch.object(sys, "argv", ["gh-issue", "create", "Issue title", "--repo", "owner/repo", "--assignee", "@me"]),
+            patch.object(sys, "stdin", io.StringIO("body")),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            exit_code = github_issue.main()
+        payload = json.loads(stdout.getvalue())
+        assert exit_code == 0 and payload["ok"] is True, payload
+        assert payload["actor"] == payload["expected_actor"] == personal_login, payload
+        assert payload["outcome_certainty"] == "confirmed", payload
+        assert payload["recommended_next_action"] == "none", payload
+        assert payload["failed_step"] is None, payload
+        assert sum(call["method"] == "POST" for call in calls) == 1, calls
+
+    with_call_stub(callback, run)
+
+
+def test_own_user_create_rejects_wrong_response_author() -> None:
+    personal_login = "fixture-contributor"
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            result = success({"login": personal_login})
+        elif method == "GET":
+            return success([])
+        else:
+            result = success(issue_body(actor="unexpected-user"), status=201)
+        result.actor = personal_login
+        result.expected_actor = None
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.create_issue("Issue title", "body", repo="owner/repo", gh_cmd="fake-gh")
+        except github_issue.IssueError as exc:
+            assert exc.failure.cause == "actor_mismatch", exc.failure
+            assert exc.failure.retryable is False, exc.failure
+        else:
+            raise AssertionError("expected response actor mismatch")
+        assert sum(call["method"] == "POST" for call in calls) == 1, calls
+
+    with_call_stub(callback, run)
+
+
+def test_own_user_sibling_writes_use_resolved_personal_actor() -> None:
+    personal_login = "fixture-contributor"
+    for command in ("edit", "close", "reopen"):
+        def callback(method: str, path: str, body: Any, **kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                assert kwargs["gh_prefix_args"] == ["--write-actor-for", "owner/repo"], kwargs
+                result = success({"login": personal_login})
+            else:
+                assert kwargs["expected_actor"] == personal_login, kwargs
+                result = success(issue_body(actor=personal_login, state="closed" if command == "close" else "open"))
+            result.actor = personal_login
+            result.expected_actor = None
+            return result
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            args = ["gh-issue", command, "42", "--repo", "owner/repo"]
+            if command == "edit":
+                args += ["--title", "New title"]
+            with (
+                patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}),
+                patch.object(sys, "argv", args),
+                patch.object(sys, "stdin", io.StringIO("")),
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+            ):
+                exit_code = github_issue.main()
+            payload = json.loads(stdout.getvalue())
+            assert exit_code == 0 and payload["ok"] is True, payload
+            assert payload["actor"] == payload["expected_actor"] == personal_login, payload
+            assert sum(call["method"] == "PATCH" for call in calls) == 1, calls
+
+        with_call_stub(callback, run)
+
+
 def test_create_unknown_outcome_requires_reconciliation_before_retry() -> None:
     def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
@@ -1194,6 +1291,9 @@ def test_close_rejects_comment_with_comment_file() -> None:
 
 TESTS = [
     test_create_preserves_fields_and_emits_operation_marker,
+    test_own_user_create_reports_success_without_duplicate_retry,
+    test_own_user_create_rejects_wrong_response_author,
+    test_own_user_sibling_writes_use_resolved_personal_actor,
     test_create_unknown_outcome_requires_reconciliation_before_retry,
     test_create_unknown_outcome_returns_unique_reconciled_issue,
     test_create_reconciliation_survives_explicit_actor_fallback,
