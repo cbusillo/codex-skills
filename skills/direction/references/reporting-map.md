@@ -78,6 +78,8 @@ Each distinct merged PR in the window contributes once: to one named kind or
 to `unresolved`, which includes conflicts. Shares divide named-kind counts by
 **all** merged PRs, including unresolved ones. Do not present a partial split
 as settled or renormalize it over classified PRs.
+Merge timestamps include the window's start and exclude its end. A merge
+exactly at the ending timestamp belongs to the following window.
 
 ## Output and validation
 
