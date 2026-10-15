@@ -637,6 +637,9 @@ def run_pass(io, args, emit, *, state=None):
                 continue
             if staging:
                 response["result"]["dry_run_result"] = io.queue(target)
+                if not own_queue(response["result"]["dry_run_result"], staging[3]):
+                    emit("busy", {"repository": repo})
+                    continue
             queue = response["result"]["dry_run_result"]["queue"]
             author_allowed = {
                 item["number"]: item
@@ -662,7 +665,11 @@ def run_pass(io, args, emit, *, state=None):
                     in dispositions[pr["number"]]["ineligible_reasons"]
                 )
             ]
-            if labeled and not staging:
+            if labeled and (
+                not staging
+                or set(labeled) - set(staging[3])
+                or any(number not in dispositions for number in labeled)
+            ):
                 emit(
                     "busy",
                     {
@@ -759,6 +766,9 @@ def run_pass(io, args, emit, *, state=None):
                 staging_current = bool(staging and staging_candidate(fresh) == staging)
                 if staging_current:
                     fresh["result"]["dry_run_result"] = io.queue(target)
+                    staging_current = own_queue(
+                        fresh["result"]["dry_run_result"], (*staging[3], *own)
+                    )
                 # Candidate observation can omit the queue. Its unchanged policy,
                 # selected head and labels retain the scan's author admission;
                 # readiness is still read again below before every label write.
@@ -780,14 +790,15 @@ def run_pass(io, args, emit, *, state=None):
                     )
                 # A scheduler may not yet have incorporated another actor's label
                 # into its candidate. Do not extend that actor's queue either.
-                if continuing and any(
-                    other["number"] not in own
+                if (continuing or staging_current) and any(
+                    other["number"] not in (*own, *(staging[3] if staging else ()))
                     and target["label"] in {label["name"] for label in other["labels"]}
                     and sorted(label["name"] for label in other["labels"])
                     != held_labels.get(other["number"])
                     for other in io.pages(f"/repos/{repo}/pulls", state="open")
                 ):
                     continuing = False
+                    staging_current = False
                 if (
                     not (idle(fresh, own) or continuing or staging_current)
                     or (staging and not staging_current)

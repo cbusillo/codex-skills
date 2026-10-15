@@ -249,6 +249,51 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.pulls[99]["labels"], [{"name": TARGET["label"]}])
         self.assertFalse(any(event == "driver_handoff" for event, _ in self.events))
         self.assertTrue(any(event == "next_batch_queued" for event, _ in self.events))
+        for _ in range(3):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [1, 2, 4, 5])
+
+    def test_staging_preserves_existing_queue_and_unknown_label_author(self):
+        for change in ("queued", "unknown_author", "missing"):
+            with self.subTest(change=change):
+                fake = self.staging_fake()
+                fake.pulls[6]["labels"] = [{"name": TARGET["label"]}]
+                if change == "unknown_author":
+                    fake.ineligible[6] = [
+                        f"{TARGET['label']} label ignored: could not read who applied it"
+                    ]
+                if change == "missing":
+                    original = fake.queue
+
+                    def queue(target):
+                        dry = original(target)
+                        dry["queue"] = [row for row in dry["queue"] if row["number"] != 6]
+                        dry["queue_order"] = [number for number in dry["queue_order"] if number != 6]
+                        return dry
+
+                    fake.queue = queue
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [])
+
+    def test_staging_stops_on_new_or_unknown_queue_labels_between_writes(self):
+        for change in ("queued", "unknown_author", "missing"):
+            with self.subTest(change=change):
+                fake = self.staging_fake()
+
+                def before(io):
+                    if not io.writes:
+                        return
+                    io.pulls[6]["labels"] = [{"name": TARGET["label"]}]
+                    if change == "unknown_author":
+                        io.ineligible[6] = [
+                            f"{TARGET['label']} label ignored: could not read who applied it"
+                        ]
+                    elif change == "missing":
+                        io.ineligible[6] = ["targets another base"]
+
+                fake.before = before
+                self.run_pass(fake)
+                self.assertEqual(fake.writes, [1])
 
     def test_staging_rechecks_author_policy_head_and_readiness_before_each_label(self):
         for change in ("author", "head", "readiness", "mergeability"):
@@ -1233,8 +1278,9 @@ class QueueReadTests(unittest.TestCase):
             with self.subTest(status=status):
                 error = urllib.error.HTTPError("https://control.example", status, "denied", {}, None)
                 with patch.object(watch.operator, "request_launchplane", side_effect=error):
-                    with self.assertRaisesRegex(watch.WatchError, "queue read rejected"):
+                    with self.assertRaises(watch.WatchError) as refused:
                         self.live.queue(TARGET)
+                    self.assertNotIsInstance(refused.exception, watch.LaunchplaneReadError)
 
 
 def api_result(certainty=None):
