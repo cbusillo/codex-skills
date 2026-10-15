@@ -33,9 +33,9 @@ scripts, dependencies, packaging, release, or runtime commands are involved.
 - One-off Python: `uv run python <script.py>`.
 - Tests: prefer repo wrappers such as `uv run test`, `uv run mcp-test`,
   `uv run platform ...`, or documented `uv run pytest ...` commands. Select
-  focused tests covering the change; a wrapper's full-suite default is not a
-  reason to run the full suite locally. Follow the repository's local/CI
-  commands and the full-local exceptions in
+  focused tests covering the change when the repository declares the local/CI
+  split; preserve legacy `qualityGate.test.default` scope until adoption.
+  Follow the repository's commands and the full-local exceptions in
   [repo-readiness](../repo-readiness/SKILL.md#gate-selection).
 - Formatting/linting/type checks: use documented uv commands and respect the
   user's linting constraints. Do not run broad lint unless requested or scoped

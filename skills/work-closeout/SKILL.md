@@ -230,7 +230,7 @@ branch, PR, and commit, then use it to decide whether closeout can proceed:
   the changed surface. Keep focused local test evidence separate from the full
   CI gate under [repo-readiness](../repo-readiness/SKILL.md#gate-selection) and
   the [test command contract](../github/references/config-schema.md#workflow-metadata).
-  A `ready` handoff needs green CI for the current head. Reuse passing evidence;
+  Under the split, `ready` needs green CI for the current head. Reuse passing evidence;
   closeout alone does not require another full local suite. Preserve full-local
   evidence for the excluded change kinds and explicit repository requirements.
 - Passed, failed, pending, and not-run evidence with concrete reasons.

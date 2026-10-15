@@ -186,10 +186,12 @@ records and write out only otherwise unrecorded gaps. Use
 - Docs-only: validate links/rendering when practical; do not run full code gates
   unless docs describe executable behavior. Prefer `docs.index` when repo
   metadata provides it.
-- Routine code change: run focused local tests for touched behavior plus
+- Routine code change under a declared local/CI split: run focused local tests for touched behavior plus
   required lint, type checks and IDE inspection. The full suite runs in CI;
   before merge or `ready`, verify it passed on the current PR head. Local
-  success alone does not establish PR readiness.
+  success alone does not establish PR readiness. Otherwise retain repository
+  requirements, including legacy `test.default`, until adoption under the test
+  command contract above; metadata absence does not opt a repository in.
 - Safety, authorization, approval-rule, destructive-helper or shared-infrastructure
   change: also run the full local suite. For shared contracts, deployment or
   release changes, broaden local coverage for the affected risk and retain any
@@ -205,12 +207,13 @@ records and write out only otherwise unrecorded gaps. Use
 Quality default: all code changes should trend toward zero known lint/static
 analysis and IDE inspection noise. Run narrow gates while iterating, but before
 declaring a code change ready, safe to merge, safe to ship, or ready to hand off,
-run broad practical static gates when tooling exists: normally whole-repo lint/static
-analysis and whole-project IDE inspection. Use downstream/related repo gates
+run broad practical static gates when tooling exists: normally whole-repo
+lint/static analysis and whole-project IDE inspection. Use downstream/related repo gates
 when contracts, shared packages, deployment behavior, or cross-repo ownership
 changes. This breadth applies to static analysis and inspection; test breadth
-follows the local/CI split and full-local exceptions above. Do not rerun the
-full suite locally merely to declare readiness or close out.
+follows the declared local/CI split, full-local exceptions and repository
+requirements above. Under the split, do not rerun the full suite locally merely
+to declare readiness or close out.
 
 If a broad gate is too slow, unavailable, blocked by IDE indexing/tooling,
 likely destructive, or disproportionate for a docs-only change, report it as not

@@ -209,6 +209,8 @@ Common top-level keys:
 - `qualityGate.test.local`: focused local test command string. Select the tests
   covering the changed behavior; replace any documented placeholders before
   running. Run required lint, type checks and IDE inspection alongside it.
+  Declaring `local` and `ci` adopts the split; a catalog update alone does not
+  migrate repositories. Adopt only when the full-suite CI gate exists.
 - `qualityGate.test.ci`: full-suite command string required in CI before merge
   or a `ready` handoff. This is not a routine local gate. Safety, authorization,
   approval-rule, destructive-helper and shared-infrastructure changes still
@@ -222,8 +224,8 @@ Common top-level keys:
   absent. Preserve its declared scope until the repository adopts the split;
   do not silently reinterpret an existing full gate as focused. To adopt,
   replace `default` with `local` and `ci` and reconcile repository instructions,
-  testing docs and CI. With no declared test command, infer focused tests and
-  the full CI gate from those sources; report missing gates as missing evidence.
+  testing docs and CI. For unset metadata fields, use repository instructions,
+  docs, CI and manifests; report missing required gates as missing evidence.
 - `importantWorkflows`: GitHub Actions workflows agents should watch closely.
 - `qaLabels`: repo-local QA handoff labels such as `awaiting-qa`. These are for
   concrete implementation or bug work waiting on manual verification, not for
