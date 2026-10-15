@@ -9,12 +9,16 @@ import datetime as dt
 import re
 import json
 import subprocess
+import sys
 import time
 from typing import Any
 
 import direction_audit as audit
 from skills.github.scripts import github_identity, github_plan_wait, github_read, ready_handoff
-from skills.supervisor.scripts import oq
+
+# The existing Supervisor helpers use sibling imports when called as scripts.
+sys.path.insert(0, str(audit.REPO_ROOT / "skills/supervisor/scripts"))
+import oq
 
 UTC = dt.timezone.utc
 QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")

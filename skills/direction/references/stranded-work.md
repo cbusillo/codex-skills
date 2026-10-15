@@ -16,7 +16,7 @@ uv run skills/direction/scripts/direction_audit.py \
 ```
 
 Use `--repo OWNER/REPO` and repeated `--stranded-repo OWNER/REPO` for a narrow
-scope. Owner discovery excludes archived repositories. Open records have no
+scope. Repository discovery excludes archived repositories. Open records have no
 age cutoff; recently updated closed records are also read for outstanding
 promises (30 days by default). Full discussion pages are read, including
 questions with no Q number. The request budget and deadline cover the whole
@@ -31,7 +31,7 @@ logical read calls; shared transport owns bounded HTTP retry attempts.
 Findings include the original evidence link, recorded event age (or explicit
 unknown), next actor and review requirement:
 
-- Questions without a matching owner reply or trusted recorded decision. The
+- Questions without a matching Director reply or trusted recorded decision. The
   shared `oq.questions` view supplies classification; the shared question
   delivery inventory supplies registration, acknowledgement and resurfacing
   evidence when `--question-queue` is selected and available.
@@ -48,10 +48,10 @@ unknown), next actor and review requirement:
   of the research issue does not settle its promise. A later linked completion
   from a trusted receiver does.
 - Existing train blocked views, aged from their label event, plus structured
-  waits naming the Supervisor, Director, owner login or supplied aliases.
+  waits naming the Supervisor, Director, Director login or supplied aliases.
   Body-only waits have unknown age because unrelated issue activity must not
   reset their clock. `--owner` identifies a Director whose login differs from
-  the repository owner.
+  the repository account.
 
 The collector emits JSON by default. Markdown is a delivery payload, including
 coverage warnings even with zero candidates. Exit 0 means complete within the
