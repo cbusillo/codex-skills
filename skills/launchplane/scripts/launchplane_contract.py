@@ -184,6 +184,9 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "dokploy-inventory-read": {
+        "method": "GET", "path": "/v1/dokploy/inventory", "mode": "read",
+    },
     "dokploy-target-repair-domain-authority-apply": {
         "method": "POST", "path": "/v1/dokploy-targets/setup", "mode": "apply",
     },
