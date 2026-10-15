@@ -587,10 +587,10 @@ def test_collect_comment_reactions_paginates(monkeypatch) -> None:
 
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake_run_json)
 
-    reactions, last_edited_at = github_unanswered_comments.collect_comment_reactions(external)
+    reactions, last_edit = github_unanswered_comments.collect_comment_reactions(external)
 
     assert reactions == [reaction(content="HEART")]
-    assert last_edited_at == ""
+    assert last_edit is None
     assert any("after=cursor-1" in argument for argument in commands[1])
 
 
@@ -678,7 +678,7 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
         "collect_candidate_reactions",
         lambda comments: (
             {review.global_key: [reaction(created_at="2026-07-25T13:00:00Z")]},
-            {review.global_key: "2026-07-25T14:00:00Z"},
+            {review.global_key: github_unanswered_comments.Edit("2026-07-25T14:00:00Z", "outside-reviewer")},
             [],
         ),
     )
@@ -1350,8 +1350,9 @@ def test_outbound_last_human_edit_clears_earlier_replies(monkeypatch, outbound_f
     fake = FakeGitHub(outbound_fixture)
     def with_opening_edit(command):
         result = fake(command)
-        if command[2] == "graphql" and "id=I_33" in command:
+        if command[2] == "graphql" and ("id=I_33" in command or "id=NODE_4" in command):
             result["data"]["node"]["lastEditedAt"] = "2026-07-25T00:00:00Z"
+            result["data"]["node"]["editor"] = {"login": "cbusillo"}
         return result
     monkeypatch.setattr(github_unanswered_comments, "run_json", with_opening_edit)
     payload = github_unanswered_comments.collect_payload(outbound_settings())
@@ -1449,11 +1450,51 @@ def test_outbound_with_portfolio_scope_does_not_adopt_repository_owners(monkeypa
     fake = FakeGitHub(outbound_fixture)
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
     settings = outbound_settings()
-    settings.update(repositories=["outside/project"], scan_repository_scope=True)
+    settings.update(repositories=["outside/other"], scan_repository_scope=True)
     payload = github_unanswered_comments.collect_payload(settings)
     assert {item["comment_id"] for item in payload["attention"]} == {1, 5, 7, 8, 10}
     searches = [call for call in fake.calls if call.startswith("search/issues?")]
     assert len(searches) == 1
+
+
+def test_closed_full_history_scan_uses_requested_closed_thread_rules(monkeypatch):
+    closed = opening(number=42, author="outside", pull_request=False, body="I can provide test files.")
+    closed.update(state="closed", closed_at="2026-07-25T00:00:00Z")
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({"repos/example/repo/issues/42": closed}))
+    settings = github_unanswered_comments.resolve_settings(args(thread=["example/repo#42"], self_login=["cbusillo"], until="2026-07-26T20:00:00Z"), {})
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert payload["status"] == "clear"
+    assert payload["counts"]["handled_closed"] == 1
+
+
+def test_explicit_thread_scope_wins_over_outbound_discovery(monkeypatch, outbound_fixture):
+    fake = FakeGitHub(outbound_fixture)
+    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+    settings = outbound_settings()
+    settings["threads"] = [("outside/project", 1)]
+    payload = github_unanswered_comments.collect_payload(settings)
+    rows = [row for row in payload["attention"] if row["number"] == 1]
+    assert any(row["comment_id"] == 3 for row in rows)  # Before Chris's unrelated activity.
+    assert all(row["attention_state"] != "outbound_reply" for row in rows)
+
+
+def test_incidental_url_does_not_disable_above_awareness(app_ready_discussion):
+    external, *_ = app_ready_discussion
+    question = comment(comment_id=2, author="fixture-automation", body="Director question: Should we use https://example.com/docs based on the comment above?", created_at="2026-07-25T12:00:00Z")
+    assert classify([external, question], [external])[0]["owner_seen"] is True
+
+
+@pytest.mark.parametrize("editor", ["maintainer", "fixture-automation", ""])
+def test_others_edits_do_not_advance_outbound_human_cutoff(monkeypatch, outbound_fixture, editor):
+    fake = FakeGitHub(outbound_fixture)
+    def edited_by_other(command):
+        result = fake(command)
+        if command[2] == "graphql" and ("id=I_33" in command or "id=NODE_4" in command):
+            result["data"]["node"].update(lastEditedAt="2026-07-25T00:00:00Z", editor={"login": editor})
+        return result
+    monkeypatch.setattr(github_unanswered_comments, "run_json", edited_by_other)
+    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    assert {item["comment_id"] for item in payload["attention"]} == {1, 5, 7, 8}
 
 
 if __name__ == "__main__":

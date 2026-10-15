@@ -199,7 +199,7 @@ reaction after the latest edit, a Director reply with the exact comment
 permalink, or a Director inline-review reply when only one eligible external
 comment exists. A trusted `Director question:` or `Director decision:` record
 also counts as awareness of the external comments it links. When it says
-"above" without a link, it covers external comments before it since the
+"above" without a comment link, it covers external comments before it since the
 previous such record in that thread. A targeted Director or bot reply is a
 public response; ordinary bot activity does not prove awareness. Open threads
 require both awareness and a public response to clear attention. Closed threads
@@ -215,6 +215,9 @@ and PRs the Director authored or commented on, verifies that participation from
 full thread history, and links external messages in the window after the
 Director's latest human activity (including edits, review bodies and inline
 comments). Configured automation is excluded and does not advance that cutoff.
+Edits advance it only when GitHub identifies a configured human as the editor;
+maintainer edits to the Director's posts do not hide replies. Overlapping
+portfolio or explicit `--thread` scopes keep their normal attention rules.
 This scan lists replies even on closed threads. GitHub search visibility,
 indexing and its 1,000-result cap limit discovery; detected partial results are
 degraded coverage. It uses the same attention and exit-code contract.

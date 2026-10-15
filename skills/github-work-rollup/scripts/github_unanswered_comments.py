@@ -66,7 +66,7 @@ POSSIBLE_AUTOMATION_LOGIN = re.compile(r"(?:^|[-_])(?:bot|automation)$", re.IGNO
 REACTIONS_QUERY = """
 query($id: ID!, $after: String) {
   node(id: $id) {
-    ... on Comment { lastEditedAt }
+    ... on Comment { lastEditedAt editor { login } }
     ... on Reactable {
       reactions(first: 100, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
         nodes {
@@ -115,6 +115,12 @@ class Reaction:
     actor: str
     content: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class Edit:
+    at: str
+    editor: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -645,11 +651,11 @@ def collect_thread(
     return thread, comments, errors
 
 
-def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], str]:
+def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], Edit | None]:
     if not comment.node_id:
         raise rollup.RollupError(f"Comment {comment.comment_id} has no GraphQL node id.")
     reactions: list[Reaction] = []
-    last_edited_at = ""
+    last_edit = None
     after = ""
     seen_cursors: set[str] = set()
     while True:
@@ -666,7 +672,8 @@ def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], str]:
             raise rollup.RollupError(f"GitHub did not expose reactions for comment {comment.comment_id}.")
         node_last_edited_at = str(node.get("lastEditedAt") or "")
         if node_last_edited_at:
-            last_edited_at = node_last_edited_at
+            editor = node.get("editor") or {}
+            last_edit = Edit(node_last_edited_at, str(editor.get("login") or ""))
         nodes = connection.get("nodes")
         if not isinstance(nodes, list):
             raise rollup.RollupError(f"GitHub returned invalid reactions for comment {comment.comment_id}.")
@@ -686,7 +693,7 @@ def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], str]:
                 )
         page_info = connection.get("pageInfo")
         if not isinstance(page_info, dict) or not page_info.get("hasNextPage"):
-            return reactions, last_edited_at
+            return reactions, last_edit
         next_cursor = str(page_info.get("endCursor") or "")
         if not next_cursor or next_cursor in seen_cursors:
             raise rollup.RollupError(f"GitHub reaction pagination stalled for comment {comment.comment_id}.")
@@ -698,12 +705,12 @@ def collect_candidate_reactions(
     comments: list[Comment],
 ) -> tuple[
     dict[tuple[str, int, str, int], list[Reaction]],
-    dict[tuple[str, int, str, int], str],
+    dict[tuple[str, int, str, int], Edit],
     list[dict[str, str]],
 ]:
     unique_comments = {comment.global_key: comment for comment in comments}
     reactions: dict[tuple[str, int, str, int], list[Reaction]] = {}
-    last_edits: dict[tuple[str, int, str, int], str] = {}
+    last_edits: dict[tuple[str, int, str, int], Edit] = {}
     errors: list[dict[str, str]] = []
     if not unique_comments:
         return reactions, last_edits, errors
@@ -716,10 +723,10 @@ def collect_candidate_reactions(
         for future in as_completed(futures):
             comment = futures[future]
             try:
-                comment_reactions, last_edited_at = future.result()
+                comment_reactions, last_edit = future.result()
                 reactions[comment.global_key] = comment_reactions
-                if last_edited_at:
-                    last_edits[comment.global_key] = last_edited_at
+                if last_edit:
+                    last_edits[comment.global_key] = last_edit
             except rollup.RollupError as exc:
                 errors.append(
                     {
@@ -873,7 +880,10 @@ def director_awareness_for(
             if exact_comment_reference(record, external):
                 return record
             # A linked record has an explicit scope; 'above' must not broaden it.
-            has_link = re.search(r"https?://|(?:issuecomment-|discussion_r|pullrequestreview-)\d+", record.body)
+            has_link = re.search(r"(?:issuecomment-|discussion_r|pullrequestreview-|#issue-)\d+", record.body) or any(
+                candidate.kind == OPENING_POST and exact_comment_reference(record, candidate)
+                for candidate in comments
+            )
             in_interval = previous is None or event_sort_key(external) > event_sort_key(previous)
             if not has_link and re.search(r"\babove\b", record.body, re.IGNORECASE) and in_interval:
                 return record
@@ -1197,8 +1207,18 @@ def outbound_threads(
 def outbound_states_for_thread(
     thread: dict[str, Any], comments: list[Comment], self_logins: set[str],
     bot_logins: set[str], settings: dict[str, Any], automation: dict[str, str],
+    last_edits: dict[tuple[str, int, str, int], Edit],
 ) -> list[dict[str, Any]]:
-    own_activity = [comment for comment in comments if normalize_login(comment.author) in self_logins]
+    own_activity = []
+    for comment in comments:
+        if normalize_login(comment.author) not in self_logins:
+            continue
+        edit = last_edits.get(comment.global_key)
+        # Maintainers can edit somebody else's posts. Only verified human edits
+        # advance the cutoff; unknown editors leave the original activity time.
+        own_activity.append(replace(
+            comment, updated_at=edit.at if edit and normalize_login(edit.editor) in self_logins else comment.created_at,
+        ))
     if not own_activity:
         return []  # Search also matches mentions and assignments.
     latest = max(comment_activity_through(comment, settings["until"]) for comment in own_activity)
@@ -1287,7 +1307,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     if settings.get("outbound"):
         found, outbound_errors = outbound_threads(outbound_self, settings)
         coverage_errors.extend(outbound_errors)
-        outbound_scope.update(found)
+        inbound_repositories = set(repositories) if settings["scan_repository_scope"] else set()
+        outbound_scope.update(key for key in found if key not in full_history_threads and key[0] not in inbound_repositories)
         for thread_key in outbound_scope:
             candidate_ids.setdefault(thread_key, set())
         repositories = rollup.unique([*repositories, *(repo for repo, _ in found)])
@@ -1325,7 +1346,9 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                 comment
                 for comment in comments_through_until
                 if (
-                    (repo, number) in outbound_scope and comment.kind in (OPENING_POST, "review")
+                    (repo, number) in outbound_scope and (
+                        comment.kind in (OPENING_POST, "review") or normalize_login(comment.author) in outbound_self
+                    )
                 ) or (
                     (repo, number) not in outbound_scope and comment.key in effective_ids
                     and is_external_comment(comment, self_logins, bot_logins)
@@ -1339,15 +1362,15 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     comment_states: list[dict[str, Any]] = []
     for thread, comments, effective_ids in collected_threads:
         enriched_comments = [
-            replace(comment, updated_at=last_edits_by_global_key[comment.global_key])
+            replace(comment, updated_at=last_edits_by_global_key[comment.global_key].at)
             if comment.global_key in last_edits_by_global_key
-            and comment_timestamp(last_edits_by_global_key[comment.global_key]) > comment_timestamp(comment.updated_at)
+            and comment_timestamp(last_edits_by_global_key[comment.global_key].at) > comment_timestamp(comment.updated_at)
             else comment
             for comment in comments
         ]
         if comments and comments[0].thread_key in outbound_scope:
             comment_states.extend(outbound_states_for_thread(
-                thread, enriched_comments, outbound_self, bot_logins, settings, people["automation"],
+                thread, enriched_comments, outbound_self, bot_logins, settings, people["automation"], last_edits_by_global_key,
             ))
             continue
         reactions_by_comment = {
@@ -1436,9 +1459,9 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "Only configured automation is excluded; people-index automation accounts (contacts.github.bot_usernames) are labeled with who they act for, and unlisted logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open plan:waiting issues whose current Waiting for step names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "Any owner reaction after the current comment version proves personal acknowledgement; owner replies require an exact permalink or an inline-review thread with one eligible external comment.",
-            "A targeted automation reply may also use an unambiguous single-author mention. Trusted Director question: or Director decision: records prove awareness of linked comments, or, when they say 'above' without a link, external comments preceding them since the previous such record in the thread; awareness alone is not a public response.",
+            "A targeted automation reply may also use an unambiguous single-author mention. Trusted Director question: or Director decision: records prove awareness of linked comments, or, when they say 'above' without a comment link, external comments preceding them since the previous such record in the thread; awareness alone is not a public response.",
             "Closed threads are handled when a comment has a targeted public response or closure followed its latest version by the scan end; this does not imply personal acknowledgement. Open threads retain separate awareness and response rules.",
-            "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Automation does not advance that cutoff. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
+            "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Only edits with a verified human editor advance that cutoff; automation and maintainer edits do not. Explicit thread and portfolio scopes retain their normal rules when outbound discovery overlaps them. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
             "External comments outside the configured lookback window are not included.",
         ],
     }
