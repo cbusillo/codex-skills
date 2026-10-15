@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
+import threading
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -56,18 +58,73 @@ def plan(harness: str, directory: Path, session: str | None, prompt: str | None,
             "repeat_days": repeat_days, "fallback": link["fallback"]}
 
 
+def refusal(message: str, **extra) -> ValueError:
+    return ValueError(json.dumps({"status": "refused", "message": message, "created": False, **extra},
+                                 ensure_ascii=False, sort_keys=True))
+
+
+def decide(request: dict, reminders: list[dict]) -> dict:
+    """Pick the one item to change, or create; completed items are never targets."""
+    matches = [r for r in reminders if r["same_target"] and not r["completed"]]
+    if len(matches) > 1:
+        raise refusal("Duplicate incomplete session reminders; no mutation")
+    existing = matches[0]["id"] if matches else None
+    if request.get("delete_id"):
+        if existing is None or existing != request["delete_id"]:
+            raise refusal("Delete ID must match the incomplete session in the exact list")
+        return {"action": "delete", "id": existing}
+    if existing is not None and request.get("update_id") != existing:
+        raise refusal("Existing reminder found; explicit update ID and write authority required",
+                      reminder_id=existing)
+    if existing is None and request.get("update_id"):
+        raise refusal("Update target not found; no replacement created")
+    # The visible URL step finds the row by title, and a shown completed row would match too.
+    if any(r["id"] != existing and r["title"] == request["title"] for r in reminders):
+        raise refusal("Title is not unique in the target list, counting completed items; "
+                      "pass a distinct --title. No UI edit")
+    return {"action": "update", "id": existing} if existing else {"action": "create", "id": None}
+
+
+def receive(process: subprocess.Popen) -> dict | None:
+    try:
+        return json.loads(process.stdout.readline())
+    except json.JSONDecodeError:
+        return None
+
+
+def exchange(process: subprocess.Popen, request: dict) -> dict | None:
+    process.stdin.write(json.dumps(request) + "\n")
+    process.stdin.flush()
+    receipt = receive(process)
+    if receipt is not None and receipt.get("status") == "lookup":
+        try:
+            process.stdin.write(json.dumps(decide(request, receipt["reminders"])) + "\n")
+        finally:
+            # Without a decision line the writer refuses and changes nothing.
+            process.stdin.close()
+        receipt = receive(process)
+    process.wait()
+    return receipt
+
+
 def native(request: dict) -> dict:
     if sys.platform != "darwin":
         raise ValueError("Native saving requires macOS 14+; use the prepared manual fields")
-    result = subprocess.run(["swift", str(Path(__file__).with_suffix(".swift"))],
-                            input=json.dumps(request), text=True, capture_output=True,
-                            timeout=90)
-    try:
-        receipt = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise ValueError(result.stderr.strip() or "Native writer returned no receipt; read back before retrying") from exc
+    # The writer prints one lookup line, then waits for this side's target decision.
+    with tempfile.TemporaryFile("w+") as errors, subprocess.Popen(
+            ["swift", str(Path(__file__).with_suffix(".swift"))], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=errors, text=True) as process:
+        watchdog = threading.Timer(90, process.kill)
+        watchdog.start()
+        try:
+            receipt = exchange(process, request)
+        finally:
+            watchdog.cancel()
+        if receipt is None:
+            errors.seek(0)
+            raise ValueError(errors.read().strip() or "Native writer returned no receipt; read back before retrying")
     expected = "deleted" if request.get("delete_id") else "saved"
-    if (result.returncode or receipt.get("status") != expected
+    if (process.returncode or receipt.get("status") != expected
             or (expected == "saved" and receipt.get("visible_url_verified") is not True)):
         raise ValueError(json.dumps(receipt, ensure_ascii=False))
     return receipt
@@ -112,7 +169,7 @@ def main() -> int:
                               "update_id": args.update_id,
                               "preserve_existing": args.preserve_existing}, ensure_ascii=False))
         return 0
-    except (ValueError, OSError, subprocess.TimeoutExpired, KeyError) as exc:
+    except (ValueError, OSError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

@@ -71,22 +71,118 @@ class ReminderSaveTests(unittest.TestCase):
         self.assertEqual(fields["repeat_days"], 2)
         self.assertEqual(fields["notes"].splitlines()[1:], [ISSUE])
 
+    def writer(self, reminders, final=None, crash=None):
+        """Fake native writer: one lookup line, then a receipt for the decision it is sent."""
+        test = self
+
+        class Writer:
+            def __init__(self, argv, **kwargs):
+                test.assertFalse(kwargs.get("shell", False))
+                self.sent, self.returncode = [], None
+                self.stdin = self
+                self.stdout = self
+                self.lines = [json.dumps({"status": "lookup", "reminders": reminders})]
+                if crash:
+                    kwargs["stderr"].write(crash)
+                    self.lines = []
+                test.writers.append(self)
+
+            def write(self, text):
+                self.sent.append(json.loads(text))
+                if len(self.sent) == 2:
+                    action = self.sent[1]["action"]
+                    receipt = final or {"status": "deleted" if action == "delete" else "saved",
+                                        "visible_url_verified": True, "created": action == "create"}
+                    self.lines.append(json.dumps(receipt))
+
+            def readline(self):
+                return self.lines.pop(0) + "\n" if self.lines else ""
+
+            def close(self):
+                if len(self.sent) == 1:  # no decision: the real writer refuses unchanged
+                    self.lines.append(json.dumps({"status": "refused", "created": False}))
+
+            def flush(self):
+                pass
+
+            def wait(self):
+                self.returncode = 0 if json.loads(self.lines[-1] if self.lines else "{}").get("status") in (None, "saved", "deleted") else 1
+                return self.returncode
+
+            kill = flush
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        self.writers = []
+        return patch.object(reminder_save.subprocess, "Popen", Writer)
+
+    def request(self, **overrides):
+        request = {k: v for k, v in self.fields().items() if k != "fallback"}
+        request.update({"update_id": None, "delete_id": None, "preserve_existing": False, **overrides})
+        return request
+
+    def item(self, item_id, completed, same_target=True, title=None):
+        return {"id": item_id, "completed": completed, "same_target": same_target,
+                "title": self.fields()["title"] if title is None else title}
+
+    def save(self, reminders, **overrides):
+        with patch.object(reminder_save.sys, "platform", "darwin"), self.writer(reminders):
+            return reminder_save.native(self.request(**overrides))
+
+    def decisions(self):
+        return [writer.sent[1:] for writer in self.writers]
+
+    def test_completed_session_reminder_does_not_block_a_new_one(self):
+        done = self.item("done", completed=True, title="earlier check-in")
+        receipt = self.save([done, self.item("done-too", completed=True, title="older check-in")])
+        self.assertTrue(receipt["created"])
+        self.assertEqual(self.decisions(), [[{"action": "create", "id": None}]])
+        for overrides in ({"update_id": "done"}, {"delete_id": "done"}):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                self.save([done], **overrides)
+            self.assertEqual(self.decisions(), [[]])
+
+    def test_incomplete_match_is_still_found_beside_completed_ones(self):
+        reminders = [self.item("done", completed=True, title="earlier check-in"), self.item("open", completed=False),
+                     self.item("other", completed=False, same_target=False, title="other")]
+        with self.assertRaises(ValueError) as refused:
+            self.save(reminders)
+        self.assertEqual(json.loads(str(refused.exception))["reminder_id"], "open")
+        self.assertEqual(self.decisions(), [[]])
+        self.save(reminders, update_id="open")
+        self.assertEqual(self.decisions(), [[{"action": "update", "id": "open"}]])
+        self.save(reminders, delete_id="open")
+        self.assertEqual(self.decisions(), [[{"action": "delete", "id": "open"}]])
+
+    def test_ambiguous_targets_are_refused_without_a_decision(self):
+        title = self.fields()["title"]
+        for reminders, overrides in (
+                ([self.item("a", False), self.item("b", False)], {}),
+                ([self.item("a", False), self.item("b", False)], {"update_id": "a"}),
+                ([self.item("other", False, same_target=False, title=title)], {}),
+                ([self.item("done", True, title=title)], {}),
+                ([self.item("done", True, title=title), self.item("open", False)], {"update_id": "open"}),
+                ([self.item("done", True)], {"update_id": "missing"})):
+            with self.subTest(reminders=reminders, overrides=overrides), self.assertRaises(ValueError):
+                self.save(reminders, **overrides)
+            self.assertEqual(self.decisions(), [[]])
+
     def test_native_receipt_must_prove_visible_attachment(self):
-        request = self.fields()
-        with patch.object(reminder_save.sys, "platform", "darwin"), patch.object(reminder_save.subprocess, "run") as run:
+        with patch.object(reminder_save.sys, "platform", "darwin"):
             for receipt in ({"status": "partial", "reminder_id": "owned-id"},
                             {"status": "manual_required"}, {"status": "refused"},
                             {"status": "saved", "visible_url_verified": False}):
-                run.return_value = subprocess.CompletedProcess([], 0 if receipt["status"] == "saved" else 1, json.dumps(receipt), "")
-                with self.assertRaises(ValueError):
-                    reminder_save.native(request)
-            run.return_value = subprocess.CompletedProcess([], 0, '{"status":"saved","visible_url_verified":true}', "")
-            self.assertTrue(reminder_save.native(request)["visible_url_verified"])
-            self.assertEqual(json.loads(run.call_args.kwargs["input"])["url"], request["url"])
-            self.assertFalse(run.call_args.kwargs.get("shell", False))
-            run.return_value = subprocess.CompletedProcess([], 1, "", "compiler failed")
-            with self.assertRaisesRegex(ValueError, "compiler failed"):
-                reminder_save.native(request)
+                with self.subTest(receipt=receipt), self.writer([], final=receipt), self.assertRaises(ValueError):
+                    reminder_save.native(self.request())
+            with self.writer([]):
+                self.assertTrue(reminder_save.native(self.request())["visible_url_verified"])
+            self.assertEqual(self.writers[0].sent[0]["url"], self.request()["url"])
+            with self.writer([], crash="compiler failed"), self.assertRaisesRegex(ValueError, "compiler failed"):
+                reminder_save.native(self.request())
 
     def test_cli_dry_run_never_writes_and_apply_omits_fallback(self):
         argv = ["reminder_save.py", "--harness", "codex", "--directory", str(self.directory),
