@@ -281,13 +281,13 @@ class ClientAppTests(unittest.TestCase):
             github_comment.authenticated_actor(gh_cmd=wrapper, operation="github.comment.issue",
                 expected_actor="different[bot]", write_repository="host/product")
 
-    def plan(self, repo: str, issue: str = "1") -> subprocess.CompletedProcess[str]:
+    def plan(self, repo: str | None, issue: str = "1") -> subprocess.CompletedProcess[str]:
         # Reproduce a two-App Client fleet without a separate bulk-reader App.
         env = {name: value for name, value in os.environ.items()
                if not name.startswith("GITHUB_READER_APP_")}
         return subprocess.run(
             [sys.executable, str(Path(identity.__file__).with_name("gh-plan.py")),
-             "--repo", repo, "show", issue],
+             *(["--repo", repo] if repo else []), "show", issue],
             env={**env, "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
                  "GH_WITH_ENV_TOKEN_PYTHON": sys.executable},
             capture_output=True, text=True, timeout=15,
@@ -319,9 +319,13 @@ class ClientAppTests(unittest.TestCase):
         payload = json.loads(missing.stdout)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error_code"], "identity_refused")
+        self.assertIn(("GET", "/repos/host/missing/installation", self.env["GITHUB_CLIENT_APP_ID"]),
+                      AppHandler.calls)
+        self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
 
     def test_plan_qualified_issue_selects_its_owner_over_default_repository(self) -> None:
-        for default, target in (("host/product", "client/product"), ("client/product", "host/product")):
+        for default, target in (("host/product", "client/product"), ("client/product", "host/product"),
+                                (None, "host/product"), (None, "client/product")):
             for ref in (f"{target}#1", f"https://github.com/{target}/issues/1"):
                 with self.subTest(default=default, ref=ref):
                     result = self.plan(default, ref)

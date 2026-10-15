@@ -1752,6 +1752,7 @@ With no Client routing configured, existing fleet behavior is unchanged.
 command, including reader initialization and actor checks; a qualified issue
 reference supplies its own target instead. The resolved target takes precedence
 over an inherited `GH_REPO`; setting `GH_REPO` separately is unnecessary.
+Qualified issue references supply this context even without `--repo`.
 
 If the Client App is not installed on the target, reads fail with the missing
 installation named. Writes retain the existing refusal and per-command own-user

@@ -6042,12 +6042,13 @@ def main() -> None:
         CURRENT_IS_WRITE = False
     previous_repo = os.environ.get("GH_REPO")
     try:
-        if args.repo:
+        if args.repo or getattr(args, "issue", None):
             # A qualified issue overrides --repo, which is only its default.
-            target_repo = (issue_ref(claim_reference(args).issue, args.repo)[0]
+            target_repo = (issue_ref(claim_reference(args).issue, args.repo or "")[0]
                            if getattr(args, "issue", None) else args.repo)
             # Bind readers, probes and transport before any cache is prepared.
-            os.environ["GH_REPO"] = target_repo
+            if target_repo:
+                os.environ["GH_REPO"] = target_repo
         args.func(args)
     except ClassifiedPlanError as exc:
         die(
@@ -6086,7 +6087,7 @@ def main() -> None:
         )
         die("Interrupted", code=130, error_code="cancelled", failure=failure)
     finally:
-        if args.repo:
+        if args.repo or getattr(args, "issue", None):
             if previous_repo is None:
                 os.environ.pop("GH_REPO", None)
             else:
