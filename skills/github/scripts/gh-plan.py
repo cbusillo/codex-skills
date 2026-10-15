@@ -5984,7 +5984,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project")
     p.set_defaults(func=cmd_close)
 
-    p = sub.add_parser("reconcile-landing", help="Read back merged PR closing references and repair closed planning metadata")
+    p = sub.add_parser("reconcile-landing", help="Reconcile landed source metadata and native parent/dependent status; report unproved finish lines")
     p.add_argument("--pr", type=int, required=True)
     p.add_argument("--apply", action="store_true", help="Repair already-closed automation-owned plans; default is read-only")
     p.set_defaults(func=cmd_reconcile_landing)

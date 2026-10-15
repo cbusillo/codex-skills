@@ -1028,9 +1028,11 @@ failure and never causes a merge retry.
   Run `uv run scripts/gh-plan.py --repo OWNER/REPO reconcile-landing --pr N --apply`
   for closing-reference metadata when the train's planning receipt is absent
   or incomplete; the [management reference](references/cli-reference.md#planning-management)
-  owns its readback and review-required outcomes. Reconcile remaining finish
-  lines and unblocked parents under github-plan rather than treating the
-  metadata receipt as their completion proof.
+  owns its readback and review-required outcomes. The helper also discovers
+  non-closing source references and reconciles native parent/dependent status
+  from existing waits and blockers. Review any open source finish line in full;
+  close through github-plan only when complete, then rerun reconciliation.
+  A related landing or metadata receipt never proves a parent's own exit criteria.
 
 ## Diagnostics And Hygiene
 

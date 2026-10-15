@@ -1,0 +1,35 @@
+{
+  "lp3678": {
+    "evidence": "https://github.com/cbusillo/launchplane/issues/3678#issuecomment-6198539059",
+    "repo": "cbusillo/launchplane", "number": 3678, "pr": 3687,
+    "state": "open", "reference": "Refs #3678; testing-lane runtime acceptance remains #3604.",
+    "status": "State: Engineering ready; source PR landed.\nNext action: Reconcile source finish line; live qualification belongs to #3604.",
+    "finish_line": "Reviewed native Odoo source export capability; live qualification belongs to parent #3604.",
+    "expected": "review_open_finish_line"
+  },
+  "lp3266": {
+    "evidence": "https://github.com/cbusillo/launchplane/issues/3266#issuecomment-6193227039",
+    "repo": "cbusillo/launchplane", "number": 3266, "pr": 3310,
+    "state": "closed", "reference": "Refs #3266. Source and isolated proof only; real Client acceptance stays on #3268.",
+    "status": "State: Complete; isolated component/source delivery proved.\nNext action: #3268 retains real-lane acceptance; #3237 retains overall zero-5xx outcome.",
+    "finish_line": "Isolated representative lane proves compatible and DB-changing two-slot releases.",
+    "expected": "reconciled"
+  },
+  "lp3525": {
+    "evidence": "https://github.com/cbusillo/launchplane/issues/3525#issuecomment-6193154507",
+    "repo": "cbusillo/launchplane", "number": 3525, "pr": 3518,
+    "state": "closed", "reference": "Closes #3493.", "cross_reference": true,
+    "status": "State: Complete; conflict refresh and separate refusal report delivered.\nNext action: #3493 retains activation/monitor acceptance.",
+    "finish_line": "Resolve #3518 conflict and record the separate claim-helper refusal.",
+    "expected": "reconciled"
+  },
+  "opw218": {
+    "evidence": "https://github.com/cbusillo/odoo-tenant-opw/issues/218#issuecomment-6198616447",
+    "repo": "cbusillo/odoo-tenant-opw", "number": 218, "source": 3702,
+    "source_repo": "cbusillo/launchplane", "pr": 3704,
+    "state": "open", "labels": ["plan", "plan:blocked"],
+    "status": "State: Active; rebuild proof remains unmet.\nNext action: Supported fresh-copy continuation after source landing.",
+    "finish_line": "Actual governed restore and isolation, healthy exact runtime, modules/login/checklist and full credential proof.",
+    "expected": "reconciled"
+  }
+}
