@@ -2990,6 +2990,25 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual((self.issue, self.comments), original)
         self.assert_no_writes()
 
+    def test_closed_landing_can_review_and_resolve_wait_without_reopening_or_claiming(self):
+        self.issue["state"] = "closed"
+        self.wait = None
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = self.args.ends_when = self.args.evidence = None
+        original = copy.deepcopy(self.issue)
+        self.run_claim(command=PLAN.cmd_wait)
+        self.assertTrue(self.emitted.call_args.args[0]["review_required"])
+        self.assert_no_writes()
+        self.args.clear = True
+        self.args.evidence = "Full completed finish line and Director acceptance reviewed"
+        self.run_claim(command=PLAN.cmd_wait)
+        self.assertEqual(self.emitted.call_args.args[0]["structured_wait"]["state"], "clear")
+        self.assertEqual(self.issue, original)
+        self.assertNotIn("status", self.events)
+        self.assertNotIn("labels", self.events)
+        with self.assertRaises(PLAN.PlanError):
+            self.run_claim()
+
     def test_wait_review_records_real_hold_then_evidenced_release_without_editing_prose(self):
         self.wait = None
         self.args.all = self.args.clear = False

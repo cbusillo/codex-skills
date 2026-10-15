@@ -20,6 +20,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import github_plan_landing as landing
+import github_plan_wait
 
 SPEC = importlib.util.spec_from_file_location("landing_plan_under_test", Path(__file__).with_name("gh-plan.py"))
 assert SPEC is not None and SPEC.loader is not None
@@ -43,7 +44,9 @@ class LandingTests(unittest.TestCase):
         self.issue = {"repo": REPO, "number": 7, "state": "closed", "state_reason": "completed",
                       "labels": [{"name": self.config["labels"][key]} for key in
                                  ("plan", "active", "waiting", "blocked", "stale")],
-                      "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\nSupervisor routes the PR.\n",
+                      "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(
+                          github_plan_wait.reviewed(evidence="Fixture finish-line review; no waits"))
+                          + "\n\n## Current Status\n\nSupervisor routes the PR.\n",
                       "user": {"login": "fixture-bot"}, "html_url": f"https://github.com/{REPO}/issues/7"}
         self.reader = Mock()
         self.reader.graphql_json.return_value = SimpleNamespace(ok=True, body=graph(7))
@@ -51,10 +54,14 @@ class LandingTests(unittest.TestCase):
         self.labels = Mock(side_effect=self.edit_labels)
         self.body = Mock(side_effect=self.edit_body)
         self.comments = Mock(return_value={"actor": "fixture-bot"})
-        patches = [patch.multiple(PLAN, load_config=Mock(return_value=self.config),
+        patches = [patch.multiple(PLAN, load_config=Mock(side_effect=self.load_config),
                                   get_issue=Mock(side_effect=lambda *_: ("fixture-bot", copy.deepcopy(self.issue))),
                                   close_relationship_preflight=Mock(return_value=("fixture-bot", {"result": "passed"})),
                                   comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
+                                  collect_paged_rest_items=Mock(return_value=("fixture-bot", [])),
+                                  read_issue_relationships=Mock(return_value=("fixture-bot", {
+                                      "blocked_by": [], "blocking": [], "sub_issues": []})),
+                                  read_next_parent=Mock(return_value=None),
                                   rest_edit_issue=self.body),
                    patch.object(PLAN.github_identity, "configured_bot_logins", return_value=("fixture-bot",)),
                    patch.multiple(PLAN.github_issue_core, set_issue_state=self.state, edit_issue=self.labels),
@@ -63,6 +70,11 @@ class LandingTests(unittest.TestCase):
         for context in patches:
             context.start()
             self.addCleanup(context.stop)
+
+    def load_config(self, *_args, discovery=None, **_kwargs):
+        if discovery is not None:
+            discovery.update(status="discovered")
+        return self.config
 
     def edit_labels(self, _number: int, **kwargs) -> dict:
         names = set(PLAN.normalize_labels(self.issue["labels"]))
@@ -173,6 +185,296 @@ class LandingTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertFalse(result["ok"])
         self.assertEqual(result["issues"], outcome["issues"])
+
+    def test_waits_missing_records_and_later_foreign_clear_never_complete(self) -> None:
+        original = self.issue["body"]
+        for record in (None, github_plan_wait.reviewed(evidence="Still requires acceptance",
+                                                       waiting_for="Client", ends_when="Client accepts")):
+            self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + (
+                "\n" + github_plan_wait.marker(record) if record else "")
+            foreign_clear = {"user": {"login": "outside"}, "body": github_plan_wait.marker(
+                github_plan_wait.reviewed(evidence="Untrusted claim"))}
+            PLAN.collect_paged_rest_items.return_value = ("fixture-bot", [foreign_clear])
+            result = self.run_landing()
+            self.assertEqual(result["issues"][0]["status"], "review_wait_record")
+        self.issue["body"] = original
+        self.labels.assert_not_called()
+        self.body.assert_not_called()
+
+    def test_reference_only_open_source_is_reported_without_closing(self) -> None:
+        self.issue["state"] = "open"
+        response = graph()
+        response["data"]["repository"]["pullRequest"]["body"] = "Refs #7; source partial, acceptance remains here."
+        self.reader.graphql_json.return_value.body = response
+        result = self.run_landing()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["review_required"])
+        self.assertFalse(result["issues"][0]["closing_reference"])
+        self.assertEqual(result["issues"][0]["status"], "review_open_finish_line")
+        self.labels.assert_not_called()
+        self.state.assert_not_called()
+
+    def test_week_examples_and_dependent_waits(self) -> None:
+        fixtures = json.loads(Path(__file__).with_name("test-fixtures").joinpath("landing/stuck-week.json").read_text())
+        for name, fixture in fixtures.items():
+            with self.subTest(name=name):
+                repo = fixture.get("source_repo", fixture["repo"])
+                number = fixture["number"]
+                self.issue.update(repo=fixture["repo"], number=number, state=fixture["state"], state_reason="completed",
+                                  html_url=f"https://github.com/{fixture['repo']}/issues/{number}")
+                self.issue["body"] = (PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(
+                    github_plan_wait.reviewed(evidence=fixture["evidence"])) + "\n\n## Finish Line\n\n"
+                    + fixture["finish_line"] + "\n\n## Current Status\n\n" + fixture["status"])
+                self.issue["labels"] = [{"name": self.config["labels"][key]} for key in fixture.get("label_keys", ["plan", "active"])]
+                original_body = self.issue["body"]
+                response = graph()
+                pull = response["data"]["repository"]["pullRequest"]
+                pull.update(body=fixture.get("reference", ""), url=f"https://github.com/{repo}/pull/{fixture['pr']}")
+                self.reader.graphql_json.return_value.body = response
+                events = ([{"event": "cross-referenced", "source": {"issue": copy.deepcopy(self.issue)}}]
+                          if fixture.get("cross_reference") else [])
+                PLAN.collect_paged_rest_items.side_effect = lambda path, **_: ("fixture-bot", events if path.endswith("timeline") else [])
+                entry = {}
+                if name == "opw218":
+                    PLAN.read_issue_relationships.return_value = ("fixture-bot", {
+                        "blocked_by": [{"repo": repo, "number": fixture["source"], "state": "closed"}], "sub_issues": []})
+                    landing.reconcile_related(PLAN, fixture["repo"], number, apply=True, entry=entry)
+                    self.assertEqual(self.issue["state"], "open")
+                    self.assertEqual(self.issue["body"], original_body)
+                    self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                                     {self.config["labels"]["plan"], self.config["labels"]["active"]})
+                    again = {}
+                    landing.reconcile_related(PLAN, fixture["repo"], number, apply=True, entry=again)
+                    self.assertEqual(again["status"], "unchanged")
+                else:
+                    result = landing.reconcile(PLAN, self.reader, repo, fixture["pr"], apply=True)
+                    entry = next(item for item in result["issues"] if item["number"] == number)
+                    self.assertFalse(entry["closing_reference"])
+                    self.assertEqual(self.issue["state"], fixture["state"])
+                    self.assertEqual(self.issue["body"], original_body)
+                self.assertEqual(entry["status"], fixture["expected"])
+        self.state.assert_not_called()
+
+    def test_related_labels_follow_waits_and_all_current_blockers(self) -> None:
+        self.issue["state"] = "open"
+        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "blocked")]
+        wait = github_plan_wait.reviewed(evidence="Parent retains its test wait", waiting_for="Director",
+                                        ends_when="Director reports the test")
+        self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(wait)
+        body = self.issue["body"]
+        for blockers, key in (([], "waiting"), ([{"repo": REPO, "number": 8, "state": "open"}], "blocked")):
+            PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocked_by": blockers, "sub_issues": []})
+            entry = {}
+            landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+            self.assertIn(self.config["labels"][key], PLAN.normalize_labels(self.issue["labels"]))
+            self.assertIn(self.config["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
+            self.assertEqual(self.issue["body"], body)
+            self.assertEqual(self.issue["state"], "open")
+        self.state.assert_not_called()
+
+    def test_clear_record_does_not_clear_legacy_waiting_label(self) -> None:
+        self.issue["state"] = "open"
+        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "waiting")]
+        self.issue["body"] += "\nWaiting for: Director's hands-on test\n"
+        original = copy.deepcopy(self.issue)
+        entry = {}
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+        self.assertEqual(entry["status"], "review_wait_record")
+        self.assertIn("next_action", entry)
+        self.assertEqual(self.issue, original)
+        self.labels.assert_not_called()
+        self.state.assert_not_called()
+
+    def test_closed_and_deliberately_unstatused_related_plans_stay_unchanged(self) -> None:
+        original = copy.deepcopy(self.issue)
+        self.issue["body"] += "\n" + github_plan_wait.PREFIX + "malformed -->"
+        closed_body = self.issue["body"]
+        entry = {}
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+        self.assertEqual(entry["status"], "unchanged")
+        self.assertEqual(self.issue["body"], closed_body)
+        self.issue.update(original)
+        self.issue["state"] = "open"
+        self.issue["labels"] = [{"name": self.config["labels"]["plan"]}]
+        original = copy.deepcopy(self.issue)
+        entry = {}
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+        self.assertTrue(entry["informational"])
+        self.assertEqual(self.issue, original)
+        self.labels.assert_not_called()
+        self.state.assert_not_called()
+
+    def test_keyword_closure_retains_custody_and_other_status_fields(self) -> None:
+        custody = "Evidence: https://github.com/fixture/catalog/issues/7#issuecomment-123\nRetained artifacts: /fixture/retained/task\nNext action: Supervisor adopts retained artifacts."
+        self.issue["body"] += custody
+        self.assertTrue(self.run_landing()["ok"])
+        self.assertIn(custody, self.issue["body"])
+        after = self.issue["body"]
+        self.assertTrue(self.run_landing()["ok"])
+        self.assertEqual(self.issue["body"], after)
+
+    def test_timeline_only_mentions_are_informational_and_do_not_expand_graph(self) -> None:
+        self.reader.graphql_json.return_value.body = graph()
+        PLAN.collect_paged_rest_items.side_effect = lambda path, **_: ("fixture-bot", [
+            {"event": "cross-referenced", "source": {"issue": copy.deepcopy(self.issue)}}]
+            if path.endswith("timeline") else [])
+        self.issue["state"] = "open"
+        original = copy.deepcopy(self.issue)
+        result = self.run_landing()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["review_required"])
+        self.assertEqual(result["issues"][0]["status"], "review_reference_only")
+        PLAN.read_issue_relationships.assert_not_called()
+        self.assertEqual(self.issue, original)
+        self.labels.assert_not_called()
+
+    def test_explicit_partial_source_keeps_finish_line_review_when_also_dependent(self) -> None:
+        dependent = copy.deepcopy(self.issue)
+        dependent.update(number=8, state="open", state_reason=None,
+                         labels=[{"name": self.config["labels"][key]} for key in ("plan", "blocked")])
+        PLAN.get_issue.side_effect = lambda number, repo: ("fixture-bot", copy.deepcopy(
+            dependent if int(number) == 8 else self.issue))
+        response = graph(7)
+        response["data"]["repository"]["pullRequest"]["body"] = "Fixes #7. Refs #8 (partial API only)."
+        self.reader.graphql_json.return_value.body = response
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {
+            "blocked_by": [], "sub_issues": [], "blocking": [{"repo": REPO, "number": 8, "state": "open"}]})
+        def edit(number, **kwargs):
+            if number != 8:
+                return self.edit_labels(number, **kwargs)
+            names = set(PLAN.normalize_labels(dependent["labels"])) - set(kwargs["remove_labels"] or [])
+            dependent["labels"] = [{"name": name} for name in names | set(kwargs["add_labels"] or [])]
+            return {"actor": "fixture-bot"}
+        self.labels.side_effect = edit
+        result = self.run_landing()
+        entry = next(entry for entry in result["issues"] if entry["number"] == 8 and entry["role"] == "source")
+        self.assertEqual(entry["role"], "source")
+        self.assertEqual(entry["status"], "review_open_finish_line")
+        related = next(entry for entry in result["issues"] if entry["number"] == 8 and entry["role"] == "related")
+        self.assertEqual(related["status"], "reconciled")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["review_required"])
+        self.assertEqual(dependent["state"], "open")
+        self.state.assert_not_called()
+
+    def test_human_parent_is_preserved_review_work_without_failed_write_receipt(self) -> None:
+        parent = copy.deepcopy(self.issue)
+        parent.update(number=8, state="open", state_reason=None, user={"login": "reporter"})
+        PLAN.get_issue.side_effect = lambda number, repo: ("fixture-bot", copy.deepcopy(
+            parent if int(number) == 8 else self.issue))
+        PLAN.read_next_parent.return_value = {"repo": REPO, "number": 8, "state": "open"}
+        before = copy.deepcopy(parent)
+        result = self.run_landing()
+        entry = next(entry for entry in result["issues"] if entry["number"] == 8)
+        self.assertEqual(entry["status"], "review_reporter_acceptance")
+        self.assertTrue(entry["informational"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["review_required"])
+        self.assertEqual(parent, before)
+
+    def test_related_readback_mismatch_and_concurrent_wait_fail(self) -> None:
+        self.issue["state"] = "open"
+        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "blocked")]
+        self.labels.side_effect = lambda *_args, **_kwargs: {"actor": "fixture-bot"}
+        with self.assertRaises(ValueError):
+            landing.reconcile_related(PLAN, REPO, 7, apply=True, entry={})
+        self.labels.reset_mock()
+        def changed(*args, **kwargs):
+            self.issue["body"] += "\n" + github_plan_wait.marker(github_plan_wait.reviewed(
+                evidence="New wait", waiting_for="Director", ends_when="Test complete"))
+            return False
+        with patch.object(landing, "comment_attention", side_effect=changed), self.assertRaises(ValueError):
+            landing.reconcile_related(PLAN, REPO, 7, apply=True, entry={})
+        self.labels.assert_not_called()
+
+    def test_parent_and_cross_repo_dependent_discovery_is_bounded_and_deduplicated(self) -> None:
+        target = {"repo": "fixture/product", "number": 8, "state": "open"}
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [target]})
+        PLAN.read_next_parent.return_value = target
+        PLAN.read_issue_relationships.side_effect = lambda repo, number, **_: ("fixture-bot", {"blocking": [
+            target if repo == REPO else {"repo": "fixture/product", "number": 9, "state": "open"}]})
+        self.assertEqual(landing.neighborhood(PLAN, REPO, [(REPO, 7)]), [(target["repo"], target["number"])])
+        PLAN.read_issue_relationships.side_effect = None
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [
+            {"repo": REPO, "number": number} for number in range(100, 201)]})
+        with self.assertRaises(ValueError):
+            landing.neighborhood(PLAN, REPO, [(REPO, 7)])
+
+    def test_foreign_first_source_cannot_change_neighborhood_owner(self) -> None:
+        target = {"repo": REPO, "number": 8, "state": "open"}
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocking": [target]})
+        related = landing.neighborhood(PLAN, REPO, [("foreign/product", 2), (REPO, 7), (REPO, 8)])
+        self.assertEqual(related, [(REPO, 8)])
+        self.assertTrue(all(call.args[0] == REPO for call in PLAN.read_issue_relationships.call_args_list))
+
+    def test_unverified_target_config_and_non_plan_labels_never_write(self) -> None:
+        self.issue["state"] = "open"
+        PLAN.load_config.side_effect = lambda *_args, **_kwargs: self.config
+        entry = {}
+        landing.reconcile_related(PLAN, "fixture/product", 7, apply=True, entry=entry)
+        self.assertEqual(entry["status"], "review_planning_config")
+        self.labels.assert_not_called()
+        for key in ("audit", "own_project"):
+            issue = {**self.issue, "labels": [{"name": self.config["labels"][key]}]}
+            self.assertFalse(landing.planning_issue(PLAN, issue, self.config))
+
+    def test_incomplete_discovery_and_relationships_never_write(self) -> None:
+        PLAN.collect_paged_rest_items.side_effect = PLAN.PlanError("Timeline unavailable")
+        with self.assertRaises(PLAN.PlanError):
+            self.run_landing()
+        PLAN.collect_paged_rest_items.side_effect = None
+        PLAN.read_issue_relationships.side_effect = PLAN.PlanError("Relationships unavailable")
+        with self.assertRaises(PLAN.PlanError):
+            self.run_landing()
+        self.labels.assert_not_called()
+        self.body.assert_not_called()
+
+    def test_landing_repairs_cross_repository_dependent_without_closing_parent(self) -> None:
+        product = "fixture/product"
+        dependent = copy.deepcopy(self.issue)
+        dependent.update(repo=product, number=8, state="open", state_reason=None,
+                         html_url=f"https://github.com/{product}/issues/8",
+                         labels=[{"name": self.config["labels"][key]} for key in ("plan", "blocked")])
+        records = {(REPO, 7): self.issue, (product, 8): dependent}
+        PLAN.get_issue.side_effect = lambda number, repo: ("fixture-bot", copy.deepcopy(records[repo, int(number)]))
+        def relationships(repo, number, **kwargs):
+            return "fixture-bot", {"blocked_by": ([{"repo": REPO, "number": 7, "state": "closed"}]
+                                                  if repo == product else []),
+                                   "blocking": ([{"repo": product, "number": 8, "state": "open"}]
+                                                if repo == REPO else []), "sub_issues": []}
+        PLAN.read_issue_relationships.side_effect = relationships
+        PLAN.read_next_parent.side_effect = lambda repo, number: ({"repo": product, "number": 8, "state": "open"}
+                                                                 if repo == REPO else None)
+        # The dependent also mentioned the PR; timeline discovery must not
+        # suppress its native-dependent label repair.
+        PLAN.collect_paged_rest_items.side_effect = lambda path, **_: ("fixture-bot", [
+            {"event": "cross-referenced", "source": {"issue": copy.deepcopy(dependent)}}]
+            if path.endswith("timeline") else [])
+        def labels(number, **kwargs):
+            issue = records[kwargs["repo"], number]
+            names = set(PLAN.normalize_labels(issue["labels"]))
+            names.difference_update(kwargs["remove_labels"] or [])
+            names.update(kwargs["add_labels"] or [])
+            issue["labels"] = [{"name": name} for name in names]
+            return {"actor": "fixture-bot"}
+        self.labels.side_effect = labels
+        before = copy.deepcopy(dependent)
+        preview = self.run_landing(apply=False)
+        self.assertTrue(preview["ok"])
+        self.labels.assert_not_called()
+        result = self.run_landing()
+        self.assertTrue(result["ok"])
+        related = [entry for entry in result["issues"] if entry["role"] == "related"]
+        self.assertEqual(len(related), 1)
+        self.assertEqual(related[0]["status"], "reconciled")
+        self.assertEqual(dependent["state"], before["state"])
+        self.assertEqual(dependent["body"], before["body"])
+        self.assertEqual(set(PLAN.normalize_labels(dependent["labels"])),
+                         {self.config["labels"][key] for key in ("plan", "active")})
+        again = self.run_landing()
+        self.assertTrue(again["ok"])
+        self.assertEqual(next(entry for entry in again["issues"] if entry["repo"] == product and entry["number"] == 8)["status"], "unchanged")
+        self.state.assert_not_called()
 
 
 if __name__ == "__main__":
