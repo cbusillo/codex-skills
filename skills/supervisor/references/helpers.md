@@ -813,13 +813,20 @@ mode instead of the shared daemon (see [the Q152 validation](https://github.com/
 leaves a remote worker in the daemon's working folder. The launcher requires
 exactly one existing absolute directory and checks every launch in a batch
 before starting any daemon, creating terminals or preparing receipts.
-Each selected account's `config.toml` must already contain
-`[projects."/absolute/repository"]` with `trust_level = "trusted"` for that
-resolved directory; trusting a parent folder does not cover a repository root.
+The preflight reads each selected account's `config.toml` `[projects]` entries.
+It checks the canonical directory, then its original spelling, then the Git
+trust root in the same order. For a registered linked worktree that root is
+the main checkout; its trust also covers repository subdirectories. An explicit
+directory entry takes precedence even when it has no trust level. The first
+matching entry must have `trust_level = "trusted"`. Trusting an unrelated parent
+such as `/Users/example/Developer` does not cover a repository root.
 An untrusted folder refuses with the selected home and an interactive Codex
-command to review its folder-trust prompt. Review trust yourself before retrying;
+command to review its folder-trust prompt, naming the actual trust target.
+Review trust yourself before retrying;
 the launcher never edits config or supplies trust overrides. An unreadable or
-malformed config also refuses without printing its contents. See the official
+malformed config also refuses without printing its contents. The preflight uses
+only these selected-home project entries; it does not use managed, cloud, profile
+or CLI trust overrides as evidence. See the official
 [directory option](https://developers.openai.com/codex/cli/reference/) and
 [project trust setting](https://developers.openai.com/codex/config-reference/).
 Before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`

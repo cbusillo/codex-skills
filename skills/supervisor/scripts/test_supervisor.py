@@ -1214,6 +1214,62 @@ def trusted_codex_launch(directory, home):
 
 
 class CodexProjectTests(unittest.TestCase):
+    def test_codex_cannot_skip_preflight_through_another_provider(self):
+        for provider in ("anthropic", "google"):
+            with self.subTest(provider=provider), self.assertRaises(ValueError):
+                iterm_tab.check_codex_project("codex --remote unix:// -C /", {"provider": provider, "env": {}})
+        iterm_tab.check_codex_project("claude", {"provider": "anthropic", "env": {}})
+
+    def test_git_main_root_trust_covers_worktree_and_subdirectories(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            repository = root / "repository"
+            subprocess.run(["git", "init", str(repository)], capture_output=True, check=True)
+            subprocess.run(["git", "-C", str(repository), "-c", "user.name=Fixture",
+                            "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                            "commit", "--allow-empty", "-m", "fixture"], capture_output=True, check=True)
+            worktree = root / "worktree"
+            subprocess.run(["git", "-C", str(repository), "worktree", "add", "--detach", str(worktree)],
+                           capture_output=True, check=True)
+            home = root / "selected"
+            trusted_codex_launch(repository, home)
+            choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
+            for directory in (repository / "subdirectory", worktree / "subdirectory", worktree):
+                directory.mkdir(exist_ok=True)
+                with self.subTest(directory=directory):
+                    iterm_tab.check_codex_project("codex -C " + shlex.quote(str(directory)), choice)
+            config = home / "config.toml"
+            trusted = config.read_text()
+            for override in ('trust_level = "untrusted"', ""):
+                config.write_text(trusted + f'\n[projects.{json.dumps(str(worktree))}]\n{override}\n')
+                with self.subTest(override=override), self.assertRaises(ValueError):
+                    iterm_tab.check_codex_project("codex -C " + shlex.quote(str(worktree)), choice)
+            config.write_text(trusted)
+            # A copied pointer must not inherit trust from the real worktree's repository.
+            impostor = root / "impostor"
+            impostor.mkdir()
+            (impostor / ".git").write_bytes((worktree / ".git").read_bytes())
+            with self.assertRaises(ValueError):
+                iterm_tab.check_codex_project("codex -C " + shlex.quote(str(impostor)), choice)
+
+    def test_original_alias_trust_and_canonical_precedence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            directory = root / "repository"
+            directory.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(directory, target_is_directory=True)
+            home = root / "selected"
+            home.mkdir()
+            config = home / "config.toml"
+            config.write_text(f'[projects.{json.dumps(str(alias))}]\ntrust_level = "trusted"\n')
+            choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
+            command = "codex -C " + shlex.quote(str(alias))
+            iterm_tab.check_codex_project(command, choice)
+            config.write_text(config.read_text() + f'\n[projects.{json.dumps(str(directory))}]\ntrust_level = "untrusted"\n')
+            with self.assertRaises(ValueError):
+                iterm_tab.check_codex_project(command, choice)
+
     def test_directory_options_and_selected_home_trust(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -1252,7 +1308,7 @@ class CodexProjectTests(unittest.TestCase):
                              "projects = []", f'projects = {{{json.dumps(str(repository))} = "trusted"}}'):
                 if contents is not None:
                     config.write_text(contents)
-                with self.subTest(contents=contents), self.assertRaisesRegex(ValueError, "not explicitly trusted") as caught:
+                with self.subTest(contents=contents), self.assertRaises(ValueError) as caught:
                     iterm_tab.check_codex_project(command, choice)
                 self.assertIn(str(home), str(caught.exception))
                 self.assertIn(str(repository), str(caught.exception))
@@ -1268,7 +1324,7 @@ class CodexProjectTests(unittest.TestCase):
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(root)}}
             config.write_text('private = "DO_NOT_PRINT\n')
             command = "codex -C " + shlex.quote(str(root))
-            with self.assertRaisesRegex(ValueError, "Cannot verify") as caught:
+            with self.assertRaises(ValueError) as caught:
                 iterm_tab.check_codex_project(command, choice)
             self.assertNotIn("DO_NOT_PRINT", str(caught.exception))
             with patch.object(Path, "open", side_effect=PermissionError), self.assertRaises(ValueError):
