@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
@@ -43,12 +42,19 @@ def transcript_snapshot(session: str, primary: str) -> dict[str, dict]:
 
 async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] | None = None):
     """Read the existing stock daemon over its native socket; only read RPCs."""
-    import aiohttp
     import stat
-    socket_path = (home / "app-server-control/app-server-control.sock").resolve(strict=True)
-    info = socket_path.stat()
-    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
-        raise ValueError("unsafe native session socket")
+    binding = home / "app-server-control/app-server-control.sock"
+    coverage = {"status": "incomplete", "peer_complete": False, "socket": str(binding)}
+    try:
+        socket_path = binding.resolve(strict=True)
+        info = socket_path.stat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            return [], {}, coverage
+        import aiohttp
+    except FileNotFoundError:
+        return [], {}, {**coverage, "status": "unavailable"}
+    except (OSError, ImportError):
+        return [], {}, coverage
     peers, states = [], {}
     coverage = {"status": "incomplete", "peer_complete": False, "socket": str(socket_path)}
     proof_sessions = sessions if proof_sessions is None else proof_sessions
@@ -172,9 +178,6 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None) -
 
 
 def observe(sessions: set[str], proof_sessions: set[str] | None = None):
-    if not shutil.which("codex"):
-        return [], {}, {"status": "unavailable", "peer_complete": False}
-
     async def run():
         return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in codex_homes()), return_exceptions=True)
 
@@ -190,6 +193,7 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
         pass
     for result in asyncio.run(run()):
         if isinstance(result, BaseException):
+            sources.append({"status": "incomplete", "peer_complete": False, "socket": ""})
             continue
         observed, outcomes, coverage = result
         sources.append(coverage)
@@ -199,9 +203,13 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
                 states[session] = outcome
     for peer in peers:
         states[peer["sessionId"]] = {"state": "live", "source": peer["source"]}
-    peer_complete = bool(sources) and all(s["peer_complete"] for s in sources)
+    observed_sources = [s for s in sources if s["status"] != "unavailable"]
+    peer_complete = bool(observed_sources) and all(s["peer_complete"] for s in observed_sources)
     observed_sockets = {s["socket"] for s in sources if s["peer_complete"]}
-    if not peer_complete or process_text is None or not process_absence_known(process_text, observed_sockets):
+    process_coverage = "unavailable" if process_text is None else "complete" if process_absence_known(process_text, observed_sockets) else "unidentified_interactive_processes"
+    if not peer_complete or process_coverage != "complete":
         states = {session: state for session, state in states.items() if state["state"] != "ended"}
-    return peers, states, {"status": "available" if peer_complete else "incomplete", "peer_complete": peer_complete,
-                           "source_count": len(sources), "observed_source_incomplete": any(not s["peer_complete"] for s in sources)}
+    return peers, states, {"status": "available" if peer_complete else "incomplete" if observed_sources else "unavailable",
+                           "peer_complete": peer_complete, "process_coverage": process_coverage,
+                           "source_count": len(observed_sources), "unavailable_source_count": len(sources) - len(observed_sources),
+                           "observed_source_incomplete": any(s["status"] == "incomplete" for s in sources)}

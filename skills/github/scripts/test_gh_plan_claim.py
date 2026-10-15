@@ -95,6 +95,7 @@ class ClaimTests(unittest.TestCase):
         self.after_post = lambda: None
         self.after_status = lambda: None
         self.during_inventory = lambda: None
+        self.observe_inventory = lambda inventory, _comments: inventory
         self.emitted = Mock()
         self.wait = wait_record.reviewed(evidence="Fixture's full history and ownership reviewed; no person/event hold")
 
@@ -154,7 +155,7 @@ class ClaimTests(unittest.TestCase):
                             comment_route=route or (lambda: ("bot", "bot-gh", TEST_BOT)),
                             load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
                 patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
-                patch.object(CLAIM, "observe_sessions", side_effect=lambda inventory, _comments: inventory), \
+                patch.object(CLAIM, "observe_sessions", side_effect=self.observe_inventory), \
                 patch.object(github_identity, "configured_bot_logins", return_value=[]), \
                 patch.object(github_comment, "comment", side_effect=self.post), \
                 patch.object(github_issue, "edit_issue", side_effect=self.labels):
@@ -859,6 +860,39 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assert_no_writes()
         self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "native_session_inventory")
+
+    def test_deleted_historical_branch_can_be_reused_without_reporting_phantom_artifacts(self):
+        self.ended_holder_fixture()
+        self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
+        self.args.branch = OTHER["branch"]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.emitted.call_args.args[0]["retained_artifacts"], [])
+
+    def test_unread_existing_native_source_reaches_the_released_artifact_guard(self):
+        import github_plan_sessions
+        self.ended_holder_fixture()
+        self.observe_inventory = CLAIM.observe_sessions
+        with patch.object(github_plan_sessions, "observe", return_value=([], {}, {
+                "status": "incomplete", "observed_source_incomplete": True})):
+            with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        self.assert_no_writes()
+
+    def test_handoff_sees_native_holder_recorded_only_on_the_retained_pr(self):
+        self.refresh_fixture()
+        target = {**OTHER, "session": "target-native-session", "branch": "work/pr-only-99"}
+        self.target_comments["/repos/owner/repo/issues/99/comments"] = [
+            {"id": 77, "body": CLAIM.marker(target), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]},
+            {"id": 78, "body": "Released claim 77", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T01:00:00Z"},
+        ]
+        def observe(inventory, comments):
+            if any(r["session"] == target["session"] for c in comments for r in CLAIM.records(c.get("body") or "")):
+                inventory["sessions"].append({"sessionId": target["session"], "cwd": "/separate/primary", "source": "codex_session"})
+            return inventory
+        self.observe_inventory = observe
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assert_no_writes()
+        self.assertEqual(caught.exception.payload["competing_evidence"][0]["session"], target["session"])
 
     def test_final_readback_coordination_names_the_new_holder(self):
         self.after_status = self.compete

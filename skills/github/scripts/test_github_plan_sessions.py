@@ -23,7 +23,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         for command in ("rg resume holder", "rg codex resume holder", "codex exec please resume holder", "codex please resume holder"):
             self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
 
-    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False):
+    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False):
         thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "status": {"type": state}}
         if mismatch: thread["id"] = "another-session"
         reads, calls, unexpected, observed_ids = 0, 0, [], set()
@@ -65,14 +65,15 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             runner = web.AppRunner(app)
             await runner.setup()
             await web.UnixSite(runner, str(socket_path)).start()
-            os.chmod(socket_path, 0o600)
+            os.chmod(socket_path, 0o666 if unsafe else 0o600)
             try:
                 with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)):
                     peers, states, coverage = await SESSIONS.observe_home(home, {"holder"})
             finally:
                 await runner.cleanup()
         self.assertEqual(unexpected, [])
-        self.assertEqual(coverage["peer_complete"], not mismatch)
+        self.assertEqual(coverage["peer_complete"], not (mismatch or unsafe))
+        if unsafe: self.assertEqual(coverage["status"], "incomplete")
         return peers, states
 
     async def test_unloaded_native_session_with_verified_final_handoff_is_candidate(self):
@@ -103,11 +104,28 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_daemon_does_not_establish_end(self):
         with tempfile.TemporaryDirectory() as folder:
-            with self.assertRaises(FileNotFoundError):
-                await SESSIONS.observe_home(Path(folder), {"holder"})
+            _, states, coverage = await SESSIONS.observe_home(Path(folder), {"holder"})
+        self.assertFalse(states)
+        self.assertEqual(coverage["status"], "unavailable")
+
+    async def test_unsafe_existing_socket_is_incomplete(self):
+        peers, states = await self.observe("idle", unsafe=True)
+        self.assertEqual((peers, states), ([], {}))
 
 
 class ObservationMergeTests(unittest.TestCase):
+    def test_daemon_reads_do_not_require_codex_on_path(self):
+        async def read(_home, _sessions, _proof):
+            return [{"sessionId": "holder", "source": "codex_session"}], {"holder": {"state": "live"}}, {"status": "available", "peer_complete": True, "socket": "/fixture/socket"}
+        with patch.dict(os.environ, {"PATH": ""}), \
+                patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+                patch.object(SESSIONS, "observe_home", side_effect=read), \
+                patch.object(SESSIONS.subprocess, "run", side_effect=FileNotFoundError):
+            peers, states, coverage = SESSIONS.observe({"holder"})
+        self.assertEqual(states["holder"]["state"], "live")
+        self.assertTrue(peers)
+        self.assertEqual(coverage["process_coverage"], "unavailable")
+
     def test_app_server_process_requires_its_exact_observed_socket(self):
         socket_path = str(Path("/fixture/socket").resolve())
         self.assertTrue(SESSIONS.process_absence_known(f"codex app-server --listen unix://{socket_path}", {socket_path}))
@@ -116,9 +134,8 @@ class ObservationMergeTests(unittest.TestCase):
 
     def test_incomplete_peer_scan_is_reported_and_cannot_prove_native_end(self):
         async def read(_home, _sessions, _proof):
-            return [], {"holder": {"state": "ended"}}, {"peer_complete": False, "socket": "/fixture/socket"}
-        with patch.object(SESSIONS.shutil, "which", return_value="codex"), \
-                patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+            return [], {"holder": {"state": "ended"}}, {"status": "incomplete", "peer_complete": False, "socket": "/fixture/socket"}
+        with patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
                 patch.object(SESSIONS, "observe_home", side_effect=read), \
                 patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
             _, states, coverage = SESSIONS.observe({"holder"})
@@ -146,11 +163,10 @@ class ObservationMergeTests(unittest.TestCase):
             self.assertFalse(snapshot[str(sibling.resolve())]["safe_verdict"])
 
     def test_unknown_interactive_process_or_missing_process_inventory_prevents_native_end(self):
-        async def read(_home, _sessions, _proof): return [], {"holder": {"state": "ended"}}, {"peer_complete": True, "socket": "/fixture/socket"}
+        async def read(_home, _sessions, _proof): return [], {"holder": {"state": "ended"}}, {"status": "available", "peer_complete": True, "socket": "/fixture/socket"}
         for command in ("codex resume --last", "codex --remote unix://fixture", "codex", "node /opt/codex-cli", "codex app-server", "codex app-server --listen unix:///unobserved/socket", ""):
             for returncode in (0, 1):
                 with self.subTest(command=command, returncode=returncode), \
-                        patch.object(SESSIONS.shutil, "which", return_value="codex"), \
                         patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
                         patch.object(SESSIONS, "observe_home", side_effect=read), \
                         patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=returncode, stdout=command)):
@@ -159,9 +175,8 @@ class ObservationMergeTests(unittest.TestCase):
 
     def test_live_evidence_wins_across_account_homes(self):
         async def read(home, _sessions, _proof):
-            return [], {"holder": {"state": "live" if home.name == "live" else "ended"}}, {"peer_complete": True, "socket": str(home / "socket")}
-        with patch.object(SESSIONS.shutil, "which", return_value="codex"), \
-                patch.object(SESSIONS, "codex_homes", return_value=[Path("/live"), Path("/ended")]), \
+            return [], {"holder": {"state": "live" if home.name == "live" else "ended"}}, {"status": "available", "peer_complete": True, "socket": str(home / "socket")}
+        with patch.object(SESSIONS, "codex_homes", return_value=[Path("/live"), Path("/ended")]), \
                 patch.object(SESSIONS, "observe_home", side_effect=read), \
                 patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
             _, states, _ = SESSIONS.observe({"holder"})

@@ -782,6 +782,10 @@ unidentified interactive clients, native-only recovery stays unavailable; an
 exact authored release remains the supported ended-ownership proof.
 Loaded peers are read before transcript scans. A timed-out or truncated observed
 peer inventory is reported as incomplete and preserves retained-artifact conflicts.
+Socket reads do not require `codex` on PATH. Existing unsafe or unreadable sockets
+are incomplete sources. `session_coverage` also reports unidentified interactive
+processes for exact-release successors; an authored release proves ended claim
+ownership, not the absence of every unobservable session on the host.
 
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;

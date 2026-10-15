@@ -2373,13 +2373,13 @@ def claim_once(args: argparse.Namespace) -> None:
         inventory = github_plan_claim.observe_sessions(
             github_plan_claim.local_inventory(target_repo, number), current_comments)
         ended_owners = github_plan_claim.ended_ownership(current_comments, inventory)
-        if any(entry["branch"] == claim["branch"] and entry["claim_id"] != args.resume_from for entry in ended_owners):
+        branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
+        if any(entry["branch"] == claim["branch"] and entry["branch"] in branches and entry["claim_id"] != args.resume_from for entry in ended_owners):
             raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
             ended_claims={entry["claim_id"] for entry in ended_owners})
         if inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
-            branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
             conflicts.extend({"source": "native_session_inventory", "branch": entry["branch"], "certainty": "incomplete"}
                              for entry in ended_owners if entry["branch"] in branches)
         return conflicts, owned
@@ -2440,6 +2440,7 @@ def claim_once(args: argparse.Namespace) -> None:
         source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
         observed_waits = {}
         released_target_sessions = set()
+        target_session_comments = list(source_comments)
         for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
@@ -2455,6 +2456,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
                 bucket="rest_core", step_prefix="refresh_comments",
             )
+            target_session_comments.extend(target_comments)
             # PR status may name the canonical issue being claimed. Keep its
             # holder prose conservative rather than applying issue exclusions.
             competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
@@ -2474,7 +2476,10 @@ def claim_once(args: argparse.Namespace) -> None:
             if retained_waits is not None and observed_waits != retained_waits:
                 raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
             retained_waits = observed_waits
-        target_inventory = github_plan_claim.local_inventory(target_repo, target_number)
+        target_inventory = github_plan_claim.observe_sessions(
+            github_plan_claim.local_inventory(target_repo, target_number), target_session_comments)
+        if target_inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
+            refuse([{"source": "native_session_inventory", "certainty": "incomplete"}])
         source_session = github_plan_claim.records(next(c for c in source_comments if c.get("id") == args.resume_from)["body"])[0]["session"]
         live_sources = [{"source": "source_session", "session": peer["sessionId"],
                          "certainty": "visible_in_native_inventory"}
@@ -2840,7 +2845,8 @@ def claim_once(args: argparse.Namespace) -> None:
     emit({"ok": True, "actor": actor, "record_kind": record_kind, "claim": claim, "claim_comment": claim_comment, "issue": compact_issue(final),
           "current_status_location": "issue_body" if can_update else "claim_comment",
           "previous_current_status": previous_status,
-          "retained_artifacts": ended_owners,
+          "retained_artifacts": [entry for entry in ended_owners if entry.get("worktrees") or entry.get("pull_requests")
+                                 or entry["branch"] in inventory["local_branches"] or entry["branch"] in inventory["remote_branches"]],
           "session_coverage": inventory["session_coverage"], "exclusive_lock": False,
           "completed_steps": completed})
 
