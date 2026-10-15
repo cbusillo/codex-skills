@@ -813,10 +813,11 @@ def prepare_launches(args):
             market = gui_launch.marketplace(home, Path.home() / ".codex")
             choices[0]["gui"] = {**reservation, "marketplace": market,
                                   "override": override, "screen": "unlocked"}
+            command_file = gui_launch.stage_command(reservation, command_texts[0])
             command_texts[0] = shlex.join([
                 sys.executable, str(Path(gui_launch.__file__).resolve()), "run",
                 "--state", reservation["state_path"], "--token", reservation["token"],
-                "--command", command_texts[0],
+                "--command-file", str(command_file),
             ])
         except Exception:
             gui_launch.release(Path(reservation["state_path"]), reservation["token"])

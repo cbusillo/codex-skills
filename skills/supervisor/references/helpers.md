@@ -640,10 +640,14 @@ override to that Codex process. The link alone does not load the marketplace.
 No shared `config.toml`, authentication, permissions or catalog installation is
 changed. Tests use fake homes, console evidence and child processes only.
 
-The account's private Launch Receipt includes `gui`:
+The paired private GUI launch receipt includes `gui`:
 named app, unlocked preflight, marketplace source/link action, process override,
-reservation token and shared state path. Terminal output gives the app, link
-action and reservation token without account paths. Keep receipts private. The link
+reservation token and shared state path. It uses the count receipt's filename
+in `<storage root>/Supervisor GUI Receipts/`; Context Panel's existing
+`Launch Receipts/` record stays count-only and keeps its existing size contract.
+The launcher prunes its own day-old GUI receipts separately. Terminal output
+gives the app, link action and reservation token without account paths. Keep
+receipts private. The link
 follows replacement at the default home's unversioned path; missing or relocated
 targets refuse. CU-T2 established discovery and one Node/Sky state screenshot,
 not arbitrary-directory input or remote app-server qualification. If runtime
@@ -666,7 +670,14 @@ output too. The state lives at `~/.code/skill-data/supervisor-gui.json`, across
 account homes. Failures known to occur before command submission release the
 slot automatically, including receipt failures; a send whose outcome is unknown
 retains it. The wrapper uses the launcher's resolved Python interpreter, without
-creating a second environment for the worker.
+creating a second environment for the worker. The full command and brief are
+staged in a mode-0600 file beside the reservation, so nested terminal quoting
+does not expand the brief into tmux's message limit. Normal exit or verified
+release removes that file. A killed wrapper retains it for recovery. If a
+launcher is interrupted before printing a token, inspect the shared state file
+and exact terminal inventory before the same verified-shutdown release. At
+wrapper startup, a short bounded lock wait tolerates a concurrent reservation
+check; a pending or live worker still blocks a second GUI launch.
 
 ### Terminal launches
 

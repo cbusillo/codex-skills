@@ -13,13 +13,15 @@ from pathlib import Path
 import plistlib
 import re
 import subprocess
+import time
 import uuid
 
 BUNDLED_MARKETPLACE = Path(".tmp/bundled-marketplaces/openai-bundled")
 
 
 def declared_app(brief):
-    if not brief.lstrip().startswith("GUI task:"):
+    brief = brief.lstrip()
+    if not brief.startswith("GUI task:"):
         return None
     lines = re.findall(r"^GUI task:\s*(.*?)\s*$", brief, re.MULTILINE)
     if not lines:
@@ -65,14 +67,19 @@ def state_path():
 
 
 @contextmanager
-def exclusive(path):
+def exclusive(path, wait_seconds=0):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ValueError("another GUI worker is running; wait for its closeout") from None
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ValueError("another GUI worker is running; wait for its closeout") from None
+                time.sleep(0.02)
         yield
 
 
@@ -96,11 +103,29 @@ def matching(path, token):
     return data
 
 
+def command_path(path, token):
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise ValueError("invalid GUI reservation token")
+    return path.with_name("supervisor-gui-" + token + ".command")
+
+
+def stage_command(reservation, command):
+    path, token = Path(reservation["state_path"]), reservation["token"]
+    with exclusive(path):
+        matching(path, token)
+        target = command_path(path, token)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(command + "\n")
+    return target
+
+
 def release(path, token):
     # The caller must verify any submitted terminal and worker have ended.
     # A live wrapper holds this lock for its entire child lifetime.
     with exclusive(path):
         matching(path, token)
+        command_path(path, token).unlink(missing_ok=True)
         path.unlink()
 
 
@@ -127,17 +152,20 @@ def marketplace(home, default_home):
     return {"path": str(link), "source": str(source), "link": action}
 
 
-def run(path, token, command):
-    with exclusive(path):
+def run(path, token, command_file):
+    with exclusive(path, wait_seconds=2):
         data = matching(path, token)
         if data["phase"] != "reserved":
             raise ValueError("GUI reservation already consumed; never replay a launch")
         try:
             require_unlocked()
+            if command_file != command_path(path, token) or not command_file.is_file():
+                raise ValueError("GUI command file does not match its reservation")
             data.update(phase="running", pid=os.getpid())
             path.write_text(json.dumps(data), encoding="utf-8")
-            return subprocess.call(["/bin/zsh", "-c", command])
+            return subprocess.call(["/bin/zsh", str(command_file)])
         finally:
+            command_path(path, token).unlink(missing_ok=True)
             path.unlink()
 
 
@@ -147,7 +175,7 @@ def main():
     parser.add_argument("--state", type=Path, default=state_path())
     parser.add_argument("--token", required=True)
     parser.add_argument("--verified-worker-ended", action="store_true")
-    parser.add_argument("--command")
+    parser.add_argument("--command-file", type=Path)
     args = parser.parse_args()
     try:
         if args.state != state_path():
@@ -156,10 +184,10 @@ def main():
             if not args.verified_worker_ended:
                 raise ValueError("inspect the receipt and exact terminal; verify no submitted worker remains first")
             release(args.state, args.token)
-        elif args.command:
-            raise SystemExit(run(args.state, args.token, args.command))
+        elif args.command_file:
+            raise SystemExit(run(args.state, args.token, args.command_file))
         else:
-            parser.error("run needs --command")
+            parser.error("run needs --command-file")
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         parser.exit(1, f"refused: {error}\n")
 

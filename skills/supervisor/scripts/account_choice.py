@@ -339,12 +339,20 @@ def record_launch(choice, now=None):
     prune_receipts(directory, now)
     receipt = {"schemaVersion": 1, "provider": provider,
                "accountID": account_id, "launchedAt": now.isoformat(timespec="seconds").replace("+00:00", "Z")}
-    if "gui" in choice:
-        receipt["gui"] = choice["gui"]
     target = directory / f"{now:%Y%m%dT%H%M%SZ}-supervisor-{uuid.uuid4().hex}.json"
+    write_launch_receipt(target, receipt)
+    if "gui" in choice:
+        gui_directory = directory.parent / "Supervisor GUI Receipts"
+        gui_directory.mkdir(mode=0o700, exist_ok=True)
+        prune_receipts(gui_directory, now, max_bytes=16 * 1024)
+        write_launch_receipt(gui_directory / target.name, {**receipt, "gui": choice["gui"]})
+    return target
+
+
+def write_launch_receipt(target, receipt):
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
                                          prefix=".supervisor-", suffix=".tmp", delete=False) as output:
             temporary = Path(output.name)
             json.dump(receipt, output, separators=(",", ":"))
@@ -354,16 +362,15 @@ def record_launch(choice, now=None):
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    return target
 
 
-def prune_receipts(directory, now):
+def prune_receipts(directory, now, *, max_bytes=1024):
     """Delete only this launcher's day-old files; preserve other launchers and symlinks."""
     for path in directory.iterdir():
         if not OWN_RECEIPT.fullmatch(path.name) or path.is_symlink() or not path.is_file():
             continue
         try:
-            if path.stat().st_size > 16 * 1024:
+            if path.stat().st_size > max_bytes:
                 continue
             data = json.loads(path.read_text(encoding="utf-8"))
             launched = parse_time(data.get("launchedAt")) if isinstance(data, dict) else None

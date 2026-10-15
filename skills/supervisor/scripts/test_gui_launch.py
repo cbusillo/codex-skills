@@ -15,6 +15,8 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -67,12 +69,17 @@ class GuiLaunchTests(unittest.TestCase):
         self.command.write_text("exec " + shlex.quote(str(fake)) + " -C " + shlex.quote(str(self.repo)))
         commands, choices = iterm_tab.prepare_launches(self.args)
         gui = choices[0]["gui"]
-        receipt = json.loads(account_choice.record_launch(choices[0]).read_text())
+        count_receipt = account_choice.record_launch(choices[0])
+        receipt = json.loads((count_receipt.parent.parent / "Supervisor GUI Receipts" / count_receipt.name).read_text())
         self.assertEqual(receipt["gui"], gui)
+        self.assertNotIn("gui", json.loads(count_receipt.read_text()))
         self.assertEqual(gui["app"], "com.example.Task")
         wrapper = shlex.split(commands[0])
-        command = wrapper[wrapper.index("--command") + 1]
-        self.assertEqual(gui_launch.run(self.state, gui["token"], command), 0)
+        command = Path(wrapper[wrapper.index("--command-file") + 1])
+        with patch.object(sys, "argv", wrapper[1:]):
+            with self.assertRaises(SystemExit) as exited:
+                gui_launch.main()
+        self.assertEqual(exited.exception.code, 0)
         argv, home = json.loads(output.read_text())
         self.assertEqual(home, str(self.account))
         source = Path(home) / self.source.relative_to(self.home / ".codex")
@@ -81,6 +88,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertEqual(source.resolve(), self.source.resolve())
         self.assertIn(self.brief.read_text(), argv[-1])
         self.assertFalse(self.state.exists())
+        self.assertFalse(command.exists())
         self.assertEqual((self.account / "config.toml").read_bytes(), self.config_before)
         self.assertEqual((self.account / "auth.json").read_text(), "opaque fixture")
 
@@ -102,6 +110,9 @@ class GuiLaunchTests(unittest.TestCase):
         _, choices = iterm_tab.prepare_launches(self.args)
         self.assertNotIn("gui", choices[0])
         self.unlocked.assert_not_called()
+
+    def test_indented_first_header_is_recognized(self):
+        self.assertEqual(gui_launch.declared_app("\n  GUI task: com.example.Task\nInspect it"), "com.example.Task")
 
     def test_output_redacts_account_paths_but_retains_recovery_token(self):
         _, choices = iterm_tab.prepare_launches(self.args)
@@ -142,8 +153,51 @@ class GuiLaunchTests(unittest.TestCase):
         choices[0]["gui"]["marketplace"]["path"] = "/fixture/" + "long-home/" * 200
         then = datetime.now(timezone.utc) - timedelta(days=2)
         receipt = account_choice.record_launch(choices[0], now=then)
+        gui_receipt = receipt.parent.parent / "Supervisor GUI Receipts" / receipt.name
+        self.assertNotIn(str(self.account), receipt.read_text())
         account_choice.prune_receipts(receipt.parent, datetime.now(timezone.utc))
+        account_choice.prune_receipts(gui_receipt.parent, datetime.now(timezone.utc), max_bytes=16 * 1024)
         self.assertFalse(receipt.exists())
+        self.assertFalse(gui_receipt.exists())
+
+    def test_apostrophe_heavy_brief_is_staged_outside_tmux_message(self):
+        self.brief.write_text("GUI task: com.example.Task\n" + "Chris's app: don't change other windows.\n" * 200)
+        self.args.command, self.args.window_id, self.args.tmux_socket = "new", "fixture", "fixture"
+        terminal = Mock()
+        terminal.run.return_value.stdout = "@1\t%1"
+        terminal.select.return_value = {"window_id": "fixture", "tab_id": "@1", "session_id": "fake",
+                                       "tty": "fake", "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
+        terminal.send = AsyncMock()
+        with patch.object(tmux_terminal, "Terminal", return_value=terminal), \
+                patch.object(iterm_tab, "verify_startup", new_callable=AsyncMock):
+            result = asyncio.run(tmux_terminal.operate(self.args))
+        staged = next(call.args[-1] for call in terminal.run.call_args_list if call.args[0] == "new-window")
+        self.assertNotIn("don't", staged)
+        command = gui_launch.command_path(self.state, result["account"]["gui"]["token"])
+        self.assertIn(self.brief.read_text(), shlex.split(command.read_text())[-1])
+        gui_launch.release(self.state, result["account"]["gui"]["token"])
+        self.assertFalse(command.exists())
+
+    def test_wrapper_waits_out_short_reservation_lock_collision(self):
+        reservation = gui_launch.reserve("com.example.Task")
+        command = gui_launch.stage_command(reservation, "fake-agent")
+        ready = threading.Event()
+
+        def brief_collision():
+            with gui_launch.exclusive(self.state):
+                ready.set()
+                time.sleep(0.05)
+
+        holder = threading.Thread(target=brief_collision)
+        holder.start()
+        self.assertTrue(ready.wait(timeout=2))
+        try:
+            with patch.object(gui_launch.subprocess, "call", return_value=0) as child:
+                self.assertEqual(gui_launch.run(self.state, reservation["token"], command), 0)
+            child.assert_called_once()
+        finally:
+            holder.join(timeout=2)
+        self.assertFalse(self.state.exists())
 
     def test_release_cli_requires_verified_shutdown_and_shared_path(self):
         reserved = gui_launch.reserve("com.example.Task")
@@ -169,15 +223,17 @@ class GuiLaunchTests(unittest.TestCase):
 
     def test_worker_rechecks_lock_before_spawning_agent(self):
         reservation = gui_launch.reserve("com.example.Task")
+        command = gui_launch.stage_command(reservation, "fake-agent")
         self.unlocked.side_effect = ValueError("locked after terminal creation")
         with patch.object(gui_launch.subprocess, "call") as child:
             with self.assertRaises(ValueError):
-                gui_launch.run(self.state, reservation["token"], "fake-agent")
+                gui_launch.run(self.state, reservation["token"], command)
         child.assert_not_called()
         self.assertFalse(self.state.exists())
 
     def test_single_slot_blocks_pending_and_running_workers_and_live_release(self):
         reservation = gui_launch.reserve("com.example.Task")
+        command = gui_launch.stage_command(reservation, "fake-agent")
         with self.assertRaises(ValueError):
             gui_launch.reserve("com.example.Other")
 
@@ -190,7 +246,7 @@ class GuiLaunchTests(unittest.TestCase):
             return 9
 
         with patch.object(gui_launch.subprocess, "call", side_effect=running):
-            self.assertEqual(gui_launch.run(self.state, reservation["token"], "fake-agent"), 9)
+            self.assertEqual(gui_launch.run(self.state, reservation["token"], command), 9)
         next_reservation = gui_launch.reserve("com.example.Other")
         with self.assertRaises(ValueError):
             gui_launch.release(self.state, reservation["token"])
