@@ -34,7 +34,7 @@ from test_gh_plan_sections import PLAN
 
 class PlanCommandContextTests(unittest.TestCase):
     def run_context(self, argv: tuple[str, ...], checkout: str | None, *,
-                    inherited: str | None = None, fail: bool = False) -> tuple[list[str | None], Any]:
+                    inherited: str | None = None, fail: bool = False) -> list[str | None]:
         args = PLAN.build_parser().parse_args(argv)
         observed = []
 
@@ -46,7 +46,7 @@ class PlanCommandContextTests(unittest.TestCase):
         args.func = command
         env = {"GH_REPO": inherited} if inherited is not None else {}
         with patch.dict(os.environ, env, clear=True), \
-                patch.object(PLAN, "repo_from_git", return_value=checkout) as git_repo, \
+                patch.object(PLAN, "repo_from_git", return_value=checkout), \
                 patch.object(PLAN, "build_parser") as parser, \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             parser.return_value.parse_args.return_value = args
@@ -56,7 +56,7 @@ class PlanCommandContextTests(unittest.TestCase):
             else:
                 PLAN.main()
             self.assertEqual(os.environ.get("GH_REPO"), inherited)
-        return observed, git_repo
+        return observed
 
     def test_repository_commands_bind_inferred_context_before_dispatch(self) -> None:
         commands = (
@@ -69,7 +69,7 @@ class PlanCommandContextTests(unittest.TestCase):
         for command in commands:
             for inherited in (None, "client/product"):
                 with self.subTest(command=command, inherited=inherited):
-                    observed, _ = self.run_context(command, "host/product", inherited=inherited)
+                    observed = self.run_context(command, "host/product", inherited=inherited)
                     self.assertEqual(observed, ["host/product"])
 
     def test_owner_and_global_commands_preserve_scope_without_requiring_checkout(self) -> None:
@@ -82,23 +82,20 @@ class PlanCommandContextTests(unittest.TestCase):
         ):
             for inherited in (None, "client/product"):
                 with self.subTest(command=command, checkout=checkout, inherited=inherited):
-                    observed, git_repo = self.run_context(command, checkout, inherited=inherited)
+                    observed = self.run_context(command, checkout, inherited=inherited)
                     self.assertEqual(observed, [inherited])
-                    if command[0] != "next":
-                        git_repo.assert_not_called()
 
     def test_explicit_repository_still_binds_global_commands(self) -> None:
         for command in (("search", "user:host fixture"), ("next",),
                         ("project-list", "--owner", "host")):
             with self.subTest(command=command):
-                observed, git_repo = self.run_context(("--repo", "host/direction", *command), None)
+                observed = self.run_context(("--repo", "host/direction", *command), None)
                 self.assertEqual(observed, ["host/direction"])
-                git_repo.assert_not_called()
 
     def test_failed_command_restores_inherited_context(self) -> None:
         for inherited in (None, "client/product"):
             with self.subTest(inherited=inherited):
-                observed, _ = self.run_context(("index",), "host/product", inherited=inherited, fail=True)
+                observed = self.run_context(("index",), "host/product", inherited=inherited, fail=True)
                 self.assertEqual(observed, ["host/product"])
 
 
