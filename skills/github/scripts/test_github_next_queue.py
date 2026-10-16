@@ -5,6 +5,8 @@
 """Behavioral coverage for current source work versus delivery qualification."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import github_direction_next as direction
@@ -30,6 +32,35 @@ def evidence() -> dict:
 
 def classify(row: dict, observed: dict | None = None) -> dict:
     return queue.classify(row, observed or evidence(), trusted={'owner', 'bot'})
+
+
+def test_october_16_delivered_and_unstarted_status_shapes() -> None:
+    fixtures = json.loads(Path(__file__).with_name('fixtures').joinpath('next-current-status.json').read_text())
+    for number, record in fixtures.items():
+        row = item(record['action'], record['state'], int(number))
+        status = queue.current_status(row['discussion'], {'owner'})
+        result = queue.remaining_work(status)
+        assert result['state'] == record['expected_work_state'], (number, result)
+        if record['expected_work_state'] == 'engineering':
+            assert classify(row)['state'] == 'available'
+        else:
+            assert result['state'] != 'engineering', (number, result)
+            assert classify(row)['state'] != 'available', (number, classify(row))
+    for state in ['Active; prerequisite #3266 merged via PR #3310.', 'Active; integration remains unstarted.']:
+        assert classify(item(fixtures['3267']['action'], state))['state'] == 'available'
+    assert classify(item('Verify deployed export.', 'Active; first source slice merged and prerequisite #10 landed'))['state'] == 'verification'
+    # Finished clauses cannot create or erase a genuine present source step.
+    for action in ['Earlier repair is complete. Implement the remaining parser.',
+                   'Implement the remaining parser; the prerequisite repair is merged.',
+                   'An agent implements the CLI wiring once #3266 is merged.',
+                   'Fix the importer so the backfill is complete.',
+                   'Earlier repair is complete and an agent implements the remaining parser.',
+                   'Since #3266 is already merged, an assigned agent integrates the generic-web driver.',
+                   'Prerequisite #3266 is complete, so implement the remaining parser.',
+                   'An assigned agent integrates the generic-web driver now that #3266 is merged.',
+                   'Implement the remaining parser because the earlier repair is merged.',
+                   'Diagnose the importer timeout; historical traces are attached.']:
+        assert classify(item(action, 'Active; first slice merged'))['state'] == 'available'
 
 
 def test_source_work_is_visible_without_caller_snapshot_but_requires_claim() -> None:

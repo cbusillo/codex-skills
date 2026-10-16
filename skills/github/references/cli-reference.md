@@ -1383,10 +1383,31 @@ of evidence; all unread references and incomplete coverage remain explicit.
 - The command excludes done, stale, waiting, inconsistently
   `plan:blocked`, dependency-unknown, and parent plans with open sub-issues. Each
   exclusion includes a normalized reason and dependency evidence when present.
+- Global traversal still evaluates native blockers and children of waiting or
+  inconsistently blocked nodes under the same scan allowance. A whole-plan wait
+  follows its ordinary descendants; independent blocker links or a child named
+  as independently selectable in structured wait evidence retain their own
+  eligibility. A later independent route can expose a previously held leaf
+  without rereading it. Stale blocked labels produce issue findings and do not
+  degrade coverage; genuinely unread relationships are named in
+  `dependency_context.unavailable_relationships`.
+  Within each milestone, held subtrees use the remaining allowance after the
+  unheld frontier; milestone order still comes first. Read-ahead follows that
+  same evaluation order. Unreviewed legacy waits keep their prerequisite links
+  held until the supported wait review records their scope. A wait
+  explicitly covering all work or any preparation follows prerequisite links
+  too. Existing structured wait evidence can name an independent child with
+  an unconditional declaration such as `#123 owns independently selectable
+  preparation` or `#123 can proceed independently`; conditional or negated
+  declarations retain the hold. Maintain that evidence with `gh-plan.py wait`,
+  preserving every outstanding wait rather than clearing the parent record.
 - Both local and global output separate observed ownership in `underway`,
   current qualification in `verification_only`, and delivered mixed scope in
   `scope_review`. Each row exposes `queue.next_action` and the evidence/read
-  limits. Reconcile qualification-only come-back steps under
+  limits. Completed-work clauses are not source actions; a merged prerequisite
+  does not prove this issue's delivery. Unstarted integration stays source work,
+  and `readiness` alone is not a read/qualification verb.
+  Reconcile qualification-only come-back steps under
   [issue closing guidance](repo-workflow.md#issue-closing-and-post-merge-proof)
   rather than assigning another verification session.
   `available_candidates` can contain source work with no observed

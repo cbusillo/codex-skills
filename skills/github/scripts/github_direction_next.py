@@ -446,6 +446,38 @@ def reviewed_remaining_scope(item: dict[str, Any], review: dict[str, Any]) -> bo
                 and bool(review.get("reason")) and bool(review.get("evidence")))
 
 
+def whole_plan_wait(parent: dict[str, Any]) -> bool:
+    """Preserve an explicit hold on all preparation across prerequisite links."""
+    record = parent.get("structured_wait")
+    if parent.get("exclusion") in {"waiting", "wait_review_required"} and (record is None or parent.get("wait_review_required")):
+        return True  # Legacy scope is unreviewed; do not release its links.
+    record = record or {}
+    conditions = " ".join(value for wait in record.get("waits", []) for value in wait.values())
+    return bool(re.search(r"\b(?:all|any|whole|entire)\s+(?:(?:source|further|engineering)\s+)?(?:work|preparation|implementation|plan)\b", conditions, re.I))
+
+
+def parent_holds_child(parent: dict[str, Any], child: dict[str, Any]) -> bool:
+    """A stale label is an issue finding; a real parent wait still has scope."""
+    if parent.get("exclusion") not in {"waiting", "wait_review_required"}:
+        return False
+    if whole_plan_wait(parent):
+        return True
+    evidence = (parent.get("structured_wait") or {}).get("evidence", "")
+    # Existing wait evidence can explicitly split out an independently
+    # selectable child without clearing the parent's person/event wait.
+    for clause in re.split(r"[;\n]|[.]\s+", evidence):
+        if re.search(r"\b(?:if|once|after|when|until|only|unless|not|never)\b", clause, re.I):
+            continue
+        if not re.search(r"\b(?:(?:owns?|is|remains?)\s+independently\s+selectable|can\s+proceed\s+independently)\b", clause, re.I):
+            continue
+        refs = issue_references(clause, repo=parent["repo"], known_repositories={parent["repo"], child["repo"]})
+        if any(ref["repo"].casefold() == child["repo"].casefold() and ref["number"] == child["number"] for ref in refs):
+            return False
+        if parent["repo"].casefold() == child["repo"].casefold() and re.search(rf"\bNative\s+{child['number']}\b", clause, re.I):
+            return False
+    return True
+
+
 def include_parent_context(
     item: dict[str, Any], parents: list[dict[str, Any]], *, complete: bool,
     tracking_roots: list[dict[str, Any]],
@@ -461,11 +493,13 @@ def include_parent_context(
     result = {**item, "discussion": discussion}
     if not complete:
         return {**result, "exclusion": "unknown_ancestry"}
+    descendant = item
     for parent in parents:
         if (parent["repo"].casefold(), parent["number"]) in tracking:
             continue
-        if parent.get("exclusion") in {"waiting", "wait_review_required", "label_blocked_without_native_edge"}:
+        if parent_holds_child(parent, descendant):
             return {**result, "exclusion": "parent_waiting", "waiting_on_parent": parent["url"], "_own_exclusion": item.get("exclusion")}
+        descendant = parent
     return result
 
 
@@ -582,6 +616,12 @@ def tooling_capacity_context(
             continue
         if milestone["state"] != "matched":
             continue
+        if entry.get("exclusion") == "parent_waiting" and entry.get("via"):
+            parent = next((row for row in entries if row["url"] == entry.get("waiting_on_parent")), None)
+            if parent is not None and parent.get("exclusion") in {"waiting", "wait_review_required"}:
+                # This newly inspected descendant shares the graph parent's
+                # frontier. The parent still needs its complete own-wait review.
+                continue
         # Shared prerequisites may inherit only the first native path. Use the
         # recorded edges, not path membership, to recognize inspected containers.
         dependencies = [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]
@@ -754,6 +794,7 @@ def rank_portfolio_work(
         if item.get("exclusion") == "parent_waiting":
             valid_parent = None
             tracking = {(root["repo"].casefold(), root["number"]) for root in graph.get("tracking_roots", [])}
+            descendant = item
             for parent in (item.get("discussion") or {}).get("parents", []):
                 if (parent["repo"].casefold(), parent["number"]) in tracking:
                     continue
@@ -761,9 +802,10 @@ def rank_portfolio_work(
                 checked = check_milestone_wait(parent, status, milestone_titles)
                 if checked.get("wait_finding") and checked["wait_finding"] not in findings:
                     findings.append(checked["wait_finding"])
-                if checked.get("exclusion") in {"waiting", "wait_review_required", "label_blocked_without_native_edge"}:
+                if parent_holds_child(checked, descendant):
                     valid_parent = parent
                     break
+                descendant = parent
             item = dict(item)
             if valid_parent is not None:
                 item["waiting_on_parent"] = valid_parent["url"]
@@ -1259,7 +1301,9 @@ def rank_direction_work(
     and waiting (explicit Current Status reports). Each unique issue is read
     once. A shared leaf inherits the earliest overall milestone that reaches it.
     Tracking issues are containers even when their summary label says waiting;
-    an ordinary waiting issue remains excluded. Candidates retain their original
+    an ordinary waiting issue remains excluded while its native links are read.
+    Parent waits follow sub-issues; independent blockers and explicitly split
+    children remain selectable. Candidates retain their original
     issue milestone and the native path that gives them their overall priority.
     A known other-family assignment has its own scan_limit allowance, preserving
     portfolio evidence without spending the ordinary allowance prematurely.
@@ -1281,23 +1325,32 @@ def rank_direction_work(
     present = {root["milestone"]["title"] for root in tracks}
     missing = [title for title in milestone_titles if title not in present and title not in completed]
     seen: set[tuple[str, int]] = set()
+    routes: set[tuple[str, int, bool]] = set()
+    node_cache: dict[tuple[str, int], dict[str, Any]] = {}
+    unavailable_relationships: list[dict[str, Any]] = []
+    waits_recorded: set[tuple[str, int]] = set()
     degraded = 0
     truncated = False
     ordinary_evaluated = 0
     other_family_evaluated = 0
     track_next_actions: dict[str, dict[str, Any]] = {}
     # A stack keeps even a deep dependency chain within the explicit scan bound.
-    pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool]] = [
-        (root, root["milestone"], [], True) for root in reversed(tracks)
+    pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool, list[dict[str, Any]]]] = [
+        (root, root["milestone"], [], True, []) for root in reversed(tracks)
     ]
     while pending:
+        scheduled = sorted(enumerate(pending), key=lambda row: (
+            order[row[1][1]["title"]], bool(row[1][4]), -row[0]))
         if prefetch_nodes is not None:
             # Read ahead only within the remaining ordinary allowance. Logical
             # DFS order, assignment allowances and coverage stay unchanged.
-            refs = [entry[0] for entry in reversed(pending)
+            refs = [entry[0] for _index, entry in scheduled
                     if (entry[0]["repo"].casefold(), entry[0]["number"]) not in seen]
             prefetch_nodes(refs[:max(0, scan_limit - ordinary_evaluated)])
-        ref, milestone, path, tracking = pending.pop()
+        # Evaluate the visible unheld frontier before spending the remaining
+        # allowance on held subtrees. Those are still read, with the same bound.
+        next_index = scheduled[0][0]
+        ref, milestone, path, tracking, held_parents = pending.pop(next_index)
         key = (ref["repo"].casefold(), ref["number"])
         step = {"repo": ref["repo"], "number": ref["number"], "url": ref["url"]}
         if "relationship" in ref:
@@ -1307,18 +1360,27 @@ def rank_direction_work(
             excluded.append({**step, "milestone": milestone, "via": via, "exclusion": "dependency_cycle"})
             degraded += 1
             continue
-        if key in seen:
+        held = bool(held_parents)
+        route_key = (*key, held)
+        if route_key in routes or (held and (*key, False) in routes):
             continue
-        if ordinary_evaluated >= scan_limit:
+        if key not in seen and ordinary_evaluated >= scan_limit:
             truncated = True
             break
-        seen.add(key)
-        node = read_node(ref["repo"], ref["number"])
-        mismatch = github_agent.exclusion(node["item"], agent)
-        if mismatch and mismatch["exclusion"] == "assigned_elsewhere" and other_family_evaluated < scan_limit:
-            other_family_evaluated += 1
-        else:
-            ordinary_evaluated += 1
+        routes.add(route_key)
+        if key not in seen:
+            seen.add(key)
+            node_cache[key] = read_node(ref["repo"], ref["number"])
+            mismatch = github_agent.exclusion(node_cache[key]["item"], agent)
+            if mismatch and mismatch["exclusion"] == "assigned_elsewhere" and other_family_evaluated < scan_limit:
+                other_family_evaluated += 1
+            else:
+                ordinary_evaluated += 1
+        elif not held:
+            # A later independent route supersedes the earlier held route,
+            # without a second issue read or a second scan allowance.
+            excluded[:] = [row for row in excluded if (row["repo"].casefold(), row["number"]) != key]
+        node = node_cache[key]
         item = {
             **node["item"],
             "blocked_by": node.get("blockers") or [],
@@ -1338,10 +1400,14 @@ def rank_direction_work(
         if reason in {"completed", "stale_needs_review", "unknown_dependencies", "pull_request"}:
             excluded.append(item)
             degraded += reason == "unknown_dependencies"
+            if reason == "unknown_dependencies":
+                unavailable_relationships.append({**step, "detail": item.get("detail"),
+                                                  "truncated_relationships": item.get("truncated_relationships", [])})
             continue
         reports = [] if item.get("wait_finding") else node.get("waiting") or []
-        waiting.extend({**report, "milestone": milestone, "via": via} for report in reports)
-        if reason in {"waiting", "wait_review_required"} and not reports and not tracking:
+        if key not in waits_recorded:
+            waiting.extend({**report, "milestone": milestone, "via": via} for report in reports)
+        if key not in waits_recorded and reason in {"waiting", "wait_review_required"} and not reports and not tracking:
             waiting.append({
                 **step,
                 "milestone": milestone,
@@ -1350,23 +1416,34 @@ def rank_direction_work(
                 "reported_by": item["url"],
                 "reported_at": item.get("updated_at"),
             })
+        waits_recorded.add(key)
         if tracking:
             track_next_actions[milestone["title"]] = {
                 "track": item["url"],
                 "references": next_action_references(status_text or ""),
             }
-        if reason in {"waiting", "wait_review_required", "label_blocked_without_native_edge"} and not tracking:
-            excluded.append(item)
-            degraded += reason == "label_blocked_without_native_edge"
-            continue
+        if reason == "label_blocked_without_native_edge":
+            item["label_finding"] = {"kind": "stale_blocked_label", **step}
+        own_item = item
+        if held_parents:
+            item = include_parent_context(item, held_parents, complete=True, tracking_roots=tracks)
         if blockers or children:
-            excluded.append({**item, "exclusion": "tracking" if tracking else reason or "delegated_to_open_sub_issues"})
+            excluded.append({**item, "exclusion": "tracking" if tracking else item.get("exclusion") or "delegated_to_open_sub_issues"})
             # Read blockers first, then independent child work. Rank all actionable
             # leaves with the same milestone/dependency/age ordering as local next.
             edges = [(edge, "blocked_by") for edge in blockers]
             edges += [(edge, "sub_issue") for edge in children]
+            child_keys = {(edge["repo"].casefold(), edge["number"]) for edge in children}
             for edge, relationship in reversed(edges):
-                pending.append(({**edge, "relationship": relationship}, milestone, via, False))
+                edge_is_child = (edge["repo"].casefold(), edge["number"]) in child_keys
+                if edge_is_child:
+                    inherits = bool(held_parents) or (not tracking and parent_holds_child(own_item, edge))
+                else:
+                    inherits = (not tracking and whole_plan_wait(own_item)) or any(whole_plan_wait(parent) for parent in held_parents)
+                # Keep intermediate ancestors as well as wait owners: a named
+                # exemption belongs to that parent's immediate native child.
+                parents = [own_item, *held_parents] if inherits else []
+                pending.append(({**edge, "relationship": relationship}, milestone, via, False, parents))
         elif tracking and not (
             item.get("plan_status") == "active" and not reports
             and re.search(r"(?im)^\s*State:\s*active\b", status_text or "")
@@ -1384,7 +1461,7 @@ def rank_direction_work(
                 *(item.get("reasons") or []),
             ]
             candidates.append(item)
-        elif reason:
+        elif item.get("exclusion"):
             excluded.append(item)
         else:
             item["reasons"] = [
@@ -1400,7 +1477,8 @@ def rank_direction_work(
         "candidate_count": len(candidates),
         "excluded": excluded,
         "waiting": waiting,
-        "findings": [item["wait_finding"] for item in [*candidates, *excluded] if item.get("wait_finding")],
+        "findings": [item[field] for item in [*candidates, *excluded]
+                     for field in ("wait_finding", "label_finding") if item.get(field)],
         "completed_milestones": [title for title in milestone_titles if title in completed],
         "tracking_roots": [{"repo": root["repo"], "number": root["number"]} for root in tracks],
         "tracking_milestones": [{"repo": root["repo"], "number": root["number"], "milestone": root["milestone"]} for root in tracks],
@@ -1414,6 +1492,7 @@ def rank_direction_work(
         "dependency_context": {
             "complete": not (degraded or truncated or missing),
             "degraded_count": degraded,
+            "unavailable_relationships": unavailable_relationships,
             "missing_tracking_milestones": missing,
         },
     }
