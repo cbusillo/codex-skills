@@ -100,24 +100,6 @@ skills:
           notes: Metadata and references covered by repo validation.
     known_gaps:
       - No browser harness performance scenario yet.
-  design-collaboration:
-    status: active
-    risk_classes:
-      - planning
-      - github_mutation
-    checks:
-      - check_id: skill-repo-validation
-        kind: static_validator
-        mode: ci
-        dimension: metadata
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Metadata and references covered by repo validation.
-    known_gaps:
-      - No advisory scenario yet for design handoff routing.
   direction:
     status: active
     risk_classes:
