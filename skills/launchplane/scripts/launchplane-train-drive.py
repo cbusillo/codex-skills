@@ -104,8 +104,9 @@ class DriveIO:
     pull_request: Callable[[str, int], dict[str, Any] | None]
     update_branch: Callable[[str, int], bool]
     failing_checks: Callable[[str, str], list[dict[str, str]] | None]
-    # Numbers of ready-to-merge PRs merged at or after an epoch time.
-    merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
+    # Bounded GitHub landing inventory, independent of mutable enqueue labels.
+    merged_since: Callable[[str, float], dict[str, Any]] = lambda _repository, _since: {
+        "numbers": [], "complete": False, "reason": "unavailable"}
     quota_wait: Callable[[], float] = lambda: 0.0
     # Reconciles the installed catalog after a landing; None when the repository is not this catalog.
     reconcile: Callable[[str, str], dict[str, Any] | None] | None = None
@@ -156,6 +157,7 @@ class DriveState:
     own_refusal_streak: int = 0
     controller_evidence: list[dict[str, Any]] = field(default_factory=list)
     recovery: dict[str, Any] | None = None
+    companion_inventory: dict[str, Any] = field(default_factory=dict)
 
 
 class DriverLockError(Exception):
@@ -548,14 +550,25 @@ def _finish_landing(
                 break
             if finish_pass + 1 < settings.max_stack_finish_passes:
                 _pause(settings, io, state)
-    # Batch companions may be missing from projected evidence; report every
-    # ready-to-merge PR that merged while this driver ran.
-    for number in io.merged_since(settings.repository, started):
-        state.batch.add(number)
+    # Service membership is authoritative. Recover omitted batch members only
+    # when GitHub independently ties them to the target's exact landing commit.
+    inventory = io.merged_since(settings.repository, started)
+    state.companion_inventory = {key: value for key, value in inventory.items() if key != "numbers"}
+    landing_sha = state.landed.get(settings.number)
+    for number in inventory["numbers"]:
+        if number in state.batch or not landing_sha:
+            continue
+        companion = io.pull_request(settings.repository, number)
+        if companion and companion.get("merged") and companion.get("merge_commit_sha") == landing_sha:
+            state.batch.add(number)
     _record_landings(settings, io, state, emit)
 
 
 def _remember_batch(result: dict[str, Any], state: DriveState) -> None:
+    for key in ("candidate", "landing_plan"):
+        for number in (result.get(key) or {}).get("pull_request_numbers") or ():
+            if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+                state.batch.add(number)
     dry_run = result.get("dry_run_result") or {}
     for number in dry_run.get("queue_order") or ():
         if isinstance(number, int):
@@ -642,6 +655,7 @@ def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[
             "landing_sha": state.landed.get(settings.number, ""),
             "prs": prs,
             "controller_evidence": state.controller_evidence,
+            **({"companion_inventory": state.companion_inventory} if state.companion_inventory else {}),
             "actions": [f"stop_{outcome}"],
             **({"controller_recovery": state.recovery} if state.recovery is not None else {}),
             **({"stack_finish": state.stack_finish} if state.stack_finish else {}),
@@ -791,27 +805,29 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         return [{"name": run.get("name", ""), "conclusion": run["conclusion"], "url": run.get("details_url", "")}
                 for run in payload if run.get("conclusion") in FAILING_CONCLUSIONS]
 
-    def merged_since(repository: str, since: float) -> list[int]:
+    def merged_since(repository: str, since: float) -> dict[str, Any]:
+        limit = 500
         try:
-            payload = reader.get_json(
-                f"/repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page=50", step="merged_since"
+            payload = reader.paged_json(
+                f"/repos/{repository}/pulls", step_prefix="merged_since",
+                params={"state": "closed", "sort": "updated", "direction": "desc"}, limit=limit + 1,
             )
         except github_read.GitHubReadError as error:
             if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
                 raise
-            return []
-        if not isinstance(payload, list):
-            return []
+            return {"numbers": [], "complete": False, "reason": "read_unavailable"}
         numbers = []
-        for item in payload:
+        for item in payload[:limit]:
             merged_at = str(item.get("merged_at") or "")
             try:
                 merged = calendar.timegm(time.strptime(merged_at, "%Y-%m-%dT%H:%M:%SZ"))
             except ValueError:
                 continue
-            if merged >= since and "ready-to-merge" in [label.get("name") for label in item.get("labels") or []]:
+            if merged >= since:
                 numbers.append(int(item["number"]))
-        return numbers
+        return {"numbers": numbers, "complete": len(payload) <= limit,
+                "reason": "complete" if len(payload) <= limit else "inventory_limit",
+                "observed_count": min(len(payload), limit), "limit": limit}
 
     def quota_wait() -> float:
         # Launchplane currently projects upstream failures as github_request_failed.
@@ -923,7 +939,7 @@ def main(argv: list[str]) -> int:
             if holder is not None:
                 outcome = _stop(settings, DriveState(batch={settings.number}), emit, "needs_owner",
                                 reason="another local driver is running for this train", running_driver=holder, prs=[],
-                                recommendation="Add ready-to-merge and leave the PR to the running driver. "
+                                recommendation="Use the enqueue label from active Launchplane policy and leave the PR to the running driver. "
                                                "If it exits before this PR lands, rerun this driver. "
                                                "No Director decision is needed for local contention.")
             else:

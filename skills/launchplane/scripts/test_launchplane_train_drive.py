@@ -121,7 +121,7 @@ class FakeTrain:
             pull_request=self.pull_request,
             update_branch=self.update_branch,
             failing_checks=self.failing_checks,
-            merged_since=lambda _repository, _since: self.companions,
+            merged_since=lambda _repository, _since: {"numbers": self.companions, "complete": True},
             reconcile=self.reconcile,
             now=lambda: self.clock,
             sleep=self.sleep,
@@ -215,7 +215,6 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                          (train_drive.EXIT_CODES["needs_owner"], "needs_owner", 8))
         self.assertEqual(stop["prs"], [])  # Refusal does not read or assert GitHub state.
         self.assertTrue(stop["running_driver"]["started_at"])
-        self.assertIn("ready-to-merge", stop["recommendation"])
         for settings in (train_drive.DriveSettings(repository="other/app", number=9),
                          train_drive.DriveSettings(repository=REPO, number=9, base_branch="release")):
             with train_drive.local_driver(settings) as holder:
@@ -676,8 +675,51 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
     def test_batch_companions_missing_from_the_queue_are_still_reported(self) -> None:
         train = FakeTrain([_response("land_batch")], merge_after={7: 1, 9: 1})
         train.companions = [9]
+        read = train.pull_request
+        train.pull_request = lambda repo, number: {**read(repo, number), "merge_commit_sha": "shared-landing"}
         _, events = _drive(train)
         self.assertEqual({pr["number"]: pr["outcome"] for pr in events[-1][1]["prs"]}, {7: "landed", 9: "landed"})
+
+    def test_unrelated_concurrent_landing_is_not_a_batch_companion(self) -> None:
+        train = FakeTrain([_response("land_batch")], merge_after={7: 1, 9: 1})
+        train.companions = [9]
+        _, events = _drive(train)
+        self.assertEqual([pr["number"] for pr in events[-1][1]["prs"]], [7])
+
+    def test_service_membership_survives_missing_queue_and_different_merge_commits(self) -> None:
+        for component in ("candidate", "landing_plan"):
+            with self.subTest(component=component):
+                train = FakeTrain([_response("land_batch", **{component: {"pull_request_numbers": [7, 8]}})],
+                                  merge_after={7: 1, 8: 1})
+                _, events = _drive(train)
+                self.assertEqual({pr["number"]: pr["outcome"] for pr in events[-1][1]["prs"]},
+                                 {7: "landed", 8: "landed"})
+
+    def test_live_companion_inventory_ignores_enqueue_labels_and_reports_bounds(self) -> None:
+        rows = [{"number": number, "merged_at": "2026-10-16T12:00:00Z", "labels": labels}
+                for number, labels in ((8, [{"name": "ship-it"}]), (9, []))]
+        with patch.object(train_drive.github_read, "GitHubReader") as reader_class:
+            reader = reader_class.return_value
+            reader.paged_json.return_value = rows
+            io = train_drive.live_io(180)
+            self.assertEqual(io.merged_since(REPO, 0)["numbers"], [8, 9])
+            self.assertTrue(io.merged_since(REPO, 0)["complete"])
+            # Fill the reader's requested bound, including its overflow sentinel.
+            limit = reader.paged_json.call_args.kwargs["limit"]
+            reader.paged_json.return_value = [rows[0]] * limit
+            inventory = io.merged_since(REPO, 0)
+            self.assertFalse(inventory["complete"])
+            self.assertEqual(inventory["reason"], "inventory_limit")
+
+    def test_incomplete_companion_inventory_is_in_terminal_evidence(self) -> None:
+        train = FakeTrain([], merge_after={7: 0})
+        io = train.io()
+        io.merged_since = lambda *_args: {"numbers": [], "complete": False, "reason": "read_unavailable"}
+        events = []
+        outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
+                                    lambda event, payload: events.append((event, payload)))
+        self.assertEqual(outcome, "landed")
+        self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
 
     def test_a_stack_landing_observes_the_service_finishing_children(self) -> None:
         train = FakeTrain(
@@ -1109,7 +1151,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         def factory(*args, **kwargs):
             io = live_factory(*args, **kwargs)
             io.pull_request = train.pull_request
-            io.merged_since = lambda *_args: []
+            io.merged_since = lambda *_args: {"numbers": [], "complete": True}
             io.reconcile = lambda *_args: None
             io.reconcile_plans = lambda *_args: None
             return io

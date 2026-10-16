@@ -174,6 +174,12 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   Only a verified GitHub merge supplies a child's `merge_commit_sha`; a carried
   child's value stays empty. Failed reads keep prior verified terminal results,
   while unavailable nonterminal members are `unknown`.
+  Candidate and landing-plan membership come from the service projection.
+  GitHub history can recover omitted companions sharing the target's exact
+  landing commit, regardless of their current enqueue labels. The terminal
+  `companion_inventory` reports whether that bounded history read completed;
+  a cap or unavailable read leaves companion coverage incomplete even when the
+  target's landing is verified.
 - **Batch Evidence**: For flat batch runs, report the dry-run/admission reason,
   candidate record id and candidate SHA, required-check status on the candidate
   commit, landing-plan record id, each landed PR number and merge commit, managed
