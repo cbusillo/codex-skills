@@ -416,6 +416,12 @@ class TrackTests(unittest.TestCase):
         self.assertTrue(self.flagged(self.track("October 15, 2026", [same_day])))
         self.assertTrue(self.flagged(self.track(None, [same_day])))
 
+    def test_iso_offsets_and_fractions_are_exact(self):
+        self.assertEqual(sweep.verified_at("Last verified: 2026-10-16T20:00:00.123+02:00"),
+                         dt.datetime(2026, 10, 16, 18, 0, 0, 123000, tzinfo=dt.timezone.utc))
+        child = self.child(closed_at="2026-10-16T19:00:00Z")
+        self.assertTrue(self.flagged(self.track("2026-10-16T20:00:00+02:00", [child])))
+
 
 class FakeReader:
     def __init__(self):
@@ -463,7 +469,7 @@ class InventoryTests(unittest.TestCase):
 
     def test_track_children_are_read_once_and_only_changed_ones_outside_inventory(self):
         self.reader.repositories["repos/cbusillo/direction"] = {"archived": False, "default_branch": "main"}
-        body = "## Current Status\n\nLast verified: 2026-10-15T12:00:00Z\n"
+        body = "## Current Status\n\nLast verified: 2026-10-15T14:00:00+02:00\n"
         self.reader.pages[("repos/cbusillo/direction/issues", 1, "open")] = [
             {"number": 3, "state": "open", "title": "Track: CM website live and used", "body": body, "comments": 0},
             {"number": 4, "state": "open", "title": "Not a track", "body": body, "comments": 0}]

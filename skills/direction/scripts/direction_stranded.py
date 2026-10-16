@@ -76,11 +76,12 @@ def verified_at(body: str | None) -> dt.datetime | None:
     text = text[text.find("Current Status"):] if "Current Status" in text else text
     line = LAST_VERIFIED.search(text)
     date = re.search(DATE, line[1], re.I) if line else None
+    if date and "T" in date[0]:
+        exact = stamp(date[0])
+        return exact.astimezone(UTC) if exact else None
     day = calendar(date[0]) if date else None
     if day is None:
         return None
-    if "T" in date[0]:
-        return day
     local = dt.datetime(day.year, day.month, day.day, tzinfo=EASTERN)
     if clock := CLOCK.search(line[1], date.end()):
         hour = int(clock[1]) % 12 + (12 if clock[3].upper() == "P" else 0)
