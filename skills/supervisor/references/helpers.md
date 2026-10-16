@@ -500,6 +500,98 @@ the Launchplane landing hold. First-class service holds and atomic admission
 belong to [launchplane#3327](https://github.com/cbusillo/launchplane/issues/3327)
 service admission.
 
+## Daily stranded-work service
+
+`scripts/stranded_service.py` uses the persistent service runner's locks,
+process cleanup and reconciliation markers for a separate daily launchd job.
+It calls the existing direction audit in stranded Markdown mode and invokes an
+existing sender. It contains no Discord client or credentials. The Supervisor
+installs and starts it after merge; preparing or rendering a job never starts it.
+Use the installed runtime catalog, never a task worktree.
+
+Keep this configuration private. Select the same inventory and trusted authors
+as the Supervisor's existing question queue. Supply the existing Discord helper
+as an absolute argument array; it receives Markdown on stdin, and `{report}` in
+an argument expands to the retained report path for file-based senders. The
+helper must exit zero only after confirmed delivery and retain its message
+receipt on stdout. A session-only MCP reply tool cannot serve as this command.
+If no standalone route exists, resolve that on the owning issue before activation;
+do not invent a destination or provision credentials.
+
+```json
+{
+  "uv": "/absolute/path/to/uv",
+  "catalog": "/runtime/catalog",
+  "state_dir": "/private/stranded-state",
+  "scan_args": ["--stranded-owner", "OWNER", "--question-queue", "OWNER/CATALOG#QUEUE", "--director-name", "DIRECTOR", "--max-requests", "2000", "--deadline-seconds", "600"],
+  "delivery_argv": ["/absolute/existing-discord-helper", "--file", "{report}"],
+  "hour": 7,
+  "minute": 30
+}
+```
+
+The calendar uses the Mac's system timezone: verify it is US Eastern for a
+7:30 AM ET schedule. launchd coalesces a missed calendar invocation after sleep;
+this user LaunchAgent requires the user to be logged in, but no terminal or
+agent session. `KeepAlive` and `RunAtLoad` are disabled. One successful delivery
+per local calendar day suppresses duplicate kickstarts; failures do not become
+successful deliveries. Exit 3 from the collector is delivered with coverage
+warnings and retained as `scan_exit_code: 3` in the daily receipt. The runner
+exits zero after the sender succeeds so launchd does not replay that delivery.
+Other collector failures retain output without sending it. Scan and delivery
+have 15-minute and two-minute bounds, respectively.
+
+After filling the private configuration with verified existing routing, the
+Supervisor renders, installs and starts only this job:
+
+```sh
+uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py render --config /private/stranded.json --output /private/stranded-jobs
+install -m 600 /private/stranded-jobs/com.codex-skills.supervisor.stranded.plist ~/Library/LaunchAgents/com.codex-skills.supervisor.stranded.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.codex-skills.supervisor.stranded.plist
+```
+
+Trigger the first digest immediately, then inspect the logs and receiver:
+
+```sh
+launchctl kickstart "gui/$(id -u)/com.codex-skills.supervisor.stranded"
+launchctl print "gui/$(id -u)/com.codex-skills.supervisor.stranded"
+```
+
+`state_dir` retains daily Markdown, collector stderr, delivery stdout/stderr,
+delivery status JSON and runner logs. A zero sender exit records transport
+success; record the actual Discord message link and Chris's receiver evidence
+on the owning issue before calling daily delivery active. A failed, timed out
+or interrupted send leaves `daily.stranded.reconcile`. Later invocations refuse
+to send until the Supervisor checks the retained outcome at the destination.
+If delivered, record its verified message URL so the schedule resumes without
+replaying that day's digest:
+
+```sh
+uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --config /private/stranded.json --delivered-url https://discord.com/channels/GUILD/CHANNEL/MESSAGE
+```
+
+If confirmed unsent, clear the marker and kickstart once:
+
+```sh
+uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --config /private/stranded.json
+```
+
+To stop and remove the job:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.codex-skills.supervisor.stranded"
+rm ~/Library/LaunchAgents/com.codex-skills.supervisor.stranded.plist
+```
+
+Keep private configuration and evidence for recovery. Stop before updating or
+rotating its files and verify children exited. Pull the landed runtime catalog
+through the supported update path, render again, review and bootstrap the job.
+To roll back, restore the previous reviewed configuration/catalog revision and
+render/bootstrap it after reconciling any pending send. Other Supervisor jobs
+and GitHub records need no change. Offline tests:
+`uv run skills/supervisor/scripts/test_stranded_service.py` and
+`uv run skills/supervisor/scripts/test_services.py`.
+
 ## Persistent Supervisor services
 
 On the Director's Mac, launchd owns four jobs: enqueue, drive, foreign and
