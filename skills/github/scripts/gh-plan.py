@@ -51,6 +51,7 @@ import github_next_queue
 import github_next_reads
 import github_plan_claim
 import github_plan_wait
+import github_plan_trigger
 import github_plan_release
 import github_plan_landing
 import github_agent
@@ -2026,7 +2027,7 @@ def cmd_show(args: argparse.Namespace) -> None:
 
 def wait_authors(repo: str) -> set[str]:
     """Use the same primary and historical automation identities as managed plans."""
-    return set(github_identity.configured_bot_logins()) | ({EXPECTED_ACTOR} if EXPECTED_ACTOR else set()) | {repo.split('/')[0]}
+    return github_plan_wait.authors(repo, expected_actor=EXPECTED_ACTOR)
 
 
 def current_wait(issue: dict[str, Any], comments: list[dict[str, Any]], repo: str) -> dict[str, Any]:
@@ -5154,6 +5155,19 @@ def close_error_with_recovery(
 
 
 def cmd_close(args: argparse.Namespace) -> None:
+    trigger = None
+    if getattr(args, "reopen_trigger", None) is not None:
+        try:
+            trigger = json.loads(args.reopen_trigger)
+            github_plan_trigger.validate(trigger)
+        except ValueError as exc:
+            raise PlanError(f"Invalid --reopen-trigger: {exc}") from exc
+    if getattr(args, "clear_reopen_trigger", None) is not None:
+        trigger = {"version": 1, "state": "clear", "evidence": args.clear_reopen_trigger}
+        try:
+            github_plan_trigger.validate(trigger)
+        except ValueError as exc:
+            raise PlanError(str(exc)) from exc
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     planning_checkout = getattr(args, "planning_checkout", None)
@@ -5163,8 +5177,10 @@ def cmd_close(args: argparse.Namespace) -> None:
             raise PlanError("--planning-checkout must name a checkout of the resolved target repository")
     planning_config: dict[str, Any] = {}
     config = load_config(issue_repo, checkout=planning_checkout, discovery=planning_config)
-    close_reason = plan_close_reason(args.reason)
+    close_reason = plan_close_reason(args.reason or "completed")
     issue_actor, issue = get_issue(args.issue, repo)
+    if trigger is not None and args.reason is None and issue.get("state") == "closed":
+        close_reason = plan_close_reason(issue.get("state_reason") or "completed")
     if getattr(args, "only_closed", False) and not issue_matches_close_reason(issue, close_reason):
         raise PlanError("Landing reconciliation only repairs already-closed issues")
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
@@ -5176,6 +5192,60 @@ def cmd_close(args: argparse.Namespace) -> None:
     route_actor, gh_cmd, expected_actor = comment_route()
     actor = issue_actor
     completed_steps: list[str] = []
+    comment_result: dict[str, Any] = {}
+    if trigger is not None:
+        # Persist and read back the trigger before closing: failed publication
+        # must never leave a closed issue whose reopen event was lost.
+        if github_plan_wait.live_lines(close_comment, prefix=github_plan_trigger.PREFIX):
+            raise PlanError("Use only --reopen-trigger to supply the close comment's trigger")
+        trigger_comment = (close_comment + "\n\nReopen trigger: " + github_plan_trigger.describe(trigger) +
+                           "\n\n" + github_plan_trigger.marker(trigger)).strip()
+        _, prior_comments = collect_paged_rest_items(
+            f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
+            step_prefix="reopen_trigger_preflight")
+        try:
+            prior_trigger = github_plan_trigger.current(issue, prior_comments, wait_authors(issue_repo))
+        except ValueError as exc:
+            raise PlanError(f"Existing reopen trigger needs review before closure: {exc}") from exc
+        try:
+            comment_result = github_comment_core.comment(
+                "issue", number, trigger_comment, repo=issue_repo, gh_cmd=gh_cmd,
+                expected_actor=expected_actor, operation=CURRENT_OPERATION,
+                completed_steps=completed_steps, failed_step="post_reopen_trigger",
+                dedupe_body=prior_trigger == trigger)
+        except github_comment_core.CommentError as exc:
+            raise plan_error_from_comment(exc, completed_steps=completed_steps) from exc
+        completed_steps.append("post_reopen_trigger")
+        try:
+            _, latest_issue = get_issue(args.issue, repo)
+            _, latest_comments = collect_paged_rest_items(
+                f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
+                step_prefix="reopen_trigger_readback")
+            if github_plan_trigger.current(latest_issue, latest_comments, wait_authors(issue_repo)) != trigger:
+                raise PlanError("Published reopen trigger differs from the current authoritative record")
+        except (PlanError, ValueError) as exc:
+            raise PlanError(f"Reopen trigger readback failed; issue not closed: {exc}",
+                            payload={"comment": comment_result, "completed_steps": completed_steps,
+                                     "recovery": "Read the current trigger before retrying close"}) from exc
+        completed_steps.append("reopen_trigger_readback")
+        # This label is only a discovery view; the JSON record owns the event.
+        # Index before closure so an interrupted close never hides a trigger.
+        index_label = github_plan_trigger.INDEX_LABEL
+        indexed = trigger.get("state") != "clear" and trigger.get("kind") != "recurrence"
+        if indexed:
+            ensure_labels(issue_repo, [index_label], {"label_defs": {index_label: {
+                "color": "c5def5", "description": "Helper-managed view of structured reopen-trigger records"}}},
+                completed_steps=completed_steps)
+        if indexed or index_label.casefold() in {name.casefold() for name in normalize_labels(latest_issue.get("labels"))}:
+            try:
+                github_issue_core.edit_issue(number, repo=issue_repo,
+                    add_labels=[index_label] if indexed else None,
+                    remove_labels=None if indexed else [index_label],
+                    gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION)
+            except github_issue_core.IssueError as exc:
+                raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
+        completed_steps.append("index_reopen_trigger")
+        close_comment = ""
 
     project_result: dict[str, Any] = {}
     project_config = config.get("projects") or {}
@@ -5348,7 +5418,6 @@ def cmd_close(args: argparse.Namespace) -> None:
     else:
         completed_steps.append("labels_already_complete")
 
-    comment_result: dict[str, Any] = {}
     if close_comment:
         try:
             comment_result = github_comment_core.comment(
@@ -5991,8 +6060,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("close", help="Close a completed or not-planned plan safely")
     p.add_argument("issue")
+    trigger_options = p.add_mutually_exclusive_group()
+    trigger_options.add_argument("--reopen-trigger", help="Version-1 structured reopen-trigger JSON; published before closure")
+    trigger_options.add_argument("--clear-reopen-trigger", metavar="EVIDENCE", help="Retire a handled reopen trigger and its discovery label")
     p.add_argument("--planning-checkout", help="Target repository checkout for planning metadata outside automatic discovery")
-    p.add_argument("--reason", default="completed")
+    p.add_argument("--reason", help="Closure reason (default completed; trigger-only updates preserve an already-closed reason)")
     p.add_argument("--comment", dest="body")
     p.add_argument("--comment-file", dest="body_file")
     p.add_argument("--owner")

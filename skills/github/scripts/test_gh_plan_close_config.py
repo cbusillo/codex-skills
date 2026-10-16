@@ -79,7 +79,8 @@ class CloseConfigTests(unittest.TestCase):
                   explicit: bool = False, wrong_origin: bool = False,
                   workspace: dict | None = None, overrides: tuple[str, ...] = (),
                   fail_labels: bool = False, fail_project: bool = False,
-                  blocked: bool = False) -> tuple[int, dict, Mock, Mock, Mock]:
+                  blocked: bool = False, already_closed: bool = False, indexed: bool = False, trigger_comments: Mock | None = None,
+                  trigger_readback: Mock | None = None) -> tuple[int, dict, Mock, Mock, Mock]:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             caller, target = root / "caller", root / "elsewhere" / "target"
@@ -94,6 +95,10 @@ class CloseConfigTests(unittest.TestCase):
                 workspace_path.write_text(json.dumps(workspace))
             issue = {"number": 7, "state": "open", "labels": [{"name": "plan:active"}],
                      "html_url": "https://github.com/fixture/target/issues/7"}
+            if indexed:
+                issue["labels"].append({"name": PLAN.github_plan_trigger.INDEX_LABEL})
+            if already_closed:
+                issue.update(state="closed", state_reason="not_planned")
             state = Mock(return_value={"actor": "fixture-bot"})
             labels = Mock(return_value={"actor": "fixture-bot"})
             if fail_labels:
@@ -119,10 +124,13 @@ class CloseConfigTests(unittest.TestCase):
                                 repo_from_git=origin, workspace_config_path=Mock(return_value=workspace_path),
                                 get_issue=Mock(return_value=("fixture-bot", issue)),
                                 close_relationship_preflight=preflight,
+                                ensure_labels=Mock(return_value=("fixture-bot", [])),
+                                collect_paged_rest_items=trigger_readback or Mock(return_value=("fixture-bot", [])),
                                 comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
                                 project_meta=meta, project_fields=Mock(return_value={"Status": {"id": "status"}}),
                                 find_project_item=Mock(return_value={"id": "item"}), set_project_field=Mock()), \
                     patch.multiple(PLAN.github_issue_core, set_issue_state=state, edit_issue=labels), \
+                    patch.object(PLAN.github_comment_core, "comment", trigger_comments or Mock()), \
                     patch.object(sys, "argv", argv), contextlib.redirect_stdout(output), \
                     contextlib.redirect_stderr(io.StringIO()):
                 code = 0
@@ -184,13 +192,13 @@ class CloseConfigTests(unittest.TestCase):
         project.assert_not_called()
 
     def test_discovery_evidence_survives_partial_close_and_project_failure(self) -> None:
-        code, result, state, _, _ = self.run_close(fail_labels=True)
+        code, result, state, labels, _ = self.run_close(fail_labels=True)
         self.assertNotEqual(code, 0)
         state.assert_called_once()
         self.assertEqual(result["planning_config"]["status"], "unavailable")
         self.assertTrue(result["recovery"]["issue_closed"])
         self.assertEqual(result["recovery"]["completion_metadata"], "labels_incomplete")
-        code, result, state, _, _ = self.run_close(fail_project=True, overrides=("--project", "Explicit"))
+        code, result, state, labels, _ = self.run_close(fail_project=True, overrides=("--project", "Explicit"))
         self.assertEqual(code, 0)
         state.assert_called_once()
         self.assertTrue(result["project"]["warning"])
@@ -203,6 +211,116 @@ class CloseConfigTests(unittest.TestCase):
         state.assert_not_called()
         labels.assert_not_called()
         project.assert_not_called()
+
+
+    def test_close_persists_trigger_before_closing_and_keeps_exact_symptom(self):
+        event = {"version": 1, "kind": "recurrence", "evidence": "Director deferral",
+                 "symptom": "exact failure: request returned false"}
+        order = []
+        def published(*args, **kwargs):
+            order.append("published")
+            self.assertEqual(PLAN.github_plan_trigger.current({}, [{"user": {"login": "fixture"},
+                             "body": args[2]}], {"fixture"}), event)
+            return {"actor": "fixture-bot"}
+        def readback(*args, **kwargs):
+            order.append("readback")
+            return "fixture", [{"user": {"login": "fixture"}, "body": PLAN.github_plan_trigger.marker(event)}]
+        # The target account is fixture, so its owner-authored record is authoritative.
+        code, result, state, labels, _ = self.run_close(
+            overrides=("--reopen-trigger", json.dumps(event)),
+            trigger_comments=Mock(side_effect=published), trigger_readback=Mock(side_effect=readback))
+        self.assertEqual(code, 0, result)
+        self.assertLess(order.index("published"), len(order) - 1)
+        self.assertEqual(order[-1], "readback")
+        state.assert_called_once()
+        self.assertFalse(any(PLAN.github_plan_trigger.INDEX_LABEL in (call.kwargs.get("remove_labels") or [])
+                             for call in labels.call_args_list))
+
+    def test_failed_trigger_publication_or_readback_prevents_closure(self):
+        event = {"version": 1, "kind": "date", "evidence": "Director deferral", "at": "2026-12-01"}
+        for fail_publish in (True, False):
+            comment = Mock(return_value={"actor": "fixture-bot"})
+            if fail_publish:
+                comment.side_effect = PLAN.github_comment_core.CommentError("Publication failed", failure=PLAN.github_api_core.FailureDetail(
+                    cause="transport_error", message="offline fixture", retryable=False,
+                    fallback_eligible=False, disposition="stop", write_outcome="rejected"))
+            with self.subTest(fail_publish=fail_publish):
+                code, result, state, labels, project = self.run_close(
+                    overrides=("--reopen-trigger", json.dumps(event)), trigger_comments=comment)
+                self.assertNotEqual(code, 0)
+                self.assertFalse(result["ok"])
+                state.assert_not_called()
+                labels.assert_not_called()
+                project.assert_not_called()
+
+    def test_failed_discovery_index_prevents_closure(self):
+        event = {"version": 1, "kind": "date", "evidence": "Director deferral", "at": "2026-12-01"}
+        readback = Mock(return_value=("fixture", [{"user": {"login": "fixture"},
+                       "body": PLAN.github_plan_trigger.marker(event)}]))
+        code, result, state, _, _ = self.run_close(fail_labels=True,
+            overrides=("--reopen-trigger", json.dumps(event)), trigger_readback=readback)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(result["ok"])
+        state.assert_not_called()
+
+    def test_invalid_trigger_is_rejected_before_any_mutation(self):
+        code, result, state, labels, project = self.run_close(overrides=("--reopen-trigger", "{}"))
+        self.assertNotEqual(code, 0)
+        self.assertFalse(result["ok"])
+        state.assert_not_called()
+        labels.assert_not_called()
+        project.assert_not_called()
+
+
+    def test_retire_trigger_removes_index_and_preserves_existing_closed_reason(self):
+        event = {"version": 1, "state": "clear", "evidence": "Fired event reviewed; no further action"}
+        comments = Mock(return_value={"actor": "fixture-bot"})
+        readback = Mock(return_value=("fixture", [{"user": {"login": "fixture"},
+                        "body": PLAN.github_plan_trigger.marker(event)}]))
+        code, result, state, labels, _ = self.run_close(already_closed=True, indexed=True,
+            overrides=("--clear-reopen-trigger", event["evidence"]), trigger_comments=comments,
+            trigger_readback=readback)
+        self.assertEqual(code, 0, result)
+        state.assert_not_called()
+        self.assertTrue(any(PLAN.github_plan_trigger.INDEX_LABEL in (call.kwargs.get("remove_labels") or [])
+                            for call in labels.call_args_list))
+        self.assertEqual(PLAN.github_plan_trigger.current({}, [{"user": {"login": "fixture"},
+                         "body": comments.call_args.args[2]}], {"fixture"}), event)
+
+
+    def test_same_clear_text_can_supersede_a_later_rearmed_event_without_an_index(self):
+        clear = {"version": 1, "state": "clear", "evidence": "Reviewed; no action"}
+        rearmed = {"version": 1, "kind": "date", "evidence": "New deferral", "at": "2027-01-01"}
+        clear_body = "Reopen trigger: " + PLAN.github_plan_trigger.describe(clear) + "\n\n" + PLAN.github_plan_trigger.marker(clear)
+        comments = [{"user": {"login": "fixture"}, "body": body} for body in
+                    (clear_body, PLAN.github_plan_trigger.marker(rearmed))]
+        def publish(*args, **kwargs):
+            if not kwargs["dedupe_body"] or not any(c["body"] == args[2] for c in comments):
+                comments.append({"user": {"login": "fixture"}, "body": args[2]})
+            return {"actor": "fixture-bot"}
+        code, result, state, labels, _ = self.run_close(already_closed=True,
+            overrides=("--clear-reopen-trigger", clear["evidence"]),
+            trigger_comments=Mock(side_effect=publish),
+            trigger_readback=Mock(side_effect=lambda *a, **kw: ("fixture", list(comments))))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(PLAN.github_plan_trigger.current({}, comments, {"fixture"}), clear)
+        state.assert_not_called()
+        self.assertFalse(any(PLAN.github_plan_trigger.INDEX_LABEL in (call.kwargs.get("remove_labels") or [])
+                             for call in labels.call_args_list))
+
+
+    def test_malformed_existing_record_returns_a_structured_failure_without_writes(self):
+        bad = Mock(return_value=("fixture", [{"user": {"login": "fixture"},
+                    "body": PLAN.github_plan_trigger.PREFIX + "invalid-json -->"}]))
+        published = Mock()
+        code, result, state, labels, _ = self.run_close(
+            overrides=("--clear-reopen-trigger", "Reviewed malformed record"),
+            trigger_readback=bad, trigger_comments=published)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(result["ok"])
+        published.assert_not_called()
+        state.assert_not_called()
+        labels.assert_not_called()
 
 
 if __name__ == "__main__":
