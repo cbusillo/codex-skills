@@ -40,17 +40,23 @@ def test_october_16_delivered_and_unstarted_status_shapes() -> None:
         row = item(record['action'], record['state'], int(number))
         status = queue.current_status(row['discussion'], {'owner'})
         result = queue.remaining_work(status)
-        if number == '3267':
-            assert result['state'] == 'engineering', result
+        assert result['state'] == record['expected_work_state'], (number, result)
+        if record['expected_work_state'] == 'engineering':
             assert classify(row)['state'] == 'available'
         else:
             assert result['state'] != 'engineering', (number, result)
             assert classify(row)['state'] != 'available', (number, classify(row))
     for state in ['Active; prerequisite #3266 merged via PR #3310.', 'Active; integration remains unstarted.']:
         assert classify(item(fixtures['3267']['action'], state))['state'] == 'available'
+    assert classify(item('Verify deployed export.', 'Active; first source slice merged and prerequisite #10 landed'))['state'] == 'verification'
     # Finished clauses cannot create or erase a genuine present source step.
     for action in ['Earlier repair is complete. Implement the remaining parser.',
-                   'Implement the remaining parser; the prerequisite repair is merged.']:
+                   'Implement the remaining parser; the prerequisite repair is merged.',
+                   'An agent implements the CLI wiring once #3266 is merged.',
+                   'Fix the importer so the backfill is complete.',
+                   'Earlier repair is complete and an agent implements the remaining parser.',
+                   'Since #3266 is already merged, an assigned agent integrates the generic-web driver.',
+                   'Prerequisite #3266 is complete, so implement the remaining parser.']:
         assert classify(item(action, 'Active; first slice merged'))['state'] == 'available'
 
 

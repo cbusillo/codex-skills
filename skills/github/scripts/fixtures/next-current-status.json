@@ -1,22 +1,27 @@
 {
   "3144": {
     "state": "Active; real remaining work, with delivered source preserved.",
-    "action": "An engineering agent searches retained October 8 logs for the two original trace endpoints/causes and records the result; any reproduced remaining diagnostic defect gets its own completing PR. #3568 retry/error repair is complete. Historical attribution is unknown; do not add a deployed checklist comeback check."
+    "action": "An engineering agent searches retained October 8 logs for the two original trace endpoints/causes and records the result; any reproduced remaining diagnostic defect gets its own completing PR. #3568 retry/error repair is complete. Historical attribution is unknown; do not add a deployed checklist comeback check.",
+    "expected_work_state": "scope_review"
   },
   "3057": {
     "state": "Active; real remaining work, with delivered source preserved.",
-    "action": "An engineering agent investigates available retained evidence for the original October 5 credential failure and records the diagnostic stage, with a completing PR only for a reproduced remaining defect. #3571 diagnostic repair is merged; Client cbusillo was already recorded. Historical cause remains unknown; no deployed comeback check is assigned."
+    "action": "An engineering agent investigates available retained evidence for the original October 5 credential failure and records the diagnostic stage, with a completing PR only for a reproduced remaining defect. #3571 diagnostic repair is merged; Client cbusillo was already recorded. Historical cause remains unknown; no deployed comeback check is assigned.",
+    "expected_work_state": "scope_review"
   },
   "3147": {
     "state": "Waiting for original-artifact qualification; both requested source fixes are already merged.",
-    "action": "The Supervisor carries qualification of the original 58e5af75 rollback artifact into a later approved release and records the exact target and outcome here. Fresh Accept creates a new baseline; it does not resume the original stopped decision."
+    "action": "The Supervisor carries qualification of the original 58e5af75 rollback artifact into a later approved release and records the exact target and outcome here. Fresh Accept creates a new baseline; it does not resume the original stopped decision.",
+    "expected_work_state": "verification"
   },
   "3312": {
     "state": "Waiting for Chris's calendar-policy activation decision; source already delivered by merged #3574.",
-    "action": "After a reply from cbusillo or a recorded Director decision, an executing agent verifies the actual Odoo company/transport references, configures the approved per-product policy through the supported profile API, and records deployed calendar/window readback."
+    "action": "After a reply from cbusillo or a recorded Director decision, an executing agent verifies the actual Odoo company/transport references, configures the approved per-product policy through the supported profile API, and records deployed calendar/window readback.",
+    "expected_work_state": "scope_review"
   },
   "3267": {
     "state": "Active; prerequisite #3266 merged via PR #3310; generic-web driver integration remains unstarted.",
-    "action": "An assigned agent integrates generic-web private readiness and atomic switching for application and Compose targets."
+    "action": "An assigned agent integrates generic-web private readiness and atomic switching for application and Compose targets.",
+    "expected_work_state": "engineering"
   }
 }

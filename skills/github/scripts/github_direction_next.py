@@ -446,15 +446,26 @@ def reviewed_remaining_scope(item: dict[str, Any], review: dict[str, Any]) -> bo
                 and bool(review.get("reason")) and bool(review.get("evidence")))
 
 
+def whole_plan_wait(parent: dict[str, Any]) -> bool:
+    """Preserve an explicit hold on all preparation across prerequisite links."""
+    record = parent.get("structured_wait") or {}
+    conditions = " ".join(value for wait in record.get("waits", []) for value in wait.values())
+    return bool(re.search(r"\b(?:all|any|whole|entire)\s+(?:(?:source|further|engineering)\s+)?(?:work|preparation|implementation|plan)\b", conditions, re.I))
+
+
 def parent_holds_child(parent: dict[str, Any], child: dict[str, Any]) -> bool:
     """A stale label is an issue finding; a real parent wait still has scope."""
     if parent.get("exclusion") not in {"waiting", "wait_review_required"}:
         return False
+    if whole_plan_wait(parent):
+        return True
     evidence = (parent.get("structured_wait") or {}).get("evidence", "")
     # Existing wait evidence can explicitly split out an independently
     # selectable child without clearing the parent's person/event wait.
     for clause in re.split(r"[;\n]|[.]\s+", evidence):
-        if not re.search(r"\b(?:owns?|is|remains?)\s+independently\s+selectable\b", clause, re.I):
+        if re.search(r"\b(?:if|once|after|when|until|only|unless|not|never)\b", clause, re.I):
+            continue
+        if not re.search(r"\b(?:(?:owns?|is|remains?)\s+independently\s+selectable|can\s+proceed\s+independently)\b", clause, re.I):
             continue
         refs = issue_references(clause, repo=parent["repo"], known_repositories={parent["repo"], child["repo"]})
         if any(ref["repo"].casefold() == child["repo"].casefold() and ref["number"] == child["number"] for ref in refs):
@@ -602,6 +613,12 @@ def tooling_capacity_context(
             continue
         if milestone["state"] != "matched":
             continue
+        if entry.get("exclusion") == "parent_waiting" and entry.get("via"):
+            parent = next((row for row in entries if row["url"] == entry.get("waiting_on_parent")), None)
+            if parent is not None and parent.get("exclusion") in {"waiting", "wait_review_required"}:
+                # This newly inspected descendant shares the graph parent's
+                # frontier. The parent still needs its complete own-wait review.
+                continue
         # Shared prerequisites may inherit only the first native path. Use the
         # recorded edges, not path membership, to recognize inspected containers.
         dependencies = [*entry.get("blocked_by", []), *entry.get("open_sub_issues", [])]
@@ -1325,7 +1342,10 @@ def rank_direction_work(
             refs = [entry[0] for entry in reversed(pending)
                     if (entry[0]["repo"].casefold(), entry[0]["number"]) not in seen]
             prefetch_nodes(refs[:max(0, scan_limit - ordinary_evaluated)])
-        ref, milestone, path, tracking, held_parents = pending.pop()
+        # Evaluate the visible unheld frontier before spending the remaining
+        # allowance on held subtrees. Those are still read, with the same bound.
+        next_index = next((index for index in range(len(pending) - 1, -1, -1) if not pending[index][4]), len(pending) - 1)
+        ref, milestone, path, tracking, held_parents = pending.pop(next_index)
         key = (ref["repo"].casefold(), ref["number"])
         step = {"repo": ref["repo"], "number": ref["number"], "url": ref["url"]}
         if "relationship" in ref:
@@ -1411,9 +1431,13 @@ def rank_direction_work(
             child_keys = {(edge["repo"].casefold(), edge["number"]) for edge in children}
             for edge, relationship in reversed(edges):
                 edge_is_child = (edge["repo"].casefold(), edge["number"]) in child_keys
-                parents = held_parents if edge_is_child else []
-                if not tracking and edge_is_child and parent_holds_child(own_item, edge):
-                    parents = [own_item, *parents]
+                if edge_is_child:
+                    inherits = bool(held_parents) or (not tracking and parent_holds_child(own_item, edge))
+                else:
+                    inherits = whole_plan_wait(own_item) or any(whole_plan_wait(parent) for parent in held_parents)
+                # Keep intermediate ancestors as well as wait owners: a named
+                # exemption belongs to that parent's immediate native child.
+                parents = [own_item, *held_parents] if inherits else []
                 pending.append(({**edge, "relationship": relationship}, milestone, via, False, parents))
         elif tracking and not (
             item.get("plan_status") == "active" and not reports

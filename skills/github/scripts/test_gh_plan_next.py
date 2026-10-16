@@ -3717,18 +3717,82 @@ def test_explicit_independent_child_keeps_other_waits_and_ancestry() -> None:
     parent = {"repo": "someone/product", "number": 3440, "url": "https://github.com/someone/product/issues/3440",
               "exclusion": "waiting", "discussion": {"complete": True}}
     for evidence in [f"{child['url']} is independently selectable preparation.",
-                     f"Native [#3777]({child['url']}) owns independently selectable preparation."]:
+                     f"Native [#3777]({child['url']}) owns independently selectable preparation.",
+                     f"{child['url']} can proceed independently."]:
         parent["structured_wait"] = {"evidence": evidence}
         assert not shared.parent_holds_child(parent, child)
         assert shared.parent_holds_child(parent, {**child, "number": 3778})
         held = shared.include_parent_context({**child, "exclusion": "waiting", "discussion": {"complete": True}},
                                              [parent], complete=True, tracking_roots=[])
         assert held["exclusion"] == "waiting"  # The child's own wait survives.
-    parent["structured_wait"] = {"evidence": f"{child['url']} is not independently selectable."}
-    assert shared.parent_holds_child(parent, child)
+    for evidence in [f"{child['url']} is not independently selectable.",
+                     f"{child['url']} is independently selectable only after Q362."]:
+        parent["structured_wait"] = {"evidence": evidence}
+        assert shared.parent_holds_child(parent, child)
 
 
 TESTS.append(test_explicit_independent_child_keeps_other_waits_and_ancestry)
+
+
+
+def test_explicit_whole_plan_wait_survives_prerequisites_of_held_children() -> None:
+    root = track("someone/direction", 1, "First")
+    parent = global_issue("someone/product", 10, labels=["plan", "plan:waiting"])
+    child = global_issue(parent["repo"], 11)
+    prep = global_issue(parent["repo"], 12)
+    ready = global_issue(parent["repo"], 20)
+    edges = {(root["repo"], 1): relationships(sub_issues=[parent, ready]),
+             (parent["repo"], 10): relationships(sub_issues=[child]),
+             (child["repo"], 11): relationships(blocked_by=[prep])}
+    module = load_module()
+    marker = module.github_plan_wait.marker(module.github_plan_wait.reviewed(
+        evidence="Client explicitly holds the whole plan.", waiting_for="Client confirms scope before any preparation",
+        ends_when="Client releases all work on the plan"))
+    comments = {(parent["repo"], 10): [{"user": {"login": "someone"}, "body": marker}]}
+    with global_fixture([root], [parent, child, prep, ready], edges, comments=comments) as (module, result, reads):
+        module.cmd_next(next_args())
+        assert [row["number"] for row in result["candidates"]] == [20]
+        assert any(row["number"] == 12 and row["exclusion"] == "parent_waiting" for row in result["excluded"])
+        assert len(reads) == len(set(reads)) == 4
+        module.cmd_next(next_args(scan_limit=3))
+        assert [row["number"] for row in result["candidates"]] == [20]
+        assert result["truncated"]
+
+
+TESTS.append(test_explicit_whole_plan_wait_survives_prerequisites_of_held_children)
+
+
+def test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier() -> None:
+    root = track("someone/direction", 1, "First")
+    parent = global_issue("someone/product", 10, labels=["plan", "plan:waiting"])
+    middle = global_issue(parent["repo"], 11)
+    leaf = global_issue(parent["repo"], 12)
+    tool = global_issue("someone/tools", 20)
+    edges = {(root["repo"], 1): relationships(sub_issues=[parent]),
+             (parent["repo"], 10): relationships(sub_issues=[middle]),
+             (middle["repo"], 11): relationships(sub_issues=[leaf])}
+    module = load_module()
+    marker = module.github_plan_wait.marker(module.github_plan_wait.reviewed(
+        evidence="#12 owns independently selectable preparation; #11 remains held.",
+        waiting_for="Client sequencing", ends_when="Client answers"))
+    comments = {(parent["repo"], 10): [{"user": {"login": "someone"}, "body": marker}]}
+    with global_fixture([root], [parent, middle, leaf], edges, comments=comments, discovered=[tool], clear_waits=[tool]) as (module, result, _reads):
+        module.load_direction = lambda *_: "# Direction\n## Milestones\n- `First`\n"
+        module.cmd_next(next_args())
+        assert not any(row["number"] == 12 for row in result["candidates"])
+        blocked = next(row for row in result["excluded"] if row["number"] == 12)
+        assert blocked["exclusion"] == "parent_waiting"
+        assert [row["number"] for row in blocked["discussion"]["parents"]] == [11, 10]
+        items = {row["number"]: row for row in [*result["excluded"], *result["candidates"]]}
+        context = {"issues": {"someone/product#10": reviewed(items[10], "waiting", waiting_on="person"),
+                              "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling")}}
+        with patch.object(module, "next_selection_context", return_value=context):
+            module.cmd_next(next_args())
+        assert result["tooling_capacity_context"]["admitted"], result["tooling_capacity_context"]
+        assert [row["number"] for row in result["available_candidates"]] == [20]
+
+
+TESTS.append(test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier)
 
 
 def main() -> None:

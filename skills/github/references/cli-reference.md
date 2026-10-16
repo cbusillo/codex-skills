@@ -1391,6 +1391,13 @@ of evidence; all unread references and incomplete coverage remain explicit.
   without rereading it. Stale blocked labels produce issue findings and do not
   degrade coverage; genuinely unread relationships are named in
   `dependency_context.unavailable_relationships`.
+  Held subtrees use the remaining allowance after the unheld frontier. A wait
+  explicitly covering all work or any preparation follows prerequisite links
+  too. Existing structured wait evidence can name an independent child with
+  an unconditional declaration such as `#123 owns independently selectable
+  preparation` or `#123 can proceed independently`; conditional or negated
+  declarations retain the hold. Maintain that evidence with `gh-plan.py wait`,
+  preserving every outstanding wait rather than clearing the parent record.
 - Both local and global output separate observed ownership in `underway`,
   current qualification in `verification_only`, and delivered mixed scope in
   `scope_review`. Each row exposes `queue.next_action` and the evidence/read
