@@ -1662,7 +1662,7 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         if key in source:
             projected[key] = (
                 _project_merge_train_stack_plan(source[key]) if key == "stack_collapse_plan"
-                else _project_merge_component(source[key], include_membership=key == "candidate")
+                else _project_merge_component(source[key], include_membership=key in {"candidate", "landing_plan"})
             )
     assert_public_safe_shape(projected)
     return projected

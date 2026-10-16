@@ -1772,6 +1772,7 @@ def test_current_launchplane_service_response_shapes() -> None:
         "status": "planned",
         "candidate_sha": "abc123",
         "entries_count": 1,
+        "pull_request_numbers": [42],
     }
 
     early_refusal = write_action.summarize_success(
