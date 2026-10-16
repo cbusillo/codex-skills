@@ -9729,10 +9729,12 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
               f"unresolved={len(payload.get('unresolved') or [])} failed={len(payload.get('failed') or [])}")
         for item in [*(payload.get("unresolved") or []), *(payload.get("failed") or [])]:
             if isinstance(item, dict):
-                print(safe_text("LEASE_UNRESOLVED: lease_id={lease_id} reason={reason} next_action={next_action}", {
+                next_action = item.get("next_action") or item.get("message")
+                print(safe_text("LEASE_UNRESOLVED: lease_id={lease_id} reason={reason}"
+                                + (" next_action={next_action}" if next_action else ""), {
                     "lease_id": item.get("lease_id"),
                     "reason": item.get("reason"),
-                    "next_action": item.get("next_action") or item.get("message"),
+                    "next_action": next_action,
                 }))
         if payload.get("dry_run"):
             print("No leases changed. Apply with cleanup-helper-leases --no-dry-run; retain any unresolved leases.")
@@ -11902,10 +11904,16 @@ def cleanup_stale_helper_lease(
         }
         if probe is not None:
             unresolved["open_probe"] = {"status": probe.get("status"), "reason": probe.get("reason")}
-            unresolved["next_action"] = (
-                f"The original IDE session reports this worktree {probe.get('status')} "
-                f"({probe.get('reason')}); retry cleanup after that open settles."
-            )
+            if not lease_open_acknowledged_by_session(lease):
+                unresolved["next_action"] = (
+                    "The original IDE session did not acknowledge every open request for this lease, so a late "
+                    "open cannot be ruled out; retry cleanup after the exact route is discoverable."
+                )
+            elif probe.get("status") != "not_open":
+                unresolved["next_action"] = (
+                    f"The original IDE session reports this worktree {probe.get('status')} "
+                    f"({probe.get('reason')}); retry cleanup after that open settles."
+                )
         return unresolved
     if dry_run:
         return {"status": "skipped", "reason": "ownership_preview_requires_apply",
@@ -11970,9 +11978,13 @@ def lease_open_acknowledged_by_session(lease: dict[str, Any]) -> bool:
     if lease.get("open_request_may_have_been_accepted") is not False:
         return False
     attempts = lease.get("open_attempts")
-    if not isinstance(attempts, list) or not attempts:
+    if not isinstance(attempts, list):
         return False
-    for attempt in attempts:
+    # App startup and "no matching IDE" entries sent no project-open request.
+    requests = [attempt for attempt in attempts if not project_open_was_not_requested([attempt])]
+    if not requests:
+        return False
+    for attempt in requests:
         if not isinstance(attempt, dict) or attempt.get("request_may_have_been_accepted") is True:
             return False
         identity = attempt.get("identity") if isinstance(attempt.get("identity"), dict) else {}

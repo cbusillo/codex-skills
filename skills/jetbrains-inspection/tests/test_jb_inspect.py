@@ -15121,19 +15121,33 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         )
 
     def test_live_original_session_reporting_project_not_open_releases_lease(self):
-        self.write_never_opened_lease()
-        identity, get = self.probe_ide("not_open", "project_not_open")
-        with identity, get as http_get, patch.object(jb_inspect, "cleanup_lifecycle") as close:
-            preview = self.run_cleanup(self.selected_id, dry_run=True)
-            self.assertEqual(preview["would_remove"], [str(self.selected_path)])
-            self.assertTrue(self.selected_path.exists())
-            result = self.run_cleanup(self.selected_id)
-        close.assert_not_called()
-        endpoint, params = http_get.call_args.args[1:3]
-        self.assertEqual((endpoint, params["probe"], params["lease_id"]), ("lifecycle/open", "true", self.selected_id))
-        self.assertEqual(result["removed"], [str(self.selected_path)])
-        self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 0)
-        self.assertFalse(self.selected_path.exists())
+        acknowledged = {"method": "bootstrapped_ide", "accepted": True, "ownership_registered": True,
+                        "lease_id": self.selected_id, "identity": {"session_id": "session", "port": 63342}}
+        histories = {
+            "running_ide": None,
+            # The IDE was started first; startup and "no matching IDE" entries sent no open request.
+            "bootstrapped_ide": [
+                {"method": "running_ide", "accepted": False, "reason": "no_matching_running_ide"},
+                {"method": "bootstrap_ide", "accepted": True},
+                acknowledged,
+            ],
+        }
+        for name, attempts in histories.items():
+            with self.subTest(name):
+                self.write_never_opened_lease(**({"open_attempts": attempts} if attempts else {}))
+                identity, get = self.probe_ide("not_open", "project_not_open")
+                with identity, get as http_get, patch.object(jb_inspect, "cleanup_lifecycle") as close:
+                    preview = self.run_cleanup(self.selected_id, dry_run=True)
+                    self.assertEqual(preview["would_remove"], [str(self.selected_path)])
+                    self.assertTrue(self.selected_path.exists())
+                    result = self.run_cleanup(self.selected_id)
+                close.assert_not_called()
+                endpoint, params = http_get.call_args.args[1:3]
+                self.assertEqual((endpoint, params["probe"], params["lease_id"]),
+                                 ("lifecycle/open", "true", self.selected_id))
+                self.assertEqual(result["removed"], [str(self.selected_path)])
+                self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 0)
+                self.assertFalse(self.selected_path.exists())
         self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
 
     def test_live_original_session_still_opening_or_unprovable_retains_lease(self):
@@ -15160,6 +15174,8 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
                 self.assertTrue(self.selected_path.exists())
                 if name == "opening":
                     self.assertIn("already_opening", unresolved["next_action"])
+                if name == "ambiguous_open_request":
+                    self.assertIn("did not acknowledge", unresolved["next_action"])
                 if name == "plugin_without_probe":
                     # An older plugin would treat the probe as a real open request.
                     http_get.assert_not_called()
