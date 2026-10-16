@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import sqlite3
@@ -841,6 +842,95 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", **env)
         self.assertEqual((code, result["model"], result["model_source"]),
                          (0, "replacement", "reported by the CLI (rerouted)"))
+
+    def test_google_isolates_concurrent_model_logs_and_rejects_shared_log_attribution(self) -> None:
+        base = self.home / ".gemini" / "antigravity-cli"
+        (base / "log").mkdir(parents=True)
+        first_conversation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        second_conversation = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        shared_log_text = (
+            'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-first"\n'
+            f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
+            'I1015 20:00:00.300000 2 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-second"\n'
+            f"I1015 20:00:00.400000 2 server.go:1233] Created conversation {second_conversation}\n"
+        )
+        for shared_path in (base / "cli.log", base / "log" / "cli-20261015_200000.log"):
+            shared_path.write_text(shared_log_text)
+        self.install(
+            "agy",
+            """#!/bin/sh
+log_file=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--log-file" ]; then
+    log_file="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+if [ -n "$log_file" ] && [ -n "$FAKE_AGY_OWN_LOG" ]; then
+  printf '%s' "$FAKE_AGY_OWN_LOG" > "$log_file"
+fi
+printf '%s' "$FAKE_AGY_JSON"
+""",
+        )
+
+        def run_one(requested: str, resolved: str, conversation: str, write_own_log: bool) -> tuple[int, dict]:
+            own_log = (
+                f'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="{resolved}"\n'
+                f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {conversation}\n"
+            )
+            return self.run_helper(
+                "run", "--provider", "google", "--repo", str(self.repo),
+                "--prompt-file", str(self.prompt), "--model", requested,
+                FAKE_AGY_OWN_LOG=own_log if write_own_log else "",
+                FAKE_AGY_JSON=json.dumps({"response": completed("none"), "conversation_id": conversation, "denied_actions": []}),
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(run_one, "requested-first", "resolved-first", first_conversation, True)
+            second_future = pool.submit(run_one, "requested-second", "resolved-second", second_conversation, True)
+            first_code, first_result = first_future.result()
+            second_code, second_result = second_future.result()
+
+        self.assertEqual(
+            (first_code, first_result["model"], first_result["model_source"]),
+            (0, "resolved-first", "reported by the CLI"),
+        )
+        self.assertEqual(
+            (second_code, second_result["model"], second_result["model_source"]),
+            (0, "resolved-second", "reported by the CLI"),
+        )
+        self.assertFalse(list(self.repo.glob(".model-review-*")), "per-run agy logs inside scratch must be cleaned up")
+
+        # When only a shared multi-conversation log is available, neither run may certify the other's label.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(run_one, "requested-first", "resolved-first", first_conversation, False)
+            second_future = pool.submit(run_one, "requested-second", "resolved-second", second_conversation, False)
+            first_code, first_result = first_future.result()
+            second_code, second_result = second_future.result()
+
+        self.assertEqual(
+            (first_code, first_result["model"], first_result["model_source"]),
+            (0, "requested-first", "requested, not reported by the CLI"),
+        )
+        self.assertEqual(
+            (second_code, second_result["model"], second_result["model_source"]),
+            (0, "requested-second", "requested, not reported by the CLI"),
+        )
+
+        # A log with one Created conversation line but conflicting model labels from a second process is also unconfirmed.
+        (base / "cli.log").write_text(
+            'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-first"\n'
+            f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
+            'I1015 20:00:00.300000 2 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-second"\n'
+        )
+        (base / "log" / "cli-20261015_200000.log").unlink()
+        code, result = run_one("requested-first", "resolved-first", first_conversation, False)
+        self.assertEqual(
+            (code, result["model"], result["model_source"]),
+            (0, "requested-first", "requested, not reported by the CLI"),
+        )
 
     def test_a_planted_finding_arrives_once_inside_a_real_review_and_only_when_the_owner_set_it(self) -> None:
         self.install("codex", FAKE_CODEX)
