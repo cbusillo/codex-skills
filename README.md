@@ -636,7 +636,9 @@ nothing extra.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that the audit script writes per repository when an audit completes,
 and it also prints a reminder line while the turn is more than a
-day old or the current repository's audit more than a week old. While this
+day old or the current repository's audit more than a week old. An audit that
+ran but held its window open counts as run; the hook names the held reason
+instead of calling it overdue. While this
 machine's own turn is stale it reads the shared turn record in `OWNER/direction`
 (see the `direction` skill), so a turn taken on another machine counts. When a
 weekly reminder is due, it makes a bounded repository-metadata read and omits

@@ -271,6 +271,12 @@ in; an executing agent that runs it clears a reminder the Director never acted
 on. Weekly audits are not marked by hand. The audit script stamps its own
 completion for the repository it audited, so an audit stamp means a real
 read-only audit ran; it never updates the daily turn or its coverage.
+The marker is per machine. Its `audits` map holds where each repository's next
+audit window starts, and `audit_runs` holds when an audit last ran. An audit
+whose reads were incomplete records its run with a `held` reason and leaves
+the window start in place so the next audit rereads it; report that as "audit
+ran, window held (reason)", never as an overdue audit. An audit that confirms
+its repository is archived removes it from both maps.
 
 To clean older markers that included archived or unadopted repositories, preview with
 `uv run <skill-dir>/scripts/direction_audit.py --prune-unadopted`, then repeat

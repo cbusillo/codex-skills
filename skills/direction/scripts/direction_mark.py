@@ -12,7 +12,9 @@ reads the marker, reads the shared record when the marker's turn is stale,
 and reminds the owner while a turn is overdue. Only the direction agent runs
 this, at the end of a turn the owner took part in. Weekly audits are not
 marked here: `direction_audit.py` records its own completion per repository,
-so an audit stamp means a real read-only audit ran.
+so an audit stamp means a real read-only audit ran. The `audits` map holds
+where each repository's next audit window starts; `audit_runs` holds when an
+audit last ran and, when it kept its window open, why.
 """
 
 from __future__ import annotations
@@ -63,6 +65,8 @@ def load(path: Path) -> dict[str, object]:
     current = current if isinstance(current, dict) else {}
     audits = current.get("audits")
     current["audits"] = audits if isinstance(audits, dict) else {}
+    if not isinstance(current.get("audit_runs"), dict):
+        current.pop("audit_runs", None)
     return current
 
 
@@ -109,15 +113,36 @@ def mark_turn(path: Path, repo: str, now: dt.datetime) -> dict[str, object]:
     return current
 
 
-def mark_audit(path: Path, repo: str, now: dt.datetime) -> dict[str, object]:
-    """Record this repository's audit without changing daily-turn evidence."""
+def mark_audit(path: Path, repo: str, now: dt.datetime, held: str | None = None) -> dict[str, object]:
+    """Record this repository's audit without changing daily-turn evidence.
+
+    A held audit ran but keeps its window open for a rerun: it records the run
+    and the reason, and leaves the window start in `audits` where it was.
+    """
     with marker_lock(path) as path:
         current = load(path)
         stamp = utc_stamp(now)
-        audits = current["audits"]
-        assert isinstance(audits, dict)
-        audits[repo] = stamp
+        audits, runs = current["audits"], current.setdefault("audit_runs", {})
+        assert isinstance(audits, dict) and isinstance(runs, dict)
+        if held is None:
+            audits[repo] = stamp
+            runs[repo] = {"ran": stamp}
+        else:
+            runs[repo] = {"ran": stamp, "held": held}
         save(path, current)
+    return current
+
+
+def drop_audit(path: Path, repo: str) -> dict[str, object]:
+    """Remove a repository an audit confirmed archived from the weekly maps."""
+    with marker_lock(path) as path:
+        current = load(path)
+        audits, runs = current["audits"], current.get("audit_runs", {})
+        assert isinstance(audits, dict) and isinstance(runs, dict)
+        if repo in audits or repo in runs:
+            audits.pop(repo, None)
+            runs.pop(repo, None)
+            save(path, current)
     return current
 
 

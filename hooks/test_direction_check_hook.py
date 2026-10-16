@@ -122,6 +122,24 @@ class ReminderTests(unittest.TestCase):
         self.assertIn(str(hook.LOOP_PATH), output.getvalue())
         self.assertIn("Direction check overdue", output.getvalue())
 
+    def test_held_window_audit_reports_the_run_not_overdue(self) -> None:
+        sys.path.insert(0, str(HOOK.parents[1] / "skills" / "direction" / "scripts"))
+        import direction_mark
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "marker.json"
+            direction_mark.mark_audit(path, "owner/direction", ago(days=10))
+            direction_mark.mark_audit(path, "owner/direction", ago(days=3), held="capacity_events:owner/repo")
+            text = hook.reminder(hook.read_marker(path) | {"turn": NOW}, NOW, "owner/direction", path)
+            self.assertNotIn("overdue:", text)
+            self.assertIn("ran 3 days ago and held its window open (capacity_events:owner/repo)", text)
+            # A held run older than a week is still a missed audit.
+            text = hook.reminder(hook.read_marker(path) | {"turn": NOW}, NOW + dt.timedelta(days=5), "owner/direction", path)
+            self.assertIn("the last weekly audit of owner/direction was 8 days ago", text)
+            # Once a later audit settles its window, the held note goes away.
+            direction_mark.mark_audit(path, "owner/direction", ago(days=1))
+            self.assertEqual(hook.reminder(hook.read_marker(path) | {"turn": NOW}, NOW, "owner/direction", path), "")
+
     def test_current_checks_print_nothing(self) -> None:
         m = marker(ago(hours=3), owner__repo=ago(days=2))
         self.assertEqual(hook.reminder(m, NOW, "owner/repo", MARKER), "")

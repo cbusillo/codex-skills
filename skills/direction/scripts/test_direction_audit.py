@@ -410,7 +410,9 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
                 assert listing in result["findings"][0]["listings"]
                 assert result["ok"] is False
                 assert result["marked"] is None, "an unread milestone addition must stay in the next window"
-                assert saved == original
+                assert {key: saved[key] for key in original} == original
+                assert saved["audit_runs"]["o/r"] == {"ran": "2026-09-21T12:00:00Z", "held": listing}
+                assert result["run_recorded"] == str(marker)
             else:
                 assert result["marked"] == str(marker)
                 assert saved["audits"]["o/r"] == "2026-09-21T12:00:00Z"
@@ -466,6 +468,31 @@ def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
                 assert "o/r" in json.loads(marker.read_text())["audits"]
 
 
+def test_audit_that_confirms_archive_drops_the_repository_from_the_marker() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        original = {"turn": "earlier", "audits": {"o/r": "2026-09-01T00:00:00Z", "o/active": "earlier"},
+                    "audit_runs": {"o/r": {"ran": "2026-09-01T00:00:00Z"}}}
+        for archived in (None, True):
+            marker.write_text(json.dumps(original))
+            output = StringIO()
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
+                                            "gh_json": lambda args, **_kwargs: {"archived": archived} if args[1] == "repos/o/r" else []}),
+                  redirect_stdout(output)):
+                module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
+            result = json.loads(output.getvalue())
+            saved = json.loads(marker.read_text())
+            assert result["marked"] is None
+            if archived:
+                # No separate prune command: the audit itself removes the retired entry.
+                assert result["dropped"] == str(marker)
+                assert saved == {"turn": "earlier", "audits": {"o/active": "earlier"}, "audit_runs": {}}
+            else:
+                assert result["dropped"] is None and saved == original
+
+
 def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_archive_state() -> None:
     module = load()
     original = {"turn": "earlier", "audits": {
@@ -508,13 +535,14 @@ def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_
 
 def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
     module = load()
-    original = {"turn": "earlier", "audits": {"o/adopted": "a", "o/missing": "b", "o/private": "c"}, "other": True}
+    original = {"turn": "earlier", "audits": {"o/adopted": "a", "o/missing": "b", "o/private": "c"}, "other": True,
+                "audit_runs": {"o/adopted": {"ran": "a"}, "o/heldmissing": {"ran": "d", "held": "capacity_events"}}}
     def fetch(args: list[str]) -> dict[str, Any]:
         endpoint = args[1]
         if endpoint == "repos/o/private":
             raise module.AuditError("HTTP 404")
         if endpoint.endswith("/contents/DIRECTION.md"):
-            if "/missing/" in endpoint:
+            if "missing/" in endpoint:
                 raise module.AuditError("HTTP 404")
             return {"type": "file", "content": "direction"}
         return {"full_name": endpoint.removeprefix("repos/"), "archived": False}
@@ -523,7 +551,7 @@ def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
         marker.write_text(json.dumps(original))
         before = marker.read_bytes()
         preview = module.prune_unadopted(marker, fetch=fetch)
-        assert preview["removed"] == ["o/missing"]
+        assert preview["removed"] == ["o/missing", "o/heldmissing"]
         assert preview["retained"] == ["o/adopted"]
         assert list(preview["unknown"]) == ["o/private"]
         assert not preview["applied"] and preview["backup"] is None
@@ -531,7 +559,8 @@ def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
         applied = module.prune_unadopted(marker, fetch=fetch, apply=True)
         assert Path(applied["backup"]).read_bytes() == before
         assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
-        assert json.loads(marker.read_text()) == {**original, "audits": {"o/adopted": "a", "o/private": "c"}}
+        assert json.loads(marker.read_text()) == {**original, "audits": {"o/adopted": "a", "o/private": "c"},
+                                                  "audit_runs": {"o/adopted": {"ran": "a"}}}
         again = marker.read_bytes()
         repeated = module.prune_unadopted(marker, fetch=fetch, apply=True)
         assert repeated["backup"] is None and not repeated["applied"]
