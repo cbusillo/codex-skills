@@ -9693,5 +9693,29 @@ def test_backup_proposal_never_accepts_apply_or_a_caller_reviewed_digest(authori
             write_action.privileged_policy_proposal_body(argparse.Namespace(payload_file=str(file)))
 
 
+@pytest.mark.parametrize("bad_path", ["/ui/products/other-product/environments/prod/actions?backup_proposal=privileged-operation-" + "d" * 32 + "#production-backup-authority", "/ui/products/example-product/environments/prod/actions?backup_proposal=privileged-operation-" + "e" * 32 + "#production-backup-authority"])
+def test_backup_proposal_wrong_product_or_operation_is_unverified_and_retained(bad_path: str) -> None:
+    envelope = {"descriptor_id": "production-backup-policy", "source_event_id": "backup-1", "request": {"authority": {"mode": "dry_run", "policy": {"product": "example-product"}}, "reason": "Plan protection"}}
+    response = {"status": "ok", "trace_id": "launchplane_req_" + "a" * 32, "write_status": "written", "summary": {"operation_id": "privileged-operation-" + "d" * 32, "descriptor_id": envelope["descriptor_id"], "status": "planned", "result_status": "ok", "expires_at": "", "review_path": bad_path}}
+    with TemporaryDirectory() as directory:
+        file = Path(directory) / "proposal.json"
+        file.write_text(json.dumps(envelope))
+        output = io.StringIO()
+        with patch.object(write_action, "resolve_settings", return_value={"service_url": "https://private.example.invalid", "token": "private-token"}), patch.object(write_action, "request_launchplane", return_value=response), redirect_stdout(output):
+            assert write_action.main(["privileged-policy-propose", "--payload-file", str(file)]) == 1
+        payload = json.loads(output.getvalue())
+        assert payload["status"] == "accepted_unverified"
+        assert "review_url" not in payload["result"]
+        assert "identical" in payload["summary"]["recommendation"]
+
+@pytest.mark.parametrize("policy", [None, "not-an-object", {}])
+def test_backup_proposal_malformed_product_is_a_local_input_error(policy: object) -> None:
+    with TemporaryDirectory() as directory:
+        file = Path(directory) / "proposal.json"
+        file.write_text(json.dumps({"descriptor_id": "production-backup-policy", "source_event_id": "backup-1", "request": {"authority": {"mode": "dry_run", "policy": policy}, "reason": "Plan protection"}}))
+        with pytest.raises(ValueError, match="invalid_backup_proposal_product"):
+            write_action.privileged_policy_proposal_body(argparse.Namespace(payload_file=str(file)))
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

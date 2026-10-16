@@ -6614,6 +6614,10 @@ def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, objec
         authority = request_body.get("authority")
         if not isinstance(authority, dict) or authority.get("mode") != "dry_run" or authority.get("reviewed_authority_digest"):
             raise ValueError("invalid_backup_proposal_authority")
+        policy = authority.get("policy")
+        product = policy.get("product") if isinstance(policy, dict) else None
+        if not isinstance(product, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", product) is None:
+            raise ValueError("invalid_backup_proposal_product")
     else:
         allowed = {"record", "reason", "related_issue"}
         required = {"record", "reason"}
@@ -10083,8 +10087,6 @@ def main(argv: list[str]) -> int:
             if body["descriptor_id"] == "production-backup-policy":
                 authority = _require_dict(_require_dict(body["request"]).get("authority"))
                 product = _require_dict(authority.get("policy")).get("product")
-                if not isinstance(product, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", product) is None:
-                    raise ValueError("invalid_backup_proposal_product")
                 request["product"] = product
             return execute_post(args=args, operation=args.command, path=helper_command_path(args.command), request=request, body=body)
         if args.command == "product-config-preflight":

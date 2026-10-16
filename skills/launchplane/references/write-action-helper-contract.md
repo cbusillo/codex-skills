@@ -1637,7 +1637,9 @@ free-text reasons and the private authority envelope never reach its output.
 Backup proposals use existing exact-lane backup planning authority. The signed-in
 Director approves or declines in the card, from any tab or device, with no file
 upload or digest comparison. The proposer cannot decide or directly apply a
-backup policy, even with a backup-write grant. Before use, verify that the service
+backup policy, even with a backup-write grant. The older direct-apply helper
+command does not override this: the service refuses local-operator/terminal-agent
+application, and approval stays in the signed-in Director card. Before use, verify that the service
 supports the descriptor; source delivery does not activate it or grant access.
 
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
