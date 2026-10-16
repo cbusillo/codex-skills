@@ -574,6 +574,13 @@ Transient provider failures
 are classified with retry metadata, but this read path does not silently switch
 actors or automatically retry outside the shared retry policy.
 
+Synthetic checks such as CodeQL can link to `/runs/<check-run-id>` rather than
+an Actions workflow run. Diagnosis keeps their failure or pending state and
+details URL, and reads check annotations for failures. JSON exposes
+`checkRunId` separately from `runId` and `jobId`, plus `annotations` or an
+explicit `annotationError`. Without a linked Actions run, the helper reports
+unavailable job logs without requesting a workflow run using the check-run ID.
+
 Log reads probe the configured CLI's help for `--allow-escape-sequences`, use
 that supported opt-in when available, and strip terminal controls before
 returning text or failure snippets. Older CLIs retain their existing log-read

@@ -219,6 +219,7 @@ def combined_checks(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "completedAt": item.get("completedAt"),
             "runId": item.get("runId"),
             "jobId": item.get("jobId"),
+            "checkRunId": item.get("id"),
             "source": "check_run",
         })
     for item in payload.get("statuses") or []:
@@ -246,6 +247,20 @@ class DiagnosisClient:
         self.run_cache: dict[int, Optional[dict[str, Any]]] = {}
         self.jobs_cache: dict[int, Optional[list[dict[str, Any]]]] = {}
         self.log_cache: dict[int, tuple[str, str, str]] = {}
+
+    def annotations(self, check_id: int) -> tuple[list[dict[str, Any]], str]:
+        try:
+            return self.reader.paged_json(
+                f"/repos/{self.repo}/check-runs/{check_id}/annotations",
+                step_prefix="checkAnnotations",
+            ), ""
+        except github_read_core.GitHubReadError as exc:
+            code = exc.result.failure.cause if exc.result.failure else "read_failed"
+            self.reader.mark_degraded("checkAnnotations", code, str(exc))
+            return [], str(exc)
+        except github_read_core.GitHubReadShapeError as exc:
+            self.reader.mark_degraded("checkAnnotations", "invalid_response", str(exc))
+            return [], str(exc)
 
     def run_metadata(self, run_id: int) -> Optional[dict[str, Any]]:
         if run_id in self.run_cache:
@@ -326,6 +341,7 @@ def analyze_check(check: dict[str, Any], client: DiagnosisClient, max_lines: int
         "detailsUrl": details_url,
         "runId": str(run_id) if run_id is not None else None,
         "jobId": str(job_id) if job_id is not None else None,
+        "checkRunId": str(check["checkRunId"]) if isinstance(check.get("checkRunId"), int) else None,
         "source": check.get("source"),
     }
 
@@ -338,8 +354,15 @@ def analyze_check(check: dict[str, Any], client: DiagnosisClient, max_lines: int
         return item
 
     if run_id is None:
-        item["classification"] = "external"
-        item["note"] = "No GitHub Actions run id was found in the details URL."
+        item["note"] = "No GitHub Actions workflow run is linked; Actions job logs are unavailable for this check."
+        if check.get("source") == "check_run":
+            if item["classification"] == "failing" and isinstance(check.get("checkRunId"), int):
+                annotations, error = client.annotations(check["checkRunId"])
+                item["annotations"] = annotations
+                if error:
+                    item["annotationError"] = error
+        else:
+            item["classification"] = "external"
         return item
 
     metadata = client.run_metadata(run_id)
@@ -376,11 +399,7 @@ def normalize(value: Any) -> str:
 
 
 def extract_run_id(url: str) -> Optional[int]:
-    for pattern in (r"/actions/runs/(\d+)", r"/runs/(\d+)"):
-        match = re.search(pattern, url)
-        if match:
-            return int(match.group(1))
-    return None
+    return github_read_core.actions_ids(url)[0]
 
 
 def extract_job_id(url: str) -> Optional[int]:
@@ -482,6 +501,12 @@ def render(payload: dict[str, Any]) -> None:
             print(f"Note: {check['note']}")
         if check.get("error"):
             print(f"Log error: {check['error']}")
+        if check.get("annotationError"):
+            print(f"Annotation error: {check['annotationError']}")
+        for annotation in check.get("annotations") or []:
+            print(f"Annotation: {annotation.get('path', '')}:{annotation.get('start_line', '')} "
+                  f"[{annotation.get('annotation_level', '')}]")
+            print(indent(str(annotation.get("message") or "")))
         snippet = check.get("failureSnippet") or ""
         if snippet:
             print("Failure snippet:")

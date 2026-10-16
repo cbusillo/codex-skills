@@ -194,6 +194,83 @@ def test_job_reader_maps_check_name_when_url_has_no_job_id() -> None:
     assert payload["checks"][0]["jobId"] == "33"
 
 
+def synthetic_check_responses() -> tuple[dict[str, Any], dict[str, Any], str]:
+    responses = base_responses()
+    actions_check = responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"][0]
+    check = {
+        **actions_check,
+        "id": actions_check["id"] + 1,
+        "name": "CodeQL",
+        "check_suite": {"id": 55},
+    }
+    check["details_url"] = f"https://github.com/o/r/runs/{check['id']}"
+    responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"].append(check)
+    annotations_path = f"/repos/o/r/check-runs/{check['id']}/annotations?per_page=100&page=1"
+    responses[annotations_path] = {"body": [{
+        "path": "src/example.py",
+        "start_line": 3,
+        "end_line": 3,
+        "annotation_level": "failure",
+        "message": "Unsafe data flow in fixture",
+    }]}
+    for suffix in ("", "/jobs?filter=latest&per_page=100&page=1"):
+        responses[f"/repos/o/r/actions/runs/{check['id']}{suffix}"] = {
+            "status": 404, "body": {"message": "Not Found"},
+        }
+    return responses, check, annotations_path
+
+
+def test_synthetic_failure_preserves_annotations_without_actions_run_lookup() -> None:
+    responses, synthetic, annotations_path = synthetic_check_responses()
+    process, calls = run_fixture(responses)
+    payload = json.loads(process.stdout)
+    assert process.returncode == 1, process.stderr
+    assert payload["failingCount"] == 2
+    assert payload["externalCount"] == 0
+    actions, check = payload["checks"]
+    assert actions["failureSnippet"]
+    assert check["classification"] == "failing"
+    assert check["conclusion"] == synthetic["conclusion"]
+    assert check["detailsUrl"] == synthetic["details_url"]
+    assert check["checkRunId"] == str(synthetic["id"])
+    assert check["runId"] is None and check["jobId"] is None
+    assert check["annotations"] == responses[annotations_path]["body"]
+    assert check["note"] and "error" not in check
+    assert payload["diagnostics"]["degraded"] is False
+    assert any(annotations_path in call for call in calls)
+    assert not any(f"/actions/runs/{synthetic['id']}" in call for call in calls)
+    assert not any(f"/actions/jobs/{synthetic['id']}" in call for call in calls)
+
+
+def test_synthetic_pending_stays_pending_without_actions_or_annotation_lookup() -> None:
+    responses, synthetic, annotations_path = synthetic_check_responses()
+    synthetic.update(status="in_progress", conclusion=None)
+    process, calls = run_fixture(responses)
+    payload = json.loads(process.stdout)
+    assert process.returncode == 1, process.stderr
+    assert payload["pendingCount"] == 1 and payload["failingCount"] == 1
+    check = payload["checks"][1]
+    assert check["classification"] == "pending"
+    assert check["runId"] is None
+    assert not any(f"/actions/runs/{synthetic['id']}" in call for call in calls)
+    assert not any(annotations_path in call for call in calls)
+
+
+def test_unavailable_synthetic_annotations_keep_failure_evidence() -> None:
+    responses, synthetic, annotations_path = synthetic_check_responses()
+    responses[annotations_path] = {"status": 403, "body": {"message": "Resource not accessible by integration"}}
+    process, calls = run_fixture(responses)
+    payload = json.loads(process.stdout)
+    assert process.returncode == 1, process.stderr
+    assert payload["failingCount"] == 2
+    check = payload["checks"][1]
+    assert check["classification"] == "failing"
+    assert check["detailsUrl"] == synthetic["details_url"]
+    assert check["annotationError"]
+    assert "checkAnnotations" in payload["diagnostics"]["degradedComponents"]
+    assert not any(f"/actions/runs/{synthetic['id']}" in call for call in calls)
+
+
 def test_missing_run_permission_degrades_but_keeps_log_evidence() -> None:
     responses = base_responses()
     responses["/repos/o/r/actions/runs/22"] = {
@@ -376,6 +453,9 @@ def test_skipped_replacement_does_not_count_historical_failure() -> None:
 
 def main() -> None:
     tests = [
+        test_synthetic_failure_preserves_annotations_without_actions_run_lookup,
+        test_synthetic_pending_stays_pending_without_actions_or_annotation_lookup,
+        test_unavailable_synthetic_annotations_keep_failure_evidence,
         test_skipped_replacement_does_not_count_historical_failure,
         test_queued_replacement_remains_pending_in_diagnosis,
         test_fixture_ignores_inherited_live_cooldown,
