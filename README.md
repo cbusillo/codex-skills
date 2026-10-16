@@ -1251,3 +1251,26 @@ or a CLI update: from a signed-in session on an account different from the
 extension, call only `mcp__catalog-chrome__list_connected_browsers` and verify
 the existing Chrome appears. Do not pair, select, navigate or modify the browser
 for this check. An installer success alone does not prove cross-account pairing.
+
+## TLS verification lint
+
+Run `uv run scripts/check_insecure_tls.py` to check tracked Python files for
+hand-built `check_hostname = False` / `CERT_NONE`, unverified contexts and common
+HTTP-client verification-off calls. The catalog validation gate runs it too.
+It parses Python without executing it; dynamic values or runtime monkeypatching
+are outside this static check. Keep Ruff's TLS rules for complementary protocol
+and library checks.
+
+An intentional exception needs a preceding `# insecure-tls: <plain reason>`
+comment at the single choke point. Adjacent disabling assignments share that
+annotation; it does not cover later blocks or call sites. A bare ignore or a
+question ID/URL alone does not explain the exception. Add the permanent decision
+link alongside the reason when the exception follows a recorded decision. The
+check changes no runtime default or per-site setting.
+
+Other repositories can run this dependency-free PEP 723 script with
+`uv run https://raw.githubusercontent.com/cbusillo/codex-skills/<reviewed-commit>/scripts/check_insecure_tls.py`
+from their own checkout. Pin the reviewed catalog commit in their existing lint
+gate, and update that pin through the normal PR path. No catalog installation,
+credentials or new required-check rule is needed. Explicit file arguments are
+available for a focused local check; CI should use the tracked-file default.
