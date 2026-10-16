@@ -349,7 +349,7 @@ class InventoryTests(unittest.TestCase):
     def test_budget_aggregates_unread_records_instead_of_flooding_digest(self):
         self.reader.pages[("repos/test/repo/issues", 1, "open")] = [
             {"number": n, "state": "open"} for n in range(1, 60)]
-        result = self.collect(max_requests=4)
+        result = self.collect(max_requests=6)
         unread = [g for g in result["coverage_gaps"] if g.get("count")]
         self.assertEqual(len(unread), 1)
         self.assertEqual(unread[0]["count"] + result["attempted_records"],
