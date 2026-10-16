@@ -37,7 +37,24 @@ class WorktreeTests(unittest.TestCase):
         self.repo = self.repo / "sample"
         self.repo.mkdir()
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "DEV_WORKTREE_"))}
-        self.env.update(HOME=str(self.home), GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        self.env.update(HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"),
+                        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        # The product clears caller GIT_* overrides. Isolate the real Git binary
+        # at the fixture boundary too, without masking injected-config regressions.
+        real_git = shutil.which("git", path=self.env["PATH"])
+        self.assertIsNotNone(real_git)
+        fixture_bin = self.base / "fixture-bin"
+        fixture_bin.mkdir()
+        fixture_git = fixture_bin / "git"
+        fixture_git.write_text(
+            f"#!{sys.executable}\nimport os, sys\n"
+            "environment = os.environ.copy()\n"
+            "environment.setdefault('GIT_CONFIG_NOSYSTEM', '1')\n"
+            f"environment.setdefault('GIT_CONFIG_GLOBAL', {os.devnull!r})\n"
+            f"os.execve({real_git!r}, [{real_git!r}, *sys.argv[1:]], environment)\n"
+        )
+        fixture_git.chmod(0o700)
+        self.env["PATH"] = str(fixture_bin) + os.pathsep + self.env["PATH"]
         self.git("init", "-b", "main")
         self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "Initial")
         self.initial = self.git("rev-parse", "HEAD")
@@ -173,15 +190,26 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse((nested / "tasks").exists())
 
     @unittest.skipUnless(os.name == "posix", "POSIX delegated-process lifetime probing")
+    def test_detached_shim_cannot_repeat_inherited_request(self):
+        self.check_post_create_child(same_request=True)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX delegated-process lifetime probing")
     def test_post_create_child_can_start_later_delegation(self):
+        self.check_post_create_child(same_request=False)
+
+    def check_post_create_child(self, same_request):
         host = self.base / "host"
         child = self.base / "post-create.py"
         ready = self.base / "child-ready"
         proceed = self.base / "proceed"
         receipt = self.base / "child-result.json"
+        visits = self.base / "visits"
         host.write_text(
-            f"#!{sys.executable}\nimport subprocess, sys\n"
-            "if sys.argv[1] == 'later':\n    raise SystemExit(0)\n"
+            f"#!{sys.executable}\nimport subprocess, sys\nfrom pathlib import Path\n"
+            f"visits = Path({str(visits)!r})\n"
+            "count = int(visits.read_text()) + 1 if visits.exists() else 1\n"
+            "visits.write_text(str(count))\n"
+            "if count >= 2 or sys.argv[1] == 'later':\n    raise SystemExit(0)\n"
             f"subprocess.Popen([{sys.executable!r}, {str(child)!r}], "
             "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)\n"
         )
@@ -191,7 +219,7 @@ class WorktreeTests(unittest.TestCase):
             f"Path({str(ready)!r}).touch()\n"
             "deadline = time.monotonic() + 10\n"
             f"while not Path({str(proceed)!r}).exists() and time.monotonic() < deadline:\n    time.sleep(0.01)\n"
-            f"result = subprocess.run([{sys.executable!r}, {str(SCRIPT)!r}, 'later'], capture_output=True, text=True, timeout=5)\n"
+            f"result = subprocess.run([{sys.executable!r}, {str(SCRIPT)!r}, {"first" if same_request else "later"!r}], capture_output=True, text=True, timeout=5)\n"
             f"Path({str(receipt)!r}).write_text(json.dumps([result.returncode, result.stderr]))\n"
         )
         self.settings({"root": str(self.base / "tasks"), "hostHelper": str(host)})
@@ -205,7 +233,12 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(ready.exists())
         self.assertTrue(receipt.exists(), "post-create child did not finish")
         code, stderr = json.loads(receipt.read_text())
-        self.assertEqual(code, 0, stderr)
+        if same_request:
+            self.assertNotEqual(code, 0, stderr)
+            self.assertEqual(int(visits.read_text()), 1)
+        else:
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(int(visits.read_text()), 2)
 
     def test_configured_root_and_linked_source_keep_main_repo_name(self):
         root = self.base / "work tree root"

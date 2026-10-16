@@ -25,16 +25,20 @@ def git_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 
 
-def delegation_active() -> bool:
+def delegation_active(args: list[str]) -> bool:
     marker = os.environ.get("DEV_WORKTREE_DELEGATED")
     if not marker:
         return False
-    # The marker belongs to the exec'd host process, not its surviving children.
+    pid, separator, request = marker.partition(":")
+    # Identical inherited callbacks remain loops even after a shim detaches.
+    if not separator or request == json.dumps(args):
+        return True
+    # A different request can start after the exec'd host has exited.
     # Keep the old conservative guard where POSIX signal-zero probing is absent.
-    if os.name != "posix" or not marker.isdecimal() or int(marker) <= 0:
+    if os.name != "posix" or not pid.isdecimal() or int(pid) <= 0:
         return True
     try:
-        os.kill(int(marker), 0)
+        os.kill(int(pid), 0)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -123,13 +127,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root, helper = configuration()
         if helper:
-            if delegation_active():
+            if delegation_active(args):
                 raise Refused("Host helper delegated back to the catalog; configure the actual host executable.")
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
             # The host owns volume identity, locks and retirement; do not mkdir or fall back.
             # Preserve the host's signal traps, including relocking during interrupted retirement.
-            os.environ["DEV_WORKTREE_DELEGATED"] = str(os.getpid())
+            os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
             os.execv(str(helper), [str(helper), *args])
         if len(args) != 3 or args[0] == "retire":
             raise Refused("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT. For cleanup follow work-closeout; this portable helper only creates worktrees.")

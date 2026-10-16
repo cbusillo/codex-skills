@@ -61,9 +61,10 @@ The outer `uv` launcher remains its parent. The POSIX process-group interrupt
 fixture exercises the shipped wrapper too; other signal and harness delivery
 paths have not been qualified here.
 A delegation marker refuses shims that call back into the catalog while the
-original host process is alive. On POSIX, the marker expires when that process
-exits, allowing a surviving post-create child to start later work. A child that
-calls back before the original host exits still refuses. Non-POSIX hosts retain
+original host process is alive, and refuses an identical inherited request even
+if a shim detaches and exits. On POSIX, a surviving post-create child can start a
+different request after the original host exits. A child that calls back before
+the original host exits still refuses. Non-POSIX hosts retain
 the conservative inherited-marker refusal; native Windows child-lifetime
 behavior has not been qualified. Process ID reuse can also conservatively refuse
 a later call; an unrelated child can remove `DEV_WORKTREE_DELEGATED` from its
