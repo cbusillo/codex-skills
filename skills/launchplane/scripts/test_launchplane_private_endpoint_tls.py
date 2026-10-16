@@ -143,6 +143,7 @@ def test_missing_ca_parser_returns_structured_refusal_before_http():
                 ["private-health-endpoint-dry-run", "--payload-file", path, "--reason", "r"],
                 post=_private_endpoint_response(**endpoint(pem)))
         assert code == 2 and not posts
+        assert result["warnings"][0]["code"] == "private_health_endpoint_tls_ca_dependency_unavailable"
         assert "BEGIN CERTIFICATE" not in json.dumps(result)
 
 
