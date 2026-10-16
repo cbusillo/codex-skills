@@ -247,6 +247,17 @@ def parse_args():
     parser.add_argument("--batch-read", action="store_true", help="Explicit cold/changed observation enrichment; default REST preserves idle 304 savings")
     parser.add_argument("--watch", action="store_true", help="Continuously emit JSONL snapshots")
     parser.add_argument(
+        "--wait-ci",
+        action="store_true",
+        help="Block until CI settles on the head or --max-wait-seconds passes, then emit one ci_wait line",
+    )
+    parser.add_argument(
+        "--max-wait-seconds",
+        type=int,
+        default=540,
+        help="Bound for --wait-ci; keep it under the harness's command timeout",
+    )
+    parser.add_argument(
         "--retry-failed-now",
         action="store_true",
         help="Rerun failed jobs for current failed workflow runs when policy allows",
@@ -264,7 +275,11 @@ def parse_args():
         parser.error("--max-flaky-retries must be >= 0")
     if args.watch and args.retry_failed_now:
         parser.error("--watch cannot be combined with --retry-failed-now")
-    if not args.once and not args.watch and not args.retry_failed_now:
+    if args.wait_ci and (args.watch or args.once or args.retry_failed_now):
+        parser.error("--wait-ci cannot be combined with --watch, --once or --retry-failed-now")
+    if args.max_wait_seconds <= 0:
+        parser.error("--max-wait-seconds must be > 0")
+    if not args.once and not args.watch and not args.retry_failed_now and not args.wait_ci:
         args.once = True
     return args
 
@@ -2016,6 +2031,30 @@ def snapshot_change_key(snapshot):
     )
 
 
+WATCH_STOP_ACTIONS = frozenset({
+    "stop_pr_closed",
+    "stop_exhausted_retries",
+    "stop_unknown_rerun",
+    "stop_missing_rerun",
+    "stop_nonretryable_rerun",
+})
+
+
+def next_poll_seconds(args, snapshot, changed, unchanged_polls, first_poll):
+    pr = snapshot.get("pr") or {}
+    pr_open = not bool(pr.get("closed")) and not bool(pr.get("merged"))
+    if not pr_open or changed or first_poll:
+        poll_seconds = args.poll_seconds
+    elif not is_ci_green(snapshot):
+        poll_seconds = min(
+            args.poll_seconds * 2 ** unchanged_polls,
+            max(args.poll_seconds, getattr(args, "green_poll_seconds", 300)),
+        )
+    else:
+        poll_seconds = getattr(args, "green_poll_seconds", 300)
+    return github_read.poll_delay(poll_seconds, snapshot.get("minimum_poll_seconds", 0.0), repository=pr.get("repo"))
+
+
 def run_watch(args):
     last_change_key = None
     unchanged_polls = 0
@@ -2031,21 +2070,7 @@ def run_watch(args):
         current_change_key = snapshot_change_key(snapshot)
         changed = current_change_key != last_change_key
         unchanged_polls = 0 if changed else min(unchanged_polls + 1, 10)
-        green = is_ci_green(snapshot)
-        pr = snapshot.get("pr") or {}
-        pr_open = not bool(pr.get("closed")) and not bool(pr.get("merged"))
-
-        if not pr_open or changed or last_change_key is None:
-            poll_seconds = args.poll_seconds
-        elif not green:
-            poll_seconds = min(
-                args.poll_seconds * 2 ** unchanged_polls,
-                max(args.poll_seconds, getattr(args, "green_poll_seconds", 300)),
-            )
-        else:
-            poll_seconds = getattr(args, "green_poll_seconds", 300)
-
-        poll_seconds = github_read.poll_delay(poll_seconds, snapshot.get("minimum_poll_seconds", 0.0), repository=pr.get("repo"))
+        poll_seconds = next_poll_seconds(args, snapshot, changed, unchanged_polls, last_change_key is None)
         print_event(
             "snapshot",
             {
@@ -2054,19 +2079,81 @@ def run_watch(args):
                 "next_poll_seconds": poll_seconds,
             },
         )
-        actions = set(snapshot.get("actions") or [])
-        if (
-            "stop_pr_closed" in actions
-            or "stop_exhausted_retries" in actions
-            or "stop_unknown_rerun" in actions
-            or "stop_missing_rerun" in actions
-            or "stop_nonretryable_rerun" in actions
-        ):
-            print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
+        if WATCH_STOP_ACTIONS & set(snapshot.get("actions") or []):
+            print_event("stop", {
+                "actions": snapshot.get("actions"),
+                "pr": snapshot.get("pr"),
+                "checks": snapshot.get("checks"),
+            })
             return 0
 
         last_change_key = current_change_key
         time.sleep(poll_seconds)
+
+
+# Exit codes for --wait-ci; 1 stays the read/command error code from main().
+CI_WAIT_EXIT_CODES = {"green": 0, "failed": 2, "pending": 3, "stopped": 4}
+CI_WAIT_NEXT_STEPS = {
+    "green": "CI is green on the head; continue the handoff.",
+    "failed": "Diagnose the failure under babysit-pr CI Failures.",
+    "pending": "CI is still running; run the same command again in this turn.",
+    "stopped": "Read actions: the PR closed or the watcher needs help.",
+}
+
+
+def ci_wait_outcome(snapshot):
+    pr = snapshot.get("pr") or {}
+    actions = set(snapshot.get("actions") or [])
+    checks = snapshot.get("checks") or {}
+    if pr.get("closed") or pr.get("merged") or WATCH_STOP_ACTIONS & actions:
+        return "stopped"
+    if int(checks.get("failed_count") or 0) or "diagnose_ci_failure" in actions:
+        return "failed"
+    if is_ci_green(snapshot):
+        return "green"
+    return None
+
+
+def print_ci_wait(outcome, snapshot, started):
+    pr = snapshot.get("pr") or {}
+    print_event("ci_wait", {
+        "outcome": outcome,
+        "checks": snapshot.get("checks"),
+        "actions": snapshot.get("actions"),
+        "pr": {key: pr.get(key) for key in ("number", "url", "head_sha", "state", "merged", "closed")},
+        "waited_seconds": round(time.monotonic() - started),
+        "next_step": CI_WAIT_NEXT_STEPS[outcome],
+    })
+    return CI_WAIT_EXIT_CODES[outcome]
+
+
+def run_wait_ci(args):
+    """Block until CI settles or the bound passes; the last line always carries check counts."""
+    started = time.monotonic()
+    deadline = started + args.max_wait_seconds
+    snapshot = {}
+    last_change_key = None
+    unchanged_polls = 0
+    while True:
+        try:
+            snapshot, _state_path = collect_snapshot(args)
+        except StateLockTimeout:
+            poll_seconds = args.poll_seconds
+        else:
+            outcome = ci_wait_outcome(snapshot)
+            if outcome:
+                return print_ci_wait(outcome, snapshot, started)
+            current_change_key = snapshot_change_key(snapshot)
+            changed = current_change_key != last_change_key
+            unchanged_polls = 0 if changed else min(unchanged_polls + 1, 10)
+            poll_seconds = next_poll_seconds(args, snapshot, changed, unchanged_polls, last_change_key is None)
+            last_change_key = current_change_key
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return print_ci_wait("pending", snapshot, started)
+        time.sleep(min(poll_seconds, remaining))
+        if time.monotonic() >= deadline:
+            return print_ci_wait("pending", snapshot, started)
 
 
 def main():
@@ -2078,6 +2165,8 @@ def main():
             return 1 if result.get("error") else 0
         if args.watch:
             return run_watch(args)
+        if args.wait_ci:
+            return run_wait_ci(args)
         snapshot, state_path = collect_snapshot(args)
         snapshot["state_file"] = str(state_path)
         print_json(snapshot)

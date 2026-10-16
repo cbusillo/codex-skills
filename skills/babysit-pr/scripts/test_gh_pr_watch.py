@@ -1195,6 +1195,99 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
     assert [event for event, _ in events] == ["snapshot", "snapshot"]
 
 
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def wait_ci_harness(monkeypatch, snapshots):
+    clock = FakeClock()
+    events = []
+    reads = iter(snapshots)
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda _args: (next(reads), Path("state.json")))
+    monkeypatch.setattr(gh_pr_watch, "print_event", lambda event, payload: events.append((event, payload)))
+    monkeypatch.setattr(gh_pr_watch.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(gh_pr_watch.time, "sleep", clock.sleep)
+    monkeypatch.setattr(gh_pr_watch.github_read, "poll_delay", lambda seconds, *_a, **_kw: seconds)
+    return clock, events
+
+
+def pending_snapshot():
+    return {"pr": sample_pr(), "checks": sample_checks(all_terminal=False, pending_count=3, passed_count=4),
+            "new_review_items": [], "actions": ["idle"]}
+
+
+def test_wait_ci_returns_when_ci_settles_with_check_counts(monkeypatch):
+    # CS1839-D1 and CS1812-D1 waited on --watch, which never exits on green CI.
+    green = {**pending_snapshot(), "checks": sample_checks(passed_count=7), "actions": ["ready_to_merge"]}
+    clock, events = wait_ci_harness(monkeypatch, [pending_snapshot(), pending_snapshot(), green])
+    args = argparse.Namespace(poll_seconds=60, green_poll_seconds=300, max_wait_seconds=540)
+
+    assert gh_pr_watch.run_wait_ci(args) == 0
+    assert [event for event, _ in events] == ["ci_wait"]
+    payload = events[0][1]
+    assert payload["outcome"] == "green"
+    assert payload["checks"]["passed_count"] == 7
+    assert payload["checks"]["pending_count"] == 0
+    assert payload["waited_seconds"] == sum(clock.sleeps)
+
+
+@pytest.mark.parametrize(("change", "outcome", "code"), [
+    ({"checks": sample_checks(failed_count=1), "actions": ["diagnose_ci_failure"]}, "failed", 2),
+    ({"pr": {**sample_pr(), "merged": True}, "actions": ["stop_pr_closed"]}, "stopped", 4),
+    ({"actions": ["stop_unknown_rerun"]}, "stopped", 4),
+])
+def test_wait_ci_ends_on_every_terminal_state(monkeypatch, change, outcome, code):
+    _clock, events = wait_ci_harness(monkeypatch, [pending_snapshot(), {**pending_snapshot(), **change}])
+    args = argparse.Namespace(poll_seconds=60, green_poll_seconds=300, max_wait_seconds=540)
+
+    assert gh_pr_watch.run_wait_ci(args) == code
+    assert [(event, payload["outcome"]) for event, payload in events] == [("ci_wait", outcome)]
+
+
+def test_wait_ci_reports_pending_at_its_bound_without_sleeping_past_it(monkeypatch):
+    clock, events = wait_ci_harness(monkeypatch, [pending_snapshot() for _ in range(20)])
+    args = argparse.Namespace(poll_seconds=60, green_poll_seconds=300, max_wait_seconds=200)
+
+    assert gh_pr_watch.run_wait_ci(args) == 3
+    assert sum(clock.sleeps) == 200
+    assert [event for event, _ in events] == ["ci_wait"]
+    payload = events[0][1]
+    assert payload["outcome"] == "pending"
+    assert payload["checks"]["pending_count"] == 3
+    assert payload["checks"]["passed_count"] == 4
+
+
+def test_watch_stop_event_carries_check_counts(monkeypatch):
+    # CS1839-D1's watch ended with a stop line that had no check counts.
+    closed = {"pr": {**sample_pr(), "merged": True}, "checks": sample_checks(passed_count=7),
+              "new_review_items": [], "actions": ["stop_pr_closed"]}
+    _clock, events = wait_ci_harness(monkeypatch, [closed])
+
+    assert gh_pr_watch.run_watch(argparse.Namespace(poll_seconds=60, green_poll_seconds=300)) == 0
+    assert events[-1][0] == "stop"
+    assert events[-1][1]["checks"]["passed_count"] == 7
+
+
+@pytest.mark.parametrize("argv", [
+    ["--wait-ci", "--watch"],
+    ["--wait-ci", "--once"],
+    ["--wait-ci", "--max-wait-seconds", "0"],
+])
+def test_wait_ci_argument_refusals(monkeypatch, argv):
+    monkeypatch.setattr(sys, "argv", ["gh_pr_watch.py", *argv])
+    with pytest.raises(SystemExit):
+        gh_pr_watch.parse_args()
+
+
 def test_25_unchanged_pending_watchers_fit_half_an_hourly_budget(monkeypatch):
     """Replay the real watch loop and HTTP transport with no free 304s.
 
