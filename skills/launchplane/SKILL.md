@@ -67,7 +67,7 @@ commands:
     source: skill
     resource_path: scripts/launchplane-write-action.py
     example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "privileged-policy-propose", "--payload-file", "<private-envelope>"]
-    purpose: Creates an inert pending policy plan and returns its Director UI review path without approval or apply.
+    purpose: Creates an inert pending policy plan and returns its full Director UI review URL without approval or apply.
   - name: launchplane-live-target-runtime-sync-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -723,7 +723,11 @@ grant for its configured `local_operator` identity. The Director approves that g
 separately through the Access policy card. Submit no proposal until the service
 supports this route and the grant is installed. Source delivery grants no access.
 
-Creation is pending and inert. Return the review path to the Director; approval
+Creation is pending and inert. Director questions and handoffs that send the
+Director to a page include a full clickable URL, never a bare UI path. Use the
+helper's `review_url` for proposal review, following
+[talking with the Director](../references/talking-with-the-director.md#carry-context).
+Keep private URLs in destinations allowed to know them. Approval
 stays in the signed-in UI and the proposer can never approve or apply. Reuse the
 private envelope's stable source event when a response is uncertain. This path
 uses private `local_operator` config, independent of terminal-agent credentials.
@@ -1076,8 +1080,12 @@ verification.
 - `GET /v1/product-config/testing-hold` and
   `POST /v1/product-config/testing-hold/apply`: Bounded local-extension paths
   for a testing lane's staff-testing hold (`testing-hold-read` / `-dry-run` /
-  `-apply`, with `--hold` or `--lift` and `--reason`). Apply requires the same
-  saved-dry-run safeguards; lifting requests a testing reconcile.
+  `-apply`, with `--hold` or `--lift`, `--reason` and optional
+  `--purpose staff_testing|isolation_staging`). Apply requires the same
+  saved-dry-run safeguards with matching purpose. Staff lifts request testing
+  reconciliation; isolation-staging lifts alone do not. Read the
+  [testing hold contract](references/write-action-helper-contract.md#testing-hold)
+  for legacy evidence and service-derived rehearsal responses.
 - `POST /v1/product-profiles/repository-identity/apply`: Bounded local-extension
   path that records a product's repository id from tracked inventory
   (`product-repository-identity-dry-run` / `-apply`, with `--product` and

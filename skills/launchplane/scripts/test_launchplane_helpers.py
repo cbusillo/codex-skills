@@ -27,6 +27,7 @@ from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from unittest.mock import Mock, patch
@@ -2993,6 +2994,72 @@ def test_testing_hold_read_sends_lane_query_and_projects_hold() -> None:
     assert "result" not in json.loads(output.getvalue()) or not json.loads(output.getvalue())["result"]
 
 
+@pytest.mark.parametrize("purpose", [None, "staff_testing", "isolation_staging"])
+@pytest.mark.parametrize("with_rehearsal", [False, True])
+def test_testing_hold_optional_metadata_survives_read_and_plan(
+    purpose: str | None, with_rehearsal: bool,
+) -> None:
+    hold: dict[str, object] = {"reason": "Review the testing lane."}
+    if purpose is not None:
+        hold["purpose"] = purpose
+    if with_rehearsal:
+        hold["rehearsal"] = {
+            "binding_sha256": "d" * 64,
+            "target_updated_at": "2026-10-16T12:00:00Z",
+            "target_source_label": "service:testing-separation",
+        }
+    plan = write_action._project_testing_hold_plan(
+        _testing_hold_plan(before=hold, after=hold, read_back=hold)
+    )
+    read = write_action._project_testing_hold_read({
+        "status": "ok", "product": "example-product", "context": "example",
+        "instance": "testing", "hold": hold, "record_sha256": "a" * 64,
+    })
+    assert read["hold"] == hold
+    assert all(plan[side] == read["hold"] for side in ("before", "after", "read_back"))
+
+
+@pytest.mark.parametrize("purpose", ["deployment", "", None, [], True])
+def test_testing_hold_unknown_purpose_is_refused(purpose: object) -> None:
+    with pytest.raises(write_action.LaunchplaneSafetyError):
+        write_action._project_testing_hold({"reason": "Review.", "purpose": purpose})
+
+
+@pytest.mark.parametrize("change", [
+    {"extra": "unsafe"}, {"binding_sha256": "bad"}, {"target_updated_at": {}},
+    {"target_source_label": {}},
+])
+def test_testing_hold_rehearsal_projection_remains_closed(change: dict[str, object]) -> None:
+    rehearsal = {
+        "binding_sha256": "d" * 64,
+        "target_updated_at": "2026-10-16T12:00:00Z",
+        "target_source_label": "service:testing-separation", **change,
+    }
+    with pytest.raises(write_action.LaunchplaneSafetyError):
+        write_action._project_testing_hold({"reason": "Review.", "rehearsal": rehearsal})
+
+
+@pytest.mark.parametrize("label", ["", "legacy target imported"])
+@pytest.mark.parametrize("updated_at", ["2026-10-16T12:00:00+00:00", "legacy-target-revision"])
+def test_testing_hold_rehearsal_accepts_producer_provenance_strings(label: str, updated_at: str) -> None:
+    rehearsal = {"binding_sha256": "d" * 64, "target_updated_at": updated_at, "target_source_label": label}
+    hold = {"reason": "Review.", "rehearsal": rehearsal}
+    result = write_action._project_testing_hold_plan(_testing_hold_plan(before=hold))
+    assert result["before"]["rehearsal"] == rehearsal
+
+
+def test_testing_hold_rehearsal_provenance_redacts_private_text() -> None:
+    result = write_action._project_testing_hold({
+        "reason": "Review.", "rehearsal": {
+            "binding_sha256": "d" * 64,
+            "target_updated_at": "imported from https://private.example.invalid/time",
+            "target_source_label": "password=private-sentinel",
+        },
+    })
+    assert "private" not in json.dumps(result)
+    assert result["rehearsal"]["binding_sha256"] == "d" * 64
+
+
 def _product_environment_response() -> dict[str, object]:
     identity = {
         "schema_version": 1,
@@ -3081,7 +3148,6 @@ def _product_environment_response() -> dict[str, object]:
                         "trust_state": "recorded",
                     }
                 ],
-                "trust_state": "recorded",
                 "provenance": {"source_kind": "record", "freshness_status": "recorded"},
             },
             "public_ingress": {"status": "pass", "failure_code": "", "trust_state": "recorded"},
@@ -3324,6 +3390,94 @@ def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
     assert status == 1 and len(calls) == 1
     assert not payload["result"] and "private detail" not in json.dumps(payload)
     assert payload["summary"]["trace_id"] == "launchplane_req_denied"
+
+
+@pytest.mark.parametrize("mode", ["missing", "stale", "fresh", "disabled", "inapplicable"])
+def test_product_environment_read_preserves_canonical_monitoring_evidence(mode: str) -> None:
+    response = _product_environment_response()
+    monitoring = cast(dict[str, Any], response["environment"])["health_monitoring"]
+    check = monitoring["checks"][0]
+    effective = mode not in {"disabled", "inapplicable"}
+    observed = mode in {"stale", "fresh"}
+    freshness = "verified" if mode == "fresh" else mode if effective else "recorded"
+    monitoring["monitoring_intent"] = "private" if mode == "inapplicable" else "public"
+    monitoring["public_incident_eligible"] = effective
+    # A newer profile does not renew an older probe's deadline.
+    monitoring["provenance"] = {
+        "source_kind": "record", "source_record_id": "profile-1",
+        "recorded_at": "2026-10-16T13:00:00Z", "refreshed_at": "",
+        "freshness_status": "recorded", "stale_after": "", "detail": "private profile detail",
+    }
+    check.update({
+        "kind": "public_http", "enabled": mode != "disabled", "probe_effective": effective,
+        "incident_eligible": effective, "status": "pass" if observed else {
+            "missing": "missing", "disabled": "disabled", "inapplicable": "not_expected",
+        }.get(mode),
+        "trust_state": freshness, "record_id": f"probe-{mode}" if observed else "",
+        "observed_at": "2026-10-16T12:00:00Z" if observed else "",
+        "provenance": {
+            "source_kind": "record", "source_record_id": f"probe-{mode}" if observed else "profile-1",
+            "recorded_at": "2026-10-16T12:00:00Z", "refreshed_at": "2026-10-16T12:00:00Z",
+            "freshness_status": freshness, "stale_after": "2026-10-16T12:30:00Z" if observed else "",
+            "detail": "https://private.example.invalid/health", "unknown": "private-provenance-value",
+        },
+        "url": "https://private.example.invalid/health", "private_endpoint_key": "private-endpoint",
+    })
+    status, payload, _calls = _run_product_read(
+        ["product-environment-read", "--product", "example-product", "--environment", "testing"], response,
+    )
+    assert status == 0, payload
+    result = payload["result"]["health_monitoring"]
+    assert "trust_state" not in result
+    assert result["public_incident_eligible"] is monitoring["public_incident_eligible"]
+    assert result["provenance"] == {key: value for key, value in monitoring["provenance"].items() if key != "detail"}
+    projected = result["checks"][0]
+    for field in ("enabled", "probe_effective", "incident_eligible", "status", "trust_state", "record_id", "observed_at"):
+        assert projected[field] == check[field]
+    assert projected["provenance"] == {
+        key: value for key, value in check["provenance"].items() if key not in {"detail", "unknown"}
+    }
+    for dropped in ("private.example.invalid", "private-endpoint", "private-provenance-value", "private profile detail"):
+        assert dropped not in json.dumps(payload)
+
+
+def test_product_health_legacy_evidence_stays_unknown_and_retired_aggregate_is_ignored() -> None:
+    result = write_action._project_product_health({
+        "monitoring_intent": "public", "trust_state": "verified", "checks": [{"enabled": True}],
+    })
+    assert "trust_state" not in result
+    assert result["public_incident_eligible"] is None and result["provenance"] is None
+    check = result["checks"][0]
+    assert check["probe_effective"] is None and check["incident_eligible"] is None
+    assert check["provenance"] is None
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_product_health_discloses_incomplete_check_projection(extra: int) -> None:
+    checks = [{"name": f"check-{index}", "probe_effective": True}
+              for index in range(write_action.PRODUCT_HEALTH_MAX_CHECKS + extra)]
+    result = write_action._project_product_health({"checks": checks})
+    assert [check["name"] for check in result["checks"]] == [
+        check["name"] for check in checks[:write_action.PRODUCT_HEALTH_MAX_CHECKS]
+    ]
+    assert result["checks_truncated"] is bool(extra)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("probe_effective", "false"), ("incident_eligible", 1), ("provenance", "verified"),
+    ("record_id", "invalid record id"),
+    ("provenance", {"stale_after": "https://private.example.invalid/deadline"}),
+    ("provenance", {"source_record_id": "invalid record id"}),
+])
+def test_product_environment_read_refuses_invalid_monitoring_evidence(field: str, value: object) -> None:
+    response = _product_environment_response()
+    monitoring = cast(dict[str, Any], response["environment"])["health_monitoring"]
+    monitoring["checks"][0][field] = value
+    status, payload, _calls = _run_product_read(
+        ["product-environment-read", "--product", "example-product", "--environment", "testing"], response,
+    )
+    assert status != 0 and not payload["result"]
+    assert "private.example.invalid" not in json.dumps(payload)
 
 
 def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:
@@ -4851,6 +5005,76 @@ def test_testing_hold_cli_dispatches_local_extension_route() -> None:
     assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
     assert all(call["body"]["hold"] is False for call in calls)
     assert "Testing done." not in json.dumps([call["request"] for call in calls])
+
+
+@pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
+@pytest.mark.parametrize("direction", ["set", "clear", "unchanged"])
+def test_testing_hold_cli_binds_purpose_and_preserves_apply_key(
+    tmp_path: Path, purpose: str, direction: str,
+) -> None:
+    hold = {"reason": "Review testing.", "purpose": purpose}
+    plan = _testing_hold_plan(
+        action=direction, reason=hold["reason"],
+        before=hold if direction == "clear" else None,
+        after=hold if direction == "set" else None,
+        changed=direction != "unchanged",
+    )
+    lane = ["--product", "example-product", "--context", "example", "--instance", "testing"]
+    intent = ["--hold" if direction == "set" else "--lift", "--reason", str(hold["reason"])]
+    evidence_path = tmp_path / "hold.json"
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        applying = kwargs["body"]["mode"] == "apply"
+        return _testing_hold_response({
+            **plan, "mode": "apply" if applying else "dry-run", "applied": applying,
+            "read_back": plan["after"] if applying else None,
+            "read_back_matches": True if applying else None,
+            "reconcile_requested": applying and direction != "set" and purpose == "staff_testing",
+        })
+
+    def run(argv: list[str]) -> tuple[int, dict[str, Any]]:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = write_action.main(argv)
+        return status, json.loads(output.getvalue())
+
+    with (
+        patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
+        patch.object(write_action, "request_launchplane", side_effect=fake_post),
+    ):
+        status, evidence = run(["testing-hold-dry-run", *lane, *intent, "--purpose", purpose])
+        assert status == 0
+        evidence_path.write_text(json.dumps(evidence))
+        apply_args = [
+            "testing-hold-apply", *lane, *intent, "--purpose", purpose,
+            "--reviewed-dry-run", "--expected-plan-digest", str(plan["plan_sha256"]),
+            "--dry-run-evidence-file", str(evidence_path), "--idempotency-key", "original-hold-key",
+        ]
+        status, receipt = run(apply_args)
+        assert status == 0
+        assert receipt["result"]["reconcile_requested"] == (
+            direction != "set" and purpose == "staff_testing"
+        )
+        assert calls[-1]["idempotency_key"] == "original-hold-key"
+        assert all(call["body"].get("purpose", "staff_testing") == purpose for call in calls)
+        if purpose == "staff_testing":
+            # The server fingerprints raw JSON: default staff retries must keep the legacy payload.
+            assert all("purpose" not in call["body"] for call in calls)
+        assert receipt["request"]["purpose"] == evidence["request"]["purpose"]
+        other_purpose = "staff_testing" if purpose == "isolation_staging" else "isolation_staging"
+        mismatched = [other_purpose if value == purpose else value for value in apply_args]
+        previous_calls = len(calls)
+        status, _ = run(mismatched)
+        assert status != 0 and len(calls) == previous_calls
+
+        # Even edited request metadata cannot reinterpret a concrete reviewed hold.
+        if direction != "unchanged":
+            evidence["request"]["purpose"] = other_purpose
+            evidence_path.write_text(json.dumps(evidence))
+            status, _ = run(mismatched)
+            assert status != 0 and len(calls) == previous_calls
 
 
 def _repository_identity_plan(**overrides: object) -> dict[str, object]:
@@ -8458,9 +8682,15 @@ def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
     "expires_at,expected_expiry",
     [("", ""), ("2026-10-05T18:00:00+02:00", "2026-10-05T16:00:00Z")],
 )
+@pytest.mark.parametrize("service_url", [
+    "https://private.example.invalid",
+    "https://private.example.invalid:8443/launchplane/",
+    "http://127.0.0.1:8080",
+    "http://[::1]:8080/launchplane",
+])
 def test_privileged_policy_propose_sends_private_envelope_and_only_returns_review_metadata(
     descriptor: str, request_body: dict[str, object], counts: dict[str, int],
-    expires_at: str, expected_expiry: str,
+    expires_at: str, expected_expiry: str, service_url: str,
 ) -> None:
     envelope = {
         "descriptor_id": descriptor,
@@ -8508,7 +8738,7 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
                     write_action,
                     "resolve_settings",
                     return_value={
-                        "service_url": "https://private.example.invalid",
+                        "service_url": service_url,
                         "token": "private-token",
                     },
                 ),
@@ -8537,12 +8767,24 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
             assert result["state"] == state
             assert result["operation_id"] == operation_id
             assert result["review_path"].endswith(operation_id)
+            review_url = urlsplit(result["review_url"])
+            configured_url = urlsplit(service_url)
+            assert (review_url.scheme, review_url.netloc) == (
+                configured_url.scheme, configured_url.netloc,
+            )
+            assert review_url.path == (
+                configured_url.path.rstrip("/") + urlsplit(result["review_path"]).path
+            )
+            assert parse_qs(review_url.query) == {"operation_id": [operation_id]}
+            assert not review_url.fragment
             assert result["counts"] == counts
             assert result["authorizes_approval"] is False
             assert result["authorizes_execution"] is False
+            without_review_url = copy.deepcopy(payload)
+            del without_review_url["result"]["review_url"]
+            assert configured_url.netloc not in json.dumps(without_review_url)
             for private in (
                 "private-token",
-                "private.example.invalid",
                 "never-emit-this",
                 str(request_body),
             ):
@@ -8570,6 +8812,7 @@ def test_privileged_policy_propose_rejects_invalid_review_deadlines(expires_at: 
         write_action.summarize_privileged_policy_proposal(
             request={"descriptor_id": "managed-merge-train-policy-import"},
             provider_payload=response,
+            service_url="https://launchplane.example.invalid",
         )
 
 
@@ -8655,6 +8898,7 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
             write_action.summarize_privileged_policy_proposal(
                 request={"descriptor_id": "managed-authz-policy-set"},
                 provider_payload=response,
+                service_url="https://launchplane.example.invalid",
             )
 
 
@@ -8781,7 +9025,9 @@ def test_privileged_policy_proposal_saved_before_500_replays_the_same_plan() -> 
                     assert write_action.main(["privileged-policy-propose", "--payload-file", str(path)]) == expected
                 outputs.append(json.loads(output.getvalue()))
                 assert "private-token" not in output.getvalue()
-                assert "private.example.invalid" not in output.getvalue()
+                without_review_url = copy.deepcopy(outputs[-1])
+                without_review_url.get("result", {}).pop("review_url", None)
+                assert "private.example.invalid" not in json.dumps(without_review_url)
         assert transport.call_count == 2
         assert len(saved) == 1
         assert outputs[0]["status"] == "outcome_unknown"
@@ -9294,12 +9540,18 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
 
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial"])
 @pytest.mark.parametrize("mode", ["dry-run", "apply"])
-def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str) -> None:
+@pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
+def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str, purpose: str) -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence = _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan()))
+        hold = {**cast(dict[str, object], _testing_hold_plan()["after"]), "purpose": purpose}
+        evidence = write_action.summarize_success(
+            operation="testing-hold-dry-run", request={"mode": "dry-run", "purpose": purpose},
+            provider_payload=_testing_hold_response(_testing_hold_plan(after=hold)),
+        )
         path = _write_json(directory, "hold-review.json", evidence)
         argv = [f"testing-hold-{mode}", "--product", "example-product", "--context", "example",
-                "--instance", "testing", "--hold", "--reason", str(_testing_hold_plan()["reason"])]
+                "--instance", "testing", "--hold", "--purpose", purpose,
+                "--reason", str(_testing_hold_plan()["reason"])]
         if mode == "apply":
             argv += _reviewed_apply_argv(evidence["result"]["plan_sha256"], path)
         fault = _interrupted_http(kind)
@@ -9310,6 +9562,7 @@ def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mod
                                            "private-message", Message(), error_body)
         code, payload, posts, _ = _run_main(argv, post=fault)
     assert code == 1 and len(posts) == 1
+    assert posts[0]["body"].get("purpose", "staff_testing") == purpose
     expected = "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
     assert payload["status"] == expected
     if expected == "outcome_unknown":
