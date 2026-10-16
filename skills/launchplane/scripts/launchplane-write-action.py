@@ -6565,6 +6565,7 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
 
 
 POLICY_PROPOSAL_DESCRIPTORS = (
+    "production-backup-policy",
     "managed-authz-policy-set",
     "managed-merge-train-policy-import",
 )
@@ -6607,6 +6608,12 @@ def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, objec
             "related_issue",
         }
         required = {"managed_set_id", "desired_policy", "reason"}
+    elif body["descriptor_id"] == "production-backup-policy":
+        allowed = {"authority", "reason", "related_issue"}
+        required = {"authority", "reason"}
+        authority = request_body.get("authority")
+        if not isinstance(authority, dict) or authority.get("mode") != "dry_run" or authority.get("reviewed_authority_digest"):
+            raise ValueError("invalid_backup_proposal_authority")
     else:
         allowed = {"record", "reason", "related_issue"}
         required = {"record", "reason"}
@@ -6644,7 +6651,7 @@ def summarize_privileged_policy_proposal(
         "execution_failed",
     } or provider_payload.get("write_status") not in {"written", "replayed"}:
         raise LaunchplaneSafetyError("invalid_response")
-    counts = (
+    counts = () if descriptor == "production-backup-policy" else (
         (
             "added_rule_count",
             "adopted_rule_count",
@@ -6687,6 +6694,13 @@ def summarize_privileged_policy_proposal(
     else:
         recommendation = "This plan is terminal. Inspect its outcome instead of requesting approval. An intentional replacement needs a fresh envelope and source event."
     review_path = f"/ui/engineering/privileged-operations?operation_id={operation_id}"
+    if descriptor == "production-backup-policy":
+        product = request.get("product")
+        if not isinstance(product, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", product) is None:
+            raise LaunchplaneSafetyError("invalid_response")
+        review_path = f"/ui/products/{urllib.parse.quote(product, safe='')}/environments/prod/actions?backup_proposal={operation_id}#production-backup-authority"
+        if summary.get("review_path") != review_path:
+            raise LaunchplaneSafetyError("invalid_response")
     result = {
         "operation_id": operation_id,
         "descriptor_id": descriptor,
@@ -10066,6 +10080,12 @@ def main(argv: list[str]) -> int:
         if args.command == "privileged-policy-propose":
             body = privileged_policy_proposal_body(args)
             request = {"mode": "propose", "payload_source": "private_file", "descriptor_id": body["descriptor_id"]}
+            if body["descriptor_id"] == "production-backup-policy":
+                authority = _require_dict(_require_dict(body["request"]).get("authority"))
+                product = _require_dict(authority.get("policy")).get("product")
+                if not isinstance(product, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", product) is None:
+                    raise ValueError("invalid_backup_proposal_product")
+                request["product"] = product
             return execute_post(args=args, operation=args.command, path=helper_command_path(args.command), request=request, body=body)
         if args.command == "product-config-preflight":
             request = {
