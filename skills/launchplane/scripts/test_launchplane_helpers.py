@@ -27,6 +27,7 @@ from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from unittest.mock import Mock, patch
@@ -8545,9 +8546,15 @@ def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
     "expires_at,expected_expiry",
     [("", ""), ("2026-10-05T18:00:00+02:00", "2026-10-05T16:00:00Z")],
 )
+@pytest.mark.parametrize("service_url", [
+    "https://private.example.invalid",
+    "https://private.example.invalid:8443/launchplane/",
+    "http://127.0.0.1:8080",
+    "http://[::1]:8080/launchplane",
+])
 def test_privileged_policy_propose_sends_private_envelope_and_only_returns_review_metadata(
     descriptor: str, request_body: dict[str, object], counts: dict[str, int],
-    expires_at: str, expected_expiry: str,
+    expires_at: str, expected_expiry: str, service_url: str,
 ) -> None:
     envelope = {
         "descriptor_id": descriptor,
@@ -8595,7 +8602,7 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
                     write_action,
                     "resolve_settings",
                     return_value={
-                        "service_url": "https://private.example.invalid",
+                        "service_url": service_url,
                         "token": "private-token",
                     },
                 ),
@@ -8624,12 +8631,24 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
             assert result["state"] == state
             assert result["operation_id"] == operation_id
             assert result["review_path"].endswith(operation_id)
+            review_url = urlsplit(result["review_url"])
+            configured_url = urlsplit(service_url)
+            assert (review_url.scheme, review_url.netloc) == (
+                configured_url.scheme, configured_url.netloc,
+            )
+            assert review_url.path == (
+                configured_url.path.rstrip("/") + urlsplit(result["review_path"]).path
+            )
+            assert parse_qs(review_url.query) == {"operation_id": [operation_id]}
+            assert not review_url.fragment
             assert result["counts"] == counts
             assert result["authorizes_approval"] is False
             assert result["authorizes_execution"] is False
+            without_review_url = copy.deepcopy(payload)
+            del without_review_url["result"]["review_url"]
+            assert configured_url.netloc not in json.dumps(without_review_url)
             for private in (
                 "private-token",
-                "private.example.invalid",
                 "never-emit-this",
                 str(request_body),
             ):
@@ -8657,6 +8676,7 @@ def test_privileged_policy_propose_rejects_invalid_review_deadlines(expires_at: 
         write_action.summarize_privileged_policy_proposal(
             request={"descriptor_id": "managed-merge-train-policy-import"},
             provider_payload=response,
+            service_url="https://launchplane.example.invalid",
         )
 
 
@@ -8742,6 +8762,7 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
             write_action.summarize_privileged_policy_proposal(
                 request={"descriptor_id": "managed-authz-policy-set"},
                 provider_payload=response,
+                service_url="https://launchplane.example.invalid",
             )
 
 
@@ -8868,7 +8889,9 @@ def test_privileged_policy_proposal_saved_before_500_replays_the_same_plan() -> 
                     assert write_action.main(["privileged-policy-propose", "--payload-file", str(path)]) == expected
                 outputs.append(json.loads(output.getvalue()))
                 assert "private-token" not in output.getvalue()
-                assert "private.example.invalid" not in output.getvalue()
+                without_review_url = copy.deepcopy(outputs[-1])
+                without_review_url.get("result", {}).pop("review_url", None)
+                assert "private.example.invalid" not in json.dumps(without_review_url)
         assert transport.call_count == 2
         assert len(saved) == 1
         assert outputs[0]["status"] == "outcome_unknown"
