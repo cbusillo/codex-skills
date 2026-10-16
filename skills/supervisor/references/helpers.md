@@ -394,9 +394,9 @@ an earlier Ready. Missing/stale heads, drafts, blocking train dispositions,
 current-head change requests and unavailable checks do not enqueue. A file
 inventory changed during reading skips that PR; other ready members continue.
 The shared parser normalizes trailing periods and bold markers on both Ready
-and renewed waits, accepts a bold full head SHA, and recognizes current and
-legacy nothing-to-test markers at the start of the test-notes section without
-requiring particular punctuation.
+and renewed waits, accepts a bold full head SHA, and validates `## Client test
+notes` with the merge train's `Nothing for the Client to test: <reason>` rule
+(plus legacy `Nothing for the owner to test:` or `.` with a reason).
 When mergeability is null, the watcher asks GitHub to compute it with up to two
 individual REST re-reads, one second apart, capped at 20 extra reads per pass
 and the watch deadline. These reads bypass conditional and batch snapshots;

@@ -23,7 +23,12 @@ import github_api as github_api_core
 import github_comment as github_comment_core
 import github_read as github_read_core
 import github_identity
-from ready_handoff import handoff_body, requires_client_acceptance
+from ready_handoff import (
+    UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE,
+    client_test_notes_error,
+    handoff_body,
+    requires_client_acceptance,
+)
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -339,6 +344,8 @@ def cmd_view(args: argparse.Namespace, *, cache_enabled: bool = True, include_bo
     normalized = normalize_pr(pr)
     if include_body:
         normalized["body"] = pr.get("body") or ""
+        if isinstance(pr.get("user"), dict):
+            normalized["user"] = pr["user"]
     return {
         "ok": True, "repo": repo, "pr": normalized,
         "actor": reader.actor, "expected_actor": reader.expected_actor,
@@ -544,6 +551,9 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     validate_ready_pr(current, repo=repo, number=number)
     if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
         raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
+    notes_error = client_test_notes_error(current, repository=repo)
+    if notes_error:
+        raise PrHelperError(notes_error, repo=repo, pr=number)
     if not args.waiting_for_client and requires_client_acceptance(current, checks["checkRuns"], repository=repo):
         if not any(
             check.get("name") == "launchplane/owner-review"
@@ -551,7 +561,7 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
             and check.get("conclusion") == "success"
             for check in checks["checkRuns"]
         ):
-            raise PrHelperError("Client acceptance is not confirmed; use --waiting-for-client", repo=repo, pr=number)
+            raise PrHelperError(UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE, repo=repo, pr=number)
     try:
         body = handoff_body(checks["headSha"], waiting_for_client=args.waiting_for_client)
     except ValueError as exc:
