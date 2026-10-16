@@ -5,7 +5,7 @@
 #     "PyYAML==6.0.3",
 # ]
 # ///
-"""Repo-wide validation for Every Code skill bundles."""
+"""Repo-wide validation for skill bundles."""
 
 from __future__ import annotations
 

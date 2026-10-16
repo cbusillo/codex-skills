@@ -715,13 +715,15 @@ parallel sources of truth.
 
 ### Agent Policy Proposals
 
-For a prepared managed access-policy or merge-train policy proposal, read
+For a prepared access-policy, merge-train policy or backup-policy proposal, read
 [the proposal helper contract](references/write-action-helper-contract.md#policy-proposals)
 and use `launchplane-write-action.py privileged-policy-propose --payload-file
-<private-envelope>`. The deployed service requires an explicit managed proposer
-grant for its configured `local_operator` identity. The Director approves that grant
-separately through the Access policy card. Submit no proposal until the service
-supports this route and the grant is installed. Source delivery grants no access.
+<private-envelope>`. Access/merge-train proposals require an explicit managed
+proposer grant for the configured `local_operator`; the Director approves it
+separately through the Access policy card. Backup proposals reuse existing
+exact-lane backup planning authority and open the product's production Actions
+card. Submit no proposal until the service supports its descriptor and the caller
+has the required authority. Source delivery grants no access.
 
 Creation is pending and inert. Director questions and handoffs that send the
 Director to a page include a full clickable URL, never a bare UI path. Use the
@@ -1165,9 +1167,11 @@ verification.
   journaled effects never proves absent provider effects or safe release.
 - `POST /v1/drivers/odoo/target-replacement-plan`: Bounded local-extension
   read (`target-replacement-plan-read --product --instance`) for what an Odoo
-  target replacement on that lane would do, before any apply. The route builds
-  a plan and writes nothing. It returns plan status, strategy, data source
-  mode, the expected artifact, blocker codes, and env-key names only: the keys
+  target replacement on that lane would do, before any apply. Add
+  `--artifact-id` with `--source-git-ref` to plan with a candidate artifact
+  instead of the lane's current one. The route builds a plan and writes
+  nothing. It returns plan status, strategy, data source mode, the artifact it
+  evaluated, blocker codes, and env-key names only: the keys
   it would deliver (`delivered_runtime_keys`, `null` when the service does not
   report them yet) and retire, the keys each blocker is about, and the current
   target's env keys and missing volume keys, plus step ids and statuses.

@@ -111,8 +111,14 @@ returns just its report as `response` or the output file. Only `status: complete
 with a nonempty `review` succeeds; a completed no-findings report may say `none`.
 The `review` field is a string; requests for structured findings are encoded as
 JSON text inside it, so callers still receive that text as their report.
+Each provider's CLI enforces that result's JSON schema, and the helper reads
+the CLI's validated object rather than the model's final text, which may carry
+narration around the JSON. Anthropic and Google results say whether that object
+was present in `structured_output`; Codex writes the constrained answer itself.
 An explicit `refused` or `incomplete` status fails with that bounded outcome.
-Missing or malformed completion evidence is `unavailable`, even after file reads.
+Missing or malformed completion evidence is `unavailable`, even after file reads;
+its `completion_shape` says why (for example, text before the JSON object)
+without quoting the response.
 These failures retain model/account provenance but omit partial or withheld text;
 they do not produce an output file or consume a planted finding. No refusal is
 retried to obtain a different answer. This confirms the reviewer's declared

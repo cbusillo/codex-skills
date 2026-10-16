@@ -384,7 +384,7 @@ def test_collect_rollup_attaches_recipient_profile(monkeypatch: pytest.MonkeyPat
 def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
     readme = base64.b64encode(
-        b"# Codex Lab\n\nCodex Lab is a harness for agent workflows.\n\n## Details\nMore text."
+        b"# Northwind Lab\n\nNorthwind Lab is a harness for agent workflows.\n\n## Details\nMore text."
     ).decode("ascii")
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -398,12 +398,12 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
                 command,
                 {
                     "description": "New harness for agent workflows.",
-                    "homepageUrl": "https://example.test/codex-lab",
+                    "homepageUrl": "https://example.test/northwind-lab",
                     "repositoryTopics": [{"name": "agents"}],
-                    "url": "https://github.com/example-org/codex-lab",
+                    "url": "https://github.com/example-org/northwind-lab",
                 },
             )
-        if command[1] == "api" and command[2] == "repos/example-org/codex-lab/readme":
+        if command[1] == "api" and command[2] == "repos/example-org/northwind-lab/readme":
             return completed(
                 command,
                 {
@@ -411,7 +411,7 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
                     "encoding": "base64",
                     "path": "README.md",
                     "sha": "abc123",
-                    "html_url": "https://github.com/example-org/codex-lab/blob/main/README.md",
+                    "html_url": "https://github.com/example-org/northwind-lab/blob/main/README.md",
                 },
             )
         if response := empty_enrichment_response(command):
@@ -420,7 +420,7 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
     settings = github_work_rollup.resolve_settings(
-        args(repo=["example-org/codex-lab"], include_derived_context=True, context_repo_limit=5),
+        args(repo=["example-org/northwind-lab"], include_derived_context=True, context_repo_limit=5),
         {},
     )
 
@@ -428,13 +428,13 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
 
     context = payload["derived_context"]
     assert context["source"].startswith("derived from GitHub")
-    assert context["repositories"][0]["repo"] == "example-org/codex-lab"
+    assert context["repositories"][0]["repo"] == "example-org/northwind-lab"
     assert context["repositories"][0]["description"] == "New harness for agent workflows."
     assert context["repositories"][0]["topics"] == ["agents"]
-    assert "Codex Lab is a harness" in context["repositories"][0]["readme"]["excerpt"]
+    assert "Northwind Lab is a harness" in context["repositories"][0]["readme"]["excerpt"]
     assert context["repositories"][0]["claims"][0]["standing_context"] is True
     assert any(command[1:3] == ["repo", "view"] for command in calls)
-    assert any(command[1:3] == ["api", "repos/example-org/codex-lab/readme"] for command in calls)
+    assert any(command[1:3] == ["api", "repos/example-org/northwind-lab/readme"] for command in calls)
 
 
 def test_missing_readme_context_does_not_pollute_limitations(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1569,7 +1569,7 @@ def test_render_manager_brief_markdown() -> None:
         },
         "priority_sections": [
             {
-                "name": "Every Code",
+                "name": "Northwind",
                 "items": [{"repo": "example-org/code", "title": "Choose auth direction"}],
                 "recently_completed": [{"repo": "example-org/code", "title": "Ship session routing"}],
                 "recently_completed_count": 4,
@@ -1591,7 +1591,7 @@ def test_render_manager_brief_markdown() -> None:
     assert "## Today's Priorities" in rendered
     assert "## Active Work" in rendered
     assert "## Focus Areas" in rendered
-    assert "Every Code**: 1 open priority item(s), 4 recent completion(s)" in rendered
+    assert "Northwind**: 1 open priority item(s), 4 recent completion(s)" in rendered
     assert "## Decisions and Risks" in rendered
     assert "## Velocity" in rendered
     assert "[code#101](https://github.com/example-org/code/issues/101) Choose auth direction" in rendered
@@ -1738,9 +1738,9 @@ def test_render_executive_brief_markdown() -> None:
         ],
         "priority_sections": [
             {
-                "name": "Every Code / Skills",
-                "workstream": "Every Code skill reporting",
-                "relationship": "Every Code skill reporting inside Every Code / Skills",
+                "name": "Northwind / Skills",
+                "workstream": "Northwind skill reporting",
+                "relationship": "Northwind skill reporting inside Northwind / Skills",
                 "initiatives": ["Work Brief"],
                 "items": [],
                 "recently_completed": [
@@ -1762,18 +1762,18 @@ def test_render_executive_brief_markdown() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Daily Work Brief for Justin" in rendered
-    assert "The visible decision is how to sequence Every Code skill reporting inside Every Code / Skills: 2 completed items, 1 cleared path, 1 release, and 1 open follow-up." in rendered
+    assert "The visible decision is how to sequence Northwind skill reporting inside Northwind / Skills: 2 completed items, 1 cleared path, 1 release, and 1 open follow-up." in rendered
     assert "Private note" not in rendered
     assert "## Executive Summary" in rendered
     assert "## Needs Justin's Attention" in rendered
-    assert "## Every Code / Skills Impact" in rendered
+    assert "## Northwind / Skills Impact" in rendered
     assert "## Failed Runs" in rendered
     assert "## Work Items Behind This Brief" in rendered
     assert "## Questions to Decide" in rendered
 
     assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
     assert "Finished work landed; the next choices are concentrated around Critical Bug." in rendered
-    assert "Every Code skill reporting inside Every Code / Skills" in rendered
+    assert "Northwind skill reporting inside Northwind / Skills" in rendered
     assert "Key initiatives: Work Brief." in rendered
     assert "Deploy production" in rendered
     assert "Completed during the day: code#202 Document auth flow; example-skills#203 Add helper validation." in rendered
@@ -1817,7 +1817,7 @@ def test_render_executive_brief_uses_dynamic_recipient() -> None:
                 }
             ]
         },
-        "priority_sections": [{"name": "Every Code", "items": [], "recently_completed": []}],
+        "priority_sections": [{"name": "Northwind", "items": [], "recently_completed": []}],
         "limitations": [],
         "releases": [],
         "workflows": [],
@@ -1837,19 +1837,19 @@ def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_a
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab"],
+        "repositories": ["example-org/northwind-lab"],
         "layout": "executive",
         "buckets": {
             "in_progress": [
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 28,
-                    "title": "Codex Lab MVP dogfood plan",
+                    "title": "Northwind Lab MVP dogfood plan",
                     "kind": "issue",
                     "state": "open",
                 },
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 45,
                     "title": "Define Code Bridge protocol, trust, and payload contract",
                     "kind": "issue",
@@ -1858,9 +1858,9 @@ def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_a
             ],
             "recently_completed": [
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 52,
-                    "title": "Run Codex Lab dogfood readiness sweep",
+                    "title": "Run Northwind Lab dogfood readiness sweep",
                     "kind": "issue",
                     "state": "closed",
                 }
@@ -1868,21 +1868,21 @@ def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_a
         },
         "priority_sections": [
             {
-                "name": "Every Code Product Issues",
-                "portfolio_area": "Every Code Product Issues",
-                "workstream": "Codex Lab",
-                "relationship": "Codex Lab dogfood work inside the Every Code product area",
+                "name": "Northwind Product Issues",
+                "portfolio_area": "Northwind Product Issues",
+                "workstream": "Northwind Lab",
+                "relationship": "Northwind Lab dogfood work inside the Northwind product area",
                 "initiatives": ["Code Bridge"],
                 "items": [
                     {
-                        "repo": "example-org/codex-lab",
+                        "repo": "example-org/northwind-lab",
                         "number": 28,
-                        "title": "Codex Lab MVP dogfood plan",
+                        "title": "Northwind Lab MVP dogfood plan",
                         "kind": "issue",
                         "state": "open",
                     },
                     {
-                        "repo": "example-org/codex-lab",
+                        "repo": "example-org/northwind-lab",
                         "number": 45,
                         "title": "Define Code Bridge protocol, trust, and payload contract",
                         "kind": "issue",
@@ -1892,9 +1892,9 @@ def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_a
                 "item_count": 2,
                 "recently_completed": [
                     {
-                        "repo": "example-org/codex-lab",
+                        "repo": "example-org/northwind-lab",
                         "number": 52,
-                        "title": "Run Codex Lab dogfood readiness sweep",
+                        "title": "Run Northwind Lab dogfood readiness sweep",
                         "kind": "issue",
                         "state": "closed",
                     }
@@ -1909,14 +1909,14 @@ def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_a
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "The visible decision is how to sequence Codex Lab dogfood work inside the Every Code product area" in rendered
-    assert "- **Codex Lab**: Codex Lab dogfood work inside the Every Code product area" in rendered
+    assert "The visible decision is how to sequence Northwind Lab dogfood work inside the Northwind product area" in rendered
+    assert "- **Northwind Lab**: Northwind Lab dogfood work inside the Northwind product area" in rendered
     assert "Key initiatives: Code Bridge." in rendered
     assert "Impact: turns finished work into a checkable result before the next cycle commits more effort." in rendered
     assert "Risk if delayed: the open items can fan out into parallel work before the decision loop closes." in rendered
     assert "Confidence: medium; based on 3 GitHub items across 1 initiative" in rendered
-    assert "Every Code Product Issues MVP" not in rendered
-    assert "Every Code product MVP" not in rendered
+    assert "Northwind Product Issues MVP" not in rendered
+    assert "Northwind product MVP" not in rendered
 
 
 def test_render_executive_brief_infers_workstream_without_using_portfolio_name_as_alias() -> None:
@@ -1925,23 +1925,23 @@ def test_render_executive_brief_infers_workstream_without_using_portfolio_name_a
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab"],
+        "repositories": ["example-org/northwind-lab"],
         "layout": "executive",
         "buckets": {
             "in_progress": [
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 28,
-                    "title": "Codex Lab MVP dogfood plan",
+                    "title": "Northwind Lab MVP dogfood plan",
                     "kind": "issue",
                     "state": "open",
                 }
             ],
             "recently_completed": [
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 52,
-                    "title": "Run Codex Lab dogfood readiness sweep",
+                    "title": "Run Northwind Lab dogfood readiness sweep",
                     "kind": "issue",
                     "state": "closed",
                 }
@@ -1949,12 +1949,12 @@ def test_render_executive_brief_infers_workstream_without_using_portfolio_name_a
         },
         "priority_sections": [
             {
-                "name": "Every Code Product Issues",
+                "name": "Northwind Product Issues",
                 "items": [
                     {
-                        "repo": "example-org/codex-lab",
+                        "repo": "example-org/northwind-lab",
                         "number": 28,
-                        "title": "Codex Lab MVP dogfood plan",
+                        "title": "Northwind Lab MVP dogfood plan",
                         "kind": "issue",
                         "state": "open",
                     }
@@ -1962,9 +1962,9 @@ def test_render_executive_brief_infers_workstream_without_using_portfolio_name_a
                 "item_count": 1,
                 "recently_completed": [
                     {
-                        "repo": "example-org/codex-lab",
+                        "repo": "example-org/northwind-lab",
                         "number": 52,
-                        "title": "Run Codex Lab dogfood readiness sweep",
+                        "title": "Run Northwind Lab dogfood readiness sweep",
                         "kind": "issue",
                         "state": "closed",
                     }
@@ -1979,9 +1979,9 @@ def test_render_executive_brief_infers_workstream_without_using_portfolio_name_a
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "The visible decision is how to sequence Codex Lab work inside Every Code Product Issues" in rendered
-    assert "- **Codex Lab**: Codex Lab work inside Every Code Product Issues" in rendered
-    assert "- **Every Code Product Issues**" not in rendered
+    assert "The visible decision is how to sequence Northwind Lab work inside Northwind Product Issues" in rendered
+    assert "- **Northwind Lab**: Northwind Lab work inside Northwind Product Issues" in rendered
+    assert "- **Northwind Product Issues**" not in rendered
 
 
 def test_render_executive_brief_infers_sentence_case_workstream_titles() -> None:
@@ -1990,14 +1990,14 @@ def test_render_executive_brief_infers_sentence_case_workstream_titles() -> None
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab"],
+        "repositories": ["example-org/northwind-lab"],
         "layout": "executive",
         "buckets": {
             "in_progress": [
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 28,
-                    "title": "Codex lab dogfood plan",
+                    "title": "Northwind lab dogfood plan",
                     "kind": "issue",
                     "state": "open",
                 }
@@ -2005,12 +2005,12 @@ def test_render_executive_brief_infers_sentence_case_workstream_titles() -> None
         },
         "priority_sections": [
             {
-                "name": "Every Code Product Issues",
+                "name": "Northwind Product Issues",
                 "items": [
                     {
-                        "repo": "example-org/codex-lab",
+                        "repo": "example-org/northwind-lab",
                         "number": 28,
-                        "title": "Codex lab dogfood plan",
+                        "title": "Northwind lab dogfood plan",
                         "kind": "issue",
                         "state": "open",
                     }
@@ -2026,7 +2026,7 @@ def test_render_executive_brief_infers_sentence_case_workstream_titles() -> None
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "- **Codex lab**" in rendered
+    assert "- **Northwind lab**" in rendered
     assert "- **Codex**" not in rendered
 
 
@@ -2036,14 +2036,14 @@ def test_render_executive_brief_does_not_select_configured_initiative_as_workstr
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab"],
+        "repositories": ["example-org/northwind-lab"],
         "layout": "executive",
         "buckets": {
             "in_progress": [
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 45,
-                    "title": "Code Bridge protocol for Codex Lab",
+                    "title": "Code Bridge protocol for Northwind Lab",
                     "kind": "issue",
                     "state": "open",
                 }
@@ -2051,13 +2051,13 @@ def test_render_executive_brief_does_not_select_configured_initiative_as_workstr
         },
         "priority_sections": [
             {
-                "name": "Every Code Product Issues",
+                "name": "Northwind Product Issues",
                 "initiatives": ["Code Bridge"],
                 "items": [
                     {
-                        "repo": "example-org/codex-lab",
+                        "repo": "example-org/northwind-lab",
                         "number": 45,
-                        "title": "Code Bridge protocol for Codex Lab",
+                        "title": "Code Bridge protocol for Northwind Lab",
                         "kind": "issue",
                         "state": "open",
                     }
@@ -2073,7 +2073,7 @@ def test_render_executive_brief_does_not_select_configured_initiative_as_workstr
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "- **Codex Lab**: Codex Lab work inside Every Code Product Issues" in rendered
+    assert "- **Northwind Lab**: Northwind Lab work inside Northwind Product Issues" in rendered
     assert "Key initiatives: Code Bridge." in rendered
     assert "- **Code Bridge**" not in rendered
 
@@ -2084,13 +2084,13 @@ def test_render_executive_brief_keeps_mixed_focus_heading_specific() -> None:
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab", "example-org/example-skills"],
+        "repositories": ["example-org/northwind-lab", "example-org/example-skills"],
         "layout": "executive",
         "buckets": {},
         "priority_sections": [
             {
                 "name": "Agent Product Issues",
-                "workstream": "Codex Lab",
+                "workstream": "Northwind Lab",
                 "items": [],
                 "recently_completed": [],
             },
@@ -2118,7 +2118,7 @@ def test_render_executive_brief_mixed_focus_heading_is_order_stable() -> None:
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab", "example-org/example-skills"],
+        "repositories": ["example-org/northwind-lab", "example-org/example-skills"],
         "layout": "executive",
         "buckets": {},
         "priority_sections": [
@@ -2130,7 +2130,7 @@ def test_render_executive_brief_mixed_focus_heading_is_order_stable() -> None:
             },
             {
                 "name": "Agent Product Issues",
-                "workstream": "Codex Lab",
+                "workstream": "Northwind Lab",
                 "items": [],
                 "recently_completed": [],
             },
@@ -2148,7 +2148,7 @@ def test_render_executive_brief_mixed_focus_heading_is_order_stable() -> None:
 
 def test_focus_heading_treats_retired_product_labels_as_supplied_data() -> None:
     # Historical input is readable without restoring its old product taxonomy.
-    sections = [{"name": "Every Code Product Issues"}, {"name": "Skills"}]
+    sections = [{"name": "Northwind Product Issues"}, {"name": "Skills"}]
     expected = " and ".join(section["name"] for section in sections[::-1]) + " Impact"
     assert github_work_rollup.focus_area_heading({"priority_sections": sections}) == expected
     assert github_work_rollup.focus_area_heading({"priority_sections": sections[::-1]}) == expected
@@ -2167,26 +2167,26 @@ def test_render_executive_brief_theme_titles_use_key_phrases_without_semicolon_s
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab"],
+        "repositories": ["example-org/northwind-lab"],
         "layout": "executive",
         "buckets": {
             "in_progress": [
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 45,
                     "title": "Define Code Bridge protocol, trust, and payload contract",
                     "kind": "issue",
                     "state": "open",
                 },
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 28,
-                    "title": "Codex Lab MVP dogfood plan",
+                    "title": "Northwind Lab MVP dogfood plan",
                     "kind": "issue",
                     "state": "open",
                 },
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 63,
                     "title": "Scope owner review follow-up",
                     "kind": "issue",
@@ -2203,7 +2203,7 @@ def test_render_executive_brief_theme_titles_use_key_phrases_without_semicolon_s
     rendered = github_work_rollup.render_payload(payload, "markdown")
     outcome = next(line for line in rendered.splitlines() if line.startswith("The useful signal is"))
 
-    assert "Code Bridge, Codex Lab, and 1 more related item" in outcome
+    assert "Code Bridge, Northwind Lab, and 1 more related item" in outcome
     assert ";" not in outcome
     assert "trust, and payload contract" not in outcome
 
@@ -2214,19 +2214,19 @@ def test_render_executive_brief_theme_titles_keep_title_fallbacks_per_item() -> 
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab"],
+        "repositories": ["example-org/northwind-lab"],
         "layout": "executive",
         "buckets": {
             "in_progress": [
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 11,
                     "title": "fix broken config",
                     "kind": "issue",
                     "state": "open",
                 },
                 {
-                    "repo": "example-org/codex-lab",
+                    "repo": "example-org/northwind-lab",
                     "number": 45,
                     "title": "Define Code Bridge protocol",
                     "kind": "issue",
@@ -2253,19 +2253,19 @@ def test_render_executive_brief_varies_impact_lines_by_workstream_signal() -> No
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab", "example-org/example-skills"],
+        "repositories": ["example-org/northwind-lab", "example-org/example-skills"],
         "layout": "executive",
         "buckets": {},
         "priority_sections": [
             {
-                "name": "Every Code Product Issues",
-                "workstream": "Codex Lab",
+                "name": "Northwind Product Issues",
+                "workstream": "Northwind Lab",
                 "initiatives": ["Code Bridge"],
                 "items": [
                     {
-                        "repo": "example-org/codex-lab",
+                        "repo": "example-org/northwind-lab",
                         "number": 28,
-                        "title": "Codex Lab MVP dogfood plan",
+                        "title": "Northwind Lab MVP dogfood plan",
                         "kind": "issue",
                         "state": "open",
                     }
@@ -2309,13 +2309,13 @@ def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> Non
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/codex-lab"],
+        "repositories": ["example-org/northwind-lab"],
         "layout": "executive",
         "buckets": {},
         "priority_sections": [
             {
-                "name": "Every Code Product Issues",
-                "workstream": "Codex Lab",
+                "name": "Northwind Product Issues",
+                "workstream": "Northwind Lab",
                 "items": [],
                 "recently_completed": [],
             }
@@ -2326,7 +2326,7 @@ def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> Non
     }
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
-    bullet = next(line for line in rendered.splitlines() if line.startswith("- **Codex Lab**"))
+    bullet = next(line for line in rendered.splitlines() if line.startswith("- **Northwind Lab**"))
 
     assert "no active signal" in bullet
     assert "concrete validation path" not in bullet
@@ -2418,7 +2418,7 @@ def test_render_executive_brief_uses_weekly_window_language() -> None:
                 }
             ],
         },
-        "priority_sections": [{"name": "Every Code", "items": [], "recently_completed": []}],
+        "priority_sections": [{"name": "Northwind", "items": [], "recently_completed": []}],
         "limitations": [],
         "releases": [],
         "workflows": [],
@@ -2427,7 +2427,7 @@ def test_render_executive_brief_uses_weekly_window_language() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Weekly Work Brief for Justin" in rendered
-    assert "The visible decision is how to sequence Every Code: 1 completed item and 1 open follow-up." in rendered
+    assert "The visible decision is how to sequence Northwind: 1 completed item and 1 open follow-up." in rendered
     assert "Looking at Improve owner summaries, did the completed work deliver what you expected" in rendered
     assert "Completed during the week: example-repo#2 Improve owner summaries." in rendered
     assert "Daily" not in rendered

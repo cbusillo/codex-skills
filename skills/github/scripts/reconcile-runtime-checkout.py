@@ -771,6 +771,8 @@ def sanitized_git_environment() -> dict[str, str]:
 
 @contextlib.contextmanager
 def reconciliation_lock(common_dir: Path) -> Iterator[None]:
+    # Legacy filename from the retired Every Code runtime; renaming it would let
+    # older and newer reconcilers run without excluding each other.
     lock_path = common_dir / "every-code-runtime-reconciliation.lock"
     with lock_path.open("a+b") as lock_file:
         if os.name == "posix":
