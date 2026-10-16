@@ -3081,7 +3081,6 @@ def _product_environment_response() -> dict[str, object]:
                         "trust_state": "recorded",
                     }
                 ],
-                "trust_state": "recorded",
                 "provenance": {"source_kind": "record", "freshness_status": "recorded"},
             },
             "public_ingress": {"status": "pass", "failure_code": "", "trust_state": "recorded"},
@@ -3324,6 +3323,94 @@ def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
     assert status == 1 and len(calls) == 1
     assert not payload["result"] and "private detail" not in json.dumps(payload)
     assert payload["summary"]["trace_id"] == "launchplane_req_denied"
+
+
+@pytest.mark.parametrize("mode", ["missing", "stale", "fresh", "disabled", "inapplicable"])
+def test_product_environment_read_preserves_canonical_monitoring_evidence(mode: str) -> None:
+    response = _product_environment_response()
+    monitoring = cast(dict[str, Any], response["environment"])["health_monitoring"]
+    check = monitoring["checks"][0]
+    effective = mode not in {"disabled", "inapplicable"}
+    observed = mode in {"stale", "fresh"}
+    freshness = "verified" if mode == "fresh" else mode if effective else "recorded"
+    monitoring["monitoring_intent"] = "private" if mode == "inapplicable" else "public"
+    monitoring["public_incident_eligible"] = effective
+    # A newer profile does not renew an older probe's deadline.
+    monitoring["provenance"] = {
+        "source_kind": "record", "source_record_id": "profile-1",
+        "recorded_at": "2026-10-16T13:00:00Z", "refreshed_at": "",
+        "freshness_status": "recorded", "stale_after": "", "detail": "private profile detail",
+    }
+    check.update({
+        "kind": "public_http", "enabled": mode != "disabled", "probe_effective": effective,
+        "incident_eligible": effective, "status": "pass" if observed else {
+            "missing": "missing", "disabled": "disabled", "inapplicable": "not_expected",
+        }.get(mode),
+        "trust_state": freshness, "record_id": f"probe-{mode}" if observed else "",
+        "observed_at": "2026-10-16T12:00:00Z" if observed else "",
+        "provenance": {
+            "source_kind": "record", "source_record_id": f"probe-{mode}" if observed else "profile-1",
+            "recorded_at": "2026-10-16T12:00:00Z", "refreshed_at": "2026-10-16T12:00:00Z",
+            "freshness_status": freshness, "stale_after": "2026-10-16T12:30:00Z" if observed else "",
+            "detail": "https://private.example.invalid/health", "unknown": "private-provenance-value",
+        },
+        "url": "https://private.example.invalid/health", "private_endpoint_key": "private-endpoint",
+    })
+    status, payload, _calls = _run_product_read(
+        ["product-environment-read", "--product", "example-product", "--environment", "testing"], response,
+    )
+    assert status == 0, payload
+    result = payload["result"]["health_monitoring"]
+    assert "trust_state" not in result
+    assert result["public_incident_eligible"] is monitoring["public_incident_eligible"]
+    assert result["provenance"] == {key: value for key, value in monitoring["provenance"].items() if key != "detail"}
+    projected = result["checks"][0]
+    for field in ("enabled", "probe_effective", "incident_eligible", "status", "trust_state", "record_id", "observed_at"):
+        assert projected[field] == check[field]
+    assert projected["provenance"] == {
+        key: value for key, value in check["provenance"].items() if key not in {"detail", "unknown"}
+    }
+    for dropped in ("private.example.invalid", "private-endpoint", "private-provenance-value", "private profile detail"):
+        assert dropped not in json.dumps(payload)
+
+
+def test_product_health_legacy_evidence_stays_unknown_and_retired_aggregate_is_ignored() -> None:
+    result = write_action._project_product_health({
+        "monitoring_intent": "public", "trust_state": "verified", "checks": [{"enabled": True}],
+    })
+    assert "trust_state" not in result
+    assert result["public_incident_eligible"] is None and result["provenance"] is None
+    check = result["checks"][0]
+    assert check["probe_effective"] is None and check["incident_eligible"] is None
+    assert check["provenance"] is None
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_product_health_discloses_incomplete_check_projection(extra: int) -> None:
+    checks = [{"name": f"check-{index}", "probe_effective": True}
+              for index in range(write_action.PRODUCT_HEALTH_MAX_CHECKS + extra)]
+    result = write_action._project_product_health({"checks": checks})
+    assert [check["name"] for check in result["checks"]] == [
+        check["name"] for check in checks[:write_action.PRODUCT_HEALTH_MAX_CHECKS]
+    ]
+    assert result["checks_truncated"] is bool(extra)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("probe_effective", "false"), ("incident_eligible", 1), ("provenance", "verified"),
+    ("record_id", "invalid record id"),
+    ("provenance", {"stale_after": "https://private.example.invalid/deadline"}),
+    ("provenance", {"source_record_id": "invalid record id"}),
+])
+def test_product_environment_read_refuses_invalid_monitoring_evidence(field: str, value: object) -> None:
+    response = _product_environment_response()
+    monitoring = cast(dict[str, Any], response["environment"])["health_monitoring"]
+    monitoring["checks"][0][field] = value
+    status, payload, _calls = _run_product_read(
+        ["product-environment-read", "--product", "example-product", "--environment", "testing"], response,
+    )
+    assert status != 0 and not payload["result"]
+    assert "private.example.invalid" not in json.dumps(payload)
 
 
 def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:
