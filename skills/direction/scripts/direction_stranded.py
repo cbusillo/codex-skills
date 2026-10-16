@@ -501,7 +501,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 unread_scopes.append({"repo": repo, "state": state})
                 continue
             metadata = one(f"repos/{repo}")
-            if metadata.get("archived") is True and state == "open":
+            if metadata.get("archived") is True and state != "reopen_triggers":
                 continue
             if not isinstance(metadata.get("archived"), bool) or not metadata.get("default_branch"):
                 gaps.append({"source": repo, "reason": "repository_state_unavailable"})
@@ -557,7 +557,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 comments_complete = len(valid_comments) == len(record["comments"])
                 record["comments"] = valid_comments
                 if state != "open":
-                    record["trigger_only"] = not recent
+                    record["trigger_only"] = metadata["archived"] or not recent
                     if "pull_request" not in item and comments_complete:
                         try:
                             trigger = github_plan_trigger.current(item, valid_comments,

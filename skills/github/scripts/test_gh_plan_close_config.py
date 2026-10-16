@@ -79,7 +79,7 @@ class CloseConfigTests(unittest.TestCase):
                   explicit: bool = False, wrong_origin: bool = False,
                   workspace: dict | None = None, overrides: tuple[str, ...] = (),
                   fail_labels: bool = False, fail_project: bool = False,
-                  blocked: bool = False, already_closed: bool = False, trigger_comments: Mock | None = None,
+                  blocked: bool = False, already_closed: bool = False, indexed: bool = False, trigger_comments: Mock | None = None,
                   trigger_readback: Mock | None = None) -> tuple[int, dict, Mock, Mock, Mock]:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -95,6 +95,8 @@ class CloseConfigTests(unittest.TestCase):
                 workspace_path.write_text(json.dumps(workspace))
             issue = {"number": 7, "state": "open", "labels": [{"name": "plan:active"}],
                      "html_url": "https://github.com/fixture/target/issues/7"}
+            if indexed:
+                issue["labels"].append({"name": PLAN.github_plan_trigger.INDEX_LABEL})
             if already_closed:
                 issue.update(state="closed", state_reason="not_planned")
             state = Mock(return_value={"actor": "fixture-bot"})
@@ -228,9 +230,11 @@ class CloseConfigTests(unittest.TestCase):
             overrides=("--reopen-trigger", json.dumps(event)),
             trigger_comments=Mock(side_effect=published), trigger_readback=Mock(side_effect=readback))
         self.assertEqual(code, 0, result)
-        self.assertEqual(order, ["published", "readback"])
+        self.assertLess(order.index("published"), len(order) - 1)
+        self.assertEqual(order[-1], "readback")
         state.assert_called_once()
-        self.assertEqual(labels.call_args_list[0].kwargs["remove_labels"], [PLAN.github_plan_trigger.INDEX_LABEL])
+        self.assertFalse(any(PLAN.github_plan_trigger.INDEX_LABEL in (call.kwargs.get("remove_labels") or [])
+                             for call in labels.call_args_list))
 
     def test_failed_trigger_publication_or_readback_prevents_closure(self):
         event = {"version": 1, "kind": "date", "evidence": "Director deferral", "at": "2026-12-01"}
@@ -273,7 +277,7 @@ class CloseConfigTests(unittest.TestCase):
         comments = Mock(return_value={"actor": "fixture-bot"})
         readback = Mock(return_value=("fixture", [{"user": {"login": "fixture"},
                         "body": PLAN.github_plan_trigger.marker(event)}]))
-        code, result, state, labels, _ = self.run_close(already_closed=True,
+        code, result, state, labels, _ = self.run_close(already_closed=True, indexed=True,
             overrides=("--clear-reopen-trigger", event["evidence"]), trigger_comments=comments,
             trigger_readback=readback)
         self.assertEqual(code, 0, result)
@@ -281,6 +285,27 @@ class CloseConfigTests(unittest.TestCase):
         self.assertEqual(labels.call_args_list[0].kwargs["remove_labels"], [PLAN.github_plan_trigger.INDEX_LABEL])
         self.assertEqual(PLAN.github_plan_trigger.current({}, [{"user": {"login": "fixture"},
                          "body": comments.call_args.args[2]}], {"fixture"}), event)
+
+
+    def test_same_clear_text_can_supersede_a_later_rearmed_event_without_an_index(self):
+        clear = {"version": 1, "state": "clear", "evidence": "Reviewed; no action"}
+        rearmed = {"version": 1, "kind": "date", "evidence": "New deferral", "at": "2027-01-01"}
+        clear_body = "Reopen trigger: " + PLAN.github_plan_trigger.describe(clear) + "\n\n" + PLAN.github_plan_trigger.marker(clear)
+        comments = [{"user": {"login": "fixture"}, "body": body} for body in
+                    (clear_body, PLAN.github_plan_trigger.marker(rearmed))]
+        def publish(*args, **kwargs):
+            if not kwargs["dedupe_body"] or not any(c["body"] == args[2] for c in comments):
+                comments.append({"user": {"login": "fixture"}, "body": args[2]})
+            return {"actor": "fixture-bot"}
+        code, result, state, labels, _ = self.run_close(already_closed=True,
+            overrides=("--clear-reopen-trigger", clear["evidence"]),
+            trigger_comments=Mock(side_effect=publish),
+            trigger_readback=Mock(side_effect=lambda *a, **kw: ("fixture", list(comments))))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(PLAN.github_plan_trigger.current({}, comments, {"fixture"}), clear)
+        state.assert_not_called()
+        self.assertFalse(any(PLAN.github_plan_trigger.INDEX_LABEL in (call.kwargs.get("remove_labels") or [])
+                             for call in labels.call_args_list))
 
 
 if __name__ == "__main__":

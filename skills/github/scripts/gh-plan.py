@@ -5200,11 +5200,16 @@ def cmd_close(args: argparse.Namespace) -> None:
             raise PlanError("Use only --reopen-trigger to supply the close comment's trigger")
         trigger_comment = (close_comment + "\n\nReopen trigger: " + github_plan_trigger.describe(trigger) +
                            "\n\n" + github_plan_trigger.marker(trigger)).strip()
+        _, prior_comments = collect_paged_rest_items(
+            f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
+            step_prefix="reopen_trigger_preflight")
+        prior_trigger = github_plan_trigger.current(issue, prior_comments, wait_authors(issue_repo))
         try:
             comment_result = github_comment_core.comment(
                 "issue", number, trigger_comment, repo=issue_repo, gh_cmd=gh_cmd,
                 expected_actor=expected_actor, operation=CURRENT_OPERATION,
-                completed_steps=completed_steps, failed_step="post_reopen_trigger", dedupe_body=True)
+                completed_steps=completed_steps, failed_step="post_reopen_trigger",
+                dedupe_body=prior_trigger == trigger)
         except github_comment_core.CommentError as exc:
             raise plan_error_from_comment(exc, completed_steps=completed_steps) from exc
         completed_steps.append("post_reopen_trigger")
@@ -5228,12 +5233,13 @@ def cmd_close(args: argparse.Namespace) -> None:
             ensure_labels(issue_repo, [index_label], {"label_defs": {index_label: {
                 "color": "c5def5", "description": "Helper-managed view of structured reopen-trigger records"}}},
                 completed_steps=completed_steps)
-        try:
-            github_issue_core.edit_issue(number, repo=issue_repo,
-                **({"add_labels": [index_label]} if indexed else {"remove_labels": [index_label]}),
-                gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION)
-        except github_issue_core.IssueError as exc:
-            raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
+        if indexed or index_label.casefold() in {name.casefold() for name in normalize_labels(latest_issue.get("labels"))}:
+            try:
+                github_issue_core.edit_issue(number, repo=issue_repo,
+                    **({"add_labels": [index_label]} if indexed else {"remove_labels": [index_label]}),
+                    gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION)
+            except github_issue_core.IssueError as exc:
+                raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
         completed_steps.append("index_reopen_trigger")
         close_comment = ""
 
