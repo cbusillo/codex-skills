@@ -17,6 +17,19 @@ directories and dangling symlinks), branches and registered worktrees are never
 reused or replaced. Choose another task slug on collision. Bare, submodule and
 separate-git-dir layouts are unsupported.
 
+The portable creator clears inherited `GIT_*` variables for its local Git
+commands. Hook object/quarantine storage, discovery ceilings, and injected
+configuration cannot override the explicit source or hide a destination inside
+another repository. Normal repository, user, and system config files still
+apply at their normal locations. Alternate files selected by `GIT_CONFIG_GLOBAL`
+or `GIT_CONFIG_SYSTEM`, environment-only `safe.directory` grants, `GIT_EXEC_PATH`,
+and Git tracing overrides are also ignored. Keep needed settings in the normal
+`~/.gitconfig`, `$XDG_CONFIG_HOME/git/config`, system or repository config as
+appropriate; put protected settings such as `safe.directory` in user/system
+config. A relocatable Git installation must work from PATH without a caller
+`GIT_EXEC_PATH`. Configured host executables retain their caller environment
+and own their Git handling.
+
 ## Per-host configuration
 
 The helper reads `~/.config/codex-skills/worktrees.json`. An absent default file
@@ -53,6 +66,18 @@ Python subprocess timeout that could kill cleanup during interrupted retirement.
 The outer `uv` launcher remains its parent. The POSIX process-group interrupt
 fixture exercises the shipped wrapper too; other signal and harness delivery
 paths have not been qualified here.
+A delegation marker refuses shims that call back into the catalog while the
+original host process is alive, and refuses an identical inherited request even
+if a shim detaches and exits. On POSIX, a surviving post-create child can start a
+different request after the original host exits. A child that calls back before
+the original host exits still refuses. Matching uses literal arguments:
+detached shims that rewrite them are outside this recursion guarantee. Configure
+`hostHelper` to the actual host executable rather than such a launcher.
+Non-POSIX hosts retain
+the conservative inherited-marker refusal; native Windows child-lifetime
+behavior has not been qualified. Process ID reuse can also conservatively refuse
+a later call; an unrelated child can remove `DEV_WORKTREE_DELEGATED` from its
+own environment before explicitly starting an independent request.
 This setting selects an existing trusted host executable; it does
 not install, replace or edit one.
 
