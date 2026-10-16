@@ -370,8 +370,14 @@ local extensions until the vendored artifact is refreshed.
   `{"schema_version": 1, "product": P, "replacement": {"product": P, "instance": I}}`
   and no idempotency key. The service builds the plan read-only and authorizes
   it as `odoo_target_replacement_plan.read` on the lane's product, context and
-  instance. It returns `plan_status`, product, context, instance, strategy,
-  expected artifact id and source ref, data source mode, the target, target-id
+  instance. Optional `--artifact-id` and `--source-git-ref`, given both or
+  neither and each a public identifier, are sent as `replacement.artifact_id`
+  and `replacement.source_git_ref` and echoed in `request`; the service then
+  evaluates that candidate artifact instead of the lane's current one, without
+  accepting a release or changing inventory. A partial or unsafe pair is refused
+  before a request is sent. It returns `plan_status`, product, context,
+  instance, strategy, `expected_artifact_id` and `expected_source_git_ref` (the
+  artifact the plan evaluated), data source mode, the target, target-id
   and inventory found flags, `allow_empty_data`, `retired_provider_keys`,
   `delivered_runtime_keys` (`null` when the service does not report the list),
   `blocker_codes`, `blocker_keys` by code, `blocker_count`, `warning_count`,

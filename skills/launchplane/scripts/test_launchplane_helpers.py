@@ -4859,6 +4859,59 @@ def test_target_replacement_plan_read_marks_missing_key_lists_as_unreported() ->
     assert (plan["blocker_codes"], plan["blocker_keys"], plan["blocker_count"]) == ([], {}, 0)
 
 
+CANDIDATE_ARTIFACT_ID = "artifact-example-20261016"
+CANDIDATE_SOURCE_GIT_REF = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_target_replacement_plan_read_plans_with_a_named_candidate_artifact() -> None:
+    response = _target_replacement_plan_response()
+    response["result"].update(
+        expected_artifact_id=CANDIDATE_ARTIFACT_ID, expected_source_git_ref=CANDIDATE_SOURCE_GIT_REF
+    )
+    argv = [
+        *PLAN_READ_ARGV,
+        "--artifact-id",
+        CANDIDATE_ARTIFACT_ID,
+        "--source-git-ref",
+        CANDIDATE_SOURCE_GIT_REF,
+    ]
+    status, payload, calls = _run_plan_read(argv, response)
+
+    assert status == 0
+    assert calls[0]["body"]["replacement"] == {
+        "product": "example-product",
+        "instance": "testing",
+        "artifact_id": CANDIDATE_ARTIFACT_ID,
+        "source_git_ref": CANDIDATE_SOURCE_GIT_REF,
+    }
+    assert not calls[0].get("idempotency_key")
+    assert (payload["request"]["artifact_id"], payload["request"]["source_git_ref"]) == (
+        CANDIDATE_ARTIFACT_ID,
+        CANDIDATE_SOURCE_GIT_REF,
+    )
+    plan = payload["result"]
+    assert (plan["expected_artifact_id"], plan["expected_source_git_ref"]) == (
+        CANDIDATE_ARTIFACT_ID,
+        CANDIDATE_SOURCE_GIT_REF,
+    )
+
+
+def test_target_replacement_plan_read_refuses_a_partial_or_unsafe_candidate() -> None:
+    for extra, code in (
+        (["--artifact-id", CANDIDATE_ARTIFACT_ID], "artifact_id_and_source_git_ref_required_together"),
+        (["--source-git-ref", CANDIDATE_SOURCE_GIT_REF], "artifact_id_and_source_git_ref_required_together"),
+        (["--artifact-id", "x y!", "--source-git-ref", CANDIDATE_SOURCE_GIT_REF], "invalid_artifact_id"),
+        (
+            ["--artifact-id", CANDIDATE_ARTIFACT_ID, "--source-git-ref", "Bearer abcdefghijklmnop"],
+            "invalid_source_git_ref",
+        ),
+    ):
+        status, payload, calls = _run_plan_read([*PLAN_READ_ARGV, *extra], _target_replacement_plan_response())
+        assert status == 2, extra
+        assert calls == [], extra
+        assert payload["warnings"][0]["code"] == code, extra
+
+
 def test_target_replacement_plan_read_reports_denial_with_trace() -> None:
     denial = urllib.error.HTTPError(
         "https://launchplane.example.invalid/v1/drivers/odoo/target-replacement-plan",
