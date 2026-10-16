@@ -56,11 +56,11 @@ class MemoryReminderTests(unittest.TestCase):
             self.assertTrue(expected)
             for harness in ({"CLAUDECODE": "1"}, {"CODEX_HOME": str(root / "profile")}):
                 env = {**base, **harness}
-                before = {p: p.read_bytes() for p in (registry, state, direction)}
+                before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
                 result = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)],
                     cwd=root, env=env, text=True, capture_output=True, check=True)
                 self.assertIn(expected, result.stdout)
-                self.assertEqual({p: p.read_bytes() for p in before}, before)
+                self.assertEqual({p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}, before)
             registry.write_text("one two three")
             result = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)],
                 cwd=root, env=base, text=True, capture_output=True, check=True)
