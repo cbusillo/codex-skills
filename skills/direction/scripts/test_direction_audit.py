@@ -1173,6 +1173,43 @@ def test_capacity_lists_reverts_reopened_issues_and_closed_milestones_in_window(
     assert [item["number"] for item in result["milestones_closed"]] == [1]
 
 
+def activity_windows(module: Any, *, incomplete: bool) -> list[dict[str, Any]]:
+    """The same offline inventory read across two adjacent capacity windows."""
+    second = dt.timedelta(seconds=1)
+    moments = [NOW - 2 * second, NOW - second, NOW, NOW + second, NOW + 2 * second]
+    milestones = {"o/live": [
+        {"number": number, "title": "Shipped", "state": "closed", "closed_at": stamp(moment)}
+        for number, moment in enumerate(moments)
+    ]}
+    events = {"o/live": [
+        {"event": "reopened", "created_at": stamp(moment), "issue": {"number": number, "title": "Bug"}}
+        for number, moment in enumerate(moments)
+    ]}
+    return [summary(module, milestones=milestones, events=events, since=start, until=end,
+                    incomplete=incomplete, pulls={"o/fun": [merged_pull(10, start)]})
+            for start, end in ((NOW - second, NOW), (NOW, NOW + 2 * second))]
+
+
+def test_capacity_milestone_closures_count_once_across_adjacent_windows() -> None:
+    module = load()
+    for incomplete in (False, True):
+        first, second = activity_windows(module, incomplete=incomplete)
+        assert [item["number"] for item in first["milestones_closed"]] == [1]
+        assert [item["number"] for item in second["milestones_closed"]] == [2, 3]
+        for result in (first, second):
+            assert result["own_share_status"] == ("unknown" if incomplete else "complete")
+
+
+def test_capacity_issue_reopens_count_once_across_adjacent_windows() -> None:
+    module = load()
+    for incomplete in (False, True):
+        first, second = activity_windows(module, incomplete=incomplete)
+        assert [item["number"] for item in first["issues_reopened"]] == [1]
+        assert [item["number"] for item in second["issues_reopened"]] == [2, 3]
+        for result in (first, second):
+            assert result["own_share_status"] == ("unknown" if incomplete else "complete")
+
+
 def test_own_project_list_reads_identifiers_patterns_and_edits() -> None:
     module = load()
     names = module.own_project_patterns(OWN_DIRECTION)

@@ -1568,14 +1568,14 @@ def capacity_summary(
     closed = [
         {"repo": repo, "number": item.get("number"), "title": item.get("title"), "closed_at": item.get("closed_at")}
         for repo in sorted(milestones) for item in milestones[repo]
-        if item.get("state") == "closed" and _within(item.get("closed_at"), since, until)
+        if item.get("state") == "closed" and _within(item.get("closed_at"), since, until, end_exclusive=True)
     ]
     reopened: dict[tuple[str, Any], dict[str, Any]] = {}
     for repo in sorted(events):
         for event in events[repo]:
             subject = event.get("issue") or {}
             if (event.get("event") != "reopened" or "pull_request" in subject
-                    or not _within(event.get("created_at"), since, until)):
+                    or not _within(event.get("created_at"), since, until, end_exclusive=True)):
                 continue
             key = (repo, subject.get("number"))
             if key not in reopened or str(event.get("created_at")) > str(reopened[key]["reopened_at"]):
