@@ -277,7 +277,13 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
             stale_command_grants=stale,
             hint=hint,
         )
-    argv = ["agy", "-p", prompt, "--sandbox", "--output-format", "json", "--print-timeout", f"{timeout}s"]
+    fd, raw_log = tempfile.mkstemp(prefix="agy-", suffix=".log", dir=scratch)
+    os.close(fd)
+    log_file = Path(raw_log)
+    argv = [
+        "agy", "-p", prompt, "--sandbox", "--output-format", "json",
+        "--print-timeout", f"{timeout}s", "--log-file", str(log_file),
+    ]
     if model:
         argv += ["--model", model]
     proc = run_cli(argv, scratch, timeout + 30)
@@ -299,7 +305,7 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
         # never a nonempty refusal (including one outside the output contract).
         if denied == ["command"] and (payload.get("response") or "").strip():
             result.update(outcome="unavailable",
-                          **agy_model(model or agy_settings().get("model"), payload.get("conversation_id")))
+                          **agy_model(model or agy_settings().get("model"), payload.get("conversation_id"), log_file))
         # A shell refusal is not evidence of missing file access. Do not recommend new grants for it.
         if denied != ["command"]:
             result["hint"] = agy_hint(repo)
@@ -310,7 +316,7 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
     return {
         "ok": True,
         "provider": "google",
-        **agy_model(requested, payload.get("conversation_id")),
+        **agy_model(requested, payload.get("conversation_id"), log_file),
         "response": payload.get("response") or "",
     }
 
@@ -318,36 +324,49 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
 REVIEWERS = {"openai": review_openai, "anthropic": review_anthropic, "google": review_google}
 
 
-def agy_log(conversation_id: Any) -> str:
+def agy_log(conversation_id: Any = None, log_file: Path | None = None) -> str:
+    valid_id = isinstance(conversation_id, str) and bool(re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id))
+    if log_file is not None:
+        try:
+            text = log_file.read_text(errors="replace")
+        except OSError:
+            text = ""
+        if text.strip():
+            conversations = re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
+            if conversation_id is not None:
+                return text if valid_id and conversations in ([], [conversation_id]) else ""
+            return text if len(conversations) <= 1 else ""
+    if not valid_id:
+        return ""
     base = AGY_SETTINGS.expanduser().parent
-    cli_log = base / "cli.log"
-    fallback = ""
-    candidates = [cli_log]
-    if isinstance(conversation_id, str) and re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id):
-        candidates += sorted((base / "log").glob("cli-*.log"), reverse=True)
+    candidates = [base / "cli.log", *sorted((base / "log").glob("cli-*.log"), reverse=True)]
     for path in candidates:
         try:
             text = path.read_text(errors="replace")
         except OSError:
             continue
         conversations = re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
-        if conversation_id and conversation_id in conversations:
+        if conversations == [conversation_id]:
             return text
-        if path == cli_log and not conversations:
-            fallback = text
-    return fallback
+        if conversation_id in conversations:
+            return ""
+    return ""
 
 
-def agy_model(requested: str | None, conversation_id: Any = None) -> dict[str, Any]:
-    """Read the model agy resolved for this run from cli.log when available."""
+def agy_model(requested: str | None, conversation_id: Any = None, log_file: Path | None = None) -> dict[str, Any]:
+    """Read the model agy resolved for this run from its CLI log when unambiguous."""
     default = {"model": requested, "model_source": "requested, not reported by the CLI" if requested else "unknown"}
-    log = agy_log(conversation_id)
-    reroutes = re.findall(r'model alias "([^"]+)" resolved to "([^"]+)"', log)
-    labels = re.findall(r'Propagating selected model override to backend: label="([^"]+)"', log)
-    if reroutes and (not labels or labels[-1] == reroutes[-1][1]):
-        return {"model": reroutes[-1][1], "model_source": "reported by the CLI (rerouted)"}
+    log = agy_log(conversation_id, log_file)
+    reroutes = list(dict.fromkeys(re.findall(r'model alias "([^"]+)" resolved to "([^"]+)"', log)))
+    labels = list(dict.fromkeys(re.findall(r'Propagating selected model override to backend: label="([^"]+)"', log)))
+    if len(reroutes) > 1 or len(labels) > 1:
+        return default
+    if reroutes and (not labels or labels[0] == reroutes[0][1]):
+        return {"model": reroutes[0][1], "model_source": "reported by the CLI (rerouted)"}
+    if reroutes and labels:
+        return default
     if labels:
-        return {"model": labels[-1], "model_source": "reported by the CLI"}
+        return {"model": labels[0], "model_source": "reported by the CLI"}
     return default
 
 
