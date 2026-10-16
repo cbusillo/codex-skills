@@ -11963,9 +11963,33 @@ def original_session_open_probe(lease: dict[str, Any], observed_sessions: set[st
     return public_payload(body)
 
 
+def lease_open_acknowledged_by_session(lease: dict[str, Any]) -> bool:
+    """Whether the lease's IDE session registered every open request, so none can still arrive unseen."""
+    if lease.get("state") not in {"cleanup_pending", "prepared", "kept_warm_after_indexing_timeout", "cleanup_failed", "cleanup_skipped"}:
+        return False
+    if lease.get("open_request_may_have_been_accepted") is not False:
+        return False
+    attempts = lease.get("open_attempts")
+    if not isinstance(attempts, list) or not attempts:
+        return False
+    for attempt in attempts:
+        if not isinstance(attempt, dict) or attempt.get("request_may_have_been_accepted") is True:
+            return False
+        identity = attempt.get("identity") if isinstance(attempt.get("identity"), dict) else {}
+        if not (
+            attempt.get("accepted") is True
+            and attempt.get("ownership_registered") is True
+            and attempt.get("lease_id") == lease.get("lease_id")
+            and (identity.get("session_id") or attempt.get("session_id")) == lease.get("session_id")
+        ):
+            return False
+    return True
+
+
 def probe_reports_project_not_open(lease: dict[str, Any], probe: dict[str, Any] | None) -> bool:
     return (
-        isinstance(probe, dict)
+        lease_open_acknowledged_by_session(lease)
+        and isinstance(probe, dict)
         and probe.get("probe") is True
         and probe.get("status") == "not_open"
         and probe.get("reason") == "project_not_open"

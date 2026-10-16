@@ -185,10 +185,12 @@ When the lease-bound accepting IDE session is still running and has no route
 for the target, cleanup sends that session a read-only `lifecycle/open` probe
 for the lease, only when its plugin reports lifecycle open diagnostics. Older
 plugins would treat the probe as an open request and are not probed. Only a
-probe answered by the same session reporting `not_open`/`project_not_open`
-releases the local lease, as `original_ide_reports_project_not_open`, without a
-close. An open still in progress, an unresolved open, or an answer from
-another session keeps the lease unresolved, and its next action names the
+probe answered by the same session reporting `not_open`/`project_not_open`,
+for a settled lease whose every open request that session acknowledged and
+registered to the lease, releases the local lease, as `original_ide_reports_project_not_open`, without a
+close. The probe cannot fence a request the IDE has not registered yet,
+so an ambiguous or unacknowledged open request, an open still in progress, an
+unresolved open, or an answer from another session keeps the lease unresolved, and its next action names the
 probe's status and reason.
 Preparation failures for projects that were already open release only the local
 lease and never call lifecycle close. `cleanup-helper-leases` uses the same

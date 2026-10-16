@@ -15099,14 +15099,17 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         self.assertTrue(self.selected_path.exists())
         self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
 
-    def write_never_opened_lease(self):
+    def write_never_opened_lease(self, **changes):
         # project_open_blocked: a live IDE accepted the open, but no exact route ever appeared.
+        attempt = {"accepted": True, "ownership_registered": True, "lease_id": self.selected_id,
+                   "identity": {"session_id": "session", "port": 63342}}
         write_json(self.selected_path, {
             "lease_id": self.selected_id, "state": "cleanup_pending", "pid": 68466,
             "opened_by_helper": True, "open_request_may_have_been_accepted": False,
             "lifecycle_target_path": "/tmp/selected", "worktree_root": "/tmp/selected",
             "session_id": "session", "ide_port": 63342, "updated_at_ms": 1,
-        })
+            "open_attempts": [attempt],
+        } | changes)
 
     def probe_ide(self, status, reason, session="session", diagnostic_version=1):
         identity = {"session_id": "session", "port": 63342, "lifecycle_open_diagnostic_version": diagnostic_version}
@@ -15134,14 +15137,20 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
 
     def test_live_original_session_still_opening_or_unprovable_retains_lease(self):
-        self.write_never_opened_lease()
+        # The probe cannot fence a request the IDE has not registered yet, so only acknowledged opens qualify.
+        ambiguous = {"open_request_may_have_been_accepted": True, "state": "open_requesting", "open_attempts": [{
+            "accepted": False, "request_may_have_been_accepted": True, "ownership_registered": False,
+            "lease_id": self.selected_id, "identity": {"session_id": "session", "port": 63342},
+        }]}
         cases = {
-            "opening": ("opening", "already_opening", "session", 1),
-            "other_session_answered": ("not_open", "project_not_open", "other-session", 1),
-            "plugin_without_probe": ("not_open", "project_not_open", "session", 0),
+            "opening": ("opening", "already_opening", "session", 1, {}),
+            "other_session_answered": ("not_open", "project_not_open", "other-session", 1, {}),
+            "plugin_without_probe": ("not_open", "project_not_open", "session", 0, {}),
+            "ambiguous_open_request": ("not_open", "project_not_open", "session", 1, ambiguous),
         }
-        for name, (status, reason, session, version) in cases.items():
+        for name, (status, reason, session, version, changes) in cases.items():
             with self.subTest(name):
+                self.write_never_opened_lease(**changes)
                 identity, get = self.probe_ide(status, reason, session, version)
                 with identity, get as http_get:
                     result = self.run_cleanup(self.selected_id)
