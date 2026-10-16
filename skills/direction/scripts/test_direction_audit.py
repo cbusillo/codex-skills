@@ -535,13 +535,14 @@ def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_
 
 def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
     module = load()
-    original = {"turn": "earlier", "audits": {"o/adopted": "a", "o/missing": "b", "o/private": "c"}, "other": True}
+    original = {"turn": "earlier", "audits": {"o/adopted": "a", "o/missing": "b", "o/private": "c"}, "other": True,
+                "audit_runs": {"o/adopted": {"ran": "a"}, "o/heldmissing": {"ran": "d", "held": "capacity_events"}}}
     def fetch(args: list[str]) -> dict[str, Any]:
         endpoint = args[1]
         if endpoint == "repos/o/private":
             raise module.AuditError("HTTP 404")
         if endpoint.endswith("/contents/DIRECTION.md"):
-            if "/missing/" in endpoint:
+            if "missing/" in endpoint:
                 raise module.AuditError("HTTP 404")
             return {"type": "file", "content": "direction"}
         return {"full_name": endpoint.removeprefix("repos/"), "archived": False}
@@ -550,7 +551,7 @@ def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
         marker.write_text(json.dumps(original))
         before = marker.read_bytes()
         preview = module.prune_unadopted(marker, fetch=fetch)
-        assert preview["removed"] == ["o/missing"]
+        assert preview["removed"] == ["o/missing", "o/heldmissing"]
         assert preview["retained"] == ["o/adopted"]
         assert list(preview["unknown"]) == ["o/private"]
         assert not preview["applied"] and preview["backup"] is None
@@ -558,7 +559,8 @@ def test_prune_preserves_adopted_unknown_and_other_marker_state() -> None:
         applied = module.prune_unadopted(marker, fetch=fetch, apply=True)
         assert Path(applied["backup"]).read_bytes() == before
         assert Path(applied["backup"]).stat().st_mode & 0o777 == 0o600
-        assert json.loads(marker.read_text()) == {**original, "audits": {"o/adopted": "a", "o/private": "c"}}
+        assert json.loads(marker.read_text()) == {**original, "audits": {"o/adopted": "a", "o/private": "c"},
+                                                  "audit_runs": {"o/adopted": {"ran": "a"}}}
         again = marker.read_bytes()
         repeated = module.prune_unadopted(marker, fetch=fetch, apply=True)
         assert repeated["backup"] is None and not repeated["applied"]

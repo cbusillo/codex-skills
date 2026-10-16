@@ -515,7 +515,9 @@ def prune_unadopted(
     removed_reasons: dict[str, str] = {}
     retained: list[str] = []
     unknown: dict[str, str] = {}
-    for repo in current["audits"]:
+    runs = current.get("audit_runs") if isinstance(current.get("audit_runs"), dict) else {}
+    # A first audit that held its window leaves an entry only in audit_runs.
+    for repo in dict.fromkeys([*current["audits"], *runs]):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
             unknown[repo] = "invalid repository name"
             continue
@@ -565,11 +567,9 @@ def prune_unadopted(
                 stream.flush()
                 os.fsync(stream.fileno())
             backup = backup_name
-            runs = current.get("audit_runs")
             for repo in removed:
-                del current["audits"][repo]
-                if isinstance(runs, dict):
-                    runs.pop(repo, None)
+                current["audits"].pop(repo, None)
+                runs.pop(repo, None)
             direction_mark.save(path, current)
     return {"ok": not unknown, "applied": apply and bool(removed), "removed": removed,
             "removed_reasons": removed_reasons,
