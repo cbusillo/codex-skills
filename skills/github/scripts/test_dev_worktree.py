@@ -341,7 +341,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertFalse((self.home / "task").exists())
 
     def test_unknown_git_probe_failure_does_not_create_a_worktree(self):
-        real_git = shutil.which("git")
+        real_git = shutil.which("git", path=self.env["PATH"])
         self.assertIsNotNone(real_git)
         bin_dir = self.base / "bin"
         bin_dir.mkdir()
