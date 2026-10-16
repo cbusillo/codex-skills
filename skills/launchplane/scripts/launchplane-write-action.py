@@ -2412,8 +2412,12 @@ def _project_testing_hold(value: object) -> dict[str, object] | None:
         rehearsal = _require_exact_fields(source["rehearsal"], TESTING_HOLD_REHEARSAL_FIELDS)
         projected["rehearsal"] = {
             "binding_sha256": _project_sha256(rehearsal.get("binding_sha256")),
-            "target_updated_at": public_timestamp(rehearsal.get("target_updated_at")),
-            "target_source_label": public_identifier(rehearsal.get("target_source_label")),
+            # Producer provenance is free text; legacy target labels may be empty.
+            "target_updated_at": public_operator_text(rehearsal["target_updated_at"]),
+            "target_source_label": (
+                "" if rehearsal["target_source_label"] == ""
+                else public_operator_text(rehearsal["target_source_label"])
+            ),
         }
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))

@@ -3038,6 +3038,27 @@ def test_testing_hold_rehearsal_projection_remains_closed(change: dict[str, obje
         write_action._project_testing_hold({"reason": "Review.", "rehearsal": rehearsal})
 
 
+@pytest.mark.parametrize("label", ["", "legacy target imported"])
+@pytest.mark.parametrize("updated_at", ["2026-10-16T12:00:00+00:00", "legacy-target-revision"])
+def test_testing_hold_rehearsal_accepts_producer_provenance_strings(label: str, updated_at: str) -> None:
+    rehearsal = {"binding_sha256": "d" * 64, "target_updated_at": updated_at, "target_source_label": label}
+    hold = {"reason": "Review.", "rehearsal": rehearsal}
+    result = write_action._project_testing_hold_plan(_testing_hold_plan(before=hold))
+    assert result["before"]["rehearsal"] == rehearsal
+
+
+def test_testing_hold_rehearsal_provenance_redacts_private_text() -> None:
+    result = write_action._project_testing_hold({
+        "reason": "Review.", "rehearsal": {
+            "binding_sha256": "d" * 64,
+            "target_updated_at": "imported from https://private.example.invalid/time",
+            "target_source_label": "password=private-sentinel",
+        },
+    })
+    assert "private" not in json.dumps(result)
+    assert result["rehearsal"]["binding_sha256"] == "d" * 64
+
+
 def _product_environment_response() -> dict[str, object]:
     identity = {
         "schema_version": 1,
