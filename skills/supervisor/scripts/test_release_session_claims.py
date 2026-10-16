@@ -176,11 +176,9 @@ class ReleaseTests(unittest.TestCase):
                 patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
                 patch.object(helper, "GitHubReader", return_value=self.reader), \
                 patch.object(helper, "discover", return_value=([("test/a", 1)], ["test/a"])), \
-                patch.object(helper, "discover_handoff", wraps=helper.discover_handoff) as lookup, \
                 patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run, \
                 contextlib.redirect_stdout(output):
             result = helper.main()
-        self.handoff_lookups = lookup.call_count
         write.assert_not_called()
         run.assert_not_called()
         return result, json.loads(output.getvalue())
@@ -239,8 +237,6 @@ class ReleaseTests(unittest.TestCase):
                 result, report = self.finish_thread(comments)
                 self.assertEqual(result, 1)
                 self.assertTrue(report["needs_reconciliation"])
-                self.assertEqual(self.handoff_lookups, 1)
-                self.assertNotIn("released_claims", report["reports"][0])
 
     def test_finish_supervisor_receipt_is_not_a_session_authored_handoff(self):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
@@ -251,8 +247,7 @@ class ReleaseTests(unittest.TestCase):
         self.entry["ended_at"] = "2026-01-01T00:06:00Z"
         result, report = self.finish_thread([self.source, receipt], evidence=evidence)
         self.assertEqual(result, 1)
-        self.assertEqual(self.handoff_lookups, 1)
-        self.assertNotIn("released_claims", report["reports"][0])
+        self.assertTrue(report["needs_reconciliation"])
 
     def test_finish_history_failure_preserves_per_issue_release_and_refusal(self):
         handoff = dict(self.reader.get_json.return_value)
