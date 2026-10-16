@@ -1256,7 +1256,7 @@ for this check. An installer success alone does not prove cross-account pairing.
 
 Run `uv run scripts/check_insecure_tls.py` to check tracked Python files for
 hand-built `check_hostname = False` / `CERT_NONE`, unverified contexts and common
-HTTP-client verification-off calls. The catalog validation gate runs it too.
+HTTP-client verification-off calls. The catalog validation gate runs it alongside the five Ruff TLS rules.
 It parses Python without executing it; dynamic values, parameter-provided clients and computed monkeypatches
 are outside this static check. Bare SSLContext construction also needs review
 of its client/server role, as does `create_default_context(Purpose.CLIENT_AUTH)`; this check does not infer that role. Keep Ruff's TLS rules for complementary protocol
