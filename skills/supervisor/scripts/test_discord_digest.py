@@ -21,7 +21,8 @@ from unittest import mock
 from urllib.parse import urlsplit
 
 import discord_digest as sender
-from test_digest_summary import FULL, report as synthetic_report
+from test_digest_summary import FULL
+from test_digest_summary import report as synthetic_report
 
 
 class SenderTests(unittest.TestCase):
