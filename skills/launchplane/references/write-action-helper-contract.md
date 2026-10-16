@@ -1609,8 +1609,8 @@ cannot supply exact evidence, leave recovery held.
 
 `privileged-policy-propose --payload-file <private-envelope>` is a bounded local
 extension of `POST /v1/agent/privileged-operations/plans`. Use the normal private
-`local_operator` configuration. It accepts only `managed-authz-policy-set` and
-`managed-merge-train-policy-import`. The service is the request-schema authority;
+`local_operator` configuration. It accepts `managed-authz-policy-set`, `managed-merge-train-policy-import`, and
+`production-backup-policy`. The service is the request-schema authority;
 see [Launchplane's proposal contract](https://github.com/cbusillo/launchplane/blob/main/docs/privileged-operations.md#agent-policy-proposals).
 
 The private JSON envelope contains `schema_version: 1`, `descriptor_id`, a
@@ -1627,6 +1627,20 @@ handoff if the configured base does not expose the signed-in UI.
 The URL identifies the private service host, so share it only
 with destinations allowed to know it. The helper never returns policy selectors
 or credential-routing fields.
+
+For `production-backup-policy`, `request` contains `authority` (the existing private
+backup-authority envelope with `mode: dry_run` and no reviewed digest), `reason`,
+and optional `related_issue`. The service runs and pins the dry run, saves the
+proposal inertly and returns a stable product production Actions link. The helper
+binds that link to the submitted product and proposal ID; provider coordinates,
+free-text reasons and the private authority envelope never reach its output.
+Backup proposals use existing exact-lane backup planning authority. The signed-in
+Director approves or declines in the card, from any tab or device, with no file
+upload or digest comparison. The proposer cannot decide or directly apply a
+backup policy, even with a backup-write grant. The older direct-apply helper
+command does not override this: the service refuses `local_operator`/`terminal_agent`
+application, and approval stays in the signed-in Director card. Before use, verify that the service
+supports the descriptor; source delivery does not activate it or grant access.
 
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new

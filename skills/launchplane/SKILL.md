@@ -715,13 +715,15 @@ parallel sources of truth.
 
 ### Agent Policy Proposals
 
-For a prepared managed access-policy or merge-train policy proposal, read
+For a prepared access-policy, merge-train policy or backup-policy proposal, read
 [the proposal helper contract](references/write-action-helper-contract.md#policy-proposals)
 and use `launchplane-write-action.py privileged-policy-propose --payload-file
-<private-envelope>`. The deployed service requires an explicit managed proposer
-grant for its configured `local_operator` identity. The Director approves that grant
-separately through the Access policy card. Submit no proposal until the service
-supports this route and the grant is installed. Source delivery grants no access.
+<private-envelope>`. Access/merge-train proposals require an explicit managed
+proposer grant for the configured `local_operator`; the Director approves it
+separately through the Access policy card. Backup proposals reuse existing
+exact-lane backup planning authority and open the product's production Actions
+card. Submit no proposal until the service supports its descriptor and the caller
+has the required authority. Source delivery grants no access.
 
 Creation is pending and inert. Director questions and handoffs that send the
 Director to a page include a full clickable URL, never a bare UI path. Use the
