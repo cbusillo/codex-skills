@@ -506,7 +506,9 @@ class InventoryTests(unittest.TestCase):
                 return {"body": "Refs #1", "merged_at": "2026-10-14T01:00:00Z", "base": {"ref": "main"}}
             return original(path, step=step)
         self.reader.get_json = read
+        reads_before_status = []
         def edit(value, **kwargs):
+            reads_before_status.append(len(self.reader.paths))
             return SimpleNamespace(ok=True, body={"data": {"repository": {"issue": {
                 "lastEditedAt": value, "createdAt": "2026-10-01T00:00:00Z"}}}})
         self.reader.graphql_json = lambda *args, **kwargs: edit("2026-10-15T01:00:00Z")
@@ -517,9 +519,9 @@ class InventoryTests(unittest.TestCase):
         result = self.collect()
         self.assertEqual(result["findings"][0]["kind"], "merged_link_needs_review")
         self.assertTrue(any(g["source"] == "test/repo#1/status" for g in result["coverage_gaps"]))
-        # The eight reads before status consume this budget; no GraphQL request runs.
+        # Exhaust the observed pre-status budget without pinning the collector's read count.
         with patch.object(self.reader, "graphql_json", side_effect=AssertionError("unbudgeted read")):
-            limited = self.collect(max_requests=8)
+            limited = self.collect(max_requests=reads_before_status[0])
         self.assertTrue(any(g["source"] == "test/repo#1/status" and g["reason"] == "request_budget_exhausted"
                             for g in limited["coverage_gaps"]))
 
