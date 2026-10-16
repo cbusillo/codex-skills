@@ -207,6 +207,7 @@ VERDICT_SOURCE_KEYS = (
     "inspection_verdict_next_action",
     "inspection_attribution",
     "proof_failures",
+    "inspection_proof",
 )
 INSPECTION_STAGE_LABEL_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
 INSPECTION_TERMINAL_OUTCOMES = frozenset({"completed", "cancelled", "failed", "timed_out", "preempted"})
