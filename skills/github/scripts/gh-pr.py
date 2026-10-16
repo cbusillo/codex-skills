@@ -332,8 +332,8 @@ def review_decision_from_reviews(reviews: list[dict[str, Any]]) -> Optional[str]
     ordered = sorted(
         enumerate(reviews),
         key=lambda pair: (
-            0 if isinstance(pair[1].get("id"), int) else 1,
-            pair[1].get("id") if isinstance(pair[1].get("id"), int) else pair[0],
+            0 if isinstance(pair[1], dict) and isinstance(pair[1].get("id"), int) else 1,
+            pair[1].get("id") if isinstance(pair[1], dict) and isinstance(pair[1].get("id"), int) else pair[0],
             pair[0],
         ),
     )
@@ -343,6 +343,9 @@ def review_decision_from_reviews(reviews: list[dict[str, Any]]) -> Optional[str]
             continue
         state = str(item.get("state") or "").upper()
         if state not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            continue
+        association = str(item.get("author_association") or "").strip().upper()
+        if association == "NONE":
             continue
         user = item.get("user") if isinstance(item.get("user"), dict) else {}
         login = str(user.get("login") or "").strip().lower()
@@ -358,8 +361,9 @@ def review_decision_from_reviews(reviews: list[dict[str, Any]]) -> Optional[str]
 
 def cmd_view(args: argparse.Namespace, *, cache_enabled: bool = True, include_body: bool = False) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
+    operation = read_operation()
     reader = github_read_core.GitHubReader(
-        gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=read_operation(),
+        gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=operation,
         cache_enabled=cache_enabled,
     )
     try:
@@ -369,15 +373,27 @@ def cmd_view(args: argparse.Namespace, *, cache_enabled: bool = True, include_bo
     if not isinstance(pr, dict):
         raise PrHelperError("PR metadata response was not an object", diagnostics=reader.diagnostics(), repo=repo, pr=number)
     reviews_read = pr.get("reviewDecision") is not None
-    if not include_body and not reviews_read:
+    reviews_read_failed = False
+    decision_source = "pull_request_metadata" if reviews_read else None
+    if not include_body and not reviews_read and operation != "github.pr.watch":
         try:
             reviews = reader.paged_json(f"/repos/{repo}/pulls/{number}/reviews", step_prefix="reviews")
             reviews_read = True
-        except (github_read_core.GitHubReadError, github_read_core.GitHubReadShapeError):
+        except github_read_core.GitHubReadError as exc:
+            if isinstance(exc.result.failure, dict) and exc.result.failure.get("disposition") == "stop":
+                raise PrHelperError(
+                    str(exc), failure=exc.result.failure, api_result=exc.result.as_dict(),
+                    diagnostics=exc.diagnostics, repo=repo, pr=number,
+                ) from exc
             reviews = []
+            reviews_read_failed = True
+        except github_read_core.GitHubReadShapeError:
+            reviews = []
+            reviews_read_failed = True
         decision = review_decision_from_reviews(reviews)
         if decision:
             pr = {**pr, "reviewDecision": decision}
+            decision_source = "rest_reviews"
     record_retry_summary(reader.retry_summary())
     normalized = normalize_pr(pr)
     if include_body:
@@ -389,12 +405,15 @@ def cmd_view(args: argparse.Namespace, *, cache_enabled: bool = True, include_bo
         "state": "not_read",
         "review_decision": "read" if has_review_decision else "not_read",
     }
-    if not has_review_decision:
-        readiness["reason"] = (
-            "no decisive review on pull request; review requirement not read by view"
-            if reviews_read
-            else "review decision not read by view"
-        )
+    if has_review_decision and decision_source:
+        readiness["review_decision_source"] = decision_source
+    elif not has_review_decision:
+        if reviews_read_failed:
+            readiness["reason"] = "review decision read failed; see diagnostics"
+        elif reviews_read:
+            readiness["reason"] = "no decisive review on pull request; review requirement not read by view"
+        else:
+            readiness["reason"] = "review decision not read by view"
     return {
         "ok": True, "repo": repo, "pr": normalized,
         "actor": reader.actor, "expected_actor": reader.expected_actor,

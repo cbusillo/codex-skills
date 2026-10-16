@@ -6623,6 +6623,10 @@ def test_pr_helper_view_reports_review_decisions_and_omits_unfetched_null() -> N
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/reviews'* ]]; then\n"
+            "  if [[ \"${GH_PR_REVIEWS_FAIL:-0}\" == '1' ]]; then\n"
+            "    printf 'HTTP/2.0 403 Forbidden\\r\\nX-GitHub-Request-Id: REQ-REV\\r\\n\\r\\n{\"message\":\"Forbidden\"}\\n'\n"
+            "    exit 1\n"
+            "  fi\n"
             "  cat \"$GH_PR_REVIEWS_FILE\"\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
@@ -6634,21 +6638,22 @@ def test_pr_helper_view_reports_review_decisions_and_omits_unfetched_null() -> N
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_REVIEWS_FILE=str(reviews_path))
 
-        def run_view(reviews: list[dict[str, Any]]) -> dict[str, Any]:
+        def run_view(reviews: list[dict[str, Any]], *, fail_reviews: bool = False) -> dict[str, Any]:
             reviews_path.write_text(json.dumps(reviews) + "\n", encoding="utf-8")
+            call_env = dict(env, GH_PR_REVIEWS_FAIL="1" if fail_reviews else "0")
             result = REAL_SUBPROCESS_RUN(
                 [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "view", "12"],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=env,
+                env=call_env,
                 check=True,
             )
             return json.loads(result.stdout)
 
         approved = run_view(
             [
-                {"id": 1, "state": "CHANGES_REQUESTED", "user": {"login": "alice"}},
+                {"id": 1, "state": "CHANGES_REQUESTED", "user": {"login": "Alice"}},
                 {"id": 2, "state": "APPROVED", "user": {"login": "alice"}},
                 {"id": 3, "state": "COMMENTED", "user": {"login": "alice"}},
             ]
@@ -6656,6 +6661,7 @@ def test_pr_helper_view_reports_review_decisions_and_omits_unfetched_null() -> N
         assert approved["pr"]["reviewDecision"] == "APPROVED", approved
         assert approved["readiness_evidence"]["state"] == "not_read", approved
         assert approved["readiness_evidence"]["review_decision"] == "read", approved
+        assert approved["readiness_evidence"]["review_decision_source"] == "rest_reviews", approved
 
         changes_requested = run_view(
             [
@@ -6665,17 +6671,27 @@ def test_pr_helper_view_reports_review_decisions_and_omits_unfetched_null() -> N
         )
         assert changes_requested["pr"]["reviewDecision"] == "CHANGES_REQUESTED", changes_requested
         assert changes_requested["readiness_evidence"]["review_decision"] == "read", changes_requested
+        assert changes_requested["readiness_evidence"]["review_decision_source"] == "rest_reviews", changes_requested
 
         unreviewed = run_view(
             [
                 {"id": 1, "state": "APPROVED", "user": {"login": "alice"}},
                 {"id": 2, "state": "DISMISSED", "user": {"login": "alice"}},
                 {"id": 3, "state": "COMMENTED", "user": {"login": "bob"}},
+                {"id": 4, "state": "APPROVED", "author_association": "NONE", "user": {"login": "outsider"}},
+                {"id": 5, "state": "APPROVED", "user": None},
             ]
         )
         assert "reviewDecision" not in unreviewed["pr"], unreviewed
         assert unreviewed["readiness_evidence"]["state"] == "not_read", unreviewed
         assert unreviewed["readiness_evidence"]["review_decision"] == "not_read", unreviewed
+        assert "no decisive review" in unreviewed["readiness_evidence"]["reason"], unreviewed
+
+        failed_reviews = run_view([], fail_reviews=True)
+        assert "reviewDecision" not in failed_reviews["pr"], failed_reviews
+        assert failed_reviews["readiness_evidence"]["review_decision"] == "not_read", failed_reviews
+        assert failed_reviews["readiness_evidence"]["reason"] == "review decision read failed; see diagnostics", failed_reviews
+        assert failed_reviews["diagnostics"]["degraded"] is True, failed_reviews
 
 
 def test_pr_helper_current_branch_resolves_upstream_fork() -> None:

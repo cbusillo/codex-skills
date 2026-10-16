@@ -287,7 +287,7 @@ for mixed-success workflows; those require a distinct job-selection contract.
 - `headRefOid`
 - `mergeable`
 - `mergeStateStatus`
-- `reviewDecision` (normally unavailable through REST)
+- `reviewDecision` (derived from REST reviews on standalone `gh-pr.py view`; omitted when not read or in `watch`/`list` contexts)
 
 ### REST-first PR checks
 

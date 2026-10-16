@@ -447,14 +447,16 @@ Use this helper for high-frequency PR polling, check polling,
 PR create/edit/comment writes, merge readiness, and merge execution. Ask for
 the PR operation you need; the helper is REST-first for normal PR orientation
 and owns quota-aware degraded output.
-`gh-pr.py view` reads REST pull request reviews to report `reviewDecision`
-(`APPROVED` or `CHANGES_REQUESTED`) when a decisive review exists and omits
-`reviewDecision` (with `readiness_evidence.review_decision: "not_read"`) rather
-than emitting an unfetched `null`. GraphQL-only fields such as
-`statusCheckRollup` remain intentionally nullable in helper output unless a
-command explicitly opts into enrichment. Keep raw GraphQL-backed `gh pr view`,
-Projects, sub-issues, and dependency operations for data the helper cannot yet
-provide cleanly.
+Standalone `gh-pr.py view` reads REST pull request reviews to report
+`reviewDecision` (`APPROVED` or `CHANGES_REQUESTED`, with
+`readiness_evidence.review_decision_source: "rest_reviews"`, reflecting latest
+reviewer states rather than branch-protection required approval counts) when a
+decisive review exists and omits `reviewDecision` (with
+`readiness_evidence.review_decision: "not_read"`) rather than emitting an
+unfetched `null`. GraphQL-only fields such as `statusCheckRollup` remain
+intentionally nullable in helper output unless a command explicitly opts into
+enrichment. Keep raw GraphQL-backed `gh pr view`, Projects, sub-issues, and
+dependency operations for data the helper cannot yet provide cleanly.
 
 Use `supersede` after a canonical PR has been selected for a duplicate or
 competing implementation. It is intentionally focused on the stale PR: it posts

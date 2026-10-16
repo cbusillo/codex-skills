@@ -156,7 +156,7 @@ def test_resolve_pr_uses_rest_helper_and_exposes_final_merge_commit(monkeypatch)
         lambda *_args, **_kwargs: sample_rest_view(reviewDecision="APPROVED"),
     )
     approved_pr = gh_pr_watch.resolve_pr("42", repo_override="example/repo")
-    assert approved_pr["review_decision"] == "APPROVED"
+    assert approved_pr["review_decision"] == ""
     assert approved_pr["review_decision_source"] == "not_queried"
     assert approved_pr["metadata_availability"]["review_decision"] is False
     assert (
