@@ -1080,8 +1080,12 @@ verification.
 - `GET /v1/product-config/testing-hold` and
   `POST /v1/product-config/testing-hold/apply`: Bounded local-extension paths
   for a testing lane's staff-testing hold (`testing-hold-read` / `-dry-run` /
-  `-apply`, with `--hold` or `--lift` and `--reason`). Apply requires the same
-  saved-dry-run safeguards; lifting requests a testing reconcile.
+  `-apply`, with `--hold` or `--lift`, `--reason` and optional
+  `--purpose staff_testing|isolation_staging`). Apply requires the same
+  saved-dry-run safeguards with matching purpose. Staff lifts request testing
+  reconciliation; isolation-staging lifts alone do not. Read the
+  [testing hold contract](references/write-action-helper-contract.md#testing-hold)
+  for legacy evidence and service-derived rehearsal responses.
 - `POST /v1/product-profiles/repository-identity/apply`: Bounded local-extension
   path that records a product's repository id from tracked inventory
   (`product-repository-identity-dry-run` / `-apply`, with `--product` and
