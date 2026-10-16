@@ -19,10 +19,9 @@ MEMORY_CITATION_TAIL = re.compile(
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 NO_DIRECTOR_ACTION = re.compile(r"^No Director (?:action|decision) needed\.\s+")
 # A terminal Claude Code task notice carries <status>; Monitor event notices do not.
-TASK_NOTICE_END = re.compile(
-    r"<task-notification>.*?<task-id>([^<]+)</task-id>.*?<status>[^<]+</status>",
-    re.DOTALL,
-)
+TASK_NOTICE = re.compile(r"<task-notification>(.*?)</task-notification>", re.DOTALL)
+TASK_NOTICE_ID = re.compile(r"<task-id>([^<]+)</task-id>")
+TASK_NOTICE_STATUS = re.compile(r"<status>[^<]+</status>")
 
 
 def validate_record(record: dict) -> None:
@@ -217,8 +216,10 @@ def track_claude_background_tasks(record: dict, running: dict) -> None:
         "attachment": attachment.get("prompt") if isinstance(attachment, dict) else None,
     }.get(record.get("type"))
     if isinstance(notice_text, str):
-        for task_id in TASK_NOTICE_END.findall(notice_text):
-            running.pop(task_id.strip(), None)
+        for notice in TASK_NOTICE.findall(notice_text):
+            task_id = TASK_NOTICE_ID.search(notice)
+            if task_id and TASK_NOTICE_STATUS.search(notice):
+                running.pop(task_id.group(1).strip(), None)
     if record.get("type") == "assistant":
         for block in message.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "TaskStop":

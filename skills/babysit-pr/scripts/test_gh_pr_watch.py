@@ -1244,6 +1244,7 @@ def test_wait_ci_returns_when_ci_settles_with_check_counts(monkeypatch):
     ({"checks": sample_checks(failed_count=1), "actions": ["diagnose_ci_failure"]}, "failed", 2),
     ({"pr": {**sample_pr(), "merged": True}, "actions": ["stop_pr_closed"]}, "stopped", 4),
     ({"actions": ["stop_unknown_rerun"]}, "stopped", 4),
+    ({"new_review_items": [{"kind": "issue_comment", "id": "1"}], "actions": ["process_review_comment"]}, "review", 5),
 ])
 def test_wait_ci_ends_on_every_terminal_state(monkeypatch, change, outcome, code):
     _clock, events = wait_ci_harness(monkeypatch, [pending_snapshot(), {**pending_snapshot(), **change}])
@@ -1251,6 +1252,7 @@ def test_wait_ci_ends_on_every_terminal_state(monkeypatch, change, outcome, code
 
     assert gh_pr_watch.run_wait_ci(args) == code
     assert [(event, payload["outcome"]) for event, payload in events] == [("ci_wait", outcome)]
+    assert events[0][1]["new_review_items"] == change.get("new_review_items", [])
 
 
 def test_wait_ci_reports_pending_at_its_bound_without_sleeping_past_it(monkeypatch):

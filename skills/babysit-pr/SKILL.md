@@ -31,7 +31,7 @@ commands:
     source: skill
     resource_path: scripts/gh_pr_watch.py
     example_argv:
-      ["uv", "run", "scripts/gh_pr_watch.py", "--pr", "auto", "--wait-ci", "--max-wait-seconds", "540"]
+      ["uv", "run", "scripts/gh_pr_watch.py", "--pr", "auto", "--wait-ci", "--max-wait-seconds", "420"]
     purpose: Block until CI settles on the PR head or the bound passes, then emit one ci_wait line with check counts.
   - name: retry-failed-checks
     source: skill
@@ -97,7 +97,7 @@ another repository, pass its URL or `--repo OWNER/REPO`.
 
 ```bash
 uv run --no-cache <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --watch   # ongoing, JSONL
-uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --wait-ci --max-wait-seconds 540   # bounded CI wait
+uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --wait-ci --max-wait-seconds 420   # bounded CI wait
 uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --once    # one snapshot
 uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --retry-failed-now
 ```
@@ -120,10 +120,14 @@ what to do:
   the same turn.
 - `4` the PR closed or the watcher stopped for help: read `actions` and apply
   [Stop Or Continue](#stop-or-continue).
+- `5` new review feedback arrived: handle `new_review_items` under
+  [Review feedback](#review-feedback) first. The watcher has marked them seen,
+  so they will not appear again.
 - `1` a read or command error: report it; the wait was lost.
 
-Keep `--max-wait-seconds` (default 540) below the harness's command timeout
-and give the command a tool timeout above it. Run it in the foreground. Do not
+Keep `--max-wait-seconds` (default 420) well below the harness's command
+timeout, since a read that starts just before the bound still finishes, and
+give the command a tool timeout above it. Run it in the foreground. Do not
 end the turn while CI is pending: a turn that ends saying it is waiting, with
 no running command that will report back, sits idle until someone nudges it.
 `--watch` is not a CI wait. It exits only when the PR closes or the watcher

@@ -94,6 +94,10 @@ class TranscriptTests(unittest.TestCase):
             ("monitor event is not an end", [notice("bmon")], ["bosltstxv", "bmon"]),
             ("terminal notices", [notice("bosltstxv", "completed"), notice("bmon", "killed")], []),
             ("task stopped", [stop, notice("bmon", "completed")], []),
+            ("an event notice never borrows the next notice's status", [
+                {"type": "user", "message": {"content": notice("bmon")["message"]["content"]
+                                             + notice("bosltstxv", "completed")["message"]["content"]}}],
+             ["bmon"]),
             ("notices absorbed mid-turn", [
                 {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "failed")["message"]["content"]},
                 {"type": "attachment", "attachment": {"type": "queued_command", "prompt": notice("bmon", "completed")["message"]["content"]}},

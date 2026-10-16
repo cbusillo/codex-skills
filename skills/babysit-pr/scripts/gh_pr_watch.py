@@ -254,8 +254,8 @@ def parse_args():
     parser.add_argument(
         "--max-wait-seconds",
         type=int,
-        default=540,
-        help="Bound for --wait-ci; keep it under the harness's command timeout",
+        default=420,
+        help="Bound for --wait-ci; leave room under the harness's command timeout for one last read",
     )
     parser.add_argument(
         "--retry-failed-now",
@@ -2092,8 +2092,9 @@ def run_watch(args):
 
 
 # Exit codes for --wait-ci; 1 stays the read/command error code from main().
-CI_WAIT_EXIT_CODES = {"green": 0, "failed": 2, "pending": 3, "stopped": 4}
+CI_WAIT_EXIT_CODES = {"green": 0, "failed": 2, "pending": 3, "stopped": 4, "review": 5}
 CI_WAIT_NEXT_STEPS = {
+    "review": "Handle new_review_items under babysit-pr Review Feedback; the watcher has marked them seen.",
     "green": "CI is green on the head; continue the handoff.",
     "failed": "Diagnose the failure under babysit-pr CI Failures.",
     "pending": "CI is still running; run the same command again in this turn.",
@@ -2107,6 +2108,9 @@ def ci_wait_outcome(snapshot):
     checks = snapshot.get("checks") or {}
     if pr.get("closed") or pr.get("merged") or WATCH_STOP_ACTIONS & actions:
         return "stopped"
+    # The snapshot marks review items seen, so the wait must hand them over rather than poll past them.
+    if snapshot.get("new_review_items"):
+        return "review"
     if int(checks.get("failed_count") or 0) or "diagnose_ci_failure" in actions:
         return "failed"
     if is_ci_green(snapshot):
@@ -2120,6 +2124,7 @@ def print_ci_wait(outcome, snapshot, started):
         "outcome": outcome,
         "checks": snapshot.get("checks"),
         "actions": snapshot.get("actions"),
+        "new_review_items": snapshot.get("new_review_items") or [],
         "pr": {key: pr.get(key) for key in ("number", "url", "head_sha", "state", "merged", "closed")},
         "waited_seconds": round(time.monotonic() - started),
         "next_step": CI_WAIT_NEXT_STEPS[outcome],
