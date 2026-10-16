@@ -947,7 +947,8 @@ def test_global_whole_parent_wait_does_not_select_its_children_or_dependencies()
             module.cmd_next(next_args())
         if body:
             assert result["candidates"] == []
-            assert reads == [("someone/product", 3)]
+            assert reads == [("someone/product", 3), ("someone/product", 4)]
+            assert any(node.get("number") == 4 and node["exclusion"] == "parent_waiting" for node in result["excluded"])
             assert any(node.get("number") == 3 and node["exclusion"] == "wait_review_required" for node in result["excluded"])
         else:
             assert [item["number"] for item in result["candidates"]] == [4]
@@ -975,7 +976,7 @@ def test_global_closed_milestone_is_completed_not_missing() -> None:
     assert result["completed_milestones"] == ["First"]
 
 
-def test_global_inconsistent_blocked_parent_makes_evidence_incomplete() -> None:
+def test_global_stale_blocked_parent_is_a_finding_with_complete_coverage() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     parent = global_issue("someone/product", 3, labels=["plan", "plan:blocked"])
     leaf = global_issue("someone/product", 4)
@@ -985,8 +986,10 @@ def test_global_inconsistent_blocked_parent_makes_evidence_incomplete() -> None:
     }
     with global_fixture(roots, [parent, leaf], edges) as (module, result, _reads):
         module.cmd_next(next_args())
-    assert result["dependency_context"]["complete"] is False
-    assert result["dependency_context"]["degraded_count"] == 1
+    assert result["dependency_context"]["complete"] is True
+    assert result["dependency_context"]["degraded_count"] == 0
+    assert [row["number"] for row in result["candidates"]] == [4]
+    assert any(row["number"] == 3 for row in result["findings"])
 
 
 def test_global_empty_tracks_are_not_reported_as_people_waits() -> None:
@@ -1992,7 +1995,8 @@ def test_discovered_blocker_explains_its_native_link_to_waiting_track_work() -> 
         candidate = result["candidates"][0]
         assert candidate["overall_milestone_context"]["state"] == "matched"
         assert candidate["overall_milestone_context"]["titles"] == ["First"]
-        assert candidate["availability"] == "needs_review" and not candidate.get("via")
+        assert candidate["availability"] == "needs_review"
+        assert [step["number"] for step in candidate["via"]] == [1, 7, 12]
         summary = {entry["milestone"]: entry for entry in result["milestone_summary"]}
         assert [item["number"] for item in summary["First"]["work"]] == [12]
 
@@ -2690,7 +2694,7 @@ TESTS = [
     test_global_whole_parent_wait_does_not_select_its_children_or_dependencies,
     test_global_leaf_waiting_on_referenced_review_is_not_actionable,
     test_global_closed_milestone_is_completed_not_missing,
-    test_global_inconsistent_blocked_parent_makes_evidence_incomplete,
+    test_global_stale_blocked_parent_is_a_finding_with_complete_coverage,
     test_global_empty_tracks_are_not_reported_as_people_waits,
     test_global_service_consumer_uses_the_same_classification_and_sort_as_cli,
     test_global_placeholder_waits_do_not_park_actionable_work,
@@ -3628,6 +3632,103 @@ TESTS.extend([test_unused_provider_read_ahead_keeps_partial_result_and_credentia
               test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
               test_parallel_global_graph_preserves_selection_waits_and_coverage,
               test_global_deadline_preserves_native_frontier_and_names_unread_discoveries])
+
+
+
+def test_waiting_and_stale_nodes_preserve_independent_native_work() -> None:
+    root = track("cbusillo/direction", 5, "First")
+    parent = global_issue("cbusillo/odoo-tenant-cm", 120, labels=["plan", "plan:waiting"])
+    child = global_issue(parent["repo"], 164)
+    source = global_issue("cbusillo/launchplane", 3699, labels=["plan", "plan:blocked"])
+    leaves = [global_issue(source["repo"], n) for n in (3708, 3709)]
+    partial = global_issue(source["repo"], 3440, labels=["plan", "plan:waiting"])
+    independent = global_issue(source["repo"], 3777)
+    edges = {(root["repo"], 5): relationships(sub_issues=[parent, partial]),
+             (parent["repo"], 120): relationships(sub_issues=[child]),
+             (child["repo"], 164): relationships(blocked_by=[source]),
+             (source["repo"], 3699): relationships(sub_issues=leaves),
+             (partial["repo"], 3440): relationships(sub_issues=[independent])}
+    nodes = [parent, child, source, *leaves, partial, independent]
+    module = load_module()
+    wait = module.github_plan_wait
+    comments = {(parent["repo"], 120): [{"user": {"login": "cbusillo"}, "body": wait.marker(wait.reviewed(
+                    evidence="Client confirmations remain on the parent; native prerequisites own source preparation.",
+                    waiting_for="Client inventory answers", ends_when="Client records answers"))}],
+                (partial["repo"], 3440): [{"user": {"login": "cbusillo"}, "body": wait.marker(wait.reviewed(
+                    evidence="Native #3777 owns independently selectable HTTPS/WSS preparation.",
+                    waiting_for="Q362", ends_when="Director answers Q362"))}]}
+    with global_fixture([root], nodes, edges, repo=root["repo"], comments=comments, clear_waits=[child, source, *leaves, independent]) as (module, result, reads):
+        module.load_direction = lambda *_: "# Direction\n## Milestones\n- `First`\n"
+        module.cmd_next(next_args(repo=root["repo"]))
+        assert {row["number"] for row in result["candidates"]} == {3708, 3709, 3777}
+        assert result["dependency_context"]["complete"]
+        assert result["candidate_coverage"]["milestone_ranking_complete"]
+        assert any(row["number"] == 3699 and row["exclusion"] == "label_blocked_without_native_edge" for row in result["excluded"])
+        assert any(row["number"] == 3699 for row in result["findings"])
+        assert len(reads) == len(set(reads)) == len(nodes)
+        assert {row["number"] for row in result["waiting"]} == {120, 3440}
+
+
+def test_waited_route_does_not_hide_an_independently_linked_leaf() -> None:
+    root = track("someone/direction", 1, "First")
+    held = global_issue("someone/product", 10, body="## Current Status\nState: Waiting.\nWaiting for: Customer sequencing.")
+    leaf = global_issue(held["repo"], 11)
+    edges = {(root["repo"], 1): relationships(sub_issues=[held, leaf]),
+             (held["repo"], 10): relationships(sub_issues=[leaf])}
+    with global_fixture([root], [held, leaf], edges) as (module, result, reads):
+        module.cmd_next(next_args())
+        assert [row["number"] for row in result["candidates"]] == [11]
+        assert [step["number"] for step in result["candidates"][0]["via"]] == [1, 11]
+        assert reads.count((leaf["repo"], 11)) == 1
+        assert not any(row["number"] == 11 for row in result["excluded"])
+
+
+def test_newly_reached_unread_relationships_degrade_coverage_with_issue_evidence() -> None:
+    module = load_module()
+    shared = module.github_direction_next
+    root = track("someone/direction", 1, "First")
+    stale = global_issue("someone/product", 2, labels=["plan", "plan:blocked"])
+    leaf = global_issue(stale["repo"], 3)
+    raw = {(row["repo"], row["number"]): row for row in [root, stale, leaf]}
+    edges = {(root["repo"], 1): relationships(sub_issues=[stale]),
+             (stale["repo"], 2): relationships(sub_issues=[leaf])}
+    def read(repo: str, number: int) -> dict[str, Any]:
+        return shared.evaluate_direction_node(raw[(repo, number)], config=module.DEFAULT_CONFIG,
+            focus=None, relationships={name: [module.compact_relationship_issue(row, name) for row in rows]
+                                       for name, rows in edges.get((repo, number), relationships()).items()},
+            truncated_relationships=["blocked_by"] if number == 3 else None)
+    roots = [{**shared.compact_list_issue(root["repo"], root), "milestone": root["milestone"]}]
+    result = shared.rank_direction_work(roots, milestone_titles=["First"], read_node=read, scan_limit=10)
+    assert not result["dependency_context"]["complete"]
+    failures = result["dependency_context"]["unavailable_relationships"]
+    assert failures[0]["number"] == 3 and failures[0]["truncated_relationships"] == ["blocked_by"]
+    bounded = shared.rank_direction_work(roots, milestone_titles=["First"], read_node=read, scan_limit=2)
+    assert bounded["truncated"] and not bounded["dependency_context"]["complete"]
+
+
+TESTS.extend([test_waiting_and_stale_nodes_preserve_independent_native_work,
+              test_waited_route_does_not_hide_an_independently_linked_leaf,
+              test_newly_reached_unread_relationships_degrade_coverage_with_issue_evidence])
+
+
+def test_explicit_independent_child_keeps_other_waits_and_ancestry() -> None:
+    shared = load_module().github_direction_next
+    child = {"repo": "other/source", "number": 3777, "url": "https://github.com/other/source/issues/3777"}
+    parent = {"repo": "someone/product", "number": 3440, "url": "https://github.com/someone/product/issues/3440",
+              "exclusion": "waiting", "discussion": {"complete": True}}
+    for evidence in [f"{child['url']} is independently selectable preparation.",
+                     f"Native [#3777]({child['url']}) owns independently selectable preparation."]:
+        parent["structured_wait"] = {"evidence": evidence}
+        assert not shared.parent_holds_child(parent, child)
+        assert shared.parent_holds_child(parent, {**child, "number": 3778})
+        held = shared.include_parent_context({**child, "exclusion": "waiting", "discussion": {"complete": True}},
+                                             [parent], complete=True, tracking_roots=[])
+        assert held["exclusion"] == "waiting"  # The child's own wait survives.
+    parent["structured_wait"] = {"evidence": f"{child['url']} is not independently selectable."}
+    assert shared.parent_holds_child(parent, child)
+
+
+TESTS.append(test_explicit_independent_child_keeps_other_waits_and_ancestry)
 
 
 def main() -> None:
