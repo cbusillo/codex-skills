@@ -1257,8 +1257,9 @@ for this check. An installer success alone does not prove cross-account pairing.
 Run `uv run scripts/check_insecure_tls.py` to check tracked Python files for
 hand-built `check_hostname = False` / `CERT_NONE`, unverified contexts and common
 HTTP-client verification-off calls. The catalog validation gate runs it too.
-It parses Python without executing it; dynamic values or runtime monkeypatching
-are outside this static check. Keep Ruff's TLS rules for complementary protocol
+It parses Python without executing it; dynamic values, parameter-provided clients and computed monkeypatches
+are outside this static check. Bare SSLContext construction also needs review
+of its client/server role; this check does not infer that role. Keep Ruff's TLS rules for complementary protocol
 and library checks.
 
 An intentional exception needs a preceding `# insecure-tls: <plain reason>`
@@ -1274,3 +1275,8 @@ from their own checkout. Pin the reviewed catalog commit in their existing lint
 gate, and update that pin through the normal PR path. No catalog installation,
 credentials or new required-check rule is needed. Explicit file arguments are
 available for a focused local check; CI should use the tracked-file default.
+
+The scan requires readable, non-symlinked, UTF-8 Python 3 inputs. It fails
+closed on unparseable tracked fixtures and reports the path for qualification;
+it does not silently exclude them. Only tracked `.py` files are selected by
+default; extensionless Python entrypoints need explicit file arguments.

@@ -29,6 +29,15 @@ class TlsTests(unittest.TestCase):
             "from httpx import Client as C\nC(verify=False)",
             "import requests\ns = requests.Session()\ns.get('https://example.invalid', verify=False)",
             "import aiohttp\naiohttp.TCPConnector(ssl=False)",
+            "import requests\nself.session = requests.Session()\nself.session.get(u, verify=False)",
+            "import requests\nwith requests.Session() as s:\n s.get(u, verify=False)",
+            "import aiohttp\nasync with aiohttp.ClientSession() as s:\n await s.get(u, ssl=False)",
+            "import requests\nrequests.Session().get(u, verify=False)",
+            "import ssl\nssl._create_default_https_context = ssl._create_unverified_context",
+            "import ssl\nctx.verify_mode = ssl.VerifyMode.CERT_NONE",
+            "import urllib3\nurllib3.PoolManager(cert_reqs='CERT_NONE')",
+            "import urllib3\nurllib3.PoolManager(assert_hostname=False)",
+            "import aiohttp\naiohttp.TCPConnector(verify_ssl=False)",
             "import ssl\nfrom urllib3 import PoolManager\nPoolManager(cert_reqs=ssl.CERT_NONE)",
             "from ssl import _create_unverified_context as unchecked\nunchecked()",
         ):
@@ -62,6 +71,20 @@ def fixture():
     # insecure-tls: disposable loopback peer exercises certificate rejection.
     ctx = ssl._create_unverified_context()
 '''), [])
+
+    def test_choke_point_reason_does_not_cover_adjacent_call(self):
+        source = "import requests, ssl\n# insecure-tls: explicit isolated vendor site setting.\nctx.check_hostname = False\nctx.verify_mode = ssl.CERT_NONE\nrequests.get(u, verify=False)\n"
+        self.assertEqual(checker.findings(source), [5])
+
+    def test_symlink_input_fails_with_its_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "real.py").write_text("ctx.check_hostname = False\n")
+            (root / "link.py").symlink_to(root / "real.py")
+            output = io.StringIO()
+            with contextlib.redirect_stderr(output):
+                self.assertEqual(checker.main(["--repo", str(root), "link.py"]), 2)
+            self.assertIn("link.py", output.getvalue())
 
     def test_safe_defaults_strings_and_unrelated_calls_pass(self):
         source = '''import ssl, requests

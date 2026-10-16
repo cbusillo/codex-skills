@@ -18,18 +18,23 @@ def qualified(node: ast.AST, imports: dict[str, str]) -> str:
     if isinstance(node, ast.Name):
         return imports.get(node.id, node.id)
     if isinstance(node, ast.Attribute):
-        return qualified(node.value, imports) + "." + node.attr
+        name = qualified(node.value, imports) + "." + node.attr
+        return imports.get(name, name)
+    if isinstance(node, ast.Call):
+        return qualified(node.func, imports)
     return ""
 
 
 def disabled(node: ast.AST, imports: dict[str, str]) -> bool:
-    return qualified(node, imports) == "ssl.CERT_NONE"
+    return qualified(node, imports) in {"ssl.CERT_NONE", "ssl.VerifyMode.CERT_NONE"} or isinstance(node, ast.Constant) and node.value == "CERT_NONE"
 
 
 def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
     if isinstance(node, (ast.Assign, ast.AnnAssign)):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         value = node.value
+        if value is not None and qualified(value, imports) in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
+            return True
         return any(isinstance(target, ast.Attribute) and (
             target.attr in {"check_hostname", "verify"} and isinstance(value, ast.Constant) and value.value is False
             or target.attr == "verify_mode" and value is not None and disabled(value, imports)
@@ -40,21 +45,21 @@ def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
             return True
         if name.split(".")[0] in {"requests", "httpx", "aiohttp", "urllib3"}:
             return any(
-                keyword.arg in {"verify", "ssl"} and isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+                keyword.arg in {"verify", "ssl", "verify_ssl", "assert_hostname"} and isinstance(keyword.value, ast.Constant) and keyword.value.value is False
                 or keyword.arg == "cert_reqs" and disabled(keyword.value, imports)
                 for keyword in node.keywords
             )
     return False
 
 
-def has_reason(lines: list[str], line: int, column: int, unsafe_ends: set[tuple[int, int]]) -> bool:
+def has_reason(lines: list[str], line: int, column: int, assignment_ends: dict[tuple[int, int], int]) -> bool:
     """One comment covers adjacent unsafe statements at the same choke point."""
     comments = []
     index = line - 2
     while index >= 0:
         text = lines[index]
-        if (index + 1, column) in unsafe_ends:
-            index -= 1
+        if (index + 1, column) in assignment_ends:
+            index = assignment_ends[index + 1, column] - 2
             continue
         if len(text) - len(text.lstrip()) != column or not text.lstrip().startswith("#"):
             break
@@ -83,8 +88,13 @@ def findings(source: str) -> list[int]:
             name = qualified(node.value.func, imports)
             if name.split(".")[0] in {"requests", "httpx", "aiohttp", "urllib3"}:
                 for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        imports[target.id] = name
+                    if isinstance(target, (ast.Name, ast.Attribute)):
+                        imports[qualified(target, imports)] = name
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                name = qualified(item.context_expr, imports)
+                if name.split(".")[0] in {"requests", "httpx", "aiohttp", "urllib3"} and isinstance(item.optional_vars, (ast.Name, ast.Attribute)):
+                    imports[qualified(item.optional_vars, imports)] = name
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     nodes = []
     for node in ast.walk(tree):
@@ -93,9 +103,13 @@ def findings(source: str) -> list[int]:
         while not isinstance(node, ast.stmt):
             node = parents[node]
         nodes.append(node)
-    ends = {(node.end_lineno, node.col_offset) for node in nodes}
+    # Only adjacent attribute assignments may inherit a choke-point annotation.
+    ends = {(node.end_lineno, node.col_offset): node.lineno for node in nodes
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and
+            any(isinstance(target, ast.Attribute) and target.attr in {"check_hostname", "verify_mode", "verify"} for target in
+                (node.targets if isinstance(node, ast.Assign) else [node.target]))}
     lines = source.splitlines()
-    return sorted({node.lineno for node in nodes if not has_reason(lines, node.lineno, node.col_offset, ends)})
+    return sorted({node.lineno for node in nodes if not has_reason(lines, node.lineno, node.col_offset, ends if isinstance(node, (ast.Assign, ast.AnnAssign)) and (node.end_lineno, node.col_offset) in ends else {})})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,9 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         for path in paths:
             file = args.repo / path
             if file.is_symlink():
-                raise ValueError("symlinked Python file requires explicit source qualification")
+                raise ValueError(f"{path}: symlinked Python input requires source qualification")
             try:
                 rows = findings(file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError) as error:
+                raise ValueError(f"{path}: unreadable Python input") from error
             except SyntaxError:
                 print(f"{path}: TLS000 cannot parse Python", file=sys.stderr)
                 return 2
@@ -122,8 +138,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{path}:{line}: TLS001 disabled TLS verification requires an insecure-tls reason at this choke point")
             failures += len(rows)
         return int(bool(failures))
-    except (OSError, UnicodeError, ValueError, subprocess.CalledProcessError):
-        print("TLS scan unavailable; verify the repository and readable Python inputs", file=sys.stderr)
+    except (OSError, UnicodeError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"TLS scan unavailable: {error}", file=sys.stderr)
         return 2
 
 
