@@ -252,6 +252,11 @@ def parse_args():
         help="Block until CI settles on the head or --max-wait-seconds passes, then emit one ci_wait line",
     )
     parser.add_argument(
+        "--allow-no-checks",
+        action="store_true",
+        help="Permit an empty complete CI inventory only for a repository with no CI configured",
+    )
+    parser.add_argument(
         "--max-wait-seconds",
         type=int,
         default=420,
@@ -1360,18 +1365,12 @@ def has_active_failed_job(failed_jobs):
     return any(str(job.get("run_status") or "").lower() != "completed" for job in failed_jobs)
 
 
-def is_pr_ready_to_merge(pr, checks_summary, new_review_items):
+def is_pr_ready_to_merge(pr, checks_summary, new_review_items, *, allow_no_checks=False):
     if pr["closed"] or pr["merged"]:
         return False
     if pr.get("draft"):
         return False
-    if not checks_summary["all_terminal"]:
-        return False
-    if checks_summary.get("evidence_complete") is not True:
-        return False
-    if checks_summary.get("head_matches") is not True:
-        return False
-    if checks_summary["failed_count"] > 0 or checks_summary["pending_count"] > 0:
+    if not is_ci_green({"checks": checks_summary}, allow_no_checks=allow_no_checks):
         return False
     if new_review_items:
         return False
@@ -1418,7 +1417,7 @@ def is_review_readiness_unavailable(pr, checks_summary, new_review_items):
     )
 
 
-def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries, owner_review_items=(), owner_review_errors=()):
+def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries, owner_review_items=(), owner_review_errors=(), allow_no_checks=False):
     actions = []
     if owner_review_errors:
         actions.append("owner_review_verification_unavailable")
@@ -1455,7 +1454,7 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
     if owner_changes_requested:
         actions.append("address_owner_review_changes")
 
-    if not owner_review_errors and not delivery_pending and not owner_changes_requested and is_pr_ready_to_merge(pr, checks_summary, new_review_items):
+    if not owner_review_errors and not delivery_pending and not owner_changes_requested and is_pr_ready_to_merge(pr, checks_summary, new_review_items, allow_no_checks=allow_no_checks):
         actions.append("ready_to_merge")
         return unique_actions(actions)
 
@@ -1589,6 +1588,7 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         args.max_flaky_retries,
         owner_review_items=state.get("owner_review_items", []),
         owner_review_errors=state.get("owner_review_errors", []),
+        allow_no_checks=getattr(args, "allow_no_checks", False),
     )
 
     if pending_reruns and not pr["closed"] and not pr["merged"]:
@@ -2000,10 +2000,13 @@ def print_event(event, payload):
     print_json({"event": event, "payload": payload})
 
 
-def is_ci_green(snapshot):
+def is_ci_green(snapshot, *, allow_no_checks=False):
     checks = snapshot.get("checks") or {}
     return (
         bool(checks.get("all_terminal"))
+        and checks.get("evidence_complete") is True
+        and checks.get("head_matches") is True
+        and (int(checks.get("passed_count") or 0) > 0 or allow_no_checks)
         and int(checks.get("failed_count") or 0) == 0
         and int(checks.get("pending_count") or 0) == 0
     )
@@ -2045,7 +2048,7 @@ def next_poll_seconds(args, snapshot, changed, unchanged_polls, first_poll):
     pr_open = not bool(pr.get("closed")) and not bool(pr.get("merged"))
     if not pr_open or changed or first_poll:
         poll_seconds = args.poll_seconds
-    elif not is_ci_green(snapshot):
+    elif not is_ci_green(snapshot, allow_no_checks=getattr(args, "allow_no_checks", False)):
         poll_seconds = min(
             args.poll_seconds * 2 ** unchanged_polls,
             max(args.poll_seconds, getattr(args, "green_poll_seconds", 300)),
@@ -2097,12 +2100,12 @@ CI_WAIT_NEXT_STEPS = {
     "review": "Handle new_review_items under babysit-pr Review Feedback; the watcher has marked them seen.",
     "green": "CI is green on the head; continue the handoff.",
     "failed": "Diagnose the failure under babysit-pr CI Failures.",
-    "pending": "CI is still running; run the same command again in this turn.",
+    "pending": "CI is pending, absent or incomplete; run the same command again in this turn.",
     "stopped": "Read actions: the PR closed or the watcher needs help.",
 }
 
 
-def ci_wait_outcome(snapshot):
+def ci_wait_outcome(snapshot, *, allow_no_checks=False):
     pr = snapshot.get("pr") or {}
     actions = set(snapshot.get("actions") or [])
     checks = snapshot.get("checks") or {}
@@ -2116,7 +2119,7 @@ def ci_wait_outcome(snapshot):
         return None
     if "diagnose_ci_failure" in actions or (checks.get("head_matches") and int(checks.get("failed_count") or 0)):
         return "failed"
-    if is_ci_green(snapshot):
+    if is_ci_green(snapshot, allow_no_checks=allow_no_checks):
         return "green"
     return None
 
@@ -2150,7 +2153,7 @@ def run_wait_ci(args):
             busy_state_file = str(err.path)
             poll_seconds = args.poll_seconds
         else:
-            outcome = ci_wait_outcome(snapshot)
+            outcome = ci_wait_outcome(snapshot, allow_no_checks=getattr(args, "allow_no_checks", False))
             if outcome:
                 return print_ci_wait(outcome, snapshot, started)
             current_change_key = snapshot_change_key(snapshot)
