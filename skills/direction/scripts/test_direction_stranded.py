@@ -163,6 +163,107 @@ class StrandedTests(unittest.TestCase):
         self.assertIn(newer["html_url"], rows[0]["evidence"])
 
 
+class MergedReviewTests(unittest.TestCase):
+    """Q406: only an actual post-merge review earns a temporary suppression."""
+
+    def setUp(self):
+        fixture = json.loads(Path(__file__).with_name("fixtures").joinpath("stranded-week-2026-10-15.json").read_text())
+        self.records = copy.deepcopy(fixture["records"])
+        self.trusted = {"shiny-code-app[bot]", "cbusillo"}
+        self.record = self.records[2]
+        self.records = [self.record]
+        self.pull = self.record["linked_pulls"][0]
+        self.merged = dt.datetime.fromisoformat(self.pull["merged_at"])
+        self.reviewed = self.merged + dt.timedelta(hours=1)
+        self.record["item"]["body"] = "## Current Status\nState: More implementation remains."
+        self.record["status_body_updated_at"] = self.reviewed.isoformat()
+        self.now = self.reviewed + dt.timedelta(days=1)
+
+    def report(self):
+        return sweep.report(self.records, now=self.now, age_hours=2, trusted=self.trusted,
+                            owners={"cbusillo"})
+
+    def kinds(self):
+        return [r["kind"] for r in self.report()["findings"]]
+
+    def comment(self, body, when, author="shiny-code-app[bot]"):
+        self.record["comments"].append({"id": len(self.record["comments"]) + 1,
+            "body": body, "created_at": when.isoformat(), "user": {"login": author},
+            "html_url": "https://github.com/cbusillo/launchplane/issues/3678#issuecomment-1"})
+
+    def test_reviewed_after_merge_suppresses_then_reflags_at_exact_fourteen_day_boundary(self):
+        self.assertEqual(self.kinds(), [])
+        self.now = self.reviewed + dt.timedelta(days=14) - dt.timedelta(microseconds=1)
+        self.assertEqual(self.kinds(), [])
+        self.now += dt.timedelta(microseconds=1)
+        self.assertEqual(self.kinds(), ["merged_link_needs_review"])
+
+    def test_stale_equal_missing_or_unknown_status_flags_despite_new_issue_activity(self):
+        self.now = self.merged + dt.timedelta(minutes=1)
+        self.record["item"]["updated_at"] = self.now.isoformat()
+        self.comment("Routine chatter", self.now)
+        for when in (self.merged - dt.timedelta(days=1), self.merged, None):
+            with self.subTest(when=when):
+                self.record["status_body_updated_at"] = when.isoformat() if when else None
+                self.assertEqual(self.kinds(), ["merged_link_needs_review"])
+        self.record["item"]["body"] = "No status section"
+        self.record["status_body_updated_at"] = self.now.isoformat()
+        self.assertEqual(self.kinds(), ["merged_link_needs_review"])
+
+    def test_completing_merge_flags_immediately_despite_post_merge_review(self):
+        for scope in ("Closes #3678", "Fixes cbusillo/launchplane#3678",
+                      "Resolves https://github.com/cbusillo/launchplane/issues/3678"):
+            with self.subTest(scope=scope):
+                self.pull["body"] = scope
+                self.now = self.merged + dt.timedelta(seconds=1)
+                self.assertEqual(self.kinds(), ["open_after_completing_merge"])
+                self.assertTrue(self.report()["findings"][0]["review_required"])
+
+    def test_newer_trusted_activity_renews_only_an_existing_post_merge_review(self):
+        activity = self.reviewed + dt.timedelta(days=10)
+        self.comment("Implementation continues", activity)
+        self.now = self.reviewed + dt.timedelta(days=14)
+        self.assertEqual(self.kinds(), [])
+        self.now = activity + dt.timedelta(days=14)
+        self.assertEqual(self.kinds(), ["merged_link_needs_review"])
+        self.record["status_body_updated_at"] = self.merged.isoformat()
+        self.now = activity
+        self.assertEqual(self.kinds(), ["merged_link_needs_review"])
+
+    def test_label_activity_and_untrusted_status_do_not_renew_review(self):
+        self.now = self.reviewed + dt.timedelta(days=14)
+        self.record["item"]["updated_at"] = self.now.isoformat()
+        self.comment("## Current Status\nState: More work", self.now, author="untrusted")
+        self.assertEqual(self.kinds(), ["merged_link_needs_review"])
+
+    def test_trusted_comment_status_and_structured_review_suppress_without_body_status(self):
+        self.record["item"]["body"] = "Original request"
+        for body in ("## Current Status\nState: More work", sweep.github_plan_wait.marker(
+                sweep.github_plan_wait.reviewed(evidence="Reviewed after merge; work remains"))):
+            with self.subTest(body=body):
+                self.record["comments"] = []
+                self.comment(body, self.reviewed)
+                self.assertEqual(self.kinds(), [])
+                self.now = self.reviewed + dt.timedelta(days=14)
+                self.assertEqual(self.kinds(), ["merged_link_needs_review"])
+                self.now = self.reviewed + dt.timedelta(days=1)
+
+    def test_edit_of_status_comment_uses_edit_time(self):
+        self.record["item"]["body"] = "Request"
+        self.comment("## Current Status\nState: More work", self.merged - dt.timedelta(days=1))
+        self.record["comments"][0]["updated_at"] = self.reviewed.isoformat()
+        self.assertEqual(self.kinds(), [])
+
+    def test_new_merge_after_review_reflags_and_completing_merge_wins_aggregation(self):
+        later = {**self.pull, "merged_at": (self.reviewed + dt.timedelta(hours=1)).isoformat()}
+        self.record["linked_pulls"].append(later)
+        self.assertEqual(self.kinds(), ["merged_link_needs_review"])
+        self.pull["body"] = "Closes #3678"
+        self.assertEqual(self.kinds(), ["open_after_completing_merge"])
+        self.record["item"]["state"] = "closed"
+        self.assertEqual(self.kinds(), [])
+
+
 REGISTER = Path(__file__).with_name("fixtures").joinpath("operational-register-2026-10-14.txt").read_text()
 
 
@@ -265,6 +366,9 @@ class FakeReader:
         self.pages = {}
         self.repositories = {"repos/test/repo": {"archived": False, "default_branch": "main"}}
         self.files = {}
+
+    def graphql_json(self, query, variables, *, step) -> SimpleNamespace:
+        raise AssertionError("unconfigured GraphQL read")
 
     def get_json(self, path, *, step):
         self.paths.append(path)
@@ -387,6 +491,37 @@ class InventoryTests(unittest.TestCase):
         result = self.collect()
         self.assertEqual(len(result["findings"]), 1)
         self.assertEqual(result["findings"][0]["kind"], "open_after_completing_merge")
+
+    def test_body_status_uses_bounded_edit_read_not_issue_activity(self):
+        original = self.reader.get_json
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = [{
+            "number": 1, "state": "open", "body": "## Current Status\nState: More work",
+            "user": {"login": "test"}, "updated_at": self.now.isoformat()}]
+        self.reader.pages[("repos/test/repo/issues/1/timeline", 1, None)] = [{
+            "event": "cross-referenced", "source": {"issue": {"number": 2,
+                "pull_request": {"url": "https://api.github.com/repos/test/repo/pulls/2"},
+                "repository_url": "https://api.github.com/repos/test/repo"}}}]
+        def read(path, *, step):
+            if path == "repos/test/repo/pulls/2":
+                return {"body": "Refs #1", "merged_at": "2026-10-14T01:00:00Z", "base": {"ref": "main"}}
+            return original(path, step=step)
+        self.reader.get_json = read
+        def edit(value, **kwargs):
+            return SimpleNamespace(ok=True, body={"data": {"repository": {"issue": {
+                "lastEditedAt": value, "createdAt": "2026-10-01T00:00:00Z"}}}})
+        self.reader.graphql_json = lambda *args, **kwargs: edit("2026-10-15T01:00:00Z")
+        self.assertEqual(self.collect()["findings"], [])
+        self.reader.graphql_json = lambda *args, **kwargs: edit(None)
+        self.assertEqual(self.collect()["findings"][0]["kind"], "merged_link_needs_review")
+        self.reader.graphql_json = lambda *args, **kwargs: SimpleNamespace(ok=False)
+        result = self.collect()
+        self.assertEqual(result["findings"][0]["kind"], "merged_link_needs_review")
+        self.assertTrue(any(g["source"] == "test/repo#1/status" for g in result["coverage_gaps"]))
+        # The eight reads before status consume this budget; no GraphQL request runs.
+        with patch.object(self.reader, "graphql_json", side_effect=AssertionError("unbudgeted read")):
+            limited = self.collect(max_requests=8)
+        self.assertTrue(any(g["source"] == "test/repo#1/status" and g["reason"] == "request_budget_exhausted"
+                            for g in limited["coverage_gaps"]))
 
     def test_expired_policy_read_does_not_launch_a_helper(self):
         with patch.object(sweep.subprocess, "run") as run:
