@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -490,29 +492,6 @@ def test_reconcile_preserves_ignored_runtime_file_collision(tmp_path: Path) -> N
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
-def test_reconcile_skips_unrelated_runtime_binding(tmp_path: Path) -> None:
-    fixture = build_runtime_fixture(tmp_path / "fixture")
-    unrelated = tmp_path / "unrelated"
-    unrelated_home = tmp_path / "unrelated-home"
-    subprocess.run(
-        ["git", "init", "--initial-branch=main", str(unrelated)],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    configure_git(unrelated)
-    commit_file(unrelated, "unrelated.txt", "unrelated\n", "unrelated")
-    unrelated_home.mkdir()
-    (unrelated_home / "skills").symlink_to(unrelated, target_is_directory=True)
-
-    proc, receipt = fixture.run(code_home=unrelated_home)
-
-    assert proc.returncode == 0
-    assert receipt["status"] == "not_applicable"
-    assert receipt["reason_code"] == "runtime_repo_mismatch"
-    assert receipt["applicable"] is False
-
-
 def build_unrelated_repository(tmp_path: Path) -> Path:
     unrelated = tmp_path / "unrelated"
     subprocess.run(
@@ -524,6 +503,21 @@ def build_unrelated_repository(tmp_path: Path) -> Path:
     configure_git(unrelated)
     commit_file(unrelated, "unrelated.txt", "unrelated\n", "unrelated")
     return unrelated
+
+
+def test_reconcile_skips_unrelated_runtime_binding(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path / "fixture")
+    unrelated = build_unrelated_repository(tmp_path)
+    unrelated_home = tmp_path / "unrelated-home"
+    unrelated_home.mkdir()
+    (unrelated_home / "skills").symlink_to(unrelated, target_is_directory=True)
+
+    proc, receipt = fixture.run(code_home=unrelated_home)
+
+    assert proc.returncode == 0
+    assert receipt["status"] == "not_applicable"
+    assert receipt["reason_code"] == "runtime_repo_mismatch"
+    assert receipt["applicable"] is False
 
 
 def test_reconcile_finds_a_claude_code_binding_when_no_codex_home_exists(tmp_path: Path) -> None:
@@ -728,6 +722,35 @@ def session_fixture(tmp_path: Path) -> RuntimeFixture:
     )
 
 
+def host_environment(fixture: RuntimeFixture) -> dict[str, str]:
+    return {
+        "HOME": str(fixture.code_home.parent / "host-home"),
+        "CODE_HOME": str(fixture.code_home),
+        "CODEX_HOME": str(fixture.code_home.parent / "unused"),
+        "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
+    }
+
+
+def stall_git_command(marker: str) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    actual_run = subprocess.run
+
+    def stall(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if marker in argv:
+            return actual_run([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+        return actual_run(argv, **kwargs)
+
+    return stall
+
+
+@contextmanager
+def reconciliation_deadline(namespace: dict[str, Any], seconds: float) -> Iterator[None]:
+    token = namespace["RECONCILIATION_DEADLINE"].set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        namespace["RECONCILIATION_DEADLINE"].reset(token)
+
+
 # The session's own catch-up budget is too short for a fixture under a loaded parallel gate.
 CATCHUP_BUDGET_ENV = {"DIRECTION_RUNTIME_CATCHUP_TIMEOUT": "60"}
 
@@ -737,9 +760,7 @@ def start_session(
     extra_env: dict[str, str] | None = None,
     runtime_catchup: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "HOME": str(fixture.code_home.parent / "host-home"),
-           "CODE_HOME": str(fixture.code_home), "CODEX_HOME": str(fixture.code_home.parent / "unused"),
-           "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
+    env = {**os.environ, **host_environment(fixture),
            "DIRECTION_MARKER": str(fixture.code_home.parent / "missing-marker.json"),
            **CATCHUP_BUDGET_ENV, **(extra_env or {})}
     return subprocess.run(
@@ -839,15 +860,8 @@ def test_upgraded_codex_hook_command_catches_up_the_bound_runtime(tmp_path: Path
 def test_session_start_reports_a_catchup_budget_spent_finding_the_runtime(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path)
     hook = runpy.run_path(str(fixture.runtime / "hooks/direction_check_hook.py"))
-    actual_run = subprocess.run
-    def slow_root(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        if "--show-toplevel" in argv:
-            return actual_run([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
-        return actual_run(argv, **kwargs)
-    env = {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home),
-           "CODEX_HOME": str(fixture.code_home.parent / "unused"), "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
-           "DIRECTION_RUNTIME_CATCHUP_TIMEOUT": "1"}
-    with mock.patch.dict(os.environ, env), mock.patch("subprocess.run", side_effect=slow_root):
+    env = {**host_environment(fixture), "DIRECTION_RUNTIME_CATCHUP_TIMEOUT": "1"}
+    with mock.patch.dict(os.environ, env), mock.patch("subprocess.run", side_effect=stall_git_command("--show-toplevel")):
         line = hook["catch_up_runtime"](fixture.runtime)
     assert "runtime_catchup_timeout" in line
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
@@ -882,14 +896,7 @@ def test_automatic_reconciliation_bounds_a_slow_fetch(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path)
     namespace = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))
     reconcile = namespace["reconcile_runtime_checkout"]
-    actual_run = subprocess.run
-    def slow_fetch(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        if "fetch" in argv:
-            return actual_run([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
-        return actual_run(argv, **kwargs)
-    env = {"HOME": str(fixture.code_home.parent / "host-home"), "CODE_HOME": str(fixture.code_home),
-           "CODEX_HOME": str(fixture.code_home.parent / "unused"), "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude")}
-    with mock.patch.dict(os.environ, env), mock.patch("subprocess.run", side_effect=slow_fetch):
+    with mock.patch.dict(os.environ, host_environment(fixture)), mock.patch("subprocess.run", side_effect=stall_git_command("fetch")):
         started = time.monotonic()
         receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=1)
         assert time.monotonic() - started < 3
@@ -997,12 +1004,8 @@ def test_automatic_fetch_with_configured_ssh_client(
         env[source] = command
     git(fixture.runtime, "remote", "set-url", "origin", f"ssh://fixture.invalid{fixture.remote}")
     namespace = runpy.run_path(str(SCRIPT))
-    token = namespace["RECONCILIATION_DEADLINE"].set(time.monotonic() + 5)
-    try:
-        with mock.patch.dict(os.environ, env, clear=True):
-            namespace["run_git"](fixture.runtime, "fetch", "origin")
-    finally:
-        namespace["RECONCILIATION_DEADLINE"].reset(token)
+    with reconciliation_deadline(namespace, 5), mock.patch.dict(os.environ, env, clear=True):
+        namespace["run_git"](fixture.runtime, "fetch", "origin")
     assert git(fixture.runtime, "rev-parse", "origin/main") == fixture.landing_sha
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
     assert git(fixture.runtime, "status", "--porcelain") == ""
@@ -1032,14 +1035,11 @@ def test_fetch_timeout_with_descendant_holding_output(tmp_path: Path) -> None:
                 proc.communicate()
                 raise
             return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
-    token = namespace["RECONCILIATION_DEADLINE"].set(time.monotonic() + 0.25)
-    started = time.monotonic()
-    try:
+    with reconciliation_deadline(namespace, 0.25):
+        started = time.monotonic()
         with mock.patch("subprocess.run", side_effect=slow_transport):
             with pytest.raises(namespace["GitCommandError"]):
                 namespace["run_git"](fixture.runtime, "fetch", "origin")
-    finally:
-        namespace["RECONCILIATION_DEADLINE"].reset(token)
     assert time.monotonic() - started < 1.5
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
     assert git(fixture.runtime, "status", "--porcelain") == ""
