@@ -20,7 +20,7 @@ from unittest.mock import Mock, patch
 
 import auto_enqueue as watch
 from skills.github.scripts.ready_handoff import READY, WAITING
-from skills.github.scripts import ready_handoff
+from skills.github.scripts import github_read, ready_handoff
 
 REPO = "example/tool"
 CLIENT = "example/client-product"
@@ -174,6 +174,9 @@ class Fake:
 
     def get(self, path):
         return copy.deepcopy(self.pulls[int(path.rsplit("/", 1)[-1])])
+
+    def get_many(self, paths):
+        return [self.get(path) for path in paths]
 
     def pages(self, path, **_params):
         if path.endswith("/labels"):
@@ -681,6 +684,7 @@ class EnqueueTests(unittest.TestCase):
                         return watch.github_api.ApiResult(ok=True, status=200, body=copy.deepcopy(body))
 
                     fake.get = live.get
+                    fake.get_many = live.get_many
                     self.events.clear()
                     with (
                         patch.object(reader, "_transport_request", side_effect=transport),
@@ -693,11 +697,75 @@ class EnqueueTests(unittest.TestCase):
                     self.assertTrue(all(call.args[0] > 0 for call in sleep.call_args_list))
                     self.assertNotIn(f"/repos/{REPO}/issues/1/comments", reader.batch_responses)
                     if batched:
+                        self.assertNotIn(path, reader.batch_responses)
                         self.assertEqual(reader.batch_responses[f"/repos/{REPO}/pulls/2"], pr(2))
                     self.assertFalse(replies)
                     if computed is not True:
                         reason = "conflicting" if computed is False else "mergeability_unknown"
                         self.assertTrue(any(event == "skipped" and data.get("reason") == reason for event, data in self.events))
+
+    def test_delayed_mergeability_backlog_progresses_across_passes(self):
+        # A base landing invalidates every PR. Conditional observations keep
+        # returning null; only individual fresh reads start/observe computation.
+        for count in (14, 30):
+            with self.subTest(count=count):
+                fake = Fake(count=count)
+                clock = [0.0]
+                started = {}
+                reads = []
+                landed = set()
+                delay = 5
+
+                def transport(_method, path, **kwargs):
+                    number = int(path.rsplit("/", 1)[-1])
+                    value = copy.deepcopy(fake.pulls[number])
+                    value.update(mergeable=None, mergeable_state="unknown")
+                    if kwargs.get("conditional_cache") is False:
+                        reads.append(number)
+                        started.setdefault(number, clock[0])
+                        if clock[0] - started[number] >= delay:
+                            value.update(mergeable=True, mergeable_state="behind")
+                    return watch.github_api.ApiResult(ok=True, status=200, body=value)
+
+                def sleep(seconds):
+                    clock[0] += seconds
+
+                with (
+                    patch.object(github_read.github_api_core, "request_identity", return_value=("fixture-reader", "fixture-reader", [])),
+                    patch.dict("os.environ", {"GITHUB_READ_CACHE_DIR": str(Path(self.directory.name) / "reader-cache")}),
+                    patch.object(watch.operator, "resolve_settings", return_value={"service_url": "https://example.test", "token": "fixture"}),
+                    patch.object(watch.operator, "validate_service_url"),
+                    patch.object(watch, "automation_only_gh_prefix_args", return_value=[]),
+                    patch.object(watch.time, "time", side_effect=lambda: clock[0]),
+                    patch.object(watch.time, "sleep", side_effect=sleep),
+                    patch.object(watch.GitHubReader, "_transport_request", side_effect=transport),
+                ):
+                    for pass_number in range(count):
+                        live = watch.Live(clock[0] + 1800)
+                        self.assertEqual(live.reader.actor, "fixture-reader")
+                        budget = live.mergeability_reads_remaining
+                        fake.get = live.get
+                        fake.get_many = lambda paths: live.get_many(paths)
+                        before_reads = len(reads)
+                        self.run_pass(fake)
+                        # Every label has one mandatory fresh pre-write GET;
+                        # all other unconditional reads draw on recovery quota.
+                        self.assertLessEqual(len(reads) - before_reads, budget + len(fake.writes))
+                        # When the budget has room to prime this backlog and
+                        # revisit two PRs, a slow computation can form a batch.
+                        if count == 14 and pass_number == 0 and budget >= count + 2:
+                            self.assertGreater(len(fake.writes), 1)
+                        landed.update(fake.writes)
+                        if len(landed) == count:
+                            break
+                        # The next landing resets computation for remaining PRs.
+                        if fake.writes:
+                            for number in fake.writes:
+                                del fake.pulls[number]
+                            fake.writes.clear()
+                            started.clear()
+                        clock[0] += 300
+                self.assertEqual(landed, set(range(1, count + 1)))
 
     def test_lazy_mergeability_budget_and_deadline_bound_extra_reads(self):
         live = object.__new__(watch.Live)
@@ -712,16 +780,40 @@ class EnqueueTests(unittest.TestCase):
             patch.object(watch.time, "time", return_value=0),
             patch.object(watch.time, "sleep") as sleep,
         ):
-            for number in range(1, 5):
-                self.assertIsNone(live.get(f"/repos/{REPO}/pulls/{number}")["mergeable"])
+            values = live.get_many([f"/repos/{REPO}/pulls/{number}" for number in range(1, 5)])
+            self.assertTrue(all(value["mergeable"] is None for value in values))
         self.assertEqual(live.reader.request.call_count, 3)
         self.assertEqual(sleep.call_count, 3)
         self.assertTrue(live.reader.cache_enabled)
         live.mergeability_reads_remaining = 3
         with patch.object(watch.time, "time", return_value=99), patch.object(watch.time, "sleep") as sleep:
-            live.get(f"/repos/{REPO}/pulls/1")
+            live.get_many([f"/repos/{REPO}/pulls/1"])
         sleep.assert_not_called()
         self.assertEqual(live.reader.request.call_count, 3)
+
+    def test_mergeability_recovery_rechecks_deadline_after_sleep(self):
+        live = object.__new__(watch.Live)
+        live.reader = Mock(batch_responses={})
+        live.reader.get_json.return_value = {**pr(), "mergeable": None}
+        live.deadline = 100
+        live.mergeability_reads_remaining = 20
+        clock = [0]
+
+        def oversleep(_seconds):
+            clock[0] = 101
+
+        with patch.object(watch.time, "time", side_effect=lambda: clock[0]), patch.object(watch.time, "sleep", side_effect=oversleep):
+            live.get_many([f"/repos/{REPO}/pulls/1"])
+        live.reader.request.assert_not_called()
+
+    def test_final_pr_observation_is_fresh_after_recovery_budget_exhaustion(self):
+        live = object.__new__(watch.Live)
+        live.reader = Mock(batch_responses={})
+        live.reader.get_json.return_value = {**pr(), "mergeable": None}
+        live.reader.request.return_value = watch.github_api.ApiResult(ok=True, status=200, body=pr())
+        live.deadline = 100
+        live.mergeability_reads_remaining = 0
+        self.assertTrue(live.get(f"/repos/{REPO}/pulls/1")["mergeable"])
 
     def test_lazy_mergeability_read_error_restores_cache(self):
         live = object.__new__(watch.Live)
