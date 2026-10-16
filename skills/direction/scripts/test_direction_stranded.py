@@ -4,6 +4,7 @@
 # dependencies = ["PyYAML==6.0.3"]
 # ///
 """Replay the week's stranded records and bounded read failures offline."""
+import base64
 import copy
 import datetime as dt
 import json
@@ -146,6 +147,100 @@ class StrandedTests(unittest.TestCase):
         self.assertIn(newer["html_url"], rows[0]["evidence"])
 
 
+REGISTER = Path(__file__).with_name("fixtures").joinpath("operational-register-2026-10-14.txt").read_text()
+
+
+class OverdueTriggerTests(unittest.TestCase):
+    """Dated triggers that passed without anyone raising them (codex-skills#716, #790)."""
+
+    def setUp(self):
+        # 11:30 PM ET on October 14, when the register's misses were found by hand.
+        self.now = dt.datetime(2026, 10, 15, 3, 30, tzinfo=dt.timezone.utc)
+        self.register = {"repo": "example/ops", "path": "docs/register.md", "default_branch": "main", "text": REGISTER}
+
+    def report(self, records=(), **kwargs):
+        return sweep.report(list(records), now=self.now, age_hours=2, trusted={"shiny-code-app[bot]", "example"},
+                            owners={"example"}, registers=[self.register], **kwargs)
+
+    def flagged(self, report=None):
+        report = report or self.report()
+        return {(row["kind"], row["url"].rpartition("#")[2]) for row in report["findings"]}
+
+    def titles(self, *names):
+        entries = {e["title"]: e for e in sweep.register_entries(REGISTER)}
+        return [sweep.anchor(entries[name]["title"]) for name in names]
+
+    def test_overdue_check_and_owner_decision_are_reported_and_future_or_event_checks_are_not(self):
+        camera, host = self.titles("Camera bridge rollback artifacts", "Host name resolution")
+        report = self.report()
+        self.assertEqual(self.flagged(report), {("overdue_operational_check", camera),
+                                                ("operational_check_waits_on_owner", host)})
+        self.assertTrue(report["complete"])
+        self.assertTrue(all(row["url"].startswith("https://github.com/example/ops/blob/main/docs/register.md#")
+                            for row in report["findings"]))
+        self.assertIn("2026-10-13", sweep.markdown(report))
+
+    def test_resolved_entry_removed_from_register_is_no_longer_reported(self):
+        camera, host = self.titles("Camera bridge rollback artifacts", "Host name resolution")
+        self.register["text"] = REGISTER.split("### Camera bridge rollback artifacts")[0]
+        self.assertEqual(self.flagged(), {("operational_check_waits_on_owner", host)})
+
+    def test_dated_check_is_reported_once_its_date_passes(self):
+        garage, roaming = self.titles("Garage close and arrival observation", "Access point roaming fault")
+        self.now = dt.datetime(2026, 11, 15, tzinfo=dt.timezone.utc)
+        kinds = self.flagged()
+        self.assertIn(("overdue_operational_check", garage), kinds)
+        self.assertIn(("overdue_operational_check", roaming), kinds)
+
+    def test_register_wording_variants_still_report(self):
+        camera, host = self.titles("Camera bridge rollback artifacts", "Host name resolution")
+        self.register["text"] = (REGISTER.replace("**Next check**:", "**Next check:**")
+                                 .replace("the overdue 2026-10-13 observation", "October 13, 2026")
+                                 .replace("- **", "* **")
+                                 .replace("the owner decides on", "waiting for the Director to decide on"))
+        self.assertEqual(self.flagged(), {("overdue_operational_check", camera),
+                                          ("operational_check_waits_on_owner", host)})
+
+    def test_entry_without_next_check_is_a_coverage_gap(self):
+        self.register["text"] = "### Unscheduled\n\n- **Current action**: look at it.\n"
+        report = self.report()
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["findings"], [])
+
+    def issue(self, number, status=None, *, structured=None, comments=()):
+        body = f"## Current Status\n\n{status}\n" if status else ""
+        if structured:
+            body += sweep.github_plan_wait.marker(structured)
+        return {"repo": "example/catalog", "comments": list(comments), "item": {
+            "number": number, "state": "open", "user": {"login": "example"}, "body": body,
+            "html_url": f"https://github.com/example/catalog/issues/{number}"}}
+
+    def test_passed_parked_until_and_waiting_for_dates_are_reported(self):
+        records = [
+            self.issue(1, "State: parked.\nParked until: October 13, 2026 (3 days of validated running)."),
+            self.issue(2, "Waiting for: the measurement after 2026-10-14T22:24:00Z."),
+            self.issue(3, "Parked until: 2026-10-30, when the window opens."),
+            self.issue(4, "Waiting for: None for the local checks (2026-10-12 scope comment)."),
+            self.issue(5, "Waiting for: the Client's DNS change; since 2026-10-01"),
+            self.issue(6, "Parked until: `next` skips a due follow-up a second time."),
+        ]
+        rows = [r for r in self.report(records)["findings"] if r["kind"] == "passed_dated_wait"]
+        self.assertEqual({r["number"] for r in rows}, {1, 2})
+        self.assertTrue(all(r["age_hours"] >= 2 and r["next_actor"] for r in rows))
+
+    def test_structured_wait_record_supersedes_prose(self):
+        reviewed = sweep.github_plan_wait.reviewed
+        records = [
+            self.issue(1, "Parked until: 2026-10-13.", structured=reviewed(evidence="Released by the Director")),
+            self.issue(2, None, structured=reviewed(evidence="Parked", waiting_for="A quiet week of backups",
+                                                    ends_when="2026-10-14, compare consecutive backups")),
+            self.issue(3, None, structured=reviewed(evidence="Parked", waiting_for="A quiet week of backups",
+                                                    ends_when="2026-10-20, compare consecutive backups")),
+        ]
+        rows = [r for r in self.report(records)["findings"] if r["kind"] == "passed_dated_wait"]
+        self.assertEqual({r["number"] for r in rows}, {2})
+
+
 class FakeReader:
     def __init__(self):
         self.paths = []
@@ -153,6 +248,7 @@ class FakeReader:
         self.limit = None
         self.pages = {}
         self.repositories = {"repos/test/repo": {"archived": False, "default_branch": "main"}}
+        self.files = {}
 
     def get_json(self, path, *, step):
         self.paths.append(path)
@@ -160,6 +256,11 @@ class FakeReader:
             return {"resources": {"core": {"remaining": self.remaining, "limit": self.limit}}}
         if path in self.repositories:
             return self.repositories[path]
+        if "/contents/" in path:
+            if path not in self.files:
+                raise sweep.github_read.GitHubReadError("Resource not found", result=SimpleNamespace(
+                    failure=SimpleNamespace(cause="not_found")), diagnostics={})
+            return {"type": "file", "content": base64.b64encode(self.files[path].encode()).decode()}
         parsed = urlsplit(path)
         query = parse_qs(parsed.query)
         key = (parsed.path, int(query.get("page", [1])[0]), query.get("state", [None])[0])
@@ -363,6 +464,24 @@ class InventoryTests(unittest.TestCase):
                 self.assertTrue(any(g["reason"] == "unread_registered_sources" for g in result["coverage_gaps"]))
                 self.assertFalse(any(g.get("missing_sources") for g in result["coverage_gaps"]))
                 self.assertFalse(any(row["url"] == urls[1] for row in result["findings"]))
+
+    def test_register_is_read_from_the_path_the_repository_declares(self):
+        metadata = "repos/test/repo/contents/.github/github.json"
+        result = self.collect()
+        self.assertEqual(result["operational_registers"], [])
+        self.assertFalse([g for g in result["coverage_gaps"] if g["source"] != "question_delivery"])
+        self.reader.files[metadata] = json.dumps({"docs": {"openOperationalIssues": "ops/follow-ups.md"}})
+        self.reader.files["repos/test/repo/contents/ops/follow-ups.md"] = REGISTER
+        result = self.collect()
+        self.assertEqual(result["operational_registers"], ["test/repo:ops/follow-ups.md"])
+        self.assertTrue(any(r["kind"] == "overdue_operational_check" and "/blob/main/ops/follow-ups.md#" in r["url"]
+                            for r in result["findings"]))
+        for declared, files in (("ops/missing.md", {}), ("../outside.md", {})):
+            reader = FakeReader()
+            reader.files = {metadata: json.dumps({"docs": {"openOperationalIssues": declared}}), **files}
+            result = sweep.collect(["test/repo"], reader=reader, now=self.now)
+            self.assertFalse(result["complete"])
+            self.assertEqual(result["operational_registers"], [])
 
     def test_sweep_reserve_agrees_with_the_shared_transport(self):
         self.reader.limit = 8000
