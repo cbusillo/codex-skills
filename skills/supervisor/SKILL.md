@@ -245,7 +245,8 @@ criteria hold:
    [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state),
    and the pilot issue holds handoffs and lessons only.
 
-Post each handoff on that issue, and say in it whether any lesson was new.
+Post each handoff as the [Handoff Shape](#handoff-shape) says, and say in it
+whether any lesson was new.
 
 ## Harnesses
 
@@ -360,6 +361,10 @@ including non-dim text, establishes neither its author nor approval.
    command file to the agent invocation and settings. The launcher validates
    every brief before launch side effects; read the launching procedure in
    [helpers](references/helpers.md#launching-and-nudging).
+   Then read each launch's first screen. A folder-trust or hook-trust prompt
+   looks like a working session from outside, and the launcher still reports
+   success; a launch with no transcript after one minute is blocked
+   ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)).
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
    issue do not clash.
@@ -388,7 +393,8 @@ including non-dim text, establishes neither its author nor approval.
    request a durable handoff and relaunch the same brief after verified safe
    closeout. If it cannot hand off, preserve it and bring the failure to the
    Director. Gather the
-   open Director questions. Close finished sessions using the procedure below
+   open Director questions. Report milestone state only as rebuilt under
+   [Milestone State](#milestone-state). Close finished sessions using the procedure below
    on every check, including sessions that finished their item without needing
    a relaunch.
 4. **Every check and every handoff points to the Director's question queue**,
@@ -455,6 +461,18 @@ for products a Client runs business on.
 - On a Client's repositories, Discussions are drafts and issues are requests
   (Q122): read Discussions, act only on issues.
 
+## Milestone State
+
+Rebuild each milestone's state from records, never from an earlier handoff,
+summary or ledger line: for every open `Track:` issue on OWNER/direction, read
+the Track, its native children and their latest Director decision comments.
+A PR handed off as ready counts as open until it merges; read its head, its
+mergeability and the train's reason for it. When the Track's Current Status
+disagrees, correct it under `github-plan`, naming the gating Director decision
+and its reason in plain words. On October 16 a successor repeated two Clients'
+waits from summaries after a recorded decision and a launch had ended them
+([Q415](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6222082256)).
+
 ## Procedure
 
 1. Check the permission mode as above.
@@ -465,7 +483,8 @@ for products a Client runs business on.
    Before you repeat what the Director said, read the exact words where the
    Director said them, not a summary. Allocate new question IDs through the
    [shared question counter rules](../references/talking-with-the-director.md#decisions-holds-and-work-state);
-   keep existing IDs from the handoff.
+   keep existing IDs from the handoff. Then rebuild every milestone's state
+   under [Milestone State](#milestone-state) before relying on the handoff's.
 4. Rebuild the ledger. For each session the handoff names, read its tab
    screen or thread once. List running processes before you rely on a
    background driver or watcher the handoff says is running.
@@ -601,12 +620,17 @@ and its terminal, transcript and account readbacks before sending input.
 
 ## Handoff Shape
 
-Post it on the pilot issue as one comment:
-
+Post the full handoff as one comment in the Director's private record on
+OWNER/direction, and a pointer with public-safe lessons on the pilot issue
+([Q403](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6220453592)).
 Follow [Agent Comments](../references/talking-with-the-director.md#agent-comments).
 Link the ledger, item records and earlier decisions for facts already recorded;
 write out only new recovery information needed for takeover:
 
+- Every open `Track:` issue on OWNER/direction, rebuilt under
+  [Milestone State](#milestone-state): its state in plain words, the Director
+  decision governing it (linked, with its reason), and every PR handed off as
+  ready but not merged. The handoff is incomplete until each Track appears.
 - The sessions left running: tab title or thread id, repository, issue, brief
   limits, next step, and context size for each.
 - Background drivers and watchers, each with its exact command or helper,
@@ -615,7 +639,8 @@ write out only new recovery information needed for takeover:
 - Where the Supervisor's files are kept, and the Director's own tabs to leave
   alone.
 - Links to the rules in force for the run.
-- New lessons; links to lessons already recorded.
+- New lessons, each already landed as a skill change or a linked issue as
+  part of this handoff; links to lessons already recorded.
 - The Director's question queue under the shared queue rules.
 
 ## Lessons From The Pilot
@@ -629,8 +654,12 @@ write out only new recovery information needed for takeover:
 - Start a fresh tab per task; reused old sessions caused most of the friction.
   Put Supervisor tabs in one dedicated terminal window and leave the
   Director's own sessions alone.
-- After launching a Codex tab, read its screen once; a folder-trust prompt
-  looks like a working session from outside.
+- A Codex thread stays loaded in its account home's daemon for 30 minutes
+  after the session exits, and a successor's claim is refused until it
+  unloads, even after the predecessor released the claim
+  ([#1951](https://github.com/cbusillo/codex-skills/issues/1951)). Brief
+  other work for that window rather than retrying the claim.
+- Take every time you write from `date`, never from memory or a summary.
 - Recorded pilot compactions preserved briefs and issues on both harnesses;
   keep recording degradation during the experiment above. The previous 450k
   close-out rule lacked evidence.

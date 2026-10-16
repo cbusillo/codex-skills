@@ -44,11 +44,22 @@ unknown), next actor and review requirement:
   shared `oq.questions` view supplies classification; the shared question
   delivery inventory supplies registration, acknowledgement and resurfacing
   evidence when `--question-queue` is selected and available.
-- Current-head Ready handoffs without the base branch's enqueue view from the
-  existing active train policy helper. Unavailable policy or an absent target
-  is routing unknown, never proof that a PR is unrouted or enqueued.
-  An aged Ready remains a candidate when its enqueue view is set: a label alone
-  cannot prove that a receiver is running or the train is making progress.
+- Current-head Ready handoffs still open past the age threshold, with or
+  without the enqueue label. Since
+  [launchplane#3834](https://github.com/cbusillo/launchplane/pull/3834) the
+  train admits a current-head Ready itself, so the label proves neither
+  routing nor progress; the finding notes it as evidence. A Ready whose PR now
+  conflicts with its base is reported at once, because the train cannot admit
+  it until the branch is refreshed and handed off again. Unavailable policy or
+  an absent target for the base branch is routing unknown.
+- Open `Track:` issues in `OWNER/direction` whose Current Status `Last verified`
+  is older than a later milestone-relevant change: a native child closing, or
+  a Director comment or recorded `Director decision` on the Track or a direct
+  child. A clock time in `Last verified` is read as US Eastern; a bare date
+  counts as the end of that day. A Track with no readable `Last verified` is
+  reported once any such change exists. The sweep reuses collected child
+  discussions and reads an uncollected child's comments only when it changed
+  after `Last verified`. Ageing starts at the oldest unrecorded change.
 - Open issues with a merged linked PR, aggregated to one candidate per issue
   with the newest explicit completing merge preferred over incidental Refs.
   Completing keywords flag immediately, even after a later status review.
