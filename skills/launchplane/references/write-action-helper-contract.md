@@ -1638,7 +1638,7 @@ Backup proposals use existing exact-lane backup planning authority. The signed-i
 Director approves or declines in the card, from any tab or device, with no file
 upload or digest comparison. The proposer cannot decide or directly apply a
 backup policy, even with a backup-write grant. The older direct-apply helper
-command does not override this: the service refuses local-operator/terminal-agent
+command does not override this: the service refuses `local_operator`/`terminal_agent`
 application, and approval stays in the signed-in Director card. Before use, verify that the service
 supports the descriptor; source delivery does not activate it or grant access.
 
