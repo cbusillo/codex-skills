@@ -80,7 +80,7 @@ closed, or until the user's help is required. This skill never merges.
   watcher with `--watch` and follow [the loop](#the-loop).
 - **Wait for CI before a handoff** (your own PR needs settled CI before a
   `ready` handoff, a merge decision or a report, and the merge train or another
-  owner handles the rest): run `--wait-ci` as a blocking foreground command and
+  session handles the rest): run `--wait-ci` as a blocking foreground command and
   follow [Waiting for CI](#waiting-for-ci).
 - **One-shot check** (the user asks for a single status check, or closeout
   evidence for an already merged or closed PR): run `--once` and report that
@@ -123,7 +123,8 @@ what to do:
 - `5` new review feedback arrived: handle `new_review_items` under
   [Review feedback](#review-feedback) first. The watcher has marked them seen,
   so they will not appear again.
-- `1` a read or command error: report it; the wait was lost.
+- `1` a read or command error, or the state lock stayed busy until the bound:
+  report it; the wait was lost.
 
 Keep `--max-wait-seconds` (default 420) well below the harness's command
 timeout, since a read that starts just before the bound still finishes, and

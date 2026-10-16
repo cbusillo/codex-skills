@@ -2111,7 +2111,10 @@ def ci_wait_outcome(snapshot):
     # The snapshot marks review items seen, so the wait must hand them over rather than poll past them.
     if snapshot.get("new_review_items"):
         return "review"
-    if int(checks.get("failed_count") or 0) or "diagnose_ci_failure" in actions:
+    # A requested rerun still shows the failed attempt, and an older head's failures are not this head's.
+    if "check_rerun_outcome" in actions:
+        return None
+    if "diagnose_ci_failure" in actions or (checks.get("head_matches") and int(checks.get("failed_count") or 0)):
         return "failed"
     if is_ci_green(snapshot):
         return "green"
@@ -2137,12 +2140,14 @@ def run_wait_ci(args):
     started = time.monotonic()
     deadline = started + args.max_wait_seconds
     snapshot = {}
+    busy_state_file = None
     last_change_key = None
     unchanged_polls = 0
     while True:
         try:
             snapshot, _state_path = collect_snapshot(args)
-        except StateLockTimeout:
+        except StateLockTimeout as err:
+            busy_state_file = str(err.path)
             poll_seconds = args.poll_seconds
         else:
             outcome = ci_wait_outcome(snapshot)
@@ -2155,10 +2160,12 @@ def run_wait_ci(args):
             last_change_key = current_change_key
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            if not snapshot:
+                print_event("state_busy", {"state_file": busy_state_file, "outcome": "lost"})
+                return 1
             return print_ci_wait("pending", snapshot, started)
+        # Sleeping only to the bound leaves one last read there, so the line is never stale.
         time.sleep(min(poll_seconds, remaining))
-        if time.monotonic() >= deadline:
-            return print_ci_wait("pending", snapshot, started)
 
 
 def main():

@@ -1255,6 +1255,42 @@ def test_wait_ci_ends_on_every_terminal_state(monkeypatch, change, outcome, code
     assert events[0][1]["new_review_items"] == change.get("new_review_items", [])
 
 
+@pytest.mark.parametrize("change", [
+    {"checks": sample_checks(failed_count=1), "actions": ["diagnose_ci_failure", "check_rerun_outcome"]},
+    {"checks": sample_checks(failed_count=1, head_matches=False, all_terminal=False), "actions": ["check_evidence_incomplete"]},
+])
+def test_wait_ci_keeps_waiting_through_a_rerun_or_an_older_heads_failures(monkeypatch, change):
+    green = {**pending_snapshot(), "checks": sample_checks(), "actions": ["ready_to_merge"]}
+    _clock, events = wait_ci_harness(monkeypatch, [{**pending_snapshot(), **change}, green])
+    args = argparse.Namespace(poll_seconds=60, green_poll_seconds=300, max_wait_seconds=540)
+
+    assert gh_pr_watch.run_wait_ci(args) == 0
+    assert events[0][1]["outcome"] == "green"
+
+
+def test_wait_ci_reads_once_more_at_its_bound(monkeypatch):
+    green = {**pending_snapshot(), "checks": sample_checks(), "actions": ["ready_to_merge"]}
+    # Unchanged polls back off 60, 120, 240; the third sleep is cut to the bound, then one last read.
+    _clock, events = wait_ci_harness(monkeypatch, [pending_snapshot()] * 3 + [green])
+    args = argparse.Namespace(poll_seconds=60, green_poll_seconds=300, max_wait_seconds=300)
+
+    assert gh_pr_watch.run_wait_ci(args) == 0
+    assert _clock.sleeps == [60, 120, 120]
+    assert events[0][1]["outcome"] == "green"
+
+
+def test_wait_ci_reports_a_lost_wait_when_the_state_lock_never_frees(monkeypatch):
+    clock, events = wait_ci_harness(monkeypatch, [])
+    def busy(_args):
+        raise gh_pr_watch.StateLockTimeout(Path("state.json"))
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", busy)
+    args = argparse.Namespace(poll_seconds=60, green_poll_seconds=300, max_wait_seconds=100)
+
+    assert gh_pr_watch.run_wait_ci(args) == 1
+    assert sum(clock.sleeps) == 100
+    assert [event for event, _ in events] == ["state_busy"]
+
+
 def test_wait_ci_reports_pending_at_its_bound_without_sleeping_past_it(monkeypatch):
     clock, events = wait_ci_harness(monkeypatch, [pending_snapshot() for _ in range(20)])
     args = argparse.Namespace(poll_seconds=60, green_poll_seconds=300, max_wait_seconds=200)
