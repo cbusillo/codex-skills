@@ -82,7 +82,8 @@ unknown), next actor and review requirement:
   issue closure, PR merge, published stable releases and GHSA patch information
   are checked; `recurrence` retains exact symptom text for search-before-filing
   and is never machine-checked or indexed. The close option maintains the discovery label;
-  use it on an already closed issue to index an existing manual record. A
+  use it on an already closed issue to re-publish and index an existing manual
+  record and reconcile its normal close metadata. A
   labeled issue without a trusted record is a coverage gap. Fired triggers bypass the aged-work threshold
   and remain in each daily digest while the issue is closed until the receiver retires the handled event with
   `close ISSUE --clear-reopen-trigger "<resolution evidence>"`; this also removes

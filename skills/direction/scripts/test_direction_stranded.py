@@ -572,10 +572,10 @@ class ReopenInventoryTests(unittest.TestCase):
     def test_owner_inventory_covers_archived_repositories_and_reports_unreadable_repositories(self):
         self.reader.repositories["repos/test/repo"]["archived"] = True
         self.reader.pages[("repos/test/repo/issues", 1, "closed")] = [self.issue(1, self.event())]
-        repos = {"test/repo": {}, "test/missing": {}}
-        with patch.object(audit, "owner_repositories", return_value=(repos, False)) as discover:
-            result = sweep.collect([], reader=self.reader, owner="test", now=self.now)
-        self.assertTrue(discover.call_args.kwargs["include_archived"])
+        self.reader.pages[("installation/repositories", 1, None)] = {"repositories": [
+            {"full_name": repo, "owner": {"login": "test"}, "archived": True}
+            for repo in ("test/repo", "test/missing")]}
+        result = sweep.collect([], reader=self.reader, owner="test", now=self.now)
         self.assertEqual({r["repo"] for r in result["findings"]}, {"test/repo"})
         self.assertTrue(any(g["source"] == "test/missing" for g in result["coverage_gaps"]))
         self.assertFalse(result["complete"])
@@ -633,6 +633,23 @@ class ReopenInventoryTests(unittest.TestCase):
         self.assertEqual([r["number"] for r in result["findings"] if r["kind"] == "reopen_trigger_fired"], [1])
         self.assertFalse(result["complete"])
         self.assertTrue(any("budget" in g["reason"] for g in result["coverage_gaps"]))
+
+
+    def test_qualifying_release_on_first_full_page_fires_without_reading_old_pages(self):
+        event = self.event("release_published", repo="target/repo", minimum_tag="v2.0")
+        original = self.reader.get_json
+        release_reads = []
+        def read(path, *, step):
+            if path.startswith("repos/target/repo/releases"):
+                release_reads.append(path)
+                return [{"draft": False, "prerelease": False, "published_at": self.now.isoformat(),
+                         "tag_name": "v2.1"}] * 100
+            return original(path, step=step)
+        self.reader.get_json = read
+        result = self.collect([self.issue(1, event)], max_pages=1)
+        self.assertEqual([r["number"] for r in result["findings"]], [1])
+        self.assertEqual(len(release_reads), 1)
+        self.assertFalse(any(g["reason"] == "reopen_trigger_unverifiable" for g in result["coverage_gaps"]))
 
 
 if __name__ == "__main__":

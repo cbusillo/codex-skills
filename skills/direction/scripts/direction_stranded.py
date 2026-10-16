@@ -375,9 +375,9 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 raise audit.AuditError(cause or type(exc).__name__) from exc
         return cache[path]
 
-    def listing(path):
+    def listing(path, *, stop=None):
         try:
-            rows, cut = audit.fetch_paginated(path, fetch=fetch, max_pages=max_pages)
+            rows, cut = audit.fetch_paginated(path, fetch=fetch, max_pages=max_pages, stop=stop)
             if cut:
                 gaps.append({"source": path, "reason": "page_limit"})
             if any(not isinstance(row, dict) for row in rows):

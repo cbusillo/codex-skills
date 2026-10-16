@@ -110,18 +110,18 @@ def fired(record: dict, *, now: dt.datetime, one, listing) -> bool:
         return item["state"] == "closed" and bool(item["merged_at"])
     if kind == "release_published":
         minimum = version(record["minimum_tag"])
-        for release in listing(f"repos/{record['repo']}/releases"):
-            if (not isinstance(release.get("draft"), bool) or not isinstance(release.get("prerelease"), bool)
+        def matches(release):
+            if (not isinstance(release, dict) or not isinstance(release.get("draft"), bool)
+                    or not isinstance(release.get("prerelease"), bool)
                     or "published_at" not in release or not isinstance(release.get("tag_name"), str)):
                 raise ValueError("Release publication information unavailable")
-            if release.get("draft") is not False or release.get("prerelease") is not False or not release.get("published_at"):
-                continue
+            if release["draft"] or release["prerelease"] or not release["published_at"]:
+                return False
             try:
-                if version(release.get("tag_name", "")) >= minimum:
-                    return True
+                return version(release["tag_name"]) >= minimum
             except ValueError:
-                continue
-        return False
+                return False
+        return any(matches(release) for release in listing(f"repos/{record['repo']}/releases", stop=matches))
     advisory = one(f"advisories/{record['ghsa_id']}")
     vulnerabilities = advisory.get("vulnerabilities")
     if (not isinstance(vulnerabilities, list) or "withdrawn_at" not in advisory
