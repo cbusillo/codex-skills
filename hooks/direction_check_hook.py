@@ -41,6 +41,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 MARKER_NAME = "direction-last-check.json"
+MEMORY_MARKER_NAME = "memory-last-check.json"
+MEMORY_STALE_DAYS = 14
+MEMORY_MAX_WORDS = 30_000
 TURN_STALE = dt.timedelta(hours=24)
 AUDIT_STALE = dt.timedelta(days=7)
 LOOP_PATH = Path(__file__).resolve().parents[1] / "skills" / "references" / "executing-loop.md"
@@ -138,6 +141,42 @@ def parse_stamp(value: object) -> dt.datetime | None:
     except ValueError:
         return None
     return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.timezone.utc)
+
+
+def memory_reminder(now: dt.datetime, env: Mapping[str, str] | None = None) -> str:
+    """Read optional review state and the registry; never write memory or markers."""
+    source = os.environ if env is None else env
+    path = Path(source.get("MEMORY_MARKER") or marker_path(source).with_name(MEMORY_MARKER_NAME)).expanduser()
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    memory_root = state.get("memory_root")
+    root = Path(memory_root).expanduser() if isinstance(memory_root, str) and memory_root else Path(source.get("HOME", "~")) / ".codex" / "memories"
+    if not root.is_absolute():
+        return ""
+    try:
+        with (root / "MEMORY.md").open(encoding="utf-8") as registry:
+            words = sum(len(line.split()) for line in registry)
+    except (OSError, UnicodeError):
+        return ""
+    days = state.get("max_age_days", MEMORY_STALE_DAYS)
+    limit = state.get("max_words", MEMORY_MAX_WORDS)
+    if type(days) is not int or days <= 0:
+        days = MEMORY_STALE_DAYS
+    if type(limit) is not int or limit <= 0:
+        limit = MEMORY_MAX_WORDS
+    last = parse_stamp(state.get("last_distilled_at"))
+    reasons = []
+    if last is not None and now - last > dt.timedelta(days=days):
+        reasons.append(f"last distillation was more than {days} days ago")
+    if words > limit:
+        reasons.append(f"registry has {words:,} words, over {limit:,}")
+    if not reasons:
+        return ""
+    return f"Codex memory review due: {'; '.join(reasons)}. Ask for distillation; record completion in {path}."
 
 
 def read_marker(path: Path) -> dict[str, object]:
@@ -508,6 +547,9 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             if overall:
                 print(overall, flush=True)
         now = dt.datetime.now(dt.timezone.utc)
+        memory_text = memory_reminder(now)
+        if memory_text:
+            print(memory_text, flush=True)
         marker = with_shared_turn(marker, now, origin_repo(root or checkout_root(Path.cwd())))
         reminder_text = reminder(marker, now, weekly_audit_repo(marker, now, origin_repo(root)), path)
         if reminder_text:
