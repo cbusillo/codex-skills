@@ -200,13 +200,24 @@ extensions until the vendored artifact is refreshed.
   `null`.
 - Dry-run and apply take `--product`, `--context`, `--instance`, `--hold` or
   `--lift`, and `--reason` (the hold's reason, or the audit reason for a lift).
+  `--purpose staff_testing|isolation_staging` defaults to `staff_testing`.
   Nothing in the request is secret, so there is no payload file.
 - Save the dry-run output. Apply requires `--reviewed-dry-run`,
   `--expected-plan-digest` equal to the saved `plan_sha256`,
-  `--dry-run-evidence-file` for the same product, lane and hold direction, and
-  `--idempotency-key`.
+  `--dry-run-evidence-file` for the same product, lane, hold direction, purpose
+  and reason, and `--idempotency-key`. Retain the original request and key for
+  an apply retry. Legacy evidence without purpose means `staff_testing` only;
+  staging requires a saved purpose-qualified request, including no-op lifts.
 - Output shows the action, the hold before and after (reason, recorder and
-  time), read-back, and whether lifting requested a testing reconcile.
+  time, optional purpose and service-derived rehearsal provenance), read-back,
+  and whether lifting requested a testing reconcile. Rehearsal provenance is
+  closed to binding digest, target update time and target source label; the
+  helper does not accept it as write input.
+- An isolation-staging lift alone does not request reconciliation or deploy.
+  Ordinary staff lifts request testing reconciliation. The service remains
+  authoritative for protected holds, qualification, denials and uncertain
+  effects; selecting a purpose grants no authority and never relabels an
+  existing hold. Continue through the same authenticated helper path.
 
 ## Product environment, activity and preview reads
 

@@ -2156,7 +2156,9 @@ INTEGRATION_ALLOWANCES_PAYLOAD_FIELDS = {
     "allowances",
 }
 INTEGRATION_ALLOWANCE_INPUT_FIELDS = {"integration", "kind", "reason", "evidence"}
-TESTING_HOLD_FIELDS = {"reason", "recorded_by", "recorded_at"}
+TESTING_HOLD_FIELDS = {"reason", "recorded_by", "recorded_at", "purpose", "rehearsal"}
+TESTING_HOLD_PURPOSES = {"staff_testing", "isolation_staging"}
+TESTING_HOLD_REHEARSAL_FIELDS = {"binding_sha256", "target_updated_at", "target_source_label"}
 TESTING_HOLD_ACTIONS = {"set", "update", "clear", "unchanged"}
 TESTING_HOLD_PLAN_FIELDS = {
     "status",
@@ -2391,6 +2393,12 @@ def _reviewed_plan_mode(value: object) -> str:
     return cast(str, value)
 
 
+def _testing_hold_purpose(value: object) -> str:
+    if not isinstance(value, str) or value not in TESTING_HOLD_PURPOSES:
+        raise LaunchplaneSafetyError("invalid_testing_hold_purpose")
+    return value
+
+
 def _project_testing_hold(value: object) -> dict[str, object] | None:
     if value is None:
         return None
@@ -2398,6 +2406,15 @@ def _project_testing_hold(value: object) -> dict[str, object] | None:
     if any(str(key) not in TESTING_HOLD_FIELDS for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
     projected: dict[str, object] = {"reason": public_operator_text(source.get("reason"))}
+    if "purpose" in source:
+        projected["purpose"] = _testing_hold_purpose(source["purpose"])
+    if source.get("rehearsal") is not None:
+        rehearsal = _require_exact_fields(source["rehearsal"], TESTING_HOLD_REHEARSAL_FIELDS)
+        projected["rehearsal"] = {
+            "binding_sha256": _project_sha256(rehearsal.get("binding_sha256")),
+            "target_updated_at": public_timestamp(rehearsal.get("target_updated_at")),
+            "target_source_label": public_identifier(rehearsal.get("target_source_label")),
+        }
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))
     if source.get("recorded_at"):
@@ -4310,10 +4327,10 @@ def summarize_success(
             summary["plan_sha256"] = result.get("plan_sha256")
             summary["recommendation"] = (
                 "Save this redacted dry-run output, review the hold change, then apply the same "
-                "product, lane, hold direction and reason with --expected-plan-digest."
+                "product, lane, hold direction, purpose and reason with --expected-plan-digest."
                 if operation == "testing-hold-dry-run"
-                else "Check read_back_matches. Lifting the hold requests a reconcile of the "
-                "testing target (reconcile_requested)."
+                else "Check read_back_matches and reconcile_requested. A staff-testing lift requests "
+                "testing reconciliation; an isolation-staging lift alone does not."
             )
         elif operation in {
             "product-repository-identity-dry-run",
@@ -5764,13 +5781,17 @@ def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, objec
         "instance": _required_argument(args, "instance").lower(),
         "mode": mode,
         "hold": bool(args.hold),
+        "purpose": _testing_hold_purpose(getattr(args, "purpose", "staff_testing")),
         "reason": _required_argument(args, "reason"),
     }
     if mode == "apply":
         expected_plan_digest = _reviewed_apply_digest(args)
-        result = _load_reviewed_plan_evidence(
-            args, operation="testing-hold-dry-run", expected_plan_digest=expected_plan_digest
+        evidence, result = _load_reviewed_evidence(
+            args, operation="testing-hold-dry-run", expected_digest=expected_plan_digest
         )
+        # A no-op lift has no hold snapshot; bind its purpose from the saved request too.
+        reviewed_purpose = _testing_hold_purpose(evidence["request"].get("purpose", "staff_testing"))
+        reviewed_hold = _project_testing_hold(result.get("after") if body["hold"] else result.get("before"))
         if (
             result.get("product") != body["product"]
             or result.get("context") != body["context"]
@@ -5778,6 +5799,11 @@ def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, objec
             # A lift's reason is not in the plan digest, so bind direction and reason here.
             or (result.get("after") is not None) != body["hold"]
             or public_operator_text(result.get("reason")) != public_operator_text(body["reason"])
+            or reviewed_purpose != body["purpose"]
+            or (
+                reviewed_hold is not None
+                and reviewed_hold.get("purpose", "staff_testing") != body["purpose"]
+            )
         ):
             raise ValueError("reviewed_dry_run_not_apply_eligible")
         body["reviewed_plan_sha256"] = expected_plan_digest
@@ -9465,6 +9491,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         direction.add_argument("--hold", dest="hold", action="store_true")
         direction.add_argument("--lift", dest="hold", action="store_false")
         testing_hold.add_argument(
+            "--purpose", choices=sorted(TESTING_HOLD_PURPOSES), default="staff_testing",
+            help="Hold purpose; staging lifts do not request deployment reconciliation.",
+        )
+        testing_hold.add_argument(
             "--reason",
             required=True,
             help="The hold's reason when holding; the audit reason when lifting.",
@@ -10291,6 +10321,7 @@ def main(argv: list[str]) -> int:
                 "context": public_identifier(body["context"]),
                 "instance": public_identifier(body["instance"]),
                 "hold": body["hold"],
+                "purpose": body["purpose"],
                 "payload_source": "operator_argument",
             }
             return execute_post(

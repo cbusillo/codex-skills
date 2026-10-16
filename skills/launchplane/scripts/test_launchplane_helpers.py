@@ -2993,6 +2993,51 @@ def test_testing_hold_read_sends_lane_query_and_projects_hold() -> None:
     assert "result" not in json.loads(output.getvalue()) or not json.loads(output.getvalue())["result"]
 
 
+@pytest.mark.parametrize("purpose", [None, "staff_testing", "isolation_staging"])
+@pytest.mark.parametrize("with_rehearsal", [False, True])
+def test_testing_hold_optional_metadata_survives_read_and_plan(
+    purpose: str | None, with_rehearsal: bool,
+) -> None:
+    hold: dict[str, object] = {"reason": "Review the testing lane."}
+    if purpose is not None:
+        hold["purpose"] = purpose
+    if with_rehearsal:
+        hold["rehearsal"] = {
+            "binding_sha256": "d" * 64,
+            "target_updated_at": "2026-10-16T12:00:00Z",
+            "target_source_label": "service:testing-separation",
+        }
+    plan = write_action._project_testing_hold_plan(
+        _testing_hold_plan(before=hold, after=hold, read_back=hold)
+    )
+    read = write_action._project_testing_hold_read({
+        "status": "ok", "product": "example-product", "context": "example",
+        "instance": "testing", "hold": hold, "record_sha256": "a" * 64,
+    })
+    assert read["hold"] == hold
+    assert all(plan[side] == read["hold"] for side in ("before", "after", "read_back"))
+
+
+@pytest.mark.parametrize("purpose", ["deployment", "", None, [], True])
+def test_testing_hold_unknown_purpose_is_refused(purpose: object) -> None:
+    with pytest.raises(write_action.LaunchplaneSafetyError):
+        write_action._project_testing_hold({"reason": "Review.", "purpose": purpose})
+
+
+@pytest.mark.parametrize("change", [
+    {"extra": "unsafe"}, {"binding_sha256": "bad"}, {"target_updated_at": {}},
+    {"target_source_label": {}},
+])
+def test_testing_hold_rehearsal_projection_remains_closed(change: dict[str, object]) -> None:
+    rehearsal = {
+        "binding_sha256": "d" * 64,
+        "target_updated_at": "2026-10-16T12:00:00Z",
+        "target_source_label": "service:testing-separation", **change,
+    }
+    with pytest.raises(write_action.LaunchplaneSafetyError):
+        write_action._project_testing_hold({"reason": "Review.", "rehearsal": rehearsal})
+
+
 def _product_environment_response() -> dict[str, object]:
     identity = {
         "schema_version": 1,
@@ -4851,6 +4896,73 @@ def test_testing_hold_cli_dispatches_local_extension_route() -> None:
     assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
     assert all(call["body"]["hold"] is False for call in calls)
     assert "Testing done." not in json.dumps([call["request"] for call in calls])
+
+
+@pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
+@pytest.mark.parametrize("direction", ["set", "clear", "unchanged"])
+def test_testing_hold_cli_binds_purpose_and_preserves_apply_key(
+    tmp_path: Path, purpose: str, direction: str,
+) -> None:
+    hold = {"reason": "Review testing.", "purpose": purpose}
+    plan = _testing_hold_plan(
+        action=direction, reason=hold["reason"],
+        before=hold if direction == "clear" else None,
+        after=hold if direction == "set" else None,
+        changed=direction != "unchanged",
+    )
+    lane = ["--product", "example-product", "--context", "example", "--instance", "testing"]
+    intent = ["--hold" if direction == "set" else "--lift", "--reason", str(hold["reason"])]
+    evidence_path = tmp_path / "hold.json"
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        applying = kwargs["body"]["mode"] == "apply"
+        return _testing_hold_response({
+            **plan, "mode": "apply" if applying else "dry-run", "applied": applying,
+            "read_back": plan["after"] if applying else None,
+            "read_back_matches": True if applying else None,
+            "reconcile_requested": applying and direction != "set" and purpose == "staff_testing",
+        })
+
+    def run(argv: list[str]) -> tuple[int, dict[str, Any]]:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = write_action.main(argv)
+        return status, json.loads(output.getvalue())
+
+    with (
+        patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
+        patch.object(write_action, "request_launchplane", side_effect=fake_post),
+    ):
+        status, evidence = run(["testing-hold-dry-run", *lane, *intent, "--purpose", purpose])
+        assert status == 0
+        evidence_path.write_text(json.dumps(evidence))
+        apply_args = [
+            "testing-hold-apply", *lane, *intent, "--purpose", purpose,
+            "--reviewed-dry-run", "--expected-plan-digest", str(plan["plan_sha256"]),
+            "--dry-run-evidence-file", str(evidence_path), "--idempotency-key", "original-hold-key",
+        ]
+        status, receipt = run(apply_args)
+        assert status == 0
+        assert receipt["result"]["reconcile_requested"] == (
+            direction != "set" and purpose == "staff_testing"
+        )
+        assert calls[-1]["idempotency_key"] == "original-hold-key"
+        assert all(call["body"]["purpose"] == purpose for call in calls)
+        assert receipt["request"]["purpose"] == evidence["request"]["purpose"]
+        other_purpose = "staff_testing" if purpose == "isolation_staging" else "isolation_staging"
+        mismatched = [other_purpose if value == purpose else value for value in apply_args]
+        previous_calls = len(calls)
+        status, _ = run(mismatched)
+        assert status != 0 and len(calls) == previous_calls
+
+        # Even edited request metadata cannot reinterpret a concrete reviewed hold.
+        if direction != "unchanged":
+            evidence["request"]["purpose"] = other_purpose
+            evidence_path.write_text(json.dumps(evidence))
+            status, _ = run(mismatched)
+            assert status != 0 and len(calls) == previous_calls
 
 
 def _repository_identity_plan(**overrides: object) -> dict[str, object]:
@@ -9294,12 +9406,18 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
 
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial"])
 @pytest.mark.parametrize("mode", ["dry-run", "apply"])
-def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str) -> None:
+@pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
+def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str, purpose: str) -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence = _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan()))
+        hold = {**cast(dict[str, object], _testing_hold_plan()["after"]), "purpose": purpose}
+        evidence = write_action.summarize_success(
+            operation="testing-hold-dry-run", request={"mode": "dry-run", "purpose": purpose},
+            provider_payload=_testing_hold_response(_testing_hold_plan(after=hold)),
+        )
         path = _write_json(directory, "hold-review.json", evidence)
         argv = [f"testing-hold-{mode}", "--product", "example-product", "--context", "example",
-                "--instance", "testing", "--hold", "--reason", str(_testing_hold_plan()["reason"])]
+                "--instance", "testing", "--hold", "--purpose", purpose,
+                "--reason", str(_testing_hold_plan()["reason"])]
         if mode == "apply":
             argv += _reviewed_apply_argv(evidence["result"]["plan_sha256"], path)
         fault = _interrupted_http(kind)
@@ -9310,6 +9428,7 @@ def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mod
                                            "private-message", Message(), error_body)
         code, payload, posts, _ = _run_main(argv, post=fault)
     assert code == 1 and len(posts) == 1
+    assert posts[0]["body"]["purpose"] == purpose
     expected = "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
     assert payload["status"] == expected
     if expected == "outcome_unknown":
