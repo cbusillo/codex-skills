@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["cryptography==50.0.2"]
 # ///
 """Execute bounded Launchplane operator actions with public-safe output."""
 
@@ -8732,6 +8732,7 @@ PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS = {
     "url",
     "status",
     "source_label",
+    "tls_ca_pem",
 }
 PRIVATE_HEALTH_ENDPOINT_RECORD_FIELDS = PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS | {"updated_at"}
 PRIVATE_HEALTH_ENDPOINT_RESULT_FIELDS = {"mode", "endpoint_key", "endpoint_status", "record"}
@@ -8748,9 +8749,47 @@ PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS = {
 PRIVATE_HEALTH_ENDPOINT_STATUSES = {"active", "disabled"}
 PRIVATE_HEALTH_ENDPOINT_PLAN_STATUSES = {"dry-run": "planned", "apply": "applied"}
 PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS = 100
+PRIVATE_HEALTH_ENDPOINT_MAX_CA_LENGTH = 65536
 # Launchplane's typed confirmation for a private health endpoint apply; the reviewed
 # dry-run evidence and plan digest are what the helper checks before sending it.
 PRIVATE_HEALTH_ENDPOINT_CONFIRMATION = "APPLY LAUNCHPLANE PRIVATE HEALTH ENDPOINT"
+
+
+def _private_health_endpoint_ca_sha256(source: dict[str, Any]) -> str:
+    """Validate public-only testing HTTPS trust; expose only its byte digest."""
+    pem = source.get("tls_ca_pem", "")
+    if not isinstance(pem, str) or len(pem) > PRIVATE_HEALTH_ENDPOINT_MAX_CA_LENGTH:
+        raise ValueError("invalid_private_health_endpoint_tls_ca")
+    if not pem:
+        return ""
+    instance, url = source.get("instance"), source.get("url")
+    if (
+        not isinstance(instance, str) or instance.strip() != "testing"
+        or not isinstance(url, str) or urllib.parse.urlsplit(url.strip()).scheme != "https"
+    ):
+        raise ValueError("invalid_private_health_endpoint_tls_ca_scope")
+    blocks = re.findall(
+        r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----", pem
+    )
+    if not blocks or "".join(pem.split()) != "".join("".join(blocks).split()):
+        raise ValueError("invalid_private_health_endpoint_tls_ca")
+    # Imported only for scoped trust. Other consumers importing the transport
+    # retain their own PEP 723 dependency environments.
+    try:
+        from cryptography import x509
+    except ImportError as exc:
+        raise ValueError("private_health_endpoint_tls_ca_dependency_unavailable") from exc
+
+    try:
+        certificates = x509.load_pem_x509_certificates(pem.encode("ascii"))
+        if not certificates or any(
+            not cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+            for cert in certificates
+        ):
+            raise ValueError("invalid_private_health_endpoint_tls_ca")
+    except (ValueError, x509.ExtensionNotFound, x509.DuplicateExtension) as exc:
+        raise ValueError("invalid_private_health_endpoint_tls_ca") from exc
+    return hashlib.sha256(pem.encode("ascii")).hexdigest()
 
 
 def _project_private_health_endpoint_record(value: object) -> dict[str, object]:
@@ -8760,6 +8799,10 @@ def _project_private_health_endpoint_record(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("unsafe_response_shape")
     if source.get("status") not in PRIVATE_HEALTH_ENDPOINT_STATUSES:
         raise LaunchplaneSafetyError("invalid_response")
+    try:
+        ca_sha256 = _private_health_endpoint_ca_sha256(source)
+    except ValueError as exc:
+        raise LaunchplaneSafetyError("invalid_response") from exc
     projected: dict[str, object] = {
         "endpoint_key": public_identifier(source.get("endpoint_key")),
         "product": public_identifier(source.get("product")),
@@ -8768,6 +8811,8 @@ def _project_private_health_endpoint_record(value: object) -> dict[str, object]:
         "status": source["status"],
         "updated_at": _optional_text(source.get("updated_at")),
     }
+    if ca_sha256:
+        projected["tls_ca_sha256"] = ca_sha256
     assert_public_safe_shape(projected)
     return projected
 
@@ -8789,6 +8834,7 @@ def _private_health_endpoint_plan_sha256(payload_digest: str, record: dict[str, 
         {
             "payload_digest": payload_digest,
             **{field: record.get(field) for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS},
+            **({"tls_ca_sha256": record["tls_ca_sha256"]} if record.get("tls_ca_sha256") else {}),
         }
     )
 
@@ -8841,6 +8887,7 @@ def private_health_endpoint_payload(args: argparse.Namespace) -> dict[str, objec
         raise ValueError("invalid_private_health_endpoint_status")
     if not isinstance(payload.get("source_label", ""), str):
         raise ValueError("invalid_source_label")
+    _private_health_endpoint_ca_sha256(payload)
     return payload
 
 
@@ -8852,7 +8899,7 @@ def private_health_endpoint_body(
     reason = _required_argument(args, "reason")
     # Sorted, so a retry sends the same body however the payload file orders its keys.
     endpoint = {
-        field: value.strip() if isinstance(value, str) else value
+        field: value.strip() if isinstance(value, str) and field != "tls_ca_pem" else value
         for field, value in sorted(payload.items())
     }
     endpoint.setdefault("status", "active")
@@ -8897,6 +8944,8 @@ def private_health_endpoint_body(
                 reviewed_record.get(field) != endpoint[field]
                 for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS
             )
+            or reviewed_record.get("tls_ca_sha256", "")
+            != _private_health_endpoint_ca_sha256(endpoint)
             or not isinstance(reviewed_updated_at, str)
             or not reviewed_updated_at
         ):
@@ -8933,6 +8982,7 @@ def execute_private_health_endpoint_apply(
 ) -> int:
     endpoint = cast(dict[str, Any], body["endpoint"])
     expected_plan_digest = args.expected_plan_digest.strip().lower()
+    expected_ca_sha256 = _private_health_endpoint_ca_sha256(endpoint)
 
     def finish(
         settings: dict[str, str], provider_payload: dict[str, Any], payload: dict[str, Any]
@@ -8945,6 +8995,7 @@ def execute_private_health_endpoint_apply(
             result.get("endpoint_status") == "applied"
             and result.get("plan_sha256") == expected_plan_digest
             and applied_url == endpoint["url"]
+            and result["record"].get("tls_ca_sha256", "") == expected_ca_sha256
         )
         if not applied_as_reviewed:
             payload["warnings"].append(
@@ -8961,12 +9012,16 @@ def execute_private_health_endpoint_apply(
             )
             # Compared here and never printed.
             public["url_matches_review"] = url == endpoint["url"]
+            public["tls_ca_matches_review"] = (
+                public.get("tls_ca_sha256", "") == expected_ca_sha256
+            )
             return public
 
         read_back_ok = attach_read_back(
             payload,
             read=read,
             matches=lambda observed: observed["url_matches_review"] is True
+            and observed["tls_ca_matches_review"] is True
             and all(
                 observed[field] == endpoint[field] for field in PRIVATE_HEALTH_ENDPOINT_PLAN_FIELDS
             ),

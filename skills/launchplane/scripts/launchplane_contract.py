@@ -62,6 +62,83 @@ _OPERATION_KEYS = {
 _WORKFLOW_KEYS = {"workflow_file", "reusable_workflow_file", "route"}
 
 EXPECTED_OPERATION_CONTRACTS = {
+    "activate_private_testing_transport_source": {
+        "method": "POST",
+        "supported_surfaces": ["service_api", "local_cli"],
+        "modes": ["dry-run", "apply", "readback"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["expected_plan_sha256", "host_review", "custody_review", "trust_review"],
+    },
+    "prepare_testing_public_ingress": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["dry-run", "apply", "readback"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_sha256"],
+    },
+    "complete_testing_verification": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["dry-run", "apply", "readback"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_sha256"],
+    },
+    "plan_private_testing_transport": {
+        "method": "POST",
+        "supported_surfaces": ["service_api", "local_cli"],
+        "modes": ["dry-run", "readback"],
+        "idempotency": "none",
+        "reviewed_evidence": ["expected_plan_sha256"],
+    },
+    "odoo_testing_walkthrough": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["dry-run", "apply"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_sha256"],
+    },
+    "retire_incomplete_testing_generation": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["dry-run", "apply", "readback"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_sha256"],
+    },
+    "prepare_fresh_testing_bootstrap": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["dry-run", "apply", "readback"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_sha256"],
+    },
+    "prepare_testing_replacement_resources": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["dry-run", "apply", "readback"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_sha256"],
+    },
+    "record_disposable_lane_safety": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["inspect", "collect", "record", "clear", "prepare-rebuild"],
+        "idempotency": "none",
+        "reviewed_evidence": ["expected_binding_sha256"],
+    },
+    "update_merge_train_operational_policy": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["apply"],
+        "idempotency": "body",
+        "reviewed_evidence": ["expected_record_id", "expected_policy_sha256"],
+    },
+    "apply_odoo_website_settings": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["dry-run", "apply"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_digest"],
+    },
     "restart_lane_service": {
         "method": "POST",
         "supported_surfaces": ["bounded_admin_helper", "operator_ui", "service_api"],
@@ -802,10 +879,21 @@ def _validate_operation_coverage(
         expected["operation_id"] for expected in EXPECTED_PROTECTED_WORKFLOWS.values()
     }
     read_only_operations = {"read_governance_projection"}
-    # Launchplane's own bounded client serves these; this skill does not wrap them.
+    # Producer-owned service/UI/CLI surfaces serve these; this skill does not wrap them.
     producer_client_operations = {
         "reconcile_legacy_generic_web_preview",
         "restart_lane_service",
+        "activate_private_testing_transport_source",
+        "prepare_testing_public_ingress",
+        "complete_testing_verification",
+        "plan_private_testing_transport",
+        "odoo_testing_walkthrough",
+        "retire_incomplete_testing_generation",
+        "prepare_fresh_testing_bootstrap",
+        "prepare_testing_replacement_resources",
+        "record_disposable_lane_safety",
+        "update_merge_train_operational_policy",
+        "apply_odoo_website_settings",
     }
     categories = (
         helper_operations,

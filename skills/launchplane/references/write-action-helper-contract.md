@@ -784,12 +784,23 @@ context. A lane's `private_http` health check names one of these records by its
 - `private-health-endpoint-read --product --context [--instance]` lists each
   record's `endpoint_key`, product, context, instance, `status` (`active` or
   `disabled`) and `updated_at`. The URL and the free-text `source_label` are
-  dropped.
+  dropped. Optional scoped CA material is validated and replaced with
+  `tls_ca_sha256`; certificate contents are never printed.
 - The private payload file holds `endpoint_key`, `product`, `context`,
   `instance` and `url`, with optional `status` (default `active`),
-  `source_label` and `schema_version`. Launchplane refuses a public URL. The
+  `source_label`, `schema_version` and `tls_ca_pem`. Nonempty CA input is
+  limited to testing HTTPS endpoints, at most 65,536 characters, and PEM CA
+  certificates with Basic Constraints. Leaf certificates, missing constraints,
+  private keys, mixed material and malformed bundles are refused before HTTP.
+  The same validation applies to service readback. Empty or omitted CA input
+  retains ordinary certificate verification. Launchplane refuses a public URL. The
   helper sets `updated_at`; a payload that carries it is refused. `--reason` is
   required on both dry-run and apply and is part of what the review binds.
+- CA bytes are preserved, including PEM line endings, so `tls_ca_sha256` can
+  be compared directly with the reviewed public bundle. Run through
+  `uv run scripts/launchplane-write-action.py` to supply its declared parser
+  dependency; an importer handling CA records needs that dependency in its own
+  environment. Missing parser support returns a bounded refusal before HTTP.
 - Launchplane does not bind the apply to the dry-run. The helper digests the
   payload and reason with the planned key and scope into `plan_sha256`; pass
   it as `--expected-plan-digest`. It refuses an apply whose payload or reason
@@ -797,8 +808,11 @@ context. A lane's `private_http` health check names one of these records by its
   so a retry with the same idempotency key replays instead of conflicting.
 - After apply the helper compares the applied record, and the record read back
   from `GET /v1/private-health-endpoints/records/{endpoint_key}`, with the
-  reviewed key, scope, status and URL. Output reports `url_matches_review` and
-  never shows the URL.
+  reviewed key, scope, status, URL and scoped CA bytes. Output reports
+  `url_matches_review` and `tls_ca_matches_review`, with only a digest for
+  nonempty CA material. Replacing or dropping reviewed CA material cannot
+  produce a verified apply. This scopes trust to one endpoint; it does not
+  change shared monitor trust or establish live TLS/runtime health.
 
 ### Product promotion status and dry-run
 
