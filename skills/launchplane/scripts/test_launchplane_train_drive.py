@@ -369,6 +369,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                                     lambda event, payload: events.append((event, payload)))
         self.assertEqual((outcome, events[-1][1]["landing_sha"]), ("landed", "sha-7"))
         self.assertEqual(events[-1][1]["companion_evidence"], "unavailable")
+        self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
 
     def test_malformed_candidate_check_response_emits_error(self) -> None:
         train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
@@ -689,7 +690,10 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
     def test_service_membership_survives_missing_queue_and_different_merge_commits(self) -> None:
         for component in ("candidate", "landing_plan"):
             with self.subTest(component=component):
-                train = FakeTrain([_response("land_batch", **{component: {"pull_request_numbers": [7, 8]}})],
+                projected = _project_controller({"status": "accepted", "result": {
+                    "controller_action": "land_batch",
+                    component: {"entries": [{"pull_request_number": 7}, {"pull_request_number": 8}]}}})
+                train = FakeTrain([projected],
                                   merge_after={7: 1, 8: 1})
                 _, events = _drive(train)
                 self.assertEqual({pr["number"]: pr["outcome"] for pr in events[-1][1]["prs"]},
@@ -700,16 +704,43 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                 for number, labels in ((8, [{"name": "ship-it"}]), (9, []))]
         with patch.object(train_drive.github_read, "GitHubReader") as reader_class:
             reader = reader_class.return_value
-            reader.paged_json.return_value = rows
+            reader.get_json.return_value = rows
             io = train_drive.live_io(180)
             self.assertEqual(io.merged_since(REPO, 0)["numbers"], [8, 9])
             self.assertTrue(io.merged_since(REPO, 0)["complete"])
-            # Fill the reader's requested bound, including its overflow sentinel.
-            limit = reader.paged_json.call_args.kwargs["limit"]
-            reader.paged_json.return_value = [rows[0]] * limit
+            from urllib.parse import parse_qs, urlparse
+            per_page = int(parse_qs(urlparse(reader.get_json.call_args.args[0]).query)["per_page"][0])
+            reader.get_json.return_value = [rows[0]] * per_page
             inventory = io.merged_since(REPO, 0)
             self.assertFalse(inventory["complete"])
-            self.assertEqual(inventory["reason"], "inventory_limit")
+
+    def test_live_companion_inventory_finishes_at_the_time_window_across_pages(self) -> None:
+        from urllib.parse import parse_qs, urlparse
+        since = train_drive.calendar.timegm(train_drive.time.strptime("2026-10-16T11:00:00Z", "%Y-%m-%dT%H:%M:%SZ"))
+        fresh = {"number": 8, "merged_at": "2026-10-16T12:00:00Z", "updated_at": "2026-10-16T12:00:00Z"}
+        old = {"number": 6, "merged_at": "2026-10-15T12:00:00Z", "updated_at": "2026-10-15T12:00:00Z"}
+        def page(path: str, **_kwargs: Any) -> list[dict[str, Any]]:
+            query = parse_qs(urlparse(path).query)
+            return ([fresh] * int(query["per_page"][0]) if query["page"] == ["1"]
+                    else [{**fresh, "number": 9}, old])
+        with patch.object(train_drive.github_read, "GitHubReader") as reader_class:
+            reader = reader_class.return_value
+            reader.get_json.side_effect = page
+            inventory = train_drive.live_io(180).merged_since(REPO, since)
+            self.assertTrue(inventory["complete"])
+            self.assertIn(9, inventory["numbers"])
+            self.assertNotIn(6, inventory["numbers"])
+            self.assertEqual(reader.get_json.call_count, 2)
+
+    def test_generated_batch_pr_is_not_an_omitted_companion(self) -> None:
+        train = FakeTrain([_response("land_batch")], merge_after={7: 1, 9: 1})
+        train.companions = [9]
+        read = train.pull_request
+        train.pull_request = lambda repo, number: {
+            **read(repo, number), "merge_commit_sha": "shared-landing",
+            "head": {"ref": "launchplane/train/example/app/main/batch" if number == 9 else "work/change"}}
+        _, events = _drive(train)
+        self.assertEqual([pr["number"] for pr in events[-1][1]["prs"]], [7])
 
     def test_incomplete_companion_inventory_is_in_terminal_evidence(self) -> None:
         train = FakeTrain([], merge_after={7: 0})

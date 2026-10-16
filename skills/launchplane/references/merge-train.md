@@ -5,14 +5,15 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
 
 - **Before Enqueueing**: Run the controller without `--mutate` and inspect the
   intended PRs in `result.dry_run_result.queue`. The current GitHub adapter
-  checks both the PR author and the actor who last applied `ready-to-merge`,
+  checks both the PR author and the actor who last applied the enqueue label
+  from active Launchplane policy,
   using the label's latest `labeled` event. Enqueue with the trusted automation
   identity's installation token. The labeler must be trusted automation or have
   a role in `allowed_actor_roles`. A label applied by a GitHub App acting with
   a user's token is always refused, regardless of the user's role.
   An unauthorized labeler is reported as
-  `ready-to-merge label ignored: applied by <login> ...`; the same
-  `<enqueue_label> label ignored:` prefix also covers unreadable labeler evidence
+  `<enqueue_label> label ignored: applied by <login> ...`; the same prefix
+  also covers unreadable labeler evidence
   and an App acting for a user. Report those refusals;
   do not work around it by relabeling under another identity. Check
   `actor_role` (the author's role), `eligible`, `ineligible_reasons`, checks, and head SHA before

@@ -237,6 +237,7 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         else:
             detail = {"read_failure_cause": "invalid_response"}
         if settings.number in state.landed:
+            state.companion_inventory = {**state.companion_inventory, "complete": False, "reason": "read_unavailable"}
             return _stop(settings, state, emit, "landed", companion_evidence="unavailable", **detail)
         return _stop(settings, state, emit, "error", reason="GitHub read unavailable", **detail)
 
@@ -552,6 +553,7 @@ def _finish_landing(
                 _pause(settings, io, state)
     # Service membership is authoritative. Recover omitted batch members only
     # when GitHub independently ties them to the target's exact landing commit.
+    state.companion_inventory = {"complete": False, "reason": "read_unavailable"}
     inventory = io.merged_since(settings.repository, started)
     state.companion_inventory = {key: value for key, value in inventory.items() if key != "numbers"}
     landing_sha = state.landed.get(settings.number)
@@ -559,7 +561,9 @@ def _finish_landing(
         if number in state.batch or not landing_sha:
             continue
         companion = io.pull_request(settings.repository, number)
-        if companion and companion.get("merged") and companion.get("merge_commit_sha") == landing_sha:
+        generated = str((companion or {}).get("head", {}).get("ref") or "").startswith(
+            ("launchplane/train/", "launchplane/construct/"))
+        if companion and not generated and companion.get("merged") and companion.get("merge_commit_sha") == landing_sha:
             state.batch.add(number)
     _record_landings(settings, io, state, emit)
 
@@ -806,28 +810,38 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
                 for run in payload if run.get("conclusion") in FAILING_CONCLUSIONS]
 
     def merged_since(repository: str, since: float) -> dict[str, Any]:
-        limit = 500
-        try:
-            payload = reader.paged_json(
-                f"/repos/{repository}/pulls", step_prefix="merged_since",
-                params={"state": "closed", "sort": "updated", "direction": "desc"}, limit=limit + 1,
-            )
-        except github_read.GitHubReadError as error:
-            if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
-                raise
-            return {"numbers": [], "complete": False, "reason": "read_unavailable"}
         numbers = []
-        for item in payload[:limit]:
-            merged_at = str(item.get("merged_at") or "")
+        per_page, max_pages, observed = 100, 5, 0
+        for page in range(1, max_pages + 1):
             try:
-                merged = calendar.timegm(time.strptime(merged_at, "%Y-%m-%dT%H:%M:%SZ"))
-            except ValueError:
-                continue
-            if merged >= since:
-                numbers.append(int(item["number"]))
-        return {"numbers": numbers, "complete": len(payload) <= limit,
-                "reason": "complete" if len(payload) <= limit else "inventory_limit",
-                "observed_count": min(len(payload), limit), "limit": limit}
+                payload = reader.get_json(
+                    f"/repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page={per_page}&page={page}",
+                    step=f"merged_since_page_{page}",
+                )
+            except github_read.GitHubReadError as error:
+                if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
+                    raise
+                return {"numbers": numbers, "complete": False, "reason": "read_unavailable"}
+            if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+                raise github_read.GitHubReadShapeError("GitHub merged_since page is not a pull request list")
+            for item in payload:
+                observed += 1
+                try:
+                    updated = calendar.timegm(time.strptime(str(item.get("updated_at") or ""), "%Y-%m-%dT%H:%M:%SZ"))
+                except ValueError:
+                    updated = None
+                if updated is not None and updated < since:
+                    return {"numbers": numbers, "complete": True, "observed_count": observed}
+                try:
+                    merged = calendar.timegm(time.strptime(str(item.get("merged_at") or ""), "%Y-%m-%dT%H:%M:%SZ"))
+                except ValueError:
+                    continue
+                if merged >= since:
+                    numbers.append(int(item["number"]))
+            if len(payload) < per_page:
+                return {"numbers": numbers, "complete": True, "observed_count": observed}
+        return {"numbers": numbers, "complete": False, "reason": "inventory_limit",
+                "observed_count": observed, "limit": per_page * max_pages}
 
     def quota_wait() -> float:
         # Launchplane currently projects upstream failures as github_request_failed.
