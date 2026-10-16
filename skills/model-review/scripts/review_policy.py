@@ -20,6 +20,12 @@ class NoProvider(ValueError):
                          + (detail or "policy has no provider other than the author"))
 
 
+class PolicyConflict(ValueError):
+    def __init__(self, provider, skipped, message):
+        self.provider, self.skipped = provider, skipped
+        super().__init__(message)
+
+
 def policy_path():
     # Shared Code home, never the provider account home or the reviewed repository.
     return Path(os.environ.get("CODE_HOME", "~/.code")).expanduser() / "skill-data/model-review.toml"
@@ -83,9 +89,6 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
         settings = policy.get("provider", {}).get(provider, {})
         if model and settings.get("model") and model != settings["model"]:
             raise ValueError("--model disagrees with the standing review decision")
-        if timeout and settings.get("timeout") and timeout > settings["timeout"]:
-            skipped.append({"provider": provider, "reason": "--timeout exceeds the standing review limit"})
-            continue
         if shutil.which(executables[provider]) is None:
             skipped.append({"provider": provider, "reason": "CLI is not installed"})
             continue
@@ -94,6 +97,8 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
         except ValueError as error:
             skipped.append({"provider": provider, "reason": str(error)})
             continue
+        if timeout and settings.get("timeout") and timeout > settings["timeout"]:
+            raise PolicyConflict(provider, skipped, "--timeout exceeds the standing review limit; no review launched")
         choice["storage_root"] = account_choice.storage_root(config["snapshot_command"])
         budget = settings.get("timeout", 900)
         return {"provider": provider, "model": model or settings.get("model"),

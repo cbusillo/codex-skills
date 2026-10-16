@@ -618,8 +618,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         selected = review_policy.select(review_policy.load_policy(), args.author_provider, args.provider,
                                         args.supplementary, args.model, args.timeout)
     except ValueError as error:
-        result = {"ok": False, "outcome": "unavailable", "error": str(error)}
-        if isinstance(error, review_policy.NoProvider):
+        result = {"ok": False, "provider": args.provider, "phase": "selection", "outcome": "unavailable", "error": str(error)}
+        if isinstance(error, review_policy.PolicyConflict):
+            result.update(provider=error.provider, skipped=error.skipped)
+        elif isinstance(error, review_policy.NoProvider):
             result["skipped"] = error.skipped
             if args.provider and error.skipped == [{"provider": args.provider, "reason": "CLI is not installed"}]:
                 result.update(provider=args.provider, installed=False)

@@ -202,9 +202,21 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.run_helper(
             "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai", "--timeout", "20")
         self.assertEqual((code, result["ok"]), (1, False))
-        self.assertEqual([r["provider"] for r in result["skipped"]], ["anthropic", "google"])
+        self.assertEqual((result["provider"], [r["provider"] for r in result["skipped"]]), ("google", ["anthropic"]))
         self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["skipped"][0]["reason"])
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
+
+    def test_timeout_override_cannot_skip_an_available_preferred_provider(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.install("agy", FAKE_AGY)
+        self.policy.write_text('version = 1\ndecision = "preferred provider"\nproviders = ["anthropic", "google"]\n'
+                               '[provider.anthropic]\ntimeout = 10\n')
+        capture = self.root / "child-env"
+        code, result = self.run_helper("run", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
+                                       "--author-provider", "openai", "--timeout", "20", FAKE_REVIEW_ENV_FILE=str(capture))
+        self.assertEqual((code, result["provider"], result["skipped"]), (1, "anthropic", []))
+        self.assertFalse(capture.exists())
+        self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_exhausted_primary_does_not_promote_supplementary_or_use_author(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -297,8 +309,12 @@ class ReviewWithModelTests(unittest.TestCase):
         # Call without the convenience wrapper's author default, like an older caller.
         proc = subprocess.run([sys.executable, str(SCRIPT), "run", "--provider", "anthropic",
                                "--repo", str(self.repo), "--prompt-file", str(self.prompt)],
-                              capture_output=True, text=True, env={"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)})
+                              capture_output=True, text=True, env={"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home),
+                                  "FAKE_SNAPSHOT_FILE": str(self.snapshot_file), "FAKE_REVIEW_ENV_FILE": str(self.root / "child-env"),
+                                  "FAKE_CLAUDE_JSON": json.dumps({"result": completed("none")})})
         self.assertEqual((proc.returncode, json.loads(proc.stdout)["ok"]), (1, False))
+        self.assertFalse((self.root / "child-env").exists())
+        self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_reviews_route_provider_home_and_write_count_only_receipt(self) -> None:
         self.install("codex", FAKE_CODEX)
