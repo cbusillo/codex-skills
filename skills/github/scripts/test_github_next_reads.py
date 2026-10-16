@@ -64,7 +64,7 @@ def cancellation_fixture(mode: str) -> None:
         retryable=False, fallback_eligible=False, disposition="stop"))
 
     def read(number=1):
-        if mode == "preflight":
+        if mode in {"preflight", "inline_preflight", "inline_nested_preflight"}:
             return module.ensure_graphql_budget(recoverable=True)
         if mode == "transport":
             return module.api_json("POST", "/graphql", {"query": "query { viewer { login } }"})
@@ -77,7 +77,8 @@ def cancellation_fixture(mode: str) -> None:
 
     original_json = module.gh_json
     def gh_json(args, **kwargs):
-        if mode == "preflight":
+        # The nested mode reaches the retried REST quota read itself.
+        if mode in {"preflight", "inline_preflight", "inline_focus"}:
             attempted.append("quota preflight")
             return actor, {"resources": {"graphql": {"remaining": 0, "reset": int(time.time()) + 60}}}
         return original_json(args, **kwargs)
@@ -90,6 +91,24 @@ def cancellation_fixture(mode: str) -> None:
     def direction_next(_args, _repo):
         reads = module.NEXT_READS
         pools.append(reads.pool)
+        if mode.startswith("inline"):
+            # The main thread owns this read, so SIGINT lands in its own retry wait.
+            def interrupt():
+                assert entered.wait(3), "inline read did not reach retry wait"
+                stopped_at.append(time.monotonic())
+                os.kill(os.getpid(), signal.SIGINT)
+            threading.Thread(target=interrupt, daemon=True).start()
+            if mode == "inline_focus":
+                module.next_focus_context("fixture/source", {"projects": {
+                    "enabled": True, "owner": "fixture", "default_project": "1"}})
+            elif mode == "inline_milestone":
+                gh_cmd, expected_actor = module.milestone_route()
+                module.github_milestone_core.list_milestones(
+                    "fixture/direction", state="all", limit=5, operation=module.CURRENT_OPERATION,
+                    actor=None, expected_actor=expected_actor, gh_cmd=gh_cmd)
+            else:
+                read()
+            return
         if mode == "fatal":
             reads.map(lambda index: read() if index == 0 else fail(), [0, 1])
         else:
@@ -158,6 +177,24 @@ def test_cli_cancellation_and_fatal_reads_interrupt_backoff_and_join_workers() -
             assert metrics["sleeping_workers"] == 2, metrics
         assert payload["elapsed_wait"] < 5, payload
         print(f"cancellation fixture: {metrics}")
+
+
+def test_cli_main_thread_inline_interrupt_is_terminal_cancellation() -> None:
+    # REST read, quota wait, the quota read's own retry, recoverable Project focus, milestones.
+    for mode in ("inline", "inline_preflight", "inline_nested_preflight", "inline_focus", "inline_milestone"):
+        proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--cancellation-fixture", mode],
+                              capture_output=True, text=True, timeout=20)
+        assert proc.returncode == 130, (mode, proc.stdout, proc.stderr)
+        payload = json.loads(proc.stdout)
+        assert payload["ok"] is False, payload
+        assert payload["error_code"] == "cancelled", payload
+        assert payload["exit_code"] == 130, payload
+        assert payload["retry_exhausted_reason"] == "cancelled", payload
+        assert payload["write_outcome"] is None, payload
+        assert payload["elapsed_wait"] < 5, payload
+        metrics = json.loads(proc.stderr.splitlines()[-1])
+        assert metrics["latency"] < 5, metrics
+        print(f"inline cancellation fixture: {metrics}")
 
 
 def test_cancelled_global_graphql_read_never_launches_transport() -> None:

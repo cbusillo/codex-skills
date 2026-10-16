@@ -28,6 +28,9 @@ Read for `next` in a repository owner's direction repository, including explicit
    before joining workers, waking pending backoffs and cancelling queued reads.
    An already running transport retains its existing bounded request deadline;
    cancellation does not kill a transport or switch its acting identity.
+   Ctrl-C during the main thread's own retry or Project quota wait also ends the
+   command with exit 130 and `error_code` `cancelled`; Project focus never
+   records it as unavailable coverage.
 3. Apply Choose Work to possible candidates from both sources. Read each full
    discussion, including the latest comments, and current PR/branch/worktree and
    supported session evidence. A complete `discussion` snapshot is the full

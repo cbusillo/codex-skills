@@ -440,6 +440,21 @@ def test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed() -> None:
         assert captured["milestone_order"]["error"] == "temporary 502"
 
         captured.clear()
+        cancelled = module.PlanError("retry wait cancelled", failure=module.github_api_core.FailureDetail(
+            cause="cancelled", message="retry wait cancelled", retryable=False,
+            fallback_eligible=False, disposition="stop"))
+        module.load_direction = lambda _repo: (_ for _ in ()).throw(cancelled)
+        try:
+            module.cmd_next(
+                type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5})()
+            )
+        except module.PlanError as exc:
+            assert exc is cancelled
+        else:
+            raise AssertionError("Ctrl-C during the direction read became degraded ordering")
+        assert not captured
+
+        captured.clear()
         module.load_direction = lambda _repo: "# Direction\n\n## Milestones\n\n- Unparseable title\n"
         module.cmd_next(
             type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 5, "scan_limit": 5})()
