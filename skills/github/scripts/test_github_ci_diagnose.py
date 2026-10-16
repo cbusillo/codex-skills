@@ -204,6 +204,101 @@ def test_job_reader_maps_check_name_when_url_has_no_job_id() -> None:
     assert payload["checks"][0]["jobId"] == "33"
 
 
+def snippet_for_log(lines: list[str], max_lines: int = 60) -> str:
+    responses = base_responses()
+    responses["/repos/o/r/actions/jobs/33/logs"]["body"] = "\n".join(lines)
+    process, _ = run_fixture(responses, max_lines=max_lines)
+    assert process.returncode == 1, process.stderr
+    payload = json.loads(process.stdout)
+    assert payload["diagnostics"]["degraded"] is False
+    snippet = payload["checks"][0]["failureSnippet"]
+    assert len(snippet.splitlines()) <= max_lines
+    return snippet
+
+
+def test_unittest_failure_precedes_database_teardown_errors() -> None:
+    for kind, exception in (("FAIL", "AssertionError: 503 != 202: authz_policy_unavailable"),
+                            ("ERROR", "KeyError: 'result'")):
+        header = f"{kind}: test_hold (tests.HoldTests.test_hold)"
+        lines = ["setup"] * 50 + [
+            "=" * 70, header, "-" * 70, "Traceback (most recent call last):",
+            '  File "tests/test_hold.py", line 20, in test_hold',
+            "    self.assertEqual(response.status_code, 202)", exception,
+            "", "-" * 70, "Ran 12 tests in 1.0s", "", "FAILED (failures=1)",
+            "##[error]Process completed with exit code 1.",
+        ] + ["postgres | ERROR: duplicate key value violates unique constraint"] * 100
+        # Actions timestamps must not hide the test runner's summary syntax.
+        snippet = snippet_for_log([f"2026-10-16T01:14:44.0000000Z {line}" for line in lines])
+        assert header in snippet, snippet
+        assert exception in snippet, snippet
+
+
+def test_pytest_failure_summary_precedes_teardown_noise() -> None:
+    for kind in ("FAILED", "ERROR"):
+        failure = f"{kind} tests/test_hold.py::test_hold - AssertionError: missing policy"
+        snippet = snippet_for_log(["setup"] * 50 + [failure] + ["cleanup"] * 40 + [
+            "postgres | ERROR: duplicate key value violates unique constraint",
+        ])
+        assert failure in snippet, snippet
+
+
+def test_service_error_with_module_path_does_not_impersonate_pytest_summary() -> None:
+    failure = "FAILED tests/test_hold.py::test_hold - AssertionError: missing policy"
+    snippet = snippet_for_log([failure] + ["cleanup"] * 70 + ["ERROR my_crate::db: connection reset"])
+    assert failure in snippet, snippet
+
+
+def test_failed_command_precedes_teardown_noise_without_test_summary() -> None:
+    failure = "##[error]Process completed with exit code 2."
+    snippet = snippet_for_log(["compiler: fatal error: missing header", failure]
+                              + ["cleanup"] * 60 + ["postgres | ERROR: expected constraint failure"])
+    assert failure in snippet, snippet
+    assert "missing header" in snippet, snippet
+
+
+def test_small_snippet_keeps_selected_failure_marker() -> None:
+    header = "FAIL: test_hold (tests.HoldTests.test_hold)"
+    snippet = snippet_for_log(["setup"] * 40 + [header] + ["trace detail"] * 40, max_lines=1)
+    assert header in snippet, snippet
+
+
+def test_short_excerpt_at_log_end_keeps_available_causal_context() -> None:
+    cause = "linker could not resolve fixture symbol"
+    failure = "##[error]Process completed with exit code 2."
+    snippet = snippet_for_log(["setup"] * 40 + [cause] + ["linker detail"] * 5 + [failure], max_lines=7)
+    assert cause in snippet, snippet
+    assert failure in snippet, snippet
+
+
+def test_later_failed_command_outranks_earlier_continued_test_failure() -> None:
+    earlier = "FAIL: test_optional (tests.OptionalTests.test_optional)"
+    cause = "compiler: fatal error: missing header"
+    failure = "##[error]Process completed with exit code 2."
+    snippet = snippet_for_log([earlier, "##[error]Process completed with exit code 1."]
+                              + ["build output"] * 80 + [cause, failure]
+                              + ["cleanup"] * 80 + ["postgres | ERROR: expected constraint failure"])
+    assert cause in snippet, snippet
+    assert failure in snippet, snippet
+    assert earlier not in snippet, snippet
+
+
+def test_logs_without_test_summary_keep_bounded_fallbacks() -> None:
+    failure = "fatal: compiler failed to start"
+    snippet = snippet_for_log(["setup"] * 60 + [failure, "compiler detail", "done"])
+    assert failure in snippet, snippet
+    assert "compiler detail" in snippet, snippet
+    tail = [f"progress {index}" for index in range(80)]
+    assert snippet_for_log(tail, max_lines=7).splitlines() == tail[-7:]
+
+
+def test_failed_command_keeps_earlier_generic_cause_before_teardown() -> None:
+    cause = "fatal: linker cannot resolve fixture symbol"
+    snippet = snippet_for_log(["setup"] * 40 + [cause] + ["linker progress"] * 70
+                              + ["##[error]Process completed with exit code 2."]
+                              + ["cleanup"] * 70 + ["postgres | ERROR: expected constraint failure"])
+    assert cause in snippet, snippet
+
+
 def synthetic_check_responses() -> tuple[dict[str, Any], dict[str, Any], str]:
     responses = base_responses()
     actions_check = responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"][0]
@@ -499,6 +594,15 @@ def test_skipped_replacement_does_not_count_historical_failure() -> None:
 
 def main() -> None:
     tests = [
+        test_unittest_failure_precedes_database_teardown_errors,
+        test_pytest_failure_summary_precedes_teardown_noise,
+        test_service_error_with_module_path_does_not_impersonate_pytest_summary,
+        test_failed_command_precedes_teardown_noise_without_test_summary,
+        test_small_snippet_keeps_selected_failure_marker,
+        test_short_excerpt_at_log_end_keeps_available_causal_context,
+        test_later_failed_command_outranks_earlier_continued_test_failure,
+        test_logs_without_test_summary_keep_bounded_fallbacks,
+        test_failed_command_keeps_earlier_generic_cause_before_teardown,
         test_third_party_check_run_retains_failure_and_annotations,
         test_synthetic_annotations_are_bounded_and_terminal_controls_removed,
         test_synthetic_failure_preserves_annotations_without_actions_run_lookup,

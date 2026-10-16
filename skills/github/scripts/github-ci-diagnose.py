@@ -34,6 +34,14 @@ FAILURE_MARKERS = (
     "timeout",
     "segmentation fault",
 )
+# Runner summaries outrank incidental errors printed during service cleanup.
+# Match at the start of a message, optionally after an Actions log timestamp.
+LOG_MESSAGE_PREFIX = r"^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?"
+FAILURE_SUMMARIES = (
+    re.compile(LOG_MESSAGE_PREFIX + r"(?:FAIL|ERROR):\s+\S+\s+\([^\n]+\)"),
+    re.compile(LOG_MESSAGE_PREFIX + r"(?:FAILED|ERROR)\s+\S+\.py::\S+"),
+)
+COMMAND_FAILURE = re.compile(LOG_MESSAGE_PREFIX + r"##\[error\]Process completed with exit code [1-9]\d*\.")
 SCRIPT_DIR = Path(__file__).resolve().parent
 GH_COMMAND = os.environ.get("GITHUB_CI_DIAGNOSE_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 EXPECTED_ACTOR = github_identity.automation_login()
@@ -428,16 +436,27 @@ def extract_failure_snippet(log_text: str, max_lines: int, context: int) -> str:
     end = min(len(lines), marker_index + context + 1)
     window = lines[start:end]
     if len(window) > max_lines:
-        window = window[-max_lines:]
+        start = max(start, min(marker_index - max_lines // 2, end - max_lines))
+        window = lines[start:min(end, start + max_lines)]
     return "\n".join(window)
 
 
 def find_failure_index(lines: Sequence[str]) -> int | None:
-    for index in range(len(lines) - 1, -1, -1):
+    command_failures = [index for index, line in enumerate(lines) if COMMAND_FAILURE.search(line)]
+    # A continued test failure must not hide a later failed build/lint step.
+    start = command_failures[-2] + 1 if len(command_failures) > 1 else 0
+    end = command_failures[-1] + 1 if command_failures else len(lines)
+    for summary in FAILURE_SUMMARIES:
+        for index in range(end - 1, start - 1, -1):
+            if summary.search(lines[index]):
+                return index
+    for index in range(end - 1, start - 1, -1):
+        if COMMAND_FAILURE.search(lines[index]):
+            continue
         lowered = lines[index].lower()
         if any(marker in lowered for marker in FAILURE_MARKERS):
             return index
-    return None
+    return command_failures[-1] if command_failures else None
 
 
 def tail_lines(text: str, max_lines: int) -> str:

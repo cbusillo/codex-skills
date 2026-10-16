@@ -598,6 +598,17 @@ returning text or failure snippets. Older CLIs retain their existing log-read
 behavior. This does not change the selected identity, permissions, or metadata
 JSON reads; unavailable logs still produce a named degraded component.
 
+Failure excerpts prefer unittest failure/error details, then pytest failure/error
+summary lines. Actions failed-command summaries bound the search before service
+teardown output. When multiple commands fail, selection uses
+the last failed command's output, after the preceding failed-command summary.
+This also means a later failing cleanup command takes precedence over an earlier
+failed test step. Actions timestamps are supported. Without a test summary, the
+last generic failure marker in that command's output remains the fallback, then
+its exit-code line, or the log tail when no failure marker exists.
+`--context` selects surrounding lines and `--max-lines` caps the excerpt while
+keeping its selected failure marker visible.
+
 Do not paste long logs into chat. Include the short snippet, the run link, and
 the exact local command that should reproduce the failure when one is obvious.
 
