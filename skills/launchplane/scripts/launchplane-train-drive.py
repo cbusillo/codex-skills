@@ -157,7 +157,8 @@ class DriveState:
     own_refusal_streak: int = 0
     controller_evidence: list[dict[str, Any]] = field(default_factory=list)
     recovery: dict[str, Any] | None = None
-    companion_inventory: dict[str, Any] = field(default_factory=dict)
+    companion_inventory: dict[str, Any] = field(default_factory=lambda: {"complete": False, "reason": "not_attempted"})
+    target_merged_at: float | None = None
 
 
 class DriverLockError(Exception):
@@ -483,6 +484,8 @@ def _record_landings(
             continue
         if pull_request.get("merged"):
             state.landed[number] = str(pull_request.get("merge_commit_sha") or "")
+            if number == settings.number:
+                state.target_merged_at = _github_timestamp(pull_request.get("merged_at"))
             emit("pr_landed", {"repository": settings.repository, "number": number, "merge_commit_sha": state.landed[number]})
         elif pull_request.get("state") == "closed" and pull_request.get("merged") is False:
             carried = state.carried_children.get(number)
@@ -554,13 +557,19 @@ def _finish_landing(
     # Service membership is authoritative. Recover omitted batch members only
     # when GitHub independently ties them to the target's exact landing commit.
     state.companion_inventory = {"complete": False, "reason": "read_unavailable"}
-    inventory = io.merged_since(settings.repository, started)
+    since = min(started, state.target_merged_at) if state.target_merged_at is not None else started
+    inventory = io.merged_since(settings.repository, since)
     state.companion_inventory = {key: value for key, value in inventory.items() if key != "numbers"}
     landing_sha = state.landed.get(settings.number)
+    if not landing_sha or state.target_merged_at is None:
+        state.companion_inventory.update(complete=False, reason="landing_identity_unavailable")
     for number in inventory["numbers"]:
         if number in state.batch or not landing_sha:
             continue
         companion = io.pull_request(settings.repository, number)
+        if companion is None:
+            state.companion_inventory.update(complete=False, reason="read_unavailable")
+            continue
         generated = str((companion or {}).get("head", {}).get("ref") or "").startswith(
             ("launchplane/train/", "launchplane/construct/"))
         if companion and not generated and companion.get("merged") and companion.get("merge_commit_sha") == landing_sha:
@@ -590,6 +599,13 @@ def _remember_batch(result: dict[str, Any], state: DriveState) -> None:
                     "root_pull_request_number": stack.get("root_pull_request_number"),
                     "expected_head_sha": child.get("expected_head_sha"),
                 }
+
+
+def _github_timestamp(value: object) -> float | None:
+    try:
+        return float(calendar.timegm(time.strptime(str(value or ""), "%Y-%m-%dT%H:%M:%SZ")))
+    except ValueError:
+        return None
 
 
 def _queue_entry(result: dict[str, Any], number: int) -> dict[str, Any] | None:
@@ -810,6 +826,7 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
                 for run in payload if run.get("conclusion") in FAILING_CONCLUSIONS]
 
     def merged_since(repository: str, since: float) -> dict[str, Any]:
+        since = int(since)  # GitHub timestamps have one-second precision.
         numbers = []
         per_page, max_pages, observed = 100, 5, 0
         for page in range(1, max_pages + 1):
@@ -826,17 +843,11 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
                 raise github_read.GitHubReadShapeError("GitHub merged_since page is not a pull request list")
             for item in payload:
                 observed += 1
-                try:
-                    updated = calendar.timegm(time.strptime(str(item.get("updated_at") or ""), "%Y-%m-%dT%H:%M:%SZ"))
-                except ValueError:
-                    updated = None
+                updated = _github_timestamp(item.get("updated_at"))
                 if updated is not None and updated < since:
                     return {"numbers": numbers, "complete": True, "observed_count": observed}
-                try:
-                    merged = calendar.timegm(time.strptime(str(item.get("merged_at") or ""), "%Y-%m-%dT%H:%M:%SZ"))
-                except ValueError:
-                    continue
-                if merged >= since:
+                merged = _github_timestamp(item.get("merged_at"))
+                if merged is not None and merged >= since:
                     numbers.append(int(item["number"]))
             if len(payload) < per_page:
                 return {"numbers": numbers, "complete": True, "observed_count": observed}

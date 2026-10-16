@@ -90,6 +90,7 @@ class FakeTrain:
             "state": "closed" if merged or number in self.closed else "open",
             "merged": merged,
             "merge_commit_sha": f"sha-{number}" if merged else None,
+            "merged_at": train_drive.time.strftime("%Y-%m-%dT%H:%M:%SZ", train_drive.time.gmtime(self.clock)) if merged else None,
             "head_repository": REPO,
             "head": {"sha": f"head-{number}"},
         }
@@ -750,6 +751,38 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
                                     lambda event, payload: events.append((event, payload)))
         self.assertEqual(outcome, "landed")
+        self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
+
+    def test_unreadable_companion_and_missing_landing_sha_leave_coverage_incomplete(self) -> None:
+        for missing_sha in (False, True):
+            with self.subTest(missing_sha=missing_sha):
+                train = FakeTrain([], merge_after={7: 0})
+                train.companions = [9]
+                read = train.pull_request
+                train.pull_request = lambda repo, number: (
+                    {**read(repo, number), "merge_commit_sha": "" if missing_sha else "landing"}
+                    if number == 7 else None)
+                _, events = _drive(train)
+                self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
+
+    def test_preexisting_landing_uses_its_merge_time_for_companion_discovery(self) -> None:
+        train = FakeTrain([], merge_after={7: 0})
+        train.clock = 100
+        io = train.io()
+        read = io.pull_request
+        io.pull_request = lambda repo, number: {**read(repo, number), "merged_at": "1970-01-01T00:00:10Z"}
+        observed = []
+        io.merged_since = lambda repo, since: observed.append(since) or {"numbers": [], "complete": True}
+        train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io, lambda *_args: None)
+        self.assertEqual(observed, [10])
+
+    def test_uncertain_recovery_marks_companion_discovery_not_attempted(self) -> None:
+        train = FakeTrain([], merge_after={7: 0})
+        io = train.io()
+        io.recover = lambda: {"status": "outcome_unknown", "recovery": {"reason": "unavailable"}}
+        events = []
+        train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
+                          lambda event, payload: events.append((event, payload)))
         self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
 
     def test_a_stack_landing_observes_the_service_finishing_children(self) -> None:
