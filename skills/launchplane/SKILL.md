@@ -723,7 +723,7 @@ grant for its configured `local_operator` identity. The Director approves that g
 separately through the Access policy card. Submit no proposal until the service
 supports this route and the grant is installed. Source delivery grants no access.
 
-Creation is pending and inert. Owner questions and handoffs that send the
+Creation is pending and inert. Director questions and handoffs that send the
 Director to a page include a full clickable URL, never a bare UI path. Use the
 helper's `review_url` for proposal review, following
 [talking with the Director](../references/talking-with-the-director.md#carry-context).
