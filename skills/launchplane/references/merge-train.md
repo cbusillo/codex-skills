@@ -134,8 +134,10 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   default, never above `--poll-seconds`), still under the low-budget floor and
   the deadline; the same action repeated backs off like any unchanged phase.
   The terminal receipt's `cadence` counts controller requests, read-only
-  observations and GitHub reads, and splits elapsed time into controller
-  requests, sleep, reads, terminal read-back and an unattributed remainder;
+  observations and GitHub read calls (a paged check read counts once), and
+  splits elapsed time into controller requests, sleep, reads, recovery,
+  terminal read-back and an unattributed remainder such as a branch update.
+  A recovery run is one measured span, not a counted controller request.
   `passes` lists each controller pass with its action, whether it was new
   progress, its request time and why it paused. These are local measurements,
   not Launchplane's own timing. A generic `github_request_failed` refusal probes

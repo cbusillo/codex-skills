@@ -177,7 +177,9 @@ class Cadence:
 
     Categories never overlap: time inside the terminal read-back counts only as
     read-back, and time no wrapper measured stays unattributed instead of being
-    called sleep. Request counts include read-back requests.
+    called sleep. Request counts include read-back requests. A GitHub read is
+    one helper call: a paged check-run read counts once. A recovery replay is
+    one measured span, since it may read, observe and replay or make no request.
     """
 
     clock: Callable[[], float]
@@ -188,6 +190,7 @@ class Cadence:
     github_reads: int = 0
     github_read_seconds: float = 0.0
     sleep_seconds: float = 0.0
+    recovery_seconds: float = 0.0
     read_back_started: float | None = None
     read_back_seconds: float = 0.0
     passes: list[dict[str, Any]] = field(default_factory=list)
@@ -204,11 +207,13 @@ class Cadence:
             self.controller_seconds += spent
             return response
 
-        def pull_request(*args: Any) -> dict[str, Any] | None:
-            self.github_reads += 1
-            payload, spent = self._measure(io.pull_request, *args)
-            self.github_read_seconds += spent
-            return payload
+        def github_read(call: Callable[..., Any]) -> Callable[..., Any]:
+            def read(*args: Any) -> Any:
+                self.github_reads += 1
+                payload, spent = self._measure(call, *args)
+                self.github_read_seconds += spent
+                return payload
+            return read
 
         def observe_controller(*args: Any) -> dict[str, Any] | None:
             self.observation_requests += 1
@@ -221,16 +226,19 @@ class Cadence:
         original_recover = io.recover
 
         def recover() -> dict[str, Any] | None:
-            # Recovery returns None without a saved request, so only a replay counts.
             assert original_recover is not None
             response, spent = self._measure(original_recover)
+            self.recovery_seconds += spent
             if response is not None:
-                self.controller_requests += 1
-                self.controller_seconds += spent
+                self.passes.append({"pass": 0, "controller_action": "recovery", "progress": False,
+                                    "at_seconds": round(self.clock() - self.started, 3),
+                                    "recovery_seconds": round(spent, 3)})
             return response
 
         return dataclasses.replace(
-            io, controller=controller, pull_request=pull_request, sleep=sleep,
+            io, controller=controller, sleep=sleep, pull_request=github_read(io.pull_request),
+            failing_checks=github_read(io.failing_checks), merged_since=github_read(io.merged_since),
+            quota_wait=github_read(io.quota_wait),
             observe_controller=observe_controller if io.observe_controller is not None else None,
             recover=recover if original_recover is not None else None,
         )
@@ -243,7 +251,8 @@ class Cadence:
         now = self.clock()
         read_back = self.read_back_seconds + (now - self.read_back_started if self.read_back_started is not None else 0.0)
         elapsed = now - self.started
-        measured = self.controller_seconds + self.github_read_seconds + self.sleep_seconds + read_back
+        measured = (self.controller_seconds + self.github_read_seconds + self.sleep_seconds
+                    + self.recovery_seconds + read_back)
         return {
             "elapsed_seconds": round(elapsed, 3),
             "controller_requests": self.controller_requests,
@@ -252,6 +261,7 @@ class Cadence:
             "github_reads": self.github_reads,
             "github_read_seconds": round(self.github_read_seconds, 3),
             "sleep_seconds": round(self.sleep_seconds, 3),
+            "recovery_seconds": round(self.recovery_seconds, 3),
             "read_back_seconds": round(read_back, 3),
             "unattributed_seconds": round(max(0.0, elapsed - measured), 3),
             "passes": self.passes,

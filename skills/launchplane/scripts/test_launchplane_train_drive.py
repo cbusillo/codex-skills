@@ -1268,15 +1268,50 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual([item["progress"] for item in cadence["passes"]], [True] * 5)
         self.assertEqual({item["controller_seconds"] for item in cadence["passes"]}, {4.0})
 
-    def test_unmeasured_time_is_unattributed_instead_of_sleep(self) -> None:
+    def test_every_github_read_is_counted_and_unmeasured_time_is_unattributed(self) -> None:
         train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
         def slow_checks(_repository: str, _sha: str) -> list[dict[str, str]]:
             train.clock += 30
             return [{"name": "ci", "conclusion": "failure", "url": ""}]
         train.failing_checks = slow_checks
-        outcome, events = _drive(train)
+        events = []
+        io = train.io()
+        # Work outside any measured call, such as local processing, is not sleep or a read.
+        controller = io.controller
+        io.controller = lambda *args: (setattr(train, "clock", train.clock + 7), controller(*args))[1]
+        outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10_000), io,
+                                    lambda event, payload: events.append((event, payload)))
         cadence = events[-1][1]["cadence"]
-        self.assertEqual((outcome, cadence["sleep_seconds"], cadence["unattributed_seconds"]), ("failed", 0.0, 30.0))
+        self.assertEqual(outcome, "failed")
+        self.assertEqual((cadence["github_read_seconds"], cadence["controller_seconds"], cadence["sleep_seconds"]),
+                         (30.0, 7.0, 0.0))
+        # One PR read before the pass, the check read, and the re-read before failing.
+        self.assertEqual(cadence["github_reads"], 3)
+        self.assertEqual(cadence["unattributed_seconds"], 0.0)
+        train = FakeTrain([_response("land_batch")], merge_after={7: 1})
+        train.companions = [9]
+        reads = []
+        io = train.io()
+        merged_since = io.merged_since
+        io.merged_since = lambda *args: reads.append("merged_since") or merged_since(*args)
+        events = []
+        train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10_000), io,
+                          lambda event, payload: events.append((event, payload)))
+        self.assertEqual(reads, ["merged_since"])
+        # Initial read, landing read, read-back reads of 7's companion: merged_since is one of them.
+        self.assertEqual(events[-1][1]["cadence"]["github_reads"], 4)
+
+    def test_unmeasured_work_stays_unattributed_instead_of_sleep(self) -> None:
+        train = FakeTrain([_response("update_branch"), _response("land_batch")], merge_after={7: 2})
+        def slow_update(_repository: str, _number: int) -> bool:
+            train.clock += 40
+            return True
+        train.update_branch = slow_update
+        outcome, events = _drive(train, allow_branch_update=True)
+        cadence = events[-1][1]["cadence"]
+        self.assertEqual(outcome, "landed")
+        self.assertEqual(cadence["unattributed_seconds"], 40.0)
+        self.assertEqual(cadence["sleep_seconds"], round(sum(train.sleeps), 3))
 
     def test_waits_record_why_they_paused(self) -> None:
         train = FakeTrain([_refusal(train_drive.LEASE_HELD_CODE), _refusal("merge_train_new_refusal"),
@@ -1297,14 +1332,19 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(first["reason"], "quota_reset")
         self.assertGreaterEqual(first["seconds"], 500)
 
-    def test_recovery_replay_counts_as_a_controller_request(self) -> None:
+    def test_recovery_is_one_measured_span_not_an_assumed_controller_request(self) -> None:
         train = FakeTrain([_response("land_batch")], merge_after={7: 0})
         io = train.io()
-        io.recover = lambda: _response("land_batch")
+        # A local refusal and a replay look alike from outside; neither is counted as a request.
+        io.recover = lambda: (setattr(train, "clock", train.clock + 12), _response("land_batch"))[1]
         events = []
         train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10_000), io,
                           lambda event, payload: events.append((event, payload)))
-        self.assertEqual((events[-1][1]["outcome"], events[-1][1]["cadence"]["controller_requests"]), ("landed", 1))
+        cadence = events[-1][1]["cadence"]
+        self.assertEqual((events[-1][1]["outcome"], cadence["controller_requests"], cadence["recovery_seconds"]),
+                         ("landed", 0, 12.0))
+        self.assertEqual(cadence["passes"][0]["controller_action"], "recovery")
+        self.assertEqual(cadence["unattributed_seconds"], 0.0)
 
 
 if __name__ == "__main__":
