@@ -1225,6 +1225,44 @@ def pending_snapshot():
             "new_review_items": [], "actions": ["idle"]}
 
 
+@pytest.mark.parametrize("summary_change", [
+    {}, {"countsComplete": False}, {"checkRunCount": None},
+    {"unavailableComponents": ["workflow_runs"]},
+])
+@pytest.mark.parametrize("allow_no_checks", [False, True])
+def test_wait_ci_empty_inventory_requires_explicit_complete_ci_free_case(
+    monkeypatch, summary_change, allow_no_checks,
+):
+    summary = {"pendingCount": 0, "failingCount": 0, "checkRunCount": 0,
+               "statusCount": 0, "countsComplete": True, "countsAreLowerBounds": False,
+               "unavailableComponents": [], **summary_change}
+    pr = sample_pr()
+    checks = gh_pr_watch.summarize_checks({"headSha": pr["head_sha"], "summary": summary}, pr["head_sha"])
+    snapshot = {**pending_snapshot(), "checks": checks}
+    clock, events = wait_ci_harness(monkeypatch, [snapshot] * 4)
+    args = argparse.Namespace(poll_seconds=60, max_wait_seconds=60, allow_no_checks=allow_no_checks)
+
+    ci_free = allow_no_checks and not summary_change
+    assert gh_pr_watch.run_wait_ci(args) == (0 if ci_free else 3)
+    assert events[0][1]["outcome"] == ("green" if ci_free else "pending")
+    assert bool(clock.sleeps) is not ci_free
+
+
+def test_wait_ci_empty_inventory_waits_until_head_checks_arrive(monkeypatch):
+    empty = {**pending_snapshot(), "checks": sample_checks(passed_count=0)}
+    green = {**pending_snapshot(), "checks": sample_checks(passed_count=1)}
+    clock, events = wait_ci_harness(monkeypatch, [empty, green])
+
+    assert gh_pr_watch.run_wait_ci(argparse.Namespace(poll_seconds=60, max_wait_seconds=120)) == 0
+    assert clock.sleeps == [60]
+    assert events[0][1]["checks"] == green["checks"]
+
+
+def test_wait_ci_accepts_explicit_ci_free_cli_option(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["gh_pr_watch.py", "--wait-ci", "--allow-no-checks"])
+    assert gh_pr_watch.parse_args().allow_no_checks is True
+
+
 def test_wait_ci_returns_when_ci_settles_with_check_counts(monkeypatch):
     # CS1839-D1 and CS1812-D1 waited on --watch, which never exits on green CI.
     green = {**pending_snapshot(), "checks": sample_checks(passed_count=7), "actions": ["ready_to_merge"]}
@@ -3284,15 +3322,40 @@ class ExecutionReader:
         return {}
 
 
-def execution_snapshot(monkeypatch, tmp_path, runs, checks, **reader_kwargs):
+def execution_snapshot(monkeypatch, tmp_path, runs, checks, *, allow_no_checks=False, **reader_kwargs):
     reader = ExecutionReader(runs, checks, **reader_kwargs)
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_: "octocat")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *a, **kw: [])
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
-    args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3)
+    args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3,
+                              allow_no_checks=allow_no_checks)
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
     return snapshot, reader
+
+
+@pytest.mark.parametrize("allow_no_checks", [False, True])
+@pytest.mark.parametrize("inventory", ["empty", "unavailable", "queued", "failed", "passed"])
+def test_wait_ci_transport_inventory(monkeypatch, tmp_path, allow_no_checks, inventory):
+    runs = [] if inventory in {"empty", "unavailable"} else [
+        execution(1, None if inventory == "queued" else "failure" if inventory == "failed" else "success",
+                  status="queued" if inventory == "queued" else "completed")
+    ]
+    checks = [execution_check(runs[0], 11)] if inventory == "passed" else []
+    unavailable = f'/repos/{sample_pr()["repo"]}/commits/{sample_pr()["head_sha"]}/check-runs' if inventory == "unavailable" else None
+    snapshot, _reader = execution_snapshot(monkeypatch, tmp_path, runs, checks,
+                                          unavailable=unavailable, allow_no_checks=allow_no_checks)
+    _clock, events = wait_ci_harness(monkeypatch, [snapshot] * 4)
+    expected = "failed" if inventory == "failed" else (
+        "green" if inventory == "passed" or (inventory == "empty" and allow_no_checks) else "pending"
+    )
+
+    result = gh_pr_watch.run_wait_ci(argparse.Namespace(
+        poll_seconds=60, max_wait_seconds=60, allow_no_checks=allow_no_checks,
+    ))
+    assert result == gh_pr_watch.CI_WAIT_EXIT_CODES[expected]
+    assert events[0][1]["outcome"] == expected
+    assert ("ready_to_merge" in events[0][1]["actions"]) is (expected == "green")
 
 
 @pytest.mark.parametrize("status,conclusion", [("completed", "success"), ("queued", None), ("in_progress", None)])
