@@ -285,6 +285,14 @@ def test_logs_without_test_summary_keep_bounded_fallbacks() -> None:
     assert snippet_for_log(tail, max_lines=7).splitlines() == tail[-7:]
 
 
+def test_failed_command_keeps_earlier_generic_cause_before_teardown() -> None:
+    cause = "fatal: linker cannot resolve fixture symbol"
+    snippet = snippet_for_log(["setup"] * 40 + [cause] + ["linker progress"] * 70
+                              + ["##[error]Process completed with exit code 2."]
+                              + ["cleanup"] * 70 + ["postgres | ERROR: expected constraint failure"])
+    assert cause in snippet, snippet
+
+
 def synthetic_check_responses() -> tuple[dict[str, Any], dict[str, Any], str]:
     responses = base_responses()
     actions_check = responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"][0]
@@ -587,6 +595,7 @@ def main() -> None:
         test_short_excerpt_at_log_end_keeps_available_causal_context,
         test_later_failed_command_outranks_earlier_continued_test_failure,
         test_logs_without_test_summary_keep_bounded_fallbacks,
+        test_failed_command_keeps_earlier_generic_cause_before_teardown,
         test_third_party_check_run_retains_failure_and_annotations,
         test_synthetic_annotations_are_bounded_and_terminal_controls_removed,
         test_synthetic_failure_preserves_annotations_without_actions_run_lookup,
