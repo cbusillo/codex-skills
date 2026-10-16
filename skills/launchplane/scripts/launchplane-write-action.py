@@ -2531,6 +2531,7 @@ def _project_product_provenance(value: object) -> dict[str, object] | None:
         "recorded_at": _optional_text(source.get("recorded_at")),
         "refreshed_at": _optional_text(source.get("refreshed_at")),
         "freshness_status": _optional_code(source.get("freshness_status")),
+        "stale_after": _optional_text(source.get("stale_after")),
     }
 
 
@@ -2616,16 +2617,21 @@ def _project_product_health(value: object) -> dict[str, object] | None:
                 "name": _optional_text(check.get("name"), max_length=120),
                 "kind": _optional_code(check.get("kind")),
                 "enabled": bool(_optional_bool(check.get("enabled"))),
+                "probe_effective": _optional_bool(check.get("probe_effective")),
+                "incident_eligible": _optional_bool(check.get("incident_eligible")),
                 "status": _optional_code(check.get("status")),
                 "failure_code": _optional_code(check.get("failure_code")),
                 "observed_at": _optional_text(check.get("observed_at")),
+                "record_id": _optional_identifier(check.get("record_id")),
                 "incident_status": _optional_code(check.get("incident_status")),
                 "trust_state": _optional_code(check.get("trust_state")),
+                "provenance": _project_product_provenance(check.get("provenance")),
             }
         )
     return {
         "monitoring_intent": _optional_code(source.get("monitoring_intent")),
-        "trust_state": _optional_code(source.get("trust_state")),
+        "public_incident_eligible": _optional_bool(source.get("public_incident_eligible")),
+        "provenance": _project_product_provenance(source.get("provenance")),
         "checks": projected_checks,
         "checks_truncated": len(checks) > PRODUCT_HEALTH_MAX_CHECKS,
     }
@@ -6610,7 +6616,7 @@ def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, objec
 
 
 def summarize_privileged_policy_proposal(
-    *, request: dict[str, object], provider_payload: dict[str, object]
+    *, request: dict[str, object], provider_payload: dict[str, object], service_url: str
 ) -> dict[str, object]:
     if (
         set(provider_payload) - {"status", "trace_id", "write_status", "summary"}
@@ -6672,20 +6678,22 @@ def summarize_privileged_policy_proposal(
         raise LaunchplaneSafetyError("invalid_response")
     if state == "planned":
         recommendation = (
-            "The pending plan has blockers; review them on the Launchplane UI host before approval."
+            "The pending plan has blockers; review them at review_url before approval."
             if result_status == "blocked"
-            else "Open the review path on the Launchplane UI host for the signed-in Director. The proposer cannot approve or apply."
+            else "Open review_url for the signed-in Director. The proposer cannot approve or apply."
         )
     elif state in {"approved", "executing"}:
         recommendation = "This plan is already approved or executing. Observe its existing outcome; no new approval is needed."
     else:
         recommendation = "This plan is terminal. Inspect its outcome instead of requesting approval. An intentional replacement needs a fresh envelope and source event."
+    review_path = f"/ui/engineering/privileged-operations?operation_id={operation_id}"
     result = {
         "operation_id": operation_id,
         "descriptor_id": descriptor,
         "state": state,
         "result_status": result_status,
-        "review_path": f"/ui/engineering/privileged-operations?operation_id={operation_id}",
+        "review_path": review_path,
+        "review_url": build_launchplane_url(service_url, review_path),
         "expires_at": public_timestamp(normalized_expiry) if normalized_expiry else "",
         "counts": {name: _nonnegative_int(summary.get(name)) for name in counts},
         "authorizes_approval": False,
@@ -6753,7 +6761,10 @@ def execute_post(
         )
         try:
             emit(
-                summarize_privileged_policy_proposal(request=request, provider_payload=provider_payload)
+                summarize_privileged_policy_proposal(
+                    request=request, provider_payload=provider_payload,
+                    service_url=settings["service_url"],
+                )
                 if operation == "privileged-policy-propose"
                 else summarize_success(
                     operation=operation,
