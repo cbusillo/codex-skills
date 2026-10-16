@@ -947,12 +947,12 @@ def test_global_whole_parent_wait_does_not_select_its_children_or_dependencies()
             module.cmd_next(next_args())
         if body:
             assert result["candidates"] == []
-            assert reads == [("someone/product", 3), ("someone/product", 4)]
+            assert set(reads) == {("someone/product", 3), ("someone/product", 4)}
             assert any(node.get("number") == 4 and node["exclusion"] == "parent_waiting" for node in result["excluded"])
             assert any(node.get("number") == 3 and node["exclusion"] == "wait_review_required" for node in result["excluded"])
         else:
             assert [item["number"] for item in result["candidates"]] == [4]
-            assert reads == [("someone/product", 3), ("someone/product", 4)]
+            assert set(reads) == {("someone/product", 3), ("someone/product", 4)}
             assert any(finding["number"] == 3 for finding in result["findings"])
 
 
@@ -1989,7 +1989,11 @@ def test_discovered_blocker_explains_its_native_link_to_waiting_track_work() -> 
     waiting = global_issue("someone/direction", 7, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Alex to decide.")
     blocker = global_issue("someone/product", 12)
     edges = {(roots[0]["repo"], 1): relationships(sub_issues=[waiting]), (waiting["repo"], 7): relationships(blocked_by=[blocker]), (blocker["repo"], 12): relationships(blocking=[waiting])}
-    with global_fixture(roots, [waiting, blocker], edges, discovered=[blocker]) as (module, result, _reads):
+    wait_module = load_module().github_plan_wait
+    comments = {(waiting["repo"], 7): [{"user": {"login": "someone"}, "body": wait_module.marker(wait_module.reviewed(
+        evidence="Parent waits on a decision; native prerequisites are independent records.",
+        waiting_for="Alex to decide", ends_when="Alex answers"))}]}
+    with global_fixture(roots, [waiting, blocker], edges, discovered=[blocker], comments=comments) as (module, result, _reads):
         module.discover_direction_work = lambda *_a, **_kw: ([blocker], {"complete": True, "repositories": [{"repo": blocker["repo"], "direction": DIRECTION}]})
         module.cmd_next(next_args())
         candidate = result["candidates"][0]
@@ -3793,6 +3797,64 @@ def test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier(
 
 
 TESTS.append(test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier)
+
+
+def test_direct_blockers_preserve_legacy_and_explicit_whole_plan_holds() -> None:
+    root = track("someone/direction", 1, "First")
+    parent = global_issue("someone/product", 3, labels=["plan", "plan:waiting"],
+        body="## Current Status\nState: Waiting.\nWaiting for: Client sign-off before any work on this plan.")
+    blocker = global_issue(parent["repo"], 4)
+    edges = {(root["repo"], 1): relationships(sub_issues=[parent]),
+             (parent["repo"], 3): relationships(blocked_by=[blocker])}
+    wait = load_module().github_plan_wait
+    for scope in ("legacy", "whole", "partial"):
+        comments = {} if scope == "legacy" else {(parent["repo"], 3): [{"user": {"login": "someone"}, "body": wait.marker(wait.reviewed(
+            evidence="Reviewed current wait scope.",
+            waiting_for="Client sign-off before any preparation" if scope == "whole" else "Client signs the final result",
+            ends_when="Client records sign-off"))}]}
+        with global_fixture([root], [parent, blocker], edges, comments=comments) as (module, result, reads):
+            module.cmd_next(next_args())
+            assert {row["number"] for row in result["candidates"]} == ({4} if scope == "partial" else set())
+            assert reads.count((blocker["repo"], 4)) == 1
+
+
+def test_held_subtree_blocker_keeps_earliest_milestone_and_prefetch_order() -> None:
+    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+    parent = global_issue("someone/product", 10, labels=["plan", "plan:waiting"])
+    child = global_issue(parent["repo"], 11)
+    blocker = global_issue(parent["repo"], 12)
+    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[parent]),
+             (roots[1]["repo"], 2): relationships(sub_issues=[blocker]),
+             (parent["repo"], 10): relationships(sub_issues=[child]),
+             (child["repo"], 11): relationships(blocked_by=[blocker])}
+    wait = load_module().github_plan_wait
+    comments = {(parent["repo"], 10): [{"user": {"login": "someone"}, "body": wait.marker(wait.reviewed(
+        evidence="Final result waits; independent prerequisites remain their own work.",
+        waiting_for="Client final review", ends_when="Client records acceptance"))}]}
+    with global_fixture(roots, [parent, child, blocker], edges, comments=comments) as (module, result, reads):
+        args = next_args()
+        args.read_workers = 2
+        module.cmd_next(args)
+        selected = next(row for row in result["candidates"] if row["number"] == 12)
+        assert selected["milestone"]["title"] == "First"
+        assert [step["number"] for step in selected["via"]] == [1, 10, 11, 12]
+        assert reads.count((blocker["repo"], 12)) == 1
+
+
+TESTS.extend([test_direct_blockers_preserve_legacy_and_explicit_whole_plan_holds,
+              test_held_subtree_blocker_keeps_earliest_milestone_and_prefetch_order])
+
+
+def test_tracking_wait_summary_does_not_hold_its_direct_blocker() -> None:
+    root = track("someone/direction", 1, "First")
+    leaf = global_issue("someone/product", 2)
+    with global_fixture([root], [leaf], {(root["repo"], 1): relationships(blocked_by=[leaf])}) as (module, result, reads):
+        module.cmd_next(next_args())
+        assert [row["number"] for row in result["candidates"]] == [2]
+        assert reads == [(leaf["repo"], 2)]
+
+
+TESTS.append(test_tracking_wait_summary_does_not_hold_its_direct_blocker)
 
 
 def main() -> None:

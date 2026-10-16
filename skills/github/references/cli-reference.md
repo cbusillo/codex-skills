@@ -1391,7 +1391,10 @@ of evidence; all unread references and incomplete coverage remain explicit.
   without rereading it. Stale blocked labels produce issue findings and do not
   degrade coverage; genuinely unread relationships are named in
   `dependency_context.unavailable_relationships`.
-  Held subtrees use the remaining allowance after the unheld frontier. A wait
+  Within each milestone, held subtrees use the remaining allowance after the
+  unheld frontier; milestone order still comes first. Read-ahead follows that
+  same evaluation order. Unreviewed legacy waits keep their prerequisite links
+  held until the supported wait review records their scope. A wait
   explicitly covering all work or any preparation follows prerequisite links
   too. Existing structured wait evidence can name an independent child with
   an unconditional declaration such as `#123 owns independently selectable

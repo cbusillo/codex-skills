@@ -56,7 +56,10 @@ def test_october_16_delivered_and_unstarted_status_shapes() -> None:
                    'Fix the importer so the backfill is complete.',
                    'Earlier repair is complete and an agent implements the remaining parser.',
                    'Since #3266 is already merged, an assigned agent integrates the generic-web driver.',
-                   'Prerequisite #3266 is complete, so implement the remaining parser.']:
+                   'Prerequisite #3266 is complete, so implement the remaining parser.',
+                   'An assigned agent integrates the generic-web driver now that #3266 is merged.',
+                   'Implement the remaining parser because the earlier repair is merged.',
+                   'Diagnose the importer timeout; historical traces are attached.']:
         assert classify(item(action, 'Active; first slice merged'))['state'] == 'available'
 
 

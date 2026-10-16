@@ -448,7 +448,10 @@ def reviewed_remaining_scope(item: dict[str, Any], review: dict[str, Any]) -> bo
 
 def whole_plan_wait(parent: dict[str, Any]) -> bool:
     """Preserve an explicit hold on all preparation across prerequisite links."""
-    record = parent.get("structured_wait") or {}
+    record = parent.get("structured_wait")
+    if parent.get("exclusion") in {"waiting", "wait_review_required"} and (record is None or parent.get("wait_review_required")):
+        return True  # Legacy scope is unreviewed; do not release its links.
+    record = record or {}
     conditions = " ".join(value for wait in record.get("waits", []) for value in wait.values())
     return bool(re.search(r"\b(?:all|any|whole|entire)\s+(?:(?:source|further|engineering)\s+)?(?:work|preparation|implementation|plan)\b", conditions, re.I))
 
@@ -1336,15 +1339,17 @@ def rank_direction_work(
         (root, root["milestone"], [], True, []) for root in reversed(tracks)
     ]
     while pending:
+        scheduled = sorted(enumerate(pending), key=lambda row: (
+            order[row[1][1]["title"]], bool(row[1][4]), -row[0]))
         if prefetch_nodes is not None:
             # Read ahead only within the remaining ordinary allowance. Logical
             # DFS order, assignment allowances and coverage stay unchanged.
-            refs = [entry[0] for entry in reversed(pending)
+            refs = [entry[0] for _index, entry in scheduled
                     if (entry[0]["repo"].casefold(), entry[0]["number"]) not in seen]
             prefetch_nodes(refs[:max(0, scan_limit - ordinary_evaluated)])
         # Evaluate the visible unheld frontier before spending the remaining
         # allowance on held subtrees. Those are still read, with the same bound.
-        next_index = next((index for index in range(len(pending) - 1, -1, -1) if not pending[index][4]), len(pending) - 1)
+        next_index = scheduled[0][0]
         ref, milestone, path, tracking, held_parents = pending.pop(next_index)
         key = (ref["repo"].casefold(), ref["number"])
         step = {"repo": ref["repo"], "number": ref["number"], "url": ref["url"]}
@@ -1434,7 +1439,7 @@ def rank_direction_work(
                 if edge_is_child:
                     inherits = bool(held_parents) or (not tracking and parent_holds_child(own_item, edge))
                 else:
-                    inherits = whole_plan_wait(own_item) or any(whole_plan_wait(parent) for parent in held_parents)
+                    inherits = (not tracking and whole_plan_wait(own_item)) or any(whole_plan_wait(parent) for parent in held_parents)
                 # Keep intermediate ancestors as well as wait owners: a named
                 # exemption belongs to that parent's immediate native child.
                 parents = [own_item, *held_parents] if inherits else []

@@ -102,16 +102,15 @@ def remaining_work(status: str) -> dict[str, Any]:
         # A source action before a completion predicate can describe its goal
         # or a prerequisite condition, rather than finished work.
         prefix = clause[:completed.start()]
-        if re.search(source_verbs, prefix, re.I) and re.search(r"\b(?:once|after|until|so|when|before)\b", prefix, re.I):
+        if source_step(prefix) and any(prefix[match.end():].strip() for match in re.finditer(source_verbs, prefix, re.I)):
             return clause
         remainder = clause[completed.end():]
         following = re.match(r"\s*(?:,\s*(?:(?:and|but|so)\s+)?|(?:and|but)\s+)(.+)", remainder, re.I)
         return following[1] if following else ""
-    source_action = "; ".join(filter(None, (current_clause(clause) for clause in clauses(source_action))))
     def source_step(text: str) -> bool:
         for match in re.finditer(source_verbs, text, re.I):
             if re.fullmatch(r"(?:diagnose|investigate)(?:s|es|ing)?", match[0], re.I) and re.search(
-                    r"\b(?:retained|historical)\b.*\b(?:evidence|logs?|trace\w*)\b", text[match.end():], re.I):
+                    r"\b(?:retained|historical)\b.*\b(?:evidence|logs?|trace\w*)\b", re.split(r";|[.]\s+", text[match.end():], maxsplit=1)[0], re.I):
                 continue
             if re.fullmatch(r"complete(?:s|ing)?", match[0], re.I):
                 completion = re.split(r"[.;]", text[match.end():], maxsplit=1)[0]
@@ -132,6 +131,7 @@ def remaining_work(status: str) -> dict[str, Any]:
                 continue
             return True
         return False
+    source_action = "; ".join(filter(None, (current_clause(clause) for clause in clauses(source_action))))
     engineering = source_step(source_action) or next_source_slice(source_action)
     historical_investigation = re.search(r"\b(?:search\w*|investigat\w*|diagnos\w*)\b.*\b(?:retained|historical)\b.*\b(?:evidence|logs?|trace\w*)\b", source_action, re.I)
     if delivered and historical_investigation and not engineering:
