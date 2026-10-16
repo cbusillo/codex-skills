@@ -732,6 +732,8 @@ class EnqueueTests(unittest.TestCase):
                     clock[0] += seconds
 
                 with (
+                    patch.object(watch.github_api, "request_identity", return_value=("fixture-reader", "fixture-reader", [])),
+                    patch.dict("os.environ", {"GITHUB_READ_CACHE_DIR": str(Path(self.directory.name) / "reader-cache")}),
                     patch.object(watch.operator, "resolve_settings", return_value={"service_url": "https://example.test", "token": "fixture"}),
                     patch.object(watch.operator, "validate_service_url"),
                     patch.object(watch, "automation_only_gh_prefix_args", return_value=[]),
