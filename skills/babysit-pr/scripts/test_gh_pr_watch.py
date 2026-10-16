@@ -150,6 +150,30 @@ def test_resolve_pr_uses_rest_helper_and_exposes_final_merge_commit(monkeypatch)
         (("view",), {"pr_spec": "42", "repo": "example/repo"})
     ]
 
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "pr_helper_json",
+        lambda *_args, **_kwargs: sample_rest_view(reviewDecision="APPROVED"),
+    )
+    approved_pr = gh_pr_watch.resolve_pr("42", repo_override="example/repo")
+    assert approved_pr["review_decision"] == ""
+    assert approved_pr["review_decision_source"] == "not_queried"
+    assert approved_pr["metadata_availability"]["review_decision"] is False
+    assert (
+        gh_pr_watch.is_review_readiness_unavailable(
+            approved_pr,
+            {
+                "all_terminal": True,
+                "evidence_complete": True,
+                "head_matches": True,
+                "failed_count": 0,
+                "pending_count": 0,
+            },
+            [],
+        )
+        is True
+    )
+
 
 def test_resolve_pr_rejects_conflicting_repo_override(monkeypatch):
     monkeypatch.setattr(gh_pr_watch, "pr_helper_json", lambda *args, **kwargs: None)

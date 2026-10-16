@@ -528,8 +528,6 @@ def resolve_pr(pr_spec, repo_override=None):
     merge_state_available = merge_state_status in KNOWN_MERGE_STATES
     if not merge_state_available:
         merge_state_status = "UNKNOWN"
-    review_decision = data.get("reviewDecision")
-
     return {
         "number": number,
         "url": pr_url,
@@ -545,14 +543,14 @@ def resolve_pr(pr_spec, repo_override=None):
         "draft": data.get("draft") is True,
         "mergeable": normalize_mergeable(data.get("mergeable")),
         "merge_state_status": merge_state_status,
-        "review_decision": str(review_decision or ""),
+        "review_decision": "",
         "review_requirement": "unknown",
         "review_decision_source": "not_queried",
         "metadata_availability": {
             "draft": isinstance(data.get("draft"), bool),
             "mergeable": isinstance(data.get("mergeable"), bool),
             "merge_state_status": merge_state_available,
-            "review_decision": review_decision is not None,
+            "review_decision": False,
         },
         "_read_diagnostic": payload["_watcher_diagnostic"],
     }
