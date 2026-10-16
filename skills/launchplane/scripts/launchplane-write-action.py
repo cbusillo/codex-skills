@@ -5777,6 +5777,7 @@ def execute_health_monitoring_apply(
 
 
 def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    purpose = _testing_hold_purpose(getattr(args, "purpose", "staff_testing"))
     body: dict[str, object] = {
         "schema_version": 1,
         "product": _required_argument(args, "product"),
@@ -5785,9 +5786,11 @@ def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, objec
         "instance": _required_argument(args, "instance").lower(),
         "mode": mode,
         "hold": bool(args.hold),
-        "purpose": _testing_hold_purpose(getattr(args, "purpose", "staff_testing")),
         "reason": _required_argument(args, "reason"),
     }
+    # Preserve the raw legacy staff payload so an uncertain apply can replay its original key.
+    if purpose != "staff_testing":
+        body["purpose"] = purpose
     if mode == "apply":
         expected_plan_digest = _reviewed_apply_digest(args)
         evidence, result = _load_reviewed_evidence(
@@ -5803,10 +5806,10 @@ def testing_hold_body(args: argparse.Namespace, *, mode: str) -> dict[str, objec
             # A lift's reason is not in the plan digest, so bind direction and reason here.
             or (result.get("after") is not None) != body["hold"]
             or public_operator_text(result.get("reason")) != public_operator_text(body["reason"])
-            or reviewed_purpose != body["purpose"]
+            or reviewed_purpose != purpose
             or (
                 reviewed_hold is not None
-                and reviewed_hold.get("purpose", "staff_testing") != body["purpose"]
+                and reviewed_hold.get("purpose", "staff_testing") != purpose
             )
         ):
             raise ValueError("reviewed_dry_run_not_apply_eligible")
@@ -10325,7 +10328,7 @@ def main(argv: list[str]) -> int:
                 "context": public_identifier(body["context"]),
                 "instance": public_identifier(body["instance"]),
                 "hold": body["hold"],
-                "purpose": body["purpose"],
+                "purpose": body.get("purpose", "staff_testing"),
                 "payload_source": "operator_argument",
             }
             return execute_post(

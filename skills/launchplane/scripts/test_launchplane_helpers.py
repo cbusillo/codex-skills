@@ -4970,7 +4970,10 @@ def test_testing_hold_cli_binds_purpose_and_preserves_apply_key(
             direction != "set" and purpose == "staff_testing"
         )
         assert calls[-1]["idempotency_key"] == "original-hold-key"
-        assert all(call["body"]["purpose"] == purpose for call in calls)
+        assert all(call["body"].get("purpose", "staff_testing") == purpose for call in calls)
+        if purpose == "staff_testing":
+            # The server fingerprints raw JSON: default staff retries must keep the legacy payload.
+            assert all("purpose" not in call["body"] for call in calls)
         assert receipt["request"]["purpose"] == evidence["request"]["purpose"]
         other_purpose = "staff_testing" if purpose == "isolation_staging" else "isolation_staging"
         mismatched = [other_purpose if value == purpose else value for value in apply_args]
@@ -9449,7 +9452,7 @@ def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mod
                                            "private-message", Message(), error_body)
         code, payload, posts, _ = _run_main(argv, post=fault)
     assert code == 1 and len(posts) == 1
-    assert posts[0]["body"]["purpose"] == purpose
+    assert posts[0]["body"].get("purpose", "staff_testing") == purpose
     expected = "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
     assert payload["status"] == expected
     if expected == "outcome_unknown":

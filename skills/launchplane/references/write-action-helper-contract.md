@@ -208,6 +208,9 @@ extensions until the vendored artifact is refreshed.
   and reason, and `--idempotency-key`. Retain the original request and key for
   an apply retry. Legacy evidence without purpose means `staff_testing` only;
   staging requires a saved purpose-qualified request, including no-op lifts.
+  Staff requests keep the legacy wire body without an explicit purpose, while
+  saved request summaries record it; this preserves the server's raw-payload
+  idempotency fingerprint for a retry after upgrading the helper.
 - Output shows the action, the hold before and after (reason, recorder and
   time, optional purpose and service-derived rehearsal provenance), read-back,
   and whether lifting requested a testing reconcile. Rehearsal provenance is
