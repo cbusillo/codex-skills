@@ -89,6 +89,124 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(self.git("for-each-ref", repo=other), "")
         self.assertFalse((other / "custom-index").exists())
 
+    def test_hook_object_environment_does_not_redirect_creation(self):
+        objects = self.base / "hook-objects"
+        objects.mkdir()
+        for overrides in (
+            {"GIT_OBJECT_DIRECTORY": str(objects)},
+            {"GIT_OBJECT_DIRECTORY": str(objects),
+             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(self.repo / ".git/objects"),
+             "GIT_QUARANTINE_PATH": str(objects)},
+        ):
+            with self.subTest(overrides=overrides):
+                task = f"hook-{len(self.git('worktree', 'list').splitlines())}"
+                self.env.update(overrides)
+                try:
+                    result = self.run_helper(self.repo, task, self.initial)
+                finally:
+                    for key in overrides:
+                        del self.env[key]
+                self.assertEqual(result.returncode, 0, result.stderr)
+                destination = Path(result.stdout.strip())
+                self.assertEqual(self.git("rev-parse", "HEAD", repo=destination), self.initial)
+                self.assertEqual(self.git("rev-parse", "HEAD"), self.source_head)
+        self.assertEqual(list(objects.iterdir()), [])
+
+    def test_hook_alternates_cannot_supply_a_foreign_start(self):
+        other = self.base / "other"
+        other.mkdir()
+        self.git("init", repo=other)
+        self.git("-c", "user.name=Other", "-c", "user.email=other@example.invalid", "commit", "--allow-empty", "-m", "Foreign", repo=other)
+        foreign = self.git("rev-parse", "HEAD", repo=other)
+        self.env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(other / ".git/objects")
+        try:
+            result = self.run_helper(self.repo, "task", foreign)
+        finally:
+            del self.env["GIT_ALTERNATE_OBJECT_DIRECTORIES"]
+        self.assert_refused(result)
+
+    def test_injected_hook_config_does_not_override_repository_config(self):
+        hooks = self.base / "injected-hooks"
+        hooks.mkdir()
+        receipt = self.base / "injected-hook-ran"
+        hook = hooks / "post-checkout"
+        hook.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(receipt)!r}).touch()\n")
+        hook.chmod(0o700)
+        config = self.base / "injected-config"
+        config.write_text(f"[core]\n    hooksPath = {hooks}\n")
+        for index, overrides in enumerate((
+            {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": str(hooks)},
+            {"GIT_CONFIG_PARAMETERS": f"'core.hooksPath={hooks}'"},
+            {"GIT_CONFIG_GLOBAL": str(config)},
+        )):
+            with self.subTest(overrides=overrides):
+                receipt.unlink(missing_ok=True)
+                previous = self.env.copy()
+                self.env.update(overrides)
+                try:
+                    result = self.run_helper(self.repo, f"config-{index}", self.initial)
+                finally:
+                    self.env = previous
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(receipt.exists(), "caller configuration ran an injected hook")
+                self.assertEqual(self.git("rev-parse", "HEAD", repo=Path(result.stdout.strip())), self.initial)
+
+        # Ordinary file-based repository hooks continue to run.
+        self.git("config", "core.hooksPath", str(hooks))
+        receipt.unlink(missing_ok=True)
+        result = self.run_helper(self.repo, "local-config", self.initial)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(receipt.exists())
+
+    def test_hook_ceiling_cannot_hide_destination_repository(self):
+        other = self.base / "other"
+        nested = other / "nested"
+        nested.mkdir(parents=True)
+        self.git("init", repo=other)
+        self.settings({"root": str(nested / "tasks")})
+        self.env["GIT_CEILING_DIRECTORIES"] = str(other)
+        try:
+            result = self.run_helper(self.repo, "task", "HEAD")
+        finally:
+            del self.env["GIT_CEILING_DIRECTORIES"]
+        self.assert_refused(result)
+        self.assertFalse((nested / "tasks").exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX delegated-process lifetime probing")
+    def test_post_create_child_can_start_later_delegation(self):
+        host = self.base / "host"
+        child = self.base / "post-create.py"
+        ready = self.base / "child-ready"
+        proceed = self.base / "proceed"
+        receipt = self.base / "child-result.json"
+        host.write_text(
+            f"#!{sys.executable}\nimport subprocess, sys\n"
+            "if sys.argv[1] == 'later':\n    raise SystemExit(0)\n"
+            f"subprocess.Popen([{sys.executable!r}, {str(child)!r}], "
+            "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)\n"
+        )
+        host.chmod(0o700)
+        child.write_text(
+            "import json, subprocess, time\nfrom pathlib import Path\n"
+            f"Path({str(ready)!r}).touch()\n"
+            "deadline = time.monotonic() + 10\n"
+            f"while not Path({str(proceed)!r}).exists() and time.monotonic() < deadline:\n    time.sleep(0.01)\n"
+            f"result = subprocess.run([{sys.executable!r}, {str(SCRIPT)!r}, 'later'], capture_output=True, text=True, timeout=5)\n"
+            f"Path({str(receipt)!r}).write_text(json.dumps([result.returncode, result.stderr]))\n"
+        )
+        self.settings({"root": str(self.base / "tasks"), "hostHelper": str(host)})
+        result = self.run_helper("first")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The original delegated host has exited before its unrelated child starts work.
+        proceed.touch()
+        deadline = time.monotonic() + 10
+        while not receipt.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(ready.exists())
+        self.assertTrue(receipt.exists(), "post-create child did not finish")
+        code, stderr = json.loads(receipt.read_text())
+        self.assertEqual(code, 0, stderr)
+
     def test_configured_root_and_linked_source_keep_main_repo_name(self):
         root = self.base / "work tree root"
         self.settings({"root": str(root)})
