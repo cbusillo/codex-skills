@@ -11,6 +11,7 @@ No retries: a failed or interrupted multipart send needs receiver reconciliation
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -72,7 +73,7 @@ def request_json(opener, url, payload=None):
                 if not 0 <= delay <= 30:
                     raise DeliveryError("digest_rate_limit_invalid")
                 time.sleep(delay)
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         # HTTP errors and their response bodies can echo credentials. Never emit them.
         raise DeliveryError("digest_http_failed") from None
     if not isinstance(result, dict):

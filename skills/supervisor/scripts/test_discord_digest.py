@@ -6,6 +6,7 @@
 """Offline sender contract tests; all HTTP stays on a fake loopback server."""
 
 import contextlib
+import http.client
 import io
 import json
 import os
@@ -140,6 +141,12 @@ class SenderTests(unittest.TestCase):
         self.assertTrue(sleep.called)
         self.assertTrue(all(call.args == (0.25,) for call in sleep.call_args_list))
         self.assertEqual(len(self.posts), 2)
+
+    def test_protocol_error_does_not_echo_secret_response(self):
+        opener = mock.Mock()
+        opener.open.side_effect = http.client.BadStatusLine(self.url)
+        with self.assertRaisesRegex(sender.DeliveryError, '^digest_http_failed$'):
+            sender.request_json(opener, self.url)
 
     def test_invalid_metadata_prevents_send(self):
         self.metadata = {'channel_id': '22', 'guild_id': self.url}
