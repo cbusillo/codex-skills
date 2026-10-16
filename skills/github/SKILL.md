@@ -890,8 +890,8 @@ Use PRs for all non-trivial changes.
   [test command contract](references/config-schema.md#workflow-metadata).
   Preserve legacy `test.default` requirements until the repository adopts the
   split. For safety, authorization, approval-rule, destructive-helper and
-  shared-infrastructure changes, also run the full test modules for the safety
-  areas touched locally, as described in
+  shared-infrastructure changes, also run locally the full test modules for the
+  safety areas touched, as described in
   [Gate Selection](../repo-readiness/SKILL.md#gate-selection). Under the split,
   the complete suite runs only in CI and must pass for the current head before
   `ready` or merge; pushing opens

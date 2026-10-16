@@ -216,7 +216,7 @@ Common top-level keys:
   approval-rule, destructive-helper and shared-infrastructure changes run
   focused tests plus the full test modules for the safety areas they touch
   locally, such as authorization, secrets, recovery or credentials. Broaden
-  local coverage within that scope when risk or missing coverage warrants it.
+  local coverage when risk or missing coverage warrants it.
   If required local modules cannot execute, record the missing evidence;
   green CI does not silently waive that local requirement.
   Metadata describes the gate; the repository's CI workflow must actually run
@@ -224,6 +224,9 @@ Common top-level keys:
   Use the adopting repository's documented change areas to classify changes
   and select affected safety modules, rather than classifying every edit by
   the repository's name.
+  Without a documented module mapping, identify complete modules exercising
+  the touched safety area through its callers; record any coverage gap as
+  missing evidence.
 - `qualityGate.test.default`: legacy test command, used until both `test.local`
   and `test.ci` are declared. An incomplete split does not override legacy test
   requirements. Preserve its declared scope until the repository adopts the split;
