@@ -5162,6 +5162,12 @@ def cmd_close(args: argparse.Namespace) -> None:
             github_plan_trigger.validate(trigger)
         except ValueError as exc:
             raise PlanError(f"Invalid --reopen-trigger: {exc}") from exc
+    if getattr(args, "clear_reopen_trigger", None) is not None:
+        trigger = {"version": 1, "state": "clear", "evidence": args.clear_reopen_trigger}
+        try:
+            github_plan_trigger.validate(trigger)
+        except ValueError as exc:
+            raise PlanError(str(exc)) from exc
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     planning_checkout = getattr(args, "planning_checkout", None)
@@ -5171,8 +5177,10 @@ def cmd_close(args: argparse.Namespace) -> None:
             raise PlanError("--planning-checkout must name a checkout of the resolved target repository")
     planning_config: dict[str, Any] = {}
     config = load_config(issue_repo, checkout=planning_checkout, discovery=planning_config)
-    close_reason = plan_close_reason(args.reason)
+    close_reason = plan_close_reason(args.reason or "completed")
     issue_actor, issue = get_issue(args.issue, repo)
+    if trigger is not None and args.reason is None and issue.get("state") == "closed":
+        close_reason = plan_close_reason(issue.get("state_reason") or "completed")
     if getattr(args, "only_closed", False) and not issue_matches_close_reason(issue, close_reason):
         raise PlanError("Landing reconciliation only repairs already-closed issues")
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
@@ -5215,11 +5223,14 @@ def cmd_close(args: argparse.Namespace) -> None:
         # This label is only a discovery view; the JSON record owns the event.
         # Index before closure so an interrupted close never hides a trigger.
         index_label = github_plan_trigger.INDEX_LABEL
-        ensure_labels(issue_repo, [index_label], {"label_defs": {index_label: {
-            "color": "c5def5", "description": "Helper-managed view of structured reopen-trigger records"}}},
-            completed_steps=completed_steps)
+        indexed = trigger.get("state") != "clear" and trigger.get("kind") != "recurrence"
+        if indexed:
+            ensure_labels(issue_repo, [index_label], {"label_defs": {index_label: {
+                "color": "c5def5", "description": "Helper-managed view of structured reopen-trigger records"}}},
+                completed_steps=completed_steps)
         try:
-            github_issue_core.edit_issue(number, repo=issue_repo, add_labels=[index_label],
+            github_issue_core.edit_issue(number, repo=issue_repo,
+                **({"add_labels": [index_label]} if indexed else {"remove_labels": [index_label]}),
                 gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION)
         except github_issue_core.IssueError as exc:
             raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
@@ -6039,9 +6050,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("close", help="Close a completed or not-planned plan safely")
     p.add_argument("issue")
-    p.add_argument("--reopen-trigger", help="Version-1 structured reopen-trigger JSON; published before closure")
+    trigger_options = p.add_mutually_exclusive_group()
+    trigger_options.add_argument("--reopen-trigger", help="Version-1 structured reopen-trigger JSON; published before closure")
+    trigger_options.add_argument("--clear-reopen-trigger", metavar="EVIDENCE", help="Retire a handled reopen trigger and its discovery label")
     p.add_argument("--planning-checkout", help="Target repository checkout for planning metadata outside automatic discovery")
-    p.add_argument("--reason", default="completed")
+    p.add_argument("--reason", help="Closure reason (default completed; trigger-only updates preserve an already-closed reason)")
     p.add_argument("--comment", dest="body")
     p.add_argument("--comment-file", dest="body_file")
     p.add_argument("--owner")

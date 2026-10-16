@@ -675,9 +675,11 @@ checks, publishes an authored comment with a visible event fields (including exa
 `github-plan:reopen-trigger` JSON marker, and reads back the authoritative
 record and applies the helper-managed `plan:reopen-trigger` discovery label
 **before** closing. The JSON remains authoritative; the label only selects
-records for a bounded daily read. Do not apply or remove the label by hand.
+machine-checkable records for a bounded daily read. Recurrence records retain
+their exact symptom without a discovery label or daily event reads. Do not apply or remove the label by hand.
 To index a manually recorded trigger, run the same close option on the already
-closed issue; it records and verifies the trigger without reopening it. A publication/readback failure leaves the issue open;
+closed issue; it records and verifies the trigger without reopening it. Without
+an explicit `--reason`, trigger updates preserve an already-closed issue's reason. A publication/readback failure leaves the issue open;
 inspect the published comment before retrying. A later metadata failure uses
 normal close recovery. Omit the option to close without adding a trigger.
 
@@ -703,6 +705,14 @@ uv run skills/github/scripts/gh-plan.py close 123 --reason not-planned \
   --comment-file decision.md \
   --reopen-trigger '{"version":1,"kind":"date","at":"2026-12-01","evidence":"Recorded deferral decision"}'
 ```
+
+After reviewing a fired event, retire it with
+`close ISSUE --clear-reopen-trigger "<resolution evidence>"`. This publishes a
+superseding `{"version":1,"state":"clear","evidence":"..."}` record and
+removes the discovery label. Use it when review decides no reopening is needed,
+or when reopened work is finished (including after a PR automatically closes
+it). It is mutually exclusive with `--reopen-trigger`; without either option,
+an existing trigger is preserved. Label changes alone never clear a record.
 
 The [daily sweep](../../direction/references/stranded-work.md) reports fired
 triggers and coverage gaps without reopening issues. This option records a

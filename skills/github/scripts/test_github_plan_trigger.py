@@ -97,5 +97,17 @@ class TriggerTests(unittest.TestCase):
             with self.assertRaises(ValueError): trigger.current(issue, [comment(body)], {"owner"})
 
 
+    def test_clear_record_supersedes_a_fired_event_without_machine_reads(self):
+        old = {"user": {"login": "owner"}, "body": trigger.marker(record("date", at="2020-01-01"))}
+        cleared = {"version": 1, "state": "clear", "evidence": "Work handled after reopening"}
+        comments = [{"user": {"login": "owner"}, "body": trigger.marker(cleared)}]
+        selected = trigger.current(old, comments, {"owner"})
+        self.assertEqual(selected, cleared)
+        one, listing = Mock(), Mock()
+        self.assertFalse(trigger.fired(selected, now=NOW, one=one, listing=listing))
+        one.assert_not_called()
+        listing.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

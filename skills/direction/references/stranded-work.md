@@ -79,10 +79,13 @@ unknown), next actor and review requirement:
   reuse the wait parser's authorship, precedence and example filtering. Dates,
   issue closure, PR merge, published stable releases and GHSA patch information
   are checked; `recurrence` retains exact symptom text for search-before-filing
-  and is never machine-checked. The close option maintains the discovery label;
+  and is never machine-checked or indexed. The close option maintains the discovery label;
   use it on an already closed issue to index an existing manual record. A
   labeled issue without a trusted record is a coverage gap. Fired triggers bypass the aged-work threshold
-  and remain in each daily digest while the issue is closed. The sweep is
+  and remain in each daily digest while the issue is closed until the receiver retires the handled event with
+  `close ISSUE --clear-reopen-trigger "<resolution evidence>"`; this also removes
+  the discovery label. Use it after the reopened work closes, or when review
+  decides not to reopen. The sweep is
   report-only: the repository agent/Supervisor reviews and reopens. A patch in
   the advisory database does not prove an installed dependency is fixed.
   Missing event facts, unread comments, malformed records, repository failures,

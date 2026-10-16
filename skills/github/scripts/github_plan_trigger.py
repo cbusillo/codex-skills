@@ -43,6 +43,11 @@ def version(tag: str) -> tuple[int, ...]:
 
 
 def validate(record: Any) -> None:
+    if isinstance(record, dict) and record.get("state") == "clear":
+        if (set(record) != {"version", "state", "evidence"} or type(record["version"]) is not int
+                or record["version"] != 1 or not isinstance(record["evidence"], str) or not record["evidence"].strip()):
+            raise ValueError("Malformed cleared reopen trigger")
+        return
     if not isinstance(record, dict) or not isinstance(record.get("kind"), str) or record["kind"] not in FIELDS:
         raise ValueError("Unknown reopen-trigger kind")
     kind = record["kind"]
@@ -66,6 +71,8 @@ def validate(record: Any) -> None:
 
 
 def describe(record: dict) -> str:
+    if record.get("state") == "clear":
+        return "cleared: " + record["evidence"]
     return record["kind"] + ": " + "; ".join(str(record[key]) for key in sorted(FIELDS[record["kind"]]))
 
 
@@ -80,6 +87,8 @@ def current(issue: dict, comments: list[dict], trusted: set[str]) -> dict | None
 def fired(record: dict, *, now: dt.datetime, one, listing) -> bool:
     """Read event facts; unknown/unreadable responses raise, never mean unfired."""
     validate(record)
+    if record.get("state") == "clear":
+        return False
     kind = record["kind"]
     if kind == "recurrence":
         return False
