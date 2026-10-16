@@ -83,6 +83,15 @@ class SnapshotTests(unittest.TestCase):
             result.policy_called = policy_called.exists()
             return result
 
+    def test_text_snapshot_preserves_pr_workflow_hints(self):
+        hints = {"note": "A green PR waits for the train", "watch": {"helper": "tools/watch.py"}}
+        result = self.snapshot({"prWorkflow": hints}, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        heading = result.stdout.index('"defaultBranch"')
+        start = result.stdout.rfind("{", 0, heading)
+        summary, _ = json.JSONDecoder().raw_decode(result.stdout[start:])
+        self.assertEqual(summary["prWorkflow"], hints)
+
     def test_product_routing_context(self):
         routing = {"product": "example-product", "context": "example_context", "publicName": "Example product"}
         result = self.snapshot({"launchplane": routing})

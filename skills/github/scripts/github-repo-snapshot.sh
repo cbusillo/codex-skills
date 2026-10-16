@@ -763,7 +763,7 @@ if [[ -n "$config_path" ]]; then
   if [[ -n "$config_override_path" ]]; then
     printf 'override: %s (applied)\n' "$config_override_path"
   fi
-  run_or_note "config summary" jq -r '{defaultBranch: (.defaultBranch // null), projectType: (.projectType // null), docs: (.docs // {}), qualityGate: (.qualityGate // {}), importantWorkflows: (.importantWorkflows // []), qaLabels: (.qaLabels // []), deployLabels: (.deployLabels // []), healthUrls: (.healthUrls // []), relatedRepos: (.relatedRepos // []), launchplane: (.launchplane // {}), jetbrains: (.jetbrains // {}), githubSignals: (.githubSignals // {}), cleanup: (.cleanup // {}), metadataFreshness: (.metadataFreshness // {})}' "$effective_config_path"
+  run_or_note "config summary" jq -r '{defaultBranch: (.defaultBranch // null), projectType: (.projectType // null), docs: (.docs // {}), qualityGate: (.qualityGate // {}), importantWorkflows: (.importantWorkflows // []), qaLabels: (.qaLabels // []), deployLabels: (.deployLabels // []), healthUrls: (.healthUrls // []), relatedRepos: (.relatedRepos // []), prWorkflow: (.prWorkflow // {}), launchplane: (.launchplane // {}), jetbrains: (.jetbrains // {}), githubSignals: (.githubSignals // {}), cleanup: (.cleanup // {}), metadataFreshness: (.metadataFreshness // {})}' "$effective_config_path"
 
   section "Cleanup"
   # shellcheck disable=SC2016 # jq variables are intentionally single-quoted.
