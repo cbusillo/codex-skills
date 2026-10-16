@@ -16,11 +16,34 @@ import sys
 
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/codex-skills/worktrees.json")
-GIT_LOCATION_OVERRIDES = {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"}
 
 
 def git_environment() -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_OVERRIDES}
+    # These are local operations on an explicit repository. Do not inherit a
+    # hook caller's discovery, object storage, or command-scoped configuration.
+    # Normal repository/user/system config files still apply.
+    return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+
+
+def delegation_active(args: list[str]) -> bool:
+    marker = os.environ.get("DEV_WORKTREE_DELEGATED")
+    if not marker:
+        return False
+    pid, separator, request = marker.partition(":")
+    # Identical inherited callbacks remain loops even after a shim detaches.
+    if not separator or request == json.dumps(args):
+        return True
+    # A different request can start after the exec'd host has exited.
+    # Keep the old conservative guard where POSIX signal-zero probing is absent.
+    if os.name != "posix" or not pid.isdecimal() or int(pid) <= 0:
+        return True
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
 
 
 class Refused(ValueError):
@@ -104,13 +127,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root, helper = configuration()
         if helper:
-            if os.environ.get("DEV_WORKTREE_DELEGATED"):
+            if delegation_active(args):
                 raise Refused("Host helper delegated back to the catalog; configure the actual host executable.")
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
             # The host owns volume identity, locks and retirement; do not mkdir or fall back.
             # Preserve the host's signal traps, including relocking during interrupted retirement.
-            os.environ["DEV_WORKTREE_DELEGATED"] = "1"
+            os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
             os.execv(str(helper), [str(helper), *args])
         if len(args) != 3 or args[0] == "retire":
             raise Refused("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT. For cleanup follow work-closeout; this portable helper only creates worktrees.")
