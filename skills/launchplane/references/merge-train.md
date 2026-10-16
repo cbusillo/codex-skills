@@ -127,7 +127,18 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   from GitHub, and Launchplane also runs its own passes. Unchanged controller
   phases and a lease held by another holder therefore poll less often, doubling
   up to `--max-wait-seconds` (fifteen minutes by default), and respect the
-  shared low-budget floor; any phase change returns to `--poll-seconds`. A generic `github_request_failed` refusal probes
+  shared low-budget floor; any phase change returns to `--poll-seconds`. A
+  newly reported action Launchplane says to mutate once and call again
+  (`admit_collapsed_root`, `plan_candidate`, `build_candidate`, `plan_landing`,
+  `land_batch`) is followed by a shorter `--progress-seconds` pause (15 by
+  default, never above `--poll-seconds`), still under the low-budget floor and
+  the deadline; the same action repeated backs off like any unchanged phase.
+  The terminal receipt's `cadence` counts controller requests, read-only
+  observations and GitHub reads, and splits elapsed time into controller
+  requests, sleep, reads, terminal read-back and an unattributed remainder;
+  `passes` lists each controller pass with its action, whether it was new
+  progress, its request time and why it paused. These are local measurements,
+  not Launchplane's own timing. A generic `github_request_failed` refusal probes
   the quota-free `/rate_limit` endpoint through the target repository's
   installation. Zero local core quota permits one wait to reset per refusal
   streak, within the driver's deadline, without spending its helper-failure budget.

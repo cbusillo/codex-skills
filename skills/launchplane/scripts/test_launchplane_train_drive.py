@@ -78,13 +78,18 @@ class FakeTrain:
         self.reconcile_receipt: dict[str, Any] | None = None
         self.observations: list[dict[str, Any] | None] = []
         self.observed = 0
+        # Simulated request latency on the fake clock.
+        self.controller_delay = 0.0
+        self.read_delay = 0.0
 
     def controller(self, _repository: str, _base: str, _key: str) -> dict[str, Any] | None:
         response = self.responses[min(self.calls, len(self.responses) - 1)]
         self.calls += 1
+        self.clock += self.controller_delay
         return response
 
     def pull_request(self, _repository: str, number: int) -> dict[str, Any]:
+        self.clock += self.read_delay
         merged = number in self.merge_after and self.calls >= self.merge_after[number]
         return {
             "state": "closed" if merged or number in self.closed else "open",
@@ -1204,6 +1209,102 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         outcome, events = _drive(FakeTrain([_response("wait_for_checks")]), deadline=300)
         self.assertEqual(outcome, "error")
         self.assertEqual(events[-1][1]["reason"], "deadline reached")
+
+    def _landing_path(self) -> FakeTrain:
+        candidate = {"candidate_sha": "abc", "pull_request_numbers": [7]}
+        return FakeTrain([_response("plan_candidate"), _response("build_candidate"),
+                          _response("observe_candidate", candidate=candidate),
+                          _response("plan_landing"), _response("land_batch")], merge_after={7: 5})
+
+    def test_known_progress_calls_again_sooner_than_a_full_poll(self) -> None:
+        elapsed = {}
+        for progress_seconds in (60, 15):
+            train = self._landing_path()
+            outcome, events = _drive(train, progress_seconds=progress_seconds)
+            self.assertEqual((outcome, train.calls), ("landed", 5))
+            elapsed[progress_seconds] = events[-1][1]["cadence"]["elapsed_seconds"]
+        # Plan, build and landing-plan each save most of a poll; candidate observation still waits a full poll.
+        self.assertGreater(elapsed[60] - elapsed[15], 3 * 40)
+        reasons = [(item["controller_action"], item.get("pause", {}).get("reason")) for item in events[-1][1]["cadence"]["passes"]]
+        self.assertEqual(reasons, [("plan_candidate", "progress"), ("build_candidate", "progress"),
+                                   ("observe_candidate", "backoff"), ("plan_landing", "progress"), ("land_batch", None)])
+        self.assertGreaterEqual(train.sleeps[2], 60)
+
+    def test_progress_pause_keeps_low_budget_floor_deadline_and_repeat_backoff(self) -> None:
+        with patch.object(train_drive.github_read.github_request_usage, "polling_floor", return_value=300.0):
+            train = self._landing_path()
+            _drive(train)
+        self.assertGreaterEqual(min(train.sleeps), 300)
+        train = FakeTrain([_response("plan_candidate")])
+        outcome, events = _drive(train, deadline=1_000)
+        self.assertEqual((outcome, events[-1][1]["reason"]), ("error", "deadline reached"))
+        # Only the first report is known progress; a repeated call-again action backs off like any other phase.
+        self.assertLess(train.sleeps[0], 17)
+        self.assertEqual([int(pause) // 10 * 10 for pause in train.sleeps[1:4]], [120, 240, 480])
+        train = FakeTrain([_response("plan_candidate")])
+        _drive(train, deadline=10)
+        self.assertEqual((train.clock, train.calls), (10, 1))
+
+    def test_operator_poll_interval_caps_the_progress_pause(self) -> None:
+        train = self._landing_path()
+        _drive(train, poll_seconds=5, progress_seconds=15)
+        self.assertLess(max(train.sleeps[:2]), 6)
+
+    def test_cadence_receipt_separates_requests_sleep_reads_and_read_back(self) -> None:
+        train = self._landing_path()
+        train.controller_delay, train.read_delay = 4.0, 1.0
+        train.companions = [9]
+        outcome, events = _drive(train)
+        self.assertEqual(outcome, "landed")
+        cadence = events[-1][1]["cadence"]
+        self.assertEqual((cadence["controller_requests"], cadence["controller_seconds"]), (5, 20.0))
+        self.assertEqual(cadence["sleep_seconds"], round(sum(train.sleeps), 3))
+        # Read-back reads count as requests but their time is read-back, not ordinary reads.
+        self.assertGreater(cadence["github_reads"], cadence["github_read_seconds"])
+        self.assertGreater(cadence["read_back_seconds"], 0)
+        parts = sum(cadence[key] for key in ("controller_seconds", "github_read_seconds", "sleep_seconds",
+                                             "read_back_seconds", "unattributed_seconds"))
+        self.assertAlmostEqual(parts, cadence["elapsed_seconds"], places=2)
+        self.assertEqual([item["progress"] for item in cadence["passes"]], [True] * 5)
+        self.assertEqual({item["controller_seconds"] for item in cadence["passes"]}, {4.0})
+
+    def test_unmeasured_time_is_unattributed_instead_of_sleep(self) -> None:
+        train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
+        def slow_checks(_repository: str, _sha: str) -> list[dict[str, str]]:
+            train.clock += 30
+            return [{"name": "ci", "conclusion": "failure", "url": ""}]
+        train.failing_checks = slow_checks
+        outcome, events = _drive(train)
+        cadence = events[-1][1]["cadence"]
+        self.assertEqual((outcome, cadence["sleep_seconds"], cadence["unattributed_seconds"]), ("failed", 0.0, 30.0))
+
+    def test_waits_record_why_they_paused(self) -> None:
+        train = FakeTrain([_refusal(train_drive.LEASE_HELD_CODE), _refusal("merge_train_new_refusal"),
+                           _response("wait_for_checks"), _response("land_batch")], merge_after={7: 4})
+        outcome, events = _drive(train)
+        self.assertEqual(outcome, "landed")
+        self.assertEqual([(item["controller_action"], item.get("pause", {}).get("reason"))
+                          for item in events[-1][1]["cadence"]["passes"]],
+                         [("controller_lease_held", "lease_held"), ("controller_refused", "refusal"),
+                          ("wait_for_checks", "backoff"), ("land_batch", None)])
+        train = FakeTrain([_refusal("github_request_failed", http_status=502), _response("land_batch")], merge_after={7: 2})
+        io = train.io()
+        io.quota_wait = lambda: 500.0
+        events = []
+        train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10_000), io,
+                          lambda event, payload: events.append((event, payload)))
+        first = events[-1][1]["cadence"]["passes"][0]["pause"]
+        self.assertEqual(first["reason"], "quota_reset")
+        self.assertGreaterEqual(first["seconds"], 500)
+
+    def test_recovery_replay_counts_as_a_controller_request(self) -> None:
+        train = FakeTrain([_response("land_batch")], merge_after={7: 0})
+        io = train.io()
+        io.recover = lambda: _response("land_batch")
+        events = []
+        train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10_000), io,
+                          lambda event, payload: events.append((event, payload)))
+        self.assertEqual((events[-1][1]["outcome"], events[-1][1]["cadence"]["controller_requests"]), ("landed", 1))
 
 
 if __name__ == "__main__":
