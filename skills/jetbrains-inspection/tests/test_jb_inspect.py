@@ -15099,6 +15099,77 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         self.assertTrue(self.selected_path.exists())
         self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
 
+    def write_never_opened_lease(self):
+        # project_open_blocked: a live IDE accepted the open, but no exact route ever appeared.
+        write_json(self.selected_path, {
+            "lease_id": self.selected_id, "state": "cleanup_pending", "pid": 68466,
+            "opened_by_helper": True, "open_request_may_have_been_accepted": False,
+            "lifecycle_target_path": "/tmp/selected", "worktree_root": "/tmp/selected",
+            "session_id": "session", "ide_port": 63342, "updated_at_ms": 1,
+        })
+
+    def probe_ide(self, status, reason, session="session", diagnostic_version=1):
+        identity = {"session_id": "session", "port": 63342, "lifecycle_open_diagnostic_version": diagnostic_version}
+        body = {"status": status, "reason": reason, "opened": False, "opening_scheduled": False,
+                "probe": True, "session_id": session}
+        return (
+            patch.object(jb_inspect, "identity_for_port", return_value=identity),
+            patch.object(jb_inspect, "http_get", return_value=jb_inspect.HttpResult(200, body, "http://fixture")),
+        )
+
+    def test_live_original_session_reporting_project_not_open_releases_lease(self):
+        self.write_never_opened_lease()
+        identity, get = self.probe_ide("not_open", "project_not_open")
+        with identity, get as http_get, patch.object(jb_inspect, "cleanup_lifecycle") as close:
+            preview = self.run_cleanup(self.selected_id, dry_run=True)
+            self.assertEqual(preview["would_remove"], [str(self.selected_path)])
+            self.assertTrue(self.selected_path.exists())
+            result = self.run_cleanup(self.selected_id)
+        close.assert_not_called()
+        endpoint, params = http_get.call_args.args[1:3]
+        self.assertEqual((endpoint, params["probe"], params["lease_id"]), ("lifecycle/open", "true", self.selected_id))
+        self.assertEqual(result["removed"], [str(self.selected_path)])
+        self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 0)
+        self.assertFalse(self.selected_path.exists())
+        self.assertEqual(self.foreign_path.read_bytes(), self.foreign_bytes)
+
+    def test_live_original_session_still_opening_or_unprovable_retains_lease(self):
+        self.write_never_opened_lease()
+        cases = {
+            "opening": ("opening", "already_opening", "session", 1),
+            "other_session_answered": ("not_open", "project_not_open", "other-session", 1),
+            "plugin_without_probe": ("not_open", "project_not_open", "session", 0),
+        }
+        for name, (status, reason, session, version) in cases.items():
+            with self.subTest(name):
+                identity, get = self.probe_ide(status, reason, session, version)
+                with identity, get as http_get:
+                    result = self.run_cleanup(self.selected_id)
+                unresolved = result["unresolved"][0]
+                self.assertEqual(unresolved["reason"], "ownership_route_unavailable")
+                self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
+                self.assertTrue(self.selected_path.exists())
+                if name == "opening":
+                    self.assertIn("already_opening", unresolved["next_action"])
+                if name == "plugin_without_probe":
+                    # An older plugin would treat the probe as a real open request.
+                    http_get.assert_not_called()
+
+    def test_plain_output_names_unresolved_lease_reason_without_inspection_verdict(self):
+        self.discovery.return_value = ([{
+            "base_path": "/tmp/selected", "project_instance_id": "foreign:1",
+            "session_id": "foreign", "project_key": "path:/tmp/selected",
+        }], {"foreign"})
+        output = io.StringIO()
+        argv = [str(SCRIPT_PATH), "cleanup-helper-leases", "--lease-id", self.selected_id, "--no-dry-run"]
+        with patch.object(sys, "argv", argv), redirect_stdout(output):
+            code = jb_inspect.main()
+        text = output.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn(f"LEASE_UNRESOLVED: lease_id={self.selected_id} reason=ownership_route_unavailable", text)
+        self.assertNotIn("VERDICT:", text)
+        self.assertTrue(self.selected_path.exists())
+
     def test_selection_and_cleanup_remain_inside_lifecycle_lock(self):
         held = []
         class Lock:
