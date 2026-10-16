@@ -14,6 +14,7 @@ import sys
 import time
 from urllib.parse import quote
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import direction_audit as audit
 from skills.github.scripts import github_identity, github_plan_wait, github_plan_trigger, github_read, ready_handoff, github_request_usage
@@ -23,6 +24,8 @@ sys.path.insert(0, str(audit.REPO_ROOT / "skills/supervisor/scripts"))
 import oq
 
 UTC = dt.timezone.utc
+# The Director writes status times in US Eastern ("2:20 PM ET").
+EASTERN = ZoneInfo("America/New_York")
 QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")
 PREFIXES = oq.QUESTION_PREFIXES
 
@@ -57,6 +60,53 @@ def calendar(text: str) -> dt.datetime | None:
         except ValueError:
             continue
     return None
+
+
+LAST_VERIFIED = re.compile(r"(?im)^\s*(?:[-*]\s*)?\**Last verified\**:\**\s*(.+)$")
+CLOCK = re.compile(r"\b(\d{1,2}):(\d{2})\s*([AP])\.?M\b", re.I)
+
+
+def verified_at(body: str | None) -> dt.datetime | None:
+    """When a Track's Current Status says it was last verified.
+
+    An ISO timestamp or a clock time (read as Eastern) is exact. A bare date
+    counts as the end of that Eastern day, so same-day changes stay quiet.
+    """
+    text = body or ""
+    text = text[text.find("Current Status"):] if "Current Status" in text else text
+    line = LAST_VERIFIED.search(text)
+    date = re.search(DATE, line[1], re.I) if line else None
+    if date and "T" in date[0]:
+        exact = stamp(date[0])
+        return exact.astimezone(UTC) if exact else None
+    day = calendar(date[0]) if date else None
+    if day is None:
+        return None
+    local = dt.datetime(day.year, day.month, day.day, tzinfo=EASTERN)
+    if clock := CLOCK.search(line[1], date.end()):
+        hour = int(clock[1]) % 12 + (12 if clock[3].upper() == "P" else 0)
+        return local.replace(hour=hour, minute=int(clock[2])).astimezone(UTC)
+    return (local + dt.timedelta(days=1)).astimezone(UTC)
+
+
+def is_track(record: dict) -> bool:
+    item = record["item"]
+    return (record["repo"].endswith("/direction") and item.get("state") == "open"
+            and "pull_request" not in item and str(item.get("title") or "").startswith("Track:"))
+
+
+def track_changes(record: dict, owners: set[str], trusted: set[str]) -> list[tuple[dt.datetime, str]]:
+    """Milestone-relevant changes: a child closing, or Director words on the Track or a child."""
+    changes = []
+    for source in [record, *record.get("track_children", [])]:
+        item = source["item"]
+        if source is not record and item.get("state") == "closed" and (closed := stamp(item.get("closed_at"))):
+            changes.append((closed, item.get("html_url") or ""))
+        for c in source.get("comments", []):
+            if (login(c) in owners or (login(c) in trusted and is_decision(question_body(c)))) and (
+                    when := stamp(c.get("created_at"))):
+                changes.append((when, c.get("html_url") or ""))
+    return changes
 
 
 def ends_at(text: str, *, leading: bool) -> dt.datetime | None:
@@ -301,16 +351,22 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 policy = record.get("train_policy") or {}
                 target = next((t for t in policy.get("targets", [])
                                if t.get("baseBranch") == (pull.get("base") or {}).get("ref")), None)
-                if target is None:
-                    add("ready_handoff_routing_unknown", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
+                since = latest.get("updated_at") or latest.get("created_at")
+                if pull.get("mergeable") is False or pull.get("mergeable_state") == "dirty":
+                    add("conflicting_ready_handoff", record, latest["html_url"], since, "Repository agent / Supervisor",
+                        "Current-head Ready now conflicts with its base, so the train cannot admit it. Refresh the branch and hand off again.",
+                        immediate=True)
+                elif target is None:
+                    add("ready_handoff_routing_unknown", record, latest["html_url"], since,
                         "Supervisor", "Current-head Ready remains open; active policy confirms no target for this base branch. Supervisor resolves routing." if policy.get("status") in {"enrolled", "not_enrolled"} else
                         "Current-head Ready remains open; active train policy is unavailable. No routing conclusion is inferred.")
-                elif target["readyLabel"].casefold() not in labels(item):
-                    add("ready_handoff_unrouted", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
-                        "Supervisor", "Current-head Ready has no enqueue view; verify existing train custody before routing.")
                 else:
-                    add("aged_ready_handoff", record, latest["html_url"], latest.get("updated_at") or latest.get("created_at"),
-                        "Supervisor / train recovery owner", "Current-head Ready remains open with its enqueue view set; that view does not prove an active receiver or train progress.")
+                    # Since launchplane#3834 the train admits a current-head Ready itself,
+                    # so the enqueue label is no signal either way; only landing is.
+                    add("aged_ready_handoff", record, latest["html_url"], since,
+                        "Supervisor / train recovery owner",
+                        "Current-head Ready has not landed; read the train's exclusion or deferral reason for this head. "
+                        + ("Its enqueue label is set." if target["readyLabel"].casefold() in labels(item) else "It has no enqueue label."))
             if "merge-blocked" in labels(item):
                 events = [e for e in record.get("timeline", []) if e.get("event") == "labeled" and
                           (e.get("label") or {}).get("name") == "merge-blocked"]
@@ -347,6 +403,15 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             add("stale_blocked_view", record, url, closed, "Supervisor / landing reconciler",
                 "Blocked view remains after all recorded native blockers completed and structured wait is clear.",
                 evidence=[b.get("html_url") for b in blockers])
+        if "track_children" in record:
+            verified = verified_at(item.get("body"))
+            newer = sorted(c for c in track_changes(record, owners, trusted) if verified is None or c[0] > verified)
+            if newer:
+                add("stale_track_status", record, url, newer[0][0], "Supervisor / milestone session",
+                    "Track Current Status is older than a later closure or decision on it or its children; "
+                    "rebuild it from those records." if verified else
+                    "Track Current Status has no readable Last verified; rebuild it from its children's records.",
+                    evidence=[source for _, source in newer])
         selected = merged_link(record)
         if selected:
             completing, pull = selected
@@ -682,6 +747,28 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                         status_body_time(record)
                 records.append(record)
                 collected.add((repo, number))
+    # A Track's children live in other repositories; reuse their collected
+    # discussions and read only changed, uncollected ones after Last verified.
+    known = {(r["repo"], r["item"]["number"]): r for r in records if not r.get("trigger_only")}
+    for record in [r for r in records if is_track(r)]:
+        verified = verified_at(record["item"].get("body"))
+        before = len(gaps)
+        children = []
+        for child in listing(f"repos/{record['repo']}/issues/{record['item']['number']}/sub_issues"):
+            match = re.fullmatch(r"https://api.github.com/repos/([\w.-]+/[\w.-]+)", child.get("repository_url") or "")
+            if not match or type(child.get("number")) is not int:
+                gaps.append({"source": f"{record['repo']}#{record['item']['number']}", "reason": "track_child_identity_unknown"})
+                continue
+            key = (match[1].casefold(), child["number"])
+            comments = []
+            if key in known:
+                comments = known[key]["comments"]
+            elif child.get("comments") and (verified is None or (stamp(child.get("updated_at")) or now) > verified):
+                since = f"?since={verified.strftime('%Y-%m-%dT%H:%M:%SZ')}" if verified else ""
+                comments = listing(f"repos/{key[0]}/issues/{child['number']}/comments{since}")
+            children.append({"item": child, "comments": comments})
+        if len(gaps) == before:
+            record["track_children"] = children
     if unread_scopes:
         gaps.append({"source": "repository_inventory", "reason": "unread_repository_scopes", "scopes": unread_scopes})
     if question_delivery is not None:
