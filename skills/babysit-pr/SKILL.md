@@ -126,6 +126,13 @@ what to do:
 - `1` a read or command error, or the state lock stayed busy until the bound:
   report it; the wait was lost.
 
+An empty check/status inventory stays pending until head CI evidence arrives.
+Unknown or incomplete evidence never reports green. For a repository with no CI
+configured, verify its required local gates and add `--allow-no-checks` to
+`--wait-ci`; this permits only a complete, head-matched empty inventory and
+does not bypass failed checks or unfinished workflows. It changes no merge
+authority or required-check verification in the checked `ready` handoff.
+
 Keep `--max-wait-seconds` (default 420) well below the harness's command
 timeout, since a read that starts just before the bound still finishes, and
 give the command a tool timeout above it. Run it in the foreground. Do not

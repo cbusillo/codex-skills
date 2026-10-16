@@ -252,6 +252,11 @@ def parse_args():
         help="Block until CI settles on the head or --max-wait-seconds passes, then emit one ci_wait line",
     )
     parser.add_argument(
+        "--allow-no-checks",
+        action="store_true",
+        help="Permit --wait-ci to finish with an empty complete inventory only for a repository with no CI configured",
+    )
+    parser.add_argument(
         "--max-wait-seconds",
         type=int,
         default=420,
@@ -2000,10 +2005,13 @@ def print_event(event, payload):
     print_json({"event": event, "payload": payload})
 
 
-def is_ci_green(snapshot):
+def is_ci_green(snapshot, *, allow_no_checks=False):
     checks = snapshot.get("checks") or {}
     return (
         bool(checks.get("all_terminal"))
+        and checks.get("evidence_complete") is True
+        and checks.get("head_matches") is True
+        and (int(checks.get("passed_count") or 0) > 0 or allow_no_checks)
         and int(checks.get("failed_count") or 0) == 0
         and int(checks.get("pending_count") or 0) == 0
     )
@@ -2097,12 +2105,12 @@ CI_WAIT_NEXT_STEPS = {
     "review": "Handle new_review_items under babysit-pr Review Feedback; the watcher has marked them seen.",
     "green": "CI is green on the head; continue the handoff.",
     "failed": "Diagnose the failure under babysit-pr CI Failures.",
-    "pending": "CI is still running; run the same command again in this turn.",
+    "pending": "CI is pending, absent or incomplete; run the same command again in this turn. For a repository with no CI configured, use --allow-no-checks.",
     "stopped": "Read actions: the PR closed or the watcher needs help.",
 }
 
 
-def ci_wait_outcome(snapshot):
+def ci_wait_outcome(snapshot, *, allow_no_checks=False):
     pr = snapshot.get("pr") or {}
     actions = set(snapshot.get("actions") or [])
     checks = snapshot.get("checks") or {}
@@ -2116,7 +2124,7 @@ def ci_wait_outcome(snapshot):
         return None
     if "diagnose_ci_failure" in actions or (checks.get("head_matches") and int(checks.get("failed_count") or 0)):
         return "failed"
-    if is_ci_green(snapshot):
+    if is_ci_green(snapshot, allow_no_checks=allow_no_checks):
         return "green"
     return None
 
@@ -2150,7 +2158,7 @@ def run_wait_ci(args):
             busy_state_file = str(err.path)
             poll_seconds = args.poll_seconds
         else:
-            outcome = ci_wait_outcome(snapshot)
+            outcome = ci_wait_outcome(snapshot, allow_no_checks=getattr(args, "allow_no_checks", False))
             if outcome:
                 return print_ci_wait(outcome, snapshot, started)
             current_change_key = snapshot_change_key(snapshot)
