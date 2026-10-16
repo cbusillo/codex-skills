@@ -11,12 +11,12 @@ commands:
   - name: model-review-run
     source: skill
     resource_path: scripts/review_with_model.py
-    example_argv: ["uv", "run", "scripts/review_with_model.py", "run", "--provider", "google", "--repo", ".", "--prompt-file", "<file>"]
+    example_argv: ["uv", "run", "scripts/review_with_model.py", "run", "--author-provider", "openai", "--repo", ".", "--prompt-file", "<file>"]
     purpose: Asks one provider's model for a read-only review and returns JSON with model provenance.
   - name: model-review-check
     source: skill
     resource_path: scripts/review_with_model.py
-    example_argv: ["uv", "run", "scripts/review_with_model.py", "check", "--repo", "."]
+    example_argv: ["uv", "run", "scripts/review_with_model.py", "check", "--author-provider", "openai", "--repo", "."]
     purpose: Shows which providers can actually read the repository from this machine.
   - name: model-review-repair
     source: skill
@@ -44,6 +44,14 @@ one.
 
 ## Run A Review
 
+Read [standing review decisions](references/provider-selection.md) before the
+first run or when the Director changes provider/model decisions. Keep the
+recorded decision in its one private shared file. Supply the author's actual
+provider; let the helper follow the standing order and Context Panel capacity.
+An explicit provider cannot bypass that policy. Finish the primary review
+before running any allowed supplementary review, serially with its recorded
+budget, and put both results in the PR's review note.
+
 1. Commit the change and leave the worktree clean. Write a prompt file that
    names the change, the paths to read, and what the change is for. Never ask
    the reviewer to run a command or tests, and do not forbid commands either:
@@ -58,7 +66,7 @@ one.
 2. Run each reviewer from this skill's base directory:
 
    ```bash
-   uv run scripts/review_with_model.py run --provider google --repo <repo> --prompt-file <file> --out <review.md>
+   uv run scripts/review_with_model.py run --author-provider openai --repo <repo> --prompt-file <file> --out <review.md>
    ```
 
    Providers are `openai`, `anthropic`, and `google`. Each is started so that
@@ -68,7 +76,7 @@ one.
    `openai` reviewer also ignores `~/.codex/config.toml`, so settings there,
    such as its default model, do not apply.
 
-   OpenAI and Anthropic reviews select their provider's Context Panel use-next
+   All reviews select their provider's Context Panel use-next
    account at launch through the [Supervisor account reader](../supervisor/scripts/account_choice.py).
    They use its private `skill-data/supervisor.toml` mappings and snapshot command;
    see [account configuration](../supervisor/references/helpers.md). The chosen
@@ -79,12 +87,13 @@ one.
    unavailable choices or receipt-storage failures stop the review before launch.
    JSON reports the account name and opaque ID plus the count-only launch receipt;
    receipts use Context Panel's existing Launch Receipts store. No fixed review-home
-   export is needed in a Supervisor launch file. Google retains its existing setup.
+   export is needed in a Supervisor launch file. Google uses the account reader's
+   single existing agy login binding, without an account override.
 
-3. Read `model` in the JSON result and report reviewers by provider and that
-   model. When `model_source` says the CLI did not report it, say so instead of
-   stating it as fact. A provider's default may be the author's own model; pass
-   `--model` to pick a different one, and do not call a same-model run
+3. Read `model` and `effort` in the JSON result and report the provider and
+   confirmed model. When `model_source` says the CLI did not report it, say so
+   instead of stating it as fact. A provider's default may be the author's own model; pass
+   `--provider NAME --model MODEL` to pick a permitted different one, and do not call a same-model run
    independent.
 4. Weigh the findings under the shared reference, then record in the pull
    request or owning issue: reviewers, what was acted on, what was declined and
@@ -116,7 +125,7 @@ Failures distinguish no command attempts from attempts without a successful comm
 Nonzero exits retain the JSON provider error and distinct stderr cause as bounded,
 credential-redacted diagnostics; OpenAI's malformed stdout is never excerpted.
 
-- Run `uv run scripts/review_with_model.py check --repo <repo>` to see which
+- Run `uv run scripts/review_with_model.py check --author-provider openai --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.
 - Anthropic and Google diff scratch stays inside the authorized checkout and is
   removed after the run. Anthropic permission failures report `denied_targets`
@@ -153,5 +162,5 @@ credential-redacted diagnostics; OpenAI's malformed stdout is never excerpted.
   `ambiguous` is the Director's to change: `repair` refuses it and changes
   nothing, so show the result and ask, or use another provider. Do not edit
   the settings file by any other route.
-- When no other provider can be made to work, say so and use what is available,
-  as the shared reference describes.
+- When no allowed provider can run, report the outcome. Keep the standing
+  decision in force; do not substitute a provider through another command.

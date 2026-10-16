@@ -19,9 +19,10 @@ These points apply to a review you commission, not to one that already ran. The
 fails loudly when a reviewer could not read or returned nothing.
 
 - Include at least one reviewer from a different provider than the author. A
-  model from the same provider shares the author's blind spots. When no other
-  provider is reachable, say so and use what is available; do not present a
-  same-provider run as independent.
+  model from the same provider shares the author's blind spots. Follow the
+  standing provider decisions through `model-review`. When no allowed provider
+  is reachable, report the outcome and keep that decision in force; do not
+  substitute a provider through another command.
 - Name reviewers by provider and model, and record the model the run actually
   used. Independence comes from the model, and one harness can run several.
   Mention the harness only to explain how a run was invoked or a sandbox effect.

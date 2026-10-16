@@ -111,9 +111,11 @@ class ReviewWithModelTests(unittest.TestCase):
         self.snapshot_file.write_text(json.dumps({
             "schemaVersion": 1,
             "accounts": [{"id": "openai-a", "provider": "openai", "label": "openai-test"},
-                         {"id": "anthropic-b", "provider": "anthropic", "label": "anthropic-test"}],
+                         {"id": "anthropic-b", "provider": "anthropic", "label": "anthropic-test"},
+                         {"id": "google-c", "provider": "google", "label": "google-test"}],
             "answers": {"useNext": [{"provider": "openai", "accountID": "openai-a"},
-                                   {"provider": "anthropic", "accountID": "anthropic-b"}]},
+                                   {"provider": "anthropic", "accountID": "anthropic-b"},
+                                   {"provider": "google", "accountID": "google-c"}]},
         }))
         config = self.home / ".code/skill-data/supervisor.toml"
         config.parent.mkdir(parents=True)
@@ -126,7 +128,12 @@ class ReviewWithModelTests(unittest.TestCase):
             '[[accounts.account]]\nname = "anthropic-review"\nprovider = "anthropic"\n'
             'context_panel_label = "anthropic-test"\n[accounts.account.env]\nCLAUDE_CONFIG_DIR = ' +
             json.dumps(str(self.home / "anthropic-review")) + '\n'
+            '[[accounts.account]]\nname = "google-review"\nprovider = "google"\n'
+            'context_panel_label = "google-test"\nsingle_login = true\nenv = {}\n'
         )
+        self.policy = config.with_name("model-review.toml")
+        self.policy.write_text('version = 1\ndecision = "fixture decision"\n'
+                               'providers = ["anthropic", "openai", "google"]\n')
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -139,6 +146,9 @@ class ReviewWithModelTests(unittest.TestCase):
     def run_helper(self, *args: str, **env: str) -> tuple[int, dict]:
         # PATH holds only the fakes plus the interpreter's directory, so an uninstalled provider stays uninstalled.
         environment = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "FAKE_SNAPSHOT_FILE": str(self.snapshot_file), **env}
+        if args[0] in {"run", "check"} and "--author-provider" not in args:
+            provider = args[args.index("--provider") + 1] if "--provider" in args else "openai"
+            args = (*args, "--author-provider", "anthropic" if provider == "openai" else "openai")
         proc = subprocess.run(
             [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=environment
         )
@@ -148,6 +158,163 @@ class ReviewWithModelTests(unittest.TestCase):
         return self.run_helper(
             "run", "--provider", provider, "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env
         )
+
+    def test_standing_decision_blocks_primary_google_but_allows_supplementary(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.policy.write_text('version = 1\ndecision = "trial decision"\n'
+                               'providers = ["anthropic"]\nsupplementary = ["google"]\n'
+                               '[provider.google]\ntimeout = 1800\n')
+        cwd_file = self.root / "agy-cwd"
+        env = {"FAKE_AGY_CWD_FILE": str(cwd_file),
+               "FAKE_AGY_JSON": json.dumps({"response": completed("none")})}
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertFalse(cwd_file.exists())
+        self.assertFalse((self.storage / "Launch Receipts").exists())
+        code, result = self.run_helper(
+            "run", "--author-provider", "openai", "--provider", "google", "--supplementary",
+            "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env)
+        self.assertEqual((code, result["provider"], result["selection"]["role"]), (0, "google", "supplementary"))
+        self.assertTrue(cwd_file.exists())
+        self.assertTrue(Path(result["launch_receipt"]).exists())
+
+    def test_capacity_fallback_uses_only_the_allowed_other_provider_choice(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.install("agy", FAKE_AGY)
+        self.policy.write_text('version = 1\ndecision = "allow fallback"\nproviders = ["anthropic", "google"]\n')
+        snapshot = json.loads(self.snapshot_file.read_text())
+        snapshot["answers"]["useNext"] = [r for r in snapshot["answers"]["useNext"] if r["provider"] != "anthropic"]
+        snapshot["ranking"] = [{"provider": "anthropic", "nextCapacityAt": "2099-01-01T00:00:00Z"}]
+        self.snapshot_file.write_text(json.dumps(snapshot))
+        capture = self.root / "child-env"
+        code, result = self.run_helper(
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai",
+            FAKE_REVIEW_ENV_FILE=str(capture), FAKE_AGY_CWD_FILE=str(self.root / "cwd"),
+            FAKE_AGY_JSON=json.dumps({"response": completed("none")}))
+        self.assertEqual((code, result["provider"]), (0, "google"))
+        self.assertEqual(result["account"]["account_id"], next(r["accountID"] for r in snapshot["answers"]["useNext"]
+                                                            if r["provider"] == "google"))
+        self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["selection"]["skipped"][0]["reason"])
+        self.assertFalse(capture.exists())
+        self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
+        # A later candidate's budget mismatch must preserve the earlier capacity reason.
+        self.policy.write_text(self.policy.read_text() + '[provider.google]\ntimeout = 10\n')
+        code, result = self.run_helper(
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai", "--timeout", "20")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertEqual((result["provider"], [r["provider"] for r in result["skipped"]]), ("google", ["anthropic"]))
+        self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["skipped"][0]["reason"])
+        self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
+
+    def test_timeout_override_cannot_skip_an_available_preferred_provider(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.install("agy", FAKE_AGY)
+        self.policy.write_text('version = 1\ndecision = "preferred provider"\nproviders = ["anthropic", "google"]\n'
+                               '[provider.anthropic]\ntimeout = 10\n')
+        capture = self.root / "child-env"
+        code, result = self.run_helper("run", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
+                                       "--author-provider", "openai", "--timeout", "20", FAKE_REVIEW_ENV_FILE=str(capture))
+        self.assertEqual((code, result["provider"], result["skipped"]), (1, "anthropic", []))
+        self.assertFalse(capture.exists())
+        self.assertFalse((self.storage / "Launch Receipts").exists())
+
+    def test_exhausted_primary_does_not_promote_supplementary_or_use_author(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.install("codex", FAKE_CODEX)
+        self.install("agy", FAKE_AGY)
+        self.policy.write_text('version = 1\ndecision = "primary held"\n'
+                               'providers = ["anthropic", "openai"]\nsupplementary = ["google"]\n')
+        snapshot = json.loads(self.snapshot_file.read_text())
+        snapshot["answers"]["useNext"] = [r for r in snapshot["answers"]["useNext"] if r["provider"] != "anthropic"]
+        self.snapshot_file.write_text(json.dumps(snapshot))
+        code, result = self.run_helper("run", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
+                                       "--author-provider", "openai")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertEqual([r["provider"] for r in result["skipped"]], ["anthropic"])
+        self.assertFalse((self.storage / "Launch Receipts").exists())
+
+    def test_review_failure_never_triggers_provider_fallback(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.install("agy", FAKE_AGY)
+        self.policy.write_text('version = 1\ndecision = "ordered providers"\nproviders = ["anthropic", "google"]\n')
+        cwd_file = self.root / "google-cwd"
+        code, result = self.run_helper(
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai",
+            FAKE_CLAUDE_JSON=json.dumps({"result": json.dumps({"status": "refused", "review": ""})}),
+            FAKE_AGY_CWD_FILE=str(cwd_file), FAKE_AGY_JSON=json.dumps({"response": completed("none")}))
+        self.assertEqual((code, result["provider"], result["outcome"]), (1, "anthropic", "refused"))
+        self.assertFalse(cwd_file.exists())
+        self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
+
+    def test_missing_or_malformed_decision_never_launches(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        capture = self.root / "child-env"
+        bodies = [None, "invalid TOML", 'version = 1\nproviders = ["anthropic"]',
+                  'version = 1\ndecision = "bad provider"\nproviders = [{name="anthropic"}]']
+        for body in bodies:
+            with self.subTest(body=body):
+                self.policy.unlink(missing_ok=True)
+                if body is not None:
+                    self.policy.write_text(body)
+                code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertFalse(capture.exists())
+                self.assertFalse((self.storage / "Launch Receipts").exists())
+
+    def test_policy_model_budget_and_actual_provenance_reach_the_review(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        requested, actual, timeout = "fixture-alias", "resolved-model", 123
+        self.policy.write_text('version = 1\ndecision = "model choice"\nproviders = ["anthropic"]\n'
+                               f'[provider.anthropic]\nmodel = "{requested}"\ntimeout = {timeout}\n')
+        argv_file = self.root / "argv"
+        code, result = self.review("anthropic", FAKE_CLAUDE_ARGV_FILE=str(argv_file),
+                                   FAKE_CLAUDE_JSON=json.dumps({"result": completed("none"), "modelUsage": {actual: {}}}))
+        self.assertEqual((code, result["model"], result["timeout"]), (0, actual, timeout))
+        argv = argv_file.read_text().splitlines()
+        self.assertEqual(argv[argv.index("--model") + 1], requested)
+        self.assertEqual(result["effort"], "unknown")
+        argv_file.unlink()
+        for option, value in (("--model", "unapproved-model"), ("--timeout", str(timeout + 1))):
+            code, result = self.run_helper("run", "--provider", "anthropic", "--repo", str(self.repo),
+                                           "--prompt-file", str(self.prompt), option, value,
+                                           FAKE_CLAUDE_ARGV_FILE=str(argv_file))
+            self.assertEqual((code, result["ok"]), (1, False))
+            self.assertFalse(argv_file.exists())
+
+    def test_supplementary_probe_uses_its_role_and_can_shorten_the_review_limit(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.policy.write_text('version = 1\ndecision = "probe trial"\n'
+                               'providers = ["anthropic"]\nsupplementary = ["google"]\n'
+                               '[provider.google]\ntimeout = 1800\n')
+        (self.repo / "probe.txt").write_text("fixture probe line\n")
+        code, result = self.run_helper(
+            "check", "--repo", str(self.repo), "--author-provider", "openai", "--supplementary", "--timeout", "12",
+            FAKE_AGY_CWD_FILE=str(self.root / "cwd"), FAKE_AGY_JSON=json.dumps({"response": completed("fixture probe line")}))
+        self.assertEqual((code, result["providers"][0]["provider"], result["providers"][0]["state"]),
+                         (0, "google", "ready"))
+        config = review_with_model.account_choice.load_config(self.policy.with_name("supervisor.toml"))
+        with patch.object(review_with_model.account_choice, "load_config", return_value=config), \
+                patch.object(review_with_model.account_choice, "read_snapshot", return_value=(json.loads(self.snapshot_file.read_text()), None)), \
+                patch.object(review_with_model.shutil, "which", return_value="fake-agy"):
+            selected = review_with_model.review_policy.select(review_with_model.review_policy.load_policy(self.policy),
+                                                              "openai", "google", True, probe=True)
+        self.assertLess(selected["timeout"], review_with_model.review_policy.load_policy(self.policy)["provider"]["google"]["timeout"])
+
+    def test_missing_author_and_invalid_model_route_are_json_errors_before_capacity(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        code, result = self.run_helper(
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai", "--model", "fixture")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertFalse((self.storage / "Launch Receipts").exists())
+        # Call without the convenience wrapper's author default, like an older caller.
+        proc = subprocess.run([sys.executable, str(SCRIPT), "run", "--provider", "anthropic",
+                               "--repo", str(self.repo), "--prompt-file", str(self.prompt)],
+                              capture_output=True, text=True, env={"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home),
+                                  "FAKE_SNAPSHOT_FILE": str(self.snapshot_file), "FAKE_REVIEW_ENV_FILE": str(self.root / "child-env"),
+                                  "FAKE_CLAUDE_JSON": json.dumps({"result": completed("none")})})
+        self.assertEqual((proc.returncode, json.loads(proc.stdout)["ok"]), (1, False))
+        self.assertFalse((self.root / "child-env").exists())
+        self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_reviews_route_provider_home_and_write_count_only_receipt(self) -> None:
         self.install("codex", FAKE_CODEX)
@@ -822,13 +989,15 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertNotEqual(result["model"], "retired-alias")
         self.assertEqual((code, result["model"], result["model_source"]),
                          (0, "replacement", "reported by the CLI (rerouted)"))
+        selected_model = "selected (High)"
         (base / "cli.log").write_text(
-            'I1013 17:14:50.632344 165 model_config_manager.go:340] Propagating selected model override to backend: label="selected"\n'
+            f'I1013 17:14:50.632344 165 model_config_manager.go:340] Propagating selected model override to backend: label="{selected_model}"\n'
             f"I1013 17:14:50.865659 413 server.go:1219] Created conversation {conversation}\n"
         )
         code, result = self.review("google", **env)
         self.assertEqual((code, result["model"], result["model_source"]),
-                         (0, "selected", "reported by the CLI"))
+                         (0, selected_model, "reported by the CLI"))
+        self.assertEqual(result["effort"], "high")
         # A cli.log pointing at another session's conversation falls back to the run's own log or request.
         (base / "cli.log").write_text(
             'I1013 17:15:00.000000 1 model_config_manager.go:340] Propagating selected model override to backend: label="other-session"\n'
