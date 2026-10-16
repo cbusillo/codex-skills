@@ -5354,11 +5354,29 @@ def summarize_target_replacement_plan_read(
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "recommendation": (
             "Read plan_status and blocker_codes first; blocker_keys names the env keys each "
-            "key-list blocker is about. Blocker, step and warning text is not returned."
+            "key-list blocker is about, and expected_artifact_id is the artifact the plan "
+            "evaluated. Blocker, step and warning text is not returned."
         ),
     }
     assert_public_safe_shape(payload["summary"])
     return payload
+
+
+def _target_replacement_plan_candidate(args: argparse.Namespace) -> dict[str, str]:
+    """The candidate artifact to plan with instead of the lane's current one: both or neither."""
+    artifact_id = (getattr(args, "artifact_id", None) or "").strip()
+    source_git_ref = (getattr(args, "source_git_ref", None) or "").strip()
+    if bool(artifact_id) != bool(source_git_ref):
+        raise ValueError("artifact_id_and_source_git_ref_required_together")
+    if not artifact_id:
+        return {}
+    candidate: dict[str, str] = {}
+    for name, value in (("artifact_id", artifact_id), ("source_git_ref", source_git_ref)):
+        try:
+            candidate[name] = public_identifier(value)
+        except LaunchplaneSafetyError:
+            raise ValueError(f"invalid_{name}") from None
+    return candidate
 
 
 def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
@@ -5368,16 +5386,18 @@ def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
     for name, value in (("product", product), ("instance", instance)):
         if not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value):
             raise ValueError(f"invalid_{name}")
+    candidate = _target_replacement_plan_candidate(args)
     operation = "target-replacement-plan-read"
     request: dict[str, object] = {
         "product": product,
         "instance": instance,
+        **candidate,
         "payload_source": "operator_argument",
     }
     body: dict[str, object] = {
         "schema_version": 1,
         "product": product,
-        "replacement": {"product": product, "instance": instance},
+        "replacement": {"product": product, "instance": instance, **candidate},
     }
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
@@ -9497,6 +9517,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     target_replacement_plan_read.add_argument("--product", required=True)
     target_replacement_plan_read.add_argument("--instance", required=True)
+    target_replacement_plan_read.add_argument(
+        "--artifact-id",
+        help="Plan with this candidate artifact instead of the lane's current one; needs --source-git-ref.",
+    )
+    target_replacement_plan_read.add_argument(
+        "--source-git-ref",
+        help="The candidate artifact's source commit; needs --artifact-id.",
+    )
 
     for command, help_text in (
         ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),

@@ -1165,9 +1165,11 @@ verification.
   journaled effects never proves absent provider effects or safe release.
 - `POST /v1/drivers/odoo/target-replacement-plan`: Bounded local-extension
   read (`target-replacement-plan-read --product --instance`) for what an Odoo
-  target replacement on that lane would do, before any apply. The route builds
-  a plan and writes nothing. It returns plan status, strategy, data source
-  mode, the expected artifact, blocker codes, and env-key names only: the keys
+  target replacement on that lane would do, before any apply. Add
+  `--artifact-id` with `--source-git-ref` to plan with a candidate artifact
+  instead of the lane's current one. The route builds a plan and writes
+  nothing. It returns plan status, strategy, data source mode, the artifact it
+  evaluated, blocker codes, and env-key names only: the keys
   it would deliver (`delivered_runtime_keys`, `null` when the service does not
   report them yet) and retire, the keys each blocker is about, and the current
   target's env keys and missing volume keys, plus step ids and statuses.
