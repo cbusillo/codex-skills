@@ -30,9 +30,11 @@ newly reported action Launchplane says to mutate once and call again (planning,
 building or landing), the next call follows after --progress-seconds instead.
 Every pause still respects the shared low-budget floor and the deadline.
 
-The stop event's `cadence` counts controller requests and GitHub reads and
-splits elapsed time into controller requests, sleep, reads, terminal read-back
-and the unattributed remainder, with one entry per controller pass.
+The stop event's `cadence` counts controller requests, read-only observations
+and GitHub reads and splits elapsed time into controller requests, sleep, reads,
+recovery, terminal read-back and the unattributed remainder. `passes` has one
+entry per controller pass (and a `recovery` entry when recovery ran); a pass
+that paused names why.
 
 When the landed repository is the skills catalog this command lives in, the
 landed stop event carries `runtime_reconciliation`: the receipt from running
