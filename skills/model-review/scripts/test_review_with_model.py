@@ -875,10 +875,13 @@ printf '%s' "$FAKE_AGY_JSON"
 """,
         )
 
-        def run_one(requested: str, resolved: str, conversation: str, write_own_log: bool) -> tuple[int, dict]:
+        def run_one(requested: str, resolved: str, conversation: str, write_own_log: bool,
+                    log_conversation: str | None = None) -> tuple[int, dict]:
+            recorded_conversation = log_conversation or conversation
             own_log = (
                 f'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="{resolved}"\n'
-                f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {conversation}\n"
+                f'I1015 20:00:00.150000 1 model_config_manager.go:340] Propagating selected model override to backend: label="{resolved}"\n'
+                f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {recorded_conversation}\n"
             )
             return self.run_helper(
                 "run", "--provider", "google", "--repo", str(self.repo),
@@ -919,18 +922,40 @@ printf '%s' "$FAKE_AGY_JSON"
             (0, "requested-second", "requested, not reported by the CLI"),
         )
 
-        # A log with one Created conversation line but conflicting model labels from a second process is also unconfirmed.
-        (base / "cli.log").write_text(
-            'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-first"\n'
-            f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
-            'I1015 20:00:00.300000 2 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-second"\n'
-        )
+        # A log with one Created conversation line but conflicting model labels or reroutes is also unconfirmed.
         (base / "log" / "cli-20261015_200000.log").unlink()
-        code, result = run_one("requested-first", "resolved-first", first_conversation, False)
+        for conflicting_log in (
+            (
+                'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-first"\n'
+                f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
+                'I1015 20:00:00.300000 2 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-second"\n'
+            ),
+            (
+                'I1015 20:00:00.100000 1 model_resolver.go:155] model alias "requested-first" resolved to "rerouted-first"\n'
+                'I1015 20:00:00.150000 1 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-second"\n'
+                f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
+            ),
+        ):
+            (base / "cli.log").write_text(conflicting_log)
+            code, result = run_one("requested-first", "resolved-first", first_conversation, False)
+            self.assertEqual(
+                (code, result["model"], result["model_source"]),
+                (0, "requested-first", "requested, not reported by the CLI"),
+            )
+
+        # A non-empty per-run log with a mismatched conversation_id must not fall through to a shared cli.log.
+        (base / "cli.log").write_text(
+            'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="shared-fallback"\n'
+            f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
+        )
+        code, result = run_one(
+            "requested-first", "resolved-first", first_conversation, True, log_conversation=second_conversation
+        )
         self.assertEqual(
             (code, result["model"], result["model_source"]),
             (0, "requested-first", "requested, not reported by the CLI"),
         )
+
 
     def test_a_planted_finding_arrives_once_inside_a_real_review_and_only_when_the_owner_set_it(self) -> None:
         self.install("codex", FAKE_CODEX)
