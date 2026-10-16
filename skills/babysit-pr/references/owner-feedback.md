@@ -29,6 +29,9 @@ older acceptance.
   not treat it as a newly verified decision. Diagnose the scoped read without
   changing credentials or grants, and hand off a persistent denial or damaged
   projection.
+  Failed saved-review reads retain validated service error codes, HTTP status
+  and trace IDs in the error evidence when available. Raw helper output,
+  provider bodies and unvalidated diagnostic values are omitted.
 - `address_owner_review_changes` means the latest decision for the current head
   requests changes. Older revisions remain visible as history; acceptance there
   does not approve the current head.

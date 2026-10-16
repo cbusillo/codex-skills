@@ -45,6 +45,9 @@ import github_identity
 import github_read
 import github_pr_batch
 
+sys.path.insert(0, str(SCRIPT_DIR.parent.parent / "launchplane" / "scripts"))
+from launchplane_safety import LaunchplaneSafetyError, assert_public_safe_shape, public_code, public_trace_id
+
 FAILED_RUN_CONCLUSIONS = {
     "failure",
     "timed_out",
@@ -1209,7 +1212,23 @@ def read_launchplane_owner_review(pr, decision_id=""):
     if not result.returncode and isinstance(payload, dict) and payload.get("ok") is True and payload.get("decision") is None and not decision_id:
         return None
     if result.returncode or not isinstance(payload, dict) or payload.get("ok") is not True or not isinstance(payload.get("decision"), dict):
-        raise GhCommandError("Launchplane Owner review verification failed; the saved decision could not be read")
+        message = "Launchplane Owner review verification failed; the saved decision could not be read"
+        diagnostics = {}
+        if isinstance(payload, dict):
+            for key, project in (("error_code", public_code), ("trace_id", public_trace_id)):
+                try:
+                    value = project(payload.get(key))
+                    assert_public_safe_shape(value)
+                    if value:
+                        diagnostics[key] = value
+                except LaunchplaneSafetyError:
+                    pass
+            status = payload.get("status_code")
+            if type(status) is int and 100 <= status <= 599:
+                diagnostics["status_code"] = status
+        if diagnostics:
+            message += "; " + json.dumps(diagnostics, sort_keys=True)
+        raise GhCommandError(message)
     return payload["decision"]
 
 
