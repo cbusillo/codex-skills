@@ -410,7 +410,9 @@ def test_main_preserves_closed_audit_cutoff_and_stamps_scan_start() -> None:
                 assert listing in result["findings"][0]["listings"]
                 assert result["ok"] is False
                 assert result["marked"] is None, "an unread milestone addition must stay in the next window"
-                assert saved == original
+                assert {key: saved[key] for key in original} == original
+                assert saved["audit_runs"]["o/r"] == {"ran": "2026-09-21T12:00:00Z", "held": listing}
+                assert result["run_recorded"] == str(marker)
             else:
                 assert result["marked"] == str(marker)
                 assert saved["audits"]["o/r"] == "2026-09-21T12:00:00Z"
@@ -464,6 +466,31 @@ def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
             else:
                 assert result["marked"] == str(marker)
                 assert "o/r" in json.loads(marker.read_text())["audits"]
+
+
+def test_audit_that_confirms_archive_drops_the_repository_from_the_marker() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        original = {"turn": "earlier", "audits": {"o/r": "2026-09-01T00:00:00Z", "o/active": "earlier"},
+                    "audit_runs": {"o/r": {"ran": "2026-09-01T00:00:00Z"}}}
+        for archived in (None, True):
+            marker.write_text(json.dumps(original))
+            output = StringIO()
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
+                                            "gh_json": lambda args, **_kwargs: {"archived": archived} if args[1] == "repos/o/r" else []}),
+                  redirect_stdout(output)):
+                module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
+            result = json.loads(output.getvalue())
+            saved = json.loads(marker.read_text())
+            assert result["marked"] is None
+            if archived:
+                # No separate prune command: the audit itself removes the retired entry.
+                assert result["dropped"] == str(marker)
+                assert saved == {"turn": "earlier", "audits": {"o/active": "earlier"}, "audit_runs": {}}
+            else:
+                assert result["dropped"] is None and saved == original
 
 
 def test_prune_removes_archived_repository_with_direction_and_preserves_unknown_archive_state() -> None:

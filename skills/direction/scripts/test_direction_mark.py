@@ -41,7 +41,8 @@ def test_turn_records_repository_and_audit_preserves_daily_evidence() -> None:
         first = mark.mark_turn(path, "owner/start", NOW)
         assert first == {"turn": mark.utc_stamp(NOW), "turn_repo": "owner/start", "audits": {}}, first
         later = mark.mark_audit(path, "owner/repo", NOW + dt.timedelta(days=1))
-        assert later == {**first, "audits": {"owner/repo": mark.utc_stamp(NOW + dt.timedelta(days=1))}}, later
+        stamp = mark.utc_stamp(NOW + dt.timedelta(days=1))
+        assert later == {**first, "audits": {"owner/repo": stamp}, "audit_runs": {"owner/repo": {"ran": stamp}}}, later
         again = mark.mark_turn(path, "owner/next", NOW + dt.timedelta(days=2))
         assert again["turn_repo"] == "owner/next"
         assert again["audits"] == {"owner/repo": "2026-09-23T12:00:30Z"}, "a turn must not touch audit stamps"
