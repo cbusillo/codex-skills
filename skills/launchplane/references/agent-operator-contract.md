@@ -66,10 +66,17 @@ artifact later projects the same routes, forcing a deliberate migration instead
 of silently maintaining two sources of truth.
 
 Every projected operation must be covered exactly once: by a projected helper
-command, a protected workflow, the read-only governance projection, or Launchplane's own bounded client. The validator's
+command, a protected workflow, the read-only governance projection, or
+Launchplane's producer-owned service/UI/CLI surface. The validator's
 operation coverage in `scripts/launchplane_contract.py` owns that
 classification; a newly projected operation fails the gate until it is
 assigned deliberately.
+
+For the producer-owned private testing activation and transport planner, use
+Launchplane's `docs/private-testing-transport.md` at the qualified service
+revision. Contract coverage does not add a catalog activation command or grant
+permission to activate a listener. The endpoint helper's public CA support is
+described in the [private endpoint contract](write-action-helper-contract.md#private-health-endpoints).
 
 The helper also tracks internal routes outside the projected command count:
 the read-before-write `GET /v1/work-graph/merge-train/policy-targets`, the

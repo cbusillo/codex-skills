@@ -1240,10 +1240,13 @@ verification.
   the private health endpoint record a lane's `private_http` health check names
   (`private-health-endpoint-read --product --context [--instance]` /
   `-dry-run` / `-apply`, with `--payload-file` and `--reason`). The private
-  payload carries the endpoint key, scope and URL; output shows keys, scope and
-  status only. Apply requires the saved dry-run evidence,
+  payload carries the endpoint key, scope and URL, with optional public
+  `tls_ca_pem` for testing HTTPS only; output redacts URLs and certificate
+  contents, showing only a CA digest when supplied. Read the
+  [private endpoint contract](references/write-action-helper-contract.md#private-health-endpoints)
+  for validation and scoped-trust limits. Apply requires the saved dry-run evidence,
   `--expected-plan-digest`, reviewed acknowledgement and an idempotency key,
-  then reads the record back and compares its URL privately.
+  then reads the record back and compares its URL and scoped CA privately.
 - `GET .../environments/prod/promotion-status` and
   `POST .../environments/prod/promotion/dry-run` under `/v1/products/{product}`:
   Bounded local-extension reads and dry-runs (`product-promotion-status-read`,

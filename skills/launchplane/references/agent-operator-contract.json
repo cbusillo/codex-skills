@@ -48,6 +48,312 @@
       {
         "idempotency": "apply",
         "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply",
+          "readback"
+        ],
+        "operation_id": "activate_private_testing_transport_source",
+        "path": "/v1/products/{product}/private-testing-transport/activation",
+        "purpose": "Install or remove exact reviewed private testing Compose source using immutable product provenance and original-operation recovery; deployment and live TLS proof remain separate.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "expected_plan_sha256",
+          "host_review",
+          "custody_review",
+          "trust_review"
+        ],
+        "schema_fingerprint_sha256": "47f44b2de14827c949b24278aab35d5a8e521d46e0527d256d71d19c735727eb",
+        "supported_surfaces": [
+          "service_api",
+          "local_cli"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply",
+          "readback"
+        ],
+        "operation_id": "prepare_testing_public_ingress",
+        "path": "/v1/products/{product}/testing-public-ingress",
+        "purpose": "Publish the current independent Odoo testing hostname at its recorded edge using an existing covering certificate; preserve its restored copy and retained routes.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_sha256"
+        ],
+        "schema_fingerprint_sha256": "b6766c09df89c7ab62a1ad2d8c07488a8a9acf78a0c048b7bfdc8d8b9aee1726",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply",
+          "readback"
+        ],
+        "operation_id": "complete_testing_verification",
+        "path": "/v1/products/{product}/testing-verification",
+        "purpose": "Verify the installed Odoo testing copy and finish its deployment and inventory publication without another deployment or restore.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_sha256"
+        ],
+        "schema_fingerprint_sha256": "6b47a49547415639977863d2d2747e5fb896ebfef965f4cd6703e881f0abc8d3",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "readback"
+        ],
+        "operation_id": "plan_private_testing_transport",
+        "path": "/v1/products/{product}/private-testing-transport/plan",
+        "purpose": "Plan or compare private testing HTTPS and WSS configuration using current target evidence; no activation or transport verification.",
+        "response_statuses": [
+          "200",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "expected_plan_sha256"
+        ],
+        "schema_fingerprint_sha256": "b59a6d26286942e115d88b89debcc82e3bf198c393df7a6a682d9c6b63835027",
+        "supported_surfaces": [
+          "service_api",
+          "local_cli"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_operator_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply"
+        ],
+        "operation_id": "odoo_testing_walkthrough",
+        "path": "/v1/drivers/odoo/testing-walkthrough",
+        "purpose": "Provision or revoke a testing-only Odoo task account, or run its browser inside Launchplane; return only redacted receipts and masked screenshots.",
+        "response_statuses": [
+          "200",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_sha256"
+        ],
+        "schema_fingerprint_sha256": "3963867c5c058922f309d9303f21605cd0e7cb6f9e139d18a4ae8440f634ae8b",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply",
+          "readback"
+        ],
+        "operation_id": "retire_incomplete_testing_generation",
+        "path": "/v1/products/{product}/testing-generation-retirement",
+        "purpose": "Retain an incomplete legacy testing generation and its unknown history without releasing the operation; an isolated successor remains separately qualified.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_sha256"
+        ],
+        "schema_fingerprint_sha256": "a647fa4ac57158aebdfc4fecde23df3299549aea436c09259b8c1ab0746e0e81",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply",
+          "readback"
+        ],
+        "operation_id": "prepare_fresh_testing_bootstrap",
+        "path": "/v1/products/{product}/testing-replacement-bootstrap",
+        "purpose": "Bind the exact fresh Odoo testing generation to its independent hostname and sanitized production-copy reconcile path; runtime proof remains separate.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "404",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_sha256"
+        ],
+        "schema_fingerprint_sha256": "9134cab96df9a3cb4e4032fd367a57118aa86252ba051af0212dec862f75c941",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply",
+          "readback"
+        ],
+        "operation_id": "prepare_testing_replacement_resources",
+        "path": "/v1/products/{product}/testing-replacement-resources",
+        "purpose": "Prepare fresh empty Odoo testing resources while preserving the retained target, then qualify their actual backing storage; this never restores data or starts web.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "404",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_sha256"
+        ],
+        "schema_fingerprint_sha256": "e276d8778bb63a5a90a42f957fee3c63adb089ad2a5fc3affb737dc2ba8ec52b",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "none",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "inspect",
+          "collect",
+          "record",
+          "clear",
+          "prepare-rebuild"
+        ],
+        "operation_id": "record_disposable_lane_safety",
+        "path": "/v1/disposable-lanes/observations",
+        "purpose": "Inspect or collect exact-lane service safety evidence, record unknown assertions, clear evidence or prepare a retained testing replacement; unavailable facts stay unknown.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "404",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "expected_binding_sha256"
+        ],
+        "schema_fingerprint_sha256": "544c4ee51320540564d30bcddd3d12450555631efa403b2ca519964b8a975458",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "body",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "apply"
+        ],
+        "operation_id": "update_merge_train_operational_policy",
+        "path": "/v1/work-graph/merge-train/policy/operational",
+        "purpose": "Update audited merge-train operational settings within existing authority, with a compared policy baseline and a stable source event.",
+        "response_statuses": [
+          "200",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "expected_record_id",
+          "expected_policy_sha256"
+        ],
+        "schema_fingerprint_sha256": "a29328e09a0fc505068a33925bd447a2fbf8aaf1ea12576ab6139ca58c438526",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
           "read_operator_mutation_identity"
         ],
         "method": "POST",
@@ -161,6 +467,37 @@
         "supported_surfaces": [
           "agent_helper",
           "operator_ui",
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_write_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply"
+        ],
+        "operation_id": "apply_odoo_website_settings",
+        "path": "/v1/product-config/odoo-website-settings/apply",
+        "purpose": "Prepare artifact-bound website intent without changing the Odoo database.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "404",
+          "409",
+          "413",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_digest"
+        ],
+        "schema_fingerprint_sha256": "e0bc6e9b9a07b51cba7375d63bd3259f1c6fc37e5d4c807f24ea886d32110f0a",
+        "supported_surfaces": [
           "service_api"
         ]
       },
@@ -294,7 +631,7 @@
       {
         "idempotency": "always",
         "identity_dependencies": [
-          "read_write_identity"
+          "read_browser_mutation_identity"
         ],
         "method": "POST",
         "modes": [
@@ -316,7 +653,7 @@
         "reviewed_evidence": [
           "reviewed_plan_digest"
         ],
-        "schema_fingerprint_sha256": "66d7c0b5e46c05e4f207aa5e923e3c43260c3842da72922c63dcb7f47d71661b",
+        "schema_fingerprint_sha256": "ab31ba59e8bbcb0a548181ec2b99bae05e5e9dc0c18b54224bf246dffa83b486",
         "supported_surfaces": [
           "protected_workflow",
           "operator_ui",
@@ -389,7 +726,7 @@
       {
         "idempotency": "apply",
         "identity_dependencies": [
-          "read_write_identity"
+          "read_operator_mutation_identity"
         ],
         "method": "POST",
         "modes": [
@@ -411,7 +748,7 @@
         "reviewed_evidence": [
           "reviewed_plan_digest"
         ],
-        "schema_fingerprint_sha256": "7d101406aac2ae680fc45afd78e30980dd0739e72e1c700906eba710fbc097b0",
+        "schema_fingerprint_sha256": "cf83a027ff202ee6530f41b21122d5b82ba10fe5a704d152fb6f926741d82645",
         "supported_surfaces": [
           "protected_workflow",
           "operator_ui",
@@ -471,8 +808,8 @@
   },
   "normalization_version": 1,
   "provenance": {
-    "source_commit_sha": "f173edc7a0ec0a42a0e74d9c339829db44dba0dc"
+    "source_commit_sha": "665b357570423ac17fa71b2cd516cb89923a7750"
   },
   "schema_version": 1,
-  "semantic_digest_sha256": "cfc9a703985101f603e384f66b425a9a5d9301a49a69d6c8021f4933c0ec864d"
+  "semantic_digest_sha256": "1b99d9c6e2441e0f7d92f71896ff2ffa175120724edcc5c6c85cdab0e9e625e2"
 }
