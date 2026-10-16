@@ -5,14 +5,15 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
 
 - **Before Enqueueing**: Run the controller without `--mutate` and inspect the
   intended PRs in `result.dry_run_result.queue`. The current GitHub adapter
-  checks both the PR author and the actor who last applied `ready-to-merge`,
+  checks both the PR author and the actor who last applied the enqueue label
+  from active Launchplane policy,
   using the label's latest `labeled` event. Enqueue with the trusted automation
   identity's installation token. The labeler must be trusted automation or have
   a role in `allowed_actor_roles`. A label applied by a GitHub App acting with
   a user's token is always refused, regardless of the user's role.
   An unauthorized labeler is reported as
-  `ready-to-merge label ignored: applied by <login> ...`; the same
-  `<enqueue_label> label ignored:` prefix also covers unreadable labeler evidence
+  `<enqueue_label> label ignored: applied by <login> ...`; the same prefix
+  also covers unreadable labeler evidence
   and an App acting for a user. Report those refusals;
   do not work around it by relabeling under another identity. Check
   `actor_role` (the author's role), `eligible`, `ineligible_reasons`, checks, and head SHA before
@@ -187,6 +188,12 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   Only a verified GitHub merge supplies a child's `merge_commit_sha`; a carried
   child's value stays empty. Failed reads keep prior verified terminal results,
   while unavailable nonterminal members are `unknown`.
+  Candidate and landing-plan membership come from the service projection.
+  GitHub history can recover omitted companions sharing the target's exact
+  landing commit, regardless of their current enqueue labels. The terminal
+  `companion_inventory` reports whether that bounded history read completed;
+  a cap or unavailable read leaves companion coverage incomplete even when the
+  target's landing is verified.
 - **Batch Evidence**: For flat batch runs, report the dry-run/admission reason,
   candidate record id and candidate SHA, required-check status on the candidate
   commit, landing-plan record id, each landed PR number and merge commit, managed

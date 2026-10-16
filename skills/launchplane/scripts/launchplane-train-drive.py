@@ -117,8 +117,9 @@ class DriveIO:
     pull_request: Callable[[str, int], dict[str, Any] | None]
     update_branch: Callable[[str, int], bool]
     failing_checks: Callable[[str, str], list[dict[str, str]] | None]
-    # Numbers of ready-to-merge PRs merged at or after an epoch time.
-    merged_since: Callable[[str, float], list[int]] = lambda _repository, _since: []
+    # Bounded GitHub landing inventory, independent of mutable enqueue labels.
+    merged_since: Callable[[str, float], dict[str, Any]] = lambda _repository, _since: {
+        "numbers": [], "complete": False, "reason": "unavailable"}
     quota_wait: Callable[[], float] = lambda: 0.0
     # Reconciles the installed catalog after a landing; None when the repository is not this catalog.
     reconcile: Callable[[str, str], dict[str, Any] | None] | None = None
@@ -170,6 +171,8 @@ class DriveState:
     own_refusal_streak: int = 0
     controller_evidence: list[dict[str, Any]] = field(default_factory=list)
     recovery: dict[str, Any] | None = None
+    companion_inventory: dict[str, Any] = field(default_factory=lambda: {"complete": False, "reason": "not_attempted"})
+    target_merged_at: float | None = None
     cadence: Cadence | None = None
 
 
@@ -366,6 +369,7 @@ def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, A
         else:
             detail = {"read_failure_cause": "invalid_response"}
         if settings.number in state.landed:
+            state.companion_inventory = {**state.companion_inventory, "complete": False, "reason": "read_unavailable"}
             return _stop(settings, state, emit, "landed", companion_evidence="unavailable", **detail)
         return _stop(settings, state, emit, "error", reason="GitHub read unavailable", **detail)
 
@@ -618,6 +622,8 @@ def _record_landings(
             continue
         if pull_request.get("merged"):
             state.landed[number] = str(pull_request.get("merge_commit_sha") or "")
+            if number == settings.number:
+                state.target_merged_at = _github_timestamp(pull_request.get("merged_at"))
             emit("pr_landed", {"repository": settings.repository, "number": number, "merge_commit_sha": state.landed[number]})
         elif pull_request.get("state") == "closed" and pull_request.get("merged") is False:
             carried = state.carried_children.get(number)
@@ -688,14 +694,34 @@ def _finish_landing(
                 break
             if finish_pass + 1 < settings.max_stack_finish_passes:
                 _pause(settings, io, state)
-    # Batch companions may be missing from projected evidence; report every
-    # ready-to-merge PR that merged while this driver ran.
-    for number in io.merged_since(settings.repository, started):
-        state.batch.add(number)
+    # Service membership is authoritative. Recover omitted batch members only
+    # when GitHub independently ties them to the target's exact landing commit.
+    state.companion_inventory = {"complete": False, "reason": "read_unavailable"}
+    since = min(started, state.target_merged_at) if state.target_merged_at is not None else started
+    inventory = io.merged_since(settings.repository, since)
+    state.companion_inventory = {key: value for key, value in inventory.items() if key != "numbers"}
+    landing_sha = state.landed.get(settings.number)
+    if not landing_sha or state.target_merged_at is None:
+        state.companion_inventory.update(complete=False, reason="landing_identity_unavailable")
+    for number in inventory["numbers"]:
+        if number in state.batch or not landing_sha:
+            continue
+        companion = io.pull_request(settings.repository, number)
+        if companion is None:
+            state.companion_inventory.update(complete=False, reason="read_unavailable")
+            continue
+        generated = str((companion or {}).get("head", {}).get("ref") or "").startswith(
+            ("launchplane/train/", "launchplane/construct/"))
+        if companion and not generated and companion.get("merged") and companion.get("merge_commit_sha") == landing_sha:
+            state.batch.add(number)
     _record_landings(settings, io, state, emit)
 
 
 def _remember_batch(result: dict[str, Any], state: DriveState) -> None:
+    for key in ("candidate", "landing_plan"):
+        for number in (result.get(key) or {}).get("pull_request_numbers") or ():
+            if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+                state.batch.add(number)
     dry_run = result.get("dry_run_result") or {}
     for number in dry_run.get("queue_order") or ():
         if isinstance(number, int):
@@ -713,6 +739,13 @@ def _remember_batch(result: dict[str, Any], state: DriveState) -> None:
                     "root_pull_request_number": stack.get("root_pull_request_number"),
                     "expected_head_sha": child.get("expected_head_sha"),
                 }
+
+
+def _github_timestamp(value: object) -> float | None:
+    try:
+        return float(calendar.timegm(time.strptime(str(value or ""), "%Y-%m-%dT%H:%M:%SZ")))
+    except ValueError:
+        return None
 
 
 def _queue_entry(result: dict[str, Any], number: int) -> dict[str, Any] | None:
@@ -782,6 +815,7 @@ def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[
             "landing_sha": state.landed.get(settings.number, ""),
             "prs": prs,
             "controller_evidence": state.controller_evidence,
+            **({"companion_inventory": state.companion_inventory} if state.companion_inventory else {}),
             "actions": [f"stop_{outcome}"],
             **({"controller_recovery": state.recovery} if state.recovery is not None else {}),
             **({"stack_finish": state.stack_finish} if state.stack_finish else {}),
@@ -932,27 +966,34 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         return [{"name": run.get("name", ""), "conclusion": run["conclusion"], "url": run.get("details_url", "")}
                 for run in payload if run.get("conclusion") in FAILING_CONCLUSIONS]
 
-    def merged_since(repository: str, since: float) -> list[int]:
-        try:
-            payload = reader.get_json(
-                f"/repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page=50", step="merged_since"
-            )
-        except github_read.GitHubReadError as error:
-            if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
-                raise
-            return []
-        if not isinstance(payload, list):
-            return []
+    def merged_since(repository: str, since: float) -> dict[str, Any]:
+        since = int(since)  # GitHub timestamps have one-second precision.
         numbers = []
-        for item in payload:
-            merged_at = str(item.get("merged_at") or "")
+        per_page, max_pages, observed = 100, 5, 0
+        for page in range(1, max_pages + 1):
             try:
-                merged = calendar.timegm(time.strptime(merged_at, "%Y-%m-%dT%H:%M:%SZ"))
-            except ValueError:
-                continue
-            if merged >= since and "ready-to-merge" in [label.get("name") for label in item.get("labels") or []]:
-                numbers.append(int(item["number"]))
-        return numbers
+                payload = reader.get_json(
+                    f"/repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page={per_page}&page={page}",
+                    step=f"merged_since_page_{page}",
+                )
+            except github_read.GitHubReadError as error:
+                if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
+                    raise
+                return {"numbers": numbers, "complete": False, "reason": "read_unavailable"}
+            if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+                raise github_read.GitHubReadShapeError("GitHub merged_since page is not a pull request list")
+            for item in payload:
+                observed += 1
+                updated = _github_timestamp(item.get("updated_at"))
+                if updated is not None and updated < since:
+                    return {"numbers": numbers, "complete": True, "observed_count": observed}
+                merged = _github_timestamp(item.get("merged_at"))
+                if merged is not None and merged >= since:
+                    numbers.append(int(item["number"]))
+            if len(payload) < per_page:
+                return {"numbers": numbers, "complete": True, "observed_count": observed}
+        return {"numbers": numbers, "complete": False, "reason": "inventory_limit",
+                "observed_count": observed, "limit": per_page * max_pages}
 
     def quota_wait() -> float:
         # Launchplane currently projects upstream failures as github_request_failed.
@@ -1067,7 +1108,7 @@ def main(argv: list[str]) -> int:
             if holder is not None:
                 outcome = _stop(settings, DriveState(batch={settings.number}), emit, "needs_owner",
                                 reason="another local driver is running for this train", running_driver=holder, prs=[],
-                                recommendation="Add ready-to-merge and leave the PR to the running driver. "
+                                recommendation="Use the enqueue label from active Launchplane policy and leave the PR to the running driver. "
                                                "If it exits before this PR lands, rerun this driver. "
                                                "No Director decision is needed for local contention.")
             else:

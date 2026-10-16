@@ -95,6 +95,7 @@ class FakeTrain:
             "state": "closed" if merged or number in self.closed else "open",
             "merged": merged,
             "merge_commit_sha": f"sha-{number}" if merged else None,
+            "merged_at": train_drive.time.strftime("%Y-%m-%dT%H:%M:%SZ", train_drive.time.gmtime(self.clock)) if merged else None,
             "head_repository": REPO,
             "head": {"sha": f"head-{number}"},
         }
@@ -126,7 +127,7 @@ class FakeTrain:
             pull_request=self.pull_request,
             update_branch=self.update_branch,
             failing_checks=self.failing_checks,
-            merged_since=lambda _repository, _since: self.companions,
+            merged_since=lambda _repository, _since: {"numbers": self.companions, "complete": True},
             reconcile=self.reconcile,
             now=lambda: self.clock,
             sleep=self.sleep,
@@ -220,7 +221,6 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                          (train_drive.EXIT_CODES["needs_owner"], "needs_owner", 8))
         self.assertEqual(stop["prs"], [])  # Refusal does not read or assert GitHub state.
         self.assertTrue(stop["running_driver"]["started_at"])
-        self.assertIn("ready-to-merge", stop["recommendation"])
         for settings in (train_drive.DriveSettings(repository="other/app", number=9),
                          train_drive.DriveSettings(repository=REPO, number=9, base_branch="release")):
             with train_drive.local_driver(settings) as holder:
@@ -375,6 +375,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                                     lambda event, payload: events.append((event, payload)))
         self.assertEqual((outcome, events[-1][1]["landing_sha"]), ("landed", "sha-7"))
         self.assertEqual(events[-1][1]["companion_evidence"], "unavailable")
+        self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
 
     def test_malformed_candidate_check_response_emits_error(self) -> None:
         train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
@@ -681,8 +682,113 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
     def test_batch_companions_missing_from_the_queue_are_still_reported(self) -> None:
         train = FakeTrain([_response("land_batch")], merge_after={7: 1, 9: 1})
         train.companions = [9]
+        read = train.pull_request
+        train.pull_request = lambda repo, number: {**read(repo, number), "merge_commit_sha": "shared-landing"}
         _, events = _drive(train)
         self.assertEqual({pr["number"]: pr["outcome"] for pr in events[-1][1]["prs"]}, {7: "landed", 9: "landed"})
+
+    def test_unrelated_concurrent_landing_is_not_a_batch_companion(self) -> None:
+        train = FakeTrain([_response("land_batch")], merge_after={7: 1, 9: 1})
+        train.companions = [9]
+        _, events = _drive(train)
+        self.assertEqual([pr["number"] for pr in events[-1][1]["prs"]], [7])
+
+    def test_service_membership_survives_missing_queue_and_different_merge_commits(self) -> None:
+        for component in ("candidate", "landing_plan"):
+            with self.subTest(component=component):
+                projected = _project_controller({"status": "accepted", "result": {
+                    "controller_action": "land_batch",
+                    component: {"entries": [{"pull_request_number": 7}, {"pull_request_number": 8}]}}})
+                train = FakeTrain([projected],
+                                  merge_after={7: 1, 8: 1})
+                _, events = _drive(train)
+                self.assertEqual({pr["number"]: pr["outcome"] for pr in events[-1][1]["prs"]},
+                                 {7: "landed", 8: "landed"})
+
+    def test_live_companion_inventory_ignores_enqueue_labels_and_reports_bounds(self) -> None:
+        rows = [{"number": number, "merged_at": "2026-10-16T12:00:00Z", "labels": labels}
+                for number, labels in ((8, [{"name": "ship-it"}]), (9, []))]
+        with patch.object(train_drive.github_read, "GitHubReader") as reader_class:
+            reader = reader_class.return_value
+            reader.get_json.return_value = rows
+            io = train_drive.live_io(180)
+            self.assertEqual(io.merged_since(REPO, 0)["numbers"], [8, 9])
+            self.assertTrue(io.merged_since(REPO, 0)["complete"])
+            from urllib.parse import parse_qs, urlparse
+            per_page = int(parse_qs(urlparse(reader.get_json.call_args.args[0]).query)["per_page"][0])
+            reader.get_json.return_value = [rows[0]] * per_page
+            inventory = io.merged_since(REPO, 0)
+            self.assertFalse(inventory["complete"])
+
+    def test_live_companion_inventory_finishes_at_the_time_window_across_pages(self) -> None:
+        from urllib.parse import parse_qs, urlparse
+        since = train_drive.calendar.timegm(train_drive.time.strptime("2026-10-16T11:00:00Z", "%Y-%m-%dT%H:%M:%SZ"))
+        fresh = {"number": 8, "merged_at": "2026-10-16T12:00:00Z", "updated_at": "2026-10-16T12:00:00Z"}
+        old = {"number": 6, "merged_at": "2026-10-15T12:00:00Z", "updated_at": "2026-10-15T12:00:00Z"}
+        def page(path: str, **_kwargs: Any) -> list[dict[str, Any]]:
+            query = parse_qs(urlparse(path).query)
+            return ([fresh] * int(query["per_page"][0]) if query["page"] == ["1"]
+                    else [{**fresh, "number": 9}, old])
+        with patch.object(train_drive.github_read, "GitHubReader") as reader_class:
+            reader = reader_class.return_value
+            reader.get_json.side_effect = page
+            inventory = train_drive.live_io(180).merged_since(REPO, since)
+            self.assertTrue(inventory["complete"])
+            self.assertIn(9, inventory["numbers"])
+            self.assertNotIn(6, inventory["numbers"])
+            self.assertEqual(reader.get_json.call_count, 2)
+
+    def test_generated_batch_pr_is_not_an_omitted_companion(self) -> None:
+        train = FakeTrain([_response("land_batch")], merge_after={7: 1, 9: 1})
+        train.companions = [9]
+        read = train.pull_request
+        train.pull_request = lambda repo, number: {
+            **read(repo, number), "merge_commit_sha": "shared-landing",
+            "head": {"ref": "launchplane/train/example/app/main/batch" if number == 9 else "work/change"}}
+        _, events = _drive(train)
+        self.assertEqual([pr["number"] for pr in events[-1][1]["prs"]], [7])
+
+    def test_incomplete_companion_inventory_is_in_terminal_evidence(self) -> None:
+        train = FakeTrain([], merge_after={7: 0})
+        io = train.io()
+        io.merged_since = lambda *_args: {"numbers": [], "complete": False, "reason": "read_unavailable"}
+        events = []
+        outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
+                                    lambda event, payload: events.append((event, payload)))
+        self.assertEqual(outcome, "landed")
+        self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
+
+    def test_unreadable_companion_and_missing_landing_sha_leave_coverage_incomplete(self) -> None:
+        for missing_sha in (False, True):
+            with self.subTest(missing_sha=missing_sha):
+                train = FakeTrain([], merge_after={7: 0})
+                train.companions = [9]
+                read = train.pull_request
+                train.pull_request = lambda repo, number: (
+                    {**read(repo, number), "merge_commit_sha": "" if missing_sha else "landing"}
+                    if number == 7 else None)
+                _, events = _drive(train)
+                self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
+
+    def test_preexisting_landing_uses_its_merge_time_for_companion_discovery(self) -> None:
+        train = FakeTrain([], merge_after={7: 0})
+        train.clock = 100
+        io = train.io()
+        read = io.pull_request
+        io.pull_request = lambda repo, number: {**read(repo, number), "merged_at": "1970-01-01T00:00:10Z"}
+        observed = []
+        io.merged_since = lambda repo, since: observed.append(since) or {"numbers": [], "complete": True}
+        train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io, lambda *_args: None)
+        self.assertEqual(observed, [10])
+
+    def test_uncertain_recovery_marks_companion_discovery_not_attempted(self) -> None:
+        train = FakeTrain([], merge_after={7: 0})
+        io = train.io()
+        io.recover = lambda: {"status": "outcome_unknown", "recovery": {"reason": "unavailable"}}
+        events = []
+        train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
+                          lambda event, payload: events.append((event, payload)))
+        self.assertFalse(events[-1][1]["companion_inventory"]["complete"])
 
     def test_a_stack_landing_observes_the_service_finishing_children(self) -> None:
         train = FakeTrain(
@@ -1114,7 +1220,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         def factory(*args, **kwargs):
             io = live_factory(*args, **kwargs)
             io.pull_request = train.pull_request
-            io.merged_since = lambda *_args: []
+            io.merged_since = lambda *_args: {"numbers": [], "complete": True}
             io.reconcile = lambda *_args: None
             io.reconcile_plans = lambda *_args: None
             return io
