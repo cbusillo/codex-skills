@@ -222,6 +222,16 @@ local extensions until the vendored artifact is refreshed.
   record id, artifact id, source ref, image reference, deployed time) with the
   runtime identity status, health checks, public ingress status, trust state and
   provenance.
+  Monitoring has no summary `trust_state`: `public_incident_eligible` and
+  profile provenance describe intent. Each check retains `probe_effective`,
+  `incident_eligible`, observation `record_id`, `observed_at`, `trust_state`,
+  and bounded provenance including `stale_after`. Consumers assess observation
+  freshness from that canonical evidence; newer profile provenance does not
+  renew a probe. Absent effectiveness/eligibility fields remain `null`, and
+  absent provenance remains `null`, rather than proving a check suppressed or
+  fresh. Private endpoint keys, URLs, free-text provenance detail and unknown
+  fields are dropped; malformed retained values fail the read. Check output
+  remains bounded with `checks_truncated` disclosing omitted checks.
 - `product-activity-read --product` returns up to 50 events, newest first, each
   with type, lane, action, status, time, title, summary and up to 10 record
   links; `events_truncated` says when more were returned.
