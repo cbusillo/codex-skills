@@ -34,6 +34,7 @@ from typing import Any
 # Share the Supervisor reader rather than keeping a second account chooser.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from skills.supervisor.scripts import account_choice
+import review_policy
 
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
@@ -253,6 +254,7 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
         "ok": True,
         "provider": "anthropic",
         "model": ",".join(models) or model,
+        "model_source": "reported by the CLI" if models else "requested, not reported by the CLI" if model else "unknown",
         "response": payload.get("result") or "",
     }
 
@@ -498,7 +500,8 @@ def reviewer_environment(choice: dict[str, Any]) -> dict[str, str]:
     return env
 
 
-def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: int) -> dict[str, Any]:
+def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: int,
+           choice: dict[str, Any] | None = None) -> dict[str, Any]:
     if shutil.which(PROVIDERS[provider]) is None:
         return failed(provider, f"`{PROVIDERS[provider]}` is not installed", installed=False)
     # File-tool reviewers need the generated diff under their authorized read root.
@@ -522,13 +525,14 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 diff_path = Path(scratch) / "change.diff"
                 diff_path.write_text(diff.decode(errors="backslashreplace"))
                 preamble += f"The changes to review are in {diff_path}. Read that file with your read-only tools.\n\n"
-            if provider in account_choice.ACCOUNT_VARIABLES:
-                choice = account_choice.select(provider)
-                env = reviewer_environment(choice)
+            if choice is not None or provider in account_choice.ACCOUNT_VARIABLES:
+                choice = choice or account_choice.select(provider)
                 account_choice.prepare_launch(choice)
                 receipt = account_choice.record_launch(choice)
                 launch = {"account": account_choice.public(choice), "launch_receipt": str(receipt)}
-                result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout, Path(scratch), env)
+            if provider in account_choice.ACCOUNT_VARIABLES:
+                result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout,
+                                             Path(scratch), reviewer_environment(choice))
             else:
                 result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout, Path(scratch))
             if provider == "google" and result.get("denied") == ["command"] and not result.get("outcome"):
@@ -609,7 +613,25 @@ def repository_root(path: Path) -> Path:
 
 def cmd_run(args: argparse.Namespace) -> int:
     repo = repository_root(Path(args.repo).resolve())
-    result = review(args.provider, Path(args.prompt_file).read_text(), repo, args.model, args.timeout)
+    try:
+        selected = review_policy.select(review_policy.load_policy(), args.author_provider, args.provider,
+                                        args.supplementary, args.model, args.timeout)
+    except ValueError as error:
+        result = {"ok": False, "outcome": "unavailable", "error": str(error)}
+        if isinstance(error, review_policy.NoProvider):
+            result["skipped"] = error.skipped
+            if args.provider and error.skipped == [{"provider": args.provider, "reason": "CLI is not installed"}]:
+                result.update(provider=args.provider, installed=False)
+        print(json.dumps(result))
+        return 2 if result.get("installed") is False else 1
+    result = review(selected["provider"], Path(args.prompt_file).read_text(), repo, selected["model"],
+                    selected["timeout"], selected["choice"])
+    result["selection"] = selected["selection"]
+    result["timeout"] = selected["timeout"]
+    # Some CLIs include effort in the reported model label; never infer it from a request.
+    effort = re.search(r"\((High|Medium|Low)\)$", result.get("model") or "", re.IGNORECASE)
+    confirmed = result.get("model_source", "").startswith("reported by the CLI")
+    result["effort"] = effort.group(1).lower() if effort and confirmed else "unknown"
     planted = plant_fault(result, fault_marker(), repo)
     if result["ok"] and args.out:
         Path(args.out).write_text(result.pop("response"))
@@ -649,8 +671,21 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 1
     prompt = f"Read {probe}; put exactly its first non-empty line in the review field of your result."
     report = []
-    for provider in args.provider or sorted(PROVIDERS):
-        result = review(provider, prompt, repo, None, args.timeout)
+    try:
+        policy = review_policy.load_policy()
+    except ValueError as error:
+        print(json.dumps({"ok": False, "error": str(error)}))
+        return 1
+    for provider in args.provider or [p for p in policy["providers"] if p != args.author_provider]:
+        try:
+            selected = review_policy.select(policy, args.author_provider, provider, args.supplementary,
+                                            timeout=args.timeout)
+        except ValueError as error:
+            missing = (isinstance(error, review_policy.NoProvider)
+                       and error.skipped == [{"provider": provider, "reason": "CLI is not installed"}])
+            report.append({"provider": provider, "state": "not installed" if missing else "not ready", "error": str(error)})
+            continue
+        result = review(provider, prompt, repo, selected["model"], selected["timeout"], selected["choice"])
         if result["ok"] and expected not in result["response"]:
             result = {**result, "ok": False, "error": "answered without reading the file"}
             result.pop("response")
@@ -742,18 +777,22 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="Ask one provider's model for a read-only review.")
-    run.add_argument("--provider", required=True, choices=sorted(PROVIDERS))
+    run.add_argument("--provider", choices=sorted(PROVIDERS), help="Explicit allowed provider; default: standing order and capacity.")
+    run.add_argument("--author-provider", required=True, choices=sorted(PROVIDERS))
+    run.add_argument("--supplementary", action="store_true", help="Run an explicitly allowed supplementary provider, serially after the primary review.")
     run.add_argument("--repo", default=".", help="Repository the reviewer reads (default: current directory).")
     run.add_argument("--prompt-file", required=True, help="What to review and what it is for; name paths, do not paste files.")
     run.add_argument("--model", help="Model to request; model_source says whether the CLI reported it.")
     run.add_argument("--out", help="Write the review here instead of including it in the JSON.")
-    run.add_argument("--timeout", type=int, default=900)
+    run.add_argument("--timeout", type=int, help="Seconds; default: standing provider setting, otherwise 900.")
     run.set_defaults(func=cmd_run)
 
     check = sub.add_parser("check", help="Show which providers can actually read a repository from here.")
     check.add_argument("--repo", default=".")
     check.add_argument("--provider", action="append", choices=sorted(PROVIDERS))
-    check.add_argument("--timeout", type=int, default=300)
+    check.add_argument("--author-provider", required=True, choices=sorted(PROVIDERS))
+    check.add_argument("--supplementary", action="store_true")
+    check.add_argument("--timeout", type=int)
     check.set_defaults(func=cmd_check)
 
     configure = sub.add_parser("configure", help="Add agy's read-only allow rules to your own settings file.")
