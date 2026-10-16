@@ -87,8 +87,8 @@ class SnapshotTests(unittest.TestCase):
         hints = {"note": "A green PR waits for the train", "watch": {"helper": "tools/watch.py"}}
         result = self.snapshot({"prWorkflow": hints}, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        heading = result.stdout.index('"defaultBranch"')
-        start = result.stdout.rfind("{", 0, heading)
+        heading = result.stdout.index("== Config ==")
+        start = result.stdout.index("{", heading)
         summary, _ = json.JSONDecoder().raw_decode(result.stdout[start:])
         self.assertEqual(summary["prWorkflow"], hints)
 
