@@ -26,8 +26,10 @@ run, reserving the larger of 250 core requests and the shared transport's
 bulk-read reserve for other work. Shared transport handles
 quota, retries and conditional response caching. Use `GITHUB_READ_CACHE_DIR`
 for a private task cache when runtime/account directories must stay untouched.
-Repository order rotates by UTC date without storing a second inventory. All
-repositories' open work precedes trigger discovery and recent closed history, and zero-comment records skip
+Repository order rotates by UTC date without storing a second inventory. Cheap
+trigger discovery precedes open discussions so that their read budget cannot
+starve the event checks. All repositories' open work then precedes recent closed
+history, and zero-comment records skip
 comment reads. Budget, quota-reserve and deadline stops count unread records
 together instead of flooding the digest. Repeated limited runs on one day keep
 the same order. The GitHub budget counts logical read calls; shared transport

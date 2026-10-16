@@ -495,7 +495,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     unread_scopes = []
     attempted_records = 0
     collected = set()
-    for state in ("open", "reopen_triggers", "closed"):
+    for state in ("reopen_triggers", "open", "closed"):
         for repo in ordered_repos:
             if reads >= budget:
                 unread_scopes.append({"repo": repo, "state": state})

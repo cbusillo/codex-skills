@@ -416,7 +416,8 @@ class InventoryTests(unittest.TestCase):
     def test_all_repositories_open_work_precedes_closed_history(self):
         self.reader.repositories["repos/test/other"] = {"archived": False, "default_branch": "main"}
         result = sweep.collect(["test/repo", "test/other"], reader=self.reader, now=self.now)
-        states = [parse_qs(urlsplit(p).query)["state"][0] for p in self.reader.paths if "state=" in p]
+        states = [parse_qs(urlsplit(p).query)["state"][0] for p in self.reader.paths
+                  if "state=" in p and "labels" not in parse_qs(urlsplit(p).query)]
         self.assertTrue(states and "open" in states and "closed" in states)
         self.assertLess(max(i for i, state in enumerate(states) if state == "open"),
                         min(i for i, state in enumerate(states) if state == "closed"))
@@ -623,6 +624,15 @@ class ReopenInventoryTests(unittest.TestCase):
         self.assertEqual(result["findings"], [])
         self.assertTrue(any(g["source"] == "test/repo#1" and g["reason"] == "reopen_trigger_unverifiable"
                             for g in result["coverage_gaps"]))
+
+
+    def test_trigger_discovery_is_not_starved_by_open_discussion_budget(self):
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = [
+            {"number": n, "state": "open"} for n in range(2, 90)]
+        result = self.collect([self.issue(1, self.event())], max_requests=8)
+        self.assertEqual([r["number"] for r in result["findings"] if r["kind"] == "reopen_trigger_fired"], [1])
+        self.assertFalse(result["complete"])
+        self.assertTrue(any("budget" in g["reason"] for g in result["coverage_gaps"]))
 
 
 if __name__ == "__main__":
