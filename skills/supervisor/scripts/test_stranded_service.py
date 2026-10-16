@@ -165,10 +165,9 @@ class DailyTests(unittest.TestCase):
             children.append(child)
             return child
 
-        with mock.patch.object(daily.subprocess, "Popen", side_effect=capture):
-            with self.assertRaises(TimeoutError):
-                daily.command([sys.executable, "-c", "import time; time.sleep(60)"], self.root,
-                              subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL, stopped, 5)
+        with mock.patch.object(daily.subprocess, "Popen", side_effect=capture), self.assertRaises(TimeoutError):
+            daily.command([sys.executable, "-c", "import time; time.sleep(60)"], self.root,
+                          subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL, stopped, 5)
         self.assertIsNotNone(children[0].poll())
         with self.assertRaises(ProcessLookupError):
             os.killpg(children[0].pid, 0)
