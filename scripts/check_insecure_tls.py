@@ -26,7 +26,15 @@ def qualified(node: ast.AST, imports: dict[str, str]) -> str:
 
 
 def disabled(node: ast.AST, imports: dict[str, str]) -> bool:
-    return qualified(node, imports) in {"ssl.CERT_NONE", "ssl.VerifyMode.CERT_NONE"} or isinstance(node, ast.Constant) and node.value == "CERT_NONE"
+    if isinstance(node, ast.IfExp):
+        return disabled(node.body, imports) or disabled(node.orelse, imports)
+    return qualified(node, imports) in {"ssl.CERT_NONE", "ssl.VerifyMode.CERT_NONE"} or isinstance(node, ast.Constant) and node.value in {"CERT_NONE", "NONE"}
+
+
+def literal_false(node: ast.AST) -> bool:
+    if isinstance(node, ast.IfExp):
+        return literal_false(node.body) or literal_false(node.orelse)
+    return isinstance(node, ast.Constant) and node.value is False
 
 
 def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
@@ -35,17 +43,22 @@ def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
         value = node.value
         if value is not None and qualified(value, imports) in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
             return True
+        if isinstance(value, (ast.Tuple, ast.List)):
+            for target in targets:
+                if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts):
+                    if any(unsafe(ast.Assign(targets=[part], value=part_value), imports) for part, part_value in zip(target.elts, value.elts)):
+                        return True
         return any(isinstance(target, ast.Attribute) and (
-            target.attr in {"check_hostname", "verify"} and isinstance(value, ast.Constant) and value.value is False
+            target.attr in {"check_hostname", "verify"} and value is not None and literal_false(value)
             or target.attr == "verify_mode" and value is not None and disabled(value, imports)
         ) for target in targets)
     if isinstance(node, ast.Call):
         name = qualified(node.func, imports)
-        if name == "ssl._create_unverified_context":
+        if name in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
             return True
         if name.split(".")[0] in {"requests", "httpx", "aiohttp", "urllib3"}:
             return any(
-                keyword.arg in {"verify", "ssl", "verify_ssl", "assert_hostname"} and isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+                keyword.arg in {"verify", "ssl", "verify_ssl", "assert_hostname"} and literal_false(keyword.value)
                 or keyword.arg == "cert_reqs" and disabled(keyword.value, imports)
                 for keyword in node.keywords
             )
@@ -84,10 +97,10 @@ def findings(source: str) -> list[int]:
                 imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
     # Also recognize ordinary client instances, without interpreting runtime code.
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
             name = qualified(node.value.func, imports)
             if name.split(".")[0] in {"requests", "httpx", "aiohttp", "urllib3"}:
-                for target in node.targets:
+                for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
                     if isinstance(target, (ast.Name, ast.Attribute)):
                         imports[qualified(target, imports)] = name
         elif isinstance(node, (ast.With, ast.AsyncWith)):

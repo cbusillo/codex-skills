@@ -1259,7 +1259,7 @@ hand-built `check_hostname = False` / `CERT_NONE`, unverified contexts and commo
 HTTP-client verification-off calls. The catalog validation gate runs it too.
 It parses Python without executing it; dynamic values, parameter-provided clients and computed monkeypatches
 are outside this static check. Bare SSLContext construction also needs review
-of its client/server role; this check does not infer that role. Keep Ruff's TLS rules for complementary protocol
+of its client/server role, as does `create_default_context(Purpose.CLIENT_AUTH)`; this check does not infer that role. Keep Ruff's TLS rules for complementary protocol
 and library checks.
 
 An intentional exception needs a preceding `# insecure-tls: <plain reason>`
@@ -1280,3 +1280,9 @@ The scan requires readable, non-symlinked, UTF-8 Python 3 inputs. It fails
 closed on unparseable tracked fixtures and reports the path for qualification;
 it does not silently exclude them. Only tracked `.py` files are selected by
 default; extensionless Python entrypoints need explicit file arguments.
+
+For a repository with intentionally unparseable templates or vendored fixtures,
+review its owned-source scope and pass that explicit file list to the same
+command in CI. Document each omitted path and why on the rollout PR; a blanket
+ignore is not an exception. The reason lint rejects empty comments and bare
+question IDs or URLs; reviewers still judge the explanation and decision link.
