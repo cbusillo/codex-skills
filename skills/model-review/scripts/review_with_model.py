@@ -346,7 +346,7 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
             result["command_diagnostic"] = diagnostic
         # Preserve command diagnostics, but retry only an empty permission failure,
         # never a nonempty refusal (including one outside the output contract).
-        if denied == ["command"] and (payload.get("response") or "").strip():
+        if denied == ["command"] and ((payload.get("response") or "").strip() or payload.get("structured_output")):
             result.update(outcome="unavailable",
                           **agy_model(model or agy_settings().get("model"), payload.get("conversation_id"), log_file))
         # A shell refusal is not evidence of missing file access. Do not recommend new grants for it.

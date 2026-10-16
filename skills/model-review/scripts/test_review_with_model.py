@@ -685,6 +685,18 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertIn("command_diagnostic", result)
         self.assertFalse(list(self.repo.glob(".model-review-*")), "denials also clean scratch")
 
+    def test_google_does_not_retry_structured_refusal_with_command_denial(self) -> None:
+        self.install("agy", RETRY_AGY)
+        calls = self.root / "calls"
+        code, result = self.review(
+            "google", FAKE_AGY_COUNT=str(calls), FAKE_AGY_RETRY_PROMPT=str(self.root / "retry"),
+            FAKE_AGY_JSON=json.dumps({"response": "", "structured_output": {"status": "refused", "review": ""},
+                                      "denied_actions": [{"action": "command"}]}),
+            FAKE_AGY_RETRY_JSON=json.dumps({"response": completed("none")}))
+        self.assertEqual((code, result["ok"], result["outcome"]), (1, False, "unavailable"))
+        self.assertEqual(len(calls.read_text().splitlines()), 1)
+        self.assertNotIn("recovery", result)
+
     def saved_command(self, command: str, status: int = 7) -> str:
         conversation = "12345678-1234-1234-1234-123456789abc"
         directory = self.home / ".gemini/antigravity-cli/conversations"
