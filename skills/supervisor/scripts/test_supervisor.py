@@ -65,6 +65,50 @@ class TranscriptTests(unittest.TestCase):
                 with self.subTest(harness=harness):
                     self.assertTrue(status.snapshot(ledger)[0]["safe_verdict"])
 
+    def test_claude_turn_end_reports_background_tasks_still_running(self):
+        # Record shapes from CS1812-D1: a background watcher, then "Waiting on the CI watcher".
+        started = [
+            {"type": "assistant", "timestamp": "2026-10-16T04:23:35Z", "message": {"content": [
+                {"type": "tool_use", "id": "toolu_watch", "name": "Bash",
+                 "input": {"command": "gh_pr_watch.py --pr 1963 --watch", "run_in_background": True}}]}},
+            {"type": "user", "timestamp": "2026-10-16T04:23:40Z",
+             "toolUseResult": {"stdout": "", "backgroundTaskId": "bosltstxv"},
+             "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_watch",
+                                      "content": "Command running in background with ID: bosltstxv."}]}},
+            {"type": "user", "timestamp": "2026-10-16T04:23:41Z", "toolUseResult": {"taskId": "bmon"},
+             "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_mon",
+                                      "content": "Monitor started (task bmon)"}]}},
+        ]
+
+        def notice(task_id, status=None):
+            body = f"<task-notification>\n<task-id>{task_id}</task-id>\n"
+            body += f"<status>{status}</status>\n" if status else "<event>line</event>\n"
+            return {"type": "user", "timestamp": "2026-10-16T05:00:00Z",
+                    "message": {"content": body + "</task-notification>"}}
+
+        stop = {"type": "assistant", "timestamp": "2026-10-16T05:12:09Z", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_stop", "name": "TaskStop", "input": {"task_id": "bosltstxv"}}]}}
+        waiting = claude("Waiting on the CI watcher for PR #1963.")
+        for name, middle, running in (
+            ("live watcher", [], ["bosltstxv", "bmon"]),
+            ("monitor event is not an end", [notice("bmon")], ["bosltstxv", "bmon"]),
+            ("terminal notices", [notice("bosltstxv", "completed"), notice("bmon", "killed")], []),
+            ("task stopped", [stop, notice("bmon", "completed")], []),
+            ("an event notice never borrows the next notice's status", [
+                {"type": "user", "message": {"content": notice("bmon")["message"]["content"]
+                                             + notice("bosltstxv", "completed")["message"]["content"]}}],
+             ["bmon"]),
+            ("notices absorbed mid-turn", [
+                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "failed")["message"]["content"]},
+                {"type": "attachment", "attachment": {"type": "queued_command", "prompt": notice("bmon", "completed")["message"]["content"]}},
+            ], []),
+        ):
+            with self.subTest(name):
+                summary = session_record.summarize(started + middle + [waiting], "claude")
+                self.assertEqual(summary["state"], "turn_ended")
+                self.assertEqual([task["task_id"] for task in summary["background_tasks"]], running)
+        self.assertEqual(session_record.summarize([waiting], "claude")["background_tasks"], [])
+
     def test_claude_cached_context_and_latest_response(self):
         records = [
             claude("old"),

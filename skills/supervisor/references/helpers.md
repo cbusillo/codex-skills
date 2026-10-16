@@ -76,8 +76,14 @@ other sessions; a malformed ledger itself ends the watch. Transcript errors
 include malformed nested payload, message, content and identity fields; they
 supply no completion proof for that session.
 Status output includes the latest response and can be private; keep it
-out of public comments. Context counts may be absent and are not a reason to
-hand off. For Claude, the count includes cached input.
+out of public comments. For Claude, `background_tasks` lists the Bash
+background and Monitor tasks that have not yet sent a terminal notice or been
+stopped. At a turn end, an empty list means nothing will resume the session:
+a "waiting" message there is a stall to nudge. A listed task is a live wait;
+check that its condition can still end it, for example CI already settled
+under a `--watch` that never exits on green, before waiting on it. Context
+counts may be absent and are not a reason to hand off. For Claude, the count
+includes cached input.
 
 For tmux entries, replace `iterm_session_id` with `tmux_session_id` from launch
 output and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`

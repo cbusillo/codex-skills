@@ -27,6 +27,12 @@ commands:
     example_argv:
       ["uv", "run", "--no-cache", "scripts/gh_pr_watch.py", "--pr", "auto", "--watch"]
     purpose: Continuously emit JSONL snapshots while babysitting a PR.
+  - name: pr-wait-ci
+    source: skill
+    resource_path: scripts/gh_pr_watch.py
+    example_argv:
+      ["uv", "run", "scripts/gh_pr_watch.py", "--pr", "auto", "--wait-ci", "--max-wait-seconds", "420"]
+    purpose: Block until CI settles on the PR head or the bound passes, then emit one ci_wait line with check counts.
   - name: retry-failed-checks
     source: skill
     resource_path: scripts/gh_pr_watch.py
@@ -72,6 +78,10 @@ closed, or until the user's help is required. This skill never merges.
 - **Ongoing follow-through** (watch, monitor, babysit, "see what happens", or
   continuing after a push, rebase, rerun, or fix while the PR is open): run the
   watcher with `--watch` and follow [the loop](#the-loop).
+- **Wait for CI before a handoff** (your own PR needs settled CI before a
+  `ready` handoff, a merge decision or a report, and the merge train or another
+  session handles the rest): run `--wait-ci` as a blocking foreground command and
+  follow [Waiting for CI](#waiting-for-ci).
 - **One-shot check** (the user asks for a single status check, or closeout
   evidence for an already merged or closed PR): run `--once` and report that
   snapshot. Do not start a watcher.
@@ -87,6 +97,7 @@ another repository, pass its URL or `--repo OWNER/REPO`.
 
 ```bash
 uv run --no-cache <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --watch   # ongoing, JSONL
+uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --wait-ci --max-wait-seconds 420   # bounded CI wait
 uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --once    # one snapshot
 uv run <skill-dir>/scripts/gh_pr_watch.py --pr <auto|number|url> --retry-failed-now
 ```
@@ -96,9 +107,41 @@ post-merge signals, cleanup, and merge or release policy. Do not infer release
 intent from package metadata or PR titles unless repository metadata or docs
 say to.
 
+## Waiting For CI
+
+`--wait-ci` polls with the watcher's cadence and prints exactly one line,
+`{"event": "ci_wait", "payload": {...}}`, whose payload carries `outcome`,
+`checks` counts, `actions`, the PR head and `next_step`. Its exit code says
+what to do:
+
+- `0` green on the head: continue the handoff.
+- `2` failed: diagnose under [CI failures](#ci-failures).
+- `3` still pending at `--max-wait-seconds`: run the same command again in
+  the same turn.
+- `4` the PR closed or the watcher stopped for help: read `actions` and apply
+  [Stop Or Continue](#stop-or-continue).
+- `5` new review feedback arrived: handle `new_review_items` under
+  [Review feedback](#review-feedback) first. The watcher has marked them seen,
+  so they will not appear again.
+- `1` a read or command error, or the state lock stayed busy until the bound:
+  report it; the wait was lost.
+
+Keep `--max-wait-seconds` (default 420) well below the harness's command
+timeout, since a read that starts just before the bound still finishes, and
+give the command a tool timeout above it. Run it in the foreground. Do not
+end the turn while CI is pending: a turn that ends saying it is waiting, with
+no running command that will report back, sits idle until someone nudges it.
+`--watch` is not a CI wait. It exits only when the PR closes or the watcher
+needs help, never on green CI, and its lines are `{"event", "payload"}`
+envelopes, not `--once` snapshots. A filter written for the `--once` shape
+never matches it.
+
 ## The Loop
 
-Keep one `--watch` process per PR and consume its snapshots in the same turn.
+Keep one `--watch` process per PR and consume its snapshots in the same turn,
+through a route that delivers each line to you as it arrives. A background
+command that reports only when it exits does not; see
+[Waiting for CI](#waiting-for-ci).
 For each snapshot:
 
 1. **Closed or merged** (`stop_pr_closed`): stop and report. On the first

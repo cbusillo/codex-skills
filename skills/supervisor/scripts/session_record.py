@@ -18,6 +18,10 @@ MEMORY_CITATION_TAIL = re.compile(
 )
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 NO_DIRECTOR_ACTION = re.compile(r"^No Director (?:action|decision) needed\.\s+")
+# A terminal Claude Code task notice carries <status>; Monitor event notices do not.
+TASK_NOTICE = re.compile(r"<task-notification>(.*?)</task-notification>", re.DOTALL)
+TASK_NOTICE_ID = re.compile(r"<task-id>([^<]+)</task-id>")
+TASK_NOTICE_STATUS = re.compile(r"<status>[^<]+</status>")
 
 
 def validate_record(record: dict) -> None:
@@ -193,6 +197,37 @@ def strip_claude_exit_tail(records: list[dict]) -> list[dict]:
     return records
 
 
+def track_claude_background_tasks(record: dict, running: dict) -> None:
+    """Follow Bash run_in_background and Monitor tasks from start to their terminal notice or TaskStop."""
+    message = record.get("message")
+    if not isinstance(message, dict):
+        message = {}
+    if record.get("type") == "user":
+        started = record.get("toolUseResult")
+        if isinstance(started, dict):
+            task_id = started.get("backgroundTaskId") or started.get("taskId")
+            if isinstance(task_id, str) and task_id:
+                running[task_id] = record.get("timestamp")
+    # A notice absorbed mid-turn is written as a queue operation and an attachment, not a user record.
+    attachment = record.get("attachment")
+    notice_text = {
+        "user": text_content(message.get("content")),
+        "queue-operation": record.get("content"),
+        "attachment": attachment.get("prompt") if isinstance(attachment, dict) else None,
+    }.get(record.get("type"))
+    if isinstance(notice_text, str):
+        for notice in TASK_NOTICE.findall(notice_text):
+            task_id = TASK_NOTICE_ID.search(notice)
+            if task_id and TASK_NOTICE_STATUS.search(notice):
+                running.pop(task_id.group(1).strip(), None)
+    if record.get("type") == "assistant":
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "TaskStop":
+                stopped = (block.get("input") or {}).get("task_id")
+                if isinstance(stopped, str):
+                    running.pop(stopped, None)
+
+
 def summarize(records: list[dict], harness: str) -> dict:
     result = {
         "last_text": "",
@@ -204,12 +239,14 @@ def summarize(records: list[dict], harness: str) -> dict:
         "safe_verdict": False,
         "capacity_stop": None,
     }
+    running_tasks: dict = {}
     if harness == "claude":
         records = strip_claude_exit_tail(records)
     for record in records:
         payload = record.get("payload") or {}
         kind = payload.get("type")
         if harness == "claude":
+            track_claude_background_tasks(record, running_tasks)
             message = record.get("message") or {}
             if record.get("type") == "user":
                 result.update(last_text="", at_turn_end=False)
@@ -294,6 +331,10 @@ def summarize(records: list[dict], harness: str) -> dict:
         "recognized" if result["safe_verdict"] else
         "unrecognized" if "Safe to exit:" in verdict_text else "absent"
     )
+    # A turn end with a live task is a wait on that task; with none, nothing will resume the turn.
+    result["background_tasks"] = [
+        {"task_id": task_id, "started": started} for task_id, started in running_tasks.items()
+    ]
     result["state"] = (
         "provider_capacity" if result["capacity_stop"] else
         "turn_ended" if result["at_turn_end"] else "active"
