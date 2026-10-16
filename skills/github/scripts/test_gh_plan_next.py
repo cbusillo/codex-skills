@@ -1117,7 +1117,7 @@ def test_portfolio_mediaforce_hold_overrides_active_unowned_issue_and_background
 
 
 def test_portfolio_occupied_and_comment_only_wait_leave_no_available_work() -> None:
-    occupied = global_issue("someone/codex-lab", 979)
+    occupied = global_issue("someone/northwind-lab", 979)
     waiting = global_issue("someone/BD_to_AVP", 769)
     comments = {(waiting["repo"], 769): [{"id": 10, "body": "Implementation is settled. Signed-app screenshot demonstration at the next beta.", "updated_at": "2026-09-26T12:00:00Z"}]}
     with global_fixture([], [], {}, discovered=[occupied, waiting], comments=comments) as (module, result, _reads):
@@ -1125,7 +1125,7 @@ def test_portfolio_occupied_and_comment_only_wait_leave_no_available_work() -> N
         by_number = {item["number"]: item for item in result["candidates"]}
         assert "next beta" in by_number[769]["discussion"]["comments"][-1]["body"]
         context = {"issues": {
-            "someone/codex-lab#979": reviewed(by_number[979], "underway"),
+            "someone/northwind-lab#979": reviewed(by_number[979], "underway"),
             "someone/BD_to_AVP#769": reviewed(by_number[769], "waiting", reason="Screenshot proof waits for next beta"),
         }}
         with patch.multiple(module, next_selection_context=lambda _args: context):

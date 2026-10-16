@@ -25,7 +25,16 @@ Every controller call makes Launchplane re-read the whole train from GitHub
 (roughly 15 requests per open PR in the repository, on the shared App quota),
 and Launchplane already runs its own passes on a timer and on check
 completions. So while the controller repeats the same action or holds its
-lease, the pause doubles from --poll-seconds up to --max-wait-seconds.
+lease, the pause doubles from --poll-seconds up to --max-wait-seconds. After a
+newly reported action Launchplane says to mutate once and call again (planning,
+building or landing), the next call follows after --progress-seconds instead.
+Every pause still respects the shared low-budget floor and the deadline.
+
+The stop event's `cadence` counts controller requests, read-only observations
+and GitHub reads and splits elapsed time into controller requests, sleep, reads,
+recovery, terminal read-back and the unattributed remainder. `passes` has one
+entry per controller pass (and a `recovery` entry when recovery ran); a pass
+that paused names why.
 
 When the landed repository is the skills catalog this command lives in, the
 landed stop event carries `runtime_reconciliation`: the receipt from running
@@ -39,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import dataclasses
 import hashlib
 import json
 import os
@@ -71,6 +81,9 @@ EXIT_CODES = {"landed": 0, "failed": 1, "needs_owner": 2, "error": 3}
 LEASE_HELD_CODE = "merge_train_controller_lease_held"
 FAILING_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 TERMINAL_READ_FAILURES = {"invalid_credentials", "permission_denied", "actor_mismatch", "unconfigured_identity"}
+# Launchplane's policy says to mutate once and call again after these actions:
+# the next controller pass has known work, so it need not wait a full poll.
+CALL_AGAIN_ACTIONS = frozenset({"admit_collapsed_root", "plan_candidate", "build_candidate", "plan_landing", "land_batch"})
 
 
 def _uncertain(response: object) -> bool:
@@ -125,6 +138,7 @@ class DriveSettings:
     base_branch: str = "main"
     deadline: float = 0.0
     poll_seconds: float = 60.0
+    progress_seconds: float = 15.0
     max_wait_seconds: float = 900.0
     allow_branch_update: bool = False
     max_branch_updates: int = 3
@@ -156,6 +170,104 @@ class DriveState:
     own_refusal_streak: int = 0
     controller_evidence: list[dict[str, Any]] = field(default_factory=list)
     recovery: dict[str, Any] | None = None
+    cadence: Cadence | None = None
+
+
+@dataclass
+class Cadence:
+    """Where a drive's time went.
+
+    Categories never overlap: time inside the terminal read-back counts only as
+    read-back, and time no wrapper measured stays unattributed instead of being
+    called sleep. Request counts include read-back requests. A GitHub read is
+    one helper call: a paged check-run read counts once. A recovery replay is
+    one measured span, since it may read, observe and replay or make no request.
+    """
+
+    clock: Callable[[], float]
+    started: float
+    controller_requests: int = 0
+    controller_seconds: float = 0.0
+    observation_requests: int = 0
+    github_reads: int = 0
+    github_read_seconds: float = 0.0
+    sleep_seconds: float = 0.0
+    recovery_seconds: float = 0.0
+    read_back_started: float | None = None
+    read_back_seconds: float = 0.0
+    passes: list[dict[str, Any]] = field(default_factory=list)
+
+    def _measure(self, call: Callable[..., Any], *args: Any) -> tuple[Any, float]:
+        before = self.clock()
+        result = call(*args)
+        return result, 0.0 if self.read_back_started is not None else self.clock() - before
+
+    def wrap(self, io: DriveIO) -> DriveIO:
+        def controller(*args: Any) -> dict[str, Any] | None:
+            self.controller_requests += 1
+            response, spent = self._measure(io.controller, *args)
+            self.controller_seconds += spent
+            return response
+
+        def github_read(call: Callable[..., Any]) -> Callable[..., Any]:
+            def read(*args: Any) -> Any:
+                self.github_reads += 1
+                payload, spent = self._measure(call, *args)
+                self.github_read_seconds += spent
+                return payload
+            return read
+
+        def observe_controller(*args: Any) -> dict[str, Any] | None:
+            self.observation_requests += 1
+            return io.observe_controller(*args) if io.observe_controller is not None else None
+
+        def sleep(seconds: float) -> None:
+            _, spent = self._measure(io.sleep, seconds)
+            self.sleep_seconds += spent
+
+        original_recover = io.recover
+
+        def recover() -> dict[str, Any] | None:
+            assert original_recover is not None
+            response, spent = self._measure(original_recover)
+            self.recovery_seconds += spent
+            if response is not None:
+                self.passes.append({"pass": 0, "controller_action": "recovery", "progress": False,
+                                    "at_seconds": round(self.clock() - self.started, 3),
+                                    "recovery_seconds": round(spent, 3)})
+            return response
+
+        return dataclasses.replace(
+            io, controller=controller, sleep=sleep, pull_request=github_read(io.pull_request),
+            failing_checks=github_read(io.failing_checks), merged_since=github_read(io.merged_since),
+            quota_wait=github_read(io.quota_wait),
+            observe_controller=observe_controller if io.observe_controller is not None else None,
+            recover=recover if original_recover is not None else None,
+        )
+
+    def begin_read_back(self) -> None:
+        if self.read_back_started is None:
+            self.read_back_started = self.clock()
+
+    def summary(self) -> dict[str, Any]:
+        now = self.clock()
+        read_back = self.read_back_seconds + (now - self.read_back_started if self.read_back_started is not None else 0.0)
+        elapsed = now - self.started
+        measured = (self.controller_seconds + self.github_read_seconds + self.sleep_seconds
+                    + self.recovery_seconds + read_back)
+        return {
+            "elapsed_seconds": round(elapsed, 3),
+            "controller_requests": self.controller_requests,
+            "controller_seconds": round(self.controller_seconds, 3),
+            "observation_requests": self.observation_requests,
+            "github_reads": self.github_reads,
+            "github_read_seconds": round(self.github_read_seconds, 3),
+            "sleep_seconds": round(self.sleep_seconds, 3),
+            "recovery_seconds": round(self.recovery_seconds, 3),
+            "read_back_seconds": round(read_back, 3),
+            "unattributed_seconds": round(max(0.0, elapsed - measured), 3),
+            "passes": self.passes,
+        }
 
 
 class DriverLockError(Exception):
@@ -201,17 +313,36 @@ def local_driver(settings: DriveSettings) -> Iterator[dict[str, Any] | None]:
         yield None
 
 
-def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: float = 0.0) -> None:
-    delay = github_read.poll_delay(
-        min(settings.poll_seconds * 2 ** min(state.unchanged_passes, 10), max(settings.poll_seconds, settings.max_wait_seconds)),
-        minimum,
-        repository=settings.repository,
-    )
-    io.sleep(min(delay, max(0.0, settings.deadline - io.now())))
+def _pause(settings: DriveSettings, io: DriveIO, state: DriveState, *, minimum: float = 0.0, reason: str = "backoff") -> None:
+    if reason == "progress":
+        interval = min(settings.progress_seconds, settings.poll_seconds)
+    else:
+        interval = min(settings.poll_seconds * 2 ** min(state.unchanged_passes, 10),
+                       max(settings.poll_seconds, settings.max_wait_seconds))
+    delay = github_read.poll_delay(interval, minimum, repository=settings.repository)
+    seconds = min(delay, max(0.0, settings.deadline - io.now()))
+    cadence = state.cadence
+    if cadence is not None and cadence.passes and cadence.read_back_started is None:
+        cadence.passes[-1]["pause"] = {"reason": reason, "seconds": round(seconds, 3)}
+    io.sleep(seconds)
+
+
+def _record_pass(state: DriveState, io: DriveIO, pass_number: int, action: str, controller_before: float,
+                 *, progress: bool = False) -> None:
+    cadence = state.cadence
+    if cadence is None:
+        return
+    cadence.passes.append({
+        "pass": pass_number, "controller_action": action, "progress": progress,
+        "at_seconds": round(io.now() - cadence.started, 3),
+        "controller_seconds": round(cadence.controller_seconds - controller_before, 3),
+    })
 
 
 def drive(settings: DriveSettings, io: DriveIO, emit: Callable[[str, dict[str, Any]], None]) -> str:
-    state = DriveState(batch={settings.number})
+    cadence = Cadence(clock=io.now, started=io.now())
+    state = DriveState(batch={settings.number}, cadence=cadence)
+    io = cadence.wrap(io)
     emit = _with_runtime_reconciliation(settings, io, emit)
     try:
         recovered = io.recover() if io.recover is not None else None
@@ -278,8 +409,10 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
 
         pass_number += 1
         key = f"train-drive-{settings.repository.replace('/', '-')}-{settings.number}-{pass_number}-{uuid.uuid4().hex}"
+        controller_before = state.cadence.controller_seconds if state.cadence is not None else 0.0
         response = io.controller(settings.repository, settings.base_branch, key)
         if _uncertain(response):
+            _record_pass(state, io, pass_number, "controller_outcome_unknown", controller_before)
             state.candidate_active = False
             state.recovery = {"reason": "controller mutation outcome is uncertain; reconcile before retry",
                               "request": {"repository": settings.repository, "base_branch": settings.base_branch,
@@ -308,6 +441,8 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                 else 1 if own_refusal else 0
             )
             state.own_refusal_code = code if own_refusal else ""
+            _record_pass(state, io, pass_number,
+                         "controller_lease_held" if code == LEASE_HELD_CODE else "controller_refused", controller_before)
             if state.own_refusal_streak >= settings.max_own_refusals:
                 _emit_snapshot(state, emit, snapshot)
                 landing = _record_landings(settings, io, state, emit)
@@ -326,7 +461,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                     snapshot["controller_action"] = "github_primary_limit_wait"
                     snapshot["retry_after_seconds"] = wait
                     _emit_snapshot(state, emit, snapshot)
-                    _pause(settings, io, state, minimum=wait)
+                    _pause(settings, io, state, minimum=wait, reason="quota_reset")
                     continue
             if snapshot["error_code"] == LEASE_HELD_CODE:
                 # Another driver is running the controller; keep polling until its lease is released or expires.
@@ -335,7 +470,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                 # The lease holder is already advancing the train; back off like an unchanged pass.
                 state.unchanged_passes = min(state.unchanged_passes + 1, 10)
                 _emit_snapshot(state, emit, snapshot)
-                _pause(settings, io, state)
+                _pause(settings, io, state, reason="lease_held")
                 continue
             state.helper_failures += 1
             state.lease_held = None
@@ -343,7 +478,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             if state.helper_failures >= settings.max_helper_failures:
                 return _stop(settings, state, emit, "error", reason="merge-train controller kept refusing",
                              **{key: snapshot[key] for key in ("status", "error_code", "http_status", "trace_id")})
-            _pause(settings, io, state)
+            _pause(settings, io, state, reason="refusal")
             continue
         state.helper_failures = 0
         state.own_refusal_streak = 0
@@ -352,6 +487,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
         result = response.get("result") or {}
         action = str(result.get("controller_action") or "")
         state.unchanged_passes = min(state.unchanged_passes + 1, 10) if action == state.last_action else 0
+        _record_pass(state, io, pass_number, action, controller_before, progress=state.unchanged_passes == 0)
         candidate = result.get("candidate") or {}
         state.candidate_active = (
             action == "observe_candidate" and bool(candidate.get("candidate_sha"))
@@ -383,7 +519,9 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
             if _record_landings(settings, io, state, emit) == "landed":
                 _finish_landing(settings, io, state, emit, started)
                 return _stop(settings, state, emit, "landed")
-        _pause(settings, io, state)
+        # A repeated call-again action is not known progress; it backs off.
+        known_work = action in CALL_AGAIN_ACTIONS and state.unchanged_passes == 0
+        _pause(settings, io, state, reason="progress" if known_work else "backoff")
 
 
 # Blocks Launchplane raises while a candidate's checks are still running; the deadline bounds the wait.
@@ -505,6 +643,8 @@ def _finish_landing(
     emit: Callable[[str, dict[str, Any]], None],
     started: float,
 ) -> None:
+    if state.cadence is not None:
+        state.cadence.begin_read_back()
     io.finish_reads()
     # The service's own controller completes child disposition. A generic
     # mutating pass can select unrelated work even after a matching dry run.
@@ -645,6 +785,7 @@ def _stop(settings: DriveSettings, state: DriveState, emit: Callable[[str, dict[
             "actions": [f"stop_{outcome}"],
             **({"controller_recovery": state.recovery} if state.recovery is not None else {}),
             **({"stack_finish": state.stack_finish} if state.stack_finish else {}),
+            **({"cadence": state.cadence.summary()} if state.cadence is not None else {}),
             **{key: value for key, value in detail.items() if value is not None},
         },
     )
@@ -893,6 +1034,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--base-branch", default="main")
     parser.add_argument("--deadline-minutes", type=float, default=240.0)
     parser.add_argument("--poll-seconds", type=float, default=60.0)
+    parser.add_argument("--progress-seconds", type=float, default=15.0,
+                        help="Pause after a newly reported plan, build or landing action (capped by --poll-seconds).")
     parser.add_argument("--max-wait-seconds", type=float, default=900.0,
                         help="Longest pause between controller calls while nothing changes.")
     parser.add_argument("--helper-timeout", type=float, default=180.0)
@@ -915,6 +1058,7 @@ def main(argv: list[str]) -> int:
         base_branch=args.base_branch,
         deadline=time.time() + args.deadline_minutes * 60,
         poll_seconds=args.poll_seconds,
+        progress_seconds=args.progress_seconds,
         max_wait_seconds=args.max_wait_seconds,
         allow_branch_update=args.allow_branch_update,
     )
