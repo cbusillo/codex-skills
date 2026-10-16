@@ -109,6 +109,18 @@ class SnapshotTests(unittest.TestCase):
         warnings = json.loads(result.stdout)["launchplane"]["warnings"]
         self.assertTrue(any(warning["code"] == "invalid_launchplane_context" for warning in warnings))
 
+    def test_service_environment_warnings_follow_enabled_helper_capabilities(self):
+        for context_enabled, operator_enabled in ((False, False), (True, False), (False, True), (True, True)):
+            metadata = {"launchplane": {"enabled": True,
+                "context": {"enabled": context_enabled, "helper": "tools/context.py"},
+                "operator": {"enabled": operator_enabled, "helper": "tools/operator.py"}}}
+            with self.subTest(context=context_enabled, operator=operator_enabled):
+                result = self.snapshot(metadata)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                codes = {warning["code"] for warning in json.loads(result.stdout)["launchplane"]["warnings"]}
+                self.assertEqual("missing_context_url_env" in codes, context_enabled)
+                self.assertEqual("missing_operator_url_env" in codes, operator_enabled)
+
     def test_invalid_launchplane_is_diagnosed(self):
         result = self.snapshot({"launchplane": "bad"})
         self.assertEqual(result.returncode, 0, result.stderr)
