@@ -5,11 +5,12 @@ remains as a retirement notice for old links. Use [validation guidance](validati
 for current Codex and Claude Code work; do not install or revive the old runtime
 to validate a skill change.
 
-The [historical fixtures](../evaluations/exec-harness/README.md), repository
-wrapper, and artifact collector remain available as source history and input to
-an explicitly scoped future port. They are not supported execution routes or
-current model recommendations. Previous setup commands are recoverable from
-Git history.
+The [historical fixtures](../evaluations/exec-harness/README.md) and artifact
+collector remain available as source history and input to an explicitly scoped
+future port. They are not supported execution routes or current model
+recommendations. The repository wrapper,
+`scripts/validate-exec-harness-skills.sh`, now only refuses and points here.
+The previous wrapper and setup commands are recoverable from Git history.
 
 The collector can interpret existing historical artifacts. Its output does not
 establish current Codex, Claude Code, or Astra behavior. Preserve the original host,
