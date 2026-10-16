@@ -156,8 +156,7 @@ def _command_state(
     )
     steps: list[str] = []
     retry_summaries: list[github_api_core.RetrySummary] = []
-    if (verify_actor and Path(gh_cmd).name == "gh-with-env-token"
-            and github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS")):
+    if verify_actor and Path(gh_cmd).name == "gh-with-env-token":
         try:
             actor = github_comment.authenticated_actor(gh_cmd=gh_cmd, operation=operation,
                 expected_actor=effective_expected_actor, write_repository=repo,

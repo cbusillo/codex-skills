@@ -8,11 +8,13 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import github_api
+from github_fixture_support import with_call_stub
 
 
 SCRIPT = Path(__file__).with_name("github_milestone.py")
@@ -241,6 +243,86 @@ def test_create_rejects_actor_mismatch_before_milestone_reads() -> None:
             raise AssertionError("expected actor mismatch")
 
     assert calls == ["/user"]
+
+
+def test_own_user_writes_retain_repository_writer() -> None:
+    module = load_module()
+    repo = "contributor/project"
+    personal_login = "fixture-contributor"
+    for action in ("create", "update", "close"):
+        writes: list[str] = []
+
+        def fake_call(method: str, path: str, _body: Any, **kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                # Model the wrapper selecting the personal writer only for a
+                # repository-aware probe; ordinary /user uses automation.
+                login = personal_login if repo in (kwargs.get("gh_prefix_args") or []) else TEST_ACTOR
+                result = api_result({"login": login})
+                result.actor = login
+                result.expected_actor = None if login == personal_login else TEST_ACTOR
+                return result
+            if method in {"POST", "PATCH"}:
+                writes.append(method)
+                result = api_result(milestone(7, title="Updated" if action == "update" else "Sprint 1",
+                                              state="closed" if action == "close" else "open"))
+            elif "?" in path:
+                result = api_result([])
+            else:
+                result = api_result(milestone(7))
+            if method in {"POST", "PATCH"}:
+                result.actor = personal_login
+                result.expected_actor = None
+            else:
+                result.actor = result.expected_actor = kwargs["actor"]
+            return result
+
+        def run(_calls: list[dict[str, Any]]) -> None:
+            with patch.dict(os.environ, {
+                "CODEX_SKILLS_ENV_FILE": "/definitely/missing/milestone-test.env",
+                "GITHUB_CLIENT_APP_OWNERS": "",
+                "GH_WITH_ENV_TOKEN_OWN_USER": "1",
+                "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "",
+            }):
+                kwargs = {"gh_cmd": "gh-with-env-token"}
+                if action == "create":
+                    result = create_milestone(module, repo, "Sprint 1", **kwargs)
+                elif action == "update":
+                    result = update_milestone(module, repo, "7", title="Updated", **kwargs)
+                else:
+                    result = close_milestone(module, repo, "7", **kwargs)
+            assert result["ok"] is True, result
+            assert result["actor"] == result["expected_actor"] == personal_login, result
+            assert result["outcome_certainty"] == "confirmed", result
+            assert result["recommended_next_action"] == "none", result
+            assert len(writes) == 1, writes
+
+        with_call_stub(fake_call, run)
+
+
+def test_repository_writer_probe_rejects_wrong_actor() -> None:
+    module = load_module()
+
+    def fake_call(_method: str, _path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        result = api_result({"login": "unexpected-user"})
+        result.actor = "declared-contributor"
+        result.expected_actor = None
+        return result
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        with patch.dict(os.environ, {
+            "GITHUB_CLIENT_APP_OWNERS": "",
+            "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "",
+        }):
+            try:
+                create_milestone(module, "contributor/project", "Sprint 1", gh_cmd="gh-with-env-token")
+            except module.MilestoneError as exc:
+                assert exc.failure.cause == "actor_mismatch", exc.failure
+                assert exc.failure.write_outcome == "not_started", exc.failure
+            else:
+                raise AssertionError("expected actor mismatch")
+        assert [call["path"] for call in calls] == ["/user"], calls
+
+    with_call_stub(fake_call, run)
 
 
 def test_update_no_op_skips_patch() -> None:
@@ -481,6 +563,8 @@ TESTS = [
     test_create_rejects_conflicting_exact_title,
     test_create_rejects_case_insensitive_title_conflict,
     test_create_rejects_actor_mismatch_before_milestone_reads,
+    test_own_user_writes_retain_repository_writer,
+    test_repository_writer_probe_rejects_wrong_actor,
     test_update_no_op_skips_patch,
     test_update_verifies_success_response_and_clear_due_on,
     test_update_accepts_server_coerced_due_on_time,

@@ -1642,9 +1642,12 @@ that unseen incident work may outrank milestones.
   returns a conflict with compact blockers and no write is attempted. Closing
   an already closed milestone is a no-op.
 
-All milestone writes use the configured automation actor, emit `actor` and
-`expected_actor`, and preserve fail-closed write-outcome and reconciliation
-fields from the shared API layer. Use these commands instead of raw
+All milestone writes resolve the writer for the target repository through the
+existing identity rules, including the explicitly authorized own-user route.
+They retain that login in `actor` and `expected_actor` and preserve fail-closed
+write-outcome and reconciliation fields from the shared API layer.
+Automation-only, missing-opt-in and wrong-actor refusals still apply.
+Use these commands instead of raw
 `gh api .../milestones` calls.
 
 ### Planning: Projects
