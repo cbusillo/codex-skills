@@ -328,6 +328,34 @@ def read_operation() -> str:
     return CURRENT_OPERATION
 
 
+def review_decision_from_reviews(reviews: list[dict[str, Any]]) -> Optional[str]:
+    ordered = sorted(
+        enumerate(reviews),
+        key=lambda pair: (
+            0 if isinstance(pair[1].get("id"), int) else 1,
+            pair[1].get("id") if isinstance(pair[1].get("id"), int) else pair[0],
+            pair[0],
+        ),
+    )
+    by_author: dict[str, str] = {}
+    for _, item in ordered:
+        if not isinstance(item, dict):
+            continue
+        state = str(item.get("state") or "").upper()
+        if state not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            continue
+        user = item.get("user") if isinstance(item.get("user"), dict) else {}
+        login = str(user.get("login") or "").strip().lower()
+        if not login:
+            continue
+        by_author[login] = state
+    if any(state == "CHANGES_REQUESTED" for state in by_author.values()):
+        return "CHANGES_REQUESTED"
+    if any(state == "APPROVED" for state in by_author.values()):
+        return "APPROVED"
+    return None
+
+
 def cmd_view(args: argparse.Namespace, *, cache_enabled: bool = True, include_body: bool = False) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     reader = github_read_core.GitHubReader(
@@ -340,16 +368,37 @@ def cmd_view(args: argparse.Namespace, *, cache_enabled: bool = True, include_bo
         raise PrHelperError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict(), diagnostics=exc.diagnostics, repo=repo, pr=number) from exc
     if not isinstance(pr, dict):
         raise PrHelperError("PR metadata response was not an object", diagnostics=reader.diagnostics(), repo=repo, pr=number)
+    reviews_read = pr.get("reviewDecision") is not None
+    if not include_body and not reviews_read:
+        try:
+            reviews = reader.paged_json(f"/repos/{repo}/pulls/{number}/reviews", step_prefix="reviews")
+            reviews_read = True
+        except (github_read_core.GitHubReadError, github_read_core.GitHubReadShapeError):
+            reviews = []
+        decision = review_decision_from_reviews(reviews)
+        if decision:
+            pr = {**pr, "reviewDecision": decision}
     record_retry_summary(reader.retry_summary())
     normalized = normalize_pr(pr)
     if include_body:
         normalized["body"] = pr.get("body") or ""
         if isinstance(pr.get("user"), dict):
             normalized["user"] = pr["user"]
+    has_review_decision = normalized.get("reviewDecision") is not None
+    readiness: dict[str, Any] = {
+        "state": "not_read",
+        "review_decision": "read" if has_review_decision else "not_read",
+    }
+    if not has_review_decision:
+        readiness["reason"] = (
+            "no decisive review on pull request; review requirement not read by view"
+            if reviews_read
+            else "review decision not read by view"
+        )
     return {
         "ok": True, "repo": repo, "pr": normalized,
         "actor": reader.actor, "expected_actor": reader.expected_actor,
-        **merge_observations(pr), "diagnostics": reader.diagnostics(),
+        **merge_observations(pr, readiness=readiness), "diagnostics": reader.diagnostics(),
     }
 
 
@@ -1231,7 +1280,7 @@ def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
     merged = pr.get("merged")
     if merged is None and pr.get("merged_at"):
         merged = True
-    return {
+    normalized = {
         "number": pr.get("number"),
         "title": pr.get("title"),
         "state": pr.get("state"),
@@ -1243,7 +1292,6 @@ def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
         "mergeable": pr.get("mergeable"),
         "mergeable_state": mergeable_state,
         "mergeStateStatus": MERGE_STATE_STATUS.get(str(mergeable_state), str(mergeable_state).upper()) if mergeable_state else None,
-        "reviewDecision": pr.get("reviewDecision"),
         "statusCheckRollup": pr.get("statusCheckRollup"),
         "labels": labels,
         "url": pr.get("html_url"),
@@ -1253,6 +1301,9 @@ def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
         "headRepository": ((pr.get("head") or {}).get("repo") or {}).get("full_name"),
         "baseRepository": ((pr.get("base") or {}).get("repo") or {}).get("full_name"),
     }
+    if pr.get("reviewDecision") is not None:
+        normalized["reviewDecision"] = pr.get("reviewDecision")
+    return normalized
 
 
 def resolve_repo(explicit: Optional[str]) -> str:

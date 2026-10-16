@@ -552,7 +552,7 @@ def resolve_pr(pr_spec, repo_override=None):
             "draft": isinstance(data.get("draft"), bool),
             "mergeable": isinstance(data.get("mergeable"), bool),
             "merge_state_status": merge_state_available,
-            "review_decision": review_decision is not None,
+            "review_decision": False,
         },
         "_read_diagnostic": payload["_watcher_diagnostic"],
     }
