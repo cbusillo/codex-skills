@@ -889,9 +889,12 @@ Use PRs for all non-trivial changes.
   `qualityGate.test.local` rather than the full `qualityGate.test.ci` gate under the
   [test command contract](references/config-schema.md#workflow-metadata).
   Preserve legacy `test.default` requirements until the repository adopts the
-  split. Apply the full-local exceptions in
+  split. For safety, authorization, approval-rule, destructive-helper and
+  shared-infrastructure changes, also run the full test modules for the safety
+  areas touched locally, as described in
   [Gate Selection](../repo-readiness/SKILL.md#gate-selection). Under the split,
-  full CI must pass for the current head before `ready` or merge; pushing opens
+  the complete suite runs only in CI and must pass for the current head before
+  `ready` or merge; pushing opens
   that CI feedback loop and does not require it to have run locally.
   For code changes with an available IDE project, run
   `jetbrains-inspection` on the changed files before pushing or updating a PR.

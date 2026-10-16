@@ -196,8 +196,11 @@ records and write out only otherwise unrecorded gaps. Use
   command contract above; metadata absence does not opt a repository in.
 - Without the split, shared contract, deployment, release, or security-sensitive
   changes retain the broader repo gate and any required inspection/security checks.
-- Under the split, safety, authorization, approval-rule, destructive-helper or shared-infrastructure
-  change: also run the full local suite. For shared contracts, deployment or
+- Under the split, safety, authorization, approval-rule, destructive-helper or
+  shared-infrastructure changes: run focused tests plus the full test modules
+  for the safety areas touched, such as authorization, secrets, recovery or
+  credentials, locally. Select those modules using the repository's documented
+  change areas; the complete suite runs only in CI. For shared contracts, deployment or
   release changes, broaden local coverage for the affected risk and retain any
   explicit repository gates.
 - Shared agent instructions, approval or safety rules, or a destructive helper:
@@ -215,7 +218,7 @@ run broad practical static gates when tooling exists: normally whole-repo
 lint/static analysis and whole-project IDE inspection. Use downstream/related repo gates
 when contracts, shared packages, deployment behavior, or cross-repo ownership
 changes. This breadth applies to static analysis and inspection; test breadth
-follows the declared local/CI split, full-local exceptions and repository
+follows the declared local/CI split, affected safety modules and repository
 requirements above. Under the split, do not rerun the full suite locally merely
 to declare readiness or close out.
 
