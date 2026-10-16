@@ -149,7 +149,7 @@ def memory_reminder(now: dt.datetime, env: Mapping[str, str] | None = None) -> s
     path = Path(source.get("MEMORY_MARKER") or marker_path(source).with_name(MEMORY_MARKER_NAME)).expanduser()
     try:
         state = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         state = {}
     if not isinstance(state, dict):
         state = {}
@@ -160,11 +160,11 @@ def memory_reminder(now: dt.datetime, env: Mapping[str, str] | None = None) -> s
     try:
         with (root / "MEMORY.md").open(encoding="utf-8") as registry:
             words = sum(len(line.split()) for line in registry)
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError):
         return ""
     days = state.get("max_age_days", MEMORY_STALE_DAYS)
     limit = state.get("max_words", MEMORY_MAX_WORDS)
-    if type(days) is not int or days <= 0:
+    if type(days) is not int or not 0 < days <= dt.timedelta.max.days:
         days = MEMORY_STALE_DAYS
     if type(limit) is not int or limit <= 0:
         limit = MEMORY_MAX_WORDS
@@ -547,7 +547,10 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             if overall:
                 print(overall, flush=True)
         now = dt.datetime.now(dt.timezone.utc)
-        memory_text = memory_reminder(now)
+        try:
+            memory_text = memory_reminder(now)
+        except Exception:  # Optional memory input must not hide direction or catch-up.
+            memory_text = ""
         if memory_text:
             print(memory_text, flush=True)
         marker = with_shared_turn(marker, now, origin_repo(root or checkout_root(Path.cwd())))

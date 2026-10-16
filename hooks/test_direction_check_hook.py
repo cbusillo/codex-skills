@@ -64,7 +64,10 @@ class MemoryReminderTests(unittest.TestCase):
             registry.write_text("one two three")
             result = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)],
                 cwd=root, env=base, text=True, capture_output=True, check=True)
-            self.assertNotIn(expected, result.stdout)
+            registry.unlink()
+            absent = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)],
+                cwd=root, env=base, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout, absent.stdout)
 
     def test_age_and_size_boundaries_and_supported_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -111,6 +114,8 @@ class MemoryReminderTests(unittest.TestCase):
             for value in ("invalid JSON", "[]", '{"max_words": true}', '{"max_age_days": -1}'):
                 state.write_text(value)
                 self.assertEqual(hook.memory_reminder(NOW, env), "")
+            state.write_text(json.dumps({"memory_root": str(root) + "\0"}))
+            self.assertEqual(hook.memory_reminder(NOW, env), "")
 
 
 class IsolatedDirectionHookTests(unittest.TestCase):
