@@ -134,12 +134,13 @@ authority or prove that a linked PR completed an issue.
 
 ## Daily delivery and maintenance
 
-Use the existing Supervisor's daily/morning scheduler and existing Director
-Discord destination/helper to run this command and deliver its Markdown once
-per day. Deliver an incomplete report too; preserve the nonzero scan status and
-coverage gaps instead of suppressing the digest. Keep routing, repository
-lists, helper invocation and scheduler configuration private. Do not build a
-second Discord client, copy credentials, or use a session-bound sleep loop.
+Use the launchd [daily service](../../supervisor/references/helpers.md#daily-stranded-work-service)
+and configured Director Discord destination with `discord_digest.py` to deliver
+this Markdown once per morning without a running Supervisor session. Deliver an incomplete report
+too; preserve the nonzero scan status and coverage gaps instead of suppressing
+the digest. Keep routing, repository lists, helper invocation and scheduler
+configuration private. Use the catalog sender with the privately configured
+digest webhook; do not copy credentials or use a session-bound sleep loop.
 Record the actual scheduler registration and receiver receipt on the owning
 issue before describing daily delivery as active. Source and fixture success
 alone do not establish scheduled delivery.
@@ -147,8 +148,8 @@ alone do not establish scheduled delivery.
 Update by pulling the landed catalog through its supported path; a digest
 uses the audit and question helpers from the same catalog. On a delivery
 failure, retain the report and helper outcome for the Supervisor; reconcile an
-uncertain send before replay. To stop, disable only the existing scheduler's
-stranded-work entry. Restore its previous command/configuration to roll back;
+uncertain send before replay. To stop, boot out only the stranded-work launchd
+job and remove its LaunchAgents plist. Restore the previous reviewed configuration to roll back;
 GitHub state needs no rollback because the sweep changes none.
 
 Offline replay: `uv run skills/direction/scripts/test_direction_stranded.py`.

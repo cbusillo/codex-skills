@@ -5354,11 +5354,29 @@ def summarize_target_replacement_plan_read(
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "recommendation": (
             "Read plan_status and blocker_codes first; blocker_keys names the env keys each "
-            "key-list blocker is about. Blocker, step and warning text is not returned."
+            "key-list blocker is about, and expected_artifact_id is the artifact the plan "
+            "evaluated. Blocker, step and warning text is not returned."
         ),
     }
     assert_public_safe_shape(payload["summary"])
     return payload
+
+
+def _target_replacement_plan_candidate(args: argparse.Namespace) -> dict[str, str]:
+    """The candidate artifact to plan with instead of the lane's current one: both or neither."""
+    artifact_id = (getattr(args, "artifact_id", None) or "").strip()
+    source_git_ref = (getattr(args, "source_git_ref", None) or "").strip()
+    if bool(artifact_id) != bool(source_git_ref):
+        raise ValueError("artifact_id_and_source_git_ref_required_together")
+    if not artifact_id:
+        return {}
+    candidate: dict[str, str] = {}
+    for name, value in (("artifact_id", artifact_id), ("source_git_ref", source_git_ref)):
+        try:
+            candidate[name] = public_identifier(value)
+        except LaunchplaneSafetyError:
+            raise ValueError(f"invalid_{name}") from None
+    return candidate
 
 
 def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
@@ -5368,16 +5386,18 @@ def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
     for name, value in (("product", product), ("instance", instance)):
         if not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value):
             raise ValueError(f"invalid_{name}")
+    candidate = _target_replacement_plan_candidate(args)
     operation = "target-replacement-plan-read"
     request: dict[str, object] = {
         "product": product,
         "instance": instance,
+        **candidate,
         "payload_source": "operator_argument",
     }
     body: dict[str, object] = {
         "schema_version": 1,
         "product": product,
-        "replacement": {"product": product, "instance": instance},
+        "replacement": {"product": product, "instance": instance, **candidate},
     }
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
@@ -6565,6 +6585,7 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
 
 
 POLICY_PROPOSAL_DESCRIPTORS = (
+    "production-backup-policy",
     "managed-authz-policy-set",
     "managed-merge-train-policy-import",
 )
@@ -6607,6 +6628,16 @@ def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, objec
             "related_issue",
         }
         required = {"managed_set_id", "desired_policy", "reason"}
+    elif body["descriptor_id"] == "production-backup-policy":
+        allowed = {"authority", "reason", "related_issue"}
+        required = {"authority", "reason"}
+        authority = request_body.get("authority")
+        if not isinstance(authority, dict) or authority.get("mode") != "dry_run" or authority.get("reviewed_authority_digest"):
+            raise ValueError("invalid_backup_proposal_authority")
+        policy = authority.get("policy")
+        product = policy.get("product") if isinstance(policy, dict) else None
+        if not isinstance(product, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", product) is None:
+            raise ValueError("invalid_backup_proposal_product")
     else:
         allowed = {"record", "reason", "related_issue"}
         required = {"record", "reason"}
@@ -6644,7 +6675,7 @@ def summarize_privileged_policy_proposal(
         "execution_failed",
     } or provider_payload.get("write_status") not in {"written", "replayed"}:
         raise LaunchplaneSafetyError("invalid_response")
-    counts = (
+    counts = () if descriptor == "production-backup-policy" else (
         (
             "added_rule_count",
             "adopted_rule_count",
@@ -6687,6 +6718,13 @@ def summarize_privileged_policy_proposal(
     else:
         recommendation = "This plan is terminal. Inspect its outcome instead of requesting approval. An intentional replacement needs a fresh envelope and source event."
     review_path = f"/ui/engineering/privileged-operations?operation_id={operation_id}"
+    if descriptor == "production-backup-policy":
+        product = request.get("product")
+        if not isinstance(product, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", product) is None:
+            raise LaunchplaneSafetyError("invalid_response")
+        review_path = f"/ui/products/{urllib.parse.quote(product, safe='')}/environments/prod/actions?backup_proposal={operation_id}#production-backup-authority"
+        if summary.get("review_path") != review_path:
+            raise LaunchplaneSafetyError("invalid_response")
     result = {
         "operation_id": operation_id,
         "descriptor_id": descriptor,
@@ -9497,6 +9535,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     target_replacement_plan_read.add_argument("--product", required=True)
     target_replacement_plan_read.add_argument("--instance", required=True)
+    target_replacement_plan_read.add_argument(
+        "--artifact-id",
+        help="Plan with this candidate artifact instead of the lane's current one; needs --source-git-ref.",
+    )
+    target_replacement_plan_read.add_argument(
+        "--source-git-ref",
+        help="The candidate artifact's source commit; needs --artifact-id.",
+    )
 
     for command, help_text in (
         ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),
@@ -10066,6 +10112,10 @@ def main(argv: list[str]) -> int:
         if args.command == "privileged-policy-propose":
             body = privileged_policy_proposal_body(args)
             request = {"mode": "propose", "payload_source": "private_file", "descriptor_id": body["descriptor_id"]}
+            if body["descriptor_id"] == "production-backup-policy":
+                authority = _require_dict(_require_dict(body["request"]).get("authority"))
+                product = _require_dict(authority.get("policy")).get("product")
+                request["product"] = product
             return execute_post(args=args, operation=args.command, path=helper_command_path(args.command), request=request, body=body)
         if args.command == "product-config-preflight":
             request = {
