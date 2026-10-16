@@ -6577,7 +6577,7 @@ def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, objec
 
 
 def summarize_privileged_policy_proposal(
-    *, request: dict[str, object], provider_payload: dict[str, object]
+    *, request: dict[str, object], provider_payload: dict[str, object], service_url: str
 ) -> dict[str, object]:
     if (
         set(provider_payload) - {"status", "trace_id", "write_status", "summary"}
@@ -6641,18 +6641,20 @@ def summarize_privileged_policy_proposal(
         recommendation = (
             "The pending plan has blockers; review them on the Launchplane UI host before approval."
             if result_status == "blocked"
-            else "Open the review path on the Launchplane UI host for the signed-in Director. The proposer cannot approve or apply."
+            else "Open review_url for the signed-in Director. The proposer cannot approve or apply."
         )
     elif state in {"approved", "executing"}:
         recommendation = "This plan is already approved or executing. Observe its existing outcome; no new approval is needed."
     else:
         recommendation = "This plan is terminal. Inspect its outcome instead of requesting approval. An intentional replacement needs a fresh envelope and source event."
+    review_path = f"/ui/engineering/privileged-operations?operation_id={operation_id}"
     result = {
         "operation_id": operation_id,
         "descriptor_id": descriptor,
         "state": state,
         "result_status": result_status,
-        "review_path": f"/ui/engineering/privileged-operations?operation_id={operation_id}",
+        "review_path": review_path,
+        "review_url": build_launchplane_url(service_url, review_path),
         "expires_at": public_timestamp(normalized_expiry) if normalized_expiry else "",
         "counts": {name: _nonnegative_int(summary.get(name)) for name in counts},
         "authorizes_approval": False,
@@ -6720,7 +6722,10 @@ def execute_post(
         )
         try:
             emit(
-                summarize_privileged_policy_proposal(request=request, provider_payload=provider_payload)
+                summarize_privileged_policy_proposal(
+                    request=request, provider_payload=provider_payload,
+                    service_url=settings["service_url"],
+                )
                 if operation == "privileged-policy-propose"
                 else summarize_success(
                     operation=operation,

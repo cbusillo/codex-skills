@@ -34,6 +34,12 @@ changes on yes.
   `[OWNER/repo#N](URL) short title`. Bare `#N` and `PR #N` labels lose context.
 - In plain-text titles and commit subjects, use full `OWNER/REPO#N` IDs and
   a short description; put clickable links in the associated Markdown body.
+- Every step that sends the Director to a page includes its full clickable
+  URL, in questions and handoffs as well as other instructions. This applies
+  to Launchplane, GitHub, Context Panel, App Store Connect, and other sites.
+  A bare path, a code-formatted route, or "open X in the UI" is insufficient.
+  Resolve the address from the configured service or authoritative page link;
+  never guess a host. Keep private URLs in destinations allowed to know them.
 - Preserve exact-output requests, runnable commands, machine-readable fields,
   helper-checked decision lines, and `Refs`/closing syntax verbatim;
   apply the linked format to the surrounding prose.

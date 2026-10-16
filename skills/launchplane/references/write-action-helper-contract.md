@@ -1594,8 +1594,11 @@ stable `source_event_id`, `request` (including reason and optional related issue
 and optional `expires_in_seconds`. Never put it in a repository or pass policy
 JSON inline. The helper rejects dedicated preparation contexts and unsupported
 request fields. It emits bounded proposal metadata, counts, trace,
-and a relative `review_path` on the Launchplane UI host; it never returns
-policy selectors or credential-routing fields.
+and a full `review_url` built from the configured service URL. Use that clickable
+URL in Owner questions and handoffs; the relative `review_path` remains for
+compatibility. The URL identifies the private service host, so share it only
+with destinations allowed to know it. The helper never returns policy selectors
+or credential-routing fields.
 
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new
