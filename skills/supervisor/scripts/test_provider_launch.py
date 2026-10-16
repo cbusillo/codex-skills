@@ -1,0 +1,111 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Provider/harness consistency, without real accounts or terminals."""
+
+import argparse
+import asyncio
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import AsyncMock, Mock, patch
+
+import account_choice
+import iterm_tab
+import tmux_terminal
+
+
+HARNESS_CHOICES = (
+    ("openai", "codex", {"CODEX_HOME": "/fixture/codex"}),
+    ("anthropic", "claude", {"CLAUDE_CONFIG_DIR": "/fixture/claude"}),
+    ("google", "agy", {}),
+)
+
+
+class ProviderLaunchTests(unittest.TestCase):
+    def test_wrong_harness_refuses_with_or_without_a_brief(self):
+        for provider, expected, env in HARNESS_CHOICES:
+            for _, agent, _ in HARNESS_CHOICES:
+                if agent == expected:
+                    continue
+                for command in (agent, f"cd / && exec /fixture/{agent}"):
+                    for brief in (None, "literal brief"):
+                        with self.subTest(provider=provider, command=command, brief=brief):
+                            with self.assertRaises(ValueError):
+                                iterm_tab.with_account(command, {"provider": provider, "env": env}, brief)
+
+    def test_mismatched_later_batch_item_refuses_before_side_effects_on_both_backends(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            files = [root / "first", root / "second"]
+            brief = root / "brief"
+            brief.write_text("literal task")
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            for provider, expected, env in HARNESS_CHOICES:
+                choice = {"provider": provider, "env": env}
+                for _, wrong, _ in HARNESS_CHOICES:
+                    if wrong == expected:
+                        continue
+                    files[0].write_text(expected)
+                    files[1].write_text(f"cd / && exec /fixture/{wrong}")
+                    args = argparse.Namespace(command="new", window_id="chosen", command_file=files,
+                                              brief_file=[brief, brief], account_provider=provider,
+                                              account_config=None, account=None, tmux_socket="fixture")
+                    for backend in ("iterm", "tmux"):
+                        terminal = Mock()
+                        with (self.subTest(provider=provider, wrong=wrong, backend=backend),
+                              patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
+                              patch.object(tmux_terminal, "Terminal", return_value=terminal),
+                              patch.object(account_choice, "select_batch", return_value=[choice, choice]),
+                              patch.object(iterm_tab, "check_codex_project"),
+                              patch.object(iterm_tab, "check_codex_daemon") as daemon,
+                              patch.object(account_choice, "prepare_launch") as prepare,
+                              patch.object(account_choice, "record_launch") as receipt):
+                            with self.assertRaises(ValueError):
+                                asyncio.run(iterm_tab.operate(app, args) if backend == "iterm"
+                                            else tmux_terminal.operate(args))
+                            daemon.assert_not_called()
+                            prepare.assert_not_called()
+                            receipt.assert_not_called()
+                            window.async_create_tab.assert_not_called()
+                            terminal.run.assert_not_called()
+
+    def test_matching_commands_execute_with_selected_environment_and_literal_brief(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            brief = "--task's $(touch NEVER) `touch NEVER`\nnext\tline"
+            for provider, agent, env in HARNESS_CHOICES:
+                child = root / agent
+                child.write_text(f'#!{sys.executable}\nimport json, os, sys\n'
+                                 'print(json.dumps({"argv": sys.argv[1:], "env": dict(os.environ)}))\n')
+                child.chmod(0o700)
+                executable = shlex.quote(str(child))
+                for command in (executable, "exec " + executable,
+                                "command " + executable, "env TERM=fixture " + executable,
+                                f"cd {shlex.quote(str(root))} && exec {executable}"):
+                    with self.subTest(provider=provider, command=command):
+                        prepared = iterm_tab.with_account(command, {"provider": provider, "env": env}, brief)
+                        completed = subprocess.run(["/bin/sh", "-c", prepared], cwd=root,
+                                                   env={**os.environ, "CLAUDE_CONFIG_DIR": "/inherited"},
+                                                   check=True, capture_output=True, text=True)
+                        received = json.loads(completed.stdout)
+                        if agent == "agy":
+                            self.assertEqual(received["argv"], ["--prompt-interactive=" + brief])
+                        else:
+                            self.assertEqual(received["argv"][-2:], ["--", brief])
+                        for key, value in env.items():
+                            self.assertEqual(received["env"][key], value)
+            self.assertFalse((root / "NEVER").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
