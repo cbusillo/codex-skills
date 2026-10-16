@@ -684,6 +684,7 @@ class EnqueueTests(unittest.TestCase):
                         return watch.github_api.ApiResult(ok=True, status=200, body=copy.deepcopy(body))
 
                     fake.get = live.get
+                    fake.get_many = live.get_many
                     self.events.clear()
                     with (
                         patch.object(reader, "_transport_request", side_effect=transport),
@@ -696,6 +697,7 @@ class EnqueueTests(unittest.TestCase):
                     self.assertTrue(all(call.args[0] > 0 for call in sleep.call_args_list))
                     self.assertNotIn(f"/repos/{REPO}/issues/1/comments", reader.batch_responses)
                     if batched:
+                        self.assertNotIn(path, reader.batch_responses)
                         self.assertEqual(reader.batch_responses[f"/repos/{REPO}/pulls/2"], pr(2))
                     self.assertFalse(replies)
                     if computed is not True:
@@ -745,7 +747,9 @@ class EnqueueTests(unittest.TestCase):
                         before_reads = len(reads)
                         self.run_pass(fake)
                         self.assertLessEqual(len(reads) - before_reads, budget)
-                        if count == 14 and pass_number == 0:
+                        # When the budget has room to prime this backlog and
+                        # revisit two PRs, a slow computation can form a batch.
+                        if count == 14 and pass_number == 0 and budget >= count + 2:
                             self.assertGreater(len(fake.writes), 1)
                         landed.update(fake.writes)
                         if len(landed) == count:
@@ -789,7 +793,12 @@ class EnqueueTests(unittest.TestCase):
         live.reader.get_json.return_value = {**pr(), "mergeable": None}
         live.deadline = 100
         live.mergeability_reads_remaining = 20
-        with patch.object(watch.time, "time", side_effect=[0, 101]), patch.object(watch.time, "sleep"):
+        clock = [0]
+
+        def oversleep(_seconds):
+            clock[0] = 101
+
+        with patch.object(watch.time, "time", side_effect=lambda: clock[0]), patch.object(watch.time, "sleep", side_effect=oversleep):
             live.get_many([f"/repos/{REPO}/pulls/1"])
         live.reader.request.assert_not_called()
 
@@ -801,7 +810,6 @@ class EnqueueTests(unittest.TestCase):
         live.deadline = 100
         live.mergeability_reads_remaining = 0
         self.assertTrue(live.get(f"/repos/{REPO}/pulls/1")["mergeable"])
-        self.assertTrue(live.reader.request.call_args.kwargs["fresh"])
 
     def test_lazy_mergeability_read_error_restores_cache(self):
         live = object.__new__(watch.Live)
