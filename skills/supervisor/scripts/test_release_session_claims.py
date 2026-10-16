@@ -156,7 +156,7 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "single timezone"):
             helper.validate_closure({**self.entry, "ended_at": "2026-01-01 00:02:00+00:00"}, "supervisor")
 
-    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body="", scoped=False):
+    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body="", scoped=False, evidence=None):
         ledger, log = self.root / "ledger.json", self.root / "closed.json"
         ledger.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
         log.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
@@ -164,7 +164,7 @@ class ReleaseTests(unittest.TestCase):
         records[1]["payload"]["message"] = "Finished.\n" + verdict
         self.transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         self.reader.paged_json.side_effect = lambda path, **_kw: comments if path.endswith("/issues/1/comments") else []
-        self.reader.get_json.side_effect = lambda path, **_kw: {"body": body, "number": 1}
+        self.reader.get_json.side_effect = lambda path, **_kw: evidence if evidence and path.endswith("/issues/comments/99") else {"body": body, "number": 1}
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
                 "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
                 "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
@@ -176,9 +176,11 @@ class ReleaseTests(unittest.TestCase):
                 patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
                 patch.object(helper, "GitHubReader", return_value=self.reader), \
                 patch.object(helper, "discover", return_value=([("test/a", 1)], ["test/a"])), \
+                patch.object(helper, "discover_handoff", wraps=helper.discover_handoff) as lookup, \
                 patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run, \
                 contextlib.redirect_stdout(output):
             result = helper.main()
+        self.handoff_lookups = lookup.call_count
         write.assert_not_called()
         run.assert_not_called()
         return result, json.loads(output.getvalue())
@@ -237,7 +239,37 @@ class ReleaseTests(unittest.TestCase):
                 result, report = self.finish_thread(comments)
                 self.assertEqual(result, 1)
                 self.assertTrue(report["needs_reconciliation"])
-                self.assertIn("no authored handoff", report["reports"][0]["error"])
+                self.assertEqual(self.handoff_lookups, 1)
+                self.assertNotIn("released_claims", report["reports"][0])
+
+    def test_finish_supervisor_receipt_is_not_a_session_authored_handoff(self):
+        evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
+                    "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
+            actor=ACTOR, role="supervisor", releaser_session="supervisor", evidence_url=self.entry["handoff_url"], retained_prs=[], related=[])
+        receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
+        self.entry["ended_at"] = "2026-01-01T00:06:00Z"
+        result, report = self.finish_thread([self.source, receipt], evidence=evidence)
+        self.assertEqual(result, 1)
+        self.assertEqual(self.handoff_lookups, 1)
+        self.assertNotIn("released_claims", report["reports"][0])
+
+    def test_finish_history_failure_preserves_per_issue_release_and_refusal(self):
+        handoff = dict(self.reader.get_json.return_value)
+        def read(path, **_kw):
+            if path.endswith("/issues/2"):
+                raise helper.GitHubReadError("temporarily unavailable", result=SimpleNamespace(status=503), diagnostics={})
+            return handoff
+        self.reader.get_json.side_effect = read
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        entry = {**self.entry, "_finish": True, "_finish_scope": "explicit scope"}
+        with patch.object(helper, "preview_guards", return_value={"status": "passed_read_only"}), \
+                patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+            report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 2), ("test/a", 1)], self.root, False)
+        self.assertEqual([r["issue"] for r in report["issue_refusals"]], [2])
+        self.assertEqual([r["claim_comment"] for r in report["claims"]], [self.source["id"]])
+        write.assert_not_called()
+        run.assert_not_called()
 
     def test_finish_status_only_ownership_is_not_a_read_only_session(self):
         result, report = self.finish_thread([], body="Claimed by trial\nSession: source-session")

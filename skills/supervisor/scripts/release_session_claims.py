@@ -461,11 +461,16 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     status = validate_closure(entry, supervisor_session)
     if entry.get("_finish"):
-        completed = finished_claims(reader, entry, actor, issues, apply)
+        try:
+            completed = finished_claims(reader, entry, actor, issues, apply)
+        except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
+                GitHubReadError, GitHubReadShapeError):
+            completed = None  # Preserve the existing per-issue refusal/release path.
         if completed is not None:
             if validate_closure(entry, supervisor_session) != status:
                 raise ValueError("source transcript changed; preserve claims")
             return completed
+        reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
     if entry.get("handoff_url"):
         handoff_record = handoff(reader, entry, actor)
     else:
@@ -507,6 +512,7 @@ def finished_claims(reader, entry, actor, issues, apply):
     released = []
     ended = release.stamp(entry["ended_at"])
     for repo, number in issues:
+        reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
         issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="finished_claim_issue")
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="finished_claim_history")
         sources = [c for c in comments if belongs_to_session(c.get("body") or "", entry["session_id"])
@@ -524,6 +530,7 @@ def finished_claims(reader, entry, actor, issues, apply):
             evidence = exact.get(source["id"])
             if (len(parsed) != 1 or parsed[0]["session"] != entry["session_id"]
                     or (source.get("user") or {}).get("login") != actor or evidence is None
+                    or release.receipt_for(evidence) is not None
                     or not release.related_sessions_match(evidence.get("body") or "", entry["session_id"])
                     or release.stamp(evidence.get("updated_at") or evidence.get("created_at")) > ended):
                 return None

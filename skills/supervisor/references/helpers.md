@@ -1335,6 +1335,9 @@ native session, with both comments authored by the automation actor and dated
 before the recorded closure. When every claim has that evidence, the report says
 `already released by the session` and names the release handoffs without writing
 another release. A verified session that never claimed reports `nothing to release`.
+A body marker matching the released source counts as ended ownership; this
+recognition leaves Current Status text unchanged. Supervisor/direction release
+receipts retain their existing evidence and handoff checks.
 With `--repo`, these statuses add `in explicit scope` and the session report's
 `coverage` matches the command's scope; claims elsewhere are not accounted for.
 Unresolved ownership retains the existing handoff and release checks; neither
