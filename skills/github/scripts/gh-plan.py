@@ -5236,7 +5236,8 @@ def cmd_close(args: argparse.Namespace) -> None:
         if indexed or index_label.casefold() in {name.casefold() for name in normalize_labels(latest_issue.get("labels"))}:
             try:
                 github_issue_core.edit_issue(number, repo=issue_repo,
-                    **({"add_labels": [index_label]} if indexed else {"remove_labels": [index_label]}),
+                    add_labels=[index_label] if indexed else None,
+                    remove_labels=None if indexed else [index_label],
                     gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION)
             except github_issue_core.IssueError as exc:
                 raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
