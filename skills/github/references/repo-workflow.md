@@ -582,6 +582,8 @@ explicit `annotationError`. Without a linked Actions run, the helper reports
 unavailable job logs without requesting a workflow run using the check-run ID.
 Annotation strings use the log reader's terminal-control filter. `--max-lines`
 also bounds the annotation count; `annotationsTruncated` signals omitted items.
+Third-party check runs likewise retain failure/pending state and annotations;
+commit statuses without an Actions link remain classified as external.
 
 Log reads probe the configured CLI's help for `--allow-escape-sequences`, use
 that supported opt-in when available, and strip terminal controls before

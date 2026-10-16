@@ -12,6 +12,7 @@ import os
 import stat
 import subprocess
 import sys
+import urllib.parse
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ FAKE_GH = r'''#!/usr/bin/env python3
 import json
 import os
 import sys
+from urllib.parse import urlsplit, urlunsplit
 
 with open(os.environ["FAKE_GH_RESPONSES"], encoding="utf-8") as handle:
     responses = json.load(handle)
@@ -42,6 +44,9 @@ if sys.argv[1:] == ["api", "--help"]:
     print("api flags: --allow-escape-sequences")
     raise SystemExit(0)
 entry = responses.get(path)
+if entry is None and "/annotations?" in path:
+    parsed = urlsplit(path)
+    entry = responses.get(urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")))
 if entry is None:
     print(f"unexpected path: {path}", file=sys.stderr)
     raise SystemExit(2)
@@ -210,7 +215,7 @@ def synthetic_check_responses() -> tuple[dict[str, Any], dict[str, Any], str]:
     }
     check["details_url"] = f"https://github.com/o/r/runs/{check['id']}"
     responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"].append(check)
-    annotations_path = f"/repos/o/r/check-runs/{check['id']}/annotations?per_page=100&page=1"
+    annotations_path = f"/repos/o/r/check-runs/{check['id']}/annotations"
     responses[annotations_path] = {"body": [{
         "path": "src/example.py",
         "start_line": 3,
@@ -261,6 +266,20 @@ def test_synthetic_pending_stays_pending_without_actions_or_annotation_lookup() 
     assert not any(annotations_path in call for call in calls)
 
 
+def test_third_party_check_run_retains_failure_and_annotations() -> None:
+    responses, check, annotations_path = synthetic_check_responses()
+    check.update(name="coverage", details_url="https://ci.example.invalid/build/coverage")
+    process, calls = run_fixture(responses)
+    payload = json.loads(process.stdout)
+    assert process.returncode == 1
+    result = payload["checks"][1]
+    assert result["classification"] == "failing"
+    assert result["detailsUrl"] == check["details_url"]
+    assert result["annotations"] == responses[annotations_path]["body"]
+    assert payload["failingCount"] == 2 and payload["externalCount"] == 0
+    assert not any(f"/actions/runs/{check['id']}" in call for call in calls)
+
+
 def test_unavailable_synthetic_annotations_keep_failure_evidence() -> None:
     responses, synthetic, annotations_path = synthetic_check_responses()
     responses[annotations_path] = {"status": 403, "body": {"message": "Resource not accessible by integration"}}
@@ -283,8 +302,7 @@ def test_synthetic_annotations_are_bounded_and_terminal_controls_removed() -> No
     annotation["message"] = f"\x1b]0;fixture-title\x07\x1b[31m{message}\x1b[0m"
     annotation["path"] = f"\x1b[31m{annotation['path']}\x1b[0m"
     # One extra item lets the helper distinguish a truncated list from a full one.
-    bounded_path = path.replace("per_page=100", "per_page=2")
-    responses[bounded_path] = {"body": [annotation, annotation]}
+    responses[path] = {"body": [annotation, annotation]}
     process, calls = run_fixture(responses, max_lines=1)
     payload = json.loads(process.stdout)
     check = payload["checks"][1]
@@ -292,7 +310,7 @@ def test_synthetic_annotations_are_bounded_and_terminal_controls_removed() -> No
     assert check["annotationsTruncated"] is True
     assert check["annotations"][0]["message"] == message
     assert all("\x1b" not in str(value) for value in check["annotations"][0].values())
-    assert sum("/annotations?" in call for call in calls) == 1
+    assert sum(urllib.parse.urlsplit(call.split()[-1]).path == path for call in calls) == 1
     process, _ = run_fixture(responses, max_lines=1, json_output=False)
     assert process.returncode == 1
     assert message in process.stdout
@@ -481,6 +499,7 @@ def test_skipped_replacement_does_not_count_historical_failure() -> None:
 
 def main() -> None:
     tests = [
+        test_third_party_check_run_retains_failure_and_annotations,
         test_synthetic_annotations_are_bounded_and_terminal_controls_removed,
         test_synthetic_failure_preserves_annotations_without_actions_run_lookup,
         test_synthetic_pending_stays_pending_without_actions_or_annotation_lookup,
