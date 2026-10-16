@@ -93,7 +93,7 @@ budget, and put both results in the PR's review note.
 3. Read `model` and `effort` in the JSON result and report the provider and
    confirmed model. When `model_source` says the CLI did not report it, say so
    instead of stating it as fact. A provider's default may be the author's own model; pass
-   `--model` to pick a different one, and do not call a same-model run
+   `--provider NAME --model MODEL` to pick a permitted different one, and do not call a same-model run
    independent.
 4. Weigh the findings under the shared reference, then record in the pull
    request or owning issue: reviewers, what was acted on, what was declined and
@@ -162,5 +162,5 @@ credential-redacted diagnostics; OpenAI's malformed stdout is never excerpted.
   `ambiguous` is the Director's to change: `repair` refuses it and changes
   nothing, so show the result and ask, or use another provider. Do not edit
   the settings file by any other route.
-- When no other provider can be made to work, say so and use what is available,
-  as the shared reference describes.
+- When no allowed provider can run, report the outcome. Keep the standing
+  decision in force; do not substitute a provider through another command.

@@ -197,6 +197,14 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["selection"]["skipped"][0]["reason"])
         self.assertFalse(capture.exists())
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
+        # A later candidate's budget mismatch must preserve the earlier capacity reason.
+        self.policy.write_text(self.policy.read_text() + '[provider.google]\ntimeout = 10\n')
+        code, result = self.run_helper(
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai", "--timeout", "20")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertEqual([r["provider"] for r in result["skipped"]], ["anthropic", "google"])
+        self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["skipped"][0]["reason"])
+        self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
 
     def test_exhausted_primary_does_not_promote_supplementary_or_use_author(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -243,7 +251,7 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def test_policy_model_budget_and_actual_provenance_reach_the_review(self) -> None:
         self.install("claude", FAKE_CLAUDE)
-        requested, actual, timeout = "fixture-alias", "resolved-model (High)", 123
+        requested, actual, timeout = "fixture-alias", "resolved-model", 123
         self.policy.write_text('version = 1\ndecision = "model choice"\nproviders = ["anthropic"]\n'
                                f'[provider.anthropic]\nmodel = "{requested}"\ntimeout = {timeout}\n')
         argv_file = self.root / "argv"
@@ -252,7 +260,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["model"], result["timeout"]), (0, actual, timeout))
         argv = argv_file.read_text().splitlines()
         self.assertEqual(argv[argv.index("--model") + 1], requested)
-        self.assertEqual(result["effort"], "high")
+        self.assertEqual(result["effort"], "unknown")
         argv_file.unlink()
         for option, value in (("--model", "unapproved-model"), ("--timeout", str(timeout + 1))):
             code, result = self.run_helper("run", "--provider", "anthropic", "--repo", str(self.repo),
@@ -965,13 +973,15 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertNotEqual(result["model"], "retired-alias")
         self.assertEqual((code, result["model"], result["model_source"]),
                          (0, "replacement", "reported by the CLI (rerouted)"))
+        selected_model = "selected (High)"
         (base / "cli.log").write_text(
-            'I1013 17:14:50.632344 165 model_config_manager.go:340] Propagating selected model override to backend: label="selected"\n'
+            f'I1013 17:14:50.632344 165 model_config_manager.go:340] Propagating selected model override to backend: label="{selected_model}"\n'
             f"I1013 17:14:50.865659 413 server.go:1219] Created conversation {conversation}\n"
         )
         code, result = self.review("google", **env)
         self.assertEqual((code, result["model"], result["model_source"]),
-                         (0, "selected", "reported by the CLI"))
+                         (0, selected_model, "reported by the CLI"))
+        self.assertEqual(result["effort"], "high")
         # A cli.log pointing at another session's conversation falls back to the run's own log or request.
         (base / "cli.log").write_text(
             'I1013 17:15:00.000000 1 model_config_manager.go:340] Propagating selected model override to backend: label="other-session"\n'

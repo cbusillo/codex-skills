@@ -84,7 +84,8 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
         if model and settings.get("model") and model != settings["model"]:
             raise ValueError("--model disagrees with the standing review decision")
         if timeout and settings.get("timeout") and timeout > settings["timeout"]:
-            raise ValueError("--timeout exceeds the standing review limit")
+            skipped.append({"provider": provider, "reason": "--timeout exceeds the standing review limit"})
+            continue
         if shutil.which(executables[provider]) is None:
             skipped.append({"provider": provider, "reason": "CLI is not installed"})
             continue
