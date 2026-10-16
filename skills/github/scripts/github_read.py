@@ -445,11 +445,7 @@ class GitHubReader:
         body = result.body
         if not isinstance(body, str):
             self.invalid_response(step, f"GitHub {step} response was not text")
-        # Remove terminal commands before log text reaches reports or snippets.
-        body = re.sub(r"\x1b][^\x07\x1b]*(?:\x07|\x1b\\)", "", body)
-        body = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", body)
-        body = re.sub(r"\x1b[ -/]*[@-~]", "", body)
-        return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", body)
+        return strip_terminal_controls(body)
 
     def paged_json(
         self,
@@ -719,6 +715,14 @@ def normalize_pull_request(item: dict[str, Any]) -> dict[str, Any]:
         "headRepository": (head.get("repo") or {}).get("full_name"),
         "baseRepository": (base.get("repo") or {}).get("full_name"),
     }
+
+
+def strip_terminal_controls(text: str) -> str:
+    """Remove terminal commands before remote text reaches reports or snippets."""
+    text = re.sub(r"\x1b][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    text = re.sub(r"\x1b[ -/]*[@-~]", "", text)
+    return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
 
 
 def actions_ids(url: Any) -> tuple[Optional[int], Optional[int]]:

@@ -181,6 +181,17 @@ ownership identity are excluded from the accepted lifecycle request count.
 Missing process identity, ambiguous
 acceptance, PID permission errors, and same-path routes in a new session remain
 fail-closed and unresolved.
+When the lease-bound accepting IDE session is still running and has no route
+for the target, cleanup sends that session a read-only `lifecycle/open` probe
+for the lease, only when its plugin reports lifecycle open diagnostics. Older
+plugins would treat the probe as an open request and are not probed. Only a
+probe answered by the same session reporting `not_open`/`project_not_open`,
+for a settled lease whose every open request that session acknowledged and
+registered to the lease, releases the local lease, as `original_ide_reports_project_not_open`, without a
+close. The probe cannot fence a request the IDE has not registered yet,
+so an ambiguous or unacknowledged open request, an open still in progress, an
+unresolved open, or an answer from another session keeps the lease unresolved, and its next action names the
+probe's status and reason.
 Preparation failures for projects that were already open release only the local
 lease and never call lifecycle close. `cleanup-helper-leases` uses the same
 lifecycle lock as inspection commands so stale reconciliation cannot race a new
@@ -208,13 +219,17 @@ Scoped results preserve these boundaries:
   safe local removals in `would_remove`. It never claims ownership, closes a
   project, or deletes a lease. A live route needing a claim remains unresolved
   until scoped apply proves ownership and settled activity. Plain output names
-  preview/apply and the predicted, removed and unresolved counts.
+  preview/apply and the predicted, removed and unresolved counts, prints a
+  `LEASE_UNRESOLVED` line with each retained lease's reason and next action,
+  and carries no inspection verdict; the nonzero exit code marks a retained
+  lease.
 - Discovery failures, unresolved ownership, route/session mismatches, and
   refused closes retain the selected lease with the existing failure evidence.
 - Only the maintained helper removes the selected lease after confirmed close
   or an existing proved no-close outcome: `open_not_attempted`,
   `project_not_open`, `project_preexisted`, `ownership_not_proven` (a definitive
-  negative claim), or `original_ide_process_dead_no_route`. Other leases remain
+  negative claim), `original_ide_process_dead_no_route`, or
+  `original_ide_reports_project_not_open`. Other leases remain
   untouched. Running without a selector retains the existing global behavior.
 
 `remove-worktree` automatically reconciles only leases for its exact worktree,

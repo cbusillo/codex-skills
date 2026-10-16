@@ -207,6 +207,7 @@ VERDICT_SOURCE_KEYS = (
     "inspection_verdict_next_action",
     "inspection_attribution",
     "proof_failures",
+    "inspection_proof",
 )
 INSPECTION_STAGE_LABEL_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
 INSPECTION_TERMINAL_OUTCOMES = frozenset({"completed", "cancelled", "failed", "timed_out", "preempted"})
@@ -551,8 +552,8 @@ def main() -> int:
             return emit_agent_result(result, command=args.command_input)
         if args.command == "cleanup-leases":
             result = command_cleanup_leases(args)
-            exit_code = classify_cleanup_leases_exit(result)
-            return emit(result, args.json, exit_code, command=args.command_input, assess=exit_code != 0)
+            # Lease cleanup is not an inspection; its exit code and per-lease reasons carry the outcome.
+            return emit(result, args.json, classify_cleanup_leases_exit(result), command=args.command_input, assess=False)
         if args.command in {"remove-worktree", "cleanup-helper-sdks"}:
             result = command_retire_sdks(args)
             return emit(result, args.json, 0, command=args.command_input, assess=False)
@@ -9727,6 +9728,15 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
         print(f"LEASE_CLEANUP: {mode} stale={len(payload['stale'])} "
               f"would_remove={len(payload.get('would_remove') or [])} removed={len(payload['removed'])} "
               f"unresolved={len(payload.get('unresolved') or [])} failed={len(payload.get('failed') or [])}")
+        for item in [*(payload.get("unresolved") or []), *(payload.get("failed") or [])]:
+            if isinstance(item, dict):
+                next_action = item.get("next_action") or item.get("message")
+                print(safe_text("LEASE_UNRESOLVED: lease_id={lease_id} reason={reason}"
+                                + (" next_action={next_action}" if next_action else ""), {
+                    "lease_id": item.get("lease_id"),
+                    "reason": item.get("reason"),
+                    "next_action": next_action,
+                }))
         if payload.get("dry_run"):
             print("No leases changed. Apply with cleanup-helper-leases --no-dry-run; retain any unresolved leases.")
     print_outcome_summary(payload)
@@ -11808,6 +11818,7 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
             "project_preexisted",
             "ownership_not_proven",
             "original_ide_process_dead_no_route",
+            "original_ide_reports_project_not_open",
         }:
             if not args.dry_run:
                 path.unlink(missing_ok=True)
@@ -11878,12 +11889,33 @@ def cleanup_stale_helper_lease(
                 "lease_id": lease.get("lease_id"),
                 "released_without_close": True,
             }
-        return {
+        probe = original_session_open_probe(lease, sessions)
+        if probe_reports_project_not_open(lease, probe):
+            return {
+                "status": "not_needed",
+                "reason": "original_ide_reports_project_not_open",
+                "lease_id": lease.get("lease_id"),
+                "released_without_close": True,
+            }
+        unresolved = {
             "status": "skipped",
             "reason": "ownership_route_unavailable",
             "lease_id": lease.get("lease_id"),
             "next_action": "Retry cleanup after the original IDE session and exact route are discoverable.",
         }
+        if probe is not None:
+            unresolved["open_probe"] = {"status": probe.get("status"), "reason": probe.get("reason")}
+            if not lease_open_acknowledged_by_session(lease):
+                unresolved["next_action"] = (
+                    "The original IDE session did not acknowledge every open request for this lease, so a late "
+                    "open cannot be ruled out; retry cleanup after the exact route is discoverable."
+                )
+            elif probe.get("status") != "not_open":
+                unresolved["next_action"] = (
+                    f"The original IDE session reports this worktree {probe.get('status')} "
+                    f"({probe.get('reason')}); retry cleanup after that open settles."
+                )
+        return unresolved
     if dry_run:
         return {"status": "skipped", "reason": "ownership_preview_requires_apply",
                 "lease_id": lease.get("lease_id"),
@@ -11910,6 +11942,75 @@ def cleanup_stale_helper_lease(
     result = cleanup_lifecycle(lease, claimed_route, str(close_proof))
     result.setdefault("lease_id", lease.get("lease_id"))
     return result
+
+
+def original_session_open_probe(lease: dict[str, Any], observed_sessions: set[str]) -> dict[str, Any] | None:
+    """Ask the lease's still-running IDE session whether it has the worktree open, opening, or unresolved."""
+    session_id = lease.get("session_id")
+    port = lease.get("ide_port")
+    target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
+    if not session_id or str(session_id) not in observed_sessions or not isinstance(port, int) or not target:
+        return None
+    try:
+        identity = identity_for_port(port)
+    except (InspectError, OSError):
+        return None
+    # Plugins without lifecycle open diagnostics would treat the probe as a real open request.
+    if identity.get("session_id") != session_id or int(identity.get("lifecycle_open_diagnostic_version") or 0) < 1:
+        return None
+    try:
+        body = http_get(port, "lifecycle/open", {
+            "worktree_path": target,
+            "session_id": session_id,
+            "lease_id": lease.get("lease_id"),
+            "probe": "true",
+        }).body
+    except InspectError as error:
+        return {"status": "error", "reason": infer_error_reason(error, error.payload)}
+    except OSError as error:
+        return {"status": "error", "reason": type(error).__name__.lower()}
+    return public_payload(body)
+
+
+def lease_open_acknowledged_by_session(lease: dict[str, Any]) -> bool:
+    """Whether the lease's IDE session registered every open request, so none can still arrive unseen."""
+    if lease.get("state") not in {"cleanup_pending", "prepared", "kept_warm_after_indexing_timeout", "cleanup_failed", "cleanup_skipped"}:
+        return False
+    if lease.get("open_request_may_have_been_accepted") is not False:
+        return False
+    attempts = lease.get("open_attempts")
+    if not isinstance(attempts, list):
+        return False
+    # App startup and "no matching IDE" entries sent no project-open request.
+    requests = [attempt for attempt in attempts if not project_open_was_not_requested([attempt])]
+    if not requests:
+        return False
+    for attempt in requests:
+        if not isinstance(attempt, dict) or attempt.get("request_may_have_been_accepted") is True:
+            return False
+        identity = attempt.get("identity") if isinstance(attempt.get("identity"), dict) else {}
+        if not (
+            attempt.get("accepted") is True
+            and attempt.get("ownership_registered") is True
+            and attempt.get("lease_id") == lease.get("lease_id")
+            and (identity.get("session_id") or attempt.get("session_id")) == lease.get("session_id")
+        ):
+            return False
+    return True
+
+
+def probe_reports_project_not_open(lease: dict[str, Any], probe: dict[str, Any] | None) -> bool:
+    return (
+        lease_open_acknowledged_by_session(lease)
+        and isinstance(probe, dict)
+        and probe.get("probe") is True
+        and probe.get("status") == "not_open"
+        and probe.get("reason") == "project_not_open"
+        and probe.get("opened") is False
+        and probe.get("opening_scheduled") is False
+        and bool(lease.get("session_id"))
+        and probe.get("session_id") == lease.get("session_id")
+    )
 
 
 def can_release_dead_original_ide_lease(
