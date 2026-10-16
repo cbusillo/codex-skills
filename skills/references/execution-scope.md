@@ -62,6 +62,15 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
   the same need. Build on what exists: reopen, extend, or adopt it, and say
   which issue you found. Propose something new only when the search finds
   nothing that covers it, and say what you searched.
+- When a workflow step is awkward, record it instead of patching it in the
+  moment. In the Director-controlled repository that owns the step, add to the
+  open `friction` issue for the same step, or file one with that label
+  (creating the label there if it is missing). Name the step and the symptom,
+  and quote the Director's words when there are any. Patch the step now only
+  when it blocks a live product, or when the direction says to fix it at its
+  cause first, such as a tool that has stopped work twice or that the next
+  milestone depends on. The weekly direction audit groups friction issues by
+  cause and proposes the fixes.
 - Preserve unrelated changes and isolate implementation when necessary. Ask when
   edits overlap or ownership cannot be established, rather than treating every
   dirty checkout as a blocker. Isolation does not relax protected-branch or

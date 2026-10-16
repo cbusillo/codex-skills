@@ -250,6 +250,15 @@ result under `escalation_open` below, even in an unadopted repository or one
 without a recent push. Reuse results already judged in this session and report
 the search's coverage limits as the daily procedure describes.
 
+Once per weekly audit, also search the open `friction` issues the same way
+(`"user:OWNER label:friction"`) and report its coverage limits. Give them to a
+design session on a model other than the one that produced the runs being
+audited. It groups them by underlying cause and proposes one fix per cause,
+preferring to remove a step or a stored state over adding a rule. Put each fix
+to the Director as a question; nothing is built until the Director approves
+it. Link the question from each grouped issue, and close those issues with the
+PR that lands the approved fix.
+
 Each adopted repository's own `DIRECTION.md` and milestones are checked in
 that one weekly audit session. An audit does not count as the Director's daily
 turn. A weekly session records a daily turn only if it also performs the daily
