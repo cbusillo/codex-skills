@@ -171,7 +171,7 @@ class ReminderTests(IsolatedDirectionHookTests):
 
     def test_compaction_prints_only_the_claude_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            env = {"DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
+            env = {"HOME": directory, "DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
             result = subprocess.run([sys.executable, str(HOOK), "--skills-only"], cwd=directory, env=env, text=True, capture_output=True, check=True)
             self.assertEqual(result.stdout.strip(), hook.SKILLS_PROTOCOL_PATH.read_text().strip())
             env.pop("CLAUDECODE")
@@ -180,7 +180,7 @@ class ReminderTests(IsolatedDirectionHookTests):
 
     def test_each_claude_prompt_gets_one_line_pointing_to_the_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            env = {"DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
+            env = {"HOME": directory, "DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
             result = subprocess.run([sys.executable, str(HOOK), "--turn"], cwd=directory, env=env, text=True, capture_output=True, check=True)
             self.assertEqual(len(result.stdout.splitlines()), 1)
             self.assertIn(str(hook.SKILLS_PROTOCOL_PATH), result.stdout)
@@ -193,7 +193,7 @@ class ReminderTests(IsolatedDirectionHookTests):
             root = Path(tmp)
             marker_path = root / hook.MARKER_NAME
             marker_path.write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat()}))
-            env = {"DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
+            env = {"HOME": str(root), "DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
             for host_env, expected in (
                 ({"CLAUDECODE": "1"}, hook.SKILLS_PROTOCOL_PATH.read_text().strip()),
                 ({"CODEX_HOME": str(root)}, ""),
@@ -326,7 +326,7 @@ class ReminderTests(IsolatedDirectionHookTests):
             nested.mkdir()
             marker_path = root / hook.MARKER_NAME
             marker_path.write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat(), "audits": {}}))
-            env = {"DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
+            env = {"HOME": str(root), "DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
             def run(cwd: Path) -> subprocess.CompletedProcess[str]:
                 return subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], cwd=cwd, env=env, capture_output=True, text=True, check=True)
 
@@ -349,7 +349,7 @@ class ReminderTests(IsolatedDirectionHookTests):
     def test_hook_process_never_blocks_and_ignores_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            env = {"DIRECTION_MARKER": str(Path(tmp) / hook.MARKER_NAME), "PATH": "/usr/bin:/bin"}
+            env = {"HOME": tmp, "DIRECTION_MARKER": str(Path(tmp) / hook.MARKER_NAME), "PATH": "/usr/bin:/bin"}
             proc = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], input='{"hook_event_name":"SessionStart"}', capture_output=True, text=True, env=env, cwd=tmp)
             self.assertEqual(proc.returncode, 0)
             self.assertIn("Direction check overdue", proc.stdout)
