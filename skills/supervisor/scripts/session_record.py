@@ -190,8 +190,11 @@ def strip_claude_exit_tail(records: list[dict]) -> list[dict]:
         and caveat_text.startswith("<local-command-caveat>")
         and caveat_text.endswith("</local-command-caveat>")
         and exit_command
-        and output_text.strip()
-        == "<local-command-stdout>(no content)</local-command-stdout>"
+        and re.fullmatch(
+            r"<local-command-stdout>(?:(?!</?local-command-stdout>).)*</local-command-stdout>",
+            output_text.strip(),
+            re.DOTALL,
+        )
     ):
         return records[:-3]
     return records

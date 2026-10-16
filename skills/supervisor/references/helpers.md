@@ -101,6 +101,10 @@ the full transcript and handoff and ask the worker for a fresh standalone
 unqualified verdict if appropriate. Manual review does not override a refused
 parser result or any shutdown verification.
 
+A complete trailing Claude local `/exit` sequence (meta caveat, `/exit` command,
+one stdout wrapper) preserves the preceding close-out verdict, including when
+stdout contains a farewell. Other user turns or resumed work invalidate it.
+
 ## Checks and morning digest
 
 ```sh

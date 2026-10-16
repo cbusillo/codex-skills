@@ -48,6 +48,64 @@ def event(kind, **extra):
 
 
 class TranscriptTests(unittest.TestCase):
+    def test_claude_exit_farewell_preserves_only_completed_closeout(self):
+        closeout = "Done.\nSafe to exit: yes"
+        prefix = [
+            {"type": "user", "message": {"content": "Close out."}},
+            claude(closeout),
+        ]
+        tail = [
+            {"type": "user", "isMeta": True, "message": {"content":
+                "<local-command-caveat>local command</local-command-caveat>"}},
+            {"type": "user", "message": {"content":
+                "<command-name>/exit</command-name>\n"
+                "<command-message>exit</command-message>\n<command-args></command-args>"}},
+            {"type": "user", "message": {"content":
+                "<local-command-stdout>Catch you later!</local-command-stdout>"}},
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            transcript = Path(folder) / "session.jsonl"
+            entry = {"harness": "claude", "session_id": "fixture", "transcript": str(transcript)}
+
+            def read(records):
+                transcript.write_text("".join(
+                    json.dumps({**record, "sessionId": "fixture"}) + "\n" for record in records
+                ))
+                return session_record.session_status(entry)
+
+            for farewell in ("Catch you later!", "Goodbye!\nSee you soon.", "(no content)"):
+                with self.subTest(farewell=farewell):
+                    output = {"type": "user", "message": {"content":
+                        f"<local-command-stdout>{farewell}</local-command-stdout>"}}
+                    result = read(prefix + tail[:2] + [output])
+                    self.assertTrue(result["safe_verdict"])
+                    self.assertEqual(result["last_text"], closeout)
+                    self.assertEqual(result["state"], "turn_ended")
+
+            user = {"type": "user", "message": {"content": "Continue working."}}
+            for records in (
+                prefix + tail[1:],  # Missing the local-command caveat.
+                prefix + tail[:2],  # Incomplete exit sequence.
+                prefix + [tail[-1]],  # Standalone stdout is still a user turn.
+                prefix + [tail[1], tail[0], tail[2]],
+                prefix + [user] + tail,
+                prefix + tail + [user],
+                prefix + [claude("Continuing.", stop_reason="tool_use")] + tail,
+                prefix + tail + [claude("Continuing.", stop_reason="tool_use")],
+                prefix[:1] + [claude("Still working.")] + tail,
+            ):
+                with self.subTest(records=records):
+                    self.assertFalse(read(records)["safe_verdict"])
+            for stdout in (
+                "Catch you later!",
+                "<local-command-stdout>Goodbye!",  # Unclosed wrapper.
+                tail[-1]["message"]["content"] + "\nContinue working.",
+                tail[-1]["message"]["content"] * 2,
+            ):
+                with self.subTest(stdout=stdout):
+                    output = {"type": "user", "message": {"content": stdout}}
+                    self.assertFalse(read(prefix + tail[:2] + [output])["safe_verdict"])
+
     def test_status_recognizes_standalone_bold_final_verdict(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
