@@ -189,6 +189,16 @@ class ClassifiedPlanError(PlanError):
         self.retry_at = retry_at
 
 
+def plan_cancelled(exc: PlanError) -> bool:
+    """A Ctrl-C that a retry wait turned into a result, not an exception."""
+    return exc.failure is not None and exc.failure.cause == "cancelled"
+
+
+def raise_if_cancelled(exc: PlanError) -> None:
+    if plan_cancelled(exc):
+        raise exc
+
+
 def record_retry_fields(result: github_api_core.ApiResult) -> None:
     record_retry_summary(result.retry_summary)
 
@@ -692,7 +702,7 @@ def project_error(
     source: PlanError | None = None,
 ) -> ClassifiedPlanError:
     return ClassifiedPlanError(
-        classify_project_error(message),
+        "cancelled" if source is not None and plan_cancelled(source) else classify_project_error(message),
         message,
         retry_at=retry_at,
         failure=source.failure if source else None,
@@ -844,7 +854,7 @@ def ensure_graphql_budget(
     payload = result.as_dict()
     retry_at = payload.get("retry_at")
     raise ClassifiedPlanError(
-        "rate_limited",
+        "cancelled" if result.failure and result.failure.cause == "cancelled" else "rate_limited",
         result.failure.message if result.failure else "GraphQL quota preflight failed",
         retry_at=int(retry_at) if isinstance(retry_at, (int, float)) else None,
         failure=result.failure,
@@ -3253,6 +3263,7 @@ def next_focus_context(
             recoverable=True,
         )
     except PlanError as exc:
+        raise_if_cancelled(exc)
         failure = project_failure_payload(
             exc,
             owner=str(owner),
@@ -3532,6 +3543,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         try:
             direction_text = load_direction(repo)
         except PlanError as exc:
+            raise_if_cancelled(exc)
             direction_note = "direction_unavailable"
             direction_error = github_api_core.redact_string(str(exc))
         else:
@@ -6113,7 +6125,8 @@ def main() -> None:
     except ClassifiedPlanError as exc:
         die(
             str(exc),
-            error_code=exc.code,
+            code=130 if plan_cancelled(exc) else 1,
+            error_code="cancelled" if plan_cancelled(exc) else exc.code,
             retry_at=exc.retry_at,
             failure=exc.failure,
             api_result=exc.api_result,
@@ -6123,6 +6136,7 @@ def main() -> None:
         error_code = exc.failure.cause if exc.failure else classify_project_error(str(exc))
         die(
             str(exc),
+            code=130 if plan_cancelled(exc) else 1,
             error_code=error_code,
             failure=exc.failure,
             api_result=exc.api_result,
@@ -6131,6 +6145,7 @@ def main() -> None:
     except github_milestone_core.MilestoneError as exc:
         die(
             str(exc),
+            code=130 if exc.failure.cause == "cancelled" else 1,
             error_code=exc.failure.cause,
             failure=exc.failure,
             api_result=exc.api_result,
