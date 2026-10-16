@@ -598,9 +598,11 @@ returning text or failure snippets. Older CLIs retain their existing log-read
 behavior. This does not change the selected identity, permissions, or metadata
 JSON reads; unavailable logs still produce a named degraded component.
 
-Failure excerpts prefer unittest failure/error details, then pytest failed-test
+Failure excerpts prefer unittest failure/error details, then pytest failure/error
 summary lines, then Actions failed-command summaries over generic error markers
-in service teardown output. Actions timestamps are supported. Without a runner
+in service teardown output. When multiple commands fail, summary selection uses
+the last failed command's output, after the preceding failed-command summary.
+Actions timestamps are supported. Without a runner
 summary, the last generic failure marker or the log tail remains the fallback.
 `--context` selects surrounding lines and `--max-lines` caps the excerpt while
 keeping its selected failure marker visible.

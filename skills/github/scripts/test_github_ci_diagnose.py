@@ -234,11 +234,12 @@ def test_unittest_failure_precedes_database_teardown_errors() -> None:
 
 
 def test_pytest_failure_summary_precedes_teardown_noise() -> None:
-    failure = "FAILED tests/test_hold.py::test_hold - AssertionError: missing policy"
-    snippet = snippet_for_log(["setup"] * 50 + [failure] + ["cleanup"] * 40 + [
-        "postgres | ERROR: duplicate key value violates unique constraint",
-    ])
-    assert failure in snippet, snippet
+    for kind in ("FAILED", "ERROR"):
+        failure = f"{kind} tests/test_hold.py::test_hold - AssertionError: missing policy"
+        snippet = snippet_for_log(["setup"] * 50 + [failure] + ["cleanup"] * 40 + [
+            "postgres | ERROR: duplicate key value violates unique constraint",
+        ])
+        assert failure in snippet, snippet
 
 
 def test_failed_command_precedes_teardown_noise_without_test_summary() -> None:
@@ -253,6 +254,26 @@ def test_small_snippet_keeps_selected_failure_marker() -> None:
     header = "FAIL: test_hold (tests.HoldTests.test_hold)"
     snippet = snippet_for_log(["setup"] * 40 + [header] + ["trace detail"] * 40, max_lines=1)
     assert header in snippet, snippet
+
+
+def test_short_excerpt_at_log_end_keeps_available_causal_context() -> None:
+    cause = "linker could not resolve fixture symbol"
+    failure = "##[error]Process completed with exit code 2."
+    snippet = snippet_for_log(["setup"] * 40 + [cause] + ["linker detail"] * 5 + [failure], max_lines=7)
+    assert cause in snippet, snippet
+    assert failure in snippet, snippet
+
+
+def test_later_failed_command_outranks_earlier_continued_test_failure() -> None:
+    earlier = "FAIL: test_optional (tests.OptionalTests.test_optional)"
+    cause = "compiler: fatal error: missing header"
+    failure = "##[error]Process completed with exit code 2."
+    snippet = snippet_for_log([earlier, "##[error]Process completed with exit code 1."]
+                              + ["build output"] * 80 + [cause, failure]
+                              + ["cleanup"] * 80 + ["postgres | ERROR: expected constraint failure"])
+    assert cause in snippet, snippet
+    assert failure in snippet, snippet
+    assert earlier not in snippet, snippet
 
 
 def test_logs_without_test_summary_keep_bounded_fallbacks() -> None:
@@ -563,6 +584,8 @@ def main() -> None:
         test_pytest_failure_summary_precedes_teardown_noise,
         test_failed_command_precedes_teardown_noise_without_test_summary,
         test_small_snippet_keeps_selected_failure_marker,
+        test_short_excerpt_at_log_end_keeps_available_causal_context,
+        test_later_failed_command_outranks_earlier_continued_test_failure,
         test_logs_without_test_summary_keep_bounded_fallbacks,
         test_third_party_check_run_retains_failure_and_annotations,
         test_synthetic_annotations_are_bounded_and_terminal_controls_removed,
