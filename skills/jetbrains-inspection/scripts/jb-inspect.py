@@ -1049,6 +1049,7 @@ def parse_structured_repository_preparation(
         "sync",
         "extras",
         "pep723Scripts",
+        "projectPath",
         "requiredGeneratedState",
     }
     unknown_keys = sorted(set(python) - allowed_keys)
@@ -1056,6 +1057,11 @@ def parse_structured_repository_preparation(
         raise repository_preparation_config_error(
             f"Structured Python preparation contains unsupported fields: {', '.join(unknown_keys)}."
         )
+    project_path = "."
+    if "projectPath" in python:
+        project_path = parse_inspection_lane_project_path(python["projectPath"], "Python preparation")
+        if project_path is None:
+            raise repository_preparation_config_error("Python preparation projectPath must name a relative directory.")
     version = python.get("version")
     if not isinstance(version, str) or re.fullmatch(r"\d+\.\d+", version) is None:
         raise repository_preparation_config_error(
@@ -1115,7 +1121,7 @@ def parse_structured_repository_preparation(
         "run",
         str(script),
         "--repo",
-        ".",
+        project_path,
         "--python",
         version,
         "--module-name",
@@ -1133,6 +1139,7 @@ def parse_structured_repository_preparation(
     generated_state = list(dict.fromkeys([
         *generated_state, ".venv", f".idea/{module_name}.iml", ".idea/modules.xml", ".idea/misc.xml",
     ]))
+    generated_state = [(Path(project_path) / path).as_posix() for path in generated_state]
     return {
         "configured": True,
         "command": shlex.join(argv),
@@ -1242,6 +1249,9 @@ def repository_preparation_command_hash(argv: list[str], target: Path | None = N
     sdk_table_sha256 = None
     script_hashes = {}
     if len(argv) >= 3 and Path(argv[2]).name == "prepare-python-project.py":
+        project = target or Path.cwd()
+        if "--repo" in argv:
+            project = project / argv[argv.index("--repo") + 1]
         try:
             helper_sha256 = hashlib.sha256(Path(argv[2]).read_bytes()).hexdigest()
         except OSError:
@@ -1251,7 +1261,7 @@ def repository_preparation_command_hash(argv: list[str], target: Path | None = N
                 script_path = argv[index + 1]
                 try:
                     script_hashes[script_path] = hashlib.sha256(
-                        ((target or Path.cwd()) / script_path).read_bytes()
+                        (project / script_path).read_bytes()
                     ).hexdigest()
                 except OSError:
                     script_hashes[script_path] = "unavailable"
@@ -1481,6 +1491,13 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     if not isinstance(argv, list) or not argv:
         raise repository_preparation_config_error("Repository preparation command validation did not produce argv.")
     if state.get("kind") == "python":
+        if "--repo" in argv:
+            project = (target / argv[argv.index("--repo") + 1]).resolve()
+            if not project.is_relative_to(target) or not project.is_dir():
+                raise repository_preparation_config_error("Python preparation projectPath must stay inside the exact worktree and exist.")
+            for relative in repository_preparation_generated_state(context):
+                if not (target / relative).resolve().is_relative_to(project):
+                    raise repository_preparation_config_error("Python preparation generated state must stay inside its projectPath.")
         sdk_table = repository_preparation_sdk_table(context)
         if sdk_table is not None:
             argv = [*argv, "--sdk-table", str(sdk_table)]

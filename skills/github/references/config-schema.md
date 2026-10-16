@@ -315,7 +315,10 @@ Common top-level keys:
   resolves the skill-owned project helper, creates a worktree-local `.venv` and
   `.idea` model. Use `sync` for a root Python project or `pep723Scripts` for
   standalone scripts; [inspection configuration](../../jetbrains-inspection/references/inspection-config.md)
-  owns the dependency-source options, bounds, conflicts and receipt validation. Put
+  owns the dependency-source options, bounds, conflicts and receipt validation.
+  `projectPath` inside the Python object prepares an existing nested project
+  without replacing the root JVM model; its generated and input paths become
+  relative to that directory. The Python lane uses the same `projectPath`. Put
   `requiredGeneratedState` inside the structured `python` object; command-string
   preparation retains the outer sibling field for backward compatibility.
   `agent-inspect`, `inspect`, and `inspect-closeout` execute preparation in the

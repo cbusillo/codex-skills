@@ -71,6 +71,19 @@ the worktree root. Generated metadata is not the source root.
 `prepare-worktree` and `prepare` are compatibility aliases for `open-worktree`
 and have the same single-project behavior.
 
+For a mixed JVM/Python repository, `prepare.python.projectPath` selects an
+existing nested Python project directory, for example `scripts`. Give the
+Python lane the same `projectPath`, and keep the JVM lane at the repository
+root. The generator creates the nested `.venv` and `.idea` without replacing
+the root Gradle/Java model. `testRoots`, `pep723Scripts` and
+`requiredGeneratedState` are relative to that preparation project; receipts
+report their paths relative to the Git worktree. Ignore those generated files
+before preparing. The path must be relative and stay inside the exact worktree,
+including after symlink resolution. Git mutation checks still cover the whole
+worktree, and only the nested Python project receives SDK provisioning. Omit
+the field for root preparation. The opt-in Qodana backend currently refuses
+this nested preparation shape; use the configured desktop lanes for it.
+
 When `qualityGate.inspection.prepare` is configured, `open-worktree`,
 `agent-inspect`, `inspect`, and `inspect-closeout` run that exact repository
 command in the exact target worktree before IDE lifecycle open or claim.
