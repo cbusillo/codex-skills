@@ -65,10 +65,17 @@ manage REST-first defaults, quota pressure, and degraded output:
 <skill-dir>/scripts/gh-pr.py --repo OWNER/REPO rate-limit
 ```
 
-The PR helper is REST-first for normal orientation. Its snapshot-compatible
-`reviewDecision` and `statusCheckRollup` fields are intentionally nullable so
-ordinary polling does not spend GraphQL quota. Use GraphQL-backed `gh pr view
---json statusCheckRollup,reviewDecision` only when that exact data is needed.
+The PR helper is REST-first for normal orientation. Standalone `gh-pr.py view`
+derives `reviewDecision` from REST pull request reviews
+(`readiness_evidence.review_decision_source: "rest_reviews"`, reflecting latest
+reviewer states rather than branch-protection required approval counts) when a
+decisive review exists, and omits `reviewDecision` (reporting
+`readiness_evidence.review_decision: "not_read"`) when no decisive review is
+present, in delegated `watch` polling, or in `gh-pr.py list`, while
+`statusCheckRollup` remains intentionally nullable so ordinary polling does not
+spend GraphQL quota. Use GraphQL-backed `gh pr view --json
+statusCheckRollup,reviewDecision` only when branch-protection-evaluated review
+requirement or rollup data is needed.
 The PR babysitter's readiness boundary is the maintained exception: after
 complete REST check evidence and clean mergeability are observed, it issues
 one short-deadline, same-actor GraphQL document pinned to the exact PR head.
@@ -573,6 +580,17 @@ unavailable; `null` counts mean no authoritative check source was available.
 Transient provider failures
 are classified with retry metadata, but this read path does not silently switch
 actors or automatically retry outside the shared retry policy.
+
+Synthetic checks such as CodeQL can link to `/runs/<check-run-id>` rather than
+an Actions workflow run. Diagnosis keeps their failure or pending state and
+details URL, and reads check annotations for failures. JSON exposes
+`checkRunId` separately from `runId` and `jobId`, plus `annotations` or an
+explicit `annotationError`. Without a linked Actions run, the helper reports
+unavailable job logs without requesting a workflow run using the check-run ID.
+Annotation strings use the log reader's terminal-control filter. `--max-lines`
+also bounds the annotation count; `annotationsTruncated` signals omitted items.
+Third-party check runs likewise retain failure/pending state and annotations;
+commit statuses without an Actions link remain classified as external.
 
 Log reads probe the configured CLI's help for `--allow-escape-sequences`, use
 that supported opt-in when available, and strip terminal controls before

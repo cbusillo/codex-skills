@@ -204,6 +204,7 @@ class ReaderIdentityTests(unittest.TestCase):
             with patch.dict(os.environ, kwargs['env']), patch.object(
                     identity, 'github_app_auth', return_value=('synthetic', 'reader-app[bot]')), patch.object(
                     github_read.GitHubReader, 'get_json', autospec=True, side_effect=get_pr), patch.object(
+                    github_read.GitHubReader, 'paged_json', autospec=True, return_value=[]), patch.object(
                     github_read, 'pull_request_checks', side_effect=checks):
                 helper.CURRENT_OPERATION = f'github.pr.{command[-2]}'
                 result = helper.cmd_view(args) if command[-2] == 'view' else helper.cmd_checks(args)

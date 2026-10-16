@@ -121,7 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--github-repo", help="Repository in OWNER/REPO form. Defaults to the origin remote.")
     parser.add_argument("--pr", default=None, help="PR number or URL. Defaults to the current branch PR.")
     parser.add_argument("--json", action="store_true", help="Emit JSON for agent/tool consumption.")
-    parser.add_argument("--max-lines", type=int, default=140, help="Maximum snippet/tail lines per failing check.")
+    parser.add_argument("--max-lines", type=int, default=140, help="Maximum snippet/tail lines or annotations per failing check.")
     parser.add_argument("--context", type=int, default=30, help="Context lines around the detected failure marker.")
     parser.add_argument(
         "--all-checks",
@@ -219,6 +219,7 @@ def combined_checks(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "completedAt": item.get("completedAt"),
             "runId": item.get("runId"),
             "jobId": item.get("jobId"),
+            "checkRunId": item.get("id"),
             "source": "check_run",
         })
     for item in payload.get("statuses") or []:
@@ -246,6 +247,21 @@ class DiagnosisClient:
         self.run_cache: dict[int, Optional[dict[str, Any]]] = {}
         self.jobs_cache: dict[int, Optional[list[dict[str, Any]]]] = {}
         self.log_cache: dict[int, tuple[str, str, str]] = {}
+
+    def annotations(self, check_id: int, limit: int) -> tuple[list[dict[str, Any]], str]:
+        try:
+            return self.reader.paged_json(
+                f"/repos/{self.repo}/check-runs/{check_id}/annotations",
+                step_prefix="checkAnnotations",
+                limit=limit,
+            ), ""
+        except github_read_core.GitHubReadError as exc:
+            code = exc.result.failure.cause if exc.result.failure else "read_failed"
+            self.reader.mark_degraded("checkAnnotations", code, str(exc))
+            return [], str(exc)
+        except github_read_core.GitHubReadShapeError as exc:
+            self.reader.mark_degraded("checkAnnotations", "invalid_response", str(exc))
+            return [], str(exc)
 
     def run_metadata(self, run_id: int) -> Optional[dict[str, Any]]:
         if run_id in self.run_cache:
@@ -326,6 +342,7 @@ def analyze_check(check: dict[str, Any], client: DiagnosisClient, max_lines: int
         "detailsUrl": details_url,
         "runId": str(run_id) if run_id is not None else None,
         "jobId": str(job_id) if job_id is not None else None,
+        "checkRunId": str(check["checkRunId"]) if isinstance(check.get("checkRunId"), int) else None,
         "source": check.get("source"),
     }
 
@@ -338,8 +355,21 @@ def analyze_check(check: dict[str, Any], client: DiagnosisClient, max_lines: int
         return item
 
     if run_id is None:
-        item["classification"] = "external"
-        item["note"] = "No GitHub Actions run id was found in the details URL."
+        item["note"] = "No GitHub Actions workflow run is linked; Actions job logs are unavailable for this check."
+        if check.get("source") == "check_run":
+            if item["classification"] == "failing" and isinstance(check.get("checkRunId"), int):
+                limit = max(1, max_lines)
+                annotations, error = client.annotations(check["checkRunId"], limit + 1)
+                item["annotations"] = [
+                    {key: github_read_core.strip_terminal_controls(value) if isinstance(value, str) else value
+                     for key, value in annotation.items()}
+                    for annotation in annotations[:limit]
+                ]
+                item["annotationsTruncated"] = len(annotations) > limit
+                if error:
+                    item["annotationError"] = error
+        else:
+            item["classification"] = "external"
         return item
 
     metadata = client.run_metadata(run_id)
@@ -376,11 +406,7 @@ def normalize(value: Any) -> str:
 
 
 def extract_run_id(url: str) -> Optional[int]:
-    for pattern in (r"/actions/runs/(\d+)", r"/runs/(\d+)"):
-        match = re.search(pattern, url)
-        if match:
-            return int(match.group(1))
-    return None
+    return github_read_core.actions_ids(url)[0]
 
 
 def extract_job_id(url: str) -> Optional[int]:
@@ -482,6 +508,14 @@ def render(payload: dict[str, Any]) -> None:
             print(f"Note: {check['note']}")
         if check.get("error"):
             print(f"Log error: {check['error']}")
+        if check.get("annotationError"):
+            print(f"Annotation error: {check['annotationError']}")
+        for annotation in check.get("annotations") or []:
+            print(f"Annotation: {annotation.get('path', '')}:{annotation.get('start_line', '')} "
+                  f"[{annotation.get('annotation_level', '')}]")
+            print(indent(str(annotation.get("message") or "")))
+        if check.get("annotationsTruncated"):
+            print("Annotations truncated; increase --max-lines or follow the details URL for more.")
         snippet = check.get("failureSnippet") or ""
         if snippet:
             print("Failure snippet:")

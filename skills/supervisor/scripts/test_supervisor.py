@@ -1200,7 +1200,7 @@ class TabCloseTests(unittest.TestCase):
     def test_claude_exec_replaces_launch_shell(self):
         choice = {"provider": "anthropic", "env": {}}
         with tempfile.TemporaryDirectory() as folder:
-            probe = Path(folder) / "probe"
+            probe = Path(folder) / "claude"
             probe.write_text('#!/bin/sh\nprintf "%s\\n" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
             probe.chmod(0o700)
             brief = "brief has && ; exec in text"
@@ -1214,7 +1214,12 @@ class TabCloseTests(unittest.TestCase):
 
     def test_returning_claude_launch_does_not_mark_later_commands(self):
         choice = {"provider": "anthropic", "env": {}}
-        command = iterm_tab.with_account('printf "%s " "$CLAUDE_ACCOUNT_MOVE_ENABLED"', choice)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        probe = Path(folder.name) / "claude"
+        probe.write_text('#!/bin/sh\nprintf "%s " "$CLAUDE_ACCOUNT_MOVE_ENABLED"\n')
+        probe.chmod(0o700)
+        command = iterm_tab.with_account(shlex.quote(str(probe)), choice)
         result = subprocess.run(["/bin/sh", "-c",
             command + '\nprintf "%s" "${CLAUDE_ACCOUNT_MOVE_ENABLED-unset}"'],
             env={k: v for k, v in os.environ.items() if k != "CLAUDE_ACCOUNT_MOVE_ENABLED"},
@@ -1227,7 +1232,7 @@ class TabCloseTests(unittest.TestCase):
         for text in ('claude "exec task"', 'exec claude task; printf later',
                      '( exec claude task )', 'claude task'):
             self.assertIsNone(iterm_tab.scoped_exec(text))
-        command = iterm_tab.with_account('cd /nonexistent-supervisor-test-1627 && exec true', choice)
+        command = iterm_tab.with_account('cd /nonexistent-supervisor-test-1627 && exec claude', choice)
         result = subprocess.run(["/bin/sh", "-c", command + '\nprintf "%s" "${CLAUDE_ACCOUNT_MOVE_ENABLED-unset}"'],
             env={k: v for k, v in os.environ.items() if k != "CLAUDE_ACCOUNT_MOVE_ENABLED"},
             capture_output=True, text=True, timeout=5, check=True)
@@ -2211,7 +2216,8 @@ class TerminalTests(unittest.TestCase):
                         "env TERM=xterm-256color claude 'Discuss CLAUDE_CONFIG_DIR=/x'",
                         "fish -c 'set -gx TERM xterm; claude brief'"):
             with self.subTest(allowed=command):
-                iterm_tab.with_account(command, choice)
+                self.assertFalse(iterm_tab.account_settings(
+                    command, account_choice.ACCOUNT_VARIABLES.values()))
         with self.assertRaisesRegex(ValueError, "already sets CODEX_HOME"):
             iterm_tab.with_account("CODEX_HOME=/manual codex brief", choice)
         command = "MY_CLAUDE_CONFIG_DIR=example claude 'Discuss CLAUDE_CONFIG_DIR=/example and CODEX_HOME=/example'"

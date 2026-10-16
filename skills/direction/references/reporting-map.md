@@ -78,11 +78,14 @@ Each distinct merged PR in the window contributes once: to one named kind or
 to `unresolved`, which includes conflicts. Shares divide named-kind counts by
 **all** merged PRs, including unresolved ones. Do not present a partial split
 as settled or renormalize it over classified PRs.
-Merge timestamps include the window's start and exclude its end. A merge
-exactly at the ending timestamp belongs to the following window.
-This boundary applies to both legacy capacity merge counts and mapped counts,
-including Directors without a map. Other activity keeps its existing interval
-behavior.
+Capacity merge, milestone closure and issue reopen timestamps include the
+window's start and exclude its end (`[since, until)`). An event exactly at the
+ending timestamp belongs to the following window. This boundary applies to
+both legacy capacity activity lists and mapped merge counts, including
+Directors without a map. Within each window, the reopened-issue list still
+shows each issue once, with its latest reopen timestamp.
+The separate `capacity.milestone_outcomes` report retains its existing
+inclusive-end interval for Track-graph issue closures and added links.
 
 ## Output and validation
 
