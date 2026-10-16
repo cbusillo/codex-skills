@@ -68,6 +68,30 @@ class InstallTests(unittest.TestCase):
     def install(self, write=True):
         return installer.install(self.home, self.codex, self.claude, write=write, updater=False)
 
+    def install_inline_hooks(self, target, hooks, **options):
+        """Write hooks as an inline TOML binding at target, install, and return the written text and receipt."""
+        import tomlkit
+
+        text = tomlkit.dumps({"hooks": hooks})
+        target.write_text(text)
+        return text, installer.install(self.home, self.codex, self.claude, write=True,
+                                       updater=False, refresh_instructions=True, **options)
+
+    def assert_alert_binding_skipped(self, target, hooks):
+        """Check the installer refuses to rewrite this binding; return its generated alert hooks."""
+        original, preview = self.install_inline_hooks(target, hooks, show_diff=True)
+        entry = next(item for item in preview["outputs"] if "catalog_alert_toml" in item)
+        self.assertEqual(entry["state"], "skipped")
+        self.assertEqual(target.read_text(), original)
+        return tomllib.loads(entry["catalog_alert_toml"])["hooks"]
+
+    def assert_reconciled_alert_binding_kept(self, target, hooks):
+        """Check the installer accepts the owner's reconciled binding unchanged."""
+        reconciled, receipt = self.install_inline_hooks(target, hooks)
+        self.assertFalse(any(item["state"] == "skipped" for item in receipt["outputs"]))
+        self.assertEqual(target.read_text(), reconciled)
+        self.assertFalse((self.codex / "hooks.json").exists())
+
     def test_fresh_install_twice_preserves_personal_settings_and_new_skills(self):
         (self.claude / "CLAUDE.md").write_text("Keep my history.\n")
         (self.codex / "AGENTS.md").write_text("Prefer concise replies.\n")
@@ -825,7 +849,6 @@ class InstallTests(unittest.TestCase):
 
     def test_inline_duplicate_alerts_require_replacement_in_place(self):
         import copy
-        import tomlkit
 
         self.install()
         hook_path = self.codex / "hooks.json"
@@ -845,28 +868,15 @@ class InstallTests(unittest.TestCase):
                 personal = {"hooks": [{"command": "my-stop"}]}
                 hooks["Stop"] = [old, personal, *generated["Stop"]]
                 hooks["state"] = {"opaque_trust": "preserve"}
-                original = tomlkit.dumps({"hooks": hooks})
-                target.write_text(original)
-                preview = installer.install(self.home, self.codex, self.claude, write=True,
-                                            updater=False, refresh_instructions=True, show_diff=True)
-                entry = next(item for item in preview["outputs"] if "catalog_alert_toml" in item)
-                self.assertEqual(entry["state"], "skipped")
-                self.assertEqual(target.read_text(), original)
+                current = self.assert_alert_binding_skipped(target, hooks)
                 # The owner replaces the managed groups, keeping the first slot
                 # and all unrelated positional inputs and trust state intact.
-                hooks["Stop"] = [*tomllib.loads(entry["catalog_alert_toml"])["hooks"]["Stop"], personal]
-                reconciled = tomlkit.dumps({"hooks": hooks})
-                target.write_text(reconciled)
-                receipt = installer.install(self.home, self.codex, self.claude, write=True,
-                                            updater=False, refresh_instructions=True)
-                self.assertFalse(any(item["state"] == "skipped" for item in receipt["outputs"]))
-                self.assertEqual(target.read_text(), reconciled)
+                hooks["Stop"] = [*current["Stop"], personal]
+                self.assert_reconciled_alert_binding_kept(target, hooks)
                 self.assertTrue(config.is_symlink())
-                self.assertFalse(hook_path.exists())
 
     def test_alert_only_inline_binding_is_evaluated_without_writes(self):
         import copy
-        import tomlkit
 
         self.install()
         hook_path = self.codex / "hooks.json"
@@ -878,22 +888,10 @@ class InstallTests(unittest.TestCase):
             with self.subTest(event=event):
                 stale = copy.deepcopy(generated[event])
                 stale[0]["hooks"][0]["command"] = "old-alert-command"
-                original = tomlkit.dumps({"hooks": {event: stale, "state": {"opaque_trust": "preserve"}}})
-                config.write_text(original)
-                preview = installer.install(self.home, self.codex, self.claude, write=True,
-                                            updater=False, refresh_instructions=True, show_diff=True)
-                entry = next(item for item in preview["outputs"] if "catalog_alert_toml" in item)
-                self.assertEqual(entry["state"], "skipped")
-                self.assertEqual(config.read_text(), original)
-                current = tomllib.loads(entry["catalog_alert_toml"])["hooks"]
+                current = self.assert_alert_binding_skipped(
+                    config, {event: stale, "state": {"opaque_trust": "preserve"}})
                 current["state"] = {"opaque_trust": "preserve"}
-                reconciled = tomlkit.dumps({"hooks": current})
-                config.write_text(reconciled)
-                receipt = installer.install(self.home, self.codex, self.claude, write=True,
-                                            updater=False, refresh_instructions=True)
-                self.assertFalse(any(item["state"] == "skipped" for item in receipt["outputs"]))
-                self.assertEqual(config.read_text(), reconciled)
-                self.assertFalse(hook_path.exists())
+                self.assert_reconciled_alert_binding_kept(config, current)
 
     def test_malformed_alert_group_does_not_stop_instruction_refresh(self):
         self.install()
