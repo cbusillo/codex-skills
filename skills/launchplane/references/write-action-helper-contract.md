@@ -840,8 +840,13 @@ The helper derives the service-required confirmation phrase and projects only
 bounded observation and mutation evidence; it never accepts a raw comment id or
 arbitrary marker.
 
-If an apply receives a success response whose body cannot be parsed or safely
-projected, it exits 1 with `status: "accepted_unverified"`: the comment may
+Success requires an envelope with `status: "accepted"` and `result.mode`
+matching the requested `apply` or `dry-run` mode. Missing or mismatched modes
+and non-success statuses fail verification.
+
+If an apply receives an HTTP-success response whose body cannot be parsed,
+safely projected, or verified against those requirements, it exits 1 with
+`status: "accepted_unverified"`: the comment may
 already have changed. Safe available HTTP status, trace and projection-error
 diagnostics remain in the summary. Retain the original request and idempotency
 key, then run `preview-feedback-remediation --mode dry-run` for the same target

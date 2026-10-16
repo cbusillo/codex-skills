@@ -4087,6 +4087,13 @@ def _project_success_output(
             raise LaunchplaneSafetyError("invalid_response")
         return records, projected_config
     if operation == "preview-feedback-remediation":
+        result = _require_dict(provider_payload.get("result"))
+        if (
+            provider_payload.get("status") != "accepted"
+            or request.get("mode") not in {"apply", "dry-run"}
+            or result.get("mode") != request.get("mode")
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
         records = _project_records(
             provider_payload.get("records"),
             {
@@ -4095,7 +4102,7 @@ def _project_success_output(
             },
         )
         return records, _project_preview_feedback_remediation_result(
-            provider_payload.get("result")
+            result
         )
     if operation in {"repository-inventory-dry-run", "repository-inventory-apply"}:
         records = _project_records(provider_payload.get("records"), set())
