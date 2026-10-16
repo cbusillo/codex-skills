@@ -82,9 +82,9 @@ Functional checks and visual checks are separate. A clicked path working does
 not prove the UI is visually acceptable; a screenshot looking plausible does not
 prove the controls work. Cover both when the task involves user-facing UI.
 
-## Design Collaboration Validation
+## Design Direction Validation
 
-If a design collaboration issue, returned design notes, or accepted design
+If a design issue, returned design notes, or accepted design
 direction exists, use that as the visual QA source of truth instead of inventing
 a new style direction.
 

@@ -199,10 +199,7 @@ preserved, or intentionally left in place.
    the owning issue/plan before saying safe to exit. If they disagree, reconcile
    the issue/plan/docs state or report safe-to-exit as conditional/no with the
    mismatch named.
-6. If design collaboration was part of the work, make sure accepted direction,
-   browser QA evidence, tradeoffs, and remaining design work are captured in the
-   relevant GitHub planning issue or PR.
-7. Classify this task's artifacts under the shared repository cleanup policy.
+6. Classify this task's artifacts under the shared repository cleanup policy.
    Clean only task-owned disposable output whose purpose is complete: transient logs,
    screenshots, temp scripts, generated scratch files, generated caches, stopped
    test containers, or other consumed temporary files.
@@ -216,9 +213,9 @@ preserved, or intentionally left in place.
    stash, or overwrite unrelated IDE changes. Whole-worktree retirement requires
    the shared cleanup policy's protected-file, preservation, ownership, and
    authorization evidence.
-8. Do not remove user artifacts, broad system caches, unrelated untracked files,
+7. Do not remove user artifacts, broad system caches, unrelated untracked files,
    or remote resources without explicit approval.
-9. Report final state concisely.
+8. Report final state concisely.
 
 ## Consuming Readiness Evidence
 
