@@ -297,7 +297,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(report["findings"]), 1)
         self.assertTrue(any(urlsplit(p).path == path and parse_qs(urlsplit(p).query).get("page") == ["2"] for p in self.reader.paths))
         self.assertTrue(any(parse_qs(urlsplit(p).query).get("state") == ["closed"]
-                            and "since" not in parse_qs(urlsplit(p).query) for p in self.reader.paths))
+                            and "since" in parse_qs(urlsplit(p).query) for p in self.reader.paths))
 
     def test_quota_reserve_and_request_limit_expose_unread_repositories(self):
         self.reader.remaining = 0
@@ -417,7 +417,9 @@ class InventoryTests(unittest.TestCase):
         self.reader.repositories["repos/test/other"] = {"archived": False, "default_branch": "main"}
         result = sweep.collect(["test/repo", "test/other"], reader=self.reader, now=self.now)
         states = [parse_qs(urlsplit(p).query)["state"][0] for p in self.reader.paths if "state=" in p]
-        self.assertEqual(states, ["open", "open", "closed", "closed"])
+        self.assertTrue(states and "open" in states and "closed" in states)
+        self.assertLess(max(i for i, state in enumerate(states) if state == "open"),
+                        min(i for i, state in enumerate(states) if state == "closed"))
         self.assertEqual(result["checked_records"], 0)
 
     def test_zero_comment_records_skip_comment_reads(self):
@@ -432,7 +434,10 @@ class InventoryTests(unittest.TestCase):
         result = sweep.collect(repos, reader=reader, now=self.now)
         scope_gaps = [g for g in result["coverage_gaps"] if g.get("scopes")]
         self.assertEqual(len(scope_gaps), 1)
-        self.assertEqual(len(scope_gaps[0]["scopes"]), len(repos) * 2)
+        self.assertEqual({s["repo"] for s in scope_gaps[0]["scopes"]}, set(repos))
+        for repo in repos:
+            self.assertTrue({"open", "reopen_triggers", "closed"} <=
+                            {s["state"] for s in scope_gaps[0]["scopes"] if s["repo"] == repo})
         self.assertLess(len(result["coverage_gaps"]), 4)
 
     def test_queue_recovery_precedes_history_and_unread_is_not_missing(self):
@@ -529,7 +534,6 @@ class ReopenInventoryTests(unittest.TestCase):
         self.assertEqual([r["number"] for r in rows], [1])
         self.assertIn("reopen_trigger_fired", sweep.markdown(result))
         self.assertEqual(rows[0]["evidence"][0]["trigger"], self.event())
-        self.assertFalse(any("since=" in p for p in self.reader.paths if "/issues?" in p))
 
     def test_comment_trigger_on_second_page_replaces_body_and_foreign_record_cannot_override(self):
         future = self.event(at="2027-01-01")
@@ -574,6 +578,51 @@ class ReopenInventoryTests(unittest.TestCase):
         self.assertEqual({r["repo"] for r in result["findings"]}, {"test/repo"})
         self.assertTrue(any(g["source"] == "test/missing" for g in result["coverage_gaps"]))
         self.assertFalse(result["complete"])
+
+
+    def test_index_finds_old_trigger_with_bounded_reads_and_preserves_recent_promises(self):
+        original = self.reader.get_json
+        trigger_issue = self.issue(1, self.event())
+        promise = self.issue(2, comments=1, updated_at=self.now.isoformat())
+        def read(path, *, step):
+            parsed = urlsplit(path)
+            query = parse_qs(parsed.query)
+            if parsed.path == "repos/test/repo/issues" and query.get("state") == ["closed"]:
+                self.reader.paths.append(path)
+                # The old labeled issue and the recently updated promise are
+                # separate populations. Unrelated old history costs no reads.
+                return [trigger_issue] if query.get("labels") == [sweep.github_plan_trigger.INDEX_LABEL] else [promise]
+            return original(path, step=step)
+        self.reader.get_json = read
+        self.reader.pages[("repos/test/repo/issues/2/comments", 1, None)] = [{
+            "id": 1, "body": "Director decision: comparison promised\nDue: 2026-10-15T00:00:00Z",
+            "user": {"login": "test"}, "created_at": "2026-10-14T00:00:00Z",
+            "html_url": "https://github.com/test/repo/issues/2#issuecomment-1"}]
+        result = self.collect([], max_requests=12)
+        self.assertEqual({(r["kind"], r["number"]) for r in result["findings"]},
+                         {("reopen_trigger_fired", 1), ("overdue_promise", 2)})
+        self.assertFalse(any("budget" in g["reason"] for g in result["coverage_gaps"]))
+
+    def test_primary_automation_author_matches_close_even_without_bot_alias_list(self):
+        issue = self.issue(1, self.event(), user={"login": "primary-bot"})
+        with patch.object(sweep.github_plan_wait.github_identity, "configured_bot_logins", return_value=()), \
+                patch.object(sweep.github_plan_wait.github_identity, "automation_login", return_value="primary-bot"):
+            result = self.collect([issue])
+        self.assertEqual([r["number"] for r in result["findings"]], [1])
+
+    def test_unread_release_listing_is_tied_to_the_closed_issue(self):
+        event = self.event("release_published", repo="target/repo", minimum_tag="v2.0")
+        original = self.reader.get_json
+        def read(path, *, step):
+            if path.startswith("repos/target/repo/releases"):
+                raise unavailable("not_found")
+            return original(path, step=step)
+        self.reader.get_json = read
+        result = self.collect([self.issue(1, event)])
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["findings"], [])
+        self.assertTrue(any(g["source"] == "test/repo#1" and g["reason"] == "reopen_trigger_unverifiable"
+                            for g in result["coverage_gaps"]))
 
 
 if __name__ == "__main__":

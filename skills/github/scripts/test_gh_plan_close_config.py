@@ -120,6 +120,7 @@ class CloseConfigTests(unittest.TestCase):
                                 repo_from_git=origin, workspace_config_path=Mock(return_value=workspace_path),
                                 get_issue=Mock(return_value=("fixture-bot", issue)),
                                 close_relationship_preflight=preflight,
+                                ensure_labels=Mock(return_value=("fixture-bot", [])),
                                 collect_paged_rest_items=trigger_readback or Mock(return_value=("fixture-bot", [])),
                                 comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
                                 project_meta=meta, project_fields=Mock(return_value={"Status": {"id": "status"}}),
@@ -187,13 +188,13 @@ class CloseConfigTests(unittest.TestCase):
         project.assert_not_called()
 
     def test_discovery_evidence_survives_partial_close_and_project_failure(self) -> None:
-        code, result, state, _, _ = self.run_close(fail_labels=True)
+        code, result, state, labels, _ = self.run_close(fail_labels=True)
         self.assertNotEqual(code, 0)
         state.assert_called_once()
         self.assertEqual(result["planning_config"]["status"], "unavailable")
         self.assertTrue(result["recovery"]["issue_closed"])
         self.assertEqual(result["recovery"]["completion_metadata"], "labels_incomplete")
-        code, result, state, _, _ = self.run_close(fail_project=True, overrides=("--project", "Explicit"))
+        code, result, state, labels, _ = self.run_close(fail_project=True, overrides=("--project", "Explicit"))
         self.assertEqual(code, 0)
         state.assert_called_once()
         self.assertTrue(result["project"]["warning"])
@@ -221,13 +222,13 @@ class CloseConfigTests(unittest.TestCase):
             order.append("readback")
             return "fixture", [{"user": {"login": "fixture"}, "body": PLAN.github_plan_trigger.marker(event)}]
         # The target account is fixture, so its owner-authored record is authoritative.
-        code, result, state, _, _ = self.run_close(
+        code, result, state, labels, _ = self.run_close(
             overrides=("--reopen-trigger", json.dumps(event)),
             trigger_comments=Mock(side_effect=published), trigger_readback=Mock(side_effect=readback))
         self.assertEqual(code, 0, result)
         self.assertEqual(order, ["published", "readback"])
         state.assert_called_once()
-        self.assertIn("reopen_trigger_readback", result["completed_steps"])
+        self.assertEqual(labels.call_args_list[0].kwargs["add_labels"], [PLAN.github_plan_trigger.INDEX_LABEL])
 
     def test_failed_trigger_publication_or_readback_prevents_closure(self):
         event = {"version": 1, "kind": "date", "evidence": "Director deferral", "at": "2026-12-01"}
@@ -245,6 +246,16 @@ class CloseConfigTests(unittest.TestCase):
                 state.assert_not_called()
                 labels.assert_not_called()
                 project.assert_not_called()
+
+    def test_failed_discovery_index_prevents_closure(self):
+        event = {"version": 1, "kind": "date", "evidence": "Director deferral", "at": "2026-12-01"}
+        readback = Mock(return_value=("fixture", [{"user": {"login": "fixture"},
+                       "body": PLAN.github_plan_trigger.marker(event)}]))
+        code, result, state, _, _ = self.run_close(fail_labels=True,
+            overrides=("--reopen-trigger", json.dumps(event)), trigger_readback=readback)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(result["ok"])
+        state.assert_not_called()
 
     def test_invalid_trigger_is_rejected_before_any_mutation(self):
         code, result, state, labels, project = self.run_close(overrides=("--reopen-trigger", "{}"))

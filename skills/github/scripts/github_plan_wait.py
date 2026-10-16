@@ -8,10 +8,21 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
+try:
+    import github_identity
+except ModuleNotFoundError:
+    from skills.github.scripts import github_identity
 
 
 PREFIX = "<!-- github-plan:wait "
+
+
+def authors(repo: str, *, expected_actor: str | None = None) -> set[str]:
+    return set(github_identity.configured_bot_logins()) | {
+        name for name in (github_identity.automation_login(), expected_actor, repo.split("/")[0]) if name}
 
 
 def marker(record: dict[str, Any]) -> str:

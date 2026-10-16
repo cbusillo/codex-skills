@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 import time
+from urllib.parse import quote
 from typing import Any
 
 import direction_audit as audit
@@ -156,7 +157,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
     gaps = list(gaps or [])
     trusted = {name.casefold() for name in trusted} | {name.casefold() for name in owners}
     owners = {name.casefold() for name in owners}
-    comments = [c for r in records for c in r.get("comments", [])] + (related_comments or [])
+    comments = [c for r in records if not r.get("trigger_only") for c in r.get("comments", [])] + (related_comments or [])
     question_comments = sorted(
         [{**c, "author": login(c), "url": c.get("html_url") or c.get("url")} for c in comments],
         key=lambda c: (c.get("created_at") or "", c["id"]),
@@ -493,7 +494,8 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     registers = []
     unread_scopes = []
     attempted_records = 0
-    for state in ("open", "closed"):
+    collected = set()
+    for state in ("open", "reopen_triggers", "closed"):
         for repo in ordered_repos:
             if reads >= budget:
                 unread_scopes.append({"repo": repo, "state": state})
@@ -508,7 +510,9 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 register = operational_register(repo, metadata["default_branch"])
                 if register:
                     registers.append(register)
-            suffix = f"state={state}"
+            suffix = "state=open" if state == "open" else (
+                "state=closed&labels=" + quote(github_plan_trigger.INDEX_LABEL, safe="")
+                if state == "reopen_triggers" else f"state=closed&since={history_start.strftime('%Y-%m-%dT%H:%M:%SZ')}")
             issues = listing(f"repos/{repo}/issues?{suffix}")
             policy = None
             if any("pull_request" in item and item.get("state") == "open" for item in issues):
@@ -529,9 +533,11 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     gaps.append({"source": repo, "reason": "invalid_issue"})
                     continue
                 number = item["number"]
+                if (repo, number) in collected or (state != "open" and item.get("state") != "closed"):
+                    continue
                 recent = (stamp(item.get("updated_at")) or now) >= history_start
                 # Closed PRs carry no reopen record; retain recent promises only.
-                if state == "closed" and "pull_request" in item and not recent:
+                if state != "open" and "pull_request" in item and not recent:
                     continue
                 if number in seen:
                     gaps.append({"source": f"{repo}#{number}", "reason": "inventory_changed_during_pagination"})
@@ -550,15 +556,21 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     gaps.append({"source": f"{repo}#{number}/comments", "reason": "invalid_comment"})
                 comments_complete = len(valid_comments) == len(record["comments"])
                 record["comments"] = valid_comments
-                if state == "closed":
+                if state != "open":
                     record["trigger_only"] = not recent
                     if "pull_request" not in item and comments_complete:
                         try:
                             trigger = github_plan_trigger.current(item, valid_comments,
-                                set(github_identity.configured_bot_logins()) | {repo.split('/')[0]} | ({director} if director else set()))
+                                github_plan_wait.authors(repo) | ({director} if director else set()))
                             if trigger:
                                 record["reopen_trigger"] = trigger
-                                record["trigger_fired"] = github_plan_trigger.fired(trigger, now=now, one=one, listing=listing)
+                                before_event = len(gaps)
+                                fired = github_plan_trigger.fired(trigger, now=now, one=one, listing=listing)
+                                if len(gaps) != before_event:
+                                    raise ValueError("Trigger target could not be read completely")
+                                record["trigger_fired"] = fired
+                            elif state == "reopen_triggers":
+                                raise ValueError("Discovery label has no authoritative trigger record")
                         except (ValueError, TypeError) as exc:
                             gaps.append({"source": f"{repo}#{number}", "reason": "reopen_trigger_unverifiable", "detail": str(exc)})
                 if item.get("state") == "open":
@@ -591,11 +603,12 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                             pull["_default_branch"] = source_metadata.get("default_branch")
                             record["linked_pulls"].append(pull)
                 records.append(record)
+                collected.add((repo, number))
     if unread_scopes:
         gaps.append({"source": "repository_inventory", "reason": "unread_repository_scopes", "scopes": unread_scopes})
     if question_delivery is not None:
         try:
-            source_comments = [c for r in records for c in r["comments"]] + related_comments
+            source_comments = [c for r in records if not r.get("trigger_only") for c in r["comments"]] + related_comments
             sources = {c.get("html_url"): normalize(c) for c in source_comments}
             scope = set(registered) | {c["url"] for c in sources.values()
                                       if c["author"] in bots | {queue_director}

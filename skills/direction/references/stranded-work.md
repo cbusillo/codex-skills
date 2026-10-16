@@ -18,7 +18,8 @@ uv run skills/direction/scripts/direction_audit.py \
 Use `--repo OWNER/REPO` and repeated `--stranded-repo OWNER/REPO` for a narrow
 scope. Repository discovery includes archived repositories for closed-trigger checking.
 Open records have no age cutoff; closed issues and their full discussions are
-read without a history cutoff for reopen triggers. Closed promises retain the
+selected by the close helper's `plan:reopen-trigger` discovery label without a
+history cutoff. The JSON record, not the label, determines the event. Closed promises retain the
 recent-history window (30 days by default). Full discussion pages are read, including
 questions with no Q number. The request budget and deadline cover the whole
 run, reserving the larger of 250 core requests and the shared transport's
@@ -26,7 +27,7 @@ bulk-read reserve for other work. Shared transport handles
 quota, retries and conditional response caching. Use `GITHUB_READ_CACHE_DIR`
 for a private task cache when runtime/account directories must stay untouched.
 Repository order rotates by UTC date without storing a second inventory. All
-repositories' open work precedes closed history, and zero-comment records skip
+repositories' open work precedes trigger discovery and recent closed history, and zero-comment records skip
 comment reads. Budget, quota-reserve and deadline stops count unread records
 together instead of flooding the digest. Repeated limited runs on one day keep
 the same order. The GitHub budget counts logical read calls; shared transport
@@ -78,7 +79,9 @@ unknown), next actor and review requirement:
   reuse the wait parser's authorship, precedence and example filtering. Dates,
   issue closure, PR merge, published stable releases and GHSA patch information
   are checked; `recurrence` retains exact symptom text for search-before-filing
-  and is never machine-checked. Fired triggers bypass the aged-work threshold
+  and is never machine-checked. The close option maintains the discovery label;
+  use it on an already closed issue to index an existing manual record. A
+  labeled issue without a trusted record is a coverage gap. Fired triggers bypass the aged-work threshold
   and remain in each daily digest while the issue is closed. The sweep is
   report-only: the repository agent/Supervisor reviews and reopens. A patch in
   the advisory database does not prove an installed dependency is fixed.

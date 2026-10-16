@@ -671,9 +671,13 @@ when the command ends, including on failure.
 
 `gh-plan.py close ISSUE --reopen-trigger '<JSON>'` records one event to review
 for reopening a deferred issue. It preserves close preflight and decision
-checks, publishes an authored comment with a visible kind and the
+checks, publishes an authored comment with a visible event fields (including exact recurrence symptom) and the
 `github-plan:reopen-trigger` JSON marker, and reads back the authoritative
-record **before** closing. A publication/readback failure leaves the issue open;
+record and applies the helper-managed `plan:reopen-trigger` discovery label
+**before** closing. The JSON remains authoritative; the label only selects
+records for a bounded daily read. Do not apply or remove the label by hand.
+To index a manually recorded trigger, run the same close option on the already
+closed issue; it records and verifies the trigger without reopening it. A publication/readback failure leaves the issue open;
 inspect the published comment before retrying. A later metadata failure uses
 normal close recovery. Omit the option to close without adding a trigger.
 

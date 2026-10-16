@@ -2027,7 +2027,7 @@ def cmd_show(args: argparse.Namespace) -> None:
 
 def wait_authors(repo: str) -> set[str]:
     """Use the same primary and historical automation identities as managed plans."""
-    return set(github_identity.configured_bot_logins()) | ({EXPECTED_ACTOR} if EXPECTED_ACTOR else set()) | {repo.split('/')[0]}
+    return github_plan_wait.authors(repo, expected_actor=EXPECTED_ACTOR)
 
 
 def current_wait(issue: dict[str, Any], comments: list[dict[str, Any]], repo: str) -> dict[str, Any]:
@@ -5212,6 +5212,18 @@ def cmd_close(args: argparse.Namespace) -> None:
                             payload={"comment": comment_result, "completed_steps": completed_steps,
                                      "recovery": "Read the current trigger before retrying close"}) from exc
         completed_steps.append("reopen_trigger_readback")
+        # This label is only a discovery view; the JSON record owns the event.
+        # Index before closure so an interrupted close never hides a trigger.
+        index_label = github_plan_trigger.INDEX_LABEL
+        ensure_labels(issue_repo, [index_label], {"label_defs": {index_label: {
+            "color": "c5def5", "description": "Helper-managed view of structured reopen-trigger records"}}},
+            completed_steps=completed_steps)
+        try:
+            github_issue_core.edit_issue(number, repo=issue_repo, add_labels=[index_label],
+                gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION)
+        except github_issue_core.IssueError as exc:
+            raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
+        completed_steps.append("index_reopen_trigger")
         close_comment = ""
 
     project_result: dict[str, Any] = {}

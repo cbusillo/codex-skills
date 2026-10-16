@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import github_plan_trigger as trigger
 import github_plan_wait as wait
 
-NOW = dt.datetime(2026, 10, 16, 12, tzinfo=dt.timezone.utc)
+NOW = dt.datetime(2026, 10, 16, 12, tzinfo=dt.UTC)
 
 
 def record(kind, **fields):

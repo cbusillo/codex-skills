@@ -16,6 +16,7 @@ except ModuleNotFoundError:
     from skills.github.scripts import github_plan_wait as waits
 
 PREFIX = "<!-- github-plan:reopen-trigger "
+INDEX_LABEL = "plan:reopen-trigger"
 FIELDS = {"date": {"at"}, "issue_closed": {"url"}, "pr_merged": {"url"},
           "release_published": {"repo", "minimum_tag"}, "advisory_fixed": {"ghsa_id"},
           "recurrence": {"symptom"}}
@@ -23,9 +24,9 @@ TARGET = re.compile(r"https://github.com/([\w.-]+/[\w.-]+)/(issues|pull)/([1-9][
 
 
 def date(value: str) -> dt.datetime:
-    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = dt.datetime.fromisoformat(value)
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-        return parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.replace(tzinfo=dt.UTC)
     if parsed.tzinfo is None:
         raise ValueError("Trigger timestamp requires a timezone (or YYYY-MM-DD)")
     return parsed
@@ -60,7 +61,7 @@ def validate(record: Any) -> None:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", record["repo"]):
             raise ValueError("Release trigger requires OWNER/REPO")
         version(record["minimum_tag"])
-    elif kind == "advisory_fixed" and not re.fullmatch(r"GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}", record["ghsa_id"], re.I):
+    elif kind == "advisory_fixed" and not re.fullmatch(r"GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}", record["ghsa_id"], re.IGNORECASE):
         raise ValueError("Trigger requires a GHSA identifier")
 
 
