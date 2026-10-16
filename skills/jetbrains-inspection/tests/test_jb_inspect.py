@@ -11859,6 +11859,48 @@ class HumanOutputTest(unittest.TestCase):
         for field in ("batch_inspection_delegations", "batch_inspection_delegation_count", "batch_inspection_delegations_omitted_count"):
             self.assertEqual(compact["agent_result"][field], payload["capture_diagnostic"][field])
 
+    def test_summarized_route_result_preserves_native_inspection_proof(self):
+        route = {"port": 63342, "project_key": "path:/tmp/worktree", "session_id": "session"}
+        native_proof = {
+            "status": "failed",
+            "capture_complete": False,
+            "capture_incomplete_reason": "execution_not_proven",
+            "scope": "files",
+            "snapshot_outcome": "completed",
+        }
+
+        def fake_call(active_route, endpoint, params, timeout=None):
+            if endpoint == "trigger":
+                return {"status": "triggered", "run_id": 7, "route": route}
+            if endpoint == "wait":
+                return {"status": "results_available", "wait_completed": True, "inspection_run_id": 7, "snapshot_run_id": 7}
+            if endpoint == "problems":
+                return {
+                    "status": "results_available",
+                    "inspection_run_id": 7,
+                    "snapshot_run_id": 7,
+                    "total_problems": 1,
+                    "problems": [{"file": "/tmp/worktree/App.ts", "line": 3, "description": "unused", "severity": "warning"}],
+                    "inspection_proof": native_proof,
+                    "proof_failures": ["execution_not_proven"],
+                    "inspection_verdict": "RED",
+                    "inspection_verdict_reason": "actionable_findings",
+                }
+            self.fail(f"unexpected endpoint: {endpoint}")
+
+        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+            result = jb_inspect.run_inspection_on_route(
+                helper_args(timeout_ms=1000, poll_ms=1),
+                {"worktree_root": "/tmp/worktree"},
+                route,
+            )
+        compact = jb_inspect.compact_agent_result_payload(result, helper_exit_code=0)
+
+        self.assertEqual(compact["inspection_proof"], native_proof)
+        self.assertEqual(compact["agent_result"]["inspection_proof"], native_proof)
+        self.assertEqual(compact["agent_result"]["verdict"], "RED")
+        self.assertEqual(compact["agent_result"]["proof_failures"], ["execution_not_proven"])
+
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):
         payload = {
             "scope": "whole_project",
