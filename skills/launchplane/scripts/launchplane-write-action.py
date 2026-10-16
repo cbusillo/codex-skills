@@ -2510,6 +2510,7 @@ def _project_product_provenance(value: object) -> dict[str, object] | None:
         "recorded_at": _optional_text(source.get("recorded_at")),
         "refreshed_at": _optional_text(source.get("refreshed_at")),
         "freshness_status": _optional_code(source.get("freshness_status")),
+        "stale_after": _optional_text(source.get("stale_after")),
     }
 
 
@@ -2595,16 +2596,21 @@ def _project_product_health(value: object) -> dict[str, object] | None:
                 "name": _optional_text(check.get("name"), max_length=120),
                 "kind": _optional_code(check.get("kind")),
                 "enabled": bool(_optional_bool(check.get("enabled"))),
+                "probe_effective": _optional_bool(check.get("probe_effective")),
+                "incident_eligible": _optional_bool(check.get("incident_eligible")),
                 "status": _optional_code(check.get("status")),
                 "failure_code": _optional_code(check.get("failure_code")),
                 "observed_at": _optional_text(check.get("observed_at")),
+                "record_id": _optional_identifier(check.get("record_id")),
                 "incident_status": _optional_code(check.get("incident_status")),
                 "trust_state": _optional_code(check.get("trust_state")),
+                "provenance": _project_product_provenance(check.get("provenance")),
             }
         )
     return {
         "monitoring_intent": _optional_code(source.get("monitoring_intent")),
-        "trust_state": _optional_code(source.get("trust_state")),
+        "public_incident_eligible": _optional_bool(source.get("public_incident_eligible")),
+        "provenance": _project_product_provenance(source.get("provenance")),
         "checks": projected_checks,
         "checks_truncated": len(checks) > PRODUCT_HEALTH_MAX_CHECKS,
     }
