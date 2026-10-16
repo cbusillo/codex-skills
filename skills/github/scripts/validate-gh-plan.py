@@ -4623,6 +4623,8 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
             "  printf '[{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"merged_at\":\"2026-05-19T01:23:52Z\",\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12/merge'* ]]; then\n"
             "  printf '{\"merged\":true,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\\n'\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12/reviews'* ]]; then\n"
+            "  printf '[{\"id\":1,\"state\":\"APPROVED\",\"commit_id\":\"head-sha\",\"user\":{\"login\":\"reviewer\"}}]\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
             "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/check-runs'* ]]; then\n"
@@ -4688,9 +4690,10 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert view_pr["labels"] == []
     assert view_pr["isDraft"] is False
     assert view_pr["mergeStateStatus"] == "CLEAN"
-    assert "reviewDecision" in view_pr and view_pr["reviewDecision"] is None
+    assert view_pr["reviewDecision"] == "APPROVED"
     assert "statusCheckRollup" in view_pr and view_pr["statusCheckRollup"] is None
     assert view_payload["readiness_evidence"]["state"] == "not_read"
+    assert view_payload["readiness_evidence"]["review_decision"] == "read"
     assert view_payload["mergeability"]["state"] == "CLEAN"
     assert view_payload["observed_merge_capability"]["observed_outcome"] == "not_attempted"
     list_prs = json.loads(list_result.stdout)["pullRequests"]
@@ -4698,7 +4701,7 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     assert list_prs[0]["number"] == 12
     assert list_prs[0]["merged"] is True
     assert list_prs[0]["mergeStateStatus"] == "CLEAN"
-    assert "reviewDecision" in list_prs[0] and list_prs[0]["reviewDecision"] is None
+    assert "reviewDecision" not in list_prs[0]
     assert "statusCheckRollup" in list_prs[0] and list_prs[0]["statusCheckRollup"] is None
     checks_payload = json.loads(checks.stdout)
     checks_summary = checks_payload["summary"]
@@ -4719,6 +4722,7 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     }
     assert json.loads(rate.stdout)["graphql"]["remaining"] == 0
     assert "/repos/owner/repo/pulls/12" in calls
+    assert "/repos/owner/repo/pulls/12/reviews" in calls
     assert "/repos/owner/repo/pulls?state=open" in calls
     assert "/repos/owner/repo/pulls/12/merge" in calls
     assert "graphql" not in calls.lower()
@@ -5539,6 +5543,9 @@ def required_check_rejection_stops_without_cooldown(
                 {"merged": True, "message": "Pull Request successfully merged", "sha": "a" * 40}
                 if ready else {"message": message}
             )
+        elif any("/repos/owner/repo/pulls/12/reviews" in arg for arg in args):
+            status = 200
+            body = []
         elif "/repos/owner/repo/pulls/12" in args:
             status = 200
             body = {
@@ -5602,7 +5609,7 @@ def required_check_rejection_stops_without_cooldown(
             assert unrelated_read.returncode == 0, unrelated_read
             unrelated_payload = json.loads(unrelated_read.stdout)
             assert unrelated_payload["elapsed_wait"] == 0.0, unrelated_payload
-            assert unrelated_payload["attempts"] == 1, unrelated_payload
+            assert unrelated_payload["attempts"] == 2, unrelated_payload
 
             ready = True
             merged = run_cli("merge")
@@ -5612,7 +5619,7 @@ def required_check_rejection_stops_without_cooldown(
             assert merged_payload["elapsed_wait"] == 0.0, merged_payload
             all_calls = calls
             assert sum("/pulls/12/merge" in call for call in all_calls) == 2, all_calls
-            assert sum("/pulls/12" in call and "/merge" not in call for call in all_calls) == 3, all_calls
+            assert sum("/pulls/12" in call and "/merge" not in call and "/reviews" not in call for call in all_calls) == 3, all_calls
             assert sleeps == [], sleeps
             assert current_time[0] == 1000.0, current_time
 
@@ -5751,6 +5758,8 @@ def test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial() -> None
             "    exit 1\n"
             "  fi\n"
             "  printf '{\"merged\":true,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\\n'\n"
+            "elif [[ \"$*\" == *'/pulls/12/reviews'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/pulls/12'* ]]; then\n"
             "  printf '{\"number\":12,\"state\":\"open\",\"mergeable\":true,\"mergeable_state\":\"blocked\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
             "elif [[ \"$*\" == *'/check-runs'* ]]; then\n"
@@ -6602,6 +6611,87 @@ def test_pr_helper_preserves_final_merge_identity() -> None:
     assert normalized["mergedAt"] == "2026-07-17T19:00:00Z"
     assert normalized["mergeCommitOid"] == "a" * 40
     assert normalized["headRefOid"] == "b" * 40
+    assert "reviewDecision" not in normalized
+
+
+def test_pr_helper_view_reports_review_decisions_and_omits_unfetched_null() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        reviews_path = tmp_path / "reviews.json"
+        gh_path = tmp_path / "gh"
+        gh_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "if [[ \"$*\" == *'/repos/owner/repo/pulls/12/reviews'* ]]; then\n"
+            "  if [[ \"${GH_PR_REVIEWS_FAIL:-0}\" == '1' ]]; then\n"
+            "    printf 'HTTP/2.0 403 Forbidden\\r\\nX-GitHub-Request-Id: REQ-REV\\r\\n\\r\\n{\"message\":\"Forbidden\"}\\n'\n"
+            "    exit 1\n"
+            "  fi\n"
+            "  cat \"$GH_PR_REVIEWS_FILE\"\n"
+            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+            "  printf '{\"number\":12,\"title\":\"Demo\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
+            "else\n"
+            "  printf '[]\\n'\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        gh_path.chmod(0o755)
+        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_REVIEWS_FILE=str(reviews_path))
+
+        def run_view(reviews: list[dict[str, Any]], *, fail_reviews: bool = False) -> dict[str, Any]:
+            reviews_path.write_text(json.dumps(reviews) + "\n", encoding="utf-8")
+            call_env = dict(env, GH_PR_REVIEWS_FAIL="1" if fail_reviews else "0")
+            result = REAL_SUBPROCESS_RUN(
+                [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "view", "12"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=call_env,
+                check=True,
+            )
+            return json.loads(result.stdout)
+
+        approved = run_view(
+            [
+                {"id": 1, "state": "CHANGES_REQUESTED", "user": {"login": "Alice"}},
+                {"id": 2, "state": "APPROVED", "user": {"login": "alice"}},
+                {"id": 3, "state": "COMMENTED", "user": {"login": "alice"}},
+            ]
+        )
+        assert approved["pr"]["reviewDecision"] == "APPROVED", approved
+        assert approved["readiness_evidence"]["state"] == "not_read", approved
+        assert approved["readiness_evidence"]["review_decision"] == "read", approved
+        assert approved["readiness_evidence"]["review_decision_source"] == "rest_reviews", approved
+
+        changes_requested = run_view(
+            [
+                {"id": 1, "state": "APPROVED", "user": {"login": "alice"}},
+                {"id": 2, "state": "CHANGES_REQUESTED", "user": {"login": "bob"}},
+            ]
+        )
+        assert changes_requested["pr"]["reviewDecision"] == "CHANGES_REQUESTED", changes_requested
+        assert changes_requested["readiness_evidence"]["review_decision"] == "read", changes_requested
+        assert changes_requested["readiness_evidence"]["review_decision_source"] == "rest_reviews", changes_requested
+
+        unreviewed = run_view(
+            [
+                {"id": 1, "state": "APPROVED", "user": {"login": "alice"}},
+                {"id": 2, "state": "DISMISSED", "user": {"login": "alice"}},
+                {"id": 3, "state": "COMMENTED", "user": {"login": "bob"}},
+                {"id": 4, "state": "APPROVED", "author_association": "NONE", "user": {"login": "outsider"}},
+                {"id": 5, "state": "APPROVED", "user": None},
+            ]
+        )
+        assert "reviewDecision" not in unreviewed["pr"], unreviewed
+        assert unreviewed["readiness_evidence"]["state"] == "not_read", unreviewed
+        assert unreviewed["readiness_evidence"]["review_decision"] == "not_read", unreviewed
+        assert "no decisive review" in unreviewed["readiness_evidence"]["reason"], unreviewed
+
+        failed_reviews = run_view([], fail_reviews=True)
+        assert "reviewDecision" not in failed_reviews["pr"], failed_reviews
+        assert failed_reviews["readiness_evidence"]["review_decision"] == "not_read", failed_reviews
+        assert failed_reviews["readiness_evidence"]["reason"] == "review decision read failed; see diagnostics", failed_reviews
+        assert failed_reviews["diagnostics"]["degraded"] is True, failed_reviews
 
 
 def test_pr_helper_current_branch_resolves_upstream_fork() -> None:
@@ -6623,6 +6713,8 @@ def test_pr_helper_current_branch_resolves_upstream_fork() -> None:
             "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/base/r/pulls?head=fork%3Afeature&state=open'* ]]; then\n"
             "  printf '[{\"number\":7}]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/base/r/pulls/7/reviews'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/base/r/pulls/7'* ]]; then\n"
             "  printf '{\"number\":7,\"title\":\"Fork PR\",\"state\":\"open\",\"draft\":false,\"html_url\":\"https://github.com/base/r/pull/7\",\"head\":{\"ref\":\"feature\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"fork/r\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"base/r\"}}}\\n'\n"
             "else\n"
@@ -6670,6 +6762,8 @@ def test_pr_helper_primary_match_skips_inaccessible_upstream() -> None:
             "elif [[ \"$*\" == *'/repos/private/r/pulls'* ]]; then\n"
             "  printf 'inaccessible upstream queried\\n' >&2\n"
             "  exit 2\n"
+            "elif [[ \"$*\" == *'/repos/fork/r/pulls/8/reviews'* ]]; then\n"
+            "  printf '[]\\n'\n"
             "elif [[ \"$*\" == *'/repos/fork/r/pulls/8'* ]]; then\n"
             "  printf '{\"number\":8,\"title\":\"Origin PR\",\"state\":\"open\",\"draft\":false,\"html_url\":\"https://github.com/fork/r/pull/8\",\"head\":{\"ref\":\"feature\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"fork/r\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"fork/r\"}}}\\n'\n"
             "else\n"
@@ -6739,7 +6833,9 @@ def test_pr_helper_accepts_enterprise_pr_urls() -> None:
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
-            "if [[ \"$*\" == *'/repos/enterprise/repo/pulls/5'* ]]; then\n"
+            "if [[ \"$*\" == *'/repos/enterprise/repo/pulls/5/reviews'* ]]; then\n"
+            "  printf '[]\\n'\n"
+            "elif [[ \"$*\" == *'/repos/enterprise/repo/pulls/5'* ]]; then\n"
             "  printf '{\"number\":5,\"title\":\"Enterprise\",\"state\":\"open\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://ghe.example.com/enterprise/repo/pull/5\",\"head\":{\"ref\":\"topic\",\"sha\":\"head-sha\",\"repo\":{\"full_name\":\"enterprise/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"enterprise/repo\"}}}\\n'\n"
             "else\n"
             "  printf '{}\\n'\n"
@@ -7094,6 +7190,7 @@ def main() -> None:
         test_pr_helper_supersede_skips_branch_delete_for_default_branch,
         test_pr_helper_preserves_url_repo_and_paginates_checks,
         test_pr_helper_preserves_final_merge_identity,
+        test_pr_helper_view_reports_review_decisions_and_omits_unfetched_null,
         test_pr_helper_current_branch_resolves_upstream_fork,
         test_pr_helper_primary_match_skips_inaccessible_upstream,
         test_pr_helper_paged_rest_failure_preserves_diagnostics,

@@ -65,10 +65,17 @@ manage REST-first defaults, quota pressure, and degraded output:
 <skill-dir>/scripts/gh-pr.py --repo OWNER/REPO rate-limit
 ```
 
-The PR helper is REST-first for normal orientation. Its snapshot-compatible
-`reviewDecision` and `statusCheckRollup` fields are intentionally nullable so
-ordinary polling does not spend GraphQL quota. Use GraphQL-backed `gh pr view
---json statusCheckRollup,reviewDecision` only when that exact data is needed.
+The PR helper is REST-first for normal orientation. Standalone `gh-pr.py view`
+derives `reviewDecision` from REST pull request reviews
+(`readiness_evidence.review_decision_source: "rest_reviews"`, reflecting latest
+reviewer states rather than branch-protection required approval counts) when a
+decisive review exists, and omits `reviewDecision` (reporting
+`readiness_evidence.review_decision: "not_read"`) when no decisive review is
+present, in delegated `watch` polling, or in `gh-pr.py list`, while
+`statusCheckRollup` remains intentionally nullable so ordinary polling does not
+spend GraphQL quota. Use GraphQL-backed `gh pr view --json
+statusCheckRollup,reviewDecision` only when branch-protection-evaluated review
+requirement or rollup data is needed.
 The PR babysitter's readiness boundary is the maintained exception: after
 complete REST check evidence and clean mergeability are observed, it issues
 one short-deadline, same-actor GraphQL document pinned to the exact PR head.
