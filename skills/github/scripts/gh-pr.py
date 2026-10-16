@@ -347,7 +347,9 @@ def review_decision_from_reviews(reviews: list[dict[str, Any]]) -> Optional[str]
         association = str(item.get("author_association") or "").strip().upper()
         if association == "NONE":
             continue
-        user = item.get("user") if isinstance(item.get("user"), dict) else {}
+        user = item.get("user")
+        if not isinstance(user, dict):
+            user = {}
         login = str(user.get("login") or "").strip().lower()
         if not login:
             continue

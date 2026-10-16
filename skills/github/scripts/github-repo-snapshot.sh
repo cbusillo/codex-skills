@@ -684,10 +684,10 @@ if [[ "$json_output" -eq 1 ]]; then
             if ($lp.enabled // false) and (($lp.service.publicUrl // null) != null) then
               {code: "committed_service_url", message: "Launchplane service.publicUrl should not be committed; use env or private operator config for concrete service URLs."}
             else empty end,
-            if ($lp.enabled // false) and (present($lp.service.contextUrlEnv // "") | not) then
+            if ($lp.enabled // false) and ($context.enabled // false) and (present($lp.service.contextUrlEnv // "") | not) then
               {code: "missing_context_url_env", message: "Launchplane service.contextUrlEnv is missing."}
             else empty end,
-            if ($lp.enabled // false) and (present($lp.service.operatorUrlEnv // "") | not) then
+            if ($lp.enabled // false) and ($lp.operator.enabled // false) and (present($lp.service.operatorUrlEnv // "") | not) then
               {code: "missing_operator_url_env", message: "Launchplane service.operatorUrlEnv is missing."}
             else empty end,
             if ($context.enabled // false) and (present($context.helper // "") | not) then
