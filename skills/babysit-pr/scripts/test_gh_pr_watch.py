@@ -1106,6 +1106,60 @@ def test_launchplane_read_failure_does_not_erase_retained_owner_feedback(monkeyp
     assert state["owner_review_items"][0]["verification_status"] == "verified"
 
 
+@pytest.mark.parametrize("status,error_code", [(403, "product_review_unavailable"), (503, "service_unavailable")])
+def test_saved_review_failure_retains_safe_diagnostics_and_blocks_readiness(monkeypatch, status, error_code):
+    saved_reader = gh_pr_watch.read_launchplane_owner_review
+    mock_owner_feedback(monkeypatch, [owner_feedback_comment()])
+    state = {}
+    gh_pr_watch.fetch_new_review_items(sample_pr(), state, True)
+    retained = state["owner_review_items"][0]["owner_review"]
+    # Exercise the actual subprocess consumer after establishing verified feedback.
+    monkeypatch.setattr(gh_pr_watch, "read_launchplane_owner_review", saved_reader)
+    payload = {"ok": False, "error": "owner_review_read_failed", "status_code": status,
+               "error_code": error_code, "trace_id": "launchplane_req_0123456789abcdef0123456789abcdef",
+               "reason": "private Client prose", "token": "ghp_not_for_output"}
+    monkeypatch.setattr(gh_pr_watch.subprocess, "run", lambda *a, **kw:
+                        subprocess.CompletedProcess(a, 1, json.dumps(payload), "private provider stderr"))
+    gh_pr_watch.fetch_new_review_items(sample_pr(), state, False)
+    evidence = json.dumps(state["owner_review_errors"])
+    assert error_code in evidence
+    assert str(status) in evidence
+    assert payload["trace_id"] in evidence
+    assert "private Client prose" not in evidence
+    assert "ghp_not_for_output" not in evidence
+    assert "private provider stderr" not in evidence
+    assert state["owner_review_items"][0]["owner_review"] == retained
+    assert state["owner_review_items"][0]["verification_status"] == "unavailable"
+    actions = gh_pr_watch.recommend_actions(sample_pr(), sample_checks(), [], [], [], 0, 3,
+        state["owner_review_items"], state["owner_review_errors"])
+    assert "owner_review_verification_unavailable" in actions
+    assert "ready_to_merge" not in actions
+
+
+@pytest.mark.parametrize("payload", [[], None, {"ok": False, "error_code": "https://private.invalid/key",
+    "trace_id": "Bearer private-key", "status_code": True},
+    {"ok": False, "error_code": {"secret": "private"}, "trace_id": ["private"], "status_code": "403"},
+    {"ok": False, "error_code": "ghp_private", "trace_id": "https://private.invalid", "status_code": 999}])
+def test_saved_review_failure_discards_unsafe_diagnostics(monkeypatch, payload):
+    monkeypatch.setattr(gh_pr_watch.subprocess, "run", lambda *a, **kw:
+                        subprocess.CompletedProcess(a, 1, json.dumps(payload), "private stderr"))
+    with pytest.raises(gh_pr_watch.GhCommandError) as failure:
+        gh_pr_watch.read_launchplane_owner_review(sample_pr())
+    evidence = str(failure.value)
+    assert "private" not in evidence
+    assert all(key not in evidence for key in ("status_code", "error_code", "trace_id"))
+
+
+@pytest.mark.parametrize("stdout", ["not JSON: private provider response", '{"ok": false,'])
+def test_saved_review_malformed_output_stays_unavailable_without_echoing_output(monkeypatch, stdout):
+    monkeypatch.setattr(gh_pr_watch.subprocess, "run", lambda *a, **kw:
+                        subprocess.CompletedProcess(a, 1, stdout, "private stderr"))
+    with pytest.raises(gh_pr_watch.GhCommandError) as failure:
+        gh_pr_watch.read_launchplane_owner_review(sample_pr())
+    assert stdout not in str(failure.value)
+    assert "private" not in str(failure.value)
+
+
 def test_recommend_actions_ignores_stale_failed_jobs_from_completed_runs():
     actions = gh_pr_watch.recommend_actions(
         sample_pr(),
