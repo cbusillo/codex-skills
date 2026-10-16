@@ -57,7 +57,9 @@ class DailyTests(unittest.TestCase):
         runner_dir = self.root / "skills/supervisor/scripts"
         runner_dir.mkdir(parents=True)
         for module in (daily, services):
-            source = Path(module.__file__)
+            source_path = module.__file__
+            assert source_path is not None
+            source = Path(source_path)
             (runner_dir / source.name).write_bytes(source.read_bytes())
         self.payload = "Coverage incomplete: offline fixture\n"
         (self.root / "payload").write_text(self.payload)

@@ -109,12 +109,12 @@ authority or prove that a linked PR completed an issue.
 ## Daily delivery and maintenance
 
 Use the launchd [daily service](../../supervisor/references/helpers.md#daily-stranded-work-service)
-and existing Director Discord destination/helper to deliver this Markdown once
-per morning without a running Supervisor session. Deliver an incomplete report
+and configured Director Discord destination with `discord_digest.py` to deliver
+this Markdown once per morning without a running Supervisor session. Deliver an incomplete report
 too; preserve the nonzero scan status and coverage gaps instead of suppressing
 the digest. Keep routing, repository lists, helper invocation and scheduler
-configuration private. Do not build a second Discord client, copy credentials,
-or use a session-bound sleep loop.
+configuration private. Use the catalog sender with the privately configured
+digest webhook; do not copy credentials or use a session-bound sleep loop.
 Record the actual scheduler registration and receiver receipt on the owning
 issue before describing daily delivery as active. Source and fixture success
 alone do not establish scheduled delivery.
