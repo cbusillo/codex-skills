@@ -5203,7 +5203,10 @@ def cmd_close(args: argparse.Namespace) -> None:
         _, prior_comments = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
             step_prefix="reopen_trigger_preflight")
-        prior_trigger = github_plan_trigger.current(issue, prior_comments, wait_authors(issue_repo))
+        try:
+            prior_trigger = github_plan_trigger.current(issue, prior_comments, wait_authors(issue_repo))
+        except ValueError as exc:
+            raise PlanError(f"Existing reopen trigger needs review before closure: {exc}") from exc
         try:
             comment_result = github_comment_core.comment(
                 "issue", number, trigger_comment, repo=issue_repo, gh_cmd=gh_cmd,

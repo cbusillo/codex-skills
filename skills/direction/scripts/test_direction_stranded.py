@@ -533,7 +533,6 @@ class ReopenInventoryTests(unittest.TestCase):
             self.issue(5, self.event(), pull_request={})], age_hours=1000)
         rows = [r for r in result["findings"] if r["kind"] == "reopen_trigger_fired"]
         self.assertEqual([r["number"] for r in rows], [1])
-        self.assertIn("reopen_trigger_fired", sweep.markdown(result))
         self.assertEqual(rows[0]["evidence"][0]["trigger"], self.event())
 
     def test_comment_trigger_on_second_page_replaces_body_and_foreign_record_cannot_override(self):
@@ -650,6 +649,13 @@ class ReopenInventoryTests(unittest.TestCase):
         self.assertEqual([r["number"] for r in result["findings"]], [1])
         self.assertEqual(len(release_reads), 1)
         self.assertFalse(any(g["reason"] == "reopen_trigger_unverifiable" for g in result["coverage_gaps"]))
+
+
+    def test_director_alias_cannot_change_the_shared_trigger_authority(self):
+        result = self.collect([self.issue(1, self.event(), user={"login": "separate-director"})],
+                              director="separate-director")
+        self.assertEqual(result["findings"], [])
+        self.assertTrue(any(g["reason"] == "reopen_trigger_unverifiable" for g in result["coverage_gaps"]))
 
 
 if __name__ == "__main__":

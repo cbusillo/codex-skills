@@ -561,7 +561,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     if "pull_request" not in item and comments_complete:
                         try:
                             trigger = github_plan_trigger.current(item, valid_comments,
-                                github_plan_wait.authors(repo) | ({director} if director else set()))
+                                github_plan_wait.authors(repo))
                             if trigger:
                                 record["reopen_trigger"] = trigger
                                 before_event = len(gaps)

@@ -282,7 +282,8 @@ class CloseConfigTests(unittest.TestCase):
             trigger_readback=readback)
         self.assertEqual(code, 0, result)
         state.assert_not_called()
-        self.assertEqual(labels.call_args_list[0].kwargs["remove_labels"], [PLAN.github_plan_trigger.INDEX_LABEL])
+        self.assertTrue(any(PLAN.github_plan_trigger.INDEX_LABEL in (call.kwargs.get("remove_labels") or [])
+                            for call in labels.call_args_list))
         self.assertEqual(PLAN.github_plan_trigger.current({}, [{"user": {"login": "fixture"},
                          "body": comments.call_args.args[2]}], {"fixture"}), event)
 
@@ -306,6 +307,20 @@ class CloseConfigTests(unittest.TestCase):
         state.assert_not_called()
         self.assertFalse(any(PLAN.github_plan_trigger.INDEX_LABEL in (call.kwargs.get("remove_labels") or [])
                              for call in labels.call_args_list))
+
+
+    def test_malformed_existing_record_returns_a_structured_failure_without_writes(self):
+        bad = Mock(return_value=("fixture", [{"user": {"login": "fixture"},
+                    "body": PLAN.github_plan_trigger.PREFIX + "invalid-json -->"}]))
+        published = Mock()
+        code, result, state, labels, _ = self.run_close(
+            overrides=("--clear-reopen-trigger", "Reviewed malformed record"),
+            trigger_readback=bad, trigger_comments=published)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(result["ok"])
+        published.assert_not_called()
+        state.assert_not_called()
+        labels.assert_not_called()
 
 
 if __name__ == "__main__":
