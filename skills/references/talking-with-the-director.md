@@ -40,6 +40,8 @@ changes on yes.
   A bare path, a code-formatted route, or "open X in the UI" is insufficient.
   Resolve the address from the configured service or authoritative page link;
   never guess a host. Keep private URLs in destinations allowed to know them.
+  If a public thread cannot carry the URL, deliver the linked step through the
+  authorized private handoff and point the public thread to that handoff.
 - Preserve exact-output requests, runnable commands, machine-readable fields,
   helper-checked decision lines, and `Refs`/closing syntax verbatim;
   apply the linked format to the surrounding prose.

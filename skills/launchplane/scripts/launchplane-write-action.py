@@ -6639,7 +6639,7 @@ def summarize_privileged_policy_proposal(
         raise LaunchplaneSafetyError("invalid_response")
     if state == "planned":
         recommendation = (
-            "The pending plan has blockers; review them on the Launchplane UI host before approval."
+            "The pending plan has blockers; review them at review_url before approval."
             if result_status == "blocked"
             else "Open review_url for the signed-in Director. The proposer cannot approve or apply."
         )

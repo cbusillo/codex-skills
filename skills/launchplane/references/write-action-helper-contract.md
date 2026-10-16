@@ -1596,7 +1596,11 @@ JSON inline. The helper rejects dedicated preparation contexts and unsupported
 request fields. It emits bounded proposal metadata, counts, trace,
 and a full `review_url` built from the configured service URL. Use that clickable
 URL in Owner questions and handoffs; the relative `review_path` remains for
-compatibility. The URL identifies the private service host, so share it only
+compatibility. This points to the UI on that same service base, including any
+configured path prefix; a tunnel or API-only proxy is not proof that the
+Director's browser can reach it. Verify the browser-facing address before the
+handoff if the configured base does not expose the signed-in UI.
+The URL identifies the private service host, so share it only
 with destinations allowed to know it. The helper never returns policy selectors
 or credential-routing fields.
 
