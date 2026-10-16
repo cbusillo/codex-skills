@@ -179,7 +179,13 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
         hours = max(0.0, (now - since).total_seconds() / 3600) if since else None
         if hours is not None and hours < age_hours:
             return
+        title = record["item"].get("title") or detail.partition(". ")[0]
+        if kind in {"unanswered_question", "registered_question"}:
+            question = next((c for c in comments if (c.get("html_url") or c.get("url")) == source), None)
+            if question:
+                title = question_body(question).partition("\n")[0]
         findings.append({"kind": kind, "repo": record["repo"], "number": record["item"]["number"],
+                         "title": title,
                          "url": source, "since": since.isoformat() if since else None,
                          "age_hours": round(hours, 2) if hours is not None else None,
                          "age_basis": "recorded_event" if since else "unknown",
@@ -323,7 +329,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
         rows, register_gaps = register_findings(register, now=now, owner_terms=owner_terms)
         gaps.extend(register_gaps)
         for row in rows:
-            add(row["kind"], {"repo": row["repo"], "item": {"number": None}}, row["url"], row["since"],
+            add(row["kind"], {"repo": row["repo"], "item": {"number": None, "title": row["title"]}}, row["url"], row["since"],
                 row["next_actor"], row["detail"], evidence=[{"last_checked": row["last_checked"], "next_check": row["next_check"]}])
     reported_questions = {row["url"] for row in findings if row["kind"] == "unanswered_question"}
     for row in deliveries.values():
@@ -665,6 +671,7 @@ def markdown(result: dict) -> str:
     for row in result["findings"]:
         age = f"{row['age_hours']:g}h" if row["age_hours"] is not None else "age unknown"
         lines.append(f"- {row['kind']} ({age}): {row['url']} — {row['next_actor']}. {row['detail']}")
+        lines.append("  Name: " + " ".join(row.get("title", row['url']).split()))
     for gap in result["coverage_gaps"]:
         count = f" ({gap['count']} records)" if "count" in gap else ""
         lines.append(f"- Coverage gap: {gap['source']} — {gap['reason']}{count}")

@@ -53,6 +53,21 @@ class StrandedTests(unittest.TestCase):
         answer["body"] = f"Done: {q['html_url']}"
         self.assertNotIn(3604, {r["number"] for r in self.report()["findings"]})
 
+    def test_presentation_names_questions_and_issues_from_their_sources(self):
+        for record in self.records:
+            record["item"]["title"] = f"Task {record['item']['number']}"
+        result = self.report()
+        question = next(r for r in result["findings"] if r["kind"] == "unanswered_question")
+        source = next(c for record in self.records for c in record["comments"]
+                      if c["html_url"] == question["url"])
+        self.assertEqual(question["title"], sweep.question_body(source).partition("\n")[0])
+        issue = next(r for r in result["findings"] if r["kind"] == "merged_link_needs_review")
+        source_item = next(r["item"] for r in self.records if r["item"]["number"] == issue["number"])
+        self.assertEqual(issue["title"], source_item["title"])
+        rendered = sweep.markdown(result)
+        self.assertIn(question["title"], rendered)
+        self.assertIn(issue["title"], rendered)
+
     def test_closed_research_promise_survives_issue_closure_until_linked_report(self):
         promise = self.records[4]["comments"][0]
         self.assertIn(1791, {r["number"] for r in self.report()["findings"]})

@@ -136,7 +136,15 @@ authority or prove that a linked PR completed an issue.
 
 Use the launchd [daily service](../../supervisor/references/helpers.md#daily-stranded-work-service)
 and configured Director Discord destination with `discord_digest.py` to deliver
-this Markdown once per morning without a running Supervisor session. Deliver an incomplete report
+one short message per morning without a running Supervisor session. The message
+shows date and coverage, counts by kind, every Director-waiting item by name,
+and the oldest five links for each other kind. It links to the full Markdown
+list, posted once through the existing bot comment helper on the pinned digest
+tracking issue ([this catalog's archive](https://github.com/cbusillo/codex-skills/issues/2006)).
+The sender's `--tracking-issue OWNER/REPO#NUMBER` selects another archive.
+The existing installed command needs no reconfiguration after the catalog
+update; its default archive is the pinned issue above. No plist, schedule or
+webhook change is needed. Deliver an incomplete report
 too; preserve the nonzero scan status and coverage gaps instead of suppressing
 the digest. Keep routing, repository lists, helper invocation and scheduler
 configuration private. Use the catalog sender with the privately configured
@@ -148,9 +156,14 @@ alone do not establish scheduled delivery.
 Update by pulling the landed catalog through its supported path; a digest
 uses the audit and question helpers from the same catalog. On a delivery
 failure, retain the report and helper outcome for the Supervisor; reconcile an
-uncertain send before replay. To stop, boot out only the stranded-work launchd
+uncertain send before replay. An identical full-list comment is reused on a
+reconciled retry through the bot helper's body deduplication. An archive failure
+prevents the Discord send. If the required items cannot fit below 2,000 UTF-16
+units even with shortened names, retain the failure for reconciliation rather
+than omitting waits or sending several messages.
+To stop, boot out only the stranded-work launchd
 job and remove its LaunchAgents plist. Restore the previous reviewed configuration to roll back;
-GitHub state needs no rollback because the sweep changes none.
+The sweep changes no findings state; archived full lists remain as history.
 
 Offline replay: `uv run skills/direction/scripts/test_direction_stranded.py`.
 The reduced fixture retains pre-recovery facts from the October 13–15 incidents

@@ -23,7 +23,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import digest_summary
+
 KEY = "DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL"
+DEFAULT_TRACKING_ISSUE = "cbusillo/codex-skills#2006"
 
 
 class DeliveryError(Exception):
@@ -102,7 +105,7 @@ def chunks(report):
         yield part
 
 
-def deliver(report, url):
+def validate(report, url):
     parsed = urllib.parse.urlsplit(url)
     if parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise DeliveryError("digest_webhook_invalid")
@@ -116,6 +119,10 @@ def deliver(report, url):
         raise DeliveryError("digest_report_empty")
     if url in report or parsed.path.rsplit("/", 1)[-1] in report:
         raise DeliveryError("digest_report_contains_credential")
+
+
+def deliver(report, url):
+    validate(report, url)
     opener = urllib.request.build_opener(NoRedirect())
     metadata = request_json(opener, url)
     guild = snowflake(metadata.get("guild_id"))
@@ -132,10 +139,19 @@ def deliver(report, url):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--file", type=Path, help="Markdown file; otherwise read stdin")
+    parser.add_argument("--tracking-issue", default=DEFAULT_TRACKING_ISSUE,
+                        help="Pinned OWNER/REPO#NUMBER for stranded-work full lists")
     args = parser.parse_args(argv)
     try:
         url = webhook_url()
         report = args.file.read_text(encoding="utf-8") if args.file else sys.stdin.read()
+        validate(report, url)
+        if report.startswith("Daily stranded-work sweep\n"):
+            # Validate the size before writing the full list. Never send a
+            # multipart stranded digest or truncate person waits.
+            digest_summary.summary(report, "https://github.com/" + args.tracking_issue.replace("#", "/issues/")
+                                   + "#issuecomment-" + "9" * 20)
+            report = digest_summary.summary(report, digest_summary.archive(report, args.tracking_issue))
         deliver(report, url)
         return 0
     except DeliveryError as error:

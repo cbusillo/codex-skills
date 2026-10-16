@@ -539,17 +539,28 @@ the file or expanding shell expressions. Keep the webhook in the private
 mode-600 environment file; never put it in the configuration or arguments.
 A missing key fails with `digest_webhook_missing`, without a value.
 
-The sender reads the guild and channel from the webhook metadata, splits the
-report within Discord's 2,000-character limit (also bounded in UTF-16 units),
-and posts each part with `wait=true` and mentions disabled. Each confirmed
-part prints its `https://discord.com/channels/GUILD/CHANNEL/MESSAGE` receipt.
-Only all confirmed parts produce exit zero. See the
+For stranded-work reports, the sender posts the full list once on the pinned
+[digest archive](https://github.com/cbusillo/codex-skills/issues/2006), reusing an
+identical bot-authored comment on a reconciled retry. `--tracking-issue
+OWNER/REPO#NUMBER` selects another archive. It then sends one message below
+2,000 UTF-16 units: date and coverage, counts by kind, all Director waits by
+name, oldest five links for each other kind, and the full-list link. If that
+cannot fit, delivery fails and retains the reconciliation boundary; no required
+item is silently dropped. Archive errors prevent Discord delivery.
+
+The sender reads the guild and channel from the webhook metadata and posts with
+`wait=true` and mentions disabled. Each confirmed message prints its
+`https://discord.com/channels/GUILD/CHANNEL/MESSAGE` receipt. Other Markdown
+input keeps the existing multipart behavior. Only all confirmed parts produce
+exit zero. See the
 [Discord webhook contract](https://docs.discord.com/developers/resources/webhook).
 It never retries: on a partial failure the prior links remain in
 `delivery.stdout`. Reconcile **all parts** at the receiver before clearing the
 marker; a link for an early part alone does not prove the whole report arrived.
 Named errors contain no URL or response body. Do not run the sender directly
-as a connectivity test against the real destination.
+as a connectivity test against the real destination. After merging and updating
+the catalog through its supported path, the existing job needs no reconfiguration.
+Its schedule, plist, private configuration and webhook remain the same.
 
 The calendar uses the Mac's system timezone: verify it is US Eastern for a
 7:30 AM ET schedule. launchd coalesces a missed calendar invocation after sleep;
@@ -613,7 +624,8 @@ render/bootstrap it after reconciling any pending send. Other Supervisor jobs
 and GitHub records need no change. Offline tests:
 `uv run skills/supervisor/scripts/test_stranded_service.py`,
 `uv run skills/supervisor/scripts/test_services.py` and
-`uv run skills/supervisor/scripts/test_discord_digest.py` (fake HTTP only).
+`uv run skills/supervisor/scripts/test_discord_digest.py` (fake HTTP only) and
+`uv run skills/supervisor/scripts/test_digest_summary.py` (synthetic reports).
 
 During every Supervisor check, inspect this job too: `launchctl print` above,
 `runner.jsonl`, `runner.stderr.log`, `daily.stranded.reconcile`, and the latest
