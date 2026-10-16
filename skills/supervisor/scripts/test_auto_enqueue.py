@@ -20,7 +20,7 @@ from unittest.mock import Mock, patch
 
 import auto_enqueue as watch
 from skills.github.scripts.ready_handoff import READY, WAITING
-from skills.github.scripts import ready_handoff
+from skills.github.scripts import github_read, ready_handoff
 
 REPO = "example/tool"
 CLIENT = "example/client-product"
@@ -721,8 +721,7 @@ class EnqueueTests(unittest.TestCase):
                     value = copy.deepcopy(fake.pulls[number])
                     value.update(mergeable=None, mergeable_state="unknown")
                     if kwargs.get("conditional_cache") is False:
-                        if kwargs.get("step") == "mergeability_read":
-                            reads.append(number)
+                        reads.append(number)
                         started.setdefault(number, clock[0])
                         if clock[0] - started[number] >= delay:
                             value.update(mergeable=True, mergeable_state="behind")
@@ -732,7 +731,7 @@ class EnqueueTests(unittest.TestCase):
                     clock[0] += seconds
 
                 with (
-                    patch.object(watch.github_api, "request_identity", return_value=("fixture-reader", "fixture-reader", [])),
+                    patch.object(github_read.github_api_core, "request_identity", return_value=("fixture-reader", "fixture-reader", [])),
                     patch.dict("os.environ", {"GITHUB_READ_CACHE_DIR": str(Path(self.directory.name) / "reader-cache")}),
                     patch.object(watch.operator, "resolve_settings", return_value={"service_url": "https://example.test", "token": "fixture"}),
                     patch.object(watch.operator, "validate_service_url"),
@@ -743,12 +742,15 @@ class EnqueueTests(unittest.TestCase):
                 ):
                     for pass_number in range(count):
                         live = watch.Live(clock[0] + 1800)
+                        self.assertEqual(live.reader.actor, "fixture-reader")
                         budget = live.mergeability_reads_remaining
                         fake.get = live.get
                         fake.get_many = lambda paths: live.get_many(paths)
                         before_reads = len(reads)
                         self.run_pass(fake)
-                        self.assertLessEqual(len(reads) - before_reads, budget)
+                        # Every label has one mandatory fresh pre-write GET;
+                        # all other unconditional reads draw on recovery quota.
+                        self.assertLessEqual(len(reads) - before_reads, budget + len(fake.writes))
                         # When the budget has room to prime this backlog and
                         # revisit two PRs, a slow computation can form a batch.
                         if count == 14 and pass_number == 0 and budget >= count + 2:
