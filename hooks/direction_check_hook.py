@@ -7,7 +7,8 @@
 
 The `direction` skill records the end of every daily turn in a small local
 marker and in a shared turn record in OWNER/direction, and the audit script
-records each weekly audit in the marker per repository. When this machine's
+records each weekly audit in the marker per repository, including an audit
+that ran but held its window open, which is reported as held, not overdue. When this machine's
 own turn is older than a day, the hook reads the shared record, so a turn
 taken on another machine counts; when that read fails it says so instead of
 calling the turn overdue.
@@ -154,7 +155,15 @@ def read_marker(path: Path) -> dict[str, object]:
             stamp = parse_stamp(value)
             if isinstance(repo, str) and stamp:
                 audits[repo] = stamp
-    result: dict[str, object] = {"turn": parse_stamp(raw.get("turn")), "audits": audits}
+    runs_raw = raw.get("audit_runs")
+    runs: dict[str, tuple[dt.datetime, str | None]] = {}
+    if isinstance(runs_raw, dict):
+        for repo, value in runs_raw.items():
+            ran = parse_stamp(value.get("ran")) if isinstance(value, dict) else None
+            if isinstance(repo, str) and ran:
+                held = value.get("held")
+                runs[repo] = (ran, held if isinstance(held, str) and held else None)
+    result: dict[str, object] = {"turn": parse_stamp(raw.get("turn")), "audits": audits, "audit_runs": runs}
     if isinstance(raw.get("turn_repo"), str):
         result["turn_repo"] = raw["turn_repo"]
     return result
@@ -379,12 +388,19 @@ def with_shared_turn(marker: dict[str, object], now: dt.datetime, repo: str | No
     return result
 
 
+def last_audit(marker: dict[str, object], repo: str) -> dt.datetime | None:
+    """When an audit of the repository last ran, whether or not its window settled."""
+    audits, runs = marker.get("audits"), marker.get("audit_runs")
+    stamps = [audits.get(repo) if isinstance(audits, dict) else None,
+              (runs.get(repo) or (None,))[0] if isinstance(runs, dict) else None]
+    return max((stamp for stamp in stamps if isinstance(stamp, dt.datetime)), default=None)
+
+
 def weekly_audit_repo(marker: dict[str, object], now: dt.datetime, repo: str | None) -> str | None:
     """Suppress a due weekly reminder only for a confirmed archived repository."""
     if not repo:
         return None
-    audits = marker.get("audits")
-    stamp = audits.get(repo) if isinstance(audits, dict) else None
+    stamp = last_audit(marker, repo)
     if isinstance(stamp, dt.datetime) and now - stamp <= AUDIT_STALE:
         return repo
     try:
@@ -420,21 +436,30 @@ def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path
         overdue.append("no direction turn has been recorded on this machine")
     elif turn_stale:
         overdue.append(f"the last direction turn was {(now - turn).days} days ago")
+    held_note = ""
     if repo:
-        audit = audits.get(repo)
+        audit = last_audit(marker, repo)
+        runs = marker.get("audit_runs")
+        run = runs.get(repo) if isinstance(runs, dict) else None
         if not isinstance(audit, dt.datetime):
             overdue.append(f"{repo} has a DIRECTION.md but no recorded weekly audit")
         elif now - audit > AUDIT_STALE:
             overdue.append(f"the last weekly audit of {repo} was {(now - audit).days} days ago")
-    if not overdue and not unconfirmed:
+        elif run and run[1] and run[0] == audit:
+            # The audit ran; only its window is still open, so this is not a missed audit.
+            held_note = (
+                f"The weekly audit of {repo} ran {(now - audit).days} days ago and held its window open ({run[1]}); "
+                "the next audit rereads that window. Do not call this audit overdue. "
+            )
+    if not overdue and not unconfirmed and not held_note:
         return ""
     if not overdue:
-        return unconfirmed + f"Do not run the marking helpers yourself; the marker is {path}."
+        return unconfirmed + held_note + f"Do not run the marking helpers yourself; the marker is {path}."
     coverage_note = ""
     coverage = marker.get("turn_repo")
     if isinstance(turn, dt.datetime) and isinstance(coverage, str) and coverage:
         coverage_note = f" The last daily turn covered {coverage}."
-    return unconfirmed + (
+    return unconfirmed + held_note + (
         "Direction check overdue: " + "; ".join(overdue) + "." + coverage_note + " "
         "Tell the owner once at the start of the session to open Claude Code and run the `direction` skill "
         "(a daily turn, or the weekly audit of this repository when that is what is overdue), then continue with the task. "

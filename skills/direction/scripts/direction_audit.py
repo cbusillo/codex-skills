@@ -457,28 +457,32 @@ def git_root(start: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else start
 
 
-def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None) -> str | None:
+def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None, held: str | None = None) -> str | None:
     """Stamp this repository's audit in the local marker the session-start hook reads.
 
     The stamp is written here, not by hand, so an audit stamp means an audit ran.
+    A held audit records that it ran and why, without moving its window start.
     GitHub is untouched; the marker is local state under the catalog home.
     """
     if direction_text is None:
         return None
     try:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("direction_mark", pathlib.Path(__file__).with_name("direction_mark.py"))
-        if spec is None or spec.loader is None:
-            return None
-        mark = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mark)
-        path = mark.marker_path()
+        path = direction_mark.marker_path()
         # Retain closures that happen while listings are being fetched for the
         # next audit instead of skipping ahead to the completion time.
-        mark.mark_audit(path, repo, started_at)
+        direction_mark.mark_audit(path, repo, started_at, held)
         return str(path)
-    except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def drop_archived(repo: str) -> str | None:
+    """Remove a repository this audit confirmed archived from the local marker."""
+    try:
+        path = direction_mark.marker_path()
+        direction_mark.drop_audit(path, repo)
+        return str(path)
+    except (OSError, RuntimeError, TypeError, ValueError):
         return None
 
 
@@ -511,7 +515,9 @@ def prune_unadopted(
     removed_reasons: dict[str, str] = {}
     retained: list[str] = []
     unknown: dict[str, str] = {}
-    for repo in current["audits"]:
+    runs = current.get("audit_runs") if isinstance(current.get("audit_runs"), dict) else {}
+    # A first audit that held its window leaves an entry only in audit_runs.
+    for repo in dict.fromkeys([*current["audits"], *runs]):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
             unknown[repo] = "invalid repository name"
             continue
@@ -562,7 +568,8 @@ def prune_unadopted(
                 os.fsync(stream.fileno())
             backup = backup_name
             for repo in removed:
-                del current["audits"][repo]
+                current["audits"].pop(repo, None)
+                runs.pop(repo, None)
             direction_mark.save(path, current)
     return {"ok": not unknown, "applied": apply and bool(removed), "removed": removed,
             "removed_reasons": removed_reasons,
@@ -1995,11 +2002,15 @@ def main(argv: list[str] | None = None) -> int:
     # unrelated listing caps keep stale reminders recurring indefinitely.
     # Incomplete capacity reads also keep the window open for a rerun.
     window_reads = {"recent_closed_audit_issues", "recent_closed_milestone_issues", "milestone_issue_events"}
-    keep_window = bool(window_reads & set(truncated)) or any(item.startswith("capacity_") for item in truncated)
+    held = sorted(item for item in truncated if item in window_reads or item.startswith("capacity_"))
     archived = result["stale_wait_report"]["repository"]["archived"]
-    result["marked_skipped"] = ("window_open" if keep_window else "archived" if archived is True
+    result["marked_skipped"] = ("archived" if archived is True else "window_open" if held
                                 else "archive_state_unknown" if archived is not False else None)
     result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)
+    # A held window still records that this audit ran, so it is not read as missed.
+    result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held))
+                              if held and archived is False else result["marked"])
+    result["dropped"] = drop_archived(repo) if archived is True else None
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 3
 
