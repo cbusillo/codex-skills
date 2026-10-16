@@ -118,7 +118,7 @@ def findings(source: str) -> list[int]:
         nodes.append(node)
     # Only adjacent attribute assignments may inherit a choke-point annotation.
     ends = {(node.end_lineno, node.col_offset): node.lineno for node in nodes
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and
+            if node.end_lineno is not None and isinstance(node, (ast.Assign, ast.AnnAssign)) and
             any(isinstance(target, ast.Attribute) and target.attr in {"check_hostname", "verify_mode", "verify"} for target in
                 (node.targets if isinstance(node, ast.Assign) else [node.target]))}
     lines = source.splitlines()
