@@ -57,12 +57,14 @@ def load_policy(path=None):
     return policy
 
 
-def select(policy, author, requested=None, supplementary=False, model=None, timeout=None):
+def select(policy, author, requested=None, supplementary=False, model=None, timeout=None, probe=False):
     """Select before inference; never switch providers after a review has started."""
     if author not in account_choice.PROVIDERS:
         raise ValueError("identify the author's provider with --author-provider")
     if timeout is not None and timeout < 1:
         raise ValueError("--timeout must be a positive integer")
+    if model and not requested:
+        raise ValueError("--model requires --provider so a fallback cannot inherit another provider's model")
     role = "supplementary" if supplementary else "providers"
     allowed = policy[role]
     if supplementary and not requested:
@@ -78,6 +80,11 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
     skipped = []
     executables = {"openai": "codex", "anthropic": "claude", "google": "agy"}
     for provider in candidates:
+        settings = policy.get("provider", {}).get(provider, {})
+        if model and settings.get("model") and model != settings["model"]:
+            raise ValueError("--model disagrees with the standing review decision")
+        if timeout and settings.get("timeout") and timeout > settings["timeout"]:
+            raise ValueError("--timeout exceeds the standing review limit")
         if shutil.which(executables[provider]) is None:
             skipped.append({"provider": provider, "reason": "CLI is not installed"})
             continue
@@ -87,15 +94,9 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
             skipped.append({"provider": provider, "reason": str(error)})
             continue
         choice["storage_root"] = account_choice.storage_root(config["snapshot_command"])
-        settings = policy.get("provider", {}).get(provider, {})
-        if model and settings.get("model") and model != settings["model"]:
-            raise ValueError("--model disagrees with the standing review decision")
-        if model and not requested:
-            raise ValueError("--model requires --provider so a fallback cannot inherit another provider's model")
-        if timeout and settings.get("timeout") and timeout != settings["timeout"]:
-            raise ValueError("--timeout disagrees with the standing review decision")
+        budget = settings.get("timeout", 900)
         return {"provider": provider, "model": model or settings.get("model"),
-                "timeout": timeout or settings.get("timeout", 900), "choice": choice,
+                "timeout": timeout or (min(300, budget) if probe else budget), "choice": choice,
                 "selection": {"author_provider": author, "role": "supplementary" if supplementary else "primary",
                               "decision": policy["decision"], "skipped": skipped}}
     raise NoProvider(skipped)

@@ -243,7 +243,7 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def test_policy_model_budget_and_actual_provenance_reach_the_review(self) -> None:
         self.install("claude", FAKE_CLAUDE)
-        requested, actual, timeout = "fixture-alias", "resolved-model", 123
+        requested, actual, timeout = "fixture-alias", "resolved-model (High)", 123
         self.policy.write_text('version = 1\ndecision = "model choice"\nproviders = ["anthropic"]\n'
                                f'[provider.anthropic]\nmodel = "{requested}"\ntimeout = {timeout}\n')
         argv_file = self.root / "argv"
@@ -252,8 +252,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["model"], result["timeout"]), (0, actual, timeout))
         argv = argv_file.read_text().splitlines()
         self.assertEqual(argv[argv.index("--model") + 1], requested)
-        self.assertEqual(result["model_source"], "reported by the CLI")
-        self.assertEqual(result["effort"], "unknown")
+        self.assertEqual(result["effort"], "high")
         argv_file.unlink()
         for option, value in (("--model", "unapproved-model"), ("--timeout", str(timeout + 1))):
             code, result = self.run_helper("run", "--provider", "anthropic", "--repo", str(self.repo),
@@ -261,6 +260,37 @@ class ReviewWithModelTests(unittest.TestCase):
                                            FAKE_CLAUDE_ARGV_FILE=str(argv_file))
             self.assertEqual((code, result["ok"]), (1, False))
             self.assertFalse(argv_file.exists())
+
+    def test_supplementary_probe_uses_its_role_and_can_shorten_the_review_limit(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.policy.write_text('version = 1\ndecision = "probe trial"\n'
+                               'providers = ["anthropic"]\nsupplementary = ["google"]\n'
+                               '[provider.google]\ntimeout = 1800\n')
+        (self.repo / "probe.txt").write_text("fixture probe line\n")
+        code, result = self.run_helper(
+            "check", "--repo", str(self.repo), "--author-provider", "openai", "--supplementary", "--timeout", "12",
+            FAKE_AGY_CWD_FILE=str(self.root / "cwd"), FAKE_AGY_JSON=json.dumps({"response": completed("fixture probe line")}))
+        self.assertEqual((code, result["providers"][0]["provider"], result["providers"][0]["state"]),
+                         (0, "google", "ready"))
+        config = review_with_model.account_choice.load_config(self.policy.with_name("supervisor.toml"))
+        with patch.object(review_with_model.account_choice, "load_config", return_value=config), \
+                patch.object(review_with_model.account_choice, "read_snapshot", return_value=(json.loads(self.snapshot_file.read_text()), None)), \
+                patch.object(review_with_model.shutil, "which", return_value="fake-agy"):
+            selected = review_with_model.review_policy.select(review_with_model.review_policy.load_policy(self.policy),
+                                                              "openai", "google", True, probe=True)
+        self.assertLess(selected["timeout"], review_with_model.review_policy.load_policy(self.policy)["provider"]["google"]["timeout"])
+
+    def test_missing_author_and_invalid_model_route_are_json_errors_before_capacity(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        code, result = self.run_helper(
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai", "--model", "fixture")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertFalse((self.storage / "Launch Receipts").exists())
+        # Call without the convenience wrapper's author default, like an older caller.
+        proc = subprocess.run([sys.executable, str(SCRIPT), "run", "--provider", "anthropic",
+                               "--repo", str(self.repo), "--prompt-file", str(self.prompt)],
+                              capture_output=True, text=True, env={"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)})
+        self.assertEqual((proc.returncode, json.loads(proc.stdout)["ok"]), (1, False))
 
     def test_reviews_route_provider_home_and_write_count_only_receipt(self) -> None:
         self.install("codex", FAKE_CODEX)

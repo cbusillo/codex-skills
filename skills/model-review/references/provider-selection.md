@@ -27,8 +27,11 @@ table accepts `model` and a positive integer `timeout` in seconds. Omit `model`
 to keep the provider CLI's configured default as its single source of truth.
 Do not encode versions in catalog code. The helper reports the actual model
 and effort when the CLI supplies that evidence, otherwise it records them as
-requested or unknown. An explicit model or budget must agree with a configured
-setting. Without a configured budget, the helper uses 900 seconds.
+requested or unknown. An explicit model must agree when a model setting exists;
+otherwise an explicit provider/model pair overrides the CLI default. A configured
+timeout is the maximum: callers may use a shorter budget. Without a configured
+budget, reviews use 900 seconds. File-read probes default to 300 seconds or the
+configured limit if shorter.
 
 Create the private file from verified Director decisions before the first run;
 missing or malformed policy stops before inference. This is decision storage,

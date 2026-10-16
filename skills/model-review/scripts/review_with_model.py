@@ -33,6 +33,7 @@ from typing import Any
 
 # Share the Supervisor reader rather than keeping a second account chooser.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from skills.supervisor.scripts import account_choice
 import review_policy
 
@@ -676,10 +677,11 @@ def cmd_check(args: argparse.Namespace) -> int:
     except ValueError as error:
         print(json.dumps({"ok": False, "error": str(error)}))
         return 1
-    for provider in args.provider or [p for p in policy["providers"] if p != args.author_provider]:
+    role = "supplementary" if args.supplementary else "providers"
+    for provider in args.provider or [p for p in policy[role] if p != args.author_provider]:
         try:
             selected = review_policy.select(policy, args.author_provider, provider, args.supplementary,
-                                            timeout=args.timeout)
+                                            timeout=args.timeout, probe=True)
         except ValueError as error:
             missing = (isinstance(error, review_policy.NoProvider)
                        and error.skipped == [{"provider": provider, "reason": "CLI is not installed"}])
@@ -778,7 +780,7 @@ def main() -> int:
 
     run = sub.add_parser("run", help="Ask one provider's model for a read-only review.")
     run.add_argument("--provider", choices=sorted(PROVIDERS), help="Explicit allowed provider; default: standing order and capacity.")
-    run.add_argument("--author-provider", required=True, choices=sorted(PROVIDERS))
+    run.add_argument("--author-provider", choices=sorted(PROVIDERS), help="Required for selection; identify the author's actual provider.")
     run.add_argument("--supplementary", action="store_true", help="Run an explicitly allowed supplementary provider, serially after the primary review.")
     run.add_argument("--repo", default=".", help="Repository the reviewer reads (default: current directory).")
     run.add_argument("--prompt-file", required=True, help="What to review and what it is for; name paths, do not paste files.")
@@ -790,7 +792,7 @@ def main() -> int:
     check = sub.add_parser("check", help="Show which providers can actually read a repository from here.")
     check.add_argument("--repo", default=".")
     check.add_argument("--provider", action="append", choices=sorted(PROVIDERS))
-    check.add_argument("--author-provider", required=True, choices=sorted(PROVIDERS))
+    check.add_argument("--author-provider", choices=sorted(PROVIDERS), help="Required for selection; identify the author's actual provider.")
     check.add_argument("--supplementary", action="store_true")
     check.add_argument("--timeout", type=int)
     check.set_defaults(func=cmd_check)
