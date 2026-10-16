@@ -148,6 +148,46 @@ def question_body(row: dict) -> str:
     return str(row.get("body") or "").strip().lstrip("*")
 
 
+def merged_link(record: dict) -> tuple[bool, dict] | None:
+    """Newest completing default-branch merge, otherwise newest incidental merge."""
+    linked = []
+    for pull in record.get("linked_pulls", []):
+        refs = {((m[1] or m[2] or pull.get("_repository", record["repo"])).casefold(), int(m[3]))
+                for m in CLOSING.finditer(pull.get("body") or "")}
+        default = pull.get("_default_branch", record.get("default_branch"))
+        if stamp(pull.get("merged_at")) and default and (pull.get("base") or {}).get("ref") == default:
+            linked.append(((record["repo"].casefold(), record["item"]["number"]) in refs, pull))
+    return max(linked, key=lambda pair: (pair[0], stamp(pair[1]["merged_at"]))) if linked else None
+
+
+def has_status(source: dict) -> bool:
+    """Existing Current Status prose or a live structured wait/status record."""
+    body = source.get("body") or ""
+    return any(k.casefold() == "current status" and v.strip()
+               for k, v in audit.github_direction_next.section_map(body).items()) or bool(github_plan_wait.live_lines(body))
+
+
+def merged_review_due(record: dict, merged_at: dt.datetime | None, now: dt.datetime, trusted: set[str]) -> bool:
+    """Only a post-merge status review earns the fourteen-day quiet period."""
+    reviews = []
+    item = record["item"]
+    if login(item) in trusted and has_status(item):
+        reviews.append(stamp(record.get("status_body_updated_at")))
+    current = record.get("comments", [])
+    for comment in current:
+        if login(comment) in trusted and has_status(comment):
+            reviews.append(stamp(comment.get("updated_at") or comment.get("created_at")))
+    reviewed = max((when for when in reviews if when), default=None)
+    if reviewed is None or merged_at is None or reviewed <= merged_at:
+        return True
+    # Later discussion is activity only after an actual post-merge review;
+    # labels and generic issue updated_at cannot establish or renew that review.
+    activity = [reviewed, *(stamp(c.get("updated_at") or c.get("created_at")) for c in current
+                            if login(c) in trusted)]
+    latest = max(when for when in activity if when)
+    return now >= latest + dt.timedelta(days=14)
+
+
 def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: set[str],
            owners: set[str], gaps: list[dict] | None = None, director_names: tuple[str, ...] = (),
            delivery_view: dict | None = None, related_comments: list[dict] | None = None,
@@ -174,10 +214,10 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
         gaps.append({"source": "question_delivery", "reason": "queue_view_incomplete",
                      **{k: delivery_view.get(k, []) for k in ("missing_sources", "untrusted_sources", "untrusted_records")}})
 
-    def add(kind, record, source, since, actor, detail, *, evidence=None):
+    def add(kind, record, source, since, actor, detail, *, evidence=None, immediate=False):
         since = since if isinstance(since, dt.datetime) else stamp(since)
         hours = max(0.0, (now - since).total_seconds() / 3600) if since else None
-        if hours is not None and hours < age_hours:
+        if not immediate and hours is not None and hours < age_hours:
             return
         title = record["item"].get("title") or detail.partition(". ")[0]
         if kind in {"unanswered_question", "registered_question"}:
@@ -307,22 +347,15 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             add("stale_blocked_view", record, url, closed, "Supervisor / landing reconciler",
                 "Blocked view remains after all recorded native blockers completed and structured wait is clear.",
                 evidence=[b.get("html_url") for b in blockers])
-        merged_links = []
-        for pull in record.get("linked_pulls", []):
-            # Explicit closing scope is a review candidate; even this does not settle real waits.
-            refs = {((m[1] or m[2] or pull.get("_repository", repo)).casefold(), int(m[3])) for m in CLOSING.finditer(pull.get("body") or "")}
-            default_branch = pull.get("_default_branch", record.get("default_branch"))
-            if pull.get("merged_at") and default_branch and (pull.get("base") or {}).get("ref") == default_branch:
-                completing = (repo.casefold(), item["number"]) in refs
-                merged_links.append((completing, pull))
-        if merged_links:
-            # One candidate per issue instead of one permanent alert per Refs PR.
-            completing, pull = max(merged_links, key=lambda pair: (pair[0], pair[1]["merged_at"]))
-            add("open_after_completing_merge" if completing else "merged_link_needs_review", record, url,
+        selected = merged_link(record)
+        if selected:
+            completing, pull = selected
+            if completing or merged_review_due(record, stamp(pull["merged_at"]), now, trusted):
+                add("open_after_completing_merge" if completing else "merged_link_needs_review", record, url,
                     pull["merged_at"], "Supervisor / landing reconciler",
                     "Linked PR merged while issue remains open; completing scope is explicit." if completing else
                     "Linked PR merged while issue remains open; Refs/partial scope is not proof of completion. Review the existing finish line.",
-                    evidence=[pull.get("html_url"), {"wait_state": wait["state"], "waits": wait["waits"]}])
+                    evidence=[pull.get("html_url"), {"wait_state": wait["state"], "waits": wait["waits"]}], immediate=True)
 
     owner_terms = ("owner", "Director", *owners, *director_names)
     for register in registers or []:
@@ -402,6 +435,44 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         except audit.AuditError as exc:
             gaps.append({"source": path, "reason": str(exc)})
             return {}
+
+    def status_body_time(record):
+        """Read body edit time only for an incidental merge with body status.
+
+        REST updated_at also moves on labels/comments; it is not status evidence.
+        This read shares the collector's request budget and reader deadline.
+        """
+        nonlocal reads, budget
+        selected = merged_link(record)
+        if not selected or selected[0] or not has_status(record["item"]):
+            return
+        source = f"{record['repo']}#{record['item']['number']}/status"
+        try:
+            if reads >= budget:
+                raise ValueError("request_budget_exhausted")
+            reads += 1
+            owner_name, repo_name = record["repo"].split("/")
+            result = reader.graphql_json(
+                "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
+                {"owner": owner_name, "name": repo_name, "number": record["item"]["number"]},
+                step="stranded_merged_status")
+            if not result.ok:
+                cause = getattr(getattr(result, "failure", None), "cause", None)
+                if cause in {"quota_reserve", "deadline_exceeded", "cancelled"}:
+                    budget = reads
+                raise ValueError(cause or "status_edit_time_unavailable")
+            if not isinstance(result.body, dict) or result.body.get("errors"):
+                raise ValueError("status_edit_time_unavailable")
+            issue = result.body["data"]["repository"]["issue"]
+            value = issue["lastEditedAt"] or issue["createdAt"]
+            if not stamp(value):
+                raise ValueError("status_edit_time_invalid")
+            record["status_body_updated_at"] = value
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, TimeoutError,
+                ValueError, KeyError, TypeError) as exc:
+            if isinstance(exc, TimeoutError):
+                budget = reads
+            gaps.append({"source": source, "reason": str(exc) if isinstance(exc, ValueError) else "status_edit_time_unavailable"})
 
     quota = one("rate_limit").get("resources", {}).get("core", {})
     remaining = quota.get("remaining")
@@ -608,6 +679,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                             pull["_repository"] = source_repo
                             pull["_default_branch"] = source_metadata.get("default_branch")
                             record["linked_pulls"].append(pull)
+                        status_body_time(record)
                 records.append(record)
                 collected.add((repo, number))
     if unread_scopes:

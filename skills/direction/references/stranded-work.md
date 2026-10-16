@@ -51,9 +51,20 @@ unknown), next actor and review requirement:
   cannot prove that a receiver is running or the train is making progress.
 - Open issues with a merged linked PR, aggregated to one candidate per issue
   with the newest explicit completing merge preferred over incidental Refs.
-  Explicit closing scope is distinguished
-  from Refs/partial scope; neither authorizes automatic closure. Real waits
-  remain in the evidence for the landing reconciler's review.
+  Completing keywords flag immediately, even after a later status review.
+  Incidental Refs flag immediately if status is absent, unknown or no newer
+  than the merge. A trusted Current Status or structured wait record updated
+  after the merge suppresses that issue for 14 days, including the exact
+  boundary: at 14 days it is reported again if still open with no newer
+  trusted discussion activity. Later trusted discussion renews the quiet
+  period only after a qualifying post-merge status review. Issue activity
+  timestamps and labels alone cannot establish a review. Body status is
+  dated from its body edit time (creation time when never edited), read
+  separately from REST issue activity; unreadable edit evidence is a coverage
+  gap and cannot suppress a finding. These findings bypass `--age-hours`.
+  Explicit closing scope is distinguished from Refs/partial scope; neither
+  authorizes automatic closure. Real waits remain in the evidence for the
+  landing reconciler's review.
 - A blocked view whose native prerequisites all completed and whose structured
   wait is clear; real open blockers and person waits are preserved.
 - Trusted, explicitly dated `Due: <ISO timestamp with timezone>` promises, and
