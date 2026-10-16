@@ -58,6 +58,36 @@ OUTPUT_INSTRUCTIONS = (
     'to "incomplete". For either, leave review empty; do not include withheld content or partial findings. '
     'A refusal must be preserved, never worked around. These output instructions also apply to file-read probes.'
 )
+# Every provider's CLI validates the final answer against this schema. Asking for JSON in the prompt
+# alone let a lead-in sentence or a raw newline inside the report string turn a finished review into
+# an unconfirmed one (codex-skills#1969).
+RESULT_SCHEMA = {
+    "type": "object",
+    "properties": {"status": {"type": "string", "enum": ["completed", "refused", "incomplete"]},
+                   "review": {"type": "string"}},
+    "required": ["status", "review"],
+    "additionalProperties": False,
+}
+
+
+def structured_response(payload: dict[str, Any], text: Any) -> tuple[str, bool]:
+    """The CLI's schema-validated result as JSON text, else its final text for the strict parser."""
+    structured = payload.get("structured_output")
+    if isinstance(structured, dict):
+        return json.dumps(structured), True
+    return text or "", False
+
+
+def response_shape(response: str, payload: Any) -> str:
+    """Why a response is not a completed result, without quoting any of it."""
+    text = response.strip()
+    if isinstance(payload, dict):
+        return "completed with an empty review" if payload.get("status") == "completed" else "JSON without a completion status"
+    if payload is not None:
+        return "JSON that is not an object"
+    if "{" not in text:
+        return "no JSON object"
+    return "invalid JSON" if text.startswith("{") else "text before the JSON object"
 
 
 def completed_review(result: dict[str, Any]) -> dict[str, Any]:
@@ -80,8 +110,10 @@ def completed_review(result: dict[str, Any]) -> dict[str, Any]:
     report = payload.get("review") if isinstance(payload, dict) else None
     if status == "completed" and isinstance(report, str) and report.strip():
         return {**result, "response": report}
-    return {**result, "ok": False, "outcome": "unavailable",
-            "error": "review completion unconfirmed" if response else "the reviewer returned nothing"}
+    if not response:
+        return {**result, "ok": False, "outcome": "unavailable", "error": "the reviewer returned nothing"}
+    return {**result, "ok": False, "outcome": "unavailable", "error": "review completion unconfirmed",
+            "completion_shape": response_shape(response, payload)}
 
 
 def agy_rules(read_roots: list[Path]) -> list[str]:
@@ -154,11 +186,13 @@ def openai_error_detail(message: str) -> str:
 def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path,
                   env: Mapping[str, str] | None = None) -> dict[str, Any]:
     answer = scratch / "answer.md"
+    schema = scratch / "result-schema.json"
+    schema.write_text(json.dumps(RESULT_SCHEMA))
     # `-s read-only` does not reach MCP servers: they run outside the sandbox, and a tool that calls
     # itself read-only runs without approval. Ignoring the user's config drops their servers, plugins,
     # and project trust, so a reviewed repository's own `.codex/config.toml` cannot start one either.
     argv = ["codex", "exec", "--ignore-user-config", "--disable", "plugins", "--disable", "apps"]
-    argv += ["--json", "-C", str(repo), "-s", "read-only", "-o", str(answer)]
+    argv += ["--json", "-C", str(repo), "-s", "read-only", "-o", str(answer), "--output-schema", str(schema)]
     if model:
         argv += ["-m", model]
     proc = run_cli([*argv, prompt], repo, timeout, env)
@@ -227,7 +261,7 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
     # MCP servers, which can write outside the repository; `--strict-mcp-config` with no config drops them.
     # The reviewed repository's own settings could start hooks, so only the user's settings load.
     argv = ["claude", "-p", prompt, "--tools", "Read,Grep,Glob", "--strict-mcp-config", "--setting-sources", "user"]
-    argv += ["--output-format", "json"]
+    argv += ["--output-format", "json", "--json-schema", json.dumps(RESULT_SCHEMA)]
     if model:
         argv += ["--model", model]
     proc = run_cli(argv, repo, timeout, env)
@@ -235,6 +269,10 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return failed("anthropic", f"claude exited {proc.returncode} without JSON", detail=proc.stdout[-400:])
+    if "structured_output" in str(payload.get("subtype")):
+        # Its final text did not validate, so it is unconfirmed review content: report only the subtype.
+        return failed("anthropic", "claude did not return a valid review result", outcome="unavailable",
+                      subtype=payload["subtype"])
     if payload.get("is_error") or proc.returncode != 0:
         return failed("anthropic", "claude reported an error", detail=str(payload.get("result"))[:400])
     if payload.get("permission_denials"):
@@ -251,12 +289,14 @@ def review_anthropic(prompt: str, repo: Path, model: str | None, timeout: int, _
         return failed("anthropic", f"claude was denied: {', '.join(tools)}", denied=tools,
                       denied_targets=targets)
     models = sorted(payload.get("modelUsage") or {})
+    response, structured = structured_response(payload, payload.get("result"))
     return {
         "ok": True,
         "provider": "anthropic",
         "model": ",".join(models) or model,
         "model_source": "reported by the CLI" if models else "requested, not reported by the CLI" if model else "unknown",
-        "response": payload.get("result") or "",
+        "response": response,
+        "structured_output": structured,
     }
 
 
@@ -284,7 +324,7 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
     os.close(fd)
     log_file = Path(raw_log)
     argv = [
-        "agy", "-p", prompt, "--sandbox", "--output-format", "json",
+        "agy", "-p", prompt, "--sandbox", "--output-format", "json", "--json-schema", json.dumps(RESULT_SCHEMA),
         "--print-timeout", f"{timeout}s", "--log-file", str(log_file),
     ]
     if model:
@@ -316,11 +356,14 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
     if payload.get("status") not in (None, "SUCCESS"):
         return failed("google", f"agy finished with status {payload.get('status')}")
     requested = model or agy_settings().get("model")
+    # agy's `response` carries narration before the JSON even when the structured result validated.
+    response, structured = structured_response(payload, payload.get("response"))
     return {
         "ok": True,
         "provider": "google",
         **agy_model(requested, payload.get("conversation_id"), log_file),
-        "response": payload.get("response") or "",
+        "response": response,
+        "structured_output": structured,
     }
 
 

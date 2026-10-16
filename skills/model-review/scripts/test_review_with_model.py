@@ -27,7 +27,11 @@ FAKE_CODEX = """#!/bin/sh
 [ -n "$FAKE_REVIEW_ENV_FILE" ] && env > "$FAKE_REVIEW_ENV_FILE"
 # Writes the answer to the file given after -o, like `codex exec`.
 [ -n "$FAKE_CODEX_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_CODEX_ARGV_FILE"
-while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
+while [ $# -gt 0 ]; do
+  [ "$1" = "-o" ] && out="$2"
+  [ "$1" = "--output-schema" ] && [ -n "$FAKE_CODEX_SCHEMA_COPY" ] && cp "$2" "$FAKE_CODEX_SCHEMA_COPY"
+  shift
+done
 if [ "${FAKE_CODEX_EVENTS+x}" ]; then
   printf '%s' "$FAKE_CODEX_EVENTS"
 else
@@ -56,6 +60,7 @@ printf '%s' "$FAKE_CLAUDE_JSON"
 """
 FAKE_AGY = """#!/bin/sh
 pwd > "$FAKE_AGY_CWD_FILE"
+[ -n "$FAKE_AGY_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_AGY_ARGV_FILE"
 [ -n "$FAKE_AGY_PROMPT_FILE" ] && printf '%s' "$2" > "$FAKE_AGY_PROMPT_FILE"
 [ -n "$FAKE_AGY_DIFF_FILE" ] && {
   diff_path=$(printf '%s' "$2" | sed -n 's/^The changes to review are in \\([^ ]*\\). Read.*/\\1/p')
@@ -597,6 +602,73 @@ class ReviewWithModelTests(unittest.TestCase):
                         FAKE_AGY_JSON=json.dumps({"response": response}), FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
                     self.assertEqual((code, result["ok"]), (1, False))
                     self.assertNotIn("response", result)
+
+    def test_every_provider_cli_is_asked_to_enforce_the_result_schema(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        self.install("claude", FAKE_CLAUDE)
+        self.install("agy", FAKE_AGY)
+        argv, schema_copy = self.root / "argv", self.root / "schema"
+        for provider in review_with_model.PROVIDERS:
+            with self.subTest(provider=provider):
+                code, _ = self.review(
+                    provider, FAKE_ANSWER=completed("none"), FAKE_CODEX_ARGV_FILE=str(argv),
+                    FAKE_CODEX_SCHEMA_COPY=str(schema_copy), FAKE_CLAUDE_ARGV_FILE=str(argv),
+                    FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}), FAKE_AGY_ARGV_FILE=str(argv),
+                    FAKE_AGY_JSON=json.dumps({"response": completed("none")}), FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                self.assertEqual(code, 0)
+                lines = argv.read_text().splitlines()
+                if provider == "openai":
+                    schema = json.loads(schema_copy.read_text())
+                else:
+                    schema = json.loads(lines[lines.index("--json-schema") + 1])
+                self.assertEqual(schema, review_with_model.RESULT_SCHEMA)
+
+    def test_structured_output_confirms_completion_despite_narrated_final_text(self) -> None:
+        # Observed on Oct 15-16: valid completed objects behind a lead-in sentence, and report
+        # strings with raw newlines. The CLI's validated object is the result; the text is not scraped.
+        self.install("claude", FAKE_CLAUDE)
+        self.install("agy", FAKE_AGY)
+        narrated = "I have enough context to finish.\n" + completed("line one\nline two")
+        structured = {"status": "completed", "review": "line one\nline two"}
+        for provider in ("anthropic", "google"):
+            with self.subTest(provider=provider):
+                code, result = self.review(
+                    provider, FAKE_CLAUDE_JSON=json.dumps({"result": narrated, "structured_output": structured}),
+                    FAKE_AGY_JSON=json.dumps({"response": narrated, "structured_output": structured}),
+                    FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                self.assertEqual((code, result["ok"], result["response"]), (0, True, "line one\nline two"))
+                self.assertTrue(result["structured_output"])
+            with self.subTest(provider=provider, status="refused"):
+                refused = {"status": "refused", "review": "WITHHELD-REPORT-CONTENT"}
+                code, result = self.review(
+                    provider, FAKE_CLAUDE_JSON=json.dumps({"result": completed("none"), "structured_output": refused}),
+                    FAKE_AGY_JSON=json.dumps({"response": completed("none"), "structured_output": refused}),
+                    FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                self.assertEqual((code, result["outcome"]), (1, "refused"))
+                self.assertNotIn("WITHHELD-REPORT-CONTENT", json.dumps(result))
+
+    def test_unconfirmed_completion_reports_its_shape_without_content(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        cases = [
+            ("I reviewed it.\n" + completed("WITHHELD-REPORT-CONTENT"), "text before the JSON object"),
+            ('{"status": "completed", "review": "WITHHELD-REPORT-CONTENT\n"}', "invalid JSON"),
+            ("WITHHELD-REPORT-CONTENT", "no JSON object"),
+            (completed(" "), "completed with an empty review"),
+        ]
+        for response, shape in cases:
+            with self.subTest(shape=shape):
+                code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"result": response}))
+                self.assertEqual((code, result["error"], result["completion_shape"]),
+                                 (1, "review completion unconfirmed", shape))
+                self.assertFalse(result["structured_output"])
+                self.assertNotIn("WITHHELD-REPORT-CONTENT", json.dumps(result))
+
+    def test_claude_structured_output_failure_withholds_its_final_text(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({
+            "is_error": True, "subtype": "error_max_structured_output_retries", "result": "WITHHELD-REPORT-CONTENT"}))
+        self.assertEqual((code, result["outcome"], result["subtype"]), (1, "unavailable", "error_max_structured_output_retries"))
+        self.assertNotIn("WITHHELD-REPORT-CONTENT", json.dumps(result))
 
     def test_google_does_not_retry_nonempty_refusal_with_command_denial(self) -> None:
         self.install("agy", RETRY_AGY)
