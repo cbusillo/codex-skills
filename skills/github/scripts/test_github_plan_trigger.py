@@ -103,6 +103,7 @@ class TriggerTests(unittest.TestCase):
         comments = [{"user": {"login": "owner"}, "body": trigger.marker(cleared)}]
         selected = trigger.current(old, comments, {"owner"})
         self.assertEqual(selected, cleared)
+        assert selected is not None
         one, listing = Mock(), Mock()
         self.assertFalse(trigger.fired(selected, now=NOW, one=one, listing=listing))
         one.assert_not_called()
