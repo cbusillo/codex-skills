@@ -464,7 +464,9 @@ never hand-applied state. Findings do not clear real waits or authorize writes.
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull
 requests per rank, the own-projects PR share, milestones
-closed, issues reopened, and merged pull requests that mark a revert. Each
+closed, issues reopened, and merged pull requests that mark a revert. These
+capacity events include the window's start and exclude its end (`[since, until)`);
+an event at the shared boundary belongs to the following window. Each
 merged PR counts as milestone work when a closing keyword, `Refs`, or native
 PR issue link reaches a milestone's `Track:` graph (listed milestones and
 those closed since the window began, including removed lines; native
