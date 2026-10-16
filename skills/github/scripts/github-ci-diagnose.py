@@ -39,7 +39,7 @@ FAILURE_MARKERS = (
 LOG_MESSAGE_PREFIX = r"^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?"
 FAILURE_SUMMARIES = (
     re.compile(LOG_MESSAGE_PREFIX + r"(?:FAIL|ERROR):\s+\S+\s+\([^\n]+\)"),
-    re.compile(LOG_MESSAGE_PREFIX + r"(?:FAILED|ERROR)\s+\S+::\S+"),
+    re.compile(LOG_MESSAGE_PREFIX + r"(?:FAILED|ERROR)\s+\S+\.py::\S+"),
 )
 COMMAND_FAILURE = re.compile(LOG_MESSAGE_PREFIX + r"##\[error\]Process completed with exit code [1-9]\d*\.")
 SCRIPT_DIR = Path(__file__).resolve().parent

@@ -242,6 +242,12 @@ def test_pytest_failure_summary_precedes_teardown_noise() -> None:
         assert failure in snippet, snippet
 
 
+def test_service_error_with_module_path_does_not_impersonate_pytest_summary() -> None:
+    failure = "FAILED tests/test_hold.py::test_hold - AssertionError: missing policy"
+    snippet = snippet_for_log([failure] + ["cleanup"] * 70 + ["ERROR my_crate::db: connection reset"])
+    assert failure in snippet, snippet
+
+
 def test_failed_command_precedes_teardown_noise_without_test_summary() -> None:
     failure = "##[error]Process completed with exit code 2."
     snippet = snippet_for_log(["compiler: fatal error: missing header", failure]
@@ -590,6 +596,7 @@ def main() -> None:
     tests = [
         test_unittest_failure_precedes_database_teardown_errors,
         test_pytest_failure_summary_precedes_teardown_noise,
+        test_service_error_with_module_path_does_not_impersonate_pytest_summary,
         test_failed_command_precedes_teardown_noise_without_test_summary,
         test_small_snippet_keeps_selected_failure_marker,
         test_short_excerpt_at_log_end_keeps_available_causal_context,
