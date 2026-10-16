@@ -602,8 +602,6 @@ def with_account(command_text, choice, brief=None):
         checked_keys.add(CLAUDE_SUGGESTION_ENV)
     google = choice["provider"] == "google"
     if google:
-        if launch_agent(command_text) != "agy":
-            raise ValueError("google account selection requires a direct AGY invocation")
         checked_keys.add("HOME")
     if default_claude:
         checked_keys.add("CLAUDE_CONFIG_DIR")
@@ -613,6 +611,9 @@ def with_account(command_text, choice, brief=None):
                   "remove those settings and use --account for an explicit override")
         raise ValueError(f"launch file already sets {', '.join(sorted(conflicts))}; "
                          + remedy)
+    expected = {"openai": "codex", "anthropic": "claude", "google": "agy"}[choice["provider"]]
+    if launch_agent(command_text) != expected:
+        raise ValueError(f"{choice['provider']} account selection requires a direct {expected} invocation")
     if brief is not None:
         command_text = append_brief(command_text, brief)
     settings = " ".join(

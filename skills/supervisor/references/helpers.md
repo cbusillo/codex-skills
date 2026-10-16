@@ -725,6 +725,11 @@ is installed for the selected Claude home, omit `--chrome` from launch files:
 the user MCP entry already supplies those tools regardless of the session account.
 Every `new` launch requires
 `--account-provider` as below; keep account variables out of launch files.
+The direct invocation must match the selected provider: `openai` runs `codex`,
+`anthropic` runs `claude`, and `google` runs `agy`. A mismatch anywhere in a
+batch refuses before daemon startup, receipt preparation, terminal creation or
+receipt writing on either backend. Correct the invocation or provider and retry;
+no account configuration migration is needed.
 Use `--account` for an explicit override through the same mapping and receipt
 path. Run one agent invocation, without restart loops or commands that continue
 after it exits. Read the launched screen once for folder trust or another
