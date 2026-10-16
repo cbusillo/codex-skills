@@ -56,6 +56,22 @@ unknown), next actor and review requirement:
   the existing recorded “Measured after one day” comparison promise. Closure
   of the research issue does not settle its promise. A later linked completion
   from a trusted receiver does.
+- Open issues whose own dated wait has passed: a Current Status
+  `Parked until:` or `Waiting for:` line, or a structured `ends_when`, that
+  starts with a date or whose date follows `until`, `after`, `by`, `before` or
+  `due` (a structured `waiting_for` counts only the latter). A structured wait
+  record supersedes Current Status prose, and a clear record reports nothing.
+  Dates after `since`, or cited records such as "the 2026-10-12 comment", are
+  history, not triggers. A date without a time is reached at its start in UTC.
+- Operational-register entries, for repositories whose `.github/github.json`
+  names one under `docs.openOperationalIssues`. Each `### ` entry with
+  `- **Field**:` bullets is read from the default branch. An entry is reported
+  when a date in the first clause of its `Next check` has passed, or when the
+  first clause of its `Current action` starts with, or says it waits on,
+  `owner`, `Director`, the Director's login or a supplied alias. Undated and
+  relative triggers ("after about a week") are not ageable and stay quiet. An
+  unreadable or missing declared register, or an entry without `Next check`,
+  is a coverage gap.
 - Existing train blocked views, aged from their label event, plus structured
   waits naming the Supervisor, Director, Director login or supplied aliases.
   Body-only waits have unknown age because unrelated issue activity must not
@@ -111,4 +127,6 @@ GitHub state needs no rollback because the sweep changes none.
 
 Offline replay: `uv run skills/direction/scripts/test_direction_stranded.py`.
 The reduced fixture retains pre-recovery facts from the October 13–15 incidents
-and ages them to a replay clock. It is not a current backlog snapshot.
+and ages them to a replay clock. It is not a current backlog snapshot. The
+operational-register fixture is an anonymized register, kept as plain text in
+the register's own wording, as it stood when two due entries had gone unraised.

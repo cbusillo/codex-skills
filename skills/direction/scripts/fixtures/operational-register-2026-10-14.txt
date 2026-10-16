@@ -1,0 +1,78 @@
+# Current Operational Follow-Ups
+
+Reduced, anonymized copy of a real register as it stood on 2026-10-14, when
+two due entries had gone unraised: a camera observation dated 2026-10-13 and
+an owner decision. Entry shapes and field wording are kept; names are not.
+
+## Entry Lifecycle
+
+1. Add an entry with a last-checked date, next-check trigger, current action,
+   and exit condition.
+2. Remove it when resolved.
+
+## Active Follow-Ups
+
+### Garage close and arrival observation
+
+- **Source**: an automation doc.
+- **Last checked**: 2026-10-10, at install.
+- **Next check**: the owner's next departures and returns, and 2026-10-17.
+- **Current action**: confirm the three behaviors from history. On 2026-10-17,
+  decide with the owner whether to retire the old watch.
+- **Exit condition**: the behaviors are confirmed in normal use.
+
+### Access point roaming fault
+
+- **Source**: a network doc.
+- **Last checked**: 2026-10-14. Fast roaming was turned off.
+- **Next check**: when the access point reports newer firmware, or 2026-11-14,
+  whichever comes first.
+- **Current action**: if the firmware is newer, turn roaming back on for a day.
+- **Exit condition**: roaming failures are near zero with it on.
+
+### Host unexplained resets
+
+- **Source**: an incident note.
+- **Last checked**: 2026-10-12, after the third occurrence.
+- **Next check**: the next unexpected reset.
+- **Current action**: run the incident checklist.
+- **Exit condition**: the cause is identified.
+
+### Host name resolution
+
+- **Source**: an issue.
+- **Last checked**: 2026-10-04, after the approved hosts edit.
+- **Next check**: before certificate, network, or hostname-dependent
+  maintenance on the host.
+- **Current action**: the owner decides on the issue whether to regenerate the
+  certificate, or accept the gaps.
+- **Exit condition**: the decision is recorded.
+
+### Backup churn audit
+
+- **Source**: a backup doc.
+- **Last checked**: 2026-09-29.
+- **Next check**: after about a week of daily backups, compare consecutive
+  backups.
+- **Current action**: move high-churn caches to unbacked volumes.
+- **Exit condition**: churn is explained.
+
+### Camera bridge rollback artifacts
+
+- **Source**: a service doc.
+- **Last checked**: 2026-10-07; the new version is running and the owner
+  confirmed all three cameras.
+- **Next check**: the overdue 2026-10-13 observation, or sooner if any camera
+  misbehaves.
+- **Current action**: after a clean week, remove the old container and both
+  snapshots.
+- **Exit condition**: the artifacts are removed.
+
+### Media pool at Critical
+
+- **Source**: a capacity plan.
+- **Last checked**: 2026-10-14. The pool was at its Critical threshold.
+- **Next check**: when the space-pressure issue closes; the owner said on
+  2026-10-13 that media is being worked on.
+- **Current action**: none here; the space-pressure issue owns it.
+- **Exit condition**: the pool is back below its Action threshold.

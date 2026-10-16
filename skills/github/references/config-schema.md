@@ -203,6 +203,10 @@ Common top-level keys:
 - `defaultBranch`: repo default branch expected by agents.
 - `projectType`: the kind of repository, shown in snapshot summaries.
 - `docs`: important repo documentation and routing references.
+  `docs.openOperationalIssues` names the repository's operational follow-up
+  register; the direction audit's
+  [stranded-work sweep](../../direction/references/stranded-work.md) reports
+  its overdue entries and those waiting on the Director.
 - `qualityGate`: local and CI commands that establish readiness for this repo.
   `qualityGate.docsRequiredWhen` lists changes that need a docs update; the
   `repo-readiness` skill checks it.

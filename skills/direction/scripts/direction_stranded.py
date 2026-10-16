@@ -5,6 +5,7 @@
 """Read-only stranded-work view of the existing direction audit inventory."""
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import re
 import json
@@ -31,6 +32,104 @@ DUE = re.compile(r"(?im)^\s*(?:[-*] )?\**Due\**:\s*(\d{4}-\d{2}-\d{2}T[^\s*]+)")
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:https://github.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b", re.I)
 
 
+DATE = (r"(?:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2}))?"
+        r"|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? \d{1,2},? \d{4})")
+# A wait's own date names when it ends; a date after "since" or in a cited
+# record ("2026-10-12 scope comment") does not.
+ENDS_AT = re.compile(r"\b(?:until|till|after|by|due|before|no earlier than|on or after)\s+(?:the\s+)?(?:[`*]+)?(" + DATE + ")", re.I)
+LEADING_DATE = re.compile(r"\s*(?:[`*]+)?(" + DATE + ")", re.I)
+REGISTER_FIELD = re.compile(r"(?m)^[-*]\s+\**([A-Za-z][\w ]*?)\**:\**\s*(.*(?:\n[ \t]+\S.*)*)")
+CLAUSE_END = re.compile(r";|\.\s")
+# Repository metadata names its operational register under this docs key.
+METADATA = ".github/github.json"
+REGISTER_KEY = "openOperationalIssues"
+
+
+def calendar(text: str) -> dt.datetime | None:
+    """A timestamp, or the start of a dated day in UTC."""
+    text = text.replace(",", "").replace(".", "")
+    if re.match(r"\d{4}-", text):
+        return stamp(text if "T" in text else text + "T00:00:00+00:00")
+    for form in ("%B %d %Y", "%b %d %Y"):
+        try:
+            return dt.datetime.strptime(text, form).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def ends_at(text: str, *, leading: bool) -> dt.datetime | None:
+    """The earliest date at which a recorded wait or check says it ends."""
+    found = [m[1] for m in ENDS_AT.finditer(text)]
+    if leading and (start := LEADING_DATE.match(text)):
+        found.append(start[1])
+    dates = [d for d in map(calendar, found) if d]
+    return min(dates) if dates else None
+
+
+def dated_waits(item: dict, wait: dict) -> list[tuple[str, dt.datetime]]:
+    """Waits whose own date ends them; the structured record supersedes prose."""
+    if wait["state"] == "clear":
+        return []
+    if wait["state"] == "waiting":
+        rows = [(f"{w['waiting_for']} (ends when: {w['ends_when']})",
+                 ends_at(w["waiting_for"], leading=False) or ends_at(w["ends_when"], leading=True))
+                for w in wait["waits"]]
+        return [(text, due) for text, due in rows if due]
+    body = item.get("body") or ""
+    status = next((v for k, v in audit.github_direction_next.section_map(body).items()
+                   if k.casefold() == "current status"), body)
+    rows = audit.github_direction_next.waiting_records(
+        {"repo": "", "number": item.get("number"), "url": item.get("html_url")}, status)
+    rows = [(r["waiting_for"], ends_at(r["waiting_for"], leading=True)) for r in rows if not r["no_current_wait"]]
+    return [(text, due) for text, due in rows if due]
+
+
+def register_entries(text: str) -> list[dict]:
+    """Entries of a Markdown operational register: `### Title` and `- **Field**: value` bullets."""
+    entries = []
+    for block in re.split(r"(?m)^(?=### )", text)[1:]:
+        title, _, rest = block.partition("\n")
+        fields = {m[1].strip().casefold(): " ".join(m[2].split()) for m in REGISTER_FIELD.finditer(rest)}
+        if fields:
+            entries.append({"title": title[4:].strip(), "fields": fields})
+    return entries
+
+
+def anchor(title: str) -> str:
+    return re.sub(r"\s", "-", re.sub(r"[^\w\s-]", "", title.strip().casefold()))
+
+
+def register_findings(register: dict, *, now: dt.datetime, owner_terms: tuple[str, ...]) -> tuple[list[dict], list[dict]]:
+    """Register entries whose dated next check passed or whose current action waits on the owner."""
+    findings, gaps = [], []
+    base = f"https://github.com/{register['repo']}/blob/{register['default_branch']}/{register['path']}"
+    names = "|".join(re.escape(term) for term in owner_terms)
+    waits_on_owner = re.compile(rf"^(?:the\s+)?(?:{names})\b|\bwait(?:s|ing)?\s+(?:on|for)\s+(?:the\s+)?(?:{names})\b", re.I)
+    for entry in register_entries(register["text"]):
+        url = f"{base}#{anchor(entry['title'])}"
+        check = entry["fields"].get("next check")
+        if check is None:
+            gaps.append({"source": url, "reason": "operational_register_entry_without_next_check"})
+            continue
+        # The trigger is the first clause; later clauses cite dated history.
+        first = CLAUSE_END.split(check, maxsplit=1)[0]
+        dates = [d for d in map(calendar, re.findall(DATE, first)) if d]
+        due = min(dates) if dates else None
+        action = entry["fields"].get("current action", "")
+        common = {"repo": register["repo"], "title": entry["title"], "url": url,
+                  "last_checked": entry["fields"].get("last checked"), "next_check": check}
+        if due and due <= now:
+            findings.append({**common, "kind": "overdue_operational_check", "since": due,
+                             "next_actor": "Repository agent",
+                             "detail": f"{entry['title']}: dated next check passed. Next check: {check}"})
+        if owner_terms and waits_on_owner.search(CLAUSE_END.split(action, maxsplit=1)[0].strip()):
+            findings.append({**common, "kind": "operational_check_waits_on_owner", "since": None,
+                             "next_actor": "Director",
+                             "detail": f"{entry['title']}: current action waits on the owner. Current action: {action}"})
+    return findings, gaps
+
+
 def stamp(value: Any) -> dt.datetime | None:
     value = audit._parse_time(value)
     return value if value and value.tzinfo else None
@@ -50,7 +149,8 @@ def question_body(row: dict) -> str:
 
 def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: set[str],
            owners: set[str], gaps: list[dict] | None = None, director_names: tuple[str, ...] = (),
-           delivery_view: dict | None = None, related_comments: list[dict] | None = None) -> dict:
+           delivery_view: dict | None = None, related_comments: list[dict] | None = None,
+           registers: list[dict] | None = None) -> dict:
     """Interpret retained API facts. A finding requests review, never authorizes a write."""
     findings: list[dict] = []
     gaps = list(gaps or [])
@@ -74,7 +174,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                      **{k: delivery_view.get(k, []) for k in ("missing_sources", "untrusted_sources", "untrusted_records")}})
 
     def add(kind, record, source, since, actor, detail, *, evidence=None):
-        since = stamp(since)
+        since = since if isinstance(since, dt.datetime) else stamp(since)
         hours = max(0.0, (now - since).total_seconds() / 3600) if since else None
         if hours is not None and hours < age_hours:
             return
@@ -181,6 +281,11 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                     None if source is item else source.get("updated_at") or source.get("created_at"), "; ".join(receivers),
                     "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
+        for text, due in dated_waits(item, wait):
+            if due <= now:
+                add("passed_dated_wait", record, url, due, "Supervisor",
+                    f"Dated wait passed; re-evaluate its trigger, then resume, re-park or close. Wait: {text}",
+                    evidence=[text])
         blockers = record.get("blockers")
         if ("plan:blocked" in labels(item) and wait["state"] == "clear" and blockers
                 and all(b.get("state") == "closed" and b.get("state_reason") == "completed" for b in blockers)):
@@ -205,6 +310,13 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                     "Linked PR merged while issue remains open; Refs/partial scope is not proof of completion. Review the existing finish line.",
                     evidence=[pull.get("html_url"), {"wait_state": wait["state"], "waits": wait["waits"]}])
 
+    owner_terms = ("owner", "Director", *owners, *director_names)
+    for register in registers or []:
+        rows, register_gaps = register_findings(register, now=now, owner_terms=owner_terms)
+        gaps.extend(register_gaps)
+        for row in rows:
+            add(row["kind"], {"repo": row["repo"], "item": {"number": None}}, row["url"], row["since"],
+                row["next_actor"], row["detail"], evidence=[{"last_checked": row["last_checked"], "next_check": row["next_check"]}])
     reported_questions = {row["url"] for row in findings if row["kind"] == "unanswered_question"}
     for row in deliveries.values():
         if not row.get("registration_url") or row["url"] in reported_questions or row.get("status") == "unread_source":
@@ -216,7 +328,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 "Supervisor / Director", "Registered question remains unresolved outside the selected open-record inventory.",
                 evidence=[{"registration_url": row["registration_url"], "delivery": row.get("delivery"),
                            "delivery_url": row.get("delivery_url"), "resurface": row.get("resurface")}])
-    findings.sort(key=lambda row: (row["since"] or "", row["repo"], row["number"], row["kind"]))
+    findings.sort(key=lambda row: (row["since"] or "", row["repo"], row["number"] or 0, row["kind"], row["url"]))
     return {"read_only": True, "sampled_at": now.isoformat(), "age_threshold_hours": age_hours,
             "complete": not gaps, "findings": findings, "coverage_gaps": gaps,
             "scope_notes": ["Decisions and completion records outside the selected repositories/history are unverified.",
@@ -336,6 +448,42 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             gaps.append({"source": question_queue, "reason": "question_delivery_contract_error", "error_type": type(error).__name__})
     else:
         gaps.append({"source": "question_delivery", "reason": "question_queue_not_selected"})
+    def file_text(path):
+        """A default-branch file, or None when the repository has none there."""
+        try:
+            body = fetch(["api", path])
+        except audit.AuditError as exc:
+            if str(exc) == "not_found":
+                return None
+            raise
+        if not isinstance(body, dict) or body.get("type") != "file" or not isinstance(body.get("content"), str):
+            raise audit.AuditError("unexpected_response_shape")
+        return base64.b64decode(body["content"]).decode()
+
+    def operational_register(repo, default_branch):
+        # The repository declares its register in its own metadata; nothing is assumed.
+        source = f"repos/{repo}/contents/{METADATA}"
+        try:
+            text = file_text(source)
+            if text is None:
+                return None
+            path = (json.loads(text).get("docs") or {}).get(REGISTER_KEY)
+            if path is None:
+                return None
+            source = f"{repo}:{REGISTER_KEY}"
+            if (not isinstance(path, str) or not re.fullmatch(r"[\w.-]+(?:/[\w.-]+)*", path)
+                    or ".." in path.split("/")):
+                raise audit.AuditError("operational_register_path_invalid")
+            source = f"repos/{repo}/contents/{path}"
+            text = file_text(source)
+            if text is None:
+                raise audit.AuditError("operational_register_missing")
+        except (audit.AuditError, ValueError, AttributeError, UnicodeDecodeError) as exc:
+            gaps.append({"source": source, "reason": str(exc) if isinstance(exc, audit.AuditError) else "unreadable_metadata"})
+            return None
+        return {"repo": repo, "path": path, "default_branch": default_branch, "text": text}
+
+    registers = []
     unread_scopes = []
     attempted_records = 0
     for state in ("open", "closed"):
@@ -349,6 +497,10 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             if metadata.get("archived") is not False or not metadata.get("default_branch"):
                 gaps.append({"source": repo, "reason": "repository_state_unavailable"})
                 continue
+            if state == "open":
+                register = operational_register(repo, metadata["default_branch"])
+                if register:
+                    registers.append(register)
             suffix = "state=open" if state == "open" else f"state=closed&since={since}"
             issues = listing(f"repos/{repo}/issues?{suffix}")
             policy = None
@@ -443,8 +595,8 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     trusted=set(github_identity.configured_bot_logins()),
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
                     gaps=gaps, director_names=director_names, delivery_view=delivery_view,
-                    related_comments=related_comments)
-    result.update({"repositories": repos, "checked_records": len(records), "attempted_records": attempted_records, "requests": reads,
+                    related_comments=related_comments, registers=registers)
+    result.update({"repositories": repos, "operational_registers": [f"{r['repo']}:{r['path']}" for r in registers], "checked_records": len(records), "attempted_records": attempted_records, "requests": reads,
                    "history_days": history_days, "quota_reserve": quota_reserve, "policy_reads": policy_reads})
     return result
 
