@@ -8749,6 +8749,7 @@ PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS = {
 PRIVATE_HEALTH_ENDPOINT_STATUSES = {"active", "disabled"}
 PRIVATE_HEALTH_ENDPOINT_PLAN_STATUSES = {"dry-run": "planned", "apply": "applied"}
 PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS = 100
+PRIVATE_HEALTH_ENDPOINT_MAX_CA_LENGTH = 65536
 # Launchplane's typed confirmation for a private health endpoint apply; the reviewed
 # dry-run evidence and plan digest are what the helper checks before sending it.
 PRIVATE_HEALTH_ENDPOINT_CONFIRMATION = "APPLY LAUNCHPLANE PRIVATE HEALTH ENDPOINT"
@@ -8757,7 +8758,7 @@ PRIVATE_HEALTH_ENDPOINT_CONFIRMATION = "APPLY LAUNCHPLANE PRIVATE HEALTH ENDPOIN
 def _private_health_endpoint_ca_sha256(source: dict[str, Any]) -> str:
     """Validate public-only testing HTTPS trust; expose only its byte digest."""
     pem = source.get("tls_ca_pem", "")
-    if not isinstance(pem, str) or len(pem) > 65536:
+    if not isinstance(pem, str) or len(pem) > PRIVATE_HEALTH_ENDPOINT_MAX_CA_LENGTH:
         raise ValueError("invalid_private_health_endpoint_tls_ca")
     if not pem:
         return ""
@@ -8774,7 +8775,10 @@ def _private_health_endpoint_ca_sha256(source: dict[str, Any]) -> str:
         raise ValueError("invalid_private_health_endpoint_tls_ca")
     # Imported only for scoped trust. Other consumers importing the transport
     # retain their own PEP 723 dependency environments.
-    from cryptography import x509
+    try:
+        from cryptography import x509
+    except ImportError as exc:
+        raise ValueError("private_health_endpoint_tls_ca_dependency_unavailable") from exc
 
     try:
         certificates = x509.load_pem_x509_certificates(pem.encode("ascii"))
@@ -8783,9 +8787,9 @@ def _private_health_endpoint_ca_sha256(source: dict[str, Any]) -> str:
             for cert in certificates
         ):
             raise ValueError("invalid_private_health_endpoint_tls_ca")
-    except (ValueError, x509.ExtensionNotFound) as exc:
+    except (ValueError, x509.ExtensionNotFound, x509.DuplicateExtension) as exc:
         raise ValueError("invalid_private_health_endpoint_tls_ca") from exc
-    return hashlib.sha256(pem.strip().encode("ascii")).hexdigest()
+    return hashlib.sha256(pem.encode("ascii")).hexdigest()
 
 
 def _project_private_health_endpoint_record(value: object) -> dict[str, object]:
@@ -8895,7 +8899,7 @@ def private_health_endpoint_body(
     reason = _required_argument(args, "reason")
     # Sorted, so a retry sends the same body however the payload file orders its keys.
     endpoint = {
-        field: value.strip() if isinstance(value, str) else value
+        field: value.strip() if isinstance(value, str) and field != "tls_ca_pem" else value
         for field, value in sorted(payload.items())
     }
     endpoint.setdefault("status", "active")

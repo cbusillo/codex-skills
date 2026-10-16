@@ -796,6 +796,11 @@ context. A lane's `private_http` health check names one of these records by its
   retains ordinary certificate verification. Launchplane refuses a public URL. The
   helper sets `updated_at`; a payload that carries it is refused. `--reason` is
   required on both dry-run and apply and is part of what the review binds.
+- CA bytes are preserved, including PEM line endings, so `tls_ca_sha256` can
+  be compared directly with the reviewed public bundle. Run through
+  `uv run scripts/launchplane-write-action.py` to supply its declared parser
+  dependency; an importer handling CA records needs that dependency in its own
+  environment. Missing parser support returns a bounded refusal before HTTP.
 - Launchplane does not bind the apply to the dry-run. The helper digests the
   payload and reason with the planned key and scope into `plan_sha256`; pass
   it as `--expected-plan-digest`. It refuses an apply whose payload or reason

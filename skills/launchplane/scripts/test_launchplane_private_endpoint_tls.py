@@ -5,10 +5,13 @@
 # ///
 """Qualify scoped public CA handling using disposable in-memory certificates."""
 
+import base64
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
 from cryptography import x509
@@ -52,8 +55,9 @@ def test_scoped_ca_review_apply_readback_and_redaction():
         argv = ["private-health-endpoint-dry-run", "--payload-file", path, "--reason", "r"]
         code, evidence, posts, _ = _run_main(argv, post=_private_endpoint_response(**data))
         assert code == 0, evidence
-        assert posts[0]["body"]["endpoint"]["tls_ca_pem"] == pem.strip()
-        assert pem.strip() not in json.dumps(evidence)
+        assert posts[0]["body"]["endpoint"]["tls_ca_pem"] == pem
+        assert evidence["result"]["record"]["tls_ca_sha256"] == hashlib.sha256(pem.encode()).hexdigest()
+        assert "BEGIN CERTIFICATE" not in json.dumps(evidence)
         saved = _write_json(directory, "review.json", evidence)
         apply = ["private-health-endpoint-apply", *argv[1:],
                  *_reviewed_apply_argv(evidence["result"]["plan_sha256"], saved)]
@@ -62,7 +66,7 @@ def test_scoped_ca_review_apply_readback_and_redaction():
             read=_private_endpoint_read(**data))
         assert code == 0, result
         assert result["result"]["read_back_matches"] is True
-        assert pem.strip() not in json.dumps(result)
+        assert "BEGIN CERTIFICATE" not in json.dumps(result)
 
         # An applied or independently stored different issuer cannot verify this review.
         for changed in ({**data, "tls_ca_pem": other}, {k: v for k, v in data.items() if k != "tls_ca_pem"}):
@@ -108,7 +112,9 @@ def test_invalid_scoped_trust_refuses_input_and_readback(case):
         data["tls_ca_pem"] = {
             "malformed": "not a certificate", "leaf": certificate(ca=False)[0],
             "missing-constraints": certificate(constraints=False)[0], "key": key,
-            "mixed": pem + key, "oversized": pem + " " * 65536, "non-string": [pem],
+            "mixed": pem + key,
+            "oversized": pem * (write_action.PRIVATE_HEALTH_ENDPOINT_MAX_CA_LENGTH // len(pem) + 1),
+            "non-string": [pem],
         }[case]
     with TemporaryDirectory(dir=Path.home()) as directory:
         path = _write_json(directory, "bad.json", data)
@@ -119,6 +125,66 @@ def test_invalid_scoped_trust_refuses_input_and_readback(case):
         assert "BEGIN" not in json.dumps(result)
     with pytest.raises(write_action.LaunchplaneSafetyError):
         write_action._project_private_health_endpoint_record(_private_endpoint_record(**data))
+
+
+def test_missing_ca_parser_returns_structured_refusal_before_http():
+    pem, _ = certificate()
+    real_import = __import__
+
+    def without_crypto(name, *args, **kwargs):
+        if name == "cryptography":
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        path = _write_json(directory, "endpoint.json", endpoint(pem))
+        with patch("builtins.__import__", side_effect=without_crypto):
+            code, result, posts, _ = _run_main(
+                ["private-health-endpoint-dry-run", "--payload-file", path, "--reason", "r"],
+                post=_private_endpoint_response(**endpoint(pem)))
+        assert code == 2 and not posts
+        assert "BEGIN CERTIFICATE" not in json.dumps(result)
+
+
+def test_duplicate_ca_extension_returns_structured_refusal_before_http():
+    pem, _ = certificate()
+
+    def encode(tag, content):
+        size = len(content)
+        length = bytes([size]) if size < 128 else bytes([128 + (size.bit_length() + 7) // 8]) + size.to_bytes((size.bit_length() + 7) // 8)
+        return bytes([tag]) + length + content
+
+    def children(data):
+        while data:
+            width = data[1] & 127 if data[1] & 128 else 0
+            start = 2 + width
+            size = int.from_bytes(data[2:start]) if width else data[1]
+            end = start + size
+            yield data[0], data[start:end]
+            data = data[end:]
+
+    # Duplicate an actual extension in a disposable certificate's DER, retaining
+    # the surrounding certificate structure. Parsing extensions must fail safely.
+    cert = x509.load_pem_x509_certificate(pem.encode())
+    _, content = next(children(cert.public_bytes(serialization.Encoding.DER)))
+    fields = list(children(content))
+    tbs = []
+    for tag, value in children(fields[0][1]):
+        if tag == 0xA3:
+            seq_tag, extensions = next(children(value))
+            value = encode(seq_tag, extensions + extensions)
+        tbs.append(encode(tag, value))
+    der = encode(0x30, encode(fields[0][0], b"".join(tbs)) + b"".join(encode(*field) for field in fields[1:]))
+    bad_pem = "-----BEGIN CERTIFICATE-----\n" + base64.encodebytes(der).decode() + "-----END CERTIFICATE-----\n"
+    with pytest.raises(x509.DuplicateExtension):
+        _ = x509.load_pem_x509_certificate(bad_pem.encode()).extensions
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        path = _write_json(directory, "endpoint.json", endpoint(bad_pem))
+        code, result, posts, _ = _run_main(
+            ["private-health-endpoint-dry-run", "--payload-file", path, "--reason", "r"],
+            post=_private_endpoint_response(**endpoint(bad_pem)))
+        assert code == 2 and not posts
+        assert "BEGIN CERTIFICATE" not in json.dumps(result)
 
 
 if __name__ == "__main__":
