@@ -321,15 +321,30 @@ class Live:
         return self.reader.batch_diagnostic
 
     def get(self, path):
-        value = self.reader.get_json(path, step="enqueue_read")
         if not re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/[0-9]+", path):
-            return value
-        for _ in range(2):
-            if value.get("mergeable") is not None:
-                break
+            return self.reader.get_json(path, step="enqueue_read")
+        # The final pre-write check must not fall back to a cached null after
+        # the scan used its recovery budget. Replace its ordinary GET, rather
+        # than adding an unbudgeted retry.
+        value = self.reader.request("GET", path, step="enqueue_read", fresh=True).body
+        return self.recover_mergeability([path], [value])[0]
+
+    def get_many(self, paths):
+        # Start every observation before spending recovery reads. A landing
+        # invalidates a whole repository, not just the first PR in list order.
+        values = [self.reader.get_json(path, step="enqueue_read") for path in paths]
+        return self.recover_mergeability(paths, values)
+
+    def recover_mergeability(self, paths, values):
+        pending = [index for index, value in enumerate(values) if value.get("mergeable") is None]
+        while pending:
             if self.mergeability_reads_remaining <= 0 or time.time() + 1 >= self.deadline:
                 break
+            index = pending.pop(0)
+            path, value = paths[index], values[index]
             time.sleep(1)
+            if time.time() >= self.deadline:
+                break
             self.mergeability_reads_remaining -= 1
             # Discard this PR's batch evidence: REST may find a new head or hold.
             # Preserve other PRs' snapshots and the batch request savings.
@@ -342,8 +357,12 @@ class Live:
                 self.reader.batch_responses.pop(endpoint, None)
             # An ETag/304 may preserve the null response. Ask GitHub directly,
             # retaining the shared transport's identity, quota and deadline guards.
-            value = self.reader.request("GET", path, step="mergeability_read", fresh=True).body
-        return value
+            values[index] = self.reader.request("GET", path, step="mergeability_read", fresh=True).body
+            # Fair rounds let slow computations finish without starving the
+            # remainder of the backlog behind a per-PR retry limit.
+            if values[index].get("mergeable") is None:
+                pending.append(index)
+        return values
 
     def pages(self, path, **params):
         return self.reader.paged_json(path, step_prefix="enqueue_read", params=params)
@@ -738,10 +757,10 @@ def run_pass(io, args, emit, *, state=None):
             if getattr(args, "batch_read", False):
                 diagnostic = io.batch(repo, [item["number"] for item in pulls if item["number"] in author_allowed])
                 emit("batch_read", {"repository": repo, **diagnostic})
-            for listed in pulls:
-                if listed["number"] not in author_allowed:
-                    continue
-                pr = io.get(f"/repos/{repo}/pulls/{listed['number']}")
+            for pr in io.get_many([
+                f"/repos/{repo}/pulls/{listed['number']}"
+                for listed in pulls if listed["number"] in author_allowed
+            ]):
                 if pr.get("mergeable") is not True:
                     emit("skipped", {
                         "repository": repo,
