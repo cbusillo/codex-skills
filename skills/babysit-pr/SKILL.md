@@ -128,10 +128,13 @@ what to do:
 
 An empty check/status inventory stays pending until head CI evidence arrives.
 Unknown or incomplete evidence never reports green. For a repository with no CI
-configured, verify its required local gates and add `--allow-no-checks` to
-`--wait-ci`; this permits only a complete, head-matched empty inventory and
+configured, verify its required local gates and add `--allow-no-checks`; this
+permits only a complete, head-matched empty inventory and
 does not bypass failed checks or unfinished workflows. It changes no merge
 authority or required-check verification in the checked `ready` handoff.
+The same CI predicate governs `ready_to_merge` actions in every watcher mode.
+If configured CI never registers checks, inspect its triggers and restore the
+expected CI rather than using the CI-free option to bypass it.
 
 Keep `--max-wait-seconds` (default 420) well below the harness's command
 timeout, since a read that starts just before the bound still finishes, and

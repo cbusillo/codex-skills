@@ -3322,13 +3322,14 @@ class ExecutionReader:
         return {}
 
 
-def execution_snapshot(monkeypatch, tmp_path, runs, checks, **reader_kwargs):
+def execution_snapshot(monkeypatch, tmp_path, runs, checks, *, allow_no_checks=False, **reader_kwargs):
     reader = ExecutionReader(runs, checks, **reader_kwargs)
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_: "octocat")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *a, **kw: [])
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
-    args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3)
+    args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3,
+                              allow_no_checks=allow_no_checks)
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
     return snapshot, reader
 
@@ -3342,7 +3343,8 @@ def test_wait_ci_transport_inventory(monkeypatch, tmp_path, allow_no_checks, inv
     ]
     checks = [execution_check(runs[0], 11)] if inventory == "passed" else []
     unavailable = f'/repos/{sample_pr()["repo"]}/commits/{sample_pr()["head_sha"]}/check-runs' if inventory == "unavailable" else None
-    snapshot, _reader = execution_snapshot(monkeypatch, tmp_path, runs, checks, unavailable=unavailable)
+    snapshot, _reader = execution_snapshot(monkeypatch, tmp_path, runs, checks,
+                                          unavailable=unavailable, allow_no_checks=allow_no_checks)
     _clock, events = wait_ci_harness(monkeypatch, [snapshot] * 4)
     expected = "failed" if inventory == "failed" else (
         "green" if inventory == "passed" or (inventory == "empty" and allow_no_checks) else "pending"
@@ -3353,6 +3355,7 @@ def test_wait_ci_transport_inventory(monkeypatch, tmp_path, allow_no_checks, inv
     ))
     assert result == gh_pr_watch.CI_WAIT_EXIT_CODES[expected]
     assert events[0][1]["outcome"] == expected
+    assert ("ready_to_merge" in events[0][1]["actions"]) is (expected == "green")
 
 
 @pytest.mark.parametrize("status,conclusion", [("completed", "success"), ("queued", None), ("in_progress", None)])
