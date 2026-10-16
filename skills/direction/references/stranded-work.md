@@ -16,9 +16,10 @@ uv run skills/direction/scripts/direction_audit.py \
 ```
 
 Use `--repo OWNER/REPO` and repeated `--stranded-repo OWNER/REPO` for a narrow
-scope. Repository discovery excludes archived repositories. Open records have no
-age cutoff; recently updated closed records are also read for outstanding
-promises (30 days by default). Full discussion pages are read, including
+scope. Repository discovery includes archived repositories for closed-trigger checking.
+Open records have no age cutoff; closed issues and their full discussions are
+read without a history cutoff for reopen triggers. Closed promises retain the
+recent-history window (30 days by default). Full discussion pages are read, including
 questions with no Q number. The request budget and deadline cover the whole
 run, reserving the larger of 250 core requests and the shared transport's
 bulk-read reserve for other work. Shared transport handles
@@ -72,6 +73,19 @@ unknown), next actor and review requirement:
   relative triggers ("after about a week") are not ageable and stay quiet. An
   unreadable or missing declared register, or an entry without `Next check`,
   is a coverage gap.
+- Closed issues with an authoritative structured reopen trigger whose event has
+  fired. The [record and close option](../../github/references/cli-reference.md#structured-reopen-triggers)
+  reuse the wait parser's authorship, precedence and example filtering. Dates,
+  issue closure, PR merge, published stable releases and GHSA patch information
+  are checked; `recurrence` retains exact symptom text for search-before-filing
+  and is never machine-checked. Fired triggers bypass the aged-work threshold
+  and remain in each daily digest while the issue is closed. The sweep is
+  report-only: the repository agent/Supervisor reviews and reopens. A patch in
+  the advisory database does not prove an installed dependency is fixed.
+  Missing event facts, unread comments, malformed records, repository failures,
+  page caps and exhausted read budgets remain explicit coverage gaps. Archived
+  repositories are read too; reopening them would first require unarchiving,
+  which this sweep does not do.
 - Existing train blocked views, aged from their label event, plus structured
   waits naming the Supervisor, Director, Director login or supplied aliases.
   Body-only waits have unknown age because unrelated issue activity must not
@@ -100,8 +114,11 @@ unread sources are distinguished from missing sources. Records with unread
 comments are not evaluated from an older body marker. Unread repositories and
 states are grouped in one coverage entry.
 
-Closed-record discovery is limited to `--history-days`: an outstanding promise
-on an older, untouched closed issue can be missed. This is outside selected
+Closed promises are limited to `--history-days`: an outstanding promise
+on an older, untouched closed issue can be missed. Structured reopen triggers
+have no history cutoff, within the same explicit page/request/quota budget.
+Repository discovery can only enumerate the selected reader's visible owned
+repositories; undiscoverable private repositories are outside that inventory. This is outside selected
 coverage, even when that selected scope is complete. Explicit closing keywords
 are a review heuristic; the sweep does not replace GitHub's native closing-link
 authority or prove that a linked PR completed an issue.

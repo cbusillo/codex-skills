@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 
 PREFIX = "<!-- github-plan:wait "
@@ -48,7 +48,7 @@ def validate(record: Any) -> None:
             raise ValueError("A structured wait needs its actor/event and ending condition")
 
 
-def live_lines(text: str) -> list[tuple[int, str]]:
+def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:
     result = []
     fence = None
     html_end = None
@@ -71,38 +71,44 @@ def live_lines(text: str) -> list[tuple[int, str]]:
             elif token[0] == fence[0] and len(token) >= len(fence):
                 fence = None
             continue
-        if fence is not None or not line.startswith(PREFIX):
+        if fence is not None or not line.startswith(prefix):
             continue
         result.append((index, line))
     return result
 
 
-def records(text: str) -> list[dict[str, Any]]:
+def records(text: str, *, prefix: str = PREFIX, validator: Callable[[Any], None] = validate) -> list[dict[str, Any]]:
     result = []
-    for _, line in live_lines(text):
-        match = re.fullmatch(re.escape(PREFIX) + r"(.*?) -->", line)
+    for _, line in live_lines(text, prefix=prefix):
+        match = re.fullmatch(re.escape(prefix) + r"(.*?) -->", line)
         if not match:
-            raise ValueError("Malformed structured wait marker")
+            raise ValueError(f"Malformed structured marker: {prefix}")
         record = json.loads(match.group(1))
-        validate(record)
+        validator(record)
         result.append(record)
     return result
 
 
-def current(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str]) -> dict[str, Any]:
+def current_record(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str], *,
+                   prefix: str, validator: Callable[[Any], None]) -> dict[str, Any] | None:
     """Last authorized record wins; arbitrary discussion cannot change it."""
-    selected = {"version": 1, "state": "review", "evidence": "", "waits": []}
+    selected = None
     sources = [issue, *comments]
     for source in sources:
         author = (source.get("user") or {}).get("login", "")
         if author.casefold() not in {login.casefold() for login in trusted}:
             continue
-        found = records(source.get("body") or "")
+        found = records(source.get("body") or "", prefix=prefix, validator=validator)
         if len(found) > 1:
-            raise ValueError("Multiple structured wait records in one source; preserve them for review")
+            raise ValueError("Multiple structured records in one source; preserve them for review")
         if found:
             selected = found[0]
     return selected
+
+
+def current(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str]) -> dict[str, Any]:
+    return current_record(issue, comments, trusted, prefix=PREFIX, validator=validate) or {
+        "version": 1, "state": "review", "evidence": "", "waits": []}
 
 
 def without_records(text: str) -> str:

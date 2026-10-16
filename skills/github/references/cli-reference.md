@@ -667,6 +667,43 @@ when the command ends, including on failure.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
   sub-issue relationships, preserving cross-repository issue references.
 
+### Structured Reopen Triggers
+
+`gh-plan.py close ISSUE --reopen-trigger '<JSON>'` records one event to review
+for reopening a deferred issue. It preserves close preflight and decision
+checks, publishes an authored comment with a visible kind and the
+`github-plan:reopen-trigger` JSON marker, and reads back the authoritative
+record **before** closing. A publication/readback failure leaves the issue open;
+inspect the published comment before retrying. A later metadata failure uses
+normal close recovery. Omit the option to close without adding a trigger.
+
+The record uses the wait record's version, evidence, author precedence and
+example-filtering rules. One record per source; the latest authorized record
+comment replaces the body/earlier comment. Invalid or duplicate authoritative
+records require review. Waits and reopen triggers are independent.
+
+Every record contains `version: 1`, `kind` and nonempty `evidence`, plus exactly
+the fields for its kind:
+
+| Kind | Fields | Fires when |
+| --- | --- | --- |
+| `date` | `at` | YYYY-MM-DD (start of day UTC), or ISO timestamp with timezone, is reached |
+| `issue_closed` | `url` | Exact GitHub issue URL has closed state |
+| `pr_merged` | `url` | Exact GitHub PR URL has a merge, not merely closed state |
+| `release_published` | `repo`, `minimum_tag` | A stable, published, non-draft release reaches the minimum stable numeric tag (optional `v`, dotted numbers; numeric comparison) |
+| `advisory_fixed` | `ghsa_id` | The global GHSA is not withdrawn and every affected range has a nonempty first patched version; this does not prove installed dependencies were updated |
+| `recurrence` | `symptom` | Never machine-checked; retain the exact symptom text for search-before-filing |
+
+```sh
+uv run skills/github/scripts/gh-plan.py close 123 --reason not-planned \
+  --comment-file decision.md \
+  --reopen-trigger '{"version":1,"kind":"date","at":"2026-12-01","evidence":"Recorded deferral decision"}'
+```
+
+The [daily sweep](../../direction/references/stranded-work.md) reports fired
+triggers and coverage gaps without reopening issues. This option records a
+condition, not authority to close protected work or perform the triggered action.
+
 ### Planning: Claim
 
 Before an authorized `go` creates a branch or worktree, run from a checkout of

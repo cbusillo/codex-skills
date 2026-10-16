@@ -17,6 +17,7 @@ import sys
 
 import direction_audit as audit
 import direction_stranded as sweep
+from skills.github.scripts import github_api
 
 
 class StrandedTests(unittest.TestCase):
@@ -269,6 +270,8 @@ class FakeReader:
         if (parsed.path.startswith("repos/") and
                 (parsed.path.endswith(("/issues", "/comments", "/timeline", "/blocked_by")))):
             return []
+        if path in {"repos/target/repo/issues/2", "repos/test/missing"}:
+            raise unavailable("not_found")
         raise AssertionError(f"unconfigured fake read: {path}")
 
 
@@ -294,7 +297,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(report["findings"]), 1)
         self.assertTrue(any(urlsplit(p).path == path and parse_qs(urlsplit(p).query).get("page") == ["2"] for p in self.reader.paths))
         self.assertTrue(any(parse_qs(urlsplit(p).query).get("state") == ["closed"]
-                            and "since" in parse_qs(urlsplit(p).query) for p in self.reader.paths))
+                            and "since" not in parse_qs(urlsplit(p).query) for p in self.reader.paths))
 
     def test_quota_reserve_and_request_limit_expose_unread_repositories(self):
         self.reader.remaining = 0
@@ -490,6 +493,87 @@ class InventoryTests(unittest.TestCase):
         result = self.collect()
         self.assertEqual(result["quota_reserve"], reserve)
         self.assertEqual(self.reader.paths, ["rate_limit"])
+
+
+def unavailable(cause):
+    return sweep.github_read.GitHubReadError("Unavailable", result=github_api.ApiResult(
+        ok=False, status=404, body={}, failure=github_api.FailureDetail(
+            cause=cause, message="offline fixture", retryable=False,
+            fallback_eligible=False, disposition="stop")), diagnostics={})
+
+
+class ReopenInventoryTests(unittest.TestCase):
+    def setUp(self):
+        self.reader = FakeReader()
+        self.now = dt.datetime(2026, 10, 16, tzinfo=dt.timezone.utc)
+
+    def event(self, kind="date", **fields):
+        return {"version": 1, "kind": kind, "evidence": "Deferral decision", **(fields or {"at": "2026-10-16"})}
+
+    def issue(self, number, event=None, **fields):
+        return {"number": number, "state": "closed", "user": {"login": "test"},
+                "body": sweep.github_plan_trigger.marker(event) if event else "",
+                "comments": 0, "updated_at": "2020-01-01T00:00:00Z", **fields}
+
+    def collect(self, issues, **kwargs):
+        self.reader.pages[("repos/test/repo/issues", 1, "closed")] = issues
+        return sweep.collect(["test/repo"], reader=self.reader, now=self.now, **kwargs)
+
+    def test_old_closed_issues_are_checked_without_age_threshold_or_history_cutoff(self):
+        result = self.collect([self.issue(1, self.event()),
+            self.issue(2, self.event(at="2026-10-17")),
+            self.issue(3, self.event("recurrence", symptom="date 2020-01-01 causes exact error")),
+            self.issue(4, self.event(), state="open"),
+            self.issue(5, self.event(), pull_request={})], age_hours=1000)
+        rows = [r for r in result["findings"] if r["kind"] == "reopen_trigger_fired"]
+        self.assertEqual([r["number"] for r in rows], [1])
+        self.assertIn("reopen_trigger_fired", sweep.markdown(result))
+        self.assertEqual(rows[0]["evidence"][0]["trigger"], self.event())
+        self.assertFalse(any("since=" in p for p in self.reader.paths if "/issues?" in p))
+
+    def test_comment_trigger_on_second_page_replaces_body_and_foreign_record_cannot_override(self):
+        future = self.event(at="2027-01-01")
+        comments = [{"id": n, "body": "", "created_at": "2026-01-01T00:00:00Z", "user": {"login": "test"},
+                     "html_url": f"https://github.com/test/repo/issues/1#issuecomment-{n}"} for n in range(1, 101)]
+        path = "repos/test/repo/issues/1/comments"
+        self.reader.pages[(path, 1, None)] = comments
+        self.reader.pages[(path, 2, None)] = [{**comments[0], "id": 101,
+            "body": sweep.github_plan_trigger.marker(self.event())}]
+        issue = self.issue(1, future, comments=101)
+        self.assertEqual(len(self.collect([issue])["findings"]), 1)
+        self.reader.pages[(path, 2, None)][0]["user"] = {"login": "outsider"}
+        self.assertEqual(self.collect([issue])["findings"], [])
+
+    def test_unread_comments_never_fall_back_to_an_old_fired_trigger(self):
+        original = self.reader.get_json
+        def read(path, *, step):
+            if "/comments?" in path:
+                raise unavailable("forbidden")
+            return original(path, step=step)
+        self.reader.get_json = read
+        result = self.collect([self.issue(1, self.event(), comments=1)])
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["findings"], [])
+        self.assertTrue(any("comments" in g["source"] for g in result["coverage_gaps"]))
+
+    def test_unreadable_target_and_malformed_record_are_coverage_gaps(self):
+        result = self.collect([self.issue(1, self.event("issue_closed", url="https://github.com/target/repo/issues/2")),
+                               self.issue(2, {"version": 1, "kind": "date"})])
+        self.assertEqual(result["findings"], [])
+        self.assertFalse(result["complete"])
+        self.assertEqual({g["source"] for g in result["coverage_gaps"] if g["reason"] == "reopen_trigger_unverifiable"},
+                         {"test/repo#1", "test/repo#2"})
+
+    def test_owner_inventory_covers_archived_repositories_and_reports_unreadable_repositories(self):
+        self.reader.repositories["repos/test/repo"]["archived"] = True
+        self.reader.pages[("repos/test/repo/issues", 1, "closed")] = [self.issue(1, self.event())]
+        repos = {"test/repo": {}, "test/missing": {}}
+        with patch.object(audit, "owner_repositories", return_value=(repos, False)) as discover:
+            result = sweep.collect([], reader=self.reader, owner="test", now=self.now)
+        self.assertTrue(discover.call_args.kwargs["include_archived"])
+        self.assertEqual({r["repo"] for r in result["findings"]}, {"test/repo"})
+        self.assertTrue(any(g["source"] == "test/missing" for g in result["coverage_gaps"]))
+        self.assertFalse(result["complete"])
 
 
 if __name__ == "__main__":

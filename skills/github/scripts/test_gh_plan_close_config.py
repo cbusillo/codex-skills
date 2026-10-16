@@ -79,7 +79,8 @@ class CloseConfigTests(unittest.TestCase):
                   explicit: bool = False, wrong_origin: bool = False,
                   workspace: dict | None = None, overrides: tuple[str, ...] = (),
                   fail_labels: bool = False, fail_project: bool = False,
-                  blocked: bool = False) -> tuple[int, dict, Mock, Mock, Mock]:
+                  blocked: bool = False, trigger_comments: Mock | None = None,
+                  trigger_readback: Mock | None = None) -> tuple[int, dict, Mock, Mock, Mock]:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             caller, target = root / "caller", root / "elsewhere" / "target"
@@ -119,10 +120,12 @@ class CloseConfigTests(unittest.TestCase):
                                 repo_from_git=origin, workspace_config_path=Mock(return_value=workspace_path),
                                 get_issue=Mock(return_value=("fixture-bot", issue)),
                                 close_relationship_preflight=preflight,
+                                collect_paged_rest_items=trigger_readback or Mock(return_value=("fixture-bot", [])),
                                 comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
                                 project_meta=meta, project_fields=Mock(return_value={"Status": {"id": "status"}}),
                                 find_project_item=Mock(return_value={"id": "item"}), set_project_field=Mock()), \
                     patch.multiple(PLAN.github_issue_core, set_issue_state=state, edit_issue=labels), \
+                    patch.object(PLAN.github_comment_core, "comment", trigger_comments or Mock()), \
                     patch.object(sys, "argv", argv), contextlib.redirect_stdout(output), \
                     contextlib.redirect_stderr(io.StringIO()):
                 code = 0
@@ -198,6 +201,53 @@ class CloseConfigTests(unittest.TestCase):
 
     def test_checkout_option_keeps_relationship_preflight(self) -> None:
         code, result, state, labels, project = self.run_close(explicit=True, blocked=True)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(result["ok"])
+        state.assert_not_called()
+        labels.assert_not_called()
+        project.assert_not_called()
+
+
+    def test_close_persists_trigger_before_closing_and_keeps_exact_symptom(self):
+        event = {"version": 1, "kind": "recurrence", "evidence": "Director deferral",
+                 "symptom": "exact failure: request returned false"}
+        order = []
+        def published(*args, **kwargs):
+            order.append("published")
+            self.assertEqual(PLAN.github_plan_trigger.current({}, [{"user": {"login": "fixture"},
+                             "body": args[2]}], {"fixture"}), event)
+            return {"actor": "fixture-bot"}
+        def readback(*args, **kwargs):
+            order.append("readback")
+            return "fixture", [{"user": {"login": "fixture"}, "body": PLAN.github_plan_trigger.marker(event)}]
+        # The target account is fixture, so its owner-authored record is authoritative.
+        code, result, state, _, _ = self.run_close(
+            overrides=("--reopen-trigger", json.dumps(event)),
+            trigger_comments=Mock(side_effect=published), trigger_readback=Mock(side_effect=readback))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(order, ["published", "readback"])
+        state.assert_called_once()
+        self.assertIn("reopen_trigger_readback", result["completed_steps"])
+
+    def test_failed_trigger_publication_or_readback_prevents_closure(self):
+        event = {"version": 1, "kind": "date", "evidence": "Director deferral", "at": "2026-12-01"}
+        for fail_publish in (True, False):
+            comment = Mock(return_value={"actor": "fixture-bot"})
+            if fail_publish:
+                comment.side_effect = PLAN.github_comment_core.CommentError("Publication failed", failure=PLAN.github_api_core.FailureDetail(
+                    cause="transport_error", message="offline fixture", retryable=False,
+                    fallback_eligible=False, disposition="stop", write_outcome="rejected"))
+            with self.subTest(fail_publish=fail_publish):
+                code, result, state, labels, project = self.run_close(
+                    overrides=("--reopen-trigger", json.dumps(event)), trigger_comments=comment)
+                self.assertNotEqual(code, 0)
+                self.assertFalse(result["ok"])
+                state.assert_not_called()
+                labels.assert_not_called()
+                project.assert_not_called()
+
+    def test_invalid_trigger_is_rejected_before_any_mutation(self):
+        code, result, state, labels, project = self.run_close(overrides=("--reopen-trigger", "{}"))
         self.assertNotEqual(code, 0)
         self.assertFalse(result["ok"])
         state.assert_not_called()
