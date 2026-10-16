@@ -19,6 +19,7 @@ import plistlib
 import re
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -109,12 +110,13 @@ def run_once(config_path, stopped):
         if receipt.exists():
             services.emit("already_delivered", day=day)
             return 0
-        report = state / f"{day}.md"
+        attempt = Path(tempfile.mkdtemp(prefix=f"{day}-", dir=state))
+        report = attempt / "report.md"
         catalog = Path(config["catalog"])
         scan = [config["uv"], "run", "--no-project", "--no-cache",
                 str(catalog / "skills/direction/scripts/direction_audit.py"),
                 *config["scan_args"], "--stranded-work-only", "--stranded-format", "markdown"]
-        with report.open("wb") as out, (state / f"{day}.scan.stderr").open("wb") as err:
+        with report.open("wb") as out, (attempt / "scan.stderr").open("wb") as err:
             scan_code = command(scan, catalog, subprocess.DEVNULL, out, err, stopped, 900)
         services.emit("scanned", exit_code=scan_code, report=str(report))
         if scan_code not in (0, 3) or not report.stat().st_size:
@@ -122,8 +124,8 @@ def run_once(config_path, stopped):
         reservation = {"day": day, "scan_exit_code": scan_code, "report": str(report)}
         marker.write_text(json.dumps(reservation) + "\n")
         delivery = [a.replace("{report}", str(report)) for a in config["delivery_argv"]]
-        with report.open("rb") as source, (state / f"{day}.delivery.stdout").open("wb") as out, \
-                (state / f"{day}.delivery.stderr").open("wb") as err:
+        with report.open("rb") as source, (attempt / "delivery.stdout").open("wb") as out, \
+                (attempt / "delivery.stderr").open("wb") as err:
             code = command(delivery, catalog, source, out, err, stopped, 120)
         if code:
             raise ValueError("delivery failed; reconcile before replay")

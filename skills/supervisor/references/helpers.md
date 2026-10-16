@@ -513,8 +513,9 @@ Keep this configuration private. Select the same inventory and trusted authors
 as the Supervisor's existing question queue. Supply the existing Discord helper
 as an absolute argument array; it receives Markdown on stdin, and `{report}` in
 an argument expands to the retained report path for file-based senders. The
-helper must exit zero only after confirmed delivery and retain its message
-receipt on stdout. A session-only MCP reply tool cannot serve as this command.
+helper's documented success contract must be exit zero only after confirmed
+delivery. Its stdout/stderr are retained as transport evidence; the runner does
+not infer success from their wording. A session-only MCP reply tool cannot serve as this command.
 If no standalone route exists, resolve that on the owning issue before activation;
 do not invent a destination or provision credentials.
 
@@ -557,8 +558,9 @@ launchctl kickstart "gui/$(id -u)/com.codex-skills.supervisor.stranded"
 launchctl print "gui/$(id -u)/com.codex-skills.supervisor.stranded"
 ```
 
-`state_dir` retains daily Markdown, collector stderr, delivery stdout/stderr,
-delivery status JSON and runner logs. A zero sender exit records transport
+`state_dir` retains each attempt's Markdown, collector stderr and delivery
+stdout/stderr in a separate dated directory, plus daily delivery status JSON and
+runner logs. Retries preserve earlier failed attempts. A zero sender exit records transport
 success; record the actual Discord message link and Chris's receiver evidence
 on the owning issue before calling daily delivery active. A failed, timed out
 or interrupted send leaves `daily.stranded.reconcile`. Later invocations refuse
@@ -591,6 +593,14 @@ render/bootstrap it after reconciling any pending send. Other Supervisor jobs
 and GitHub records need no change. Offline tests:
 `uv run skills/supervisor/scripts/test_stranded_service.py` and
 `uv run skills/supervisor/scripts/test_services.py`.
+
+During every Supervisor check, inspect this job too: `launchctl print` above,
+`runner.jsonl`, `runner.stderr.log`, `daily.stranded.reconcile`, and the latest
+daily receipt. After the scheduled time, a missing receipt means the digest has
+not been confirmed: read the attempt's scan/sender output, reconcile any marker,
+and retry only a confirmed unsent delivery. A scan failure can retry without a
+send marker; a sender failure stays stopped across future mornings until
+reconciled. Never treat a loaded job alone as proof that digests are arriving.
 
 ## Persistent Supervisor services
 

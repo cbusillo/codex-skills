@@ -7,6 +7,7 @@
 
 import datetime as dt
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import services
 import stranded_service as daily
@@ -47,8 +49,7 @@ class DailyTests(unittest.TestCase):
             "raise SystemExit(subprocess.run([sys.executable, *sys.argv[i:]]).returncode)\n"
         )
         self.uv.chmod(0o700)
-        self.catalog = Path(__file__).resolve().parents[3]
-        self.data = {"uv": str(self.uv), "catalog": str(self.catalog),
+        self.data = {"uv": str(self.uv), "catalog": str(self.root),
                      "state_dir": str(self.state), "scan_args": [],
                      "delivery_argv": [sys.executable, str(self.sender)], "hour": 7, "minute": 30}
         # Fixtures live under the temporary catalog working directory. Copy only
@@ -58,7 +59,6 @@ class DailyTests(unittest.TestCase):
         for module in (daily, services):
             source = Path(module.__file__)
             (runner_dir / source.name).write_bytes(source.read_bytes())
-        self.data["catalog"] = str(self.root)
         self.payload = "Coverage incomplete: offline fixture\n"
         (self.root / "payload").write_text(self.payload)
         (self.root / "scan-code").write_text("0")
@@ -82,7 +82,7 @@ class DailyTests(unittest.TestCase):
         self.assertEqual((self.root / "received").read_text(), self.payload)
         receipt = json.loads(next(self.state.glob("*.delivered.json")).read_text())
         self.assertEqual(receipt["scan_exit_code"], int((self.root / "scan-code").read_text()))
-        self.assertIn("https://discord.com/", next(self.state.glob("*.delivery.stdout")).read_text())
+        self.assertIn("https://discord.com/", next(self.state.rglob("delivery.stdout")).read_text())
         self.assertEqual(self.entry().returncode, 0)
         self.assertEqual((self.root / "received").read_text(), self.payload)
 
@@ -98,12 +98,14 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(cleared.returncode, 0)
         self.assertEqual(self.entry().returncode, 0)
         self.assertEqual((self.root / "received").read_text(), self.payload * 2)
+        self.assertEqual(len(list(self.state.rglob("delivery.stdout"))), 2)
+        self.assertTrue(all(path.read_text() for path in self.state.rglob("delivery.stdout")))
 
     def test_scan_error_is_retained_without_sending_and_next_run_can_recover(self):
         (self.root / "scan-code").write_text("2")
         self.assertEqual(self.entry().returncode, 1)
         self.assertFalse((self.root / "received").exists())
-        self.assertEqual(next(self.state.glob("*.md")).read_text(), self.payload)
+        self.assertEqual(next(self.state.rglob("report.md")).read_text(), self.payload)
         (self.root / "scan-code").write_text("0")
         self.assertEqual(self.entry().returncode, 0)
 
@@ -155,9 +157,21 @@ class DailyTests(unittest.TestCase):
     def test_stopped_child_is_reaped(self):
         stopped = threading.Event()
         stopped.set()
-        with self.assertRaises(TimeoutError):
-            daily.command([sys.executable, "-c", "import time; time.sleep(60)"], self.root,
-                          subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL, stopped, 5)
+        children = []
+        original = subprocess.Popen
+
+        def capture(*args, **kwargs):
+            child = original(*args, **kwargs)
+            children.append(child)
+            return child
+
+        with mock.patch.object(daily.subprocess, "Popen", side_effect=capture):
+            with self.assertRaises(TimeoutError):
+                daily.command([sys.executable, "-c", "import time; time.sleep(60)"], self.root,
+                              subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL, stopped, 5)
+        self.assertIsNotNone(children[0].poll())
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(children[0].pid, 0)
 
 
 if __name__ == "__main__":
