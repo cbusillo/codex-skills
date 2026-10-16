@@ -9,6 +9,7 @@ import argparse
 import copy
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -257,6 +258,31 @@ def test_partial_and_incomplete_graph_never_become_available():
     ):
         reader.return_value.results = []
         assert plan.read_planning_graph("owner/repo") is None
+
+
+def test_cancelled_graph_read_stops_instead_of_falling_back_to_rest():
+    plan = load_plan()
+    api = plan.github_api_core
+    failure = api.FailureDetail(cause="cancelled", message="retry wait cancelled", retryable=False,
+                                fallback_eligible=False, disposition="stop")
+    cancelled = github_read.GitHubReadError("retry wait cancelled", diagnostics={}, result=api.ApiResult(
+        ok=False, status=None, body=None, operation="github.plan.next", failure=failure))
+    with (
+        patch.object(plan, "EXPECTED_ACTOR", "fixture-reader"),
+        patch.object(plan, "BOT_GH", Path(__file__)),
+        mock_attribute(plan.github_identity, "active_auth_fallback_allowed", return_value=False),
+        mock_attribute(plan.github_identity, "own_user_opted_in", return_value=False),
+        mock_attribute(plan.github_plan_graph, "planning_graph", side_effect=cancelled),
+        mock_attribute(plan.github_read, "GitHubReader") as reader,
+        patch.dict(os.environ, {"GH_PLAN_SKIP_BOT": "0", "GH_PLAN_ALLOW_ACTIVE_FIRST": "0"}),
+    ):
+        reader.return_value.results = []
+        try:
+            plan.read_planning_graph("owner/repo")
+        except plan.PlanError as exc:
+            assert exc.failure is failure
+        else:
+            raise AssertionError("Ctrl-C during the graph read fell back to REST")
 
 
 def test_inventory_pagination_and_changed_connection_fail_closed():

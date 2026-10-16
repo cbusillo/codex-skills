@@ -1958,6 +1958,9 @@ def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None
         BATCH_READ_CONTEXT.update({"used": True, "fallback_reason": None})
         return rows
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError, AttributeError) as error:
+        if isinstance(error, github_read.GitHubReadError):
+            # Ctrl-C in the graph's retry wait ends the command; it is not a REST fallback.
+            raise_if_cancelled(PlanError(str(error), failure=error.result.failure, api_result=error.result.as_dict()))
         BATCH_READ_CONTEXT["fallback_reason"] = github_api_core.redact_string(str(error))
         # Discard the whole optional graph before recovering through REST.
         return None
