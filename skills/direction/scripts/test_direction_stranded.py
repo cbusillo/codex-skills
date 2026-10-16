@@ -503,6 +503,7 @@ class InventoryTests(unittest.TestCase):
                 "repository_url": "https://api.github.com/repos/test/repo"}}}]
         def read(path, *, step):
             if path == "repos/test/repo/pulls/2":
+                self.reader.paths.append(path)
                 return {"body": "Refs #1", "merged_at": "2026-10-14T01:00:00Z", "base": {"ref": "main"}}
             return original(path, step=step)
         self.reader.get_json = read
