@@ -363,7 +363,8 @@ across the repository owner's repositories, not only this one:
 `gh-plan.py search "<terms> user:<owner>" --state all`. Say what you found or
 what you searched. Read its full discussion before changing scope. Use the configured
 planning label, normally `plan`, and existing label conventions; ask before
-creating labels.
+creating labels other than the `friction` label that
+[task scope](../references/execution-scope.md) names.
 
 Treat every human-authored title and body as immutable source material.
 Repository role grants permissions, not automation ownership of authored words.

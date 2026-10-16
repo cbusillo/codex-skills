@@ -67,9 +67,10 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
   open `friction` issue for the same step, or file one with that label
   (creating the label there if it is missing). Name the step and the symptom,
   and quote the Director's words when there are any. Patch the step now only
-  when it blocks a live product; a tool that has stopped work twice is still
-  fixed at its cause as the direction says. The weekly direction audit groups
-  friction issues by cause and proposes the fixes.
+  when it blocks a live product, or when the direction says to fix it at its
+  cause first, such as a tool that has stopped work twice or that the next
+  milestone depends on. The weekly direction audit groups friction issues by
+  cause and proposes the fixes.
 - Preserve unrelated changes and isolate implementation when necessary. Ask when
   edits overlap or ownership cannot be established, rather than treating every
   dirty checkout as a blocker. Isolation does not relax protected-branch or
