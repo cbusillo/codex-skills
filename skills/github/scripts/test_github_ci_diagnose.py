@@ -128,6 +128,8 @@ def run_fixture(
     github_repo: str | None = "o/r",
     origin: str | None = "git@github.com:o/r.git",
     upstream: str | None = None,
+    max_lines: int | None = None,
+    json_output: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -156,7 +158,10 @@ def run_fixture(
             command.extend(["--github-repo", github_repo])
         if pr:
             command.extend(["--pr", pr])
-        command.append("--json")
+        if max_lines is not None:
+            command.extend(["--max-lines", str(max_lines)])
+        if json_output:
+            command.append("--json")
         process = subprocess.run(
             command,
             cwd=root,
@@ -269,6 +274,29 @@ def test_unavailable_synthetic_annotations_keep_failure_evidence() -> None:
     assert check["annotationError"]
     assert "checkAnnotations" in payload["diagnostics"]["degradedComponents"]
     assert not any(f"/actions/runs/{synthetic['id']}" in call for call in calls)
+
+
+def test_synthetic_annotations_are_bounded_and_terminal_controls_removed() -> None:
+    responses, _, path = synthetic_check_responses()
+    annotation = responses[path]["body"][0]
+    message = annotation["message"]
+    annotation["message"] = f"\x1b]0;fixture-title\x07\x1b[31m{message}\x1b[0m"
+    annotation["path"] = f"\x1b[31m{annotation['path']}\x1b[0m"
+    # One extra item lets the helper distinguish a truncated list from a full one.
+    bounded_path = path.replace("per_page=100", "per_page=2")
+    responses[bounded_path] = {"body": [annotation, annotation]}
+    process, calls = run_fixture(responses, max_lines=1)
+    payload = json.loads(process.stdout)
+    check = payload["checks"][1]
+    assert len(check["annotations"]) == 1
+    assert check["annotationsTruncated"] is True
+    assert check["annotations"][0]["message"] == message
+    assert all("\x1b" not in str(value) for value in check["annotations"][0].values())
+    assert sum("/annotations?" in call for call in calls) == 1
+    process, _ = run_fixture(responses, max_lines=1, json_output=False)
+    assert process.returncode == 1
+    assert message in process.stdout
+    assert "\x1b" not in process.stdout
 
 
 def test_missing_run_permission_degrades_but_keeps_log_evidence() -> None:
@@ -453,6 +481,7 @@ def test_skipped_replacement_does_not_count_historical_failure() -> None:
 
 def main() -> None:
     tests = [
+        test_synthetic_annotations_are_bounded_and_terminal_controls_removed,
         test_synthetic_failure_preserves_annotations_without_actions_run_lookup,
         test_synthetic_pending_stays_pending_without_actions_or_annotation_lookup,
         test_unavailable_synthetic_annotations_keep_failure_evidence,

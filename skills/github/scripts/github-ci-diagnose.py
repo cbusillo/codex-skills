@@ -121,7 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--github-repo", help="Repository in OWNER/REPO form. Defaults to the origin remote.")
     parser.add_argument("--pr", default=None, help="PR number or URL. Defaults to the current branch PR.")
     parser.add_argument("--json", action="store_true", help="Emit JSON for agent/tool consumption.")
-    parser.add_argument("--max-lines", type=int, default=140, help="Maximum snippet/tail lines per failing check.")
+    parser.add_argument("--max-lines", type=int, default=140, help="Maximum snippet/tail lines or annotations per failing check.")
     parser.add_argument("--context", type=int, default=30, help="Context lines around the detected failure marker.")
     parser.add_argument(
         "--all-checks",
@@ -248,11 +248,12 @@ class DiagnosisClient:
         self.jobs_cache: dict[int, Optional[list[dict[str, Any]]]] = {}
         self.log_cache: dict[int, tuple[str, str, str]] = {}
 
-    def annotations(self, check_id: int) -> tuple[list[dict[str, Any]], str]:
+    def annotations(self, check_id: int, limit: int) -> tuple[list[dict[str, Any]], str]:
         try:
             return self.reader.paged_json(
                 f"/repos/{self.repo}/check-runs/{check_id}/annotations",
                 step_prefix="checkAnnotations",
+                limit=limit,
             ), ""
         except github_read_core.GitHubReadError as exc:
             code = exc.result.failure.cause if exc.result.failure else "read_failed"
@@ -357,8 +358,14 @@ def analyze_check(check: dict[str, Any], client: DiagnosisClient, max_lines: int
         item["note"] = "No GitHub Actions workflow run is linked; Actions job logs are unavailable for this check."
         if check.get("source") == "check_run":
             if item["classification"] == "failing" and isinstance(check.get("checkRunId"), int):
-                annotations, error = client.annotations(check["checkRunId"])
-                item["annotations"] = annotations
+                limit = max(1, max_lines)
+                annotations, error = client.annotations(check["checkRunId"], limit + 1)
+                item["annotations"] = [
+                    {key: github_read_core.strip_terminal_controls(value) if isinstance(value, str) else value
+                     for key, value in annotation.items()}
+                    for annotation in annotations[:limit]
+                ]
+                item["annotationsTruncated"] = len(annotations) > limit
                 if error:
                     item["annotationError"] = error
         else:
@@ -507,6 +514,8 @@ def render(payload: dict[str, Any]) -> None:
             print(f"Annotation: {annotation.get('path', '')}:{annotation.get('start_line', '')} "
                   f"[{annotation.get('annotation_level', '')}]")
             print(indent(str(annotation.get("message") or "")))
+        if check.get("annotationsTruncated"):
+            print("Annotations truncated; increase --max-lines or follow the details URL for more.")
         snippet = check.get("failureSnippet") or ""
         if snippet:
             print("Failure snippet:")
