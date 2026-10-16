@@ -502,7 +502,8 @@ empty or placeholder sections, decorated no-test markers, and `Nothing for the
 Client to test` without `: <reason>` refuse with the exact remedy, and
 repositories that feed a Client release (including pinned Odoo addon sources)
 require a `## Client test notes` section unless authored by `dependabot[bot]`
-without `owner-review`. Real Client test notes use Launchplane's
+without `owner-review` (the merge train additionally verifies a pure dependency
+diff). Real Client test notes use Launchplane's
 repository mapping and scoped product profile: `director_standing` supplies
 standing acceptance. Unknown, unavailable or mismatched profile evidence keeps
 the Client acceptance path. An explicit review label or non-neutral review check

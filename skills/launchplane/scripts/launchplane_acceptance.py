@@ -53,15 +53,18 @@ def _managed_runtime_entries(
 def _read_active_client_profile(
     settings: dict[str, Any], entry: dict[str, Any]
 ) -> dict[str, Any] | None:
-    product = operator.public_identifier(entry.get("product"))
-    profile_payload = operator.request_launchplane_read(
-        service_url=settings["service_url"], settings=settings,
-        path=operator.helper_command_path("product-profile-read").format(product=product),
-        query={}, timeout=10,
-    )
-    profile = operator.summarize_product_profile_read(
-        request={"product": product}, provider_payload=profile_payload
-    )
+    try:
+        product = operator.public_identifier(entry.get("product"))
+        profile_payload = operator.request_launchplane_read(
+            service_url=settings["service_url"], settings=settings,
+            path=operator.helper_command_path("product-profile-read").format(product=product),
+            query={}, timeout=10,
+        )
+        profile = operator.summarize_product_profile_read(
+            request={"product": product}, provider_payload=profile_payload
+        )
+    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+        return None
     result = profile["result"]
     if (
         profile["status"] != "ok"
@@ -165,11 +168,11 @@ def read_client_release_repository(repository: str) -> bool:
         ]
         if len(matches) > 1:
             return False
-        if len(matches) == 1:
-            return _read_active_client_profile(settings, matches[0]) is not None
+        for entry in matches:
+            if _read_active_client_profile(settings, entry) is not None:
+                return True
         for entry in managed:
-            driver_id = entry.get("driver_id")
-            if isinstance(driver_id, str) and driver_id and driver_id != "odoo":
+            if entry.get("driver_id") != "odoo":
                 continue
             result = _read_active_client_profile(settings, entry)
             if result is None or result.get("driver_id") != "odoo":
@@ -179,7 +182,7 @@ def read_client_release_repository(repository: str) -> bool:
                 str(lane["instance"])
                 for lane in (result.get("lanes") or [])
                 if isinstance(lane, dict) and lane.get("instance") in {"prod", "testing"}
-            ] or ["prod", "testing"]
+            ]
             for instance in dict.fromkeys(lanes):
                 if _lane_pins_addon_source(
                     settings, product=product, instance=instance, target_key=target_key

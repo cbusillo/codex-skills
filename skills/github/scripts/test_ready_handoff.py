@@ -281,6 +281,8 @@ class ReadyTests(unittest.TestCase):
             "Nothing for the Client to test. Documentation-only change.",
             "Nothing for the Client to test; automated tooling.",
             "Nothing for the Client to test, automated tooling.",
+            "Nothing for the Client to test - placeholder",
+            "Nothing for the Client to tests: extra s.",
             "Nothing for the Client to test in this source-only repair; duplicate tools removed.",
             "nothing for the client to test: wrong case.",
         ):
@@ -314,7 +316,8 @@ class ReadyTests(unittest.TestCase):
             "Summary\n\n- Client test notes: Try the new command.",
             "## Client test notes\n\nNone",
             "## Client test notes\n\nN/A.",
-            "## Client test notes\n\nNothing for the Client to test - placeholder",
+            "## Client test notes\n\nTODO - add steps",
+            "## Client test notes\n\nTBD - later",
         ):
             with self.subTest(body=body):
                 self.reader.pr["body"] = body
@@ -326,7 +329,28 @@ class ReadyTests(unittest.TestCase):
         self.client_release.return_value = True
         message = self.refuse()
         self.assertIn("## Client test notes", message)
-        self.reader.pr["user"] = {"login": "dependabot[bot]"}
+        self.reader.pr["user"] = {"login": "dependabot[bot]", "type": "Bot"}
+        self.post()
+
+    def test_batch_sections_and_nested_headings_match_train_rules(self):
+        self.reader.pr["body"] = (
+            "## Client test notes\n"
+            "Intro for batch.\n"
+            "### #10\nTry feature A.\n"
+            "### #11\nNothing for the Client to test: internal refactor.\n"
+        )
+        self.reader.pr["labels"] = [{"name": "owner-review"}]
+        self.assertEqual(
+            self.refuse(),
+            "The Client review label requires real Client test notes.",
+        )
+        self.reader.pr["labels"] = []
+        self.reader.pr["body"] = (
+            "## Client test notes\n\n"
+            "## Owner test notes\n"
+            "### Owner test notes\n"
+            "Nothing for the Client to test: nested heading."
+        )
         self.post()
 
     def test_decorated_no_test_marker_and_fenced_heading_refuse(self):
