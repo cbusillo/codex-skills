@@ -1128,20 +1128,45 @@ def _edit_issue_impl(
         steps.append("add_labels")
     for label in normalized_remove_labels:
         encoded = urllib.parse.quote(label, safe="")
-        _call_api(
-            "DELETE",
-            f"/repos/{resolved_repo}/issues/{number}/labels/{encoded}",
-            None,
-            gh_cmd=gh_cmd,
-            operation=operation,
-            actor=actor,
-            expected_actor=expected_actor,
-            completed_steps=steps,
-            failed_step="remove_label",
-            is_write=True,
-            failure_payload=failure_payload,
-            retry_summaries=retry_summaries,
+        removal_summary_index = len(retry_summaries)
+        api_kwargs = dict(
+            gh_cmd=gh_cmd, operation=operation, actor=actor,
+            expected_actor=expected_actor, completed_steps=steps,
+            failure_payload=failure_payload, retry_summaries=retry_summaries,
         )
+        try:
+            _call_api(
+                "DELETE", f"/repos/{resolved_repo}/issues/{number}/labels/{encoded}",
+                None, failed_step="remove_label", is_write=True, **api_kwargs,
+            )
+        except IssueError as error:
+            # A replay can get 404 after an earlier DELETE succeeded unseen.
+            # Only this endpoint's absent-label response permits reconciliation.
+            if not (
+                error.api_result and error.api_result.get("status") == 404
+                and error.failure.cause == "not_found"
+                and error.failure.message == "Resource not found: Label does not exist"
+            ):
+                raise
+            readback = _call_api(
+                "GET", f"/repos/{resolved_repo}/issues/{number}", None,
+                failed_step="reconcile_remove_label", is_write=False, **api_kwargs,
+            ).body
+            labels = readback.get("labels") if isinstance(readback, dict) else None
+            if not (
+                isinstance(readback, dict) and readback.get("number") == number
+                and isinstance(labels, list)
+                and all(isinstance(item, dict) and isinstance(item.get("name"), str)
+                        and item["name"] for item in labels)
+                and all(item["name"].casefold() != label.casefold() for item in labels)
+            ):
+                raise error
+            removal_summary = retry_summaries[removal_summary_index]
+            removal_summary.outcome_certainty = "confirmed"
+            removal_summary.recommended_next_action = "none"
+            removal_summary.exhausted_reason = None
+            removal_summary.retry_eligible = True
+            steps.append("reconcile_remove_label")
         steps.append("remove_label")
     if normalized_add_assignees:
         _call_api(

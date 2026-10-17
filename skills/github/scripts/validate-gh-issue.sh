@@ -1246,6 +1246,32 @@ grep -q -- '--method POST.* /repos/owner/repo/issues/42/assignees' "$log"
 grep -q -- '--method DELETE.* /repos/owner/repo/issues/42/assignees' "$log"
 grep -q -- '--method GET.* /repos/owner/repo/issues/42' "$log"
 
+# Exercise the real wrapper and HTTP parser, including stderr from gh on 404.
+cat >"$tmpdir/absent-label-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+    *'/user'*) printf '{"login":"fixture-automation"}\n' ;;
+    *'--method POST'*'/issues/42/labels'*) cat >/dev/null; printf '[{"name":"plan:active"}]\n' ;;
+    *'--method DELETE'*'/issues/42/labels/plan%3Awaiting'*)
+        printf 'HTTP/2.0 404 Not Found\r\ncontent-type: application/json\r\n\r\n{"message":"Label does not exist"}\n'
+        printf 'gh: Label does not exist (HTTP 404)\n' >&2
+        exit 1 ;;
+    *'--method GET'*'/issues/42'*)
+        printf '{"number":42,"title":"Issue title","state":"open","html_url":"https://github.com/owner/repo/issues/42","labels":[{"name":"plan:active"}],"assignees":[],"milestone":null}\n' ;;
+    *) printf 'unexpected gh args: %s\n' "$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$tmpdir/absent-label-gh"
+for edit_pass in first rerun; do
+    GH_ISSUE_GH="$tmpdir/absent-label-gh" \
+        "$repo_root/github/scripts/gh-issue" edit 42 --repo owner/repo \
+        --add-label plan:active --remove-label plan:waiting \
+        >"$stdout_log" 2>"$stderr_log"
+    assert_helper_envelope "$stdout_log" github.issue.edit 'https://github.com/owner/repo/issues/42'
+    jq -e '.disposition == "complete" and .outcome_certainty == "confirmed" and .recommended_next_action == "none" and .labels == ["plan:active"]' "$stdout_log" >/dev/null
+done
+
 cat >"$tmpdir/record-comment-helper-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
