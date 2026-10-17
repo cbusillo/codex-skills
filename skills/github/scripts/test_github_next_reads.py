@@ -23,6 +23,25 @@ from unittest.mock import patch
 from github_next_reads import NextReads, ReadDeadline
 
 
+@contextlib.contextmanager
+def self_signals_reach_sender():
+    """Pin the allowed delivery that made #1990 intermittent.
+
+    POSIX may deliver a process-directed signal to the thread that sent it,
+    while only the main Python thread runs handlers. Rerouting self-signals
+    makes a helper-thread os.kill(getpid()) stall every run instead of some.
+    Signals for other processes keep their real route.
+    """
+    real_kill = os.kill
+    def kill(pid, sig):
+        if pid == os.getpid():
+            signal.raise_signal(sig)
+        else:
+            real_kill(pid, sig)
+    with patch.object(os, "kill", kill):
+        yield
+
+
 def cancellation_fixture(mode: str) -> None:
     """Exercise the real CLI envelope and reader/retry path, without GitHub."""
     from test_gh_plan_next import load_module
@@ -189,6 +208,16 @@ def test_cli_cancellation_and_fatal_reads_interrupt_backoff_and_join_workers() -
         print(f"cancellation fixture: {metrics}")
 
 
+def test_cancellation_fixture_interrupts_when_launched_with_sigint_ignored() -> None:
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--cancellation-fixture", "inline"],
+                              capture_output=True, text=True, timeout=20)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    assert proc.returncode == 130, (proc.stdout, proc.stderr)
+
+
 def test_cli_main_thread_inline_interrupt_is_terminal_cancellation() -> None:
     # REST read, quota wait, the quota read's own retry, recoverable Project focus, milestones.
     for mode in ("inline", "inline_preflight", "inline_nested_preflight", "inline_focus", "inline_milestone"):
@@ -205,6 +234,21 @@ def test_cli_main_thread_inline_interrupt_is_terminal_cancellation() -> None:
         metrics = json.loads(proc.stderr.splitlines()[-1])
         assert metrics["latency"] < 5, metrics
         print(f"inline cancellation fixture: {metrics}")
+
+
+def test_signal_routing_pin_leaves_other_processes_alone() -> None:
+    received = []
+    previous = signal.signal(signal.SIGTERM, lambda *_: received.append("fixture"))
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        with self_signals_reach_sender():
+            os.kill(child.pid, signal.SIGTERM)
+        assert not received, "a signal for another process reached the fixture"
+        assert child.wait(timeout=5) == -signal.SIGTERM
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        child.kill()
+        child.wait()
 
 
 def test_cancelled_global_graphql_read_never_launches_transport() -> None:
@@ -372,10 +416,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--cancellation-fixture":
-        # Exercise the allowed kernel routing that exposed #1990: an untargeted
-        # process signal reaches its sender, while only the main Python thread
-        # can run the handler. Thread-directed signals retain their real route.
-        with patch.object(os, "kill", side_effect=lambda _pid, sig: signal.raise_signal(sig)):
+        # A shell's background job inherits SIGINT ignored; the stimulus needs Python's handler.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        with self_signals_reach_sender():
             cancellation_fixture(sys.argv[2])
     else:
         main()
