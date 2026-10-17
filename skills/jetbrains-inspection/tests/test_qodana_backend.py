@@ -49,6 +49,15 @@ def finding(file="src/a.py", line=3, rule="PyUnresolvedReferencesInspection", me
 
 
 class QodanaTests(unittest.TestCase):
+    def test_nested_desktop_preparation_cannot_prepare_qodana_snapshot_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            private = Path(temporary)
+            with self.assertRaises(backend.Blocked):
+                backend.preparation({"prepare": {"python": {
+                    "version": "3.12", "projectPath": "scripts",
+                }}}, private, "python")
+            self.assertEqual(list(private.iterdir()), [])
+
     temp: tempfile.TemporaryDirectory[str]
     root: Path
     repo: Path
