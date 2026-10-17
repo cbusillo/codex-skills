@@ -1238,13 +1238,16 @@ def repository_preparation_target(context: dict[str, Any]) -> Path:
 
 def repository_preparation_sdk_table(context: dict[str, Any]) -> Path | None:
     config_dir = context.get("ide_config_dir")
-    lanes = configured_inspection_lanes(context)
+    lanes = context.get("_repository_preparation_lanes") or configured_inspection_lanes(context)
     if lanes:
         python_lanes = [
             lane for lane in lanes
             if (product := product_for_selector(lane.ide)) is not None and product.key == "pycharm"
         ]
-        candidates = python_lanes or lanes
+        argv = context.get("_repository_preparation_argv", [])
+        project_path = argv[argv.index("--repo") + 1] if "--repo" in argv else None
+        matching = [lane for lane in python_lanes if lane.project_path == project_path] if project_path else []
+        candidates = matching or python_lanes or lanes
         if len(candidates) != 1:
             return None
         selection = resolve_ide_selection({"ide": candidates[0].ide})
@@ -2535,12 +2538,13 @@ def explicit_nested_lane_context(args: argparse.Namespace, context: dict[str, An
     lane = matching[0]
     result = {key: value for key, value in context.items()
               if key not in {"inspection_lanes", "_inspection_lanes", "ide_selection", "ide_config_dir", "ide_app_path"}}
-    result.update(ide=lane.ide, ide_app=None, ide_channel=None, ide_version=None,
+    result.update(ide=lane.ide, ide_app=getattr(args, "ide_app", None),
+                  ide_channel=getattr(args, "ide_channel", None), ide_version=getattr(args, "ide_version", None),
                   inspection_lane=lane.public(), project_path=str(project),
                   exact_route_path=str(project), lifecycle_target_path=str(project))
     args.ide = lane.ide
     args.project_path = str(project)
-    args.ide_app = args.ide_channel = args.ide_version = None
+    result["_repository_preparation_lanes"] = lanes
     selection = resolve_ide_selection(result)
     if selection:
         result["ide_selection"] = selection.public()

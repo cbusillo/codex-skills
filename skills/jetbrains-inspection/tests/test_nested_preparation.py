@@ -108,9 +108,9 @@ else:
                        scope="whole_project", _inspection_lanes=lanes)
         self.args.ide = None
         self.args.repo_explicit = True
-        self.args.ide_app = "IntelliJ IDEA"
-        self.args.ide_channel = "eap"
-        self.args.ide_version = "fixture-version"
+        self.args.ide_app = None
+        self.args.ide_channel = None
+        self.args.ide_version = None
         with (
             patch.object(jb_inspect, "resolve_ide_selection", return_value=None),
             patch.object(jb_inspect, "run_configured_inspection_lanes", side_effect=AssertionError("nested scope widened")),
@@ -137,6 +137,37 @@ else:
             self.args.repo_explicit = True
             context["repo_path"] = str(self.root / "src")
             self.assertTrue(jb_inspect.command_closeout(self.args, context)["lanes"])
+
+    def test_explicit_ide_selectors_are_retained_but_root_defaults_are_not(self):
+        lanes = jb_inspect.parse_inspection_lanes({"lanes": [
+            {"id": "python", "ide": "PyCharm", "include": ["scripts/*.py"], "projectPath": "scripts"},
+        ]})
+        context = self.context()
+        context.update(repo_path=str(self.project), _inspection_lanes=lanes,
+                       ide_app="IntelliJ IDEA", ide_channel="eap", ide_version="root-version")
+        self.args.repo_explicit = True
+        self.args.ide_app = "PyCharm"
+        self.args.ide_channel = "stable"
+        self.args.ide_version = "fixture-version"
+        with patch.object(jb_inspect, "resolve_ide_selection", return_value=None):
+            selected = jb_inspect.explicit_nested_lane_context(self.args, context)
+        for key in ("ide_app", "ide_channel", "ide_version"):
+            self.assertEqual(selected[key], getattr(self.args, key))
+
+    def test_preparation_selects_the_python_lane_for_its_project(self):
+        lanes = jb_inspect.parse_inspection_lanes({"lanes": [
+            {"id": "fixture", "ide": "PyCharm", "include": ["fixture/*.py"], "projectPath": "fixture"},
+            {"id": "python", "ide": "PyCharm", "include": ["scripts/*.py"], "projectPath": "scripts"},
+        ]})
+        from types import SimpleNamespace
+        config = self.root / "private-config"
+        context = self.context()
+        context["_inspection_lanes"] = lanes
+        with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}), patch.object(
+            jb_inspect, "resolve_ide_selection", return_value=SimpleNamespace(config_dir=config)
+        ) as resolve:
+            self.assertEqual(jb_inspect.repository_preparation_sdk_table(context), config / "options/jdk.table.xml")
+        resolve.assert_called_once_with({"ide": lanes[1].ide})
 
     def test_nested_symlink_to_root_refuses_without_mutating_jvm(self):
         self.project.rmdir()
