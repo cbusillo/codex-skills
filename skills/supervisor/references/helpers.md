@@ -967,7 +967,8 @@ before `--verified-target`, then read back once; do not replay an uncertain send
 
 ### Browser and Computer Use preflight
 
-For a browser brief, add `--require-browser` to `iterm_tab.py new`. Ordinary
+Page checks stay headless. For a GUI brief explicitly naming the Agents Chrome
+profile, add `--require-browser` to `iterm_tab.py new`. Ordinary
 source briefs get warnings and keep working. `--without-browser` skips Claude's
 bounded connected-browser listing; the two flags cannot be combined. Neither
 flag permits an unbriefed browser or desktop action.
