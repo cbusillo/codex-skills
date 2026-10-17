@@ -573,16 +573,37 @@ entrypoint = "supervisor/scripts/foreign_watch.py"
 intent = "Notify the Supervisor of foreign comments and Launchplane review records within an explicit repository scope."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "Paged GET /repos/{repo}/issues/comments?since={watermark}"
+endpoint_or_command = "Paged GET /repos/{repo}/issues/comments?since={watermark}; GET /repos/{repo}/issues/comments/{id} and paged GET /repos/{repo}/issues/{number}/comments?since= for the Director's mention approval and any later answer"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
-retained_graphql_rationale = "No GraphQL or full-history scans; only the since-scoped repository comment feed."
-source_refs = ["supervisor/scripts/foreign_watch.py:read_comments", "supervisor/scripts/foreign_watch.py:scan"]
-test_refs = ["supervisor/scripts/test_foreign_watch.py:test_filter_and_review_records", "supervisor/scripts/test_foreign_watch.py:test_quota_retry_time_and_failed_read_retention"]
+retained_graphql_rationale = "No GraphQL or full-history scans; only the since-scoped repository comment feed. Mentions outside the listed repositories use github.director_mentions.search."
+source_refs = ["supervisor/scripts/foreign_watch.py:read_comments", "supervisor/scripts/foreign_watch.py:scan", "supervisor/scripts/foreign_watch.py:scan_mentions"]
+test_refs = ["supervisor/scripts/test_foreign_watch.py:test_filter_and_review_records", "supervisor/scripts/test_foreign_watch.py:test_quota_retry_time_and_failed_read_retention", "supervisor/scripts/test_foreign_watch.py:MentionTests"]
+
+[[operations]]
+id = "github.director_mentions.search"
+request_priority = "bulk"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Read-only search under the Director's own active gh login, which can see private repositories the automation App is not installed in. Runs only with the Director's standing approval (Q455 on cbusillo/codex-skills#2073): an unquoted, unqualified first-line answer by the Director or a recorded Director decision, not withdrawn by a later answer; callers verify it under the automation identity and otherwise report a coverage gap. No writes, no App token, no grants."
+entrypoint = "github/scripts/director_mentions.py"
+intent = "Find threads outside a watched scope that mention the Director, for the Supervisor's foreign watch and the external-comment radar."
+current_transport = "gh_cli_wrapper"
+selected_transport = "gh_cli_wrapper"
+endpoint_or_command = "gh-with-env-token api --method GET /user and paged GET /search/issues?q=mentions:{login} updated:{since}..{until}, with the per-command active-auth fallback and no automation env file"
+quota_bucket = "search"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL; REST search returns thread links, and the caller reads nothing else under the Director's login."
+source_refs = ["github/scripts/director_mentions.py:director_get", "github/scripts/director_mentions.py:approval_gap", "github/scripts/director_mentions.py:search"]
+test_refs = ["github/scripts/test_director_mentions.py:DirectorReadRouteTests", "github/scripts/test_director_mentions.py:ApprovalTests", "github/scripts/test_director_mentions.py:SearchTests"]
 
 [[operations]]
 id = "github.direction.director_waits"
@@ -1547,7 +1568,7 @@ id = "github.comment_radar"
 request_priority = "bulk"
 capabilities = ["metadata_read", "issues_read", "pull_requests_read"]
 permission_mode = "delegated"
-permission_note = "Read-only portfolio, explicit-thread and opt-in outbound discovery under the configured identity. Existing metadata, Issues and Pull requests read grants and their safe probes suffice; no default-profile expansion or identity fallback. Search sees only accessible repositories. Denied reads, partial search results and the 1,000-result cap produce degraded coverage and exit 3, preserving collected attention."
+permission_note = "Read-only portfolio, explicit-thread and opt-in outbound discovery under the configured identity. Existing metadata, Issues and Pull requests read grants and their safe probes suffice; no default-profile expansion or identity fallback. Search sees only accessible repositories. Denied reads, partial search results and the 1,000-result cap produce degraded coverage and exit 3, preserving collected attention. Outbound mentions outside the scan use github.director_mentions.search under its standing approval, or report the gap."
 entrypoint = "github-work-rollup/scripts/github_unanswered_comments.py"
 intent = "Report external comments needing attention, handled closed threads, and replies after the Director's last human activity in outside repositories."
 current_transport = "composite"
@@ -1560,8 +1581,8 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "degraded_snapshot"
 retained_graphql_rationale = "GraphQL reaction timestamps and description/review lastEditedAt are required to compare awareness and human activity against the current message version; REST issue updated_at also changes on unrelated thread activity."
-source_refs = ["github-work-rollup/scripts/github_unanswered_comments.py:collect_payload", "github-work-rollup/scripts/github_unanswered_comments.py:outbound_threads", "github-work-rollup/scripts/github_unanswered_comments.py:collect_thread", "github-work-rollup/scripts/github_unanswered_comments.py:collect_comment_reactions"]
-test_refs = ["github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_lists_authored_and_commented_threads_after_last_human_activity", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_search_paginates_and_reports_search_cap", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_partial_or_malformed_search_is_degraded", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_read_failure_preserves_attention_and_degrades", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_uses_existing_exit_contract", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_others_edits_do_not_advance_outbound_human_cutoff"]
+source_refs = ["github-work-rollup/scripts/github_unanswered_comments.py:collect_payload", "github-work-rollup/scripts/github_unanswered_comments.py:outbound_threads", "github-work-rollup/scripts/github_unanswered_comments.py:collect_thread", "github-work-rollup/scripts/github_unanswered_comments.py:collect_comment_reactions", "github-work-rollup/scripts/github_unanswered_comments.py:outbound_mentions"]
+test_refs = ["github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_lists_authored_and_commented_threads_after_last_human_activity", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_search_paginates_and_reports_search_cap", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_partial_or_malformed_search_is_degraded", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_read_failure_preserves_attention_and_degrades", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_uses_existing_exit_contract", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_others_edits_do_not_advance_outbound_human_cutoff", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_lists_mentions_outside_scope_including_private_and_mention_only_threads", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_without_mention_approval_reports_the_gap"]
 
 [[operations]]
 id = "github.work_evidence"
