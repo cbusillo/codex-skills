@@ -2390,9 +2390,10 @@ class TerminalTests(unittest.TestCase):
                     account_choice.prepare_launch(choice)
                 self.assertNotIn(folder, str(failed.exception))
                 reasons[code] = str(failed.exception)
-            self.assertIn("macOS", reasons[errno.EPERM])
-            self.assertNotIn("check write access", reasons[errno.EPERM])
-            self.assertIn("check write access", reasons[errno.EACCES])
+            self.assertIn("Supervisor's terminal session", reasons[errno.EPERM])
+            self.assertNotIn("Supervisor's terminal session", reasons[errno.EACCES])
+            for reason in reasons.values():
+                self.assertIn("check write access", reason)
 
     def test_partial_batch_failure_preserves_started_and_failed_launch_identities(self):
         with tempfile.TemporaryDirectory() as folder:
