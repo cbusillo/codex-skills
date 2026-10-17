@@ -761,6 +761,10 @@ work, do not continue from the latest operational finding alone. Before the next
 slice, state how it fits the active Launchplane plan, issue graph, rollout
 sequence, or product ownership boundary.
 
+Before designing a deploy, testing or promotion workflow in a product
+repository, or proposing a grant, read `cbusillo/launchplane`'s `DIRECTION.md`
+at `origin/main`; only the overall direction file is loaded at session start.
+
 If an operational finding changes the plan, update the owning GitHub plan issue
 or PR before treating the new path as canonical. Prefer explicit blocker,
 sub-issue, or related-issue edges over burying direction changes in chat.

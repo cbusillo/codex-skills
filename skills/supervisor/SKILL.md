@@ -278,6 +278,10 @@ closure. To see the sessions as familiar iTerm tabs, attach from iTerm with
 `tmux -L supervisor -CC attach -t <window-id>` using the returned container id.
 Detaching or reattaching leaves agent sessions running; never kill the server
 to disconnect the view.
+The view is read-only. When a worker needs the Director's answers, for example
+a computer-use session, tell the Director at launch that you will relay: bring
+each question to chat as a numbered Q and send the reply with
+`iterm_tab.py send` at a verified idle prompt.
 
 The shared launcher disables Claude Code prompt suggestions with
 `--settings '{"promptSuggestionEnabled": false}'` on both backends. Keep that
@@ -314,6 +318,8 @@ including non-dim text, establishes neither its author nor approval.
   for authorization, credentials, security, policy or guidance changes, and
   hard debugging, as recorded in the
   [direction#28 effort decision](https://github.com/cbusillo/direction/issues/28#issuecomment-5999464811).
+- When host load is high, add CPU-light work (read-only analysis, reviews,
+  docs, repositories with small suites) instead of holding launches.
 
 ## The Pattern
 
@@ -342,6 +348,11 @@ including non-dim text, establishes neither its author nor approval.
    acceptance), and truly independent work where parallel wall-clock time
    matters.
    The brief says what the session may do, where it stops, and where it asks.
+   A fix or diagnosis brief also asks which invariant should have prevented
+   the failure (add it as a test), why it went unnoticed (reuse existing
+   monitors), what the fix could block on global paths such as the train,
+   deploys or recovery, and whether a stuck condition underneath keeps
+   producing symptoms.
    Never widen a brief after launch. Write it from the decision record,
    quoting the Director's words, never from a PR's wording. When a request
    names a visual thing, check which one before writing the brief. A session
@@ -381,7 +392,13 @@ including non-dim text, establishes neither its author nor approval.
    ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)).
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
-   issue do not clash.
+   issue do not clash. The anchor must be claimable: for a `plan:waiting`
+   issue, split out a small active child issue, or give the existing wait
+   evidence that `claim --wait-resolved` accepts.
+   Before a launch batch, compare PRs merged with PRs opened in each
+   repository over the last few hours. If merges are behind and no merge-path
+   fix is available, launch only finishing work. Keep each repository under
+   about 8 open agent PRs.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Director question:`. Follow the shared
    [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
