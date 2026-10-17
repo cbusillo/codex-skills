@@ -11,7 +11,8 @@ root is the repository root, or the main checkout's root for a linked worktree
 Trust on a parent folder does not cover a git repository nested inside it.
 
 Director decision (October 17, 2026): everything under ~/Developer is trusted.
-The launcher writes that record, in every configured Claude home, only for
+The launcher writes that record, in every configured Claude home and in the
+default home (~/.claude.json, Q471 on codex-skills#2100), only for
 roots under ~/Developer and for linked worktrees of those repositories in the
 configured worktree root. Every other folder must already be trusted in the
 selected home. Only that one key changes; logins and other settings are kept.
@@ -122,6 +123,7 @@ def plan(directory, selected, homes, main_root, developer=None, worktrees=None):
     """Return the (config, roots) writes a launch needs, or refuse before any write.
 
     `homes` returns every configured Claude account; it is read only for folders in scope.
+    The default home is included too when its `.claude.json` exists; it is never created.
     """
     directory = Path(directory)
     if not directory.is_absolute() or not directory.is_dir():
@@ -143,7 +145,11 @@ def plan(directory, selected, homes, main_root, developer=None, worktrees=None):
                 "the trust dialog yourself, then retry")
         return []
     writes = []
-    for path in dict.fromkeys(config_file(choice) for choice in [selected, *homes()]):
+    paths = [config_file(choice) for choice in [selected, *homes()]]
+    default = config_file({"env": {}})
+    if default.exists():
+        paths.append(default)
+    for path in dict.fromkeys(paths):
         _, _, projects = read_projects(path)
         needed = [root for root in roots if not trusted(projects, root)]
         if needed:

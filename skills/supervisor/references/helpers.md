@@ -1234,8 +1234,8 @@ main checkout's root for a linked worktree
 ([permissions](https://code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder)).
 Trust on a parent folder does not cover a repository inside it. Under the
 Director's decision in [#2100](https://github.com/cbusillo/codex-skills/issues/2100),
-the launcher sets that one key in every configured Claude home, before any
-tab, when the root is under `~/Developer`, or the folder is a linked worktree
+the launcher sets that one key in every configured Claude home, and in the
+default home's `~/.claude.json` when it exists (Q471), before any tab, when the root is under `~/Developer`, or the folder is a linked worktree
 in the configured [worktree root](../../github/references/worktrees.md#per-host-configuration)
 whose main checkout is under `~/Developer`. For a worktree it records both the
 main checkout's root and the worktree's own root, because Claude's docs
@@ -1251,7 +1251,7 @@ the key again. This relies on Claude Code saving by renaming a new file over
 when the selected home already trusts its root; otherwise the launch refuses
 and names the home, so you can open `claude` there and review the dialog
 yourself. A configured home without `.claude.json` also refuses before any
-write. The launcher leaves every other key, including the login, unchanged.
+write; a default home without one is skipped, never created. The launcher leaves every other key, including the login, unchanged.
 Before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
 runs `CODEX_HOME=<selected-home> codex app-server daemon start` for each selected
 home, with a 30-second command timeout. Native `start` reuses a healthy running

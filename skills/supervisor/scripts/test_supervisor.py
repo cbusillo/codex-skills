@@ -1608,7 +1608,6 @@ class ClaudeTrustTests(unittest.TestCase):
             config.chmod(0o600)
         accounts = [{"name": "main", "provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(self.homes[0])}},
                     {"name": "spare", "provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(self.homes[1])}},
-                    {"name": "default", "provider": "anthropic", "env": {}},
                     {"name": "codex", "provider": "openai", "env": {"CODEX_HOME": str(self.root / "codex")}}]
         self.choice = {"provider": "anthropic", "env": accounts[0]["env"]}
         for target in (patch.object(Path, "home", return_value=self.user),
@@ -1741,12 +1740,21 @@ class ClaudeTrustTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cd /absolute/repository"):
             iterm_tab.prepare_launches(account_launch_args(command))
         repository = git_repository(self.developer / "repository")
-        self.configs[2].unlink()
-        before = [config.read_bytes() for config in self.configs[:2]]
+        self.configs[1].unlink()
+        before = [self.configs[0].read_bytes(), self.configs[2].read_bytes()]
         with self.assertRaisesRegex(ValueError, "does not exist"):
             self.launch(repository)
-        self.assertEqual([config.read_bytes() for config in self.configs[:2]], before)
+        self.assertEqual([self.configs[0].read_bytes(), self.configs[2].read_bytes()], before)
+        self.assertFalse(self.configs[1].exists())
+
+    def test_unused_default_home_is_not_created(self):
+        repository = git_repository(self.developer / "repository")
+        self.configs[2].unlink()
+        self.launch(repository)
         self.assertFalse(self.configs[2].exists())
+        for config in self.configs[:2]:
+            with self.subTest(config=config):
+                self.assertIs(claude_projects(config)[str(repository)]["hasTrustDialogAccepted"], True)
 
 
 class TerminalTests(unittest.TestCase):
