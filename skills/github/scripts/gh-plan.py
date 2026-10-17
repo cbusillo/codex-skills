@@ -5168,10 +5168,11 @@ def close_error_with_recovery(
 
 
 def close_attention_preflight(
-    issue_repo: str, number: int, issue: dict[str, Any], decision_url: str | None,
+    issue_repo: str, number: int, issue: dict[str, Any], decision_url: str | None, gh_cmd: str,
 ) -> dict[str, Any]:
     try:
-        return github_close_attention.check(issue_repo, number, issue=issue, decision_url=decision_url)
+        return github_close_attention.check(issue_repo, number, issue=issue, decision_url=decision_url,
+                                            gh_cmd=gh_cmd)
     except github_close_attention.CloseAttentionError as exc:
         raise PlanError(
             str(exc),
@@ -5221,10 +5222,11 @@ def cmd_close(args: argparse.Namespace) -> None:
     owner_decision: dict[str, Any] | None = None
     if close_reason == "not_planned" and not issue_matches_close_reason(issue, close_reason):
         owner_decision = check_owner_decides_not_planned(issue_repo, number, issue)
-    close_attention = close_attention_preflight(issue_repo, number, issue, getattr(args, "unanswered_decision", None))
     close_comment = read_body(args) if args.body is not None or args.body_file else ""
     plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
+    close_attention = close_attention_preflight(issue_repo, number, issue, getattr(args, "unanswered_decision", None),
+                                                gh_cmd)
     actor = issue_actor
     completed_steps: list[str] = []
     comment_result: dict[str, Any] = {}

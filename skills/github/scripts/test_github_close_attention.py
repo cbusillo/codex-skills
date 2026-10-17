@@ -49,7 +49,7 @@ def row(number: int = 7, *, author: str = "client", author_class: str = "person"
 
 
 def radar(*rows: dict[str, Any], status: str = "attention", seen: list[list[str]] | None = None):
-    def run(threads: list[str]) -> dict[str, Any]:
+    def run(threads: list[str], _gh_cmd: str | None = None) -> dict[str, Any]:
         if seen is not None:
             seen.append(threads)
         return {"status": status, "attention": list(rows), "coverage": {"errors": []}}
@@ -84,7 +84,7 @@ class CloseAttentionTests(unittest.TestCase):
         self.assertEqual(result["result"], "passed")
 
     def test_incomplete_coverage_refuses(self) -> None:
-        def degraded(_threads: list[str]) -> dict[str, Any]:
+        def degraded(_threads: list[str], _gh_cmd: str | None = None) -> dict[str, Any]:
             return {"status": "degraded", "attention": [],
                     "coverage": {"errors": [{"repo": REPO, "lane": "issue_comments", "error": "HTTP 502"}]}}
         with self.assertRaises(gate.CloseAttentionError) as refused:
@@ -93,7 +93,7 @@ class CloseAttentionTests(unittest.TestCase):
         self.assertIn("HTTP 502", str(refused.exception))
 
     def test_closed_issue_is_not_checked(self) -> None:
-        def never(_threads: list[str]) -> dict[str, Any]:
+        def never(_threads: list[str], _gh_cmd: str | None = None) -> dict[str, Any]:
             raise AssertionError("an already-closed issue needs no comment check")
         result = gate.check(REPO, 7, issue={"state": "closed"}, radar=never)
         self.assertEqual(result["result"], "skipped")
@@ -127,13 +127,16 @@ class CloseAttentionTests(unittest.TestCase):
 
     def test_radar_failure_is_degraded_coverage(self) -> None:
         commands: list[list[str]] = []
+        routes: list[str] = []
 
-        def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
             commands.append(command)
+            routes.append(kwargs["env"]["GITHUB_UNANSWERED_COMMENTS_GH"])
             return subprocess.CompletedProcess(command, 3, '{"status": "degraded", "error": "auth"}', "")
-        payload = gate.run_radar([f"{REPO}#7", f"{REPO}#9"], run)
+        payload = gate.run_radar([f"{REPO}#7", f"{REPO}#9"], "fake-gh", run)
         self.assertEqual(payload["status"], "degraded")
         self.assertEqual(commands[0][-4:], ["--thread", f"{REPO}#7", "--thread", f"{REPO}#9"])
+        self.assertEqual(routes, ["fake-gh"])
 
 
 if __name__ == "__main__":

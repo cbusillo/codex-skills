@@ -1582,7 +1582,7 @@ def _close_attention(
     repo: str, number: int, decision_url: Optional[str], *, expected_actor: Optional[str],
 ) -> dict[str, Any]:
     try:
-        return github_close_attention.check(repo, number, decision_url=decision_url)
+        return github_close_attention.check(repo, number, decision_url=decision_url, gh_cmd=DEFAULT_GH)
     except github_close_attention.CloseAttentionError as exc:
         raise _local_error(
             str(exc),

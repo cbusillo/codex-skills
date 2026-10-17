@@ -14,6 +14,7 @@ Director decision on the issue is the only override.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from datetime import datetime
@@ -87,13 +88,15 @@ def linked_threads(reader: GitHubReader, repo: str, number: int, issue: dict[str
     return threads
 
 
-def run_radar(threads: list[str],
+def run_radar(threads: list[str], gh_cmd: str | None = None,
               run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> dict[str, Any]:
     command = ["uv", "run", "--quiet", str(HELPER), "--format", "json"]
     for thread in threads:
         command += ["--thread", thread]
+    # The radar reads through the same gh route as the close it guards.
+    env = {**os.environ, "GITHUB_UNANSWERED_COMMENTS_GH": gh_cmd} if gh_cmd else None
     try:
-        result = run(command, capture_output=True, text=True, check=False, timeout=HELPER_TIMEOUT_SECONDS)
+        result = run(command, capture_output=True, text=True, check=False, timeout=HELPER_TIMEOUT_SECONDS, env=env)
         payload = json.loads(result.stdout or "null")
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         return {"status": "degraded", "error": f"comment check did not finish: {error}"}
@@ -166,12 +169,13 @@ def describe(row: dict[str, Any]) -> str:
 
 
 def check(repo: str, number: int, *, issue: dict[str, Any] | None = None, decision_url: str | None = None,
-          reader: GitHubReader | None = None,
-          radar: Callable[[list[str]], dict[str, Any]] | None = None) -> dict[str, Any]:
+          gh_cmd: str | None = None, reader: GitHubReader | None = None,
+          radar: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
     """Return the passed check, or raise CloseAttentionError before any write."""
     if issue is not None and str(issue.get("state") or "").casefold() == "closed":
         return {"result": "skipped", "reason": "already_closed"}
-    client = reader or GitHubReader(operation="github.close_attention", repository=repo)
+    client = reader or (GitHubReader(operation="github.close_attention", repository=repo, gh_cmd=gh_cmd) if gh_cmd
+                        else GitHubReader(operation="github.close_attention", repository=repo))
     try:
         issue = issue if issue is not None else client.get_json(f"repos/{repo}/issues/{number}",
                                                                 step="close_attention_issue")
@@ -182,7 +186,7 @@ def check(repo: str, number: int, *, issue: dict[str, Any] | None = None, decisi
         threads, payload = [thread_ref(repo, number)], {"status": "degraded",
                                                          "error": f"linked threads unreadable: {error}"}
     else:
-        payload = (radar or run_radar)(threads)
+        payload = (radar or run_radar)(threads, gh_cmd)
     rows, gaps = unanswered_rows(payload), coverage_gaps(payload)
     result = {"threads": threads, "unanswered": rows, "coverage_gaps": gaps}
     if not rows and not gaps:
