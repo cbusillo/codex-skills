@@ -346,6 +346,49 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
 
+    def summarized_write(self, command, output, started="2025-12-31T23:59:59.400Z", finished="2026-01-01T00:00:01.200Z"):
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(1, {"type": "assistant", "timestamp": started, "message": {"content": [
+            {"type": "tool_use", "id": "write", "input": {"command": command}}]}})
+        # Claude Code repeats tool blocks in untimestamped records.
+        records.insert(2, {"type": "api-request-blob", "message": {"content": [
+            {"type": "tool_use", "id": "write", "input": {"command": command}}]}})
+        records.insert(3, {"type": "user", "timestamp": finished, "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "write", "content": output, "is_error": False}]}})
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        self.reader.paged_json.return_value = []
+        return {**self.entry, "handoff_url": None}
+
+    def test_summarized_write_created_during_the_call_is_bound(self):
+        other = "https://github.com/test/a/issues/1#issuecomment-98"
+        summary = "python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get(\"url\"))'"
+        shapes = {
+            # LP3912-D2: heredoc body with an apostrophe, then two writes in one call.
+            "two writes after a heredoc": (
+                f"cat > c.md <<'EOF'\nThe lane's passwords\nEOF\ngh-comment -R test/a --body-file c.md issue 2 | {summary}; "
+                f"gh-comment -R test/a --body-file c.md issue 1 | {summary}",
+                f"confirmed {other}\nconfirmed {self.entry['handoff_url']}"),
+            # CS2069-C1: the write chained with a read whose summary prints a dict.
+            "write chained with a read": (
+                f"gh-comment issue 1 -R test/a --body-file c.md | {summary}; gh-pr.py --repo test/a checks 2 | {summary}",
+                f"True None {self.entry['handoff_url']}\n{{'summary': {{'pendingCount': 3}}}}"),
+            "documented gh-pr.py argument order": (
+                f"gh-pr.py --repo test/a comment 1 --body-file c.md | {summary}",
+                f"True None {self.entry['handoff_url']}"),
+        }
+        for name, (command, output) in shapes.items():
+            with self.subTest(name):
+                found, _ = helper.discover_handoff(self.reader, self.summarized_write(command, output), ACTOR)
+                self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_url_printed_by_a_write_but_created_outside_the_call_is_not_bound(self):
+        # A read chained into the write may print an older shared-bot comment.
+        entry = self.summarized_write(
+            "gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/comments/99 --jq .html_url",
+            f"{self.entry['handoff_url']}\n{{}}", started="2026-01-01T00:00:30Z", finished="2026-01-01T00:00:35Z")
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, entry, ACTOR)
+
     def test_unplanned_active_inventory_followup_is_not_an_all_clear(self):
         entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
                  "_inventory_claims": [self.inventory_row(claim_comment_id=2)]}
