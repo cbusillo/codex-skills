@@ -38,11 +38,11 @@ def literal_false(node: ast.AST) -> bool:
 
 
 def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
+    if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load) and qualified(node, imports) in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
+        return True
     if isinstance(node, (ast.Assign, ast.AnnAssign)):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         value = node.value
-        if value is not None and qualified(value, imports) in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
-            return True
         if isinstance(value, (ast.Tuple, ast.List)):
             for target in targets:
                 if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts):
@@ -54,8 +54,6 @@ def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
         ) for target in targets)
     if isinstance(node, ast.Call):
         name = qualified(node.func, imports)
-        if name in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
-            return True
         if name.split(".")[0] in {"requests", "httpx", "aiohttp", "urllib3"}:
             return any(
                 keyword.arg in {"verify", "ssl", "verify_ssl", "assert_hostname"} and literal_false(keyword.value)
@@ -111,6 +109,8 @@ def findings(source: str) -> list[int]:
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     nodes = []
     for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(parents.get(node), ast.Compare):
+            continue  # Comparing a factory identity does not install or call it.
         if not unsafe(node, imports):
             continue
         while not isinstance(node, ast.stmt):
@@ -122,7 +122,14 @@ def findings(source: str) -> list[int]:
             any(isinstance(target, ast.Attribute) and target.attr in {"check_hostname", "verify_mode", "verify"} for target in
                 (node.targets if isinstance(node, ast.Assign) else [node.target]))}
     lines = source.splitlines()
-    return sorted({node.lineno for node in nodes if not has_reason(lines, node.lineno, node.col_offset, ends if isinstance(node, (ast.Assign, ast.AnnAssign)) and (node.end_lineno, node.col_offset) in ends else {})})
+    result = set()
+    for node in nodes:
+        decorators = node.decorator_list if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else []
+        line = min([node.lineno, *(decorator.lineno for decorator in decorators)])
+        adjacent = ends if (node.end_lineno, node.col_offset) in ends else {}
+        if not has_reason(lines, line, node.col_offset, adjacent):
+            result.add(line)
+    return sorted(result)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1271,7 +1271,8 @@ for this check. An installer success alone does not prove cross-account pairing.
 
 ## TLS verification lint
 
-Run `uv run scripts/check_insecure_tls.py` to check tracked Python files for
+Run `scripts/lint-tls.sh` for the complete catalog TLS gate. Its
+checker step checks tracked Python files for
 hand-built `check_hostname = False` / `CERT_NONE`, unverified contexts and common
 HTTP-client verification-off calls. The catalog validation gate runs it alongside the five Ruff TLS rules.
 It parses Python without executing it; dynamic values, parameter-provided clients and computed monkeypatches
@@ -1303,3 +1304,24 @@ review its owned-source scope and pass that explicit file list to the same
 command in CI. Document each omitted path and why on the rollout PR; a blanket
 ignore is not an exception. The reason lint rejects empty comments and bare
 question IDs or URLs; reviewers still judge the explanation and decision link.
+
+When Ruff reports the same library call, add its targeted `# noqa: S501` or
+`# noqa: S323` at that call alongside the reasoned choke-point annotation.
+The checker still requires the reason; no blanket ignore replaces it. The
+shared context-assignment exception needs no duplicate call-site comments.
+
+Adoption needs both the shared checker and Ruff S501, S502, S503, S504 and
+S323 in the repository's existing lint gate; the script alone does not check
+protocol choices. Run it with an interpreter that supports that repository's
+source grammar, for example `uv run --python 3.14 <pinned-script-url>` for
+Python 3.14 source. Do not exclude valid modern source because an older parser
+rejects it. Update the catalog's Ruff pin/selector in `scripts/lint-tls.sh` through the
+normal reviewed PR path; CI and runnable metadata both call that command.
+
+For a decorated declaration, put the reason above its first decorator. The
+annotation covers the declaration, and does not exempt unsafe code in its body.
+Factory identity comparisons used as guards do not disable verification.
+
+The complete gate selects tracked source for both linters, so untracked scratch
+files do not change the local result. Ruff also checks tracked stubs/notebooks
+and keeps its configured exclusions; the AST check parses tracked `.py` files.
