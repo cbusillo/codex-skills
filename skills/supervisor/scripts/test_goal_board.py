@@ -30,10 +30,16 @@ def pr(number, state="OPEN", comments=()):
             "comments": {"totalCount": len(comments), "nodes": list(comments)}}
 
 
-def child(number, prs=(), comments=(), total_prs=None):
+def status(action, state="Working"):
+    return f"## Current Status\n\nState: {state}\nNext action: {action}\nBlocked by: None\n"
+
+
+def child(number, prs=(), comments=(), total_prs=None, state="OPEN", label="plan:active", body=None):
     return {"number": number, "title": f"Child {number}", "url": f"https://github.com/owner/app/issues/{number}",
-            "state": "OPEN", "repository": {"nameWithOwner": "owner/app"},
-            "labels": {"totalCount": 2, "nodes": [{"name": "plan"}, {"name": "plan:active"}]},
+            "state": state, "repository": {"nameWithOwner": "owner/app"},
+            "body": status(f"Child {number} step.") if body is None else body,
+            "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": "2026-10-15T00:00:00Z",
+            "labels": {"totalCount": 2, "nodes": [{"name": "plan"}, {"name": label}]},
             "subIssuesSummary": {"total": 0, "completed": 0},
             "comments": {"totalCount": len(comments), "nodes": list(comments)},
             "closedByPullRequestsReferences": {"totalCount": len(prs) if total_prs is None else total_prs,
@@ -43,6 +49,7 @@ def child(number, prs=(), comments=(), total_prs=None):
 def track(number, children=(), comments=(), total_children=None):
     return {"number": number, "title": f"Track: {number}", "url": f"https://github.com/owner/direction/issues/{number}",
             "state": "OPEN", "milestone": {"title": f"Milestone {number}"},
+            "body": status(f"Track {number} step."), "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": None,
             "labels": {"totalCount": 2, "nodes": [{"name": "plan"}, {"name": "plan:waiting"}]},
             "comments": {"totalCount": len(comments), "nodes": list(comments)},
             "subIssues": {"totalCount": len(children) if total_children is None else total_children,
@@ -59,7 +66,9 @@ def details(**tracks):
 
 
 class GoalBoardTests(unittest.TestCase):
-    def setUp(self):
+    def __init__(self, *args, **kwargs):
+        # unittest builds one instance per test method, so each test gets its own reader.
+        super().__init__(*args, **kwargs)
         self.reader = Mock()
         self.reader.diagnostics.return_value = {}
 
@@ -130,6 +139,7 @@ class GoalBoardTests(unittest.TestCase):
         # A decision or handoff inside the window is the latest one, so a long thread stays complete.
         decided = track(1, comments=[comment("Director decision: yes")])
         decided["comments"]["totalCount"] = 145
+        decided["lastEditedAt"] = "2026-10-16T12:00:00Z"
         ready = pr(100, comments=[comment(f"Ready for the merge train\n\nHead: {HEAD}")])
         ready["comments"]["totalCount"] = 80
         decided["subIssues"] = {"totalCount": 1, "nodes": [child(12, prs=[ready])]}
@@ -166,6 +176,55 @@ class GoalBoardTests(unittest.TestCase):
         self.assertNotIn("Track: 1", text)
         self.assertIn("https://github.com/owner/app/issues/10", text)
         self.assertIn("Child 10", goal_board.markdown({**board, "checked_at": "now"}))
+
+    def test_closed_child_shows_closed_and_notes_a_stale_open_label(self):
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[
+            child(10, state="CLOSED"), child(11, state="CLOSED", label="plan:done"), child(12)])))
+        text = goal_board.markdown({**board, "checked_at": "now"}, links_only=True)
+        self.assertIn("https://github.com/owner/app/issues/10: closed (label plan:active is stale)", text)
+        self.assertIn("https://github.com/owner/app/issues/11: closed", text)
+        self.assertNotIn("issues/11: closed (", text)
+        self.assertIn("https://github.com/owner/app/issues/12: plan:active", text)
+
+    def test_each_row_carries_its_live_next_action(self):
+        newer = comment(status("Comment step."), at="2026-10-16T00:00:00Z", ident=8)
+        forged = comment(status("Forged step."), author={"__typename": "User", "login": "stranger"},
+                         at="2026-10-17T00:00:00Z", ident=9)
+        wordy = child(13, body=status("x" * 300 + "\nsecond line"))
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[
+            child(10), child(11, comments=[newer, forged]), child(12, body="No status here."), wordy,
+            child(14, body="## Current Status\n\nState: Done\n")])))
+        one = board["tracks"][0]
+        self.assertEqual(one["next_action"], "Track 1 step.")
+        self.assertEqual([row["next_action"] for row in one["children"][:3]],
+                         ["Child 10 step.", "Comment step.", "no Current Status"])
+        self.assertEqual(len(one["children"][3]["next_action"]), goal_board.NEXT_ACTION_CHARS)
+        self.assertEqual(one["children"][4]["next_action"], "no Next action in Current Status")
+        self.assertTrue(board["coverage"]["complete"])
+        text = goal_board.markdown({**board, "checked_at": "now"})
+        self.assertIn("issues/10 Child 10: plan:active; next action: Child 10 step.", text)
+        self.assertNotIn("second line", text)
+        self.assertNotIn("Child 10 step.", goal_board.markdown({**board, "checked_at": "now"}, links_only=True))
+
+    def test_long_thread_without_a_status_in_the_window_says_next_action_unknown(self):
+        window = [comment("Progress note", at="2026-10-16T00:00:00Z")]
+        older_body = child(10, comments=window)
+        older_body["comments"]["totalCount"] = 145
+        older_body["lastEditedAt"] = "2026-10-10T00:00:00Z"
+        no_body = child(11, comments=window, body="No status here.")
+        no_body["comments"]["totalCount"] = 145
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[older_body, no_body])))
+        self.assertFalse(board["coverage"]["complete"])
+        self.assertEqual({row["next_action"] for row in board["tracks"][0]["children"]}, {goal_board.UNKNOWN})
+        self.assertIn(f"next action: {goal_board.UNKNOWN}", goal_board.markdown({**board, "checked_at": "now"}, links_only=True))
+        # A body edited after the oldest comment read cannot be overridden by an unread older comment.
+        newer_body = child(10, comments=window)
+        newer_body["comments"]["totalCount"] = 145
+        newer_body["lastEditedAt"] = "2026-10-16T12:00:00Z"
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[newer_body])))
+        row = board["tracks"][0]["children"][0]
+        self.assertEqual((row["next_action"], row["unread"]), ("Child 10 step.", ["older decisions"]))
 
 
 if __name__ == "__main__":
