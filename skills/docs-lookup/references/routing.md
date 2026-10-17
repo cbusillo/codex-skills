@@ -24,6 +24,10 @@ move that guidance into `AGENTS.md` or workflow metadata.
   framework docs and compare version guidance against local manifests.
 - **Docker, GitHub Actions, uv, PyPI, and packaging**: use official docs,
   workflow files, `pyproject.toml`, lockfiles, and repo release policies.
+- **Exact GitHub docs facts**, such as which App permission an endpoint needs:
+  grep the raw article body at
+  `https://docs.github.com/api/article/body?pathname=<path>`. Summarizing
+  fetchers have misread permission tables.
 - **Dokploy and Launchplane**: use official or repo-owned operational docs;
   never copy private hosts, tokens, provider payloads, or secret values into
   public notes.

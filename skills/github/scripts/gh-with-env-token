@@ -930,7 +930,7 @@ if context.is_write or not allowed:
     print(message, file=sys.stderr)
     raise SystemExit(1)
 if sys.argv[3] and not github_api.public_read_command_is_scoped(args, sys.argv[3]):
-    print("error: public repository fallback needs a read scoped to the verified repository; use --repo with number/branch operands for issue/pr/run commands, REST repos/{owner}/{repo}, or a repo-qualified REST issue search", file=sys.stderr)
+    print("error: own-user repository read fallback needs a read scoped to the verified repository; use --repo with number/branch operands for issue/pr/run commands, REST repos/{owner}/{repo}, or a repo-qualified REST issue search", file=sys.stderr)
     raise SystemExit(1)
 PY
 }
@@ -1016,10 +1016,13 @@ if [ "$app_variable_count" -gt 0 ] || [ "$client_app" -eq 1 ]; then
 	# github_identity.PUBLIC_READ_EXIT_STATUS: GitHub's unauthenticated
 	# repository endpoint proved public visibility; personal auth still needs
 	# the existing per-command opt-in and declared-login verification.
-	if [ "$app_auth_status" -eq 5 ]; then
+	# github_identity.PRIVATE_CONTRIBUTOR_READ_EXIT_STATUS: under that opt-in,
+	# the App cannot see another account's private repository; the read is
+	# scoped to that repository the same way.
+	if [ "$app_auth_status" -eq 5 ] || [ "$app_auth_status" -eq 6 ]; then
 		public_read_repository=$(target_repository "$@")
 		if [ "$reader_app" -eq 1 ] || [ "$check_auth" -eq 1 ] || ! verify_read_command "$@"; then
-			echo "error: public repository fallback accepts ordinary reads only" >&2
+			echo "error: own-user repository read fallback accepts ordinary reads only" >&2
 			exit 1
 		fi
 		act_as_own_user "$(target_repository "$@")" "$@"

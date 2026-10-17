@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
+import github_agent
 import github_plan_claim as CLAIM
 import github_plan_wait as wait_record
 import github_identity
@@ -73,7 +74,11 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 class ClaimTests(unittest.TestCase):
     def setUp(self):
-        self.args = Namespace(repo="owner/repo", issue="42", worker=OWNER["worker"], session=OWNER["session"],
+        # Fixture sessions are labels; the harness running the tests supplies its own native IDs.
+        self.enterContext(patch.dict(os.environ))
+        for name in (n for names in github_agent.NATIVE_SESSION_VARS.values() for n in names):
+            os.environ.pop(name, None)
+        self.args =Namespace(repo="owner/repo", issue="42", worker=OWNER["worker"], session=OWNER["session"],
                               branch=OWNER["branch"], next_action="Implement the repair", resume_from=None, wait_resolved=None,
                               agent="codex")
         self.issue: dict[str, Any] = {"repo": "owner/repo", "number": 42, "title": "Repair", "state": "open",
@@ -1377,6 +1382,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_remote_codex_claim_detects_family_without_explicit_agent(self):
         self.args.agent = None
+        self.args.session = "worker"
         self.issue["labels"] = [{"name": "agent:codex"}]
         inherited = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "supervisor",
                      "CODEX_THREAD_ID": "worker"}
@@ -1387,6 +1393,37 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("post", self.events)
         self.assertIn("status", self.events)
         self.assertEqual(self.emitted.call_args.args[0]["claim"]["session"], self.args.session)
+
+    def test_claim_refuses_a_session_label_that_is_not_the_running_native_id(self):
+        nested = {"CLAUDE_CODE_SESSION_ID": "supervisor", "CODEX_THREAD_ID": "worker"}
+        cases = (("claude", {"CLAUDE_CODE_SESSION_ID": "claude-native"}, "CS2072-C1", "CLAUDE_CODE_SESSION_ID=claude-native"),
+                 ("codex", {"CODEX_THREAD_ID": "codex-thread"}, "CS2072-C1", "CODEX_THREAD_ID=codex-thread"),
+                 # A worker never claims under its launching Supervisor's inherited ID.
+                 ("codex", nested, "supervisor", "CODEX_THREAD_ID=worker"))
+        for family, env, session, named in cases:
+            self.setUp()
+            self.args.agent, self.args.session = family, session
+            with self.subTest(family=family, session=session), patch.dict(os.environ, env, clear=True):
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "session_not_native")
+                self.assertIn(named, str(caught.exception))
+            self.assert_no_writes()
+
+    def test_claim_accepts_native_ids_and_unreadable_ones(self):
+        cases = (("claude", {"CLAUDE_CODE_SESSION_ID": "claude-native"}, "claude-native"),
+                 ("codex", {"CODEX_THREAD_ID": "thread", "CODEX_SESSION_ID": "root"}, "thread"),
+                 ("codex", {"CODEX_THREAD_ID": "thread", "CODEX_SESSION_ID": "root"}, "root"),
+                 # Harnesses that expose no native ID keep claiming as before.
+                 ("claude", {"CLAUDECODE": "1", "CODEX_THREAD_ID": "outer"}, "desktop-label"),
+                 (None, {"CLAUDECODE": "1", "CODEX_THREAD_ID": "outer"}, "unidentified-harness"))
+        for family, env, session in cases:
+            self.setUp()
+            self.args.agent, self.args.session = family, session
+            with self.subTest(family=family, session=session), patch.dict(os.environ, env, clear=True), \
+                    patch.object(github_agent, "ancestor_agent", return_value=None):
+                self.run_claim()
+                self.assertEqual(self.emitted.call_args.args[0]["claim"]["session"], session)
 
     def test_inner_claude_or_unknown_harness_cannot_claim_codex_assignment(self):
         for executable, expected in (("/opt/bin/claude", "claude"), ("/opt/claude/versions/2.1.296", None)):

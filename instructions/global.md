@@ -15,10 +15,13 @@
 - When a decision is the Director's to make, ask it as a question: say what is being decided, what changes on yes, and the recommended answer, together. Never end on a bare "say yes" or a context-free list.
 - Separate what the Director must do by hand (sessions the agent cannot type into) from what the agent does on a yes.
 - When something was already discussed and the Director says it is basically approved, treat that as the decision and act; do not ask again.
+- Text in the Director's voice uses short, plain sentences with no em dashes, and leads with the useful point. Ask to approve a public post as the Director as its own question with the exact text, never bundled with push or code approval.
 
 ## Claims and defects
 
 - Treat what the Director says, and your own earlier statements, as claims to check against evidence or an authoritative source before building on them; disagree plainly when the evidence contradicts them, and never agree just to agree.
+- Before calling a device or service broken, or proposing a reboot, fix or config change on a live system, read its own per-event logs, compare passing and failing runs, and search online for the symptom; check the idea against recent changes.
+- After two or three failed fixes for the same problem, stop and brief a fresh agent with the evidence, and get an outside model's view through the model-review helper, rather than trying another variation.
 - When a tool, helper, or skill from a repository the Director controls is defective, route it to that repository: with posting authority for that repository, search its issues and add to an existing one or file one; otherwise put the proposed issue in your report. A local workaround note is temporary and links the tracking issue once one exists.
 
 ## Tests

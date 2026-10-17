@@ -20,10 +20,15 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
+import director_mentions
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_review_markers import PRODUCT_REVIEW_MARKER
 
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+MENTIONS = "director-mentions"  # watermark key; not a repository name
+# Search indexing can lag; each mention search overlaps the previous one and
+# skips thread versions already reported.
+MENTION_OVERLAP = timedelta(minutes=15)
 
 
 def timestamp(value: str) -> datetime:
@@ -96,6 +101,45 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
     return notices, errors, next_watermarks
 
 
+def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
+    """Director mentions outside the watched repositories; a gap is reported, never skipped.
+
+    Returns notices, coverage gaps, errors, watermarks and the reported thread
+    versions ({url: updated_at}) still inside the overlap window.
+    """
+    since = (timestamp(watermarks[MENTIONS]) - MENTION_OVERLAP).isoformat().replace("+00:00", "Z")
+    mentions, gap, error = director_mentions.collect(
+        getattr(args, "director_login", None), since, getattr(args, "mention_approval", None),
+        set(own_logins),
+        lambda repo, comment_id: reader.get_json(f"repos/{repo}/issues/comments/{comment_id}",
+                                                 step="foreign_mention_approval"),
+        lambda issue_url, created: reader.paged_json(
+            director_mentions.thread_comments_path(issue_url), step_prefix="foreign_mention_approval_thread",
+            params={"since": created}, required_query_params={"since": created}),
+        excluded_repositories=repos)
+    if gap:  # Keep the watermark so a later approval catches up from here.
+        return [], [{"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"}], [], \
+            watermarks, seen
+    if error:
+        return [], [], [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}], \
+            watermarks, seen
+    fresh = [mention for mention in mentions if seen.get(mention["url"]) != mention["updated_at"]]
+    window = timestamp(since)
+    kept = {url: updated for url, updated in {**seen, **{m["url"]: m["updated_at"] for m in mentions}}.items()
+            if timestamp(updated) >= window}
+    return fresh, [], [], {**watermarks, MENTIONS: started}, kept
+
+
+def load_mention_seen(path: Path) -> dict[str, str]:
+    data = json.loads(path.read_text()) if path.exists() else {}
+    seen = data.get("mention_seen", {}) if isinstance(data, dict) else None
+    if not isinstance(seen, dict) or not all(isinstance(url, str) for url in seen):
+        raise ValueError("mention_seen must be an object")
+    for value in seen.values():
+        timestamp(value)
+    return dict(seen)
+
+
 def load_state(path: Path, repos, initial: str, *, rewind=False) -> dict[str, str]:
     data = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(data, dict):
@@ -113,11 +157,11 @@ def load_state(path: Path, repos, initial: str, *, rewind=False) -> dict[str, st
     return values
 
 
-def save_state(path: Path, watermarks):
+def save_state(path: Path, watermarks, mention_seen=None):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
-        stream.write(json.dumps({"watermarks": watermarks}) + "\n")
+        stream.write(json.dumps({"watermarks": watermarks, "mention_seen": mention_seen or {}}) + "\n")
     try:
         temporary.replace(path)
     finally:
@@ -144,6 +188,10 @@ def main() -> int:
     parser.add_argument("--repo", action="append", required=True)
     parser.add_argument("--own-login", action="append", required=True)
     parser.add_argument("--launchplane-login", action="append", default=[])
+    parser.add_argument("--director-login",
+                        help="the Director's own login for mention searches outside the watched repositories")
+    parser.add_argument("--mention-approval",
+                        help="link to the Director's standing approval for those searches under their login")
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--since")
     parser.add_argument("--interval", type=float, default=300)
@@ -170,7 +218,8 @@ def main() -> int:
 
 
 def watch(args, repos, initial, deadline):
-    watermarks = load_state(args.state, repos, initial, rewind=args.since is not None)
+    watermarks = load_state(args.state, [*repos, MENTIONS], initial, rewind=args.since is not None)
+    seen = load_mention_seen(args.state)
     while time.monotonic() < deadline:
         started = utc_now()
         reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True,
@@ -178,8 +227,12 @@ def watch(args, repos, initial, deadline):
                               deadline_at=time.time() + max(0, deadline - time.monotonic()))
         notices, errors, watermarks = scan(repos, watermarks, args.own_login,
                                           args.launchplane_login, started, reader)
-        print(json.dumps({"notices": notices, "errors": errors, "untrusted": True}), flush=True)
-        save_state(args.state, watermarks)
+        mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
+            args, repos, watermarks, seen, args.own_login, started, reader)
+        notices, errors = notices + mentions, errors + mention_errors
+        print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps,
+                          "untrusted": True}), flush=True)
+        save_state(args.state, watermarks, seen)
         persistent = getattr(args, "persistent", False)
         if args.once or (not persistent and (notices or errors)) or any(
             not error["retryable"] for error in errors

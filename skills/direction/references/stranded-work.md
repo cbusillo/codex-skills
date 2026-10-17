@@ -128,8 +128,11 @@ unknown), next actor and review requirement:
   threshold. The root comes from `--worktree-root`, or else from the host's
   configured `hostHelper` root; without one the check is skipped. Each worktree
   is retired with its lock's command, never from the report.
-- Open issues whose body Current Status `Next action:` names the Supervisor,
-  aged from the body's edit time, which is read once per such issue from the
+- Open issues whose body Current Status `Next action:` routes the work to the
+  Supervisor: the action opens with the capitalized role, makes it the subject
+  of a verb, or waits on or hands off to it. A path, skill name or description
+  that only mentions it does not count, and an empty field never reads the next
+  line. Each issue is aged from the body's edit time, which is read once per such issue from the
   sweep's budget. An unreadable edit time is a coverage gap and the issue is
   still listed with unknown age. The result's `supervisor_next_action_by_repo`
   and a Markdown line give the count per repository. Status kept only in a

@@ -331,6 +331,9 @@ Manual-only skills mirror Codex's `agents/openai.yaml` policy in Claude's
 Invoke those workflows with `/shared:skill-name` on Claude. On Codex use the
 name shown in its skill list: `$shared:skill-name` for the new catalog binding,
 or `$skill-name` when a preserved legacy binding lists an unprefixed name.
+Codex reads `[[skills.config]]` enable and disable rules only from the user
+config and session flags, never from a repository's `.codex/config.toml`;
+later rules win.
 Claude's field requires an actual user slash-command invocation.
 The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
 so missing source or a uv startup failure cannot masquerade as a policy denial.
@@ -354,7 +357,7 @@ entries.
 "**Repository visibility**: github.com/OWNER/* repositories are a mix of public and private; a push to a public one is publishing",
 "**Source control**: github.com/OWNER/* (the owner's own repositories) — all are trusted working repositories",
 "**Trusted repos**: every github.com/OWNER/* repository; only a repository's own work belongs in its commits",
-"**Org-specific CLIs**: the codex-skills helpers in CATALOG/skills/github/scripts (gh-pr.py, gh-issue, gh-comment, git-commit-as-bot, git-push-as-bot, gh-with-env-token) act as the configured automation account. Human PR approval is not a merge gate; green CI is the gate, and a change that calls for another model's review has it recorded before merging."
+"**Org-specific CLIs**: the codex-skills helpers in CATALOG/skills/github/scripts (gh-pr.py, gh-plan.py, gh-issue, gh-comment, git-commit-as-bot, git-push-as-bot, gh-with-env-token) act as the configured automation account. Human PR approval is not a merge gate; green CI is the gate, and a change that calls for another model's review has it recorded before merging."
 ```
 
 Set `autoMode.allow`, keeping the built-in rules:

@@ -169,6 +169,21 @@ registered `--private-endpoint-key`; enabling a private check requires it.
 For a disabled private check an omitted key preserves the existing key.
 No argument accepts an endpoint URL, domain, provider target or full profile.
 
+The lane's dependency coverage policy is optional. Omit every dependency flag
+to preserve it; the request is then identical to one from before the policy
+existed. To change it, pass `--dependency-mode informational|required` with
+`--dependency-source derived|override`. The service replaces the whole policy,
+so the source is always explicit and changing the mode never drops an existing
+override silently. An override takes zero or more `--dependency
+database|email|cache` (zero is an explained none) and a
+`--dependency-override-reason`; `derived` accepts neither. The dry-run shows the
+current and requested mode and override dependencies, and that policy joins the
+reviewed request digest, the saved-evidence check on apply and the read-back.
+Read-back compares the whole stored policy, reason included, against the
+request or, when omitted, against the policy read before apply. The service
+still refuses edits that would leave required coverage without an enabled
+HTTP check; switch to informational in the same reviewed change.
+
 Save the dry-run JSON outside the repository. Apply requires that evidence via
 `--dry-run-evidence-file`, its `plan_sha256` via `--expected-plan-digest`,
 `--reviewed-dry-run`, and a stable `--idempotency-key`. A request digest binds
@@ -179,8 +194,9 @@ After apply it reads the selected lane/check back, compares the intended policy,
 and verifies preservation of the stored public URL and lane fallback URLs
 privately. Private keys must match the requested or preserved registered key.
 
-Receipts contain the lane/check, intent and flags, digests, trace/record ids and
-read-back verification. URLs, endpoint keys and free-text reasons are omitted.
+Receipts contain the lane/check, intent and flags, dependency mode and override
+kinds, digests, trace/record ids and read-back verification. URLs, endpoint keys
+and free-text reasons, including override reasons, are omitted.
 `accepted_unverified` with a nonzero exit means apply was accepted but the
 response or read-back did not verify; inspect the record before any retry.
 An uncertain transport outcome retains the existing helper's reconciliation
@@ -1434,7 +1450,10 @@ existing budget. This is still one read and grants no apply authority. Launchpla
 
 The service's `check` becomes `result`: product, path, overall state, blocked
 and unknown counts, and ordered steps with `step_id`, state, code, fixed
-description, fix kind, and record ids. Clear steps use `fix: none`; other fix
+description, fix kind, and record ids. A failed testing deploy's code is the
+operation's error code: up to four dot-separated snake_case words (for example
+`plan_not_ready.<blocker>`), at most 96 characters. Colons and other shapes
+fail closed. Clear steps use `fix: none`; other fix
 kinds are `code`, `grant`, `owner_approval`, `client_acceptance`, `by_hand` and
 `wait`. Counts and overall state must agree with the steps, and the response
 must match the requested product and path. Unknown fields at every level,
@@ -1531,6 +1550,13 @@ replay metadata, nested merge-train candidate/landing/stack summaries, the
 write-intent `record`, and product-config runtime, key-safety, count, and secret
 binding metadata. Secret record ids, provider target details, actor identities,
 instructions, raw findings, and arbitrary nested dictionaries are not copied.
+
+Strict projections check each response object against a fixed field
+allowlist, so one unknown field there fails the whole read with
+`unsafe_response_shape`; some reads, such as activity and target-replacement
+operations, drop or list unknown fields instead. A Launchplane PR that adds a
+field to a strictly projected response lands the matching helper allowlist
+change first and says so in its PR body.
 
 Unexpected successful provider shapes fail closed as `invalid_response` rather
 than being recursively sanitized. For an accepted controller reply that cannot

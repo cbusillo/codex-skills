@@ -13,6 +13,7 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
 import foreign_watch
@@ -107,8 +108,10 @@ class WatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "watch.json"
             self.assertEqual(foreign_watch.load_state(path, [REPO], SINCE), {REPO: SINCE})
-            foreign_watch.save_state(path, {REPO: STARTED})
+            foreign_watch.save_state(path, {REPO: STARTED}, {"https://github.com/client/private/issues/8": STARTED})
             self.assertEqual(foreign_watch.load_state(path, [REPO], SINCE), {REPO: STARTED})
+            self.assertEqual(foreign_watch.load_mention_seen(path),
+                             {"https://github.com/client/private/issues/8": STARTED})
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             for data in ([], {"watermarks": []}, {"watermarks": {REPO: "invalid"}}):
                 path.write_text(json.dumps(data))
@@ -190,6 +193,94 @@ class WatchTests(unittest.TestCase):
         notices = self.scan(reader)[0]
         self.assertEqual(notices[0]["kind"], "foreign")
         self.assertTrue(notices[0]["review_marker"])
+
+
+APPROVAL = "https://github.com/director/meta/issues/7#issuecomment-99"
+
+
+def mention(repo, number, updated=STARTED):
+    return {"repository_url": f"https://api.github.com/repos/{repo}", "number": number,
+            "html_url": f"https://github.com/{repo}/issues/{number}", "updated_at": updated,
+            "user": {"login": "client"}, "body": "@director please decide"}
+
+
+def director_get(items):
+    def get(endpoint):
+        if endpoint == "user":
+            return {"login": "director"}
+        return {"items": items, "total_count": len(items), "incomplete_results": False}
+    return Mock(side_effect=get)
+
+
+class MentionTests(unittest.TestCase):
+    @staticmethod
+    def scan(approval=APPROVAL, get=None, watermark=SINCE, seen=None):
+        reader = Mock()
+        reader.get_json.return_value = {
+            "id": 99, "user": {"login": "director"}, "created_at": SINCE,
+            "body": f"{foreign_watch.director_mentions.APPROVAL_QUESTION} yes",
+            "issue_url": "https://api.github.com/repos/director/meta/issues/7"}
+        reader.paged_json.return_value = []
+        args = argparse.Namespace(director_login="director", mention_approval=approval)
+        get = get or director_get([mention("client/private", 4), mention(REPO, 1)])
+        with patch.object(foreign_watch.director_mentions, "director_get", get):
+            result = foreign_watch.scan_mentions(args, [REPO], {foreign_watch.MENTIONS: watermark}, seen or {},
+                                                 ["director", "agent[bot]"], STARTED, reader)
+        return result, reader, get
+
+    def test_mention_outside_watched_list_is_an_untrusted_notice(self):
+        (notices, gaps, errors, watermarks, _), reader, _ = self.scan()
+        self.assertEqual((gaps, errors), ([], []))
+        self.assertEqual([(n["repository"], n["number"]) for n in notices], [("client/private", 4)])
+        self.assertTrue(notices[0]["untrusted"])
+        self.assertNotIn("body", notices[0])
+        self.assertEqual(watermarks[foreign_watch.MENTIONS], STARTED)
+        self.assertEqual(reader.get_json.call_args.args[0], "repos/director/meta/issues/comments/99")
+
+    def test_late_indexed_mention_is_reported_once_across_passes(self):
+        # Updated a minute before the watermark but only searchable now.
+        late = mention("client/private", 8, updated="2026-10-09T11:59:00Z")
+        get = director_get([late])
+        (notices, _, _, _, seen), _, _ = self.scan(get=get)
+        self.assertEqual([n["number"] for n in notices], [8])
+        query = parse_qs(urlparse(get.call_args_list[1].args[0]).query)["q"][0]
+        self.assertIn("updated:>=2026-10-09T11:45:00Z", query)
+        (again, _, _, _, _), _, _ = self.scan(get=director_get([late]), watermark=STARTED, seen=seen)
+        self.assertEqual(again, [])
+        edited = mention("client/private", 8, updated="2026-10-09T12:04:00Z")
+        (changed, _, _, _, _), _, _ = self.scan(get=director_get([edited]), watermark=STARTED, seen=seen)
+        self.assertEqual([n["number"] for n in changed], [8])
+
+    def test_unapproved_mentions_report_gap_without_searching(self):
+        (notices, gaps, errors, watermarks, _), _, get = self.scan(approval=None)
+        self.assertEqual((notices, errors), ([], []))
+        self.assertIn("not covered", gaps[0]["gap"])
+        get.assert_not_called()
+        self.assertEqual(watermarks[foreign_watch.MENTIONS], SINCE)
+
+    def test_search_failure_is_retryable_and_keeps_watermark(self):
+        def rate_limited(endpoint):
+            if endpoint == "user":
+                return {"login": "director"}
+            raise foreign_watch.director_mentions.MentionSearchError("rate limited")
+        (notices, gaps, errors, watermarks, _), _, _ = self.scan(get=Mock(side_effect=rate_limited))
+        self.assertEqual((notices, gaps), ([], []))
+        self.assertTrue(errors[0]["retryable"])
+        self.assertEqual(watermarks[foreign_watch.MENTIONS], SINCE)
+
+    def test_cli_without_director_login_prints_the_gap_and_keeps_watching(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reader = Mock()
+            reader.paged_json.return_value = []
+            output = io.StringIO()
+            with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
+                    "--repo", REPO, "--own-login", "director", "--state", str(Path(directory) / "w.json"),
+                    "--since", SINCE, "--once"]), \
+                 patch.object(foreign_watch, "GitHubReader", return_value=reader), redirect_stdout(output):
+                self.assertEqual(foreign_watch.main(), 0)
+            line = json.loads(output.getvalue())
+            self.assertEqual(line["errors"], [])
+            self.assertEqual(line["coverage_gaps"][0]["lane"], foreign_watch.MENTIONS)
 
 
 if __name__ == "__main__":

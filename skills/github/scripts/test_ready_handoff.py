@@ -151,6 +151,24 @@ class ReadyTests(unittest.TestCase):
                 self.reader.pr = {"number": 1, "state": "open", "draft": False, "labels": [], "head": {"sha": SHA}, **change}
                 self.refuse()
 
+    def test_conflicting_base_refuses(self):
+        for change in ({"mergeable": False, "mergeable_state": "dirty"}, {"mergeable": False}, {"mergeable_state": "dirty"}):
+            with self.subTest(change=change):
+                self.reader.pr_reads = 0
+                self.reader.pr = {"number": 1, "state": "open", "draft": False, "labels": [], "head": {"sha": SHA}, **change}
+                self.assertIn("babysit-pr Conflicts", self.refuse())
+
+    def test_conflict_found_by_fresh_read_refuses(self):
+        self.reader.current_pr = {**self.reader.pr, "mergeable": False, "mergeable_state": "dirty"}
+        self.refuse()
+
+    def test_unknown_or_clean_mergeability_posts(self):
+        for change in ({"mergeable": None, "mergeable_state": "unknown"}, {"mergeable": True, "mergeable_state": "clean"}, {"mergeable": True, "mergeable_state": "blocked"}):
+            with self.subTest(change=change):
+                self.reader.pr_reads = 0
+                self.reader.pr = {"number": 1, "state": "open", "draft": False, "labels": [], "head": {"sha": SHA}, **change}
+                self.post()
+
     def test_push_or_hold_during_reads_refuses(self):
         for change in ({"head": {"sha": "b" * 40}}, {"labels": [{"name": "merge-blocked"}]}, {"labels": [{"name": "owner-review"}]}):
             with self.subTest(change=change):

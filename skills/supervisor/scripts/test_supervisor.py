@@ -7,6 +7,7 @@
 
 import argparse
 import asyncio
+import errno
 import json
 import subprocess
 import shlex
@@ -2430,6 +2431,22 @@ class TerminalTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "cannot prepare"):
                     account_choice.prepare_launch(choice)
             self.assertEqual(list((root / "Launch Receipts").iterdir()), [])
+
+    def test_macos_refused_receipt_store_names_the_supported_route(self):
+        with tempfile.TemporaryDirectory() as folder:
+            choice = {"storage_root": Path(folder)}
+            reasons = {}
+            for code in (errno.EPERM, errno.EACCES):
+                refusal = PermissionError(code, os.strerror(code))
+                with (patch.object(account_choice.tempfile, "NamedTemporaryFile", side_effect=refusal),
+                      self.assertRaises(ValueError) as failed):
+                    account_choice.prepare_launch(choice)
+                self.assertNotIn(folder, str(failed.exception))
+                reasons[code] = str(failed.exception)
+            self.assertIn("Supervisor's terminal session", reasons[errno.EPERM])
+            self.assertNotIn("Supervisor's terminal session", reasons[errno.EACCES])
+            for reason in reasons.values():
+                self.assertIn("check write access", reason)
 
     def test_partial_batch_failure_preserves_started_and_failed_launch_identities(self):
         with tempfile.TemporaryDirectory() as folder:
