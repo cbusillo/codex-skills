@@ -2355,8 +2355,10 @@ def claim_once(args: argparse.Namespace) -> None:
     admission_unlinked = getattr(args, "admission_unlinked", None)
     if (admission_links or admission_unlinked is not None) and not admission:
         raise PlanError("--admission-link and --admission-unlinked require --admission")
-    if any(not github_plan_claim.ISSUE_URL.fullmatch(link) for link in admission_links):
-        raise PlanError("--admission-link must be an exact GitHub issue or pull request URL")
+    if any(github_plan_claim.admission_link_target(link) is None for link in admission_links):
+        raise PlanError("--admission-link must be https://github.com/OWNER/REPO/issues/N or "
+                        "https://github.com/OWNER/REPO/pull/N, optionally followed by #issuecomment-ID "
+                        "(N and ID are positive integers)")
     if admission_unlinked is not None and (admission != "milestone" or not admission_unlinked.strip()
                                            or any(c in admission_unlinked for c in "\n\r")):
         raise PlanError("--admission-unlinked records one nonempty line for milestone admission")
@@ -5994,7 +5996,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,
                    help="Which overall Order rule admits this work; milestone requires a native link into a milestone Track graph")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL",
-                   help="Issue or PR evidence for the admission; repeat-stop needs both occurrences")
+                   help="Issue or PR URL, optionally with #issuecomment-ID; preserves the cited comment; repeat-stop needs both occurrences")
     p.add_argument("--admission-unlinked", metavar="REASON",
                    help="Why milestone work cannot be linked into its Track graph yet")
     p.set_defaults(func=cmd_claim)

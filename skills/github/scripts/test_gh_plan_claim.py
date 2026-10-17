@@ -3421,6 +3421,68 @@ class ClaimTests(unittest.TestCase):
                 self.admit(kind, links, unlinked)
             self.assert_no_writes()
 
+    def test_admission_comment_links_keep_the_exact_evidence(self):
+        first = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        for second in (
+            "https://github.com/owner/other/pull/6#issuecomment-456",
+            "https://github.com/owner/repo/issues/5#issuecomment-456",
+        ):
+            with self.subTest(second=second):
+                self.setUp()
+                self.admit("repeat-stop", (first, second, first))
+                self.assertIn(f"Admission: repeat-stop; {first}, {second}\n", self.comments[-1]["body"])
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_admission_comment_resolves_to_its_parent_without_widening_issue_urls(self):
+        for kind in ("issues", "pull"):
+            parent = f"https://github.com/owner/repo/{kind}/5"
+            comment = parent + "#issuecomment-123"
+            with self.subTest(kind=kind):
+                self.assertEqual(CLAIM.admission_link_target(comment), ("owner/repo", 5))
+                self.assertEqual(CLAIM.admission_link_target(parent), ("owner/repo", 5))
+                self.assertIsNone(CLAIM.ISSUE_URL.fullmatch(comment))
+
+    def test_comment_evidence_does_not_supply_a_missing_occurrence_or_track(self):
+        link = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        with self.assertRaises(PLAN.PlanError):
+            self.admit("repeat-stop", (link, link))
+        self.assert_no_writes()
+        self.setUp()
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.admit("milestone", (link,))
+        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+        self.assert_no_writes()
+
+    def test_invalid_admission_links_refuse_before_writes(self):
+        parent = "https://github.com/owner/repo/issues/5"
+        for link in (
+            parent + "#issuecomment-0", parent + "#issuecomment-nope", parent + "#other-123",
+            parent + "#issuecomment-123/extra", parent + "?query=1#issuecomment-123",
+            parent + "#issuecomment-123\n", parent.replace("https:", "http:"),
+            parent.replace("github.com", "github.com.example.org"),
+            "https://github.com/owner/repo/issues/comments/123",
+        ):
+            with self.subTest(link=link):
+                self.setUp()
+                with self.assertRaises(PLAN.PlanError):
+                    self.admit("spare-capacity", (link,))
+                self.assert_no_writes()
+
+    def test_comment_admission_preserves_ownership_and_wait_refusals(self):
+        link = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        for blocked in ("ownership", "wait"):
+            with self.subTest(blocked=blocked):
+                self.setUp()
+                if blocked == "ownership":
+                    self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+                else:
+                    self.wait = wait_record.reviewed(evidence="Device test pending", waiting_for="Director",
+                                                     ends_when="Device acceptance recorded")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.admit("spare-capacity", (link,))
+                self.assertEqual(caught.exception.code, "claim_conflict" if blocked == "ownership" else "claim_wait_unresolved")
+                self.assert_no_writes()
+
 
 if __name__ == "__main__":
     unittest.main()

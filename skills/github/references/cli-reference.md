@@ -855,7 +855,13 @@ Unreadable admission graph nodes or relationships also accept that explanation
 and record incomplete verification. Ownership, actor authentication, waits and
 native blockers retain their independent refusals.
 `repeat-stop` needs both occurrences as `--admission-link URL`; any kind may
-add links. Admission records why the work was taken; it grants no authority.
+add links. Links accept `https://github.com/OWNER/REPO/issues/N` or
+`https://github.com/OWNER/REPO/pull/N`, optionally followed by
+`#issuecomment-ID` for a discussion comment (positive numeric N and ID).
+The parent identifies the issue or PR; the claim keeps the exact comment URL
+as evidence. Two distinct comments on one parent can cite two occurrences;
+repeating the same URL still counts once. Admission records why the work was
+taken; it grants no authority and does not verify the linked decision.
 
 The command checks Current Status and the complete discussion, unresolved
 native blockers, registered worktrees, local branches, live remote heads, open
