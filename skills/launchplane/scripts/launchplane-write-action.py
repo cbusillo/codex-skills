@@ -2479,7 +2479,8 @@ PRODUCT_READ_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 PRODUCT_ACTIVITY_MAX_EVENTS = 50
 PRODUCT_ACTIVITY_MAX_RECORD_LINKS = 10
 PRODUCT_HEALTH_MAX_CHECKS = 20
-PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
+# Launchplane writes dotted error codes of up to 96 characters.
+PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,95}$")
 PREVIEW_MAX_GENERATIONS = 20
 PREVIEW_MAX_SOURCES = 10
 RECONCILE_MAX_REQUESTS = 50
@@ -5057,8 +5058,6 @@ def _project_path_check(value: object) -> dict[str, object]:
         assert_public_safe_shape({key: item for key, item in step.items() if key not in {"step_id", "record_ids"}})
         if step["state"] not in states or step["fix"] not in fixes:
             raise LaunchplaneSafetyError("invalid_response")
-        if not isinstance(step["code"], str):
-            raise LaunchplaneSafetyError("invalid_response")
         record_ids = step["record_ids"]
         if not isinstance(record_ids, list) or len(record_ids) > 50:
             raise LaunchplaneSafetyError("invalid_response")
@@ -5066,7 +5065,8 @@ def _project_path_check(value: object) -> dict[str, object]:
             {
                 "step_id": public_identifier(step["step_id"]),
                 "state": step["state"],
-                "code": public_code(step["code"]),
+                # A failed testing deploy carries the operation's dotted error code.
+                "code": _public_dotted_code(step["code"]),
                 "description": public_summary_string(step["description"]),
                 "fix": step["fix"],
                 "record_ids": [public_identifier(record_id) for record_id in record_ids],

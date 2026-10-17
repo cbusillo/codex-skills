@@ -1434,7 +1434,9 @@ existing budget. This is still one read and grants no apply authority. Launchpla
 
 The service's `check` becomes `result`: product, path, overall state, blocked
 and unknown counts, and ordered steps with `step_id`, state, code, fixed
-description, fix kind, and record ids. Clear steps use `fix: none`; other fix
+description, fix kind, and record ids. A failed testing deploy's code is the
+operation's dotted error code (for example `plan_not_ready.<blocker>`), up to
+96 characters. Clear steps use `fix: none`; other fix
 kinds are `code`, `grant`, `owner_approval`, `client_acceptance`, `by_hand` and
 `wait`. Counts and overall state must agree with the steps, and the response
 must match the requested product and path. Unknown fields at every level,
