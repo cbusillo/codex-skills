@@ -265,12 +265,16 @@ Common top-level keys:
   capabilities. It must not contain tokens, cookies, secret values, concrete
   Launchplane service URLs, private credential paths, provider payloads,
   product/runtime endpoints, or plaintext runtime configuration.
-  Product repositories may also carry routing-only `product`, `publicName`,
-  and a string `context` identifying their Launchplane mapping. This does not
-  enable a local context helper or grant runtime authority. Catalog helper
-  configuration uses an object `context` with `enabled` and `helper` instead.
-  The snapshot preserves routing fields under `launchplane.routing` and helper
-  configuration under `launchplane.context`.
+  The snapshot can display legacy `product`, `publicName`, and string `context`
+  fields from existing metadata under `launchplane.routing`. That read-only
+  compatibility projection does not authorize storing or refreshing real
+  Launchplane-managed product/context coordinates in repository metadata.
+  Resolve current values from Launchplane service records, the API/admin UI,
+  or explicit scoped admin input under the
+  [Runtime Authority Boundary](../../launchplane/SKILL.md#runtime-authority-boundary).
+  Generic catalog helper configuration uses an object `context` with `enabled`
+  and `helper`; the snapshot displays it under `launchplane.context`. Displaying
+  either shape does not enable a helper or grant runtime authority.
   Enrollment and enqueue routing come from the active Launchplane policy:
   `uv run skills/launchplane/scripts/launchplane-write-action.py merge-train-policy-read --repo OWNER/REPO`
   (from the catalog root). The snapshot reads it in both text and JSON mode

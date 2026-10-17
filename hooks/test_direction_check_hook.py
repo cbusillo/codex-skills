@@ -38,7 +38,95 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
     return {"turn": turn, "audits": {repo.replace("__", "/"): stamp for repo, stamp in audits.items()}}
 
 
-class ReminderTests(unittest.TestCase):
+class MemoryReminderTests(unittest.TestCase):
+    def test_session_start_reports_due_memory_on_both_harnesses_without_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            memory = root / "memory"
+            memory.mkdir()
+            registry = memory / "MEMORY.md"
+            registry.write_text("one two three four")
+            state = root / "memory.json"
+            state.write_text(json.dumps({"memory_root": str(memory), "max_words": 3}))
+            direction = root / "direction.json"
+            direction.write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat()}))
+            base = {"HOME": str(root), "PATH": "/usr/bin:/bin", "MEMORY_MARKER": str(state),
+                    "DIRECTION_MARKER": str(direction)}
+            expected = hook.memory_reminder(NOW, base)
+            self.assertTrue(expected)
+            for harness in ({"CLAUDECODE": "1"}, {"CODEX_HOME": str(root / "profile")}):
+                env = {**base, **harness}
+                before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+                result = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)],
+                    cwd=root, env=env, text=True, capture_output=True, check=True)
+                self.assertIn(expected, result.stdout)
+                self.assertEqual({p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}, before)
+            registry.write_text("one two three")
+            result = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)],
+                cwd=root, env=base, text=True, capture_output=True, check=True)
+            registry.unlink()
+            absent = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)],
+                cwd=root, env=base, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout, absent.stdout)
+
+    def test_age_and_size_boundaries_and_supported_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            memory = root / "memory"
+            memory.mkdir()
+            registry = memory / "MEMORY.md"
+            registry.write_text("one two three")
+            state = root / "memory-check.json"
+            env = {"HOME": str(root), "MEMORY_MARKER": str(state)}
+            marker = {"memory_root": str(memory), "last_distilled_at": NOW.isoformat(),
+                      "max_age_days": 2, "max_words": 3}
+            state.write_text(json.dumps(marker))
+            self.assertEqual(hook.memory_reminder(NOW + dt.timedelta(days=2), env), "")
+            self.assertTrue(hook.memory_reminder(NOW + dt.timedelta(days=2, seconds=1), env))
+            registry.write_text("one two\nthree four")
+            self.assertTrue(hook.memory_reminder(NOW, env))
+            registry.write_text("one")
+            state.write_text(json.dumps({**marker, "last_distilled_at": (NOW + dt.timedelta(days=1)).isoformat()}))
+            self.assertEqual(hook.memory_reminder(NOW, env), "")
+
+    def test_defaults_use_shared_memory_and_do_not_split_by_harness_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            memory = root / ".codex" / "memories"
+            memory.mkdir(parents=True)
+            (memory / "MEMORY.md").write_text("word " * (hook.MEMORY_MAX_WORDS + 1))
+            for extra in ({"CODEX_HOME": str(root / "other-profile")}, {"CLAUDECODE": "1"}, {}):
+                with self.subTest(extra=extra):
+                    self.assertTrue(hook.memory_reminder(NOW, {"HOME": str(root), **extra}))
+            state = root / ".code" / hook.MEMORY_MARKER_NAME
+            state.parent.mkdir()
+            (memory / "MEMORY.md").write_text("word " * hook.MEMORY_MAX_WORDS)
+            state.write_text(json.dumps({"last_distilled_at": (NOW - dt.timedelta(days=hook.MEMORY_STALE_DAYS)).isoformat()}))
+            self.assertEqual(hook.memory_reminder(NOW, {"HOME": str(root)}), "")
+            self.assertTrue(hook.memory_reminder(NOW + dt.timedelta(seconds=1), {"HOME": str(root)}))
+
+    def test_missing_or_malformed_optional_state_never_breaks_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "memory.json"
+            env = {"HOME": str(root), "MEMORY_MARKER": str(state)}
+            self.assertEqual(hook.memory_reminder(NOW, env), "")
+            for value in ("invalid JSON", "[]", '{"max_words": true}', '{"max_age_days": -1}'):
+                state.write_text(value)
+                self.assertEqual(hook.memory_reminder(NOW, env), "")
+            state.write_text(json.dumps({"memory_root": str(root) + "\0"}))
+            self.assertEqual(hook.memory_reminder(NOW, env), "")
+
+
+class IsolatedDirectionHookTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Direction-only scenarios must not inspect the host's installed memory.
+        patcher = mock.patch.object(hook, "memory_reminder", return_value="")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class ReminderTests(IsolatedDirectionHookTests):
     def test_startup_keeps_commands_and_reference_without_the_procedure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "loop.md"
@@ -83,7 +171,7 @@ class ReminderTests(unittest.TestCase):
 
     def test_compaction_prints_only_the_claude_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            env = {"DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
+            env = {"HOME": directory, "DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
             result = subprocess.run([sys.executable, str(HOOK), "--skills-only"], cwd=directory, env=env, text=True, capture_output=True, check=True)
             self.assertEqual(result.stdout.strip(), hook.SKILLS_PROTOCOL_PATH.read_text().strip())
             env.pop("CLAUDECODE")
@@ -92,7 +180,7 @@ class ReminderTests(unittest.TestCase):
 
     def test_each_claude_prompt_gets_one_line_pointing_to_the_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            env = {"DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
+            env = {"HOME": directory, "DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
             result = subprocess.run([sys.executable, str(HOOK), "--turn"], cwd=directory, env=env, text=True, capture_output=True, check=True)
             self.assertEqual(len(result.stdout.splitlines()), 1)
             self.assertIn(str(hook.SKILLS_PROTOCOL_PATH), result.stdout)
@@ -105,7 +193,7 @@ class ReminderTests(unittest.TestCase):
             root = Path(tmp)
             marker_path = root / hook.MARKER_NAME
             marker_path.write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat()}))
-            env = {"DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
+            env = {"HOME": str(root), "DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
             for host_env, expected in (
                 ({"CLAUDECODE": "1"}, hook.SKILLS_PROTOCOL_PATH.read_text().strip()),
                 ({"CODEX_HOME": str(root)}, ""),
@@ -238,7 +326,7 @@ class ReminderTests(unittest.TestCase):
             nested.mkdir()
             marker_path = root / hook.MARKER_NAME
             marker_path.write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat(), "audits": {}}))
-            env = {"DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
+            env = {"HOME": str(root), "DIRECTION_MARKER": str(marker_path), "PATH": "/usr/bin:/bin"}
             def run(cwd: Path) -> subprocess.CompletedProcess[str]:
                 return subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], cwd=cwd, env=env, capture_output=True, text=True, check=True)
 
@@ -261,7 +349,7 @@ class ReminderTests(unittest.TestCase):
     def test_hook_process_never_blocks_and_ignores_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            env = {"DIRECTION_MARKER": str(Path(tmp) / hook.MARKER_NAME), "PATH": "/usr/bin:/bin"}
+            env = {"HOME": tmp, "DIRECTION_MARKER": str(Path(tmp) / hook.MARKER_NAME), "PATH": "/usr/bin:/bin"}
             proc = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], input='{"hook_event_name":"SessionStart"}', capture_output=True, text=True, env=env, cwd=tmp)
             self.assertEqual(proc.returncode, 0)
             self.assertIn("Direction check overdue", proc.stdout)
@@ -293,10 +381,11 @@ Fixture journey.
 """
 
 
-class OverallDirectionTests(unittest.TestCase):
+class OverallDirectionTests(IsolatedDirectionHookTests):
     """A repository without its own DIRECTION.md shows its owner's overall direction."""
 
     def setUp(self) -> None:
+        super().setUp()
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)], check=False))
         self.repo = self.tmp / "product"
@@ -391,10 +480,11 @@ class OverallDirectionTests(unittest.TestCase):
         self.assertIn("error connecting to api.github.com", text)
 
 
-class SharedTurnTests(unittest.TestCase):
+class SharedTurnTests(IsolatedDirectionHookTests):
     """The hook consults the shared turn record only when this machine's turn is stale."""
 
     def setUp(self) -> None:
+        super().setUp()
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)], check=False))
         self.calls = self.tmp / "calls"
