@@ -9335,6 +9335,8 @@ def _add_reviewed_apply_arguments(parser: argparse.ArgumentParser, *, apply: boo
     )
 
 
+OPERATION_PATH_CHECK_TIMEOUT_SECONDS = 300.0
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
@@ -9342,7 +9344,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument(
         "--timeout", type=float, default=argparse.SUPPRESS,
-        help="HTTP timeout seconds (promotion status and Dokploy inventory: 30; controller: 180; other commands: 10).",
+        help="HTTP timeout seconds (operation path checks: 300; promotion status and Dokploy inventory: 30; controller: 180; other commands: 10).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -9893,7 +9895,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = parser.parse_args(argv)
     args.timeout = getattr(
         args, "timeout",
-        180.0 if args.command == "merge-train-controller-run-once"
+        OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
+        else 180.0 if args.command == "merge-train-controller-run-once"
         else 30.0 if args.command in {"product-promotion-status-read", "dokploy-inventory-read"} else 10.0,
     )
     return args

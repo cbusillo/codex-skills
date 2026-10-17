@@ -1428,8 +1428,9 @@ is unchanged. The service must echo the requested intent; an older service that
 ignores it fails response validation. Ordinary service responses omit `intent`
 entirely; a null field is not accepted. Validated source/operation/task selectors
 are retained in the request echo so saved diagnostics identify their exact scope.
-This is still one read and grants no apply
-authority. Launchplane#3911 owns compatible service delivery.
+Operation intents use a 300-second HTTP budget for the existing bounded host
+probes; an explicit global `--timeout` still wins. Ordinary reads keep their
+existing budget. This is still one read and grants no apply authority. Launchplane#3911 owns compatible service delivery.
 
 The service's `check` becomes `result`: product, path, overall state, blocked
 and unknown counts, and ordered steps with `step_id`, state, code, fixed
