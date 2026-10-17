@@ -5,7 +5,9 @@ repository owner keeps an overall direction in `OWNER/direction`. The
 session-start hook prints this reference's command block and a link on both
 supported harnesses, after the overall stop boundaries in the second case. The owning skills hold
 the detailed procedures and [task scope and authorization](execution-scope.md)
-still governs every action.
+still governs every action. When a permission check refuses an action, stop
+that action, report the refusal with its exact text, and continue other work;
+never redo it through another tool, agent, or identity.
 
 ```text
 Executing loop for this repository (from DIRECTION.md):

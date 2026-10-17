@@ -357,7 +357,7 @@ entries.
 "**Repository visibility**: github.com/OWNER/* repositories are a mix of public and private; a push to a public one is publishing",
 "**Source control**: github.com/OWNER/* (the owner's own repositories) — all are trusted working repositories",
 "**Trusted repos**: every github.com/OWNER/* repository; only a repository's own work belongs in its commits",
-"**Org-specific CLIs**: the codex-skills helpers in CATALOG/skills/github/scripts (gh-pr.py, gh-issue, gh-comment, git-commit-as-bot, git-push-as-bot, gh-with-env-token) act as the configured automation account. Human PR approval is not a merge gate; green CI is the gate, and a change that calls for another model's review has it recorded before merging."
+"**Org-specific CLIs**: the codex-skills helpers in CATALOG/skills/github/scripts (gh-pr.py, gh-plan.py, gh-issue, gh-comment, git-commit-as-bot, git-push-as-bot, gh-with-env-token) act as the configured automation account. Human PR approval is not a merge gate; green CI is the gate, and a change that calls for another model's review has it recorded before merging."
 ```
 
 Set `autoMode.allow`, keeping the built-in rules:
