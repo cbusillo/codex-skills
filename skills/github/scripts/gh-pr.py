@@ -28,6 +28,7 @@ from ready_handoff import (
     client_test_notes_error,
     handoff_body,
     requires_client_acceptance,
+    review_evidence_gap,
 )
 
 
@@ -632,12 +633,44 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
             for check in checks["checkRuns"]
         ):
             raise PrHelperError(UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE, repo=repo, pr=number)
+    review_gap = ready_review_gap(repo, number, current)
+    if review_gap:
+        raise PrHelperError(review_gap, repo=repo, pr=number)
     try:
         body = handoff_body(checks["headSha"], waiting_for_client=args.waiting_for_client)
     except ValueError as exc:
         raise PrHelperError(str(exc), repo=repo, pr=number) from exc
     result = shared_comment("pr", repo, number, body, operation=CURRENT_OPERATION)
     return {**result, "headSha": checks["headSha"], "body": body, "summary": summary}
+
+
+def ready_review_gap(repo: str, number: int, pr: dict[str, Any]) -> str:
+    """Refuse a handoff whose required review of record has no recorded outcome."""
+    reader, config_reader = (
+        github_read_core.GitHubReader(
+            gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=read_operation(), cache_enabled=False,
+        )
+        for _ in range(2)
+    )
+    trusted = {login.casefold() for login in (EXPECTED_ACTOR, (pr.get("user") or {}).get("login")) if login}
+    try:
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="review_records")
+        return review_evidence_gap(
+            repo, number, base=pr["baseRefName"], head=pr["headRefOid"], comments=comments, trusted=trusted,
+            # A repository without the config file answers 404; keep that expected
+            # read out of the successful handoff's retry guidance.
+            read_json=lambda path: (config_reader if "/contents/" in path else reader).get_json(path, step="review_records"),
+            read_pages=lambda path: reader.paged_json(path, step_prefix="review_records"),
+            missing=lambda error: isinstance(error, github_read_core.GitHubReadError) and error.result.status == 404,
+        )
+    except github_read_core.GitHubReadError as exc:
+        raise PrHelperError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict(), diagnostics=exc.diagnostics, repo=repo, pr=number) from exc
+    except (github_read_core.GitHubReadShapeError, KeyError, TypeError, ValueError) as exc:
+        raise PrHelperError(f"Review-of-record evidence is unavailable: {exc}", diagnostics=reader.diagnostics(), repo=repo, pr=number) from exc
+    finally:
+        record_retry_summary(reader.retry_summary())
+        if not any(result.status == 404 for result in config_reader.failed_results):
+            record_retry_summary(config_reader.retry_summary())
 
 
 def validate_ready_pr(pr: dict[str, Any], *, repo: str, number: int) -> None:

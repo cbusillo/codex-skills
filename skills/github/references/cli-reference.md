@@ -478,7 +478,20 @@ refuses a draft, closed PR or `merge-blocked`. It also refuses a PR that GitHub
 computed as conflicting with its base (`mergeable` false or merge state
 `DIRTY`); refresh it under babysit-pr's
 [Conflicts](../../babysit-pr/SKILL.md#conflicts) and post `ready` for the new
-head. Unknown mergeability is not a conflict. It rechecks the head and labels
+head. Unknown mergeability is not a conflict. It also refuses while a
+[review by another model](../../references/model-review.md) is pending or
+missing: a review request comment (a `Review prompt` or `Review request` lead,
+`Review of record needed`, or "Supervisor runs the review") with no later
+outcome comment (a `Review of record:`, `Review weighed` or `Review by another
+model` lead), or a change to the base branch's
+`qualityGate.modelReview.requiredPaths` with no outcome posted after the head
+commit. A `Review prompt` or `Review request` lead counts only when its first
+line names the review of record, another model or a provider, and an outcome
+lead whose first sentence says the review is blocked, pending or not done is a
+status update, not an outcome. Only the automation account's and the PR
+author's comments count;
+`supervisor/scripts/auto_enqueue.py` skips the same PRs with reason
+`review_of_record_not_recorded`. It rechecks the head and labels
 before posting through the shared comment writer. This is a handoff to the
 assigned routing agent; it applies no enqueue label and performs no merge.
 Other review and task authorization requirements still apply.

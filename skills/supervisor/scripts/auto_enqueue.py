@@ -30,7 +30,11 @@ sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
 from skills.github.scripts import github_api, github_pr_batch
 from skills.github.scripts.github_identity import automation_login
-from skills.github.scripts.ready_handoff import latest_ready, requires_client_acceptance
+from skills.github.scripts.ready_handoff import (
+    latest_ready,
+    requires_client_acceptance,
+    review_evidence_gap,
+)
 from skills.github.scripts.github_read import (
     GitHubReader,
     GitHubReadError,
@@ -560,6 +564,20 @@ class Live:
             return False
         return True
 
+    def review_gap(self, target, pr, extra_trusted):
+        """Name a pending or missing review of record; ready refuses the same gap."""
+        repo, number = target["repo"], pr["number"]
+        try:
+            return review_evidence_gap(
+                repo, number, base=target["base"], head=pr["head"]["sha"],
+                comments=self.pages(f"/repos/{repo}/issues/{number}/comments"),
+                trusted={pr["user"]["login"].casefold()} | extra_trusted,
+                read_json=self.get, read_pages=self.pages,
+                missing=lambda error: isinstance(error, GitHubReadError) and error.result.status == 404,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            return f"review-of-record evidence unavailable: {error}"
+
     def label(self, target, number):
         result = github_api.call_gh_with_retry(
             "POST",
@@ -774,6 +792,18 @@ def run_pass(io, args, emit, *, state=None):
                     in author_allowed[pr["number"]]["ineligible_reasons"]
                 )
                 if io.qualified(target, pr, set(args.handoff_login), agent_review_required):
+                    review_gap = io.review_gap(target, pr, set(args.handoff_login))
+                    if review_gap:
+                        emit(
+                            "skipped",
+                            {
+                                "repository": repo,
+                                "pr": pr["number"],
+                                "reason": "review_of_record_not_recorded",
+                                "detail": review_gap,
+                            },
+                        )
+                        continue
                     files = io.pages(f"/repos/{repo}/pulls/{pr['number']}/files")
                     if len(files) != pr["changed_files"] or not files:
                         emit(
@@ -881,6 +911,7 @@ def run_pass(io, args, emit, *, state=None):
                             for row in entries
                         ),
                     )
+                    or io.review_gap(target, pr, set(args.handoff_login))
                 ):
                     emit("batch_stopped", {"repository": repo, "labeled": own})
                     break

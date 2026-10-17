@@ -5,11 +5,15 @@
 # ///
 """Shared merge-train handoff format and current-head selection."""
 
+import base64
+import json
 import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from fnmatch import fnmatchcase
 from pathlib import Path
+from urllib.parse import quote
 
 READY = "Ready for the merge train"
 WAITING = "Engineering ready; waiting for"
@@ -35,6 +39,27 @@ UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE = (
     'engineering-only changes use "Nothing for the Client to test: <reason>" '
     'under "## Client test notes"'
 )
+REVIEW_CONFIG_PATH = ".github/github.json"
+# Leads sessions and the Supervisor already write; see model-review Reporting.
+REVIEW_LEAD = re.compile(r"^[\s#>*_]+")
+REVIEW_OUTCOME = re.compile(
+    r"(?i)^(?:[\w-]+ )?review of record(?: \([^)]*\))?:"
+    r"|^review weighed\b|^review by another model\b"
+    r"|\bcompleted the review of record\b"
+)
+# A status update that the review is blocked or not done is never an outcome.
+REVIEW_NOT_DONE = re.compile(
+    r"(?i)\b(?:blocked|pending|waiting|still needs?|needed|requested|not yet|yet|neither"
+    r"|has not|hasn't|could not|couldn't|cannot|can't|failed|unavailable)\b"
+)
+REVIEW_REQUEST = re.compile(
+    r"(?i)^review (?:prompt|request)\b|^review of record (?:still )?(?:needed|requested)\b"
+)
+# A bare "Review request" lead counts only when it names a model review.
+REVIEW_REQUEST_CONTEXT = re.compile(
+    r"(?i)review of record|another model|model-review|provider|openai|anthropic|google|gemini"
+)
+SUPERVISOR_RUNS_REVIEW = re.compile(r"(?i)\bsupervisor runs the review\b")
 
 
 @dataclass(frozen=True)
@@ -307,3 +332,93 @@ def latest_ready(pr, comments, trusted):
     return handoff_line(body.splitlines()[0]) == READY and [
         match.group("sha") for match in HEAD.finditer(body)
     ] == [pr["head"]["sha"]]
+
+
+def review_record(body):
+    """Classify a review-of-record comment by the leads already in use."""
+    lines = (body or "").strip().splitlines()
+    first = REVIEW_LEAD.sub("", lines[0]) if lines else ""
+    sentence = re.split(r"[.!?]\**\s", first, maxsplit=1)[0]
+    if REVIEW_OUTCOME.search(first) and not REVIEW_NOT_DONE.search(sentence):
+        return "outcome"
+    if (REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)) or SUPERVISOR_RUNS_REVIEW.search(body or ""):
+        return "request"
+    return None
+
+
+def review_required_patterns(config):
+    """Read qualityGate.modelReview.requiredPaths from the base branch's config."""
+    value = ((config.get("qualityGate") or {}).get("modelReview") or {}).get("requiredPaths", [])
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ValueError("qualityGate.modelReview.requiredPaths must list path patterns")
+    return tuple(value)
+
+
+def review_required_files(files, patterns):
+    names = {
+        name
+        for item in files
+        for name in (item.get("filename"), item.get("previous_filename"))
+        if name
+    }
+    return sorted(name for name in names if any(fnmatchcase(name, p) for p in patterns))
+
+
+def review_of_record_gap(comments, trusted, *, required_files=(), head_committed_at=None):
+    """Return why a required review of record is unrecorded, or an empty string.
+
+    A posted request with no later outcome is pending. A change to a
+    review-required path also needs an outcome posted after the head commit.
+    """
+    latest = {}
+    for comment in comments:
+        if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
+            continue
+        kind = review_record(comment.get("body"))
+        if kind:
+            key = (timestamp(comment["created_at"]), comment["id"])
+            if kind not in latest or latest[kind][0] < key:
+                latest[kind] = (key, comment)
+    request, outcome = latest.get("request"), latest.get("outcome")
+    if request and (not outcome or outcome[0] < request[0]):
+        where = request[1].get("html_url") or f"comment {request[1]['id']}"
+        return (
+            f"A review of record was requested ({where}) with no later recorded outcome; "
+            'post the weighed result (for example "Review weighed: ..." or '
+            '"Review of record: <provider> ...") before ready'
+        )
+    if required_files and (
+        not outcome
+        or (head_committed_at is not None and outcome[0][0] < timestamp(head_committed_at))
+    ):
+        shown = ", ".join(required_files[:3]) + (" ..." if len(required_files) > 3 else "")
+        return (
+            f"This PR changes review-required paths ({shown}) and has no review-of-record "
+            "outcome recorded after its head commit; run the review under model-review and "
+            'post the weighed result (for example "Review weighed: ...") before ready'
+        )
+    return ""
+
+
+def review_evidence_gap(repo, number, *, base, head, comments, trusted, read_json, read_pages, missing):
+    """Read the base branch's review paths, then the files and head date they need.
+
+    The base branch's config decides, so a PR cannot drop its own requirement.
+    ``missing`` names the caller's not-found error; any other read failure raises.
+    """
+    try:
+        payload = read_json(f"/repos/{repo}/contents/{REVIEW_CONFIG_PATH}?ref={quote(base, safe='')}")
+    except Exception as error:
+        if not missing(error):
+            raise
+        payload = None
+    patterns = ()
+    if payload is not None:
+        try:
+            config = json.loads(base64.b64decode(payload["content"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"{REVIEW_CONFIG_PATH} on {base} is unreadable") from error
+        patterns = review_required_patterns(config)
+    files = review_required_files(read_pages(f"/repos/{repo}/pulls/{number}/files"), patterns) if patterns else []
+    committed = read_json(f"/repos/{repo}/commits/{head}")["commit"]["committer"]["date"] if files else None
+    return review_of_record_gap(comments, trusted, required_files=files, head_committed_at=committed)
