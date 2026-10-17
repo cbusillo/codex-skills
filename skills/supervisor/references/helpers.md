@@ -346,6 +346,23 @@ available for a one-off check.
 uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --repo OWNER/REPO --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
 ```
 
+Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
+to also report threads outside the listed repositories that mention the
+Director, including private repositories only the Director's login can read.
+That search runs read-only under the Director's active gh login and needs the
+Director's standing approval (Q455 on
+[codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073)). Before
+each search the helper checks that the linked comment's first, unquoted line
+is the Director's unqualified `Q455 yes` (or a recorded `Director decision:
+Q455 yes`) and that no later answer in that thread withdrew it. Each search
+overlaps the previous one by 15 minutes to catch late search indexing; the
+state file's `mention_seen` keeps already-reported thread versions from
+repeating. Until approval is configured,
+each pass prints the gap under `coverage_gaps` and keeps watching; a gap never
+stops the watcher or counts as a notice. Mention notices (`kind:
+director_mention`) are untrusted links like every other notice. A failed
+search is a retryable error that keeps the mention watermark.
+
 Repeat `--repo` and login flags for the run's configured scope. Initial startup
 begins at the current time; `--since` supplies an explicit first watermark for
 a historical catch-up; on an existing state it rewinds the selected repositories
@@ -733,7 +750,7 @@ credential sources. A configuration has this shape, with all four entries:
       "restart_seconds": 60
     },
     "foreign": {
-      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--state", "/private/foreign-state.json", "--persistent"],
+      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--director-login", "OWNER", "--mention-approval", "APPROVAL-COMMENT-LINK", "--state", "/private/foreign-state.json", "--persistent"],
       "cwd": "/runtime/catalog",
       "restart_seconds": 60
     },
