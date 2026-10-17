@@ -47,8 +47,17 @@ REVIEW_OUTCOME = re.compile(
     r"|^review weighed\b|^review by another model\b"
     r"|\bcompleted the review of record\b"
 )
+# A status update that the review is blocked or not done is never an outcome.
+REVIEW_NOT_DONE = re.compile(
+    r"(?i)\b(?:blocked|pending|waiting|still needs?|needed|requested|not yet|yet|neither"
+    r"|has not|hasn't|could not|couldn't|cannot|can't|failed|unavailable)\b"
+)
 REVIEW_REQUEST = re.compile(
     r"(?i)^review (?:prompt|request)\b|^review of record (?:still )?(?:needed|requested)\b"
+)
+# A bare "Review request" lead counts only when it names a model review.
+REVIEW_REQUEST_CONTEXT = re.compile(
+    r"(?i)review of record|another model|model-review|provider|openai|anthropic|google|gemini"
 )
 SUPERVISOR_RUNS_REVIEW = re.compile(r"(?i)\bsupervisor runs the review\b")
 
@@ -329,9 +338,10 @@ def review_record(body):
     """Classify a review-of-record comment by the leads already in use."""
     lines = (body or "").strip().splitlines()
     first = REVIEW_LEAD.sub("", lines[0]) if lines else ""
-    if REVIEW_OUTCOME.search(first):
+    sentence = re.split(r"[.!?]\**\s", first, maxsplit=1)[0]
+    if REVIEW_OUTCOME.search(first) and not REVIEW_NOT_DONE.search(sentence):
         return "outcome"
-    if REVIEW_REQUEST.search(first) or SUPERVISOR_RUNS_REVIEW.search(body or ""):
+    if (REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)) or SUPERVISOR_RUNS_REVIEW.search(body or ""):
         return "request"
     return None
 

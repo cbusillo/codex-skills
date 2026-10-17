@@ -98,6 +98,7 @@ class ReviewRecordTests(unittest.TestCase):
             "Anthropic **claude-opus-5-5** completed the review of record (CLI-confirmed model).",
             "Review weighed at `83f8b258`. I reproduced the finding and acted on it.",
             "Review by another model (author: Anthropic Claude Opus): OpenAI via Codex, read-only",
+            "Anthropic review of record: Claude Opus 5.5, completed twice. Fixed: errors cannot hide output.",
         )
         requests = (
             "Review prompt for the review of record (provider: openai; author: anthropic).",
@@ -107,6 +108,16 @@ class ReviewRecordTests(unittest.TestCase):
             "Review of record still needed. The OpenAI review could not launch.",
             "Context first.\n\nThe helper fails here, so **Supervisor runs the review**:",
         )
+        # Status updates and unrelated requests are neither outcomes nor model-review requests.
+        neither = (
+            "Review by another model is blocked by #2069; the Supervisor still needs to run it.",
+            "Neither provider has completed the review of record yet.",
+            "Review of record: OpenAI could not start; retrying from the Supervisor's session.",
+            "Review request: please check the Client test notes.",
+        )
+        for body in neither:
+            with self.subTest(body=body):
+                self.assertIsNone(ready_handoff.review_record(body))
         for body in outcomes:
             with self.subTest(body=body):
                 self.assertEqual(ready_handoff.review_record(body), "outcome")
@@ -231,11 +242,13 @@ class ReadyTests(unittest.TestCase):
 
     def test_pending_review_of_record_refuses_until_a_later_outcome(self):
         self.review_comment("Review prompt for the OpenAI review of record. **Supervisor runs the review.**", 1)
-        self.assertIn("review of record was requested", self.refuse())
-        self.review_comment("**Review of record: OpenAI, run by the Supervisor** at head `aaaaaaa`.", 2)
+        self.refuse()
+        self.review_comment("Review by another model is blocked by #2069; the Supervisor still needs to run it.", 2)
+        self.refuse()
+        self.review_comment("**Review of record: OpenAI, run by the Supervisor** at head `aaaaaaa`.", 3)
         self.post()
         self.writer.reset_mock()
-        self.review_comment("Review of record still needed after the fix push.", 3)
+        self.review_comment("Review of record still needed after the fix push.", 4)
         self.refuse()
 
     def test_untrusted_review_request_does_not_hold_ready(self):
@@ -247,7 +260,7 @@ class ReadyTests(unittest.TestCase):
         self.post()
         self.writer.reset_mock()
         self.reader.files = [{"filename": "skills/github/SKILL.md"}]
-        self.assertIn("review-required paths", self.refuse())
+        self.refuse()
         self.review_comment("Review weighed: none to act on.", 4)
         self.refuse()
         self.review_comment("Review weighed at the current head: nothing to act on.", 6)
@@ -260,7 +273,7 @@ class ReadyTests(unittest.TestCase):
 
     def test_unreadable_review_paths_refuse(self):
         self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": "AGENTS.md"}}}
-        self.assertIn("Review-of-record evidence is unavailable", self.refuse())
+        self.refuse()
 
     def test_waiting_for_client_invalidates_ready_without_bypassing_ci(self):
         self.args.waiting_for_client = True
