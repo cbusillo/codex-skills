@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import pathlib
 import re
 import json
 import subprocess
@@ -22,6 +23,7 @@ from skills.github.scripts import github_identity, github_plan_wait, github_plan
 # The existing Supervisor helpers use sibling imports when called as scripts.
 sys.path.insert(0, str(audit.REPO_ROOT / "skills/supervisor/scripts"))
 import oq
+import landed_worktrees
 
 UTC = dt.timezone.utc
 # The Director writes status times in US Eastern ("2:20 PM ET").
@@ -241,7 +243,7 @@ def merged_review_due(record: dict, merged_at: dt.datetime | None, now: dt.datet
 def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: set[str],
            owners: set[str], gaps: list[dict] | None = None, director_names: tuple[str, ...] = (),
            delivery_view: dict | None = None, related_comments: list[dict] | None = None,
-           registers: list[dict] | None = None) -> dict:
+           registers: list[dict] | None = None, worktrees: list[dict] | None = None) -> dict:
     """Interpret retained API facts. A finding requests review, never authorizes a write."""
     findings: list[dict] = []
     gaps = list(gaps or [])
@@ -429,6 +431,22 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
         for row in rows:
             add(row["kind"], {"repo": row["repo"], "item": {"number": None, "title": row["title"]}}, row["url"], row["since"],
                 row["next_actor"], row["detail"], evidence=[{"last_checked": row["last_checked"], "next_check": row["next_check"]}])
+    by_repo: dict[str, list[dict]] = {}
+    for row in worktrees or []:
+        since = stamp(row.get("since"))
+        if since is None or (now - since).total_seconds() / 3600 >= age_hours:
+            by_repo.setdefault(row["repo"], []).append(row)
+    for repo, rows in sorted(by_repo.items()):
+        # One finding per repository keeps the digest short; evidence names every worktree.
+        rows.sort(key=lambda r: r.get("since") or "")
+        names = ", ".join(r["task"] for r in rows[:5]) + (f" and {len(rows) - 5} more" if len(rows) > 5 else "")
+        dirty = sum(1 for r in rows if r["dirty"])
+        add("finished_worktree", {"repo": repo, "item": {"number": None, "title": f"{len(rows)} finished task worktrees in {repo}"}},
+            f"https://github.com/{repo}", rows[0].get("since"), "Supervisor / landing step",
+            f"Work landed or was closed but its task worktree is still on this host: {names}. Retire each with the "
+            "command its lock names; the host helper keeps any that are in use or unpublished."
+            + (f" {dirty} have local changes to preserve first." if dirty else ""),
+            evidence=[{key: r[key] for key in ("task", "branch", "basis", "dirty", "pull")} for r in rows], immediate=True)
     reported_questions = {row["url"] for row in findings if row["kind"] == "unanswered_question"}
     for row in deliveries.values():
         if not row.get("registration_url") or row["url"] in reported_questions or row.get("status") == "unread_source":
@@ -451,7 +469,8 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
 def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             history_days: int = 30, max_requests: int = 800, max_pages: int = 20,
             quota_reserve: int = 250, owner: str | None = None, director_names: tuple[str, ...] = (),
-            question_queue: str | None = None, policy_reader=None, director: str | None = None) -> dict:
+            question_queue: str | None = None, policy_reader=None, director: str | None = None,
+            worktree_root: pathlib.Path | None = None) -> dict:
     """Reuse the direction audit's paged inventory with one global bounded read budget."""
     gaps: list[dict] = []
     records: list[dict] = []
@@ -796,10 +815,38 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     trusted=set(github_identity.configured_bot_logins()),
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
                     gaps=gaps, director_names=director_names, delivery_view=delivery_view,
-                    related_comments=related_comments, registers=registers)
+                    related_comments=related_comments, registers=registers,
+                    worktrees=finished_worktrees(
+                        worktree_root, fetch, gaps,
+                        lambda slug: slug.casefold() in repos or (owner or "").casefold() == slug.split("/")[0].casefold(),
+                    ) if worktree_root else None)
     result.update({"repositories": repos, "operational_registers": [f"{r['repo']}:{r['path']}" for r in registers], "checked_records": len(records), "attempted_records": attempted_records, "requests": reads,
                    "history_days": history_days, "closed_trigger_history": "all", "quota_reserve": quota_reserve, "policy_reads": policy_reads})
     return result
+
+
+def finished_worktrees(root: pathlib.Path, fetch, gaps: list[dict], include) -> list[dict]:
+    """Finished task worktrees under this host's root; PR reads share the sweep's budget."""
+    def pulls_for(slug, branch):
+        owner = slug.split("/")[0]
+        try:
+            rows = fetch(["api", f"repos/{slug}/pulls?state=all&per_page=100&head={quote(owner)}:{quote(branch, safe='')}"])
+        except audit.AuditError as exc:
+            raise LookupError(str(exc)) from exc
+        if not isinstance(rows, list):
+            raise LookupError("unexpected_response_shape")
+        if len(rows) >= 100:
+            # A full page may hide the PR that contains the head; never conclude from it.
+            raise LookupError("page_limit")
+        return rows
+
+    try:
+        rows, worktree_gaps = landed_worktrees.finished(root, pulls_for, include)
+    except OSError:
+        gaps.append({"source": "worktree_root", "reason": "unreadable"})
+        return []
+    gaps.extend(worktree_gaps)
+    return rows
 
 
 def train_policy(repo: str, *, deadline_at: float) -> dict | None:
