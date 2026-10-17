@@ -1917,8 +1917,9 @@ No token, new grant, credential copy or browser session is needed from the agent
 
 Repository and comment verification use automation-only REST reads through the
 shared reader. The canonical repository must still have the requested name and
-a personal owner. The URL must appear in that exact comment. Only the fixed
-`/user` identity read and that attachment GET use the personal token. Binary
+a personal GitHub account rather than an organization. The URL must appear in
+that exact comment. Only the fixed `/user` identity read and that attachment GET
+use the personal token. Binary
 downloads use a separate bounded transport without retries or identity fallback;
 redirects go only to supported GitHub asset hosts over HTTPS, with no personal
 Authorization header forwarded. The personal credential's existing privileges
@@ -1931,8 +1932,8 @@ and reports only path, byte count and SHA-256 in terminal JSON. File bodies,
 error bodies and signed redirect URLs are withheld. `--max-bytes` defaults to
 100 MiB; failed or oversized reads leave no partial destination file.
 
-This route deliberately refuses other owners, organization repositories,
-automation-only mode, unverified comment links, HTML responses (including login
+This route deliberately refuses repositories belonging to another account,
+organization repositories, automation-only mode, unverified comment links, HTML responses (including login
 pages) and unsupported redirects. A pasted attachment link is evidence of its
 presence in a comment, not independent proof of its original upload repository.
 The helper does not broaden general own-user reads or writes. If the existing
