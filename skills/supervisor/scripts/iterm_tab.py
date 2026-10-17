@@ -142,19 +142,25 @@ class LaunchFailure(ValueError):
                        "next_action": "List and read these tabs before retrying; earlier launches may be running."}
         if isinstance(error, StartupFailure):
             self.detail["failed_launch"]["startup"] = error.snapshot
+            if error.snapshot.get("blocked_prompt"):
+                self.detail["status"] = "launch_blocked"
         super().__init__(reason)
 
 
 class StartupFailure(ValueError):
     def __init__(self, snapshot):
         self.snapshot = snapshot
-        super().__init__("terminal exited during startup; inspect its last output before retrying"
-                         if snapshot["dead"] else
-                         "startup observation unavailable; submitted agent may be running; inspect before retrying")
+        if snapshot.get("blocked_prompt"):
+            reason = f"startup blocked by {snapshot['blocked_prompt']} prompt; inspect the exact terminal; do not relaunch or grant trust automatically"
+        else:
+            reason = ("terminal exited during startup; inspect its last output before retrying"
+                      if snapshot["dead"] else
+                      "startup observation unavailable; submitted agent may be running; inspect before retrying")
+        super().__init__(reason)
 
 
 async def verify_startup(read, timeout=2.0):
-    """Observe immediate exit; this is not full agent readiness."""
+    """Observe immediate exit or native trust prompts; not full readiness."""
     deadline = time.monotonic() + timeout
     last_dead = None
     while True:
@@ -164,6 +170,12 @@ async def verify_startup(read, timeout=2.0):
             if last_dead is not None:
                 raise StartupFailure({**last_dead, "observation_error": type(error).__name__}) from error
             raise
+        if not snapshot["dead"]:
+            screen = "\n".join(snapshot.get("screen", [])).casefold()
+            choice = r"(?m)^\s*[›❯>]?\s*(?:[12][.)]\s*)?"
+            if (re.search(choice + r"trust all and\s+continue\b", screen)
+                    and re.search(choice + r"continue without trusting\b", screen)):
+                raise StartupFailure({**snapshot, "blocked_prompt": "hook_trust"})
         if snapshot["dead"]:
             last_dead = snapshot
         # tmux can observe PTY EOF before SIGCHLD supplies the exit status.

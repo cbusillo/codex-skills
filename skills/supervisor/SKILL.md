@@ -391,9 +391,11 @@ including non-dim text, establishes neither its author nor approval.
    command file to the agent invocation and settings. The launcher validates
    every brief before launch side effects; read the launching procedure in
    [helpers](references/helpers.md#launching-and-nudging).
-   Then read each launch's first screen. A folder-trust or hook-trust prompt
-   looks like a working session from outside, and the launcher still reports
-   success; a launch with no transcript after one minute is blocked
+   Then read each launch's first screen. The launcher reports a visible Codex
+   hook-review prompt as `launch_blocked`, retaining the terminal identity and
+   screen. Inspect that terminal before acting; do not relaunch or grant trust
+   automatically. A folder-trust or later prompt may still need attention;
+   a launch with no transcript after one minute is blocked
    ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)).
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one

@@ -957,7 +957,11 @@ no account configuration migration is needed.
 Use `--account` for an explicit override through the same mapping and receipt
 path. Run one agent invocation, without restart loops or commands that continue
 after it exits. Read the launched screen once for folder trust or another
-blocking prompt. Record the new native thread and exact transcript in the
+blocking prompt. The short startup observation reports a visible Codex hook-review
+prompt as `launch_blocked` with `startup.blocked_prompt: hook_trust`, the exact
+terminal identity and screen. It does not answer the prompt or prove readiness;
+a later prompt still needs first-screen/transcript verification. Do not launch
+a duplicate after a blocked result. Record the new native thread and exact transcript in the
 ledger. Prefer `codex queue` for Codex nudges with the verified thread id and
 its configured home; never queue exit commands. The terminal helper suppresses
 broadcast input, uses bracketed paste for multiline messages, and sends text
@@ -1261,7 +1265,8 @@ terminal identity, any already-written count-only receipt, and available last
 output (tmux also reports available exit status or termination signal). An iTerm profile that immediately closes
 the exited session can make its final screen unavailable. Inspect those terminals before retrying;
 the launcher never replays a batch automatically. This observation catches early
-exit, not full agent readiness or a later failure. iTerm replaces the interactive
+exit and a visible Codex hook-review prompt (`launch_blocked`), not full agent
+readiness or a later failure. iTerm replaces the interactive
 shell with the launch command in a scoped zsh process, so an agent exit ends
 that exact session even if the launch file omitted `exec`. It uses the native
 session termination monitor; tmux reads pane state without driving iTerm. Brief
