@@ -1544,7 +1544,7 @@ class QualificationTests(unittest.TestCase):
         files = [{"filename": "src/tool.py"}]
 
         def get(path):
-            if "/contents/.github/github.json?ref=trunk" in path:
+            if f"/contents/{ready_handoff.REVIEW_CONFIG_PATH}?ref=trunk" in path:
                 if config is None:
                     raise watch.GitHubReadError(
                         "Not Found",
@@ -1552,8 +1552,6 @@ class QualificationTests(unittest.TestCase):
                         diagnostics={},
                     )
                 return {"content": base64.b64encode(json.dumps(config).encode()).decode()}
-            if path.endswith(f"/commits/{SHA}"):
-                return {"commit": {"committer": {"date": "2026-01-01T00:01:02Z"}}}
             raise AssertionError(path)
 
         self.io.get = get
@@ -1562,7 +1560,7 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(gap(), "")
         self.comments.append(comment("Supervisor runs the review.", 2))
         self.assertTrue(gap())
-        self.comments.append(comment("Review weighed: none.", 3))
+        self.comments.append(comment(f"Review weighed: none.\n\nHead: {SHA}", 3))
         self.assertEqual(gap(), "")
         config = {"qualityGate": {"modelReview": {"requiredPaths": ["skills/*"]}}}
         self.assertEqual(gap(), "")

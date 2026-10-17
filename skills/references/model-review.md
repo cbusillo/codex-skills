@@ -83,7 +83,11 @@ In the pull request or the owning issue, give the reviewers by provider and
 model, what was acted on, what was declined and why, and what was reproduced.
 On a pull request, start that comment with `Review weighed:` or
 `Review of record:`; `ready` refuses a pending or missing review of record
-until one follows the request or the head commit (see
+until a later result identifies the current head (see
 [ready handoffs](../github/references/cli-reference.md#ready-handoffs)).
 Keep it short; the declined list is what keeps dissent visible without turning
 it into code.
+
+For a review that gates ready or auto-enqueue, include `Head: <full reviewed SHA>`
+on its own line, or identify the head in the outcome's first line. Describe the
+actual result or disposition; a launch or status update is not an outcome.

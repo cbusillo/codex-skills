@@ -45,46 +45,35 @@ REVIEW_LEAD = re.compile(r"^[\s#>*_]+")
 REVIEW_OUTCOME = re.compile(
     r"(?i)^(?:[\w-]+ )?review of record(?: \([^)]*\))?:"
     r"|^review weighed\b|^review by another model\b"
-    r"|\bcompleted the review of record\b"
+    r"|^(?:openai|anthropic|google|gemini|claude)\b.*?\bcompleted the review of record\b"
 )
-# A status update that the review is blocked or not done is never an outcome.
-# Only statements about the review itself count, so "no changes needed" or a
-# fixed "failed-read" bug in a completed record does not.
-REVIEW_NOT_DONE = re.compile(
-    r"(?i)(?:\b(?:did|does|do|has|have|had|is|was|were|could|can|will|would)(?: not|n't)"
-    r"|\bcannot|\bnot yet|\byet to|\bnever|\bfailed to|\bunable to|\bneither|\bno (?:provider|model|one))"
-    r"(?:\s+[\w`*-]+){0,4}?\s+(?:complete[ds]?|finish(?:ed|es)?|run|ran|start(?:ed|s)?"
-    r"|launch(?:ed|es)?|done|return(?:ed|s)?|reviewed)\b"
-    r"|\b(?:review(?: of record| by another model)?|it)\s+(?:is|was|remains|stays)\s+(?:still\s+)?"
-    r"(?:blocked|pending|waiting|outstanding|incomplete|unavailable|queued|running|in progress"
-    r"|needed|required|requested)\b"
-    r"|\bstill (?:needs?|needed|required)\b"
+# An outcome needs an affirmative result. Examine only the text preceding
+# that result for unfinished review status; the findings describe the code.
+REVIEW_RESULT = re.compile(
+    r"(?i)\b(?:completed|finished|reviewed|found|identified|declined)\b"
+    r"|\brun by (?:the )?supervisor\b"
+    r"|\b(?:no findings|none(?: to act on)?|nothing to act on|no changes needed)\b(?!\s+yet)"
+    r"|\bfindings?\s*:(?=\s|$)|\bfindings? (?:acted on|fixed|addressed)\b"
+    r"|\bacted on\b|\bis correct\b"
 )
-# Keep continuation clauses: a provider name before ';' is not a result.
-# Findings after an affirmative completion describe the code, not review status.
-REVIEW_FINDINGS = re.compile(
-    r"(?i)(?P<completion>\b(?:completed|finished) (?:the )?review(?: of record)?\b)"
-    r".*?\b(?:and found|and identified|and reported|finding[s]?:)\b"
-)
-REVIEW_STATUS = re.compile(
-    r"(?i)^\s*(?:(?:openai|anthropic|google|gemini|claude)\s*[:;,]?\s*)?"
-    r"(?:(?:review|it)\s+)?(?:(?:is|was|remains)\s+)?(?:still\s+)?"
-    r"(?:blocked|pending|waiting|outstanding|incomplete|unavailable|queued|running|in progress)\b"
-)
-REVIEW_STATUS_LEAD = re.compile(
-    r"(?i)^(?:[\w-]+ )?review of record(?: \([^)]*\))?:\s*"
-    r"|^review weighed[:\s]*|^review by another model[:\s]*"
+REVIEW_UNFINISHED = re.compile(
+    r"(?i)\b(?:not|never|neither|cannot|unable|pending|blocked|requested|needed|waiting"
+    r"|outstanding|incomplete|unavailable|queued|running|errored|failed|retrying|rerunning"
+    r"|will|would|after|once|until)\b(?![-\w])|\btimed out\b"
 )
 REVIEW_REQUEST = re.compile(
     r"(?i)^review (?:prompt|request)\b|^review of record (?:still )?(?:needed|requested)\b"
 )
-# A bare "Review request" lead counts only when it names a model review.
 REVIEW_REQUEST_CONTEXT = re.compile(
     r"(?i)\breview of record\b|\banother model\b|\bmodel[- ]review\b"
     r"|\bprovider\s*:\s*`?(?:openai|anthropic|google)\b"
-    r"|\b(?:openai|anthropic|gemini|claude)\b"
 )
-SUPERVISOR_RUNS_REVIEW = re.compile(r"(?i)\bsupervisor runs the review\b")
+SUPERVISOR_RUNS_REVIEW = re.compile(
+    r"(?i)^(?:.*?\bso\s+)?supervisor runs the review[.:]?\s*$"
+)
+REVIEW_HEAD = re.compile(
+    r"(?i)\b(?:head(?: SHA)?|at)\s*:?\s*[`*]*(?P<sha>[0-9a-f]{7,40})\b"
+)
 
 
 @dataclass(frozen=True)
@@ -363,15 +352,22 @@ def review_record(body):
     """Classify a review-of-record comment by the leads already in use."""
     lines = (body or "").strip().splitlines()
     first = REVIEW_LEAD.sub("", lines[0]) if lines else ""
-    status = REVIEW_STATUS_LEAD.sub("", first)
-    findings = REVIEW_FINDINGS.search(status)
-    if findings:
-        status = status[:findings.end("completion")]
-    if REVIEW_OUTCOME.search(first) and not (
-        REVIEW_STATUS.search(status) or REVIEW_NOT_DONE.search(status)
-    ):
+    result = REVIEW_RESULT.search(first)
+    # Some existing records put the actual result in a following section.
+    if not result and REVIEW_OUTCOME.search(first):
+        result_body = "\n".join(lines)
+        result = REVIEW_RESULT.search(result_body)
+        prefix = result_body[:result.start()] if result else ""
+    else:
+        prefix = first[:result.start()] if result else ""
+    if REVIEW_OUTCOME.search(first) and result and not REVIEW_UNFINISHED.search(prefix):
         return "outcome"
-    if (REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)) or SUPERVISOR_RUNS_REVIEW.search(body or ""):
+    explicit_request = REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)
+    supervisor_request = any(
+        SUPERVISOR_RUNS_REVIEW.fullmatch(line.strip().replace("**", ""))
+        for line in lines if not line.lstrip().startswith((">", "`"))
+    )
+    if explicit_request or supervisor_request:
         return "request"
     return None
 
@@ -394,17 +390,26 @@ def review_required_files(files, patterns):
     return sorted(name for name in names if any(fnmatchcase(name, p) for p in patterns))
 
 
-def review_of_record_gap(comments, trusted, *, required_files=(), head_committed_at=None):
+def review_of_record_gap(comments, trusted, *, required_files=(), head=None):
     """Return why a required review of record is unrecorded, or an empty string.
 
     A posted request with no later outcome is pending. A change to a
-    review-required path also needs an outcome posted after the head commit.
+    review-required path also needs an outcome naming the current head.
     """
     latest = {}
     for comment in comments:
         if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
             continue
         kind = review_record(comment.get("body"))
+        if kind == "outcome" and head:
+            body = comment.get("body") or ""
+            declared = [match.group("sha").lower() for match in HEAD.finditer(body)]
+            reviewed_heads = declared or [
+                match.group("sha").lower()
+                for match in REVIEW_HEAD.finditer(body.splitlines()[0])
+            ]
+            if not reviewed_heads or not all(head.lower().startswith(sha) for sha in reviewed_heads):
+                continue
         if kind:
             key = (timestamp(comment["created_at"]), comment["id"])
             if kind not in latest or latest[kind][0] < key:
@@ -415,23 +420,20 @@ def review_of_record_gap(comments, trusted, *, required_files=(), head_committed
         return (
             f"A review of record was requested ({where}) with no later recorded outcome; "
             'post the weighed result (for example "Review weighed: ..." or '
-            '"Review of record: <provider> ...") before ready'
+            f'"Review of record: <provider> ...") naming Head: {head}; accepted identities: {", ".join(sorted(trusted))}'
         )
-    if required_files and (
-        not outcome
-        or (head_committed_at is not None and outcome[0][0] < timestamp(head_committed_at))
-    ):
+    if required_files and not outcome:
         shown = ", ".join(required_files[:3]) + (" ..." if len(required_files) > 3 else "")
         return (
             f"This PR changes review-required paths ({shown}) and has no review-of-record "
-            "outcome recorded after its head commit; run the review under model-review and "
+            f"outcome naming Head: {head}; accepted identities: {', '.join(sorted(trusted))}. Run the review under model-review and "
             'post the weighed result (for example "Review weighed: ...") before ready'
         )
     return ""
 
 
 def review_evidence_gap(repo, number, *, base, head, comments, trusted, read_json, read_pages, missing):
-    """Read the base branch's review paths, then the files and head date they need.
+    """Read the base branch's review paths and the changed files they govern.
 
     The base branch's config decides, so a PR cannot drop its own requirement.
     ``missing`` names the caller's not-found error; any other read failure raises.
@@ -450,5 +452,4 @@ def review_evidence_gap(repo, number, *, base, head, comments, trusted, read_jso
             raise ValueError(f"{REVIEW_CONFIG_PATH} on {base} is unreadable") from error
         patterns = review_required_patterns(config)
     files = review_required_files(read_pages(f"/repos/{repo}/pulls/{number}/files"), patterns) if patterns else []
-    committed = read_json(f"/repos/{repo}/commits/{head}")["commit"]["committer"]["date"] if files else None
-    return review_of_record_gap(comments, trusted, required_files=files, head_committed_at=committed)
+    return review_of_record_gap(comments, trusted, required_files=files, head=head)

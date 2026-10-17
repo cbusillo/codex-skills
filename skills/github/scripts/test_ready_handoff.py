@@ -39,7 +39,6 @@ class Reader:
         self.comments: list[dict[str, Any]] = []
         self.config = None
         self.files = [{"filename": "src/tool.py"}]
-        self.committed_at = "2026-01-01T00:05:00Z"
         self.current_pr = None
         self.pr_reads = 0
         self.unavailable = False
@@ -55,12 +54,10 @@ class Reader:
             return copy.deepcopy(self.current_pr if self.pr_reads > 1 and self.current_pr else self.pr)
         if path.endswith("/status"):
             return {"state": "success"}
-        if "/contents/.github/github.json?ref=main" in path:
+        if f"/contents/{ready_handoff.REVIEW_CONFIG_PATH}?ref=main" in path:
             if self.config is None:
                 raise GitHubReadError("Not Found", result=ApiResult(ok=False, status=404, body=None), diagnostics={})
             return {"content": base64.b64encode(json.dumps(self.config).encode()).decode()}
-        if path.endswith(f"/commits/{SHA}"):
-            return {"commit": {"committer": {"date": self.committed_at}}}
         raise AssertionError(path)
 
     def paged_json(self, path, **_kwargs):
@@ -94,14 +91,21 @@ class ReviewRecordTests(unittest.TestCase):
             "**Review of record: OpenAI, run by the Supervisor** from its iTerm session",
             "**Review of record (OpenAI): no findings.** The Supervisor ran it",
             "Anthropic review of record: Claude Opus 5.5, no findings.",
-            "EXEC-CS review of record: Anthropic `claude-opus-5-5`, read-only",
+            "EXEC-CS review of record: Anthropic `claude-opus-5-5`, read-only\n\nNo findings.",
             "Anthropic **claude-opus-5-5** completed the review of record (CLI-confirmed model).",
             "Review weighed at `83f8b258`. I reproduced the finding and acted on it.",
-            "Review by another model (author: Anthropic Claude Opus): OpenAI via Codex, read-only",
+            "Review by another model (author: Anthropic Claude Opus): OpenAI via Codex, read-only\n\nNo findings.",
             "Anthropic review of record: Claude Opus 5.5, completed twice. Fixed: errors cannot hide output.",
             "Review weighed: OpenAI completed the review; no changes needed.",
             "Review weighed: OpenAI completed the review and found the failed-read bug, now fixed.",
             "Review weighed: OpenAI completed the review and found that the helper did not run required checks.",
+        )
+        outcomes += (
+            "Review of record: OpenAI found the cache was not returned on 304; fixed.",
+            "Review weighed: two OpenAI findings acted on; the watcher never started its timer, now fixed.",
+            "Review weighed: OpenAI reviewed it and found the helper did not run checks; fixed.",
+            "Review of record: OpenAI, pending-review handling is correct.",
+            "Review weighed: OpenAI completed the review; findings: the helper did not run checks.",
         )
         requests = (
             "Review prompt for the review of record (provider: openai; author: anthropic).",
@@ -124,6 +128,20 @@ class ReviewRecordTests(unittest.TestCase):
             "Review of record: pending.",
             "Review of record: OpenAI is still running.",
             "Review of record: OpenAI; could not complete the review.",
+            "Review of record: requested from OpenAI.",
+            "Review of record: OpenAI launched; waiting for the result.",
+            "Review of record: Anthropic (Opus) is still running.",
+            "Review of record: Codex is still running.",
+            "Review of record: OpenAI timed out after 30 minutes; retrying.",
+            "Review of record: OpenAI errored (exit 1); rerunning.",
+            "Pending review of record: OpenAI.",
+            "Blocked review of record: OpenAI (#2069).",
+            "Review weighed: not yet; OpenAI is still running.",
+            "I'll post ready after Anthropic has completed the review of record.",
+            "Review request: Claude Code hook settings page",
+            "Review request: OpenAI API key rotation docs",
+            "No model review is needed here; the Supervisor runs the review only for skill paths.",
+            "Status recap: > Supervisor runs the review.",
         )
         for body in neither:
             with self.subTest(body=body):
@@ -274,13 +292,13 @@ class ReadyTests(unittest.TestCase):
                     self.reader.files = [{"filename": "AGENTS.md"}]
                     if requested:
                         self.review_comment("Review prompt for the review of record.", 6)
-                    self.review_comment(status, 7)
+                    self.review_comment(f"{status}\n\nHead: {SHA}", 7)
                     self.refuse()
 
     def test_completed_review_with_code_defect_allows_ready(self):
         self.review_comment("Review prompt for the review of record.", 6)
         self.review_comment(
-            "Review weighed: OpenAI completed the review and found that the helper did not run required checks.", 7,
+            f"Review weighed: OpenAI completed the review and found that the helper did not run required checks.\n\nHead: {SHA}", 7,
         )
         self.post()
 
@@ -292,16 +310,34 @@ class ReadyTests(unittest.TestCase):
         self.review_comment("Supervisor runs the review.", 1, login="drive-by")
         self.post()
 
-    def test_review_required_paths_need_an_outcome_after_the_head_commit(self):
+    def test_review_required_paths_need_an_outcome_for_the_current_head(self):
         self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["skills/*/SKILL.md"]}}}
         self.post()
         self.writer.reset_mock()
         self.reader.files = [{"filename": "skills/github/SKILL.md"}]
         self.refuse()
-        self.review_comment("Review weighed: none to act on.", 4)
+        self.review_comment(f"Review weighed: none to act on.\n\nHead: {'b' * 40}", 4)
         self.refuse()
-        self.review_comment("Review weighed at the current head: nothing to act on.", 6)
+        self.review_comment(f"Review weighed at `{SHA}`: nothing to act on.", 6)
         self.post()
+
+    def test_old_review_cannot_cover_a_previously_unpushed_commit(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "AGENTS.md"}]
+        # B may be committed before this review but pushed after it. Dates do
+        # not identify the reviewed source; the outcome covers only A.
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {'b' * 40}", 6)
+        self.refuse()
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7)
+        self.post()
+
+    def test_no_head_or_untrusted_owner_outcome_is_not_current_evidence(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "AGENTS.md"}]
+        self.review_comment("Review weighed: no findings.", 6)
+        self.refuse()
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7, login="repository-owner")
+        self.refuse()
 
     def test_renamed_review_required_path_still_needs_an_outcome(self):
         self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
