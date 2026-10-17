@@ -197,8 +197,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", required=True, type=covered_repo, help="OWNER/REPO covered by the daily turn")
     args = parser.parse_args(argv)
     path = marker_path()
-    written = mark_turn(path, args.repo, dt.datetime.now(dt.timezone.utc))
+    try:
+        written = mark_turn(path, args.repo, dt.datetime.now(dt.timezone.utc))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        error = f"Could not record daily direction marker at {path}: {exc}"
+        print(json.dumps({"ok": False, "marker": str(path), "local_recorded": False, "error": error}))
+        print(f"ERROR: {error}. The turn was not recorded locally or shared.", file=sys.stderr)
+        return 1
     shared = share_turn(str(written["turn"]), args.repo)
+    if not shared["ok"]:
+        print(f"ERROR: Daily turn recorded at {path}, but the shared record failed: {shared['error']}", file=sys.stderr)
     print(json.dumps({"ok": shared["ok"], "marker": str(path), "turn": written["turn"], "turn_repo": written["turn_repo"], "shared": shared}))
     # The local turn is written either way; a failed shared write leaves other machines reminding.
     return 0 if shared["ok"] else 2
