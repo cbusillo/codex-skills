@@ -59,7 +59,9 @@ needed. Before the first PR push, run focused local checks and that required
 review, address findings locally, and batch fixes into one push. Avoid fix-up
 pushes in quick succession. Never merge the base into, rebase, or update your
 own PR branch unless there is a real conflict or a check explicitly requires
-it; the merge train owns freshness on train-routed PRs.
+it; the merge train owns freshness on train-routed PRs. Once a PR has asked its
+Client for review, give every later commit a
+[Client-impact trailer](../github/references/repo-workflow.md#client-impact-trailers).
 
 For milestone work, honor the same authorization and direction stop
 boundaries on each issue. If one issue must pause or escalate, continue other

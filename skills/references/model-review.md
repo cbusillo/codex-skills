@@ -41,6 +41,12 @@ fails loudly when a reviewer could not read or returned nothing.
   checks. The warning scanner and its CI wiring are documented in
   [test quality](test-quality.md). This question does not expand when a review
   is required; the criteria above still own that decision.
+- When commits carry
+  [Client-impact trailers](../github/references/repo-workflow.md#client-impact-trailers),
+  ask the reviewer to check each `none` claim against that commit's diff. A
+  commit that could change what the Client saw or accepted is a blocking
+  finding; fix it with a `Client-impact: visible` commit so the Client decides
+  again.
 
 ## Weighing Findings
 
