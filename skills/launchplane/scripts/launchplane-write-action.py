@@ -1829,7 +1829,10 @@ def _project_merge_train_policy_import_response(
         raise LaunchplaneSafetyError("invalid_response")
     for policy_key in policy_keys:
         public_identifier(policy_key)
-    public_identifier(record.get("source"))
+    # Launchplane's record source is required free text; validate it, never emit it.
+    source = record.get("source")
+    if not isinstance(source, str) or not source.strip():
+        raise LaunchplaneSafetyError("invalid_response")
     projected = {
         "record_id": public_identifier(record.get("record_id")),
         "status": status,
