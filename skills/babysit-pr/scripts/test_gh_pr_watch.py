@@ -412,6 +412,30 @@ def test_unknown_merge_state_does_not_request_branch_update():
     )
 
 
+@pytest.mark.parametrize("conflict", [
+    {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY"},
+    {"mergeable": "CONFLICTING", "merge_state_status": "UNKNOWN"},
+    {"mergeable": "UNKNOWN", "merge_state_status": "DIRTY"},
+])
+def test_confirmed_conflict_requests_refresh_instead_of_idle(conflict):
+    # codex-skills#2045: a green, reviewed but conflicting PR came back idle.
+    pr = sample_pr()
+    pr.update(conflict)
+    assert gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3) == ["refresh_conflicting_branch"]
+
+
+@pytest.mark.parametrize("unread", ["mergeable", "merge_state_status"])
+def test_unknown_mergeability_waits_without_refresh(unread):
+    pr = sample_pr()
+    pr.update({"mergeable": "UNKNOWN", "merge_state_status": "UNKNOWN"})
+    assert gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3) == ["idle"]
+    pr.update({"mergeable": "CONFLICTING", "merge_state_status": "DIRTY"})
+    pr["metadata_availability"].update({"mergeable": False, "merge_state_status": False})
+    assert "refresh_conflicting_branch" not in gh_pr_watch.recommend_actions(
+        pr, sample_checks(), [], [], [], 0, 3
+    )
+
+
 def test_review_readiness_query_distinguishes_nullable_decision():
     pr = sample_pr()
     pr.update({"review_decision": "", "review_requirement": "unknown", "review_decision_source": "not_queried"})
@@ -1337,6 +1361,8 @@ def test_wait_ci_returns_when_ci_settles_with_check_counts(monkeypatch):
     ({"pr": {**sample_pr(), "merged": True}, "actions": ["stop_pr_closed"]}, "stopped", 4),
     ({"actions": ["stop_unknown_rerun"]}, "stopped", 4),
     ({"new_review_items": [{"kind": "issue_comment", "id": "1"}], "actions": ["process_review_comment"]}, "review", 5),
+    ({"actions": ["refresh_conflicting_branch"]}, "conflict", 6),
+    ({"checks": sample_checks(), "actions": ["refresh_conflicting_branch"]}, "conflict", 6),
 ])
 def test_wait_ci_ends_on_every_terminal_state(monkeypatch, change, outcome, code):
     _clock, events = wait_ci_harness(monkeypatch, [pending_snapshot(), {**pending_snapshot(), **change}])
