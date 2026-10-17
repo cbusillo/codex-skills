@@ -65,6 +65,8 @@ def trust_roots(directory, main_root):
     if top is None:
         return [directory], None
     main = main_root(directory)
+    # A Git pointer may name the main checkout through a symlink; scope uses the real path.
+    main = main.resolve() if main is not None else None
     return list(dict.fromkeys(root for root in (main, top) if root is not None)), main
 
 
@@ -81,18 +83,20 @@ def in_scope(directory, roots, main, developer, worktrees):
 
 
 def read_projects(path):
+    """Return the raw bytes, the parsed config, and its projects object (attached if absent)."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        data = json.loads(raw)
     except FileNotFoundError:
         raise ValueError(f"Claude home config {path} does not exist; sign in to that home "
                          "interactively once before launching on it") from None
     except (OSError, ValueError) as error:
         raise ValueError(f"cannot read Claude folder trust in {path} ({type(error).__name__}); "
                          "inspect that config before retrying") from None
-    projects = data.get("projects", {}) if isinstance(data, dict) else None
+    projects = data.setdefault("projects", {}) if isinstance(data, dict) else None
     if not isinstance(projects, dict):
         raise ValueError(f"cannot read Claude folder trust in {path}: projects is not an object")
-    return data, projects
+    return raw, data, projects
 
 
 def trusted(projects, root):
@@ -115,7 +119,7 @@ def plan(directory, selected, homes, main_root, developer=None, worktrees=None):
     roots, main = trust_roots(directory, main_root)
     if not in_scope(directory, roots, main, developer, worktrees):
         path = config_file(selected)
-        _, projects = read_projects(path)
+        _, _, projects = read_projects(path)
         missing = [str(root) for root in roots if not trusted(projects, root)]
         if missing:
             raise ValueError(
@@ -126,7 +130,7 @@ def plan(directory, selected, homes, main_root, developer=None, worktrees=None):
         return []
     writes = []
     for path in dict.fromkeys(config_file(choice) for choice in [selected, *homes()]):
-        _, projects = read_projects(path)
+        _, _, projects = read_projects(path)
         needed = [root for root in roots if not trusted(projects, root)]
         if needed:
             writes.append((path, needed))
@@ -134,9 +138,20 @@ def plan(directory, selected, homes, main_root, developer=None, worktrees=None):
 
 
 def apply(writes):
-    """Set only the trust key, replacing the file atomically, then read it back."""
+    """Set only the trust key in each home, keeping every other change."""
     for path, roots in writes:
-        data, projects = read_projects(path)
+        write_trust(path, roots)
+
+
+def write_trust(path, roots, attempts=3):
+    """Replace the file atomically, only if nobody changed it since it was read.
+
+    Claude Code documents no lock for `.claude.json`, so a running session's
+    write between the last comparison and the rename can still win; the
+    readback then refuses the launch instead of reporting trust.
+    """
+    for _ in range(attempts):
+        raw, data, projects = read_projects(path)
         for root in roots:
             entry = projects.get(str(root))
             projects[str(root)] = {**(entry if isinstance(entry, dict) else {}), TRUST_KEY: True}
@@ -148,11 +163,13 @@ def apply(writes):
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(temporary, mode)
+            if path.read_bytes() != raw:
+                continue
             os.replace(temporary, path)
-        except BaseException:
+        finally:
             Path(temporary).unlink(missing_ok=True)
-            raise
-        _, projects = read_projects(path)
-        if not all(trusted(projects, root) for root in roots):
-            raise ValueError(f"Claude folder trust did not persist in {path}; another writer "
-                             "replaced it, retry the launch")
+        _, _, projects = read_projects(path)
+        if all(trusted(projects, root) for root in roots):
+            return
+    raise ValueError(f"Claude folder trust did not persist in {path}; another writer kept "
+                     "changing it, retry the launch")

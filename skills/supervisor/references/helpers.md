@@ -1239,8 +1239,10 @@ tab, when the root is under `~/Developer`, or the folder is a linked worktree
 in the configured [worktree root](../../github/references/worktrees.md#per-host-configuration)
 whose main checkout is under `~/Developer`. For a worktree it records both the
 main checkout's root and the worktree's own root, because Claude's docs
-describe both. Symlinks are resolved first, so a link under `~/Developer`
-that points elsewhere is outside that scope. Any other folder launches only
+describe both. Symlinks are resolved first, in the launch folder and in a
+worktree's Git pointer, so a link under `~/Developer` that points elsewhere is
+outside that scope. Each write replaces the file only if it is unchanged since
+it was read, retrying a few times, so a running session's save is kept. Any other folder launches only
 when the selected home already trusts its root; otherwise the launch refuses
 and names the home, so you can open `claude` there and review the dialog
 yourself. A configured home without `.claude.json` also refuses before any

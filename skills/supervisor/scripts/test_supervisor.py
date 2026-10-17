@@ -1633,6 +1633,9 @@ class ClaudeTrustTests(unittest.TestCase):
         data = json.loads(config.read_text())
         data["projects"][str(repository)] = {"allowedTools": ["Read"]}
         config.write_text(json.dumps(data))
+        data = json.loads(self.configs[2].read_text())
+        del data["projects"]
+        self.configs[2].write_text(json.dumps(data))
         self.launch(repository / "addons")
         for config in self.configs:
             with self.subTest(config=config):
@@ -1662,8 +1665,12 @@ class ClaudeTrustTests(unittest.TestCase):
         escape.symlink_to(outside, target_is_directory=True)
         plain = self.worktrees / "plain"
         plain.mkdir()
+        disguised = self.worktrees / "disguised"
+        git_fixture("-C", str(outside), "worktree", "add", "--detach", str(disguised))
+        pointer = (disguised / ".git").read_text().split(":", 1)[1].strip()
+        (disguised / ".git").write_text(f"gitdir: {escape / Path(pointer).relative_to(outside)}\n")
         before = [config.read_bytes() for config in self.configs]
-        for directory in (outside, foreign, escape, plain, self.developer.parent):
+        for directory in (outside, foreign, escape, plain, disguised, self.developer.parent):
             with (self.subTest(directory=directory),
                   patch.object(account_choice, "prepare_launch") as prepare,
                   self.assertRaisesRegex(ValueError, "not trusted") as caught):
@@ -1682,6 +1689,27 @@ class ClaudeTrustTests(unittest.TestCase):
         commands, _ = self.launch(outside)
         self.assertIn(str(outside), commands[0])
         self.assertEqual([config.read_bytes() for config in self.configs], before)
+
+    def test_concurrent_config_change_is_kept(self):
+        repository = git_repository(self.developer / "repository")
+        mkstemp = tempfile.mkstemp
+        changed = []
+
+        def concurrent_writer(*args, **kwargs):
+            # Another Claude session saves its config between the launcher's read and rename.
+            if not changed:
+                data = json.loads(self.configs[0].read_text())
+                data["oauthAccount"] = {"emailAddress": "refreshed@example.invalid"}
+                self.configs[0].write_text(json.dumps(data))
+                changed.append(True)
+            return mkstemp(*args, **kwargs)
+
+        with patch.object(iterm_tab.claude_trust.tempfile, "mkstemp", side_effect=concurrent_writer):
+            self.launch(repository)
+        data = json.loads(self.configs[0].read_text())
+        self.assertEqual(data["oauthAccount"], {"emailAddress": "refreshed@example.invalid"})
+        self.assertIs(data["projects"][str(repository)]["hasTrustDialogAccepted"], True)
+        self.assertEqual(sorted(path.name for path in self.homes[0].iterdir()), [".claude.json"])
 
     def test_missing_directory_or_home_config_refuses_without_partial_writes(self):
         command = self.root / "command"
