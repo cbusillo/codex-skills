@@ -806,8 +806,10 @@ and say why.
   explicit `--head BRANCH`.
 - **Commits and pushes** by Code or spawned agents: `scripts/git-commit-as-bot`
   and `scripts/git-push-as-bot`.
-  Before a PR base update, apply the ownership and authorization checks in
-  [Merge Readiness](references/repo-workflow.md#merge-readiness), then use
+  Never refresh your own PR branch merely because it is behind; require a real
+  conflict or an explicit check requirement. The merge train owns freshness on
+  train-routed PRs. Before a base update, apply the ownership and authorization
+  checks in [Merge Readiness](references/repo-workflow.md#merge-readiness), then use
   `gh-pr.py update-branch`. For local integration,
   use `git-commit-as-bot --git-command merge|pull|rebase|cherry-pick|revert|am`
   from the target directory, followed by that command's arguments, including
@@ -884,7 +886,11 @@ contract, read its CLI reference section; skip unrelated recipes.
 
 Use PRs for all non-trivial changes.
 
-- **Pre-push quality**: For repositories declaring `test.local` and `test.ci`, run
+- **Pre-push quality**: Before the first PR push, complete focused local checks
+  and any review required by [reviews by another model](../references/model-review.md).
+  Address the findings locally and batch fixes into one push; avoid fix-up
+  pushes in quick succession. For repositories declaring `test.local` and
+  `test.ci`, run
   focused local tests plus required lint and type checks, selecting
   `qualityGate.test.local` rather than the full `qualityGate.test.ci` gate under the
   [test command contract](references/config-schema.md#workflow-metadata).

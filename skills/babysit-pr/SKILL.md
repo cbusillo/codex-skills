@@ -185,14 +185,12 @@ For each snapshot:
    clearing saved state. A new
    head gets its own retry state. See [API notes](references/github-api-notes.md)
    for selection and retry accounting.
-5. **Behind the base** (`update_behind_branch`): after review and CI work, and
-   only with existing merge authorization, verify with
-   `../github/scripts/gh-pr.py view <pr>` that `headRepository` matches the PR
-   repository, the head branch is automation-owned, and its diff stays within
-   the approved change. Then run
-   `../github/scripts/gh-pr.py update-branch <pr>`, which observes the
-   asynchronous update, and watch checks on the new head. Never update a fork
-   or someone else's branch without approval from the person it belongs to.
+5. **Behind the base** (`update_behind_branch`): this action alone does not
+   justify a refresh. Refresh only for a real conflict or an explicit check
+   requirement under [Merge Readiness](../github/references/repo-workflow.md#merge-readiness),
+   with existing merge authorization and its ownership checks. The merge train
+   owns freshness on train-routed PRs; follow its workflow or assigned handoff.
+   After an authorized update, watch checks on the new head.
 6. **Evidence still settling**: `check_evidence_incomplete` means check counts
    cannot prove a terminal round; do not rerun from it. `review_readiness_unavailable`
    means everything else is green but review state could not be read; the
@@ -283,6 +281,8 @@ without unrelated changes; surface it instead.
 
 ## Fixes And Pushes
 
+- Batch known CI and review fixes, run focused local checks and any required
+  review by another model, then push once. Avoid fix-up pushes in quick succession.
 - For a branch-caused CI fix, read
   [CI Failure Diagnosis](../github/references/repo-workflow.md#ci-failure-diagnosis)
   and apply its pattern-sweep instruction before pushing.
