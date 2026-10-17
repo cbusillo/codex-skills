@@ -29,6 +29,8 @@ MENTIONS = "director-mentions"  # watermark key; not a repository name
 # Search indexing can lag; each mention search overlaps the previous one and
 # skips thread versions already reported.
 MENTION_OVERLAP = timedelta(minutes=15)
+# Enough of the comment to read it at a check; the full comment stays on GitHub.
+EXCERPT_CHARS = 240
 
 
 def timestamp(value: str) -> datetime:
@@ -42,6 +44,11 @@ def timestamp(value: str) -> datetime:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def excerpt(body: str) -> str:
+    text = " ".join(body.split())
+    return text if len(text) <= EXCERPT_CHARS else text[:EXCERPT_CHARS - 1].rstrip() + "…"
 
 
 def read_comments(reader, repo: str, since: str) -> list[dict]:
@@ -82,7 +89,7 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
                 if is_launchplane or (login or "").casefold() not in own:
                     pending.append({
                         "repository": repo, "author": login, "url": url,
-                        "updated_at": updated,
+                        "updated_at": updated, "excerpt": excerpt(body),
                         "kind": "launchplane" if is_launchplane else "foreign",
                         "untrusted": True,
                         "review_marker": marker_seen,
