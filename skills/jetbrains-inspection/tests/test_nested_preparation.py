@@ -45,6 +45,7 @@ else:
 ''')
         uv.chmod(0o755)
         self.environment = {
+            "JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "",
             "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
             "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(self.root),
         }
@@ -132,6 +133,10 @@ else:
             self.args.repo_explicit = False
             self.assertTrue(jb_inspect.command_closeout(self.args, context)["lanes"])
             multi.assert_called_once()
+        with patch.object(jb_inspect, "run_configured_inspection_lanes", return_value={"lanes": True}):
+            self.args.repo_explicit = True
+            context["repo_path"] = str(self.root / "src")
+            self.assertTrue(jb_inspect.command_closeout(self.args, context)["lanes"])
 
     def test_nested_symlink_to_root_refuses_without_mutating_jvm(self):
         self.project.rmdir()

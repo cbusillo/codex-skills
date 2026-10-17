@@ -2526,8 +2526,10 @@ def explicit_nested_lane_context(args: argparse.Namespace, context: dict[str, An
         return None
     if not project.is_relative_to(root):
         raise inspection_lane_config_error("The requested nested project must stay inside the exact worktree.")
-    relative = project.relative_to(root).as_posix()
-    matching = [lane for lane in lanes if lane.project_path == relative]
+    matching = [lane for lane in lanes if lane.project_path is not None
+                and (root / lane.project_path).resolve() == project]
+    if not matching:
+        return None
     if len(matching) != 1:
         raise inspection_lane_config_error("The explicit nested project must match exactly one declared lane projectPath.")
     lane = matching[0]
