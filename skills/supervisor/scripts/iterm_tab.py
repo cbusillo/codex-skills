@@ -23,11 +23,14 @@ import tomllib
 from pathlib import Path
 
 import account_choice
+import agent_tools
 import gui_launch
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
+# The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
+CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
 
 
 class SendFailure(ValueError):
@@ -605,7 +608,11 @@ def with_account(command_text, choice, brief=None):
     default_claude = choice["provider"] == "anthropic" and "CLAUDE_CONFIG_DIR" not in choice["env"]
     checked_keys = set(choice["env"]) | set(account_choice.ACCOUNT_VARIABLES.values())
     if choice["provider"] == "anthropic":
-        checked_keys.add(CLAUDE_SUGGESTION_ENV)
+        checked_keys.update({CLAUDE_SUGGESTION_ENV, agent_tools.CHROME_ENV})
+        if CHROME_OPT_IN.is_file() and "--chrome" in launch_words(command_text)[1:]:
+            raise ValueError("remove --chrome: it starts the built-in Chrome server on this session's own "
+                             "login, which cannot reach the Agents browser; the catalog-chrome server "
+                             "supplies browser tools on every account")
     google = choice["provider"] == "google"
     if google:
         checked_keys.add("HOME")
@@ -632,6 +639,8 @@ def with_account(command_text, choice, brief=None):
         prefixes.append(f"export {settings}")
     if choice["provider"] == "anthropic":
         prefixes.append(f"export {CLAUDE_SUGGESTION_ENV}=false")
+        if CHROME_OPT_IN.is_file():
+            prefixes.append(f"export {agent_tools.CHROME_ENV}=0")
         command_text = scoped_exec(command_text) or (
             "( export CLAUDE_ACCOUNT_MOVE_ENABLED=1; " + command_text + "\n)"
         )
@@ -686,6 +695,35 @@ def codex_git_trust_root(directory):
     except (OSError, ValueError):
         return None
     return None
+
+
+def check_claude_tools(command_text, choice, without_browser=False, probes=None):
+    """Refuse a Claude launch whose pinned Chrome server cannot see a browser."""
+    if choice["provider"] != "anthropic" or not CHROME_OPT_IN.is_file():
+        return
+    home_value = choice["env"].get("CLAUDE_CONFIG_DIR")
+    home = Path(home_value).expanduser() if home_value else None
+    directory = launch_parts(command_text)[1]
+    directory = Path(directory).expanduser() if directory else Path.cwd()
+    server = agent_tools.chrome_server(home)
+    # The launch exports CLAUDE_CODE_ENABLE_CFC=0, so the built-in server stays off.
+    tools = {"warnings": agent_tools.claude_problems(home, directory, {agent_tools.CHROME_ENV: "0"})}
+    if without_browser:
+        tools["browsers"] = "not checked (--without-browser)"
+    else:
+        key = json.dumps(server, sort_keys=True)
+        probes = {} if probes is None else probes
+        if key not in probes:
+            try:
+                probes[key] = agent_tools.connected_browsers(server)
+            except ValueError as error:
+                raise ValueError(f"Chrome check failed: {error}; no terminal was launched") from None
+        if not probes[key]:
+            raise ValueError("no Chrome browser is connected to the catalog-chrome account; open the "
+                             "Agents Chrome profile and retry, or pass --without-browser for a brief "
+                             "that needs no browser; no terminal was launched")
+        tools["browsers"] = len(probes[key])
+    choice["tools"] = tools
 
 
 def check_codex_project(command_text, choice):
@@ -791,8 +829,10 @@ def prepare_launches(args):
             choices = account_choice.select_batch(
                 args.account_provider, args.account_config, args.account, count=len(files)
             )
+        probes = {}
         for text, choice in zip(command_texts, choices):
             check_codex_project(text, choice)
+            check_claude_tools(text, choice, getattr(args, "without_browser", False), probes)
         if apps[0]:
             home = Path(choices[0]["env"]["CODEX_HOME"]).expanduser()
             if not home.is_absolute() or not home.is_dir():
@@ -1135,6 +1175,8 @@ def main():
         choices=account_choice.PROVIDERS,
         help="launch on Context Panel's use-next account or ranked batch order",
     )
+    new.add_argument("--without-browser", action="store_true",
+                     help="launch Claude without the connected-browser check, for briefs that need no browser")
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)
     for name in ("send", "read", "clear"):
