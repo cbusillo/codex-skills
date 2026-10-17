@@ -393,7 +393,7 @@ policy:
       match:
         argv_prefix: ["gh", "pr", "update-branch"]
       action: require_preferred
-      message: Raw PR branch updates use the active local GitHub account. Use gh-pr.py update-branch for a SHA-guarded automation update and new-head observation.
+      message: Raw PR branch updates use the active local GitHub account. First apply the freshness, train ownership and authorization rules in references/repo-workflow.md Merge Readiness; use gh-pr.py update-branch only for a permitted SHA-guarded automation update and new-head observation.
       preferred:
         - kind: script
           path: scripts/gh-pr.py
@@ -689,7 +689,7 @@ policy:
       match:
         shell_regex: "(?:^|[;&|(`\\n]|\\s-[A-Za-z]*c\\s+['\"])\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(?:command|exec|time|nohup|env)\\s+)*(?:\\S*/)?git(?:\\s+(?:-[cC]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--(?:git-dir|work-tree|namespace|config-env|exec-path|super-prefix|attr-source)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--[a-z][a-z-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+)?|-[pP]))*\\s+(?:merge(?!\\s+--ff-only(?=\\s|$)(?![^;&|\\n]*\\s--(?:ff|no-ff)(?:\\s|$)))|pull|rebase|cherry-pick|revert|am)(?![\\w-])(?!\\s+--(?:abort|quit)\\s*(?:$|[;&|\\n]))"
       action: require_preferred
-      message: Raw Git integration can create human-identity commits. Before PR updates apply ownership and authorization checks in references/repo-workflow.md Merge Readiness, then use gh-pr.py update-branch. For local integration run git-commit-as-bot --git-command COMMAND from the target directory. For non-creating sync use git fetch then git merge --ff-only REF, with --ff-only first. Existing branch and landing authorization applies.
+      message: Raw Git integration can create human-identity commits. Before PR updates apply the freshness, train ownership, branch ownership and authorization rules in references/repo-workflow.md Merge Readiness; use gh-pr.py update-branch only for permitted mergeable updates. For local integration run git-commit-as-bot --git-command COMMAND from the target directory. For non-creating sync use git fetch then git merge --ff-only REF, with --ff-only first. Existing branch and landing authorization applies.
       preferred:
         - kind: script
           path: scripts/gh-pr.py
@@ -806,8 +806,10 @@ and say why.
   explicit `--head BRANCH`.
 - **Commits and pushes** by Code or spawned agents: `scripts/git-commit-as-bot`
   and `scripts/git-push-as-bot`.
-  Before a PR base update, apply the ownership and authorization checks in
-  [Merge Readiness](references/repo-workflow.md#merge-readiness), then use
+  Never refresh your own PR branch merely because it is behind; require a real
+  conflict or an explicit check requirement. The merge train owns freshness on
+  train-routed PRs. Before a base update, apply the ownership and authorization
+  checks in [Merge Readiness](references/repo-workflow.md#merge-readiness), then use
   `gh-pr.py update-branch`. For local integration,
   use `git-commit-as-bot --git-command merge|pull|rebase|cherry-pick|revert|am`
   from the target directory, followed by that command's arguments, including
@@ -884,7 +886,11 @@ contract, read its CLI reference section; skip unrelated recipes.
 
 Use PRs for all non-trivial changes.
 
-- **Pre-push quality**: For repositories declaring `test.local` and `test.ci`, run
+- **Pre-push quality**: Before the first PR push, complete focused local checks
+  and any review required by [reviews by another model](../references/model-review.md).
+  Address the findings locally and batch fixes into one push; avoid fix-up
+  pushes in quick succession. For repositories declaring `test.local` and
+  `test.ci`, run
   focused local tests plus required lint and type checks, selecting
   `qualityGate.test.local` rather than the full `qualityGate.test.ci` gate under the
   [test command contract](references/config-schema.md#workflow-metadata).

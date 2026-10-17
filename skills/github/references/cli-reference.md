@@ -414,7 +414,8 @@ also include the shared `api_result` diagnostics envelope.
 - `scripts/gh-pr.py ready <pr> [--waiting-for-client] [--allow-no-checks]`: Read current-head
   checks and post the [ready handoff](#ready-handoffs) through automation auth.
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
-  into the PR branch after the ownership and authorization checks in
+  into the PR branch only when needed under the freshness, ownership and
+  authorization rules in
   [Merge Readiness](repo-workflow.md#merge-readiness), through the automation
   identity using GitHub's
   [update-branch API](https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request-branch)

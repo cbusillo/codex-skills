@@ -508,11 +508,21 @@ Before merging any PR, do a fresh PR read and account for feedback:
   session, covers this merge; ask only when that authorization is missing or no
   longer covers the action and scope
 
-If the fresh PR state is `BEHIND`, first use `gh-pr.py view` to verify
-`headRepository` matches the PR repository, the head branch is automation-owned,
-and its own diff remains within the approved change. Then use
-`scripts/gh-pr.py update-branch <pr>` before attempting merge; the helper
-observes the asynchronous update.
+Never merge the base into, rebase, or update your own PR branch merely because
+it is `BEHIND`. Refresh only for a real conflict or a check that explicitly
+requires it. The merge train owns freshness on train-routed PRs; follow its
+workflow or assigned handoff rather than refreshing proactively.
+An enforced up-to-date branch-protection rule counts as an explicit requirement
+immediately before an authorized direct merge, after other checks are green and
+review feedback is accounted for. Do not refresh while that work is still pending.
+
+When a branch update is needed and belongs to this session, use `gh-pr.py view`
+to verify `headRepository` matches the PR repository, the head branch is automation-owned,
+and its own diff remains within the approved change. For a mergeable base update,
+use `scripts/gh-pr.py update-branch <pr>`; the helper observes the asynchronous
+update. For a real conflict, merge the base locally with
+`git-commit-as-bot --git-command merge`, resolve it and continue with
+`git-commit-as-bot --git-command merge --continue`, then push with `git-push-as-bot`.
 Re-read the PR to capture the new head SHA, then use `babysit-pr` to wait for
 checks and review evidence on that exact head. A check result for the old head
 does not qualify the updated branch. Do not update a fork or another person's
