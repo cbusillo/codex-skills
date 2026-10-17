@@ -24,6 +24,16 @@ import urllib.request
 
 import github_identity
 import github_read
+import director_mentions
+
+
+APPROVAL_REPOSITORY = "cbusillo/codex-skills"
+APPROVAL_COMMENT = 6241276473
+APPROVAL_QUESTION = "Q467"
+APPROVAL_URL = f"https://github.com/{APPROVAL_REPOSITORY}/issues/2021#issuecomment-{APPROVAL_COMMENT}"
+STANDING_DIRECTOR = APPROVAL_REPOSITORY.split("/")[0]
+# First line of the Director decision recorded on the approval comment.
+RECORDED_AFFIRMATIVE = f"{APPROVAL_QUESTION}, and make it a standing approval"
 
 
 class AttachmentError(Exception):
@@ -36,17 +46,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def personal_login(repository: str) -> str:
-    if not github_identity.own_user_opted_in():
-        raise AttachmentError("requires Director approval and GH_WITH_ENV_TOKEN_OWN_USER=1 on this command")
     if str(github_identity.configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") or "").casefold() in {"1", "true", "yes"}:
         raise AttachmentError("automation-only mode refuses personal attachment authentication")
     if os.environ.get("GH_HOST", "github.com") != "github.com":
         raise AttachmentError("only github.com attachments are supported")
-    login = github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN") or ""
+    login = github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN") or STANDING_DIRECTOR
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login):
         raise AttachmentError("configure GH_WITH_ENV_TOKEN_OWN_USER_LOGIN as the person's personal login")
     if not github_identity.REPOSITORY_PATTERN.fullmatch(repository) or repository.split("/")[0].casefold() != login.casefold():
         raise AttachmentError("attachment reads are limited to repositories owned by the declared person")
+    if login.casefold() != STANDING_DIRECTOR.casefold() and not github_identity.own_user_opted_in():
+        raise AttachmentError("no standing approval for this Director; requires the existing per-command own-user approval")
     return login
 
 
@@ -63,7 +73,7 @@ def attachment_name(url: str) -> str:
     return f"{match[1]}-{safe_name}"
 
 
-def verify_comment(repository: str, comment: int, url: str) -> None:
+def verify_comment(repository: str, comment: int, url: str):
     reader = github_read.GitHubReader(
         operation="github.attachment.download", repository=repository,
         gh_prefix_args=github_read.automation_only_gh_prefix_args(), strict_actor=True,
@@ -80,6 +90,42 @@ def verify_comment(repository: str, comment: int, url: str) -> None:
     links = re.findall(r'https://github\.com/user-attachments/files/[0-9]+/[^\s<>()\]"\']+', str(record.get("body", "")))
     if url not in links:
         raise AttachmentError("attachment URL is absent from the requested comment")
+    return reader, record
+
+
+def authorization(login: str, reader, record: dict) -> str:
+    if login.casefold() != STANDING_DIRECTOR.casefold():
+        return "per_command"
+    if (record.get("author_association") not in {"COLLABORATOR", "MEMBER"}
+            or not isinstance(record.get("user"), dict) or record["user"].get("type") != "User"):
+        raise AttachmentError("standing approval covers Client/staff collaborator comments, not unverified authors")
+
+    def read_comment(repository: str, comment: int):
+        if repository != APPROVAL_REPOSITORY or comment != APPROVAL_COMMENT:
+            raise AttachmentError("unexpected standing-approval source")
+        value = reader.get_json(f"/repos/{repository}/issues/comments/{comment}", step="standing_approval")
+        if not isinstance(value, dict) or value.get("issue_url") != f"https://api.github.com/repos/{APPROVAL_REPOSITORY}/issues/2021":
+            raise AttachmentError("unexpected standing-approval thread")
+        return value
+
+    def read_later(issue_url: str, since: str):
+        path = director_mentions.thread_comments_path(issue_url)
+        values = reader.paged_json(f"/{path}", step_prefix="approval_withdrawals",
+                                   params={"since": since}, limit=1001)
+        if len(values) > 1000:
+            raise AttachmentError("standing-approval discussion coverage is incomplete")
+        return values
+
+    recorders = set(github_identity.configured_bot_logins())
+    if primary := github_identity.automation_login():
+        recorders.add(primary)
+    gap = director_mentions.approval_gap(
+        APPROVAL_URL, login, recorders, read_comment, read_later,
+        question=APPROVAL_QUESTION, recorded_affirmative=RECORDED_AFFIRMATIVE,
+    )
+    if gap:
+        raise AttachmentError(f"{APPROVAL_QUESTION} standing approval unavailable or withdrawn; no personal read attempted")
+    return "standing_approval"
 
 
 def personal_token(login: str) -> str:
@@ -167,10 +213,22 @@ def download(opener, url: str, token: str, destination: pathlib.Path, max_bytes:
     raise AttachmentError("attachment exceeded the redirect limit")
 
 
-def evidence_directory(value: str) -> pathlib.Path:
+def evidence_directory(value: str, repository: str) -> pathlib.Path:
     path = pathlib.Path(value).expanduser()
     if not path.is_absolute():
         raise AttachmentError("--evidence-dir must be an absolute private task-evidence directory")
+    roots = [parent for parent in path.parents if parent.name == "task-evidence"]
+    if not roots:
+        raise AttachmentError("downloads must stay under task-evidence/REPO/TASK")
+    root = roots[0].resolve()
+    resolved = path.resolve()
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError:
+        raise AttachmentError("evidence path escapes task evidence") from None
+    if (len(relative.parts) < 2 or relative.parts[0] != repository.split("/")[1]
+            or any((parent / ".git").exists() for parent in (resolved, *resolved.parents))):
+        raise AttachmentError("downloads require task-evidence/REPO/TASK outside Git checkouts")
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.stat()
     if path.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
@@ -191,8 +249,9 @@ def main(argv: list[str] | None = None) -> int:
         name = attachment_name(args.url)
         if args.comment < 1 or args.max_bytes < 1:
             raise AttachmentError("comment and max-bytes must be positive")
-        verify_comment(args.repo, args.comment, args.url)
-        directory = evidence_directory(args.evidence_dir)
+        reader, record = verify_comment(args.repo, args.comment, args.url)
+        authority = authorization(login, reader, record)
+        directory = evidence_directory(args.evidence_dir, args.repo)
         destination = directory / name
         if destination.exists() or destination.is_symlink():
             raise AttachmentError("evidence file already exists; choose a new evidence directory")
@@ -200,7 +259,8 @@ def main(argv: list[str] | None = None) -> int:
         opener = urllib.request.build_opener(NoRedirect())
         verify_person(opener, token, login)
         result = download(opener, args.url, token, destination, args.max_bytes)
-        print(json.dumps({"schema_version": 1, "ok": True, "operation": "github.attachment.download", **result}))
+        print(json.dumps({"schema_version": 1, "ok": True, "operation": "github.attachment.download",
+                          "authority": authority, "untrusted": True, **result}))
         return 0
     except AttachmentError as error:
         message = str(error)

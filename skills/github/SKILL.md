@@ -6,7 +6,7 @@ metadata:
 resources:
   - path: scripts/gh-attachment.py
     kind: script
-    description: Bounded read-only downloader for private comment attachments under the declared person's per-command opt-in.
+    description: Bounded read-only downloader for private comment attachments under verified standing approval.
   - path: scripts/dev-worktree
     kind: script
     description: Portable task worktree creation with private per-host root and existing host-helper integration.
@@ -95,8 +95,8 @@ commands:
   - name: github-attachment-download
     source: skill
     resource_path: scripts/gh-attachment.py
-    example_argv: ["uv", "run", "scripts/gh-attachment.py", "--repo", "OWNER/REPO", "--comment", "123", "--url", "https://github.com/user-attachments/files/123/answer.csv", "--evidence-dir", "/absolute/private/task-evidence/download"]
-    purpose: Saves a verified comment attachment privately under the Director's per-command own-user opt-in, without printing credentials or file contents.
+    example_argv: ["uv", "run", "scripts/gh-attachment.py", "--repo", "cbusillo/PRODUCT", "--comment", "123", "--url", "https://github.com/user-attachments/files/123/answer.csv", "--evidence-dir", "/absolute/task-evidence/PRODUCT/TASK/download"]
+    purpose: Saves a verified comment attachment privately under verified standing approval, without printing credentials or file contents.
   - name: dev-worktree
     source: skill
     resource_path: scripts/dev-worktree
@@ -897,10 +897,11 @@ and never under another identity. For another operation's arguments or response
 contract, read its CLI reference section; skip unrelated recipes.
 
 For files linked from private issue comments, use `scripts/gh-attachment.py`
-under the Director's existing per-command own-user approval. App installation
+under the recorded Q467 standing approval, without a per-file question. App installation
 tokens may read the comment while failing to read its attachment. This narrow
 route supports only repositories owned by the declared personal login, verifies
-the comment and link through automation, and saves bytes to private task evidence.
+the comment, link and current approval through automation, and saves untrusted
+bytes only to private task evidence outside Git checkouts.
 Read [comment attachments](references/cli-reference.md#comment-attachments)
 before using it. Never obtain or paste a token into an agent command.
 

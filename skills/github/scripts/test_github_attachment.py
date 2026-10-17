@@ -41,6 +41,9 @@ class AttachmentTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = pathlib.Path(self.directory.name)
+        self.evidence = self.root / "task-evidence" / "product" / "task" / "download"
+        self.login = "director"
+        self.repository = "director/product"
         self.url = "https://github.com/user-attachments/files/123/answer.csv"
         self.asset = "https://github-production-user-asset-6210df.s3.amazonaws.com/answer?signature=private"
         self.token = "personal-secret-fixture"
@@ -67,7 +70,7 @@ class AttachmentTests(unittest.TestCase):
     def open(self, request, **kwargs):
         self.calls.append(request)
         if request.full_url == "https://api.github.com/user":
-            return Response(json.dumps({"login": "director", "type": "User"}).encode())
+            return Response(json.dumps({"login": self.login, "type": "User"}).encode())
         if request.full_url == self.url:
             # Regression: an installation token gets 404; the declared user token succeeds.
             if request.get_header("Authorization") != f"token {self.token}":
@@ -78,8 +81,8 @@ class AttachmentTests(unittest.TestCase):
         raise AssertionError("unscoped network request")
 
     def invoke(self, **overrides):
-        values = {"repo": "director/product", "comment": "42", "url": self.url,
-                  "evidence-dir": str(self.root / "evidence"), **overrides}
+        values = {"repo": self.repository, "comment": "42", "url": self.url,
+                  "evidence-dir": str(self.evidence), **overrides}
         argv = [value for key, item in values.items() for value in (f"--{key}", str(item))]
         output = io.StringIO()
         with redirect_stdout(output):
@@ -146,11 +149,11 @@ class AttachmentTests(unittest.TestCase):
         status, result = self.invoke()
         self.assertEqual(status, 1)
         self.assertIn("404", result["error"])
-        self.assertEqual(list((self.root / "evidence").iterdir()), [])
+        self.assertEqual(list(self.evidence.iterdir()), [])
 
     def test_size_limit_leaves_no_partial_file(self):
         self.assertEqual(self.invoke(**{"max-bytes": 3})[0], 1)
-        self.assertEqual(list((self.root / "evidence").iterdir()), [])
+        self.assertEqual(list(self.evidence.iterdir()), [])
 
     def test_installation_token_failure_does_not_switch_identity(self):
         self.run.return_value.stdout = b"installation-token-fixture"
@@ -159,7 +162,7 @@ class AttachmentTests(unittest.TestCase):
         self.assertIn("404", result["error"])
         self.assertEqual(self.run.call_count, 1)
         self.assertEqual(len(self.calls), 2)
-        self.assertEqual(list((self.root / "evidence").iterdir()), [])
+        self.assertEqual(list(self.evidence.iterdir()), [])
 
     def test_unavailable_login_and_credential_errors_are_not_echoed(self):
         self.run.return_value.returncode = 1
@@ -179,11 +182,11 @@ class AttachmentTests(unittest.TestCase):
 
         self.opener_factory.return_value.open.side_effect = html_response
         self.assertEqual(self.invoke()[0], 1)
-        self.assertEqual(list((self.root / "evidence").iterdir()), [])
+        self.assertEqual(list(self.evidence.iterdir()), [])
 
     def test_existing_file_and_symlink_are_not_overwritten(self):
-        directory = self.root / "evidence"
-        directory.mkdir(mode=0o700)
+        directory = self.evidence
+        directory.mkdir(mode=0o700, parents=True)
         saved = directory / attachment.attachment_name(self.url)
         saved.write_bytes(b"original")
         self.assertEqual(self.invoke()[0], 1)
@@ -197,8 +200,8 @@ class AttachmentTests(unittest.TestCase):
         self.run.assert_not_called()
 
     def test_public_evidence_directory_refused(self):
-        directory = self.root / "evidence"
-        directory.mkdir(mode=0o755)
+        directory = self.evidence
+        directory.mkdir(mode=0o755, parents=True)
         directory.chmod(0o755)
         self.assertEqual(self.invoke()[0], 1)
         self.run.assert_not_called()
@@ -222,6 +225,90 @@ class AttachmentTests(unittest.TestCase):
         # The downloader inspects Location itself; urllib must never auto-follow it.
         handler = attachment.NoRedirect()
         self.assertIsNone(handler.redirect_request(None, None, 302, "", {}, self.asset))
+
+    def standing_scope(self):
+        self.login = attachment.STANDING_DIRECTOR
+        self.repository = f"{self.login}/product"
+        os.environ.pop("GH_WITH_ENV_TOKEN_OWN_USER", None)
+        os.environ.pop("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN", None)
+        os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
+        self.repo["full_name"] = self.repository
+        self.comment.update({"issue_url": f"https://api.github.com/repos/{self.repository}/issues/9",
+                             "author_association": "COLLABORATOR", "user": {"type": "User"}})
+        # Actual first line of the recorded Q467 decision, not an invented yes/no reply.
+        self.approval = {"id": attachment.APPROVAL_COMMENT,
+                         "issue_url": f"https://api.github.com/repos/{attachment.APPROVAL_REPOSITORY}/issues/2021",
+                         "body": "Director decision: Q467, and make it a standing approval",
+                         "user": {"login": "fixture-automation"}, "created_at": "2026-10-17T21:20:42Z"}
+
+        def metadata(path, **kwargs):
+            if path.endswith(f"/comments/{attachment.APPROVAL_COMMENT}"):
+                return self.approval
+            return self.comment if "/comments/" in path else self.repo
+
+        self.reader_factory.return_value.get_json.side_effect = metadata
+        self.reader_factory.return_value.paged_json.return_value = []
+
+    def test_recorded_standing_approval_downloads_without_per_file_opt_in(self):
+        self.standing_scope()
+        status, result = self.invoke()
+        self.assertEqual(status, 0)
+        self.assertEqual(pathlib.Path(result["path"]).read_bytes(), self.body)
+        self.assertTrue(result["untrusted"])
+        self.assertEqual(result["authority"], "standing_approval")
+        self.assertEqual(self.run.call_args.args[0][-1], self.login)
+
+    def test_standing_approval_withdrawal_refuses_before_personal_credential(self):
+        self.standing_scope()
+        self.reader_factory.return_value.paged_json.return_value = [{
+            "id": attachment.APPROVAL_COMMENT + 1, "created_at": "2026-10-18T00:00:00Z",
+            "user": {"login": self.login}, "body": f"{attachment.APPROVAL_QUESTION} no, stop downloads"}]
+        self.assertEqual(self.invoke()[0], 1)
+        self.run.assert_not_called()
+
+    def test_quoted_or_foreign_approval_and_unreadable_discussion_do_not_authorize(self):
+        self.standing_scope()
+        for change in ({"body": f"> {attachment.RECORDED_AFFIRMATIVE}"},
+                       {"user": {"login": "client"}},
+                       {"body": f"Director decision: {attachment.APPROVAL_QUESTION} no"}):
+            with self.subTest(change=change), patch.dict(self.approval, change):
+                self.assertEqual(self.invoke()[0], 1)
+        self.reader_factory.return_value.paged_json.side_effect = OSError("unreadable")
+        self.assertEqual(self.invoke()[0], 1)
+        self.run.assert_not_called()
+
+    def test_unrelated_client_text_does_not_withdraw_or_grant_authority(self):
+        self.standing_scope()
+        self.reader_factory.return_value.paged_json.return_value = [{
+            "id": attachment.APPROVAL_COMMENT + 1, "created_at": "2026-10-18T00:00:00Z",
+            "user": {"login": "client"}, "body": f"{attachment.APPROVAL_QUESTION} no"}]
+        self.assertEqual(self.invoke()[0], 0)
+
+    def test_unverified_author_and_bot_comments_are_outside_standing_scope(self):
+        self.standing_scope()
+        for change in ({"author_association": "NONE"}, {"user": {"type": "Bot"}}):
+            with self.subTest(change=change), patch.dict(self.comment, change):
+                self.assertEqual(self.invoke()[0], 1)
+        self.run.assert_not_called()
+
+    def test_task_evidence_location_is_required(self):
+        for path in (self.root / "private-download", self.root / "task-evidence" / "wrong-repo" / "task"):
+            with self.subTest(path=path):
+                self.assertEqual(self.invoke(**{"evidence-dir": path})[0], 1)
+                self.assertFalse(path.exists())
+        self.run.assert_not_called()
+
+    def test_evidence_symlink_escape_and_git_checkout_are_refused(self):
+        task = self.evidence.parent
+        task.mkdir(parents=True)
+        outside = self.root / "outside"
+        outside.mkdir(mode=0o700)
+        self.evidence.symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.invoke()[0], 1)
+        self.evidence.unlink()
+        (self.root / ".git").mkdir()
+        self.assertEqual(self.invoke()[0], 1)
+        self.run.assert_not_called()
 
 
 if __name__ == "__main__":
