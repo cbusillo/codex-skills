@@ -393,7 +393,7 @@ policy:
       match:
         argv_prefix: ["gh", "pr", "update-branch"]
       action: require_preferred
-      message: Raw PR branch updates use the active local GitHub account. Use gh-pr.py update-branch for a SHA-guarded automation update and new-head observation.
+      message: Raw PR branch updates use the active local GitHub account. First apply the freshness, train ownership and authorization rules in references/repo-workflow.md Merge Readiness; use gh-pr.py update-branch only for a permitted SHA-guarded automation update and new-head observation.
       preferred:
         - kind: script
           path: scripts/gh-pr.py
@@ -689,7 +689,7 @@ policy:
       match:
         shell_regex: "(?:^|[;&|(`\\n]|\\s-[A-Za-z]*c\\s+['\"])\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(?:command|exec|time|nohup|env)\\s+)*(?:\\S*/)?git(?:\\s+(?:-[cC]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--(?:git-dir|work-tree|namespace|config-env|exec-path|super-prefix|attr-source)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--[a-z][a-z-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+)?|-[pP]))*\\s+(?:merge(?!\\s+--ff-only(?=\\s|$)(?![^;&|\\n]*\\s--(?:ff|no-ff)(?:\\s|$)))|pull|rebase|cherry-pick|revert|am)(?![\\w-])(?!\\s+--(?:abort|quit)\\s*(?:$|[;&|\\n]))"
       action: require_preferred
-      message: Raw Git integration can create human-identity commits. Before PR updates apply ownership and authorization checks in references/repo-workflow.md Merge Readiness, then use gh-pr.py update-branch. For local integration run git-commit-as-bot --git-command COMMAND from the target directory. For non-creating sync use git fetch then git merge --ff-only REF, with --ff-only first. Existing branch and landing authorization applies.
+      message: Raw Git integration can create human-identity commits. Before PR updates apply the freshness, train ownership, branch ownership and authorization rules in references/repo-workflow.md Merge Readiness; use gh-pr.py update-branch only for permitted mergeable updates. For local integration run git-commit-as-bot --git-command COMMAND from the target directory. For non-creating sync use git fetch then git merge --ff-only REF, with --ff-only first. Existing branch and landing authorization applies.
       preferred:
         - kind: script
           path: scripts/gh-pr.py

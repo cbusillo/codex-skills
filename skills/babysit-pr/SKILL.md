@@ -190,8 +190,7 @@ For each snapshot:
    [Merge Readiness](../github/references/repo-workflow.md#merge-readiness) to
    verify an explicit update requirement, ownership and scope. The merge train
    owns freshness on train-routed PRs; follow its workflow or assigned handoff.
-   After an authorized update, watch checks on the new head. Resolve real
-   conflicts through Merge Readiness's local conflict path.
+   After an authorized update, watch checks on the new head.
 6. **Evidence still settling**: `check_evidence_incomplete` means check counts
    cannot prove a terminal round; do not rerun from it. `review_readiness_unavailable`
    means everything else is green but review state could not be read; the
@@ -284,6 +283,8 @@ without unrelated changes; surface it instead.
 
 - Batch known CI and review fixes, run focused local checks and any required
   review by another model, then push once. Avoid fix-up pushes in quick succession.
+- For a real base conflict, use the local merge path in
+  [Merge Readiness](../github/references/repo-workflow.md#merge-readiness).
 - For a branch-caused CI fix, read
   [CI Failure Diagnosis](../github/references/repo-workflow.md#ci-failure-diagnosis)
   and apply its pattern-sweep instruction before pushing.
