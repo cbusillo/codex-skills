@@ -36,6 +36,102 @@ can coexist with raw derivatives or generated skills still in use. Conversely,
 files that exist but are no longer consumed may be historical rather than active
 memory. Keep existence, ownership, consumption, and authority separate.
 
+## Codex background consolidation
+
+Use this section when an approved note has not appeared in generated memory.
+Match the installed version before relying on these implementation details.
+The sources below are pinned to Codex CLI 0.163.0, upstream commit
+`83086188ae0614bd882818ff1aa23f3194962012`.
+If the installed version differs, recheck the linked files at its installed tag;
+treat these names, numbers and schema details as unverified until confirmed.
+
+### Trigger and eligibility
+
+The [startup implementation](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/memories/write/src/start.rs)
+starts an asynchronous task for an eligible root session: non-ephemeral,
+memories feature enabled, not a subagent, and a memory state DB available.
+It runs Phase 1 rollout extraction, then Phase 2 consolidation. This path is
+triggered by session startup, not a clock-based schedule or a note-file watcher.
+Passing time, writing a note, resuming a turn or rebooting alone does not prove
+that another eligible startup happened.
+
+The [global job claim](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/state/src/runtime/memories.rs#L1073-L1217)
+skips consolidation during retry backoff, while a running lease is active, or
+for **six hours after the latest successful finish**. Even a successful
+no-workspace-change pass records success. Calculate the next eligible time
+from the actual job record; an eligible startup after that time can attempt a
+run, but expiry is not a scheduled execution or completion promise.
+
+Other gates remain relevant. The
+[rate-limit guard](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/memories/write/src/guard.rs)
+checks both reported windows; the default remaining-capacity threshold is 25%.
+Phase 1's default six-hour rollout-idle requirement concerns extraction inputs,
+not the global cooldown. See the version's
+[configuration defaults](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/config/src/types.rs).
+Do not lower a threshold or edit job timestamps to make a pending request run.
+
+### Observe a run without changing it
+
+Resolve the active Codex home, memory version and SQLite home first; SQLite
+storage can be configured separately. In this version, v1 jobs are in
+`memories_1.sqlite`, and v2 jobs are in `memories_v2_1.sqlite`. These are separate
+from `state_5.sqlite`. Both versions use the same job kind and key shown below,
+through the shared [memory-store implementation](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/state/src/runtime/memories.rs).
+Inspect each enabled version separately (both when dual-writing). A row in an
+inactive version's database is historical, not progress for the active version.
+Verify the schema against the
+[memory migrations](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/state/memory_migrations/0001_memories.sql)
+before querying an unfamiliar installation. Use an existing database opened
+read-only, replacing the placeholder with the resolved database for that version:
+
+```sh
+sqlite3 -init /dev/null -readonly /absolute/path/to/MEMORY_DATABASE.sqlite <<'SQL'
+SELECT status, started_at, finished_at, lease_until, retry_at, last_error,
+       datetime(started_at, 'unixepoch') AS started_utc,
+       datetime(finished_at, 'unixepoch') AS finished_utc
+FROM jobs
+WHERE kind = 'memory_consolidate_global' AND job_key = 'global';
+SQL
+```
+
+Keep this a one-shot query. `-init /dev/null` skips the user's SQLite startup file.
+Read-only opening can still need [WAL shared-memory files](https://www.sqlite.org/wal.html#read_only_databases)
+or briefly hold a read lock. An open failure is a coverage gap, not a reason to
+copy the database or change permissions. Do not use `immutable=1` on a live DB;
+it disables normal locking and change detection.
+
+The raw timestamp fields are Unix seconds; the formatted columns are UTC.
+Interpret the row together:
+
+- `running` with an unexpired lease means the job is claimed. Lease updates
+  show heartbeat activity, not proof the generated content is correct.
+- `retry_at` in the future means backoff. A recent `finished_at` with no
+  `last_error` can impose the success cooldown even when status is `pending`:
+  the claim code tests exactly those fields. Success writes `finished_at` and
+  clears `last_error`; new extraction work can enqueue the row without clearing
+  either field.
+- For a particular note, record its write time and observe a successful run whose
+  `started_at` is after that time. A run that merely finishes after the note may
+  already have synced its inputs before the note existed. A later start is only
+  candidate execution evidence: read the resulting content to determine whether
+  the note applied, then verify fresh retrieval.
+
+The [Phase 2 implementation](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/memories/write/src/phase2.rs)
+syncs inputs, uses the workspace diff to decide whether to start a consolidation
+agent, heartbeats its lease and records success or failure. The agent's
+user-facing completion notifications are disabled. Logs/metrics may explain
+skips and failures, but missing log lines or a missing `phase2_workspace_diff.md`
+do not establish that no run occurred. A completed no-change pass also need not
+rewrite the registry. Keep job execution, note application and retrieval as
+separate observations.
+
+The native [`memory/status` handler](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/app-server/src/request_processors/memory_status.rs)
+reports **v2 readiness only**: consolidated-thread count and summary validity
+against a minimum count (20 by default). It is not an in-progress indicator,
+does not report the last run, and cannot establish v1 consolidation status.
+Read-only metadata inspection does not authorize DB edits, a memory reset or
+manual changes to generated files; use the owning update contract below.
+
 ## Claude Code stores
 
 Claude Code keeps memory per repository rather than per client home. Confirm

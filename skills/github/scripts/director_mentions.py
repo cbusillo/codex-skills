@@ -30,7 +30,6 @@ APPROVAL_ISSUE = "https://github.com/cbusillo/codex-skills/issues/2073"
 # An answer is the comment's first line, unquoted: "Q455 yes" from the Director,
 # or "Director decision: Q455 yes" recorded by trusted automation. Any other
 # answer to the question, or a hedged one, withholds approval.
-ANSWER = re.compile(rf"{APPROVAL_QUESTION}\b\W*(\w+)(.*)", re.IGNORECASE)
 DECISION_PREFIX = re.compile(r"Director decision\s*:\s*", re.IGNORECASE)
 AFFIRMATIVE = {"yes", "approved", "approve"}
 HEDGE = re.compile(r"\b(?:not|no|don't|do not|but|unless|declin\w*|reject\w*|revok\w*|withdraw\w*)\b", re.IGNORECASE)
@@ -83,8 +82,13 @@ def thread_comments_path(issue_api_url: str) -> str:
     return f"{match.group(1)}/comments"
 
 
-def answer(comment: Any, director_login: str, recorders: set[str]) -> bool | None:
-    """True or False for a Director answer to the approval question, else None."""
+def answer(comment: Any, director_login: str, recorders: set[str], *,
+           question: str = APPROVAL_QUESTION, recorded_affirmative: str | None = None) -> bool | None:
+    """True or False for a Director answer, else None.
+
+    Other narrow readers may name their own question and the exact affirmative
+    first line of an existing trusted recorded decision. Q455 defaults stay unchanged.
+    """
     if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
         return None
     author = ((comment.get("user") or {}).get("login") or "").casefold()
@@ -95,9 +99,11 @@ def answer(comment: Any, director_login: str, recorders: set[str]) -> bool | Non
     decision = DECISION_PREFIX.match(text)
     if decision and author in {login.casefold() for login in recorders}:
         text = text[decision.end():].strip("*_` ")
+        if recorded_affirmative and text.casefold() == recorded_affirmative.casefold():
+            return True
     elif author != director_login.casefold():
         return None
-    match = ANSWER.match(text)
+    match = re.match(rf"{re.escape(question)}\b\W*(\w+)(.*)", text, re.IGNORECASE)
     if not match:
         return None
     return match.group(1).casefold() in AFFIRMATIVE and not HEDGE.search(match.group(2))
@@ -106,6 +112,7 @@ def answer(comment: Any, director_login: str, recorders: set[str]) -> bool | Non
 def approval_gap(
     approval_url: str | None, director_login: str, recorders: set[str],
     read_comment: Callable[[str, int], Any], read_later: Callable[[str, str], list[Any]],
+    *, question: str = APPROVAL_QUESTION, recorded_affirmative: str | None = None,
 ) -> str | None:
     """Why unattended Director-login searches are not approved, or None.
 
@@ -119,16 +126,18 @@ def approval_gap(
         return "the standing approval must be a GitHub issue comment link"
     try:
         comment = read_comment(match.group(1), int(match.group(2)))
-        if answer(comment, director_login, recorders) is not True:
-            return f"the linked comment is not an unqualified {APPROVAL_QUESTION} approval from the Director"
+        if answer(comment, director_login, recorders, question=question,
+                  recorded_affirmative=recorded_affirmative) is not True:
+            return f"the linked comment is not an unqualified {question} approval from the Director"
         later = read_later(comment["issue_url"], comment["created_at"])
     except Exception as error:  # Any read failure leaves approval unverified.
         return f"the standing approval could not be verified: {error}"
-    answers = [answer(item, director_login, recorders) for item in sorted(
+    answers = [answer(item, director_login, recorders, question=question,
+                      recorded_affirmative=recorded_affirmative) for item in sorted(
         (item for item in later if isinstance(item, dict) and item.get("id") != comment.get("id")),
         key=lambda item: str(item.get("created_at") or ""))]
     if [value for value in answers if value is not None][-1:] == [False]:
-        return f"a later answer withdrew the {APPROVAL_QUESTION} approval"
+        return f"a later answer withdrew the {question} approval"
     return None
 
 

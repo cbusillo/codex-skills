@@ -396,7 +396,10 @@ including non-dim text, establishes neither its author nor approval.
    screen. Inspect that terminal before acting; do not relaunch or grant trust
    automatically. A folder-trust or later prompt may still need attention;
    a launch with no transcript after one minute is blocked
-   ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)).
+   ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)). Claude
+   launches into `~/Developer` repositories and their worktrees get folder
+   trust set before launch, in every Claude home including the default one; other folders must already be trusted
+   ([#2100](https://github.com/cbusillo/codex-skills/issues/2100)).
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
    issue do not clash. A worker that will claim its anchor needs a claimable

@@ -1231,6 +1231,33 @@ only these selected-home project entries; it does not use managed, cloud, profil
 or CLI trust overrides as evidence. See the official
 [directory option](https://developers.openai.com/codex/cli/reference/) and
 [project trust setting](https://developers.openai.com/codex/config-reference/).
+
+Claude launches use `cd /absolute/repository && exec claude ...`; a launch
+without that literal absolute `cd` refuses. Claude Code records folder trust as
+`projects["<root>"].hasTrustDialogAccepted` in each home's `.claude.json`
+(`~/.claude.json` for the default home), keyed on the repository root, or the
+main checkout's root for a linked worktree
+([permissions](https://code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder)).
+Trust on a parent folder does not cover a repository inside it. Under the
+Director's decision in [#2100](https://github.com/cbusillo/codex-skills/issues/2100),
+the launcher sets that one key in every configured Claude home, and in the
+default home's `~/.claude.json` when it exists (Q471), before any tab, when the root is under `~/Developer`, or the folder is a linked worktree
+in the configured [worktree root](../../github/references/worktrees.md#per-host-configuration)
+whose main checkout is under `~/Developer`. For a worktree it records both the
+main checkout's root and the worktree's own root, because Claude's docs
+describe both. Symlinks are resolved first, in the launch folder and in a
+worktree's Git pointer, so a link under `~/Developer` that points elsewhere is
+outside that scope. Each write swaps the new file in atomically (macOS
+`renamex_np` `RENAME_SWAP`, Linux `renameat2` `RENAME_EXCHANGE`) and gets back
+the file it displaced. If a running session saved in between, its content is
+carried forward and swapped in again, so that save is never discarded. A save
+after the swap replaces the launcher's file whole; the readback then applies
+the key again. This relies on Claude Code saving by renaming a new file over
+`.claude.json`, which its leftover `.claude.json.tmp.*` files show. Any other folder launches only
+when the selected home already trusts its root; otherwise the launch refuses
+and names the home, so you can open `claude` there and review the dialog
+yourself. A configured home without `.claude.json` also refuses before any
+write; a default home without one is skipped, never created. The launcher leaves every other key, including the login, unchanged.
 Before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
 runs `CODEX_HOME=<selected-home> codex app-server daemon start` for each selected
 home, with a 30-second command timeout. Native `start` reuses a healthy running
@@ -1654,6 +1681,23 @@ the matched PID/TTY and Supervisor-owned ledger entry.
 
 Missing handoffs are discovered from the native final response or recorded
 comment-write receipts, then verified against live comment author and dates.
+A comment URL printed by a recognized comment-write call, however its output
+was summarized or chained, is bound only when the comment's body is exactly what
+that call sent and names no other session. What a call sent is a heredoc consumed
+by that comment command's stdin, or the text the session last wrote to its
+`--body-file` (a Write or Edit tool, or a `cat` heredoc redirect). Input to an
+unrelated command in the same shell call does not qualify. Body files are tracked
+by their full lexical path, using the transcript's recorded working directory
+for relative paths; matching basenames is insufficient. Straightforward literal
+shell assignments such as `body=/tmp/handoff.md; gh-comment issue 1 --body-file
+"$body"` are supported within the same call. Unknown variables, shell cwd changes,
+and relative paths without a recorded working directory do not establish a file
+identity. These cases can still use the helper's JSON receipt or the exact-session
+fallback below. When the transcript records the call's start and
+result, the comment must also have been created between them. Other text the
+session typed, such as a search pattern, is not authorship, and neither is a
+shared-bot comment that a chained read prints. The helper's JSON receipt binds
+on its own.
 A fallback source-issue or summary comment must name the exact native ID;
 shared-bot recency alone never qualifies. The summary thread defaults to
 `OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.
