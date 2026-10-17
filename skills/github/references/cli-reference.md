@@ -1379,9 +1379,10 @@ competitor's record.
   rejects open entries with compact references and `write_outcome=not_started`.
   Issues blocked by the plan do not prevent closure. Closing an open issue
   also runs the comment radar on it, its native blockers, dependents,
-  sub-issues and parent, and same-owner issues and PRs its body references.
+  sub-issues and parent, and issues and PRs in the same account that its body
+  references.
   It refuses with `close_attention_preflight` and `write_outcome=not_started`,
-  naming each comment, when an outside person's comment has no owner or agent
+  naming each comment, when an outside person's comment has no Director or agent
   reply after its latest version and no targeted response, or when coverage is
   degraded. Planning records and Director question or decision records are not
   replies. Answer each on its thread and rerun. Only the Director overrides:
