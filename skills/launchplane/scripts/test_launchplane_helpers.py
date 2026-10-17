@@ -3363,7 +3363,7 @@ def test_path_check_preserves_operation_ids_with_embedded_sk(context: str) -> No
 @pytest.mark.parametrize("code", [
     "plan_not_ready.source_artifact_missing",
     "deploy_blocked.runtime_environment_unresolved",
-    ".".join(["a" + "b" * 22] * 4),
+    ".".join(["a" + "b" * 23] + ["a" + "b" * 22] * 3),
 ])
 def test_path_check_accepts_a_failed_testing_deploy_with_a_dotted_error_code(code: str) -> None:
     response = _path_check_response()
@@ -3379,6 +3379,27 @@ def test_path_check_accepts_a_failed_testing_deploy_with_a_dotted_error_code(cod
     )
     assert status == 0 and len(calls) == 1, payload
     assert payload["result"] == check
+
+
+@pytest.mark.parametrize("code", [
+    "internal-db.example.invalid:5432",
+    "internal-db.example.invalid",
+    "plan_not_ready..source",
+    "plan_not_ready.",
+    "Plan_not_ready.source",
+    "a.b.c.d.e",
+    ".".join(["a" + "b" * 24] + ["a" + "b" * 22] * 3),
+])
+def test_path_check_refuses_step_codes_outside_launchplane_code_grammar(code: str) -> None:
+    response = _path_check_response()
+    check = response["check"]
+    check.update(state="blocked", blocked_count=1)
+    check["steps"][1].update(state="blocked", fix="by_hand", code=code)
+    status, payload, _calls = _run_product_read(
+        ["path-check", "--product", check["product"], "--path", check["path"]], response
+    )
+    assert status == 1 and payload["status"] == "invalid" and payload["result"] == {}
+    assert code not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("prefix", ["sk-", "ghp_", "ghs_", "gho_", "ghu_", "ghr_", "github_pat_"])

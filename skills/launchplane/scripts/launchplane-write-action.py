@@ -2479,8 +2479,7 @@ PRODUCT_READ_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 PRODUCT_ACTIVITY_MAX_EVENTS = 50
 PRODUCT_ACTIVITY_MAX_RECORD_LINKS = 10
 PRODUCT_HEALTH_MAX_CHECKS = 20
-# Launchplane writes dotted error codes of up to 96 characters.
-PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,95}$")
+PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
 PREVIEW_MAX_GENERATIONS = 20
 PREVIEW_MAX_SOURCES = 10
 RECONCILE_MAX_REQUESTS = 50
@@ -5033,6 +5032,18 @@ def _summarize_product_read(
     return payload
 
 
+# Launchplane's operation error codes: up to four dot-separated snake_case words.
+PATH_CHECK_DOTTED_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}(?:\.[a-z][a-z0-9_]{0,63}){1,3}$")
+PATH_CHECK_DOTTED_CODE_MAX_LENGTH = 96
+
+
+def _path_check_step_code(value: object) -> str:
+    if (isinstance(value, str) and len(value) <= PATH_CHECK_DOTTED_CODE_MAX_LENGTH
+            and PATH_CHECK_DOTTED_CODE_RE.fullmatch(value)):
+        return value
+    return public_code(value)
+
+
 def _project_path_check(value: object) -> dict[str, object]:
     source = _require_dict(value)
     fields = {"product", "path", "state", "blocked_count", "unknown_count", "steps"}
@@ -5066,7 +5077,7 @@ def _project_path_check(value: object) -> dict[str, object]:
                 "step_id": public_identifier(step["step_id"]),
                 "state": step["state"],
                 # A failed testing deploy carries the operation's dotted error code.
-                "code": _public_dotted_code(step["code"]),
+                "code": _path_check_step_code(step["code"]),
                 "description": public_summary_string(step["description"]),
                 "fix": step["fix"],
                 "record_ids": [public_identifier(record_id) for record_id in record_ids],
