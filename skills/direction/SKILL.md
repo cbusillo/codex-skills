@@ -284,7 +284,10 @@ read-only audit ran; it never updates the daily turn or its coverage.
 
 Before calling a daily turn complete, check the command's exit status and JSON
 receipt for its marker path, timestamp, and covered repository. For a weekly
-audit, check `run_recorded` (including held windows), or the explicit skip reason.
+audit, completion is recorded only when `run_recorded` is non-null. An archived
+repository instead needs `marked_skipped: "archived"` with a non-null `dropped`
+receipt confirming removal. Any other result means no completion was recorded,
+including a held window with unknown archive state or an unadopted repository.
 Report that receipt in the final response. If the command was omitted, failed,
 or returned `marker_error`, say plainly that completion was not recorded and
 include the error or missing step; do not report the turn or audit as complete.
@@ -349,7 +352,10 @@ uv run <skill-dir>/scripts/direction_audit.py --repo OWNER/REPO
 
 It reads the merged `DIRECTION.md` from the default branch, never a checkout.
 It writes nothing to GitHub; it only stamps this repository's audit in the
-local marker. When the Director explicitly selects `--gh gh` or declares
+local marker. Exit 1 with `marker_error` still carries the audit's findings;
+report them along with the persistence failure. Exit 1 with only `error` means
+the reads failed before producing an audit result.
+When the Director explicitly selects `--gh gh` or declares
 their own login with `--automation`, `limits` names
 `owner_acts_as_automation`: milestone additions by that login are treated as
 Director decisions because the audit cannot tell who used it. This is a known attribution
