@@ -611,7 +611,7 @@ def main() -> None:
         print(json.dumps(payload, sort_keys=True), file=sys.stdout)
         raise SystemExit(1) from exc
 
-    print(json.dumps(payload, sort_keys=True))
+    print(json.dumps(payload, sort_keys=True, default=str))
     if args.strict and payload.get("status") != "matched":
         raise SystemExit(2)
 

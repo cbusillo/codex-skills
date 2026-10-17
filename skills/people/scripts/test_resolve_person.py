@@ -152,6 +152,42 @@ class ResolvePersonTest(TestCase):
         for field in ("communication_style", "contact_notes", "notes"):
             self.assertNotIn(field, result["match"])
 
+    def test_single_fuzzy_match_keeps_lookup_context(self) -> None:
+        people = self.people()
+        person = people[0]
+        result = resolve_person.resolve("exampleman", people, fuzzy=True)
+        self.assertEqual(result["status"], "matched")
+        self.assertEqual(result["confidence"], "fuzzy")
+        self.assertEqual(result["match"]["notes"], person["notes"])
+        for field in ("communication_style", "contact_notes"):
+            self.assertEqual(result["match"][field], person["preferences"][field])
+
+    def test_cli_serializes_yaml_dates_in_global_guidance(self) -> None:
+        document = resolve_person.yaml.safe_load("""
+people:
+  - id: dated-person
+    display_name: Dated Person
+    notes: 2026-10-01
+    preferences:
+      communication_style: 2026-10-01T12:00:00Z
+      contact_notes: 2026-10-02
+""")
+        with tempfile.TemporaryDirectory() as tmp:
+            index = self.write_index(
+                Path(tmp), "global/people.yaml", resolve_person.yaml.safe_dump(document)
+            )
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "dated-person", "--scope", "global",
+                 "--global-index", str(index), "--strict"],
+                text=True, capture_output=True, check=False,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        match = json.loads(proc.stdout)["match"]
+        person = document["people"][0]
+        self.assertEqual(match["notes"], str(person["notes"]))
+        for field in ("communication_style", "contact_notes"):
+            self.assertEqual(match[field], str(person["preferences"][field]))
+
     def test_fuzzy_ambiguity_omits_guidance(self) -> None:
         # Remove the exact alias so both longer names reach the fuzzy tier.
         people = self.people()
