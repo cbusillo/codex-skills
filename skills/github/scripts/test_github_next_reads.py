@@ -36,6 +36,7 @@ def cancellation_fixture(mode: str) -> None:
     attempted = []
     stopped_at = []
     pools = []
+    interrupters = []
     runtime_type = api.RetryRuntime
     actor = "fixture-reader"
 
@@ -93,11 +94,17 @@ def cancellation_fixture(mode: str) -> None:
         pools.append(reads.pool)
         if mode.startswith("inline"):
             # The main thread owns this read, so SIGINT lands in its own retry wait.
+            main_thread = threading.get_ident()
             def interrupt():
                 assert entered.wait(3), "inline read did not reach retry wait"
                 stopped_at.append(time.monotonic())
-                os.kill(os.getpid(), signal.SIGINT)
-            threading.Thread(target=interrupt, daemon=True).start()
+                # A process-directed signal may reach this sender or the progress
+                # thread instead. Python then defers KeyboardInterrupt until the
+                # main thread's 60-second wait ends. Interrupt its syscall too.
+                signal.pthread_kill(main_thread, signal.SIGINT)
+            interrupter = threading.Thread(target=interrupt, daemon=True)
+            interrupters.append(interrupter)
+            interrupter.start()
             if mode == "inline_focus":
                 module.next_focus_context("fixture/source", {"projects": {
                     "enabled": True, "owner": "fixture", "default_project": "1"}})
@@ -150,6 +157,9 @@ def cancellation_fixture(mode: str) -> None:
             code = exc.code
         else:
             raise AssertionError("fixture did not produce a terminal failure")
+        for interrupter in interrupters:
+            interrupter.join(timeout=3)
+            assert not interrupter.is_alive(), "inline signal sender leaked"
         assert module.NEXT_READS is None
         assert os.environ["GITHUB_RETRY_DEADLINE_AT"] == prior_deadline
         assert all(not thread.is_alive() for pool in pools for thread in pool._threads)
@@ -362,6 +372,10 @@ def main() -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--cancellation-fixture":
-        cancellation_fixture(sys.argv[2])
+        # Exercise the allowed kernel routing that exposed #1990: an untargeted
+        # process signal reaches its sender, while only the main Python thread
+        # can run the handler. Thread-directed signals retain their real route.
+        with patch.object(os, "kill", side_effect=lambda _pid, sig: signal.raise_signal(sig)):
+            cancellation_fixture(sys.argv[2])
     else:
         main()
