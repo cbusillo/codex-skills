@@ -5537,12 +5537,15 @@ def summarize_names_only_read(
         raise LaunchplaneSafetyError("invalid_response")
     projected = []
     names_truncated = False
+    # The service accepts any non-empty key, so an unusual name is counted, not fatal;
+    # a secret-looking one still fails the read.
+    drops = _FieldDrops()
+    allowed_scopes = ("global", "context", "instance") if field == "settings" else (
+        "global", "context", "context_instance"
+    )
     for raw in records[:NAMES_ONLY_MAX_ITEMS]:
         record = _require_dict(raw)
         scope = record.get("scope")
-        allowed_scopes = ("global", "context", "instance") if field == "settings" else (
-            "global", "context", "context_instance"
-        )
         if scope not in allowed_scopes:
             raise LaunchplaneSafetyError("invalid_response")
         item: dict[str, object] = {"scope": scope}
@@ -5555,14 +5558,16 @@ def summarize_names_only_read(
                 if not isinstance(values, list):
                     raise LaunchplaneSafetyError("invalid_response")
                 names_truncated |= len(values) > NAMES_ONLY_MAX_ITEMS
-                item[name] = [_public_env_key(value) for value in values[:NAMES_ONLY_MAX_ITEMS]]
+                kept = [drops.keep(f"settings[].{name}[]", _public_env_key, value)
+                        for value in values[:NAMES_ONLY_MAX_ITEMS]]
+                item[name] = [value for value in kept if value]
         else:
             for name in ("name", "integration"):
                 item[name] = public_identifier(record.get(name))
             item["status"] = public_code(record.get("status"))
         projected.append(item)
     result = {field: projected, "records_truncated": len(records) > NAMES_ONLY_MAX_ITEMS,
-              "names_truncated": names_truncated}
+              "names_truncated": names_truncated, "dropped_name_count": drops.count}
     assert_public_safe_shape(result)
     payload = base_payload(status="ok", operation=operation, request=request)
     payload["result"] = result

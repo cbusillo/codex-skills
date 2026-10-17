@@ -98,7 +98,10 @@ retains its error code and trace, with no second request.
 `result.settings` contains only each record's scope, context, instance, `keys`
 and `withheld_keys`. `result.secrets` contains only name, integration, scope
 and status. Unknown fields, values, ciphertext, descriptions and audit metadata
-are never projected. Malformed retained metadata fails the read. The envelope
+are never projected. Malformed retained metadata fails the read. The service
+accepts any non-empty settings key, so a key that is not env-key shaped is left
+out and counted in `dropped_name_count`; a secret-looking key fails the read.
+The envelope
 keeps the requested context/instance and service trace. Both record lists and
 each key list are capped at 500; `records_truncated` and `names_truncated`
 report the bounds. A truncated or access-filtered list cannot prove absence.

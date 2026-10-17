@@ -96,6 +96,15 @@ def test_malformed_metadata_fails_closed_without_raw_response(kind):
     assert code == 1 and payload["status"] == "invalid"
 
 
+def test_unusual_setting_key_is_counted_without_failing_shared_global_read():
+    response = body("runtime-settings", "testing")
+    response["settings"][0]["keys"] = ["web.base-url", "ODOO_VERSION", "K" * 129]
+    code, payload, _ = invoke("runtime-settings", "testing", response)
+    assert code == 0
+    assert payload["result"]["settings"][0]["keys"] == ["ODOO_VERSION"]
+    assert payload["result"]["dropped_name_count"] == 2
+
+
 @pytest.mark.parametrize("kind", ["runtime-settings", "secrets"])
 def test_denial_keeps_trace_and_never_retries(kind):
     error = urllib.error.HTTPError("https://service.example.invalid", 403,
