@@ -8,6 +8,7 @@
 import json
 import contextlib
 import io
+import itertools
 import fcntl
 import importlib
 from types import SimpleNamespace
@@ -332,31 +333,41 @@ class ReleaseTests(unittest.TestCase):
 
     def test_legacy_abbreviated_write_receipt_and_unbound_final_link(self):
         records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
-        records.insert(2, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
+        records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "body", "input": {"file_path": "handoff.md", "content": "Handoff"}}]}})
+        records.insert(2, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
+        records.insert(3, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
         # This models receipt shapes only; harness identity and safe exit remain Codex.
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
         self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
         records = helper.session_record.read_jsonl(self.transcript)
-        records[2]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
+        records[3]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
         records[-2]["payload"]["message"] = f"See {self.entry['handoff_url']}\nSafe to exit: yes"
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         self.reader.paged_json.return_value = []
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
 
-    def summarized_write(self, command, output, started="2025-12-31T23:59:59.400Z", finished="2026-01-01T00:00:01.200Z"):
+    def summarized_write(self, command, output, started="2025-12-31T23:59:59.400Z", finished="2026-01-01T00:00:01.200Z",
+                         body="Handoff: the lane's passwords moved.\nNext: land it."):
         records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"type": "assistant", "timestamp": started, "message": {"content": [
-            {"type": "tool_use", "id": "write", "input": {"command": command}}]}})
-        # Claude Code repeats tool blocks in untimestamped records.
-        records.insert(2, {"type": "api-request-blob", "message": {"content": [
-            {"type": "tool_use", "id": "write", "input": {"command": command}}]}})
-        records.insert(3, {"type": "user", "timestamp": finished, "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "write", "content": output, "is_error": False}]}})
+        records[1:1] = [
+            # The session writes the comment body itself before posting it.
+            {"type": "assistant", "timestamp": started, "message": {"content": [
+                {"type": "tool_use", "id": "body", "input": {"file_path": "c.md", "content": body}}]}},
+            {"type": "assistant", "timestamp": started, "message": {"content": [
+                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
+            # Claude Code repeats tool blocks in untimestamped records.
+            {"type": "api-request-blob", "message": {"content": [
+                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
+            {"type": "user", "timestamp": finished, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "write", "content": output, "is_error": False}]}},
+        ]
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         self.reader.paged_json.return_value = []
+        # The comment helper appends its operation marker to the posted body.
+        self.reader.get_json.return_value = {**self.reader.get_json.return_value,
+                                             "body": f"{body}\n\n<!-- github-skill-operation:0123abcd -->"}
         return {**self.entry, "handoff_url": None}
 
     def test_summarized_write_created_during_the_call_is_bound(self):
@@ -380,6 +391,32 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(name):
                 found, _ = helper.discover_handoff(self.reader, self.summarized_write(command, output), ACTOR)
                 self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_another_sessions_comment_created_during_the_call_is_not_bound(self):
+        # Session B posts with the same bot while session A's write is chained with a read.
+        command = "gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments"
+        outputs = {"bare URL": self.entry["handoff_url"], "read JSON": json.dumps([{"html_url": self.entry["handoff_url"]}])}
+        bodies = {"names its own session": "B's handoff\nSession: session-B", "names no session": "B's handoff"}
+        for (shape, output), (name, other_body) in itertools.product(outputs.items(), bodies.items()):
+            with self.subTest(shape=shape, body=name):
+                entry = self.summarized_write(command, output)
+                self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": other_body}
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_a_written_comment_that_names_another_session_is_not_its_handoff(self):
+        # For example, a Supervisor attestation about the session it closed.
+        entry = self.summarized_write("gh-comment issue 1 --body-file c.md", self.entry["handoff_url"],
+                                      body="Closed session\nSession: session-B\nSafe to exit: yes")
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_a_read_before_the_write_in_one_call_does_not_hide_the_write(self):
+        summary = "python3 -c 'import json,sys; print(json.load(sys.stdin)[\"comment\"][\"url\"])'"
+        entry = self.summarized_write(f"gh-pr.py --repo test/a checks 2; gh-comment issue 1 --body-file c.md | {summary}",
+                                      f"{{'summary': {{'pendingCount': 3}}}}\n{self.entry['handoff_url']}")
+        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
 
     def test_url_printed_by_a_write_but_created_outside_the_call_is_not_bound(self):
         # A read chained into the write may print an older shared-bot comment.

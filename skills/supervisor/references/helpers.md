@@ -1624,7 +1624,10 @@ Missing handoffs are discovered from the native final response or recorded
 comment-write receipts, then verified against live comment author and dates.
 A comment URL printed by a recognized comment-write call, however its output
 was summarized or chained, is bound only when the comment was created between
-that call and its recorded result.
+that call and its recorded result and its body is text the session itself wrote
+before then (a heredoc, `--body`, or a file it wrote), naming no other session.
+A shared-bot comment that a chained read prints is not authorship. A lone URL
+printed without the helper's JSON receipt needs the same written body.
 A fallback source-issue or summary comment must name the exact native ID;
 shared-bot recency alone never qualifies. The summary thread defaults to
 `OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.

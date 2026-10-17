@@ -32,7 +32,7 @@ import github_identity
 import github_plan_claim as claim
 import github_plan_release as release
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
-from github_comment import CommentError, comment
+from github_comment import OPERATION_MARKER_LINE_RE, CommentError, comment
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 HANDOFF = release.COMMENT_URL
@@ -315,23 +315,31 @@ def discover_handoff(reader, entry, actor):
             executable = False
             tail = tokens[index + 1:]
             if name in {"gh-comment", "github_comment.py"}:
-                return any(t in {"issue", "pr"} and i + 1 < len(tail) and tail[i + 1].isdigit() for i, t in enumerate(tail))
+                if any(t in {"issue", "pr"} and i + 1 < len(tail) and tail[i + 1].isdigit() for i, t in enumerate(tail)):
+                    return True
             if name == "gh-pr.py":
                 # The documented form puts the global --repo before the subcommand.
                 while tail[:1] in (["--repo"], ["-R"]) or (tail and tail[0].startswith("--repo=")):
                     tail = tail[1 if "=" in tail[0] else 2:]
-                return tail[:1] == ["comment"]
+                if tail[:1] == ["comment"]:
+                    return True
+            # A read earlier in a chained call does not hide a later write.
         return False
     # A write's output is often summarized or chained with other commands, so a
     # URL it prints is bound by the comment's creation inside that call instead.
+    # Timing alone does not prove authorship: the comment body must also be text
+    # this session wrote itself (a heredoc, --body, or a file it wrote) before then.
     started = {}
     windowed = []
+    authored = []
+    def flat(text):
+        return " ".join(text.split())
     def add_windowed(call_id, finished_at, value):
         if call_id not in started or not started[call_id] or not finished_at:
             return
         for repo, number, comment_id in re.findall(HANDOFF.pattern, "\n".join(strings(value))):
             windowed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}",
-                             release.stamp(started[call_id]), release.stamp(finished_at)))
+                             release.stamp(started[call_id]), release.stamp(finished_at), len(authored)))
     for record in records:
         payload = record.get("payload") or {}
         arguments = payload.get("arguments") or payload.get("input") or ""
@@ -353,26 +361,31 @@ def discover_handoff(reader, entry, actor):
         # Historical fixtures/native direct calls may contain the shell command itself.
         if not command and not isinstance(structured, dict) and payload.get("name") in {"exec_command", "functions.exec_command"}:
             command = str(arguments)
+        if payload.get("type") in {"function_call", "custom_tool_call"}:
+            authored.extend(flat(t) for t in strings(structured if isinstance(structured, dict) else arguments))
         if payload.get("type") in {"function_call", "custom_tool_call"} and is_comment_write(command):
             if payload.get("call_id"):
                 writes.add(payload["call_id"])
                 started[payload["call_id"]] = started.get(payload["call_id"]) or record.get("timestamp")
         if payload.get("type") in {"function_call_output", "custom_tool_call_output"} and payload.get("call_id") in writes:
-            outputs.extend(strings(payload.get("output")))
+            outputs.extend((text, len(authored)) for text in strings(payload.get("output")))
             add_windowed(payload["call_id"], record.get("timestamp"), payload.get("output"))
         for block in (record.get("message") or {}).get("content") or []:
             if not isinstance(block, dict):
                 continue
+            if block.get("type") == "tool_use":
+                authored.extend(flat(t) for t in strings(block.get("input")))
             if block.get("type") == "tool_use" and is_comment_write(str((block.get("input") or {}).get("command") or (block.get("input") or {}).get("cmd") or "")):
                 if block.get("id"):
                     writes.add(block["id"])
                     started[block["id"]] = started.get(block["id"]) or record.get("timestamp")
             if block.get("type") == "tool_result" and block.get("tool_use_id") in writes and block.get("is_error") is not True:
-                outputs.extend(strings(block.get("content")))
+                outputs.extend((text, len(authored)) for text in strings(block.get("content")))
                 add_windowed(block["tool_use_id"], record.get("timestamp"), block.get("content"))
     receipt_urls = []
+    printed = []
     decoder = json.JSONDecoder()
-    for text in outputs:
+    for text, count in outputs:
         # Consume complete envelopes, not URLs embedded in a subsequent read's body.
         cursor = 0
         while (start := text.find("{", cursor)) >= 0:
@@ -386,16 +399,18 @@ def discover_handoff(reader, entry, actor):
                 url = (value.get("comment") or {}).get("url")
                 if isinstance(url, str) and HANDOFF.fullmatch(url):
                     receipt_urls.append(url)
-        # Older helpers were commonly piped to grep url; accept a single URL.
+        # Older helpers were commonly piped to grep url; accept a single URL whose
+        # body the session wrote, since a chained read can print one too.
         legacy = list(dict.fromkeys(re.findall(HANDOFF.pattern, text)))
         if len(legacy) == 1 and "{" not in text:
             repo, number, comment_id = legacy[0]
-            receipt_urls.append(f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}")
+            printed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}", count))
     final_text = session_record.session_status(entry)["last_text"]
     final_urls = [f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
                   for repo, number, comment_id in re.findall(HANDOFF.pattern, final_text)]
     candidates = [*entry.get("_handoffs", []),
-                  *reversed(receipt_urls), *(url for url, _, _ in reversed(windowed)), *reversed(final_urls)]
+                  *reversed(receipt_urls), *(url for url, _ in reversed(printed)),
+                  *(url for url, _, _, _ in reversed(windowed)), *reversed(final_urls)]
     for url in dict.fromkeys(candidates):
         match = HANDOFF.fullmatch(url)
         if not match:
@@ -411,13 +426,19 @@ def discover_handoff(reader, entry, actor):
         text = evidence.get("body") or ""
         # GitHub stamps whole seconds; allow that truncation plus small clock skew.
         created = release.stamp(evidence.get("created_at") or "1970-01-01T00:00:00Z")
-        in_window = any(u == url and start - timedelta(seconds=2) <= created <= end + timedelta(seconds=2)
-                        for u, start, end in windowed)
+        body = flat(OPERATION_MARKER_LINE_RE.sub("", text))
+        def wrote(count):
+            return bool(body) and release.related_sessions_match(text, entry["session_id"]) and any(
+                body in written for written in authored[:count])
+        legacy_receipt = any(u == url and wrote(count) for u, count in printed)
+        in_window = any(u == url and start - timedelta(seconds=2) <= created <= end + timedelta(seconds=2) and wrote(count)
+                        for u, start, end, count in windowed)
         if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
                 and not text.startswith("Claimed by ") and not claim.records(text)
-                and (url in entry.get("_handoffs", []) or url in receipt_urls or in_window or entry["session_id"] in text)):
+                and (url in entry.get("_handoffs", []) or url in receipt_urls or legacy_receipt or in_window
+                     or entry["session_id"] in text)):
             provenance = ("Supervisor verified inventory handoff" if url in entry.get("_handoffs", [])
-                          else "native comment-write receipt" if url in receipt_urls
+                          else "native comment-write receipt" if url in receipt_urls or legacy_receipt
                           else "native comment-write window" if in_window else "exact-ID handoff")
             return {**entry, "handoff_url": url, "_handoff_provenance": provenance}, evidence
     # A summary without a transcript URL must name the exact native ID.
