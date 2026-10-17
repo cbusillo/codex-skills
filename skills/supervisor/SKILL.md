@@ -480,9 +480,11 @@ uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
 ```
 
 It covers every open `Track:` issue on OWNER/direction in one bounded read:
-each Track's status label, its native children, the latest `Director decision`
-comment on each, and the open PRs that close each child, with their handoff
-state under the merge train's ready-handoff rule. It prints a checked-at time
+each Track's status label, its native children, the live `Next action:` from
+each one's Current Status, the latest `Director decision` comment on each, and
+the open PRs that close each child, with their handoff state under the merge
+train's ready-handoff rule. A closed child shows as closed, whatever its label
+says. It prints a checked-at time
 and the Tracks discovered versus read. Anything it could not read says
 "unknown, not refreshed"; report that, never an earlier status. Quota is no
 reason to skip it: one rebuild costs about 30 GraphQL points

@@ -19,7 +19,7 @@ import time
 CATALOG = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CATALOG))
 sys.path.insert(0, str(CATALOG / "skills/github/scripts"))
-from skills.github.scripts import github_read
+from skills.github.scripts import github_direction_next, github_next_queue, github_read
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import HEAD, READY, WAITING, handoff_line, timestamp
 
@@ -32,6 +32,8 @@ LABEL_LIMIT = 50
 PR_LIMIT = 5
 PR_COMMENTS = 30
 TRACKS_PER_QUERY = 10
+NEXT_ACTION_CHARS = 200
+OPEN_LABELS = ("plan:active", "plan:blocked", "plan:waiting", "plan:stale")
 
 LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -44,14 +46,14 @@ LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $
 }"""
 
 COMMENT = "url createdAt updatedAt databaseId body author { __typename login }"
-TRACK_FIELDS = f"""number title url state
+TRACK_FIELDS = f"""number title url state body createdAt lastEditedAt
       milestone {{ title }}
       labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
       comments(last: {TRACK_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
       subIssues(first: {CHILD_LIMIT}) {{
         totalCount
         nodes {{
-          number title url state
+          number title url state body createdAt lastEditedAt
           repository {{ nameWithOwner }}
           labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
           subIssuesSummary {{ total completed }}
@@ -104,6 +106,43 @@ def latest_decision(comments, trusted, unread):
     return None
 
 
+def next_action(node, trusted, unread):
+    """The live Next action from the issue's Current Status, on one line.
+
+    A status comment as new as the body wins, so a long thread without one
+    in the window settles only when the body is strictly newer than that window.
+    """
+    comments = node["comments"]
+    body_at = node.get("lastEditedAt") or node["createdAt"]
+    discussion = {"body": node.get("body") or "", "comments": [
+        {"author": login(comment.get("author")), "body": comment.get("body"), "created_at": comment["createdAt"]}
+        for comment in comments["nodes"]]}
+    in_window = any(comment["author"] in trusted
+                    and "Current Status" in github_direction_next.section_map(comment["body"] or "")
+                    for comment in discussion["comments"])
+    in_body = "Current Status" in github_direction_next.section_map(discussion["body"])
+    if truncated(comments) and not in_window and (
+            not in_body or not comments["nodes"]
+            or timestamp(body_at) <= min(timestamp(comment["createdAt"]) for comment in comments["nodes"])):
+        unread.append("next action")
+        return UNKNOWN
+    if not in_window and not in_body:
+        return "no Current Status"
+    status = github_next_queue.current_status(discussion, trusted, body_recorded_at=body_at)
+    action = " ".join(github_next_queue.status_field(status, "Next action").split())
+    if not action:
+        return "no Next action in Current Status"
+    return action if len(action) <= NEXT_ACTION_CHARS else action[:NEXT_ACTION_CHARS - 1].rstrip() + "…"
+
+
+def child_state(child):
+    """A closed child is closed whatever its label says; an open label is noted as stale."""
+    if child["state"] != "closed":
+        return child["status"] or child["state"]
+    label = child["status"]
+    return f"closed (label {label} is stale)" if label in OPEN_LABELS else "closed"
+
+
 def handoff(pr, trusted, unread):
     """Classify the latest trusted handoff with the merge train's shared rules."""
     latest = None
@@ -134,6 +173,7 @@ def child_row(node, trusted):
     return {"repository": node["repository"]["nameWithOwner"], "number": node["number"],
         "title": node["title"], "url": node["url"], "state": node["state"].lower(),
         "status": status_label(node["labels"], unread), "sub_issues": node["subIssuesSummary"],
+        "next_action": next_action(node, trusted, unread),
         "latest_decision": latest_decision(node["comments"], trusted, unread),
         "open_prs": [{"url": pr["url"], "head": pr["headRefOid"], "draft": pr["isDraft"],
             "mergeable": pr["mergeable"].lower(), "handoff": handoff(pr, trusted, unread)}
@@ -149,6 +189,7 @@ def track_row(node, trusted):
     return {"number": node["number"], "title": node["title"], "url": node["url"],
         "milestone": (node.get("milestone") or {}).get("title"),
         "status": status_label(node["labels"], unread),
+        "next_action": next_action(node, trusted, unread),
         "latest_decision": latest_decision(node["comments"], trusted, unread),
         "children": [child_row(child, trusted) for child in children["nodes"]],
         "unread": unread}
@@ -217,9 +258,16 @@ def goal_board(reader, owner, *, repo="direction", trusted, max_pages=10):
 
 
 def unread_text(row):
-    # The status and handoff fields already print their own unknown.
+    # The status, next action and handoff fields already print their own unknown.
     return "".join(f"; {part} {UNKNOWN}" for part in row["unread"]
-                   if part != "status label" and not part.startswith("handoff on "))
+                   if part not in ("status label", "next action") and not part.startswith("handoff on "))
+
+
+def action_text(row, links_only):
+    # The links format is for public places, so it leaves out the action's prose.
+    if links_only and row["next_action"] != UNKNOWN:
+        return ""
+    return f"; next action: {row['next_action']}"
 
 
 def markdown(board, *, links_only=False):
@@ -233,13 +281,15 @@ def markdown(board, *, links_only=False):
             lines.append(f"\n- {track['url']}{name}: {UNKNOWN}")
             continue
         decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
-        lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}{decision}{unread_text(track)}")
+        lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
+                     f"{action_text(track, links_only)}{decision}{unread_text(track)}")
         for child in track["children"]:
             title = "" if links_only else f" {child['title']}"
             decision = f"; decision {child['latest_decision']}" if child["latest_decision"] else ""
             prs = "".join(f"; PR {pr['url']} {'draft, ' if pr['draft'] else ''}{pr['handoff']}, mergeable {pr['mergeable']}"
                           for pr in child["open_prs"])
-            lines.append(f"  - {child['url']}{title}: {child['status'] or child['state']}{decision}{prs}{unread_text(child)}")
+            lines.append(f"  - {child['url']}{title}: {child_state(child)}"
+                         f"{action_text(child, links_only)}{decision}{prs}{unread_text(child)}")
     for error in board["errors"]:
         lines.append(f"\nError: {error}")
     return "\n".join(lines)
