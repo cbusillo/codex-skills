@@ -2355,13 +2355,19 @@ def claim_once(args: argparse.Namespace) -> None:
     admission_unlinked = getattr(args, "admission_unlinked", None)
     if (admission_links or admission_unlinked is not None) and not admission:
         raise PlanError("--admission-link and --admission-unlinked require --admission")
-    if any(github_plan_claim.admission_link_target(link) is None for link in admission_links):
+    admission_targets = {link: github_plan_claim.admission_link_target(link) for link in admission_links}
+    if None in admission_targets.values():
         raise PlanError("--admission-link must be https://github.com/OWNER/REPO/issues/N or "
                         "https://github.com/OWNER/REPO/pull/N, optionally followed by #issuecomment-ID "
                         "(N and ID are positive integers)")
     if admission_unlinked is not None and (admission != "milestone" or not admission_unlinked.strip()
                                            or any(c in admission_unlinked for c in "\n\r")):
         raise PlanError("--admission-unlinked records one nonempty line for milestone admission")
+    # Spellings of one issue, PR or comment cite one occurrence; keep the first as written.
+    first_spellings: dict[tuple[str, int, int | None], str] = {}
+    for link, target in admission_targets.items():
+        first_spellings.setdefault(target, link)
+    admission_links = list(first_spellings.values())
     if admission == "repeat-stop" and len(admission_links) < 2:
         raise PlanError("Repeat-stop admission needs both occurrences: pass --admission-link once for each")
     refresh_pr = getattr(args, "refresh_pr", None)

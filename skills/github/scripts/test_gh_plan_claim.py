@@ -3429,18 +3429,31 @@ class ClaimTests(unittest.TestCase):
         ):
             with self.subTest(second=second):
                 self.setUp()
-                self.admit("repeat-stop", (first, second, first))
-                self.assertIn(f"Admission: repeat-stop; {first}, {second}\n", self.comments[-1]["body"])
+                self.admit("repeat-stop", (first, second, first.replace("/issues/", "/pull/")))
+                self.assertIn(CLAIM.admission_text("repeat-stop", [first, second]), self.comments[-1]["body"])
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def test_admission_comment_resolves_to_its_parent_without_widening_issue_urls(self):
-        for kind in ("issues", "pull"):
-            parent = f"https://github.com/owner/repo/{kind}/5"
-            comment = parent + "#issuecomment-123"
-            with self.subTest(kind=kind):
-                self.assertEqual(CLAIM.admission_link_target(comment), ("owner/repo", 5))
-                self.assertEqual(CLAIM.admission_link_target(parent), ("owner/repo", 5))
-                self.assertIsNone(CLAIM.ISSUE_URL.fullmatch(comment))
+    def test_spellings_of_one_citation_count_as_one_occurrence(self):
+        # GitHub serves one number's issue and PR paths, and owner/repo case-insensitively.
+        for first, second in (
+            ("https://github.com/owner/repo/issues/5#issuecomment-123",
+             "https://github.com/owner/repo/pull/5#issuecomment-123"),
+            ("https://github.com/owner/repo/issues/5#issuecomment-123",
+             "https://github.com/Owner/Repo/issues/5#issuecomment-123"),
+            ("https://github.com/owner/repo/issues/5", "https://github.com/owner/repo/pull/5"),
+        ):
+            with self.subTest(second=second):
+                self.setUp()
+                with self.assertRaises(PLAN.PlanError):
+                    self.admit("repeat-stop", (first, second))
+                self.assert_no_writes()
+
+    def test_walk_does_not_follow_a_comment_link_as_a_graph_node(self):
+        graph = {("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/direction/issues/9#issuecomment-1"}},
+                 ("owner/direction", 9): {"issue": self.TRACK}}
+        (track, _), reads = self.walk(graph)
+        self.assertIsNone(track)
+        self.assertEqual(reads, [("owner/product", 7)])
 
     def test_comment_evidence_does_not_supply_a_missing_occurrence_or_track(self):
         link = "https://github.com/owner/repo/issues/5#issuecomment-123"
@@ -3448,8 +3461,11 @@ class ClaimTests(unittest.TestCase):
             self.admit("repeat-stop", (link, link))
         self.assert_no_writes()
         self.setUp()
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            self.admit("milestone", (link,))
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        with patch.object(CLAIM, "admission_track", return_value=(None, True)) as walk, \
+                self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(walk.call_args.args[:2], (("owner/repo", 42), "owner"))
         self.assertEqual(caught.exception.code, "claim_admission_unlinked")
         self.assert_no_writes()
 

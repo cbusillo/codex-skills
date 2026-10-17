@@ -907,13 +907,14 @@ ADMISSIONS = ("live-breakage", "milestone", "repeat-stop", "spare-capacity")
 ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/([1-9]\d*)")
 
 
-def admission_link_target(link: str) -> tuple[str, int] | None:
-    """Resolve cited issue/PR discussion evidence without broadening graph URLs."""
+def admission_link_target(link: str) -> tuple[str, int, int | None] | None:
+    """The cited issue/PR and comment, keyed as GitHub resolves them, without broadening graph URLs."""
     parent, separator, fragment = link.partition("#")
-    if separator and not re.fullmatch(r"issuecomment-[1-9]\d*", fragment):
+    comment = re.fullmatch(r"issuecomment-([1-9]\d*)", fragment)
+    if separator and not comment:
         return None
     match = ISSUE_URL.fullmatch(parent)
-    return (match[1], int(match[2])) if match else None
+    return (match[1].casefold(), int(match[2]), int(comment[1]) if comment else None) if match else None
 
 
 def admission_track(
