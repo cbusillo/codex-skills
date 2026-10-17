@@ -396,7 +396,7 @@ class OverdueTriggerTests(unittest.TestCase):
             self.issue(3, "Next action: Next agent refreshes PR #9 against main."),
             self.issue(4, "State: active.\nWaiting for: the Supervisor's ledger week."),
         ]
-        other = self.issue(5, "Next action: supervisor releases claim 61.")
+        other = self.issue(5, "Next action: When claim 61 goes quiet, the Supervisor releases it.")
         other["repo"] = "example/other"
         records.append(other)
         for record, edited in zip(records, ["2026-10-13T00:00:00Z", "2026-10-11T00:00:00Z", "2026-10-11T00:00:00Z",
@@ -417,6 +417,34 @@ class OverdueTriggerTests(unittest.TestCase):
         records[1].pop("status_body_updated_at")
         rows = [r for r in self.report(records)["findings"] if r["kind"] == "supervisor_next_action"]
         self.assertEqual([(r["number"], r["age_basis"]) for r in rows], [(2, "unknown"), (5, "recorded_event")])
+
+    def test_next_action_counts_only_the_supervisor_as_an_actor(self):
+        """codex-skills#2096: a path or description naming the Supervisor is not a handoff to it."""
+        routed = [
+            "Supervisor; existing fleet owner records the event result.",
+            "The Supervisor (who holds the enqueue log) posts the receipt here.",
+            "At the recorded event the Supervisor posts both counts.",
+            "CP806-C1 follows CI, waits for the Supervisor's OpenAI review on #875, then runs ready.",
+            "After CI, handoff to the Supervisor for landing.",
+        ]
+        quiet = [
+            "Next agent fixes skills/supervisor/scripts/digest_summary.py.",
+            "Agent selects the next fixture cluster; the five duplicated supervisor terminal graphs are resolved.",
+            "An agent replaces Supervisor accepted-first hand ordering with automatic batching.",
+            "Next agent fixes the Supervisor scripts and runs their tests.",
+            "The merge train lands PR #3854; nothing further for the Supervisor to route.",
+        ]
+        for text in routed:
+            self.assertEqual(sweep.supervisor_next_action(f"## Current Status\nNext action: {text}"), text)
+        for text in quiet:
+            self.assertIsNone(sweep.supervisor_next_action(f"## Current Status\nNext action: {text}"), text)
+
+    def test_status_fields_stay_on_their_own_line(self):
+        """codex-skills#2096: an empty field never reads the next field as its value."""
+        body = ("## Current Status\nState: Active.\nNext action:\nBlocked by: Supervisor decision\n"
+                "Last verified:\n\n<!-- github-plan:wait {\"evidence\": \"Filed Oct 17, 2026\"} -->")
+        self.assertIsNone(sweep.supervisor_next_action(body))
+        self.assertIsNone(sweep.verified_at(body))
 
 
 class TrackTests(unittest.TestCase):
