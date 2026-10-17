@@ -128,6 +128,12 @@ unknown), next actor and review requirement:
   threshold. The root comes from `--worktree-root`, or else from the host's
   configured `hostHelper` root; without one the check is skipped. Each worktree
   is retired with its lock's command, never from the report.
+- Open issues whose body Current Status `Next action:` names the Supervisor,
+  aged from the body's edit time, which is read once per such issue from the
+  sweep's budget. An unreadable edit time is a coverage gap and the issue is
+  still listed with unknown age. The result's `supervisor_next_action_by_repo`
+  and a Markdown line give the count per repository. Status kept only in a
+  comment is not read for this check.
 - Existing train blocked views, aged from their label event, plus structured
   waits naming the Supervisor, Director, Director login or supplied aliases.
   Body-only waits have unknown age because unrelated issue activity must not

@@ -408,7 +408,10 @@ including non-dim text, establishes neither its author nor approval.
    request a durable handoff and relaunch the same brief after verified safe
    closeout. If it cannot hand off, preserve it and bring the failure to the
    Director. Gather the
-   open Director questions. Report milestone state only from this check's
+   open Director questions. Read the latest stranded-work digest's
+   `supervisor_next_action` list, oldest first: do the Supervisor-only steps,
+   rewrite the rest to name the next agent and its step, or hand a batch to a
+   triage session. Report milestone state only from this check's
    goal board. Close finished sessions using the procedure below
    on every check, including sessions that finished their item without needing
    a relaunch.

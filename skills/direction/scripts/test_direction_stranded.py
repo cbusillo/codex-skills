@@ -17,6 +17,7 @@ import sys
 
 import direction_audit as audit
 import direction_stranded as sweep
+import digest_summary
 from skills.github.scripts import github_api
 
 
@@ -387,6 +388,36 @@ class OverdueTriggerTests(unittest.TestCase):
         rows = [r for r in self.report(records)["findings"] if r["kind"] == "passed_dated_wait"]
         self.assertEqual({r["number"] for r in rows}, {2})
 
+    def test_next_action_routed_to_the_supervisor_is_listed_oldest_first_per_repository(self):
+        """codex-skills#2024: 199 issues handed their next step back to the Supervisor unseen."""
+        records = [
+            self.issue(1, "Next action: Supervisor routes PR #9 through the merge train."),
+            self.issue(2, "- **Next action:** The Supervisor brings Q426 to Chris."),
+            self.issue(3, "Next action: Next agent refreshes PR #9 against main."),
+            self.issue(4, "State: active.\nWaiting for: the Supervisor's ledger week."),
+        ]
+        other = self.issue(5, "Next action: supervisor releases claim 61.")
+        other["repo"] = "example/other"
+        records.append(other)
+        for record, edited in zip(records, ["2026-10-13T00:00:00Z", "2026-10-11T00:00:00Z", "2026-10-11T00:00:00Z",
+                                            "2026-10-11T00:00:00Z", "2026-10-12T00:00:00Z"]):
+            record["status_body_updated_at"] = edited
+        result = self.report(records)
+        rows = [r for r in result["findings"] if r["kind"] == "supervisor_next_action"]
+        self.assertEqual([(r["repo"], r["number"]) for r in rows],
+                         [("example/catalog", 2), ("example/other", 5), ("example/catalog", 1)])
+        self.assertEqual(rows[0]["evidence"], ["The Supervisor brings Q426 to Chris."])
+        self.assertEqual(result["supervisor_next_action_by_repo"], {"example/catalog": 2, "example/other": 1})
+        text = sweep.markdown(result)
+        self.assertIn("Next action names the Supervisor: example/catalog 2, example/other 1", text)
+        # The digest still parses the report with the new kind and count line.
+        self.assertEqual(sum(r["kind"] == "supervisor_next_action" for r in digest_summary.parse(text)[2]), 3)
+        # A fresh hand-back stays quiet until the age threshold; an unknown edit time is still listed.
+        records[0]["status_body_updated_at"] = (self.now - dt.timedelta(hours=1)).isoformat()
+        records[1].pop("status_body_updated_at")
+        rows = [r for r in self.report(records)["findings"] if r["kind"] == "supervisor_next_action"]
+        self.assertEqual([(r["number"], r["age_basis"]) for r in rows], [(2, "unknown"), (5, "recorded_event")])
+
 
 class TrackTests(unittest.TestCase):
     now = dt.datetime(2026, 10, 16, 23, 0, tzinfo=dt.timezone.utc)
@@ -635,6 +666,15 @@ class InventoryTests(unittest.TestCase):
         result = self.collect()
         self.assertEqual(len(result["findings"]), 1)
         self.assertEqual(result["findings"][0]["kind"], "open_after_completing_merge")
+
+    def test_supervisor_routed_status_is_aged_from_its_body_edit(self):
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = [{
+            "number": 1, "state": "open", "body": "## Current Status\nNext action: Supervisor routes PR #2.",
+            "user": {"login": "test"}, "updated_at": self.now.isoformat()}]
+        self.reader.graphql_json = lambda *args, **kwargs: SimpleNamespace(ok=True, body={"data": {"repository": {
+            "issue": {"lastEditedAt": "2026-10-14T00:00:00Z", "createdAt": "2026-10-01T00:00:00Z"}}}})
+        rows = self.collect()["findings"]
+        self.assertEqual([(r["kind"], r["age_hours"]) for r in rows], [("supervisor_next_action", 48.0)])
 
     def test_body_status_uses_bounded_edit_read_not_issue_activity(self):
         original = self.reader.get_json
