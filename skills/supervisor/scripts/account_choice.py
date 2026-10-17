@@ -11,6 +11,7 @@ local config; nothing here reads credentials or changes any login.
 """
 
 import argparse
+import errno
 import json
 import os
 import pwd
@@ -323,6 +324,12 @@ def prepare_launch(choice):
             probe.flush()
             os.fsync(probe.fileno())
     except OSError as error:
+        if error.errno == errno.EPERM:
+            # macOS app-data protection, not file modes: a process with no app
+            # behind it (a launchd-started tmux worker) is refused the App Group.
+            raise ValueError("cannot prepare launch receipt storage (PermissionError: EPERM); macOS refuses "
+                             "this process the reader's storage root. Launch from a process macOS allows, "
+                             "such as the Supervisor's terminal session (codex-skills#2069)") from error
         raise ValueError(f"cannot prepare launch receipt storage ({type(error).__name__}); "
                          "check write access to the reader's storage root before retrying") from error
 
