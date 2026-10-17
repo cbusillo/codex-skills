@@ -49,6 +49,11 @@ that event and its actor. Preserve people's waits and the parent's or
 milestone's own exit criteria. Real remaining engineering stays actionable:
 source changes have their own completing PR, and operational steps are carried
 through their supported path within the task's authority.
+In a handoff's `Next action:`, name the next agent and its concrete step, such
+as "Next agent: refresh PR #N against main". Name the Supervisor only for a step
+that needs its authority: merge-train entry, presenting a Director question, a
+release, or releasing a claim. The daily stranded-work sweep lists every open
+issue whose Next action names the Supervisor.
 Before recording a split or handoff, read github-plan's
 [Status Labels](../github-plan/SKILL.md#status-labels).
 Never substitute a comment for an unmet finish line, or keep completed work

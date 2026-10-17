@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import time
+from collections import Counter
 from urllib.parse import quote
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -89,6 +90,17 @@ def verified_at(body: str | None) -> dt.datetime | None:
         hour = int(clock[1]) % 12 + (12 if clock[3].upper() == "P" else 0)
         return local.replace(hour=hour, minute=int(clock[2])).astimezone(UTC)
     return (local + dt.timedelta(days=1)).astimezone(UTC)
+
+
+NEXT_ACTION = re.compile(r"(?im)^\s*(?:[-*]\s*)?\**Next action\**:\**\s*(.+)$")
+
+
+def supervisor_next_action(body: str | None) -> str | None:
+    """The body Current Status Next action when it routes work to the Supervisor."""
+    status = next((v for k, v in audit.github_direction_next.section_map(body or "").items()
+                   if k.casefold() == "current status"), "")
+    line = NEXT_ACTION.search(status)
+    return line[1].strip() if line and re.search(r"\bsupervisor\b", line[1], re.I) else None
 
 
 def is_track(record: dict) -> bool:
@@ -393,6 +405,11 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                     None if source is item else source.get("updated_at") or source.get("created_at"), "; ".join(receivers),
                     "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
+        if routed := supervisor_next_action(item.get("body")):
+            # Aged from the body edit, never from label or comment activity.
+            add("supervisor_next_action", record, url, record.get("status_body_updated_at"), "Supervisor / triage session",
+                "Current Status routes the next action to the Supervisor. Do the Supervisor-only step, "
+                "or name the next agent and its concrete step.", evidence=[routed])
         for text, due in dated_waits(item, wait):
             if due <= now:
                 add("passed_dated_wait", record, url, due, "Supervisor",
@@ -459,8 +476,10 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 evidence=[{"registration_url": row["registration_url"], "delivery": row.get("delivery"),
                            "delivery_url": row.get("delivery_url"), "resurface": row.get("resurface")}])
     findings.sort(key=lambda row: (row["since"] or "", row["repo"], row["number"] or 0, row["kind"], row["url"]))
+    routed = Counter(row["repo"] for row in findings if row["kind"] == "supervisor_next_action")
     return {"read_only": True, "sampled_at": now.isoformat(), "age_threshold_hours": age_hours,
             "complete": not gaps, "findings": findings, "coverage_gaps": gaps,
+            "supervisor_next_action_by_repo": dict(sorted(routed.items(), key=lambda pair: (-pair[1], pair[0]))),
             "scope_notes": ["Decisions and completion records outside the selected repositories/history are unverified.",
                             "Unscheduled promises without a parseable due time are not ageable; no promise state is invented.",
                             "GitHub enqueue/blocked labels are existing helper views, not train custody authority; service-only holds are outside coverage."]}
@@ -521,14 +540,16 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             return {}
 
     def status_body_time(record):
-        """Read body edit time only for an incidental merge with body status.
+        """Read body edit time for an incidental merge with body status, or a
+        body status that routes the next action to the Supervisor.
 
         REST updated_at also moves on labels/comments; it is not status evidence.
         This read shares the collector's request budget and reader deadline.
         """
         nonlocal reads, budget
         selected = merged_link(record)
-        if not selected or selected[0] or not has_status(record["item"]):
+        incidental = selected and not selected[0] and has_status(record["item"])
+        if not incidental and not supervisor_next_action(record["item"].get("body")):
             return
         source = f"{record['repo']}#{record['item']['number']}/status"
         try:
@@ -878,6 +899,8 @@ def markdown(result: dict) -> str:
         age = f"{row['age_hours']:g}h" if row["age_hours"] is not None else "age unknown"
         lines.append(f"- {row['kind']} ({age}): {row['url']} — {row['next_actor']}. {row['detail']}")
         lines.append("  Name: " + " ".join(row.get("title", row['url']).split()))
+    if routed := result.get("supervisor_next_action_by_repo"):
+        lines.append("Next action names the Supervisor: " + ", ".join(f"{repo} {count}" for repo, count in routed.items()))
     for gap in result["coverage_gaps"]:
         count = f" ({gap['count']} records)" if "count" in gap else ""
         lines.append(f"- Coverage gap: {gap['source']} — {gap['reason']}{count}")
