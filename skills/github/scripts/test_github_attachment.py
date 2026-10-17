@@ -104,7 +104,8 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(self.calls[-1].get_method(), "GET")
         self.assertIsNone(self.calls[-1].get_header("Authorization"))
         self.assertEqual(self.run.call_args.args[0], ["gh", "auth", "token", "--hostname", "github.com", "--user", "director"])
-        self.assertEqual(self.reader_factory.call_args.kwargs["gh_prefix_args"], ["--require-automation-auth"])
+        self.assertEqual(self.reader_factory.call_args.kwargs["gh_prefix_args"],
+                         attachment.github_read.automation_only_gh_prefix_args())
 
     def test_missing_opt_in_and_automation_only_refuse_before_authentication(self):
         for variable, value in (("GH_WITH_ENV_TOKEN_OWN_USER", "0"),
@@ -266,6 +267,35 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(self.invoke()[0], 1)
         self.run.assert_not_called()
 
+    def test_director_owner_comment_downloads_with_per_command_approval(self):
+        self.standing_scope()
+        os.environ["GH_WITH_ENV_TOKEN_OWN_USER"] = "1"
+        self.comment["author_association"] = "OWNER"
+        status, result = self.invoke()
+        self.assertEqual(status, 0)
+        self.assertEqual(result["authority"], "per_command")
+        self.assertEqual(pathlib.Path(result["path"]).read_bytes(), self.body)
+        self.reader_factory.return_value.paged_json.assert_not_called()
+
+    def test_per_command_approval_downloads_after_standing_withdrawal(self):
+        self.standing_scope()
+        self.reader_factory.return_value.paged_json.return_value = [{
+            "id": attachment.APPROVAL_COMMENT + 1, "created_at": "2026-10-18T00:00:00Z",
+            "user": {"login": self.login}, "body": f"{attachment.APPROVAL_QUESTION} no"}]
+        os.environ["GH_WITH_ENV_TOKEN_OWN_USER"] = "1"
+        status, result = self.invoke()
+        self.assertEqual(status, 0)
+        self.assertEqual(result["authority"], "per_command")
+        self.assertEqual(pathlib.Path(result["path"]).read_bytes(), self.body)
+
+    def test_automation_only_refuses_standing_director_per_command_approval(self):
+        self.standing_scope()
+        os.environ["GH_WITH_ENV_TOKEN_OWN_USER"] = "1"
+        os.environ["GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH"] = "1"
+        self.assertEqual(self.invoke()[0], 1)
+        self.run.assert_not_called()
+        self.reader_factory.assert_not_called()
+
     def test_quoted_or_foreign_approval_and_unreadable_discussion_do_not_authorize(self):
         self.standing_scope()
         for change in ({"body": f"> {attachment.RECORDED_AFFIRMATIVE}"},
@@ -286,7 +316,8 @@ class AttachmentTests(unittest.TestCase):
 
     def test_unverified_author_and_bot_comments_are_outside_standing_scope(self):
         self.standing_scope()
-        for change in ({"author_association": "NONE"}, {"user": {"type": "Bot"}}):
+        for change in ({"author_association": "NONE"}, {"author_association": "OWNER"},
+                       {"user": {"type": "Bot"}}):
             with self.subTest(change=change), patch.dict(self.comment, change):
                 self.assertEqual(self.invoke()[0], 1)
         self.run.assert_not_called()

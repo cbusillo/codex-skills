@@ -1910,11 +1910,13 @@ uv run scripts/gh-attachment.py \
 On Chris-Studio, use the host's `/Volumes/Developer-Artifacts/task-evidence/`
 root. `COMMENT_ID` is the numeric ID in `#issuecomment-...`. The helper checks
 the recorded approval and the complete subsequent discussion through automation
-on every invocation, using the same approval reader as Q455 mention searches.
+for standing downloads, using the same approval reader as Q455 mention searches.
 Unreadable, ambiguous or withdrawn approval stops before personal authentication.
 The Director can withdraw it with `Q467 no` as the first nonempty line of a
 comment on #2021 (a trusted `Director decision: Q467 no` also withdraws it).
-A later unqualified `Q467 yes` restores it. Quoted or third-party text does not.
+Recognized Q467 replies without unqualified approval also withhold it, including
+an older reply edited after the approval. A later unqualified `Q467 yes` restores
+it. Quoted or third-party text does not.
 
 The standing route accepts human collaborator/member comments in personally
 owned repositories; unknown authors and bots are outside that verified
@@ -1922,9 +1924,11 @@ Client/staff scope. It verifies the canonical repository and exact comment link
 using automation-only REST reads. The existing `gh` credential for `cbusillo`
 is retrieved inside the helper and checked against `/user`; it is never printed,
 persisted or handed to the agent. A conflicting declared personal login is not
-silently changed. Other Directors retain the existing declared-login,
-per-command `GH_WITH_ENV_TOKEN_OWN_USER=1` route under their own approval; Q467
-never grants use of their accounts.
+silently changed. All Directors retain the existing declared-login,
+per-command `GH_WITH_ENV_TOKEN_OWN_USER=1` route under their own explicit approval.
+That command selects per-command authority instead of Q467, including for `OWNER`
+comments or after standing approval is withdrawn; automation-only mode still
+refuses it. Q467 never grants use of other Directors' accounts.
 
 Only the fixed `/user` identity read and attachment GET use the personal token.
 Binary downloads use a bounded transport without retries or identity fallback;

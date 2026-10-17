@@ -94,7 +94,7 @@ def verify_comment(repository: str, comment: int, url: str):
 
 
 def authorization(login: str, reader, record: dict) -> str:
-    if login.casefold() != STANDING_DIRECTOR.casefold():
+    if github_identity.own_user_opted_in():
         return "per_command"
     if (record.get("author_association") not in {"COLLABORATOR", "MEMBER"}
             or not isinstance(record.get("user"), dict) or record["user"].get("type") != "User"):
