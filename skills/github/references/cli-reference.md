@@ -2040,7 +2040,16 @@ The Client App and primary App paths do not require this declaration. See
 [Client fleets with two Apps](#client-fleets-with-two-apps) for App routing;
 Client release acceptance stays with the person's personal account.
 Reads there, and commands that name no
-repository such as GraphQL by node ID, use the configured installation.
+repository such as GraphQL by node ID, use the configured installation. The
+one exception is a read under the same per-command opt-in of a repository the
+App cannot see: another account's repository with no installation that
+GitHub's unauthenticated repository endpoint does not report as public. That
+read runs as the declared personal login, so the helpers' pre-reads before an
+own-user write reach a private repository. It must be an ordinary read scoped
+to that repository, as for the Client App's public-read fallback; public
+repositories, unknown visibility, and the registering account's repositories
+keep the App reader, and `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` or
+`--check` keeps it too.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
 `GITHUB_TOKEN` in that order. `--check` reports the selected credential source
 and verifies the current App installation and actor without performing a write.

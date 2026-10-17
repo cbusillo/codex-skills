@@ -75,6 +75,9 @@ class PublicReadRepository(GitHubAppError):
 CONTRIBUTOR_EXIT_STATUS = 3
 NOT_INSTALLED_EXIT_STATUS = 4
 PUBLIC_READ_EXIT_STATUS = 5
+# An opted-in read of a private repository in another account, where no
+# installation lets the App see it; the wrapper scopes it like a public read.
+PRIVATE_CONTRIBUTOR_READ_EXIT_STATUS = 6
 
 # Acting as the person's own GitHub user is a stop the agent asks its Director
 # about, so it runs only when the caller sets this for the command; a value in
@@ -765,6 +768,27 @@ def repository_is_public(config: GitHubAppConfig, repository: str) -> bool:
             and str(payload.get("full_name", "")).casefold() == repository.casefold())
 
 
+def app_cannot_see_contributor_repository(config: GitHubAppConfig, repository: str) -> bool:
+    """Whether a read must leave the App because it cannot see the repository.
+
+    True only for another account's repository with no installation that
+    GitHub does not report as public. The registering account's repositories,
+    installed ones, public ones and unknown visibility keep the App reader.
+    """
+    if repository_installation_config(config, repository, required=False) is not None:
+        return False
+    if repository.split("/", 1)[0].casefold() == registering_account(config):
+        return False
+    try:
+        public = repository_is_public(config, repository)
+    except GitHubAppError as error:
+        detail = str(error).removeprefix("GitHub App ")
+        print(f"note: visibility of {repository} could not be verified, so the App reads it: {detail}",
+              file=sys.stderr)
+        return False
+    return not public
+
+
 def _mint_and_cache(config: GitHubAppConfig, cache_path: pathlib.Path, current_time: int) -> tuple[str, str]:
     login = _request_app_login(config, now=current_time)
     token, expires_at = _request_installation_token(config, now=current_time)
@@ -824,6 +848,14 @@ def main() -> int:
                     config = repository_config
                 print(check_github_app_installation(config))
                 return 0
+            automation_only = (getattr(args, "no_personal_read", False) or str(
+                configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") or "").casefold() in {"1", "true", "yes"})
+            if (args.command == "app-auth" and args.repo and not args.reader and not args.require_installation
+                    and not config.require_repository_installation and own_user_opted_in() and not automation_only
+                    and app_cannot_see_contributor_repository(config, args.repo)):
+                print(f"note: the GitHub App cannot see {args.repo}, a private repository of another account",
+                      file=sys.stderr)
+                return PRIVATE_CONTRIBUTOR_READ_EXIT_STATUS
             token, login = github_app_auth(
                 config,
                 repository=getattr(args, "repo", None) or None,
