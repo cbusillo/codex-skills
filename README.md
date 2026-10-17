@@ -1271,7 +1271,8 @@ for this check. An installer success alone does not prove cross-account pairing.
 
 ## TLS verification lint
 
-Run `uv run scripts/check_insecure_tls.py` to check tracked Python files for
+Run `scripts/lint-tls.sh` for the complete catalog TLS gate. Its
+`uv run scripts/check_insecure_tls.py` step checks tracked Python files for
 hand-built `check_hostname = False` / `CERT_NONE`, unverified contexts and common
 HTTP-client verification-off calls. The catalog validation gate runs it alongside the five Ruff TLS rules.
 It parses Python without executing it; dynamic values, parameter-provided clients and computed monkeypatches
@@ -1314,5 +1315,9 @@ S323 in the repository's existing lint gate; the script alone does not check
 protocol choices. Run it with an interpreter that supports that repository's
 source grammar, for example `uv run --python 3.14 <pinned-script-url>` for
 Python 3.14 source. Do not exclude valid modern source because an older parser
-rejects it. Update the catalog's Ruff pin/selector and its runnable metadata
-command together through the normal reviewed PR path.
+rejects it. Update the catalog's Ruff pin/selector in `scripts/lint-tls.sh` through the
+normal reviewed PR path; CI and runnable metadata both call that command.
+
+For a decorated declaration, put the reason above its first decorator. The
+annotation covers the declaration, and does not exempt unsafe code in its body.
+Factory identity comparisons used as guards do not disable verification.

@@ -5,6 +5,10 @@
 # ///
 import contextlib
 import io
+import os
+import shlex
+import shutil
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -94,6 +98,11 @@ def fixture():
                 self.assertEqual(checker.main(["--repo", str(root), "link.py"]), 2)
             self.assertIn("link.py", output.getvalue())
 
+    def test_decorator_reason_precedes_the_decorator_and_does_not_cover_body(self):
+        source = "import ssl\n# insecure-tls: isolated loopback fixture patches the TLS factory.\n@mock.patch.object(ssl, '_create_default_https_context', ssl._create_unverified_context)\ndef test_peer():\n    pass\n"
+        self.assertEqual(checker.findings(source), [])
+        self.assertTrue(checker.findings(source.replace("    pass", "    ctx.check_hostname = False")))
+
     def test_safe_defaults_strings_and_unrelated_calls_pass(self):
         source = '''import ssl, requests
 ctx = ssl.create_default_context()
@@ -102,6 +111,9 @@ ctx.verify_mode = ssl.CERT_REQUIRED
 requests.get("https://example.invalid", verify=True)
 example = "ctx.check_hostname = False"
 build_ssl_context(verify_ssl=False)
+assert ssl._create_default_https_context is not ssl._create_unverified_context
+if ssl._create_default_https_context is ssl._create_unverified_context:
+    raise RuntimeError("unverified TLS factory")
 '''
         self.assertEqual(checker.findings(source), [])
 
@@ -119,6 +131,39 @@ build_ssl_context(verify_ssl=False)
             path.write_text("def broken(:\n")
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(checker.main(["--repo", str(root)]), 2)
+
+
+class TlsGateTests(unittest.TestCase):
+    def test_gate_rejects_either_linter_failure_from_outside_its_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outside = Path(directory)
+            root = outside / "repo"
+            scripts = root / "scripts"
+            scripts.mkdir(parents=True)
+            binary = outside / "bin"
+            binary.mkdir()
+            for name in ("lint-tls.sh", "check_insecure_tls.py"):
+                shutil.copyfile(Path(__file__).with_name(name), scripts / name)
+            (scripts / "run-python-helper.sh").write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+            (scripts / "run-python-helper.sh").chmod(0o755)
+            (binary / "uv").write_text('#!/bin/sh\nexit "${TLS_TEST_RUFF_STATUS:-0}"\n')
+            (binary / "uv").chmod(0o755)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            path = root / "client.py"
+            path.write_text("import ssl\nctx = ssl.create_default_context()\n")
+            subprocess.run(["git", "-C", str(root), "add", path.name], check=True)
+            env = {**os.environ, "PATH": str(binary) + os.pathsep + os.environ["PATH"], "TLS_TEST_RUFF_STATUS": "0"}
+
+            def run():
+                return subprocess.run(["bash", str(scripts / "lint-tls.sh")], cwd=outside,
+                                      env=env, capture_output=True, text=True)
+
+            self.assertEqual(run().returncode, 0)
+            path.write_text("import ssl\nctx = ssl.create_default_context()\nctx.check_hostname = False\n")
+            self.assertEqual(run().returncode, 1)
+            path.write_text("import ssl\nctx = ssl.create_default_context()\n")
+            env["TLS_TEST_RUFF_STATUS"] = "1"
+            self.assertEqual(run().returncode, 1)
 
 
 if __name__ == "__main__":
