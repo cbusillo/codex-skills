@@ -60,14 +60,29 @@ REVIEW_NOT_DONE = re.compile(
     r"|needed|required|requested)\b"
     r"|\bstill (?:needs?|needed|required)\b"
 )
-# The clause carrying the lead: later clauses describe the work, not the review.
-REVIEW_CLAUSE = re.compile(r"[.!?]\**\s|;|\s+but\s")
+# Keep continuation clauses: a provider name before ';' is not a result.
+# Findings after an affirmative completion describe the code, not review status.
+REVIEW_FINDINGS = re.compile(
+    r"(?i)(?P<completion>\b(?:completed|finished) (?:the )?review(?: of record)?\b)"
+    r".*?\b(?:and found|and identified|and reported|finding[s]?:)\b"
+)
+REVIEW_STATUS = re.compile(
+    r"(?i)^\s*(?:(?:openai|anthropic|google|gemini|claude)\s*[:;,]?\s*)?"
+    r"(?:(?:review|it)\s+)?(?:(?:is|was|remains)\s+)?(?:still\s+)?"
+    r"(?:blocked|pending|waiting|outstanding|incomplete|unavailable|queued|running|in progress)\b"
+)
+REVIEW_STATUS_LEAD = re.compile(
+    r"(?i)^(?:[\w-]+ )?review of record(?: \([^)]*\))?:\s*"
+    r"|^review weighed[:\s]*|^review by another model[:\s]*"
+)
 REVIEW_REQUEST = re.compile(
     r"(?i)^review (?:prompt|request)\b|^review of record (?:still )?(?:needed|requested)\b"
 )
 # A bare "Review request" lead counts only when it names a model review.
 REVIEW_REQUEST_CONTEXT = re.compile(
-    r"(?i)review of record|another model|model-review|provider|openai|anthropic|google|gemini"
+    r"(?i)\breview of record\b|\banother model\b|\bmodel[- ]review\b"
+    r"|\bprovider\s*:\s*`?(?:openai|anthropic|google)\b"
+    r"|\b(?:openai|anthropic|gemini|claude)\b"
 )
 SUPERVISOR_RUNS_REVIEW = re.compile(r"(?i)\bsupervisor runs the review\b")
 
@@ -348,8 +363,13 @@ def review_record(body):
     """Classify a review-of-record comment by the leads already in use."""
     lines = (body or "").strip().splitlines()
     first = REVIEW_LEAD.sub("", lines[0]) if lines else ""
-    clause = REVIEW_CLAUSE.split(first, maxsplit=1)[0]
-    if REVIEW_OUTCOME.search(first) and not REVIEW_NOT_DONE.search(clause):
+    status = REVIEW_STATUS_LEAD.sub("", first)
+    findings = REVIEW_FINDINGS.search(status)
+    if findings:
+        status = status[:findings.end("completion")]
+    if REVIEW_OUTCOME.search(first) and not (
+        REVIEW_STATUS.search(status) or REVIEW_NOT_DONE.search(status)
+    ):
         return "outcome"
     if (REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)) or SUPERVISOR_RUNS_REVIEW.search(body or ""):
         return "request"

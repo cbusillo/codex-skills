@@ -486,10 +486,12 @@ outcome comment (a `Review of record:`, `Review weighed` or `Review by another
 model` lead), or a change to the base branch's
 `qualityGate.modelReview.requiredPaths` with no outcome posted after the head
 commit. A `Review prompt` or `Review request` lead counts only when its first
-line names the review of record, another model or a provider, and an outcome
-lead whose first clause says the review itself is blocked, pending or not done
-is a status update, not an outcome. Only the automation account's and the PR
-author's comments count;
+line identifies a model review (for example, the review of record, another
+model, or an explicit model provider). A product name such as Google login
+is insufficient. An outcome lead reporting a blocked, pending or unfinished
+review is a status update, including a continuation after a semicolon.
+Findings about the code after a completed review do not negate its completion.
+Only the automation account's and the PR author's comments count;
 `supervisor/scripts/auto_enqueue.py` skips the same PRs with reason
 `review_of_record_not_recorded`. It rechecks the head and labels
 before posting through the shared comment writer. This is a handoff to the

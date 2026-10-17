@@ -101,6 +101,7 @@ class ReviewRecordTests(unittest.TestCase):
             "Anthropic review of record: Claude Opus 5.5, completed twice. Fixed: errors cannot hide output.",
             "Review weighed: OpenAI completed the review; no changes needed.",
             "Review weighed: OpenAI completed the review and found the failed-read bug, now fixed.",
+            "Review weighed: OpenAI completed the review and found that the helper did not run required checks.",
         )
         requests = (
             "Review prompt for the review of record (provider: openai; author: anthropic).",
@@ -118,6 +119,11 @@ class ReviewRecordTests(unittest.TestCase):
             "Review of record: OpenAI did not complete the review.",
             "Review of record: OpenAI review is not done.",
             "Review request: please check the Client test notes.",
+            "Review request for the Google login button UI.",
+            "Review request: please check the provider settings UI.",
+            "Review of record: pending.",
+            "Review of record: OpenAI is still running.",
+            "Review of record: OpenAI; could not complete the review.",
         )
         for body in neither:
             with self.subTest(body=body):
@@ -254,6 +260,33 @@ class ReadyTests(unittest.TestCase):
         self.writer.reset_mock()
         self.review_comment("Review of record still needed after the fix push.", 4)
         self.refuse()
+
+    def test_unfinished_status_never_clears_a_requested_or_required_review(self):
+        for status in (
+            "Review of record: pending.",
+            "Review of record: OpenAI is still running.",
+            "Review of record: OpenAI; could not complete the review.",
+        ):
+            for requested in (False, True):
+                with self.subTest(status=status, requested=requested):
+                    self.reader.comments = []
+                    self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+                    self.reader.files = [{"filename": "AGENTS.md"}]
+                    if requested:
+                        self.review_comment("Review prompt for the review of record.", 6)
+                    self.review_comment(status, 7)
+                    self.refuse()
+
+    def test_completed_review_with_code_defect_allows_ready(self):
+        self.review_comment("Review prompt for the review of record.", 6)
+        self.review_comment(
+            "Review weighed: OpenAI completed the review and found that the helper did not run required checks.", 7,
+        )
+        self.post()
+
+    def test_product_review_request_does_not_hold_ready(self):
+        self.review_comment("Review request for the Google login button UI.", 6)
+        self.post()
 
     def test_untrusted_review_request_does_not_hold_ready(self):
         self.review_comment("Supervisor runs the review.", 1, login="drive-by")
