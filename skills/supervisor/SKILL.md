@@ -19,6 +19,9 @@ resources:
   - path: references/claude-account-moves.md
     kind: reference
     description: Read when enrolling or moving a rate-limited Supervisor Claude session.
+  - path: scripts/goal_board.py
+    kind: script
+    description: Rebuild the goal board from every open Track issue on OWNER/direction in one bounded read.
   - path: scripts/status.py
     kind: script
     description: Read context and activity for explicit ledger sessions.
@@ -48,7 +51,7 @@ resources:
     description: Record verified closure, discover remaining claims across Director repositories and release them through the planning helper; includes closed-log backfill.
   - path: references/helpers.md
     kind: reference
-    description: Private ledger schema, helper usage and shutdown stages.
+    description: Local state, session registry schema, goal board, helper usage and shutdown stages.
 commands:
   - name: supervisor-services-render
     source: skill
@@ -65,6 +68,11 @@ commands:
     resource_path: scripts/account_choice.py
     example_argv: ["uv", "run", "scripts/account_choice.py", "--provider", "anthropic"]
     purpose: Show which configured account a launch would use and why.
+  - name: supervisor-goal-board
+    source: skill
+    resource_path: scripts/goal_board.py
+    example_argv: ["uv", "run", "scripts/goal_board.py", "--owner", "OWNER", "--format", "markdown"]
+    purpose: Rebuild the goal board from GitHub on every check, after compaction and at takeover.
   - name: supervisor-status
     source: skill
     resource_path: scripts/status.py
@@ -380,8 +388,9 @@ including non-dim text, establishes neither its author nor approval.
    Supervisor or a direction session, not only one posted from the Director's
    own login. On an escalation, it leaves the `direction` label in place; the
    weekly direction audit judges the decision and removes it.
-3. **A check about every 23 minutes.** Keep a ledger of session, repository,
-   issue, and tab title. Nudge a stalled session with exact facts: the comment,
+3. **A check about every 23 minutes.** Rebuild the goal board first, under
+   [Milestone State](#milestone-state). Keep the session registry under
+   [Local State](#local-state). Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context
    size. Let automatic compaction proceed; a routine idle check alone is not
    a reason to compact. When a session needs manual compaction, use the
@@ -393,8 +402,8 @@ including non-dim text, establishes neither its author nor approval.
    request a durable handoff and relaunch the same brief after verified safe
    closeout. If it cannot hand off, preserve it and bring the failure to the
    Director. Gather the
-   open Director questions. Report milestone state only as rebuilt under
-   [Milestone State](#milestone-state). Close finished sessions using the procedure below
+   open Director questions. Report milestone state only from this check's
+   goal board. Close finished sessions using the procedure below
    on every check, including sessions that finished their item without needing
    a relaunch.
 4. **Every check and every handoff points to the Director's question queue**,
@@ -463,15 +472,53 @@ for products a Client runs business on.
 
 ## Milestone State
 
-Rebuild each milestone's state from records, never from an earlier handoff,
-summary or ledger line: for every open `Track:` issue on OWNER/direction, read
-the Track, its native children and their latest Director decision comments.
-A PR handed off as ready counts as open until it merges; read its head, its
-mergeability and the train's reason for it. When the Track's Current Status
-disagrees, correct it under `github-plan`, naming the gating Director decision
-and its reason in plain words. On October 16 a successor repeated two Clients'
-waits from summaries after a recorded decision and a launch had ended them
-([Q415](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6222082256)).
+The goal board is a view, rebuilt from GitHub on every check, after compaction
+and at takeover. Never keep, edit or carry a board forward. Rebuild it with:
+
+```sh
+uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
+```
+
+It covers every open `Track:` issue on OWNER/direction in one bounded read:
+each Track's status label, its native children, the latest `Director decision`
+comment on each, and the open PRs that close each child, with their handoff
+state under the merge train's ready-handoff rule. It prints a checked-at time
+and the Tracks discovered versus read. Anything it could not read says
+"unknown, not refreshed"; report that, never an earlier status. Quota is no
+reason to skip it: one rebuild costs about 30 GraphQL points
+([Q446](https://github.com/cbusillo/codex-skills/issues/2053#issuecomment-6229016162)).
+[Goal board](references/helpers.md#goal-board) has the output and its limits.
+
+The board points to records; it does not hold them. Before you repeat a
+Director hold or wait, or brief work from a board line, open the linked
+decision or the issue's Current Status and read the exact words. A PR handed
+off as ready counts as open until it merges; read its head, its mergeability
+and the train's reason for it. When a Track's Current Status disagrees with
+its records, correct it under `github-plan`, naming the gating Director
+decision and its reason in plain words. On October 16 a successor repeated two
+Clients' waits from summaries after a recorded decision and a launch had ended
+them ([Q415](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6222082256)),
+and a hand-kept board line called two parked ideas a Director hold
+([#2053](https://github.com/cbusillo/codex-skills/issues/2053)).
+
+## Local State
+
+Keep locally only what GitHub cannot rebuild:
+
+- the session registry (the helpers' `--ledger` file): each session's exact
+  session, terminal and transcript identities, repository, issue and brief;
+- the helpers' own state: watcher watermarks and deadlines, the enqueue hold
+  record, capacity-retry state and the closed-session log;
+- one recovery note, overwritten at each change rather than appended, naming
+  pending local actions (an uncertain send, a marker to reconcile) and where
+  these files are.
+
+Keep no status prose, copied decisions, board lines or rule lists there. A
+decision lives on its issue, status in the issue's Current Status, and a
+lesson in this skill once proven or on a linked issue while pending. The
+narrative log kept during the pilot's first two weeks is archived once, marked
+historical. That archive and its RULE lines are not authority: never read them
+for recovery or repeat them as fact.
 
 ## Procedure
 
@@ -483,11 +530,13 @@ waits from summaries after a recorded decision and a launch had ended them
    Before you repeat what the Director said, read the exact words where the
    Director said them, not a summary. Allocate new question IDs through the
    [shared question counter rules](../references/talking-with-the-director.md#decisions-holds-and-work-state);
-   keep existing IDs from the handoff. Then rebuild every milestone's state
-   under [Milestone State](#milestone-state) before relying on the handoff's.
-4. Rebuild the ledger. For each session the handoff names, read its tab
-   screen or thread once. List running processes before you rely on a
-   background driver or watcher the handoff says is running.
+   keep existing IDs from the handoff. Then rebuild the goal board under
+   [Milestone State](#milestone-state); the handoff's Track list is history.
+4. Rebuild the session registry. For each session the handoff names, read its
+   tab screen or thread once. Read the recovery note and verify each pending
+   action against its source before acting on it. List running processes
+   before you rely on a background driver or watcher the handoff says is
+   running.
 5. Recreate the ~23-minute check and morning digest with the harness's own
    scheduling feature. Arm Claude Code turn-end notices (`notify_when_idle`)
    and the bounded `skills/supervisor/scripts/codex_idle_watch.py` watch for
@@ -499,8 +548,8 @@ waits from summaries after a recorded decision and a launch had ended them
    deadline, using the same private watermark state. Also watch Launchplane
    production release events for each live Client product; a release can
    start without a comment.
-   Read [helper setup](references/helpers.md) before rebuilding the private
-   ledger or running a helper.
+   Read [helper setup](references/helpers.md) before rebuilding the session
+   registry or running a helper.
 6. Read `stale_wait_report` from the existing
    `uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --stale-waits-only` output for
    each Director repository returned in `discovery_context.repositories` by
@@ -528,7 +577,8 @@ waits from summaries after a recorded decision and a launch had ended them
    again and open an issue labeled `direction` under its escalation
    procedure. The Supervisor never acts on such a finding or declines it.
 9. Keep working through compaction, preserving the brief, issue and current
-   step in Keep instructions. Close out only when compaction fails, the work
+   step in Keep instructions, and rebuild the goal board before the next
+   report. Close out only when compaction fails, the work
    is done, or the account needs the session gone; then write the handoff below
    and use `work-closeout`. This is the Director's one-week experiment from
    [codex-skills#885](https://github.com/cbusillo/codex-skills/issues/885), judged
@@ -624,13 +674,15 @@ Post the full handoff as one comment in the Director's private record on
 OWNER/direction, and a pointer with public-safe lessons on the pilot issue
 ([Q403](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6220453592)).
 Follow [Agent Comments](../references/talking-with-the-director.md#agent-comments).
-Link the ledger, item records and earlier decisions for facts already recorded;
-write out only new recovery information needed for takeover:
+Link item records and earlier decisions for facts already recorded; write out
+only new recovery information needed for takeover:
 
-- Every open `Track:` issue on OWNER/direction, rebuilt under
-  [Milestone State](#milestone-state): its state in plain words, the Director
-  decision governing it (linked, with its reason), and every PR handed off as
-  ready but not merged. The handoff is incomplete until each Track appears.
+- The goal board rebuilt at handoff time under
+  [Milestone State](#milestone-state), with its checked-at time and coverage:
+  each Track's state in plain words, the Director decision governing it
+  (linked, with its reason), and every PR handed off as ready but not merged.
+  The handoff is incomplete until every discovered Track is read or named as
+  unknown, not refreshed.
 - The sessions left running: tab title or thread id, repository, issue, brief
   limits, next step, and context size for each.
 - Background drivers and watchers, each with its exact command or helper,
@@ -644,6 +696,9 @@ write out only new recovery information needed for takeover:
 - The Director's question queue under the shared queue rules.
 
 ## Lessons From The Pilot
+
+A lesson lands here or in the references once proven, and lives on a linked
+issue while pending. There is no local rule list.
 
 - System Events `keystroke` and `key code` go to the frontmost application,
   even inside `tell process "Google Chrome"`. A file-picker attempt typed a
