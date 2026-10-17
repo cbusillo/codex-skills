@@ -114,6 +114,24 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "remains"):
                     helper.validate_closure(self.entry, "supervisor")
 
+    def test_claude_compaction_after_the_verdict_still_allows_release(self):
+        transcript = self.root / "claude-source.jsonl"
+        verdict = {"type": "assistant", "timestamp": "2026-01-01T00:01:00Z", "message": {
+            "content": [{"type": "text", "text": "Finished.\nSafe to exit: yes"}], "stop_reason": "end_turn"}}
+        compaction = [
+            {"type": "system", "subtype": "compact_boundary", "timestamp": "2026-01-01T00:01:30Z"},
+            {"type": "user", "isCompactSummary": True, "timestamp": "2026-01-01T00:01:31Z",
+             "message": {"content": "This session is being continued from a previous conversation."}},
+        ]
+        entry = {**self.entry, "harness": "claude", "transcript": str(transcript)}
+        transcript.write_text("".join(json.dumps({**r, "sessionId": SOURCE["session"]}) + "\n" for r in [verdict] + compaction))
+        self.assertTrue(helper.validate_closure(entry, "supervisor")["safe_verdict"])
+        resumed = {"type": "assistant", "timestamp": "2026-01-01T00:01:40Z", "message": {
+            "content": [{"type": "text", "text": "Picking the work back up."}], "stop_reason": "end_turn"}}
+        transcript.write_text("".join(json.dumps({**r, "sessionId": SOURCE["session"]}) + "\n" for r in [verdict] + compaction + [resumed]))
+        with self.assertRaisesRegex(ValueError, "lacks an unqualified"):
+            helper.validate_closure(entry, "supervisor")
+
     def inventory_row(self, **changes):
         return {"repo": "test/a", "issue": 1, "claim_comment_id": 1,
                 "session_id": SOURCE["session"], "ended_at": self.entry["ended_at"],
