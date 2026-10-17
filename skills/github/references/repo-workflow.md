@@ -325,6 +325,26 @@ Default to PR-backed implementation work.
   `--wait-ci` to wait in the foreground for CI before a `ready` handoff, and
   `--watch` while an open PR still needs active follow-through.
 
+### Client-Impact Trailers
+
+Each change still needs its own Client acceptance; release acceptance is a
+separate final check and never replaces it. After a PR asks its Client for
+review, end every later commit message with one trailer, for example
+`git-commit-as-bot -m "..." --trailer "Client-impact: none"`:
+
+- `Client-impact: none` only when the commit cannot change anything the Client
+  saw or accepted, such as tests, CI or comments.
+- `Client-impact: visible` for anything else, or when unsure.
+
+Launchplane carries an acceptance only across `none` commits on a single-parent
+history. A `visible` or missing trailer, or a merge you commit (a
+conflict-resolving merge is always `visible`), waits for a new Client
+decision; the train's own base refresh keeps its existing carry. See
+Launchplane's
+[carried acceptance](https://github.com/cbusillo/launchplane/blob/main/docs/owner-acceptance.md#carried-acceptance).
+Reviewers check each `none` claim against that commit's actual diff, not its
+message.
+
 ### Issue Closing And Post-Merge Proof
 
 Use `Closes #123` by default when the PR's merge completes the issue's

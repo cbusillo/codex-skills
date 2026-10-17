@@ -945,7 +945,9 @@ Use PRs for all non-trivial changes.
   `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`;
   use `--waiting-for-client` until a required Client acceptance covers the
   current head. Read [ready handoffs](references/cli-reference.md#ready-handoffs)
-  for the check and comment contract. Local handoff files are scratch unless
+  for the check and comment contract. After a Client review request, mark every
+  later commit under [Client-impact trailers](references/repo-workflow.md#client-impact-trailers).
+  Local handoff files are scratch unless
   intentionally committed.
 
 ## Merging
