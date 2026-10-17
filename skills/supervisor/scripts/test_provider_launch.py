@@ -19,6 +19,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
+import agent_tools
 import iterm_tab
 import tmux_terminal
 
@@ -31,6 +32,13 @@ HARNESS_CHOICES = (
 
 
 class ProviderLaunchTests(unittest.TestCase):
+    def setUp(self):
+        # Generic launch cases must not discover the host's private opt-in.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(temp.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
     def test_wrong_harness_refuses_with_or_without_a_brief(self):
         for provider, expected, env in HARNESS_CHOICES:
             for _, agent, _ in HARNESS_CHOICES:
@@ -105,6 +113,128 @@ class ProviderLaunchTests(unittest.TestCase):
                         for key, value in env.items():
                             self.assertEqual(received["env"][key], value)
             self.assertFalse((root / "NEVER").exists())
+
+    def test_pinned_chrome_launch_exports_single_route_and_refuses_explicit_override(self):
+        with tempfile.TemporaryDirectory() as folder:
+            opt_in = Path(folder) / "chrome.toml"
+            opt_in.touch()
+            child = Path(folder) / "claude"
+            child.write_text(f'#!{sys.executable}\nimport os,json\nprint(json.dumps(dict(os.environ)))\n')
+            child.chmod(0o700)
+            choice = {"provider": "anthropic", "env": {}}
+            with patch.object(iterm_tab, "CHROME_OPT_IN", opt_in):
+                command = iterm_tab.with_account(str(child), choice)
+                result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True,
+                                        env={**os.environ, agent_tools.CHROME_ENV: "1"})
+                self.assertEqual(json.loads(result.stdout)[agent_tools.CHROME_ENV], "0")
+                for command in ("claude --chrome", f"{agent_tools.CHROME_ENV}=1 claude"):
+                    with self.subTest(command=command), self.assertRaises(ValueError):
+                        iterm_tab.with_account(command, choice)
+
+    def test_browser_preflight_checks_selected_home_and_caches_batch_probe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            opt_in = root / "chrome.toml"
+            opt_in.touch()
+            repo = root / "repository with spaces"
+            home = root / "selected"
+            home.mkdir()
+            server = {"command": "fixture"}
+            (home / ".claude.json").write_text(json.dumps({
+                "mcpServers": {agent_tools.CHROME_SERVER: server},
+                "projects": {str(repo): {"enabledMcpServers": [agent_tools.COMPUTER_USE]}}}))
+            choice = {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(home)}}
+            command = "cd " + shlex.quote(str(repo)) + " && claude"
+            with (patch.object(iterm_tab, "CHROME_OPT_IN", opt_in),
+                  patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
+                  patch.object(agent_tools, "connected_browsers", return_value=[{"id": "fixture"}]) as probe):
+                cache = {}
+                for _ in range(2):
+                    iterm_tab.check_claude_tools(command, choice, probes=cache, require_browser=True)
+                self.assertEqual(probe.call_count, 1)
+                probe.assert_called_with(server)
+                self.assertEqual(choice["tools"], {"warnings": [], "browsers": 1})
+                probe.return_value = []
+                with self.assertRaises(ValueError):
+                    iterm_tab.check_claude_tools(command, choice, require_browser=True)
+                iterm_tab.check_claude_tools(command, choice)
+                self.assertTrue(choice["tools"]["warnings"])
+                probe.reset_mock()
+                iterm_tab.check_claude_tools(command, choice, without_browser=True)
+                probe.assert_not_called()
+
+    def test_required_browser_refuses_before_receipt_or_terminal_on_both_backends(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            launch, brief, opt_in = (root / name for name in ("launch", "brief", "chrome.toml"))
+            launch.write_text("claude")
+            brief.write_text("Read one page in the Agents browser.")
+            opt_in.touch()
+            choice = {"provider": "anthropic", "env": {}}
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=[launch],
+                                      brief_file=[brief], account_provider="anthropic", account_config=None,
+                                      account=None, tmux_socket="fixture", require_browser=True)
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            with (patch.object(iterm_tab, "CHROME_OPT_IN", opt_in),
+                  patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
+                  patch.object(agent_tools, "claude_problems", return_value=[]),
+                  patch.object(agent_tools, "chrome_server", return_value={"command": "fixture"}),
+                  patch.object(agent_tools, "connected_browsers", return_value=[]),
+                  patch.object(account_choice, "select", return_value=choice),
+                  patch.object(account_choice, "prepare_launch") as prepare,
+                  patch.object(account_choice, "record_launch") as receipt,
+                  patch.object(tmux_terminal, "Terminal") as terminal):
+                for backend in ("iterm", "tmux"):
+                    with self.subTest(backend=backend), self.assertRaises(ValueError):
+                        asyncio.run(iterm_tab.operate(app, args) if backend == "iterm"
+                                    else tmux_terminal.operate(args))
+                prepare.assert_not_called()
+                receipt.assert_not_called()
+                terminal.return_value.run.assert_not_called()
+                window.async_create_tab.assert_not_called()
+
+    def test_local_codex_uses_selected_marketplace_and_preserves_account_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / ".codex" / agent_tools.BUNDLED_MARKETPLACE
+            source.mkdir(parents=True)
+            account = root / "account with spaces"
+            account.mkdir()
+            config = account / "config.toml"
+            config.write_text("# preserve fixture config\n")
+            before = config.read_bytes()
+            auth = account / "auth.json"
+            auth.write_text("opaque fixture; never read by launcher")
+            opt_in = root / "chrome.toml"
+            opt_in.touch()
+            plugins = [{"name": n, "marketplaceName": "openai-bundled", "installed": True, "enabled": True}
+                       for n in agent_tools.CODEX_PLUGINS]
+            choice = {"provider": "openai", "env": {"CODEX_HOME": str(account)}}
+            with (patch.object(iterm_tab, "CHROME_OPT_IN", opt_in),
+                  patch.object(Path, "home", return_value=root),
+                  patch.object(agent_tools, "codex_plugins", return_value=plugins) as inventory):
+                command = iterm_tab.prepare_codex_tools("codex -C /fixture/repo", choice, required=True)
+                link = account / agent_tools.BUNDLED_MARKETPLACE
+                self.assertEqual(link.resolve(), source.resolve())
+                self.assertEqual(config.read_bytes(), before)
+                self.assertTrue(auth.is_file())
+                inventory.assert_called_once_with(account, link, Path("/fixture/repo"))
+                words = shlex.split(command)
+                self.assertIn("--no-daemon", words)
+                import tomllib
+                override = tomllib.loads(words[words.index("-c") + 1])
+                self.assertEqual(override["marketplaces"]["openai-bundled"]["source"], str(link))
+                self.assertEqual(choice["env"][agent_tools.CODEX_SOURCE_ENV], str(link))
+                inventory.return_value = []
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_codex_tools("codex -C /fixture/repo", choice, required=True)
+                iterm_tab.prepare_codex_tools("codex -C /fixture/repo", choice)
+                self.assertTrue(choice["tools"]["warnings"])
+                inventory.reset_mock()
+                remote = "codex --remote unix:// -C /fixture/repo"
+                self.assertEqual(iterm_tab.prepare_codex_tools(remote, choice, required=True), remote)
+                inventory.assert_not_called()
 
 
 if __name__ == "__main__":

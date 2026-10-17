@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
+import agent_tools
 import gui_launch
 import iterm_tab
 import tmux_terminal
@@ -42,6 +43,10 @@ class GuiLaunchTests(unittest.TestCase):
         patch.dict(os.environ, {"ZDOTDIR": str(self.root)}).start()
         patch.object(Path, "home", return_value=self.home).start()
         patch.object(gui_launch, "state_path", return_value=self.state).start()
+        patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent-opt-in").start()
+        patch.object(agent_tools, "codex_plugins", return_value=[
+            {"name": name, "marketplaceName": "openai-bundled", "enabled": True, "installed": True}
+            for name in agent_tools.CODEX_PLUGINS]).start()
         self.unlocked = patch.object(gui_launch, "require_unlocked").start()
         self.choice = {"provider": "openai", "env": {"CODEX_HOME": str(self.account)},
                        "account_id": "openai-a", "storage_root": str(self.root)}
@@ -168,8 +173,8 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertEqual(list((self.root / "Launch Receipts").iterdir()), [])
 
     def test_rollback_failure_preserves_original_cause_and_recovery_token(self):
-        original = ValueError("fake marketplace failure")
-        with patch.object(gui_launch, "marketplace", side_effect=original), \
+        original = ValueError("fake command staging failure")
+        with patch.object(gui_launch, "stage_command", side_effect=original), \
                 patch.object(gui_launch, "release", side_effect=OSError("fake rollback failure")):
             with self.assertRaises(ValueError) as raised:
                 iterm_tab.prepare_launches(self.args)
