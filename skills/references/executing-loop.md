@@ -55,7 +55,13 @@ Never substitute a comment for an unmet finish line, or keep completed work
 open for an agent to return.
 
 Use [reviews by another model](model-review.md) to decide when a review is
-needed. For milestone work, honor the same authorization and direction stop
+needed. Before the first PR push, run focused local checks and that required
+review, address findings locally, and batch fixes into one push. Avoid fix-up
+pushes in quick succession. Never merge the base into, rebase, or update your
+own PR branch unless there is a real conflict or a check explicitly requires
+it; the merge train owns freshness on train-routed PRs.
+
+For milestone work, honor the same authorization and direction stop
 boundaries on each issue. If one issue must pause or escalate, continue other
 independent milestone issues. Put close-out follow-ups outside the current
 milestone by default. An executing agent may add one to a milestone listed in
