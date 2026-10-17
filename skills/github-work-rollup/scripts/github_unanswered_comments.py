@@ -34,6 +34,7 @@ import github_work_rollup as rollup
 IDENTITY_SCRIPT_DIR = ROOT / "github" / "scripts"
 if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
+import director_mentions
 import github_identity
 import github_direction_next
 import github_repository_scope as repository_scope
@@ -134,6 +135,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thread", action="append", default=[], help="Full-history OWNER/REPO#NUMBER or GitHub issue/PR URL.")
     parser.add_argument("--outbound", action="store_true", help="Find replies after your last activity in repositories you do not own.")
     parser.add_argument("--self-login", action="append", default=[], help="Human owner login whose reactions and replies count.")
+    parser.add_argument(
+        "--mention-approval",
+        help="Link to the Director's standing approval for --outbound mention searches under their own login.",
+    )
     parser.add_argument("--bot-login", action="append", default=[], help="Automation login whose targeted replies count.")
     parser.add_argument(
         "--people-index",
@@ -197,6 +202,7 @@ def resolve_settings(
         "scan_repository_scope": bool(repositories or repo_owners or not explicit_scope),
         "outbound": outbound,
         "outbound_self_logins": outbound_self_logins,
+        "mention_approval": getattr(args, "mention_approval", None) or config.get("mention_approval"),
         "explicit_scope": explicit_scope,
         "self_logins": self_logins,
         "bot_logins": bot_logins,
@@ -1204,6 +1210,27 @@ def outbound_threads(
     return unique_threads(threads), errors
 
 
+def outbound_mentions(
+    outbound_self: set[str], recorders: set[str], settings: dict[str, Any],
+    excluded_repositories: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Director mentions outside the scan, searched under the Director's own login once approved."""
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    def read_comment(repo: str, comment_id: int) -> Any:
+        return run_json([GH, "api", f"repos/{repo}/issues/comments/{comment_id}"])
+    for login in sorted(outbound_self) or [None]:
+        mentions, gap, error = director_mentions.collect(
+            login, format_api_timestamp(settings["since"]), settings.get("mention_approval"), recorders, read_comment,
+            excluded_repositories=excluded_repositories, excluded_owners=outbound_self,
+        )
+        if gap or error:
+            errors.append({"repo": login or "-", "lane": "director_mentions", "error": f"Mentions outside these repositories are not covered: {gap or error}"})
+        rows.extend(mentions)
+    rows.sort(key=lambda row: row["updated_at"], reverse=True)
+    return rows, errors
+
+
 def outbound_states_for_thread(
     thread: dict[str, Any], comments: list[Comment], self_logins: set[str],
     bot_logins: set[str], settings: dict[str, Any], automation: dict[str, str],
@@ -1304,6 +1331,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     for thread_key in full_history_threads:
         candidate_ids.setdefault(thread_key, set())
     outbound_scope: set[tuple[str, int]] = set()
+    mention_rows: list[dict[str, Any]] = []
     if settings.get("outbound"):
         found, outbound_errors = outbound_threads(outbound_self, settings)
         coverage_errors.extend(outbound_errors)
@@ -1315,6 +1343,11 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         )
         for thread_key in outbound_scope:
             candidate_ids.setdefault(thread_key, set())
+        mention_rows, mention_errors = outbound_mentions(
+            outbound_self, self_logins | bot_logins, settings,
+            repositories if settings["scan_repository_scope"] else [],
+        )
+        coverage_errors.extend(mention_errors)
         repositories = rollup.unique([*repositories, *(repo for repo, _ in found)])
 
     collected_threads: list[tuple[dict[str, Any], list[Comment], set[tuple[str, int]]]] = []
@@ -1364,6 +1397,9 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     )
     coverage_errors.extend(reaction_errors)
     comment_states: list[dict[str, Any]] = []
+    # Full-history threads and outbound threads the Director took part in are
+    # already reported by their own rules; mentions elsewhere are listed below.
+    covered_threads = {(repo.casefold(), number) for repo, number in full_history_threads}
     for thread, comments, effective_ids in collected_threads:
         enriched_comments = [
             replace(comment, updated_at=last_edits_by_global_key[comment.global_key].at)
@@ -1373,6 +1409,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             for comment in comments
         ]
         if comments and comments[0].thread_key in outbound_scope:
+            if any(normalize_login(comment.author) in outbound_self for comment in comments):
+                covered_threads.add((comments[0].repo.casefold(), comments[0].number))
             comment_states.extend(outbound_states_for_thread(
                 thread, enriched_comments, outbound_self, bot_logins, settings, people["automation"], last_edits_by_global_key,
             ))
@@ -1395,6 +1433,9 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             )
         )
 
+    mention_rows = [
+        row for row in mention_rows if (row["repository"].casefold(), row["number"]) not in covered_threads
+    ]
     comment_states.sort(
         key=lambda item: (item.get("created_at") or "", item.get("comment_id") or 0),
         reverse=True,
@@ -1413,7 +1454,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     }
     coverage_errors.sort(key=lambda item: (item.get("repo") or "", item.get("lane") or "", item.get("error") or ""))
     decisions = [row for row in unasked_waits if row["wait_kind"] == "decision"]
-    status = "degraded" if coverage_errors else "attention" if attention or decisions else "clear"
+    status = "degraded" if coverage_errors else "attention" if attention or decisions or mention_rows else "clear"
     return {
         "ok": not coverage_errors,
         "schema_version": 3,
@@ -1444,6 +1485,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             **state_counts,
             "unasked_director_waits": len(decisions),
             "unasked_director_holds": len(unasked_waits) - len(decisions),
+            "director_mentions": len(mention_rows),
             **{
                 f"author_{kind}": sum(1 for item in attention if item["author_class"] == kind)
                 for kind in ("person", "automation", "possible_automation")
@@ -1451,6 +1493,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         },
         "attention": attention,
         "unasked_director_waits": unasked_waits,
+        "director_mentions": mention_rows,
         "people_index": {
             "status": people["status"],
             "director_named": bool(people["director_names"]),
@@ -1466,6 +1509,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "A targeted automation reply may also use an unambiguous single-author mention. Trusted Director question: or Director decision: records prove awareness of linked comments, or, when they say 'above' without a comment link, external comments preceding them since the previous such record in the thread; awareness alone is not a public response.",
             "Closed threads are handled when a comment has a targeted public response or closure followed its latest version by the scan end; this does not imply personal acknowledgement. Open threads retain separate awareness and response rules.",
             "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Only edits with a verified human editor advance that cutoff; automation and maintainer edits do not. Explicit thread and portfolio scopes retain their normal rules when outbound discovery overlaps them. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
+            "With --outbound, threads outside the scanned repositories that mention the Director and were updated in the window are listed as untrusted links. That search runs read-only under the Director gh login and only with the standing approval linked by --mention-approval; without it, the gap is reported as degraded coverage.",
             "External comments outside the configured lookback window are not included.",
         ],
     }
@@ -1536,6 +1580,12 @@ def render_markdown(payload: dict[str, Any]) -> str:
             lines.append("")
             lines.append(f"- [{wait['repo']}#{wait['number']}: {wait['title']}]({wait['url']}) — {reason}")
             lines.append(f"  - Waiting for: {wait['waiting_for']}")
+    mentions = payload.get("director_mentions") or []
+    if mentions:
+        lines.extend(["", "## Outside Repositories — Mentions Of You"])
+        for mention in mentions:
+            lines.append("")
+            lines.append(f"- [{mention['repository']}#{mention['number']}]({mention['url']}) — thread updated at `{mention['updated_at']}`")
     people = payload.get("people_index") or {}
     if people and not people.get("director_named"):
         detail = (
@@ -1544,7 +1594,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
             else "the people index does not name the Director"
         )
         lines.extend(["", f"Waits that name the Director only by name were not matched: {detail}."])
-    if not payload["attention"] and not waits:
+    if not payload["attention"] and not waits and not mentions:
         message = (
             "No surfaced comments require attention, but coverage is incomplete; this is not an all-clear."
             if payload["status"] == "degraded"

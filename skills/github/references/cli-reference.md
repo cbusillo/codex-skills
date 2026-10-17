@@ -2047,6 +2047,10 @@ changing actor when automation auth is missing, rejected, or rate-limited.
 Write-like commands also require the authenticated login to match the configured
 automation account. Set `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for
 an explicitly approved one-off command whose human-owned actor is acceptable.
+The Director-mention search in `scripts/director_mentions.py` is the one
+standing use: it sets the fallback per command with no automation env file,
+sends only GETs to `/user` and `/search/issues`, and runs only after verifying
+the Director's standing approval comment.
 `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` is the stronger helper-owned mode:
 it overrides the fallback setting even when an env file enables fallback, and
 refuses the own-user path in other accounts' repositories even with

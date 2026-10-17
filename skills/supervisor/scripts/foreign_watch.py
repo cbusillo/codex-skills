@@ -20,10 +20,12 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
+import director_mentions
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_review_markers import PRODUCT_REVIEW_MARKER
 
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+MENTIONS = "director-mentions"  # watermark key; not a repository name
 
 
 def timestamp(value: str) -> datetime:
@@ -96,6 +98,22 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
     return notices, errors, next_watermarks
 
 
+def scan_mentions(args, repos, watermarks, own_logins, started, reader):
+    """Director mentions outside the watched repositories; a gap is reported, never skipped."""
+    since = watermarks[MENTIONS]
+    mentions, gap, error = director_mentions.collect(
+        getattr(args, "director_login", None), since, getattr(args, "mention_approval", None),
+        set(own_logins),
+        lambda repo, comment_id: reader.get_json(f"repos/{repo}/issues/comments/{comment_id}",
+                                                 step="foreign_mention_approval"),
+        excluded_repositories=repos)
+    if gap:  # Keep the watermark so a later approval catches up from here.
+        return [], [{"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"}], [], watermarks
+    if error:
+        return [], [], [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}], watermarks
+    return mentions, [], [], {**watermarks, MENTIONS: started}
+
+
 def load_state(path: Path, repos, initial: str, *, rewind=False) -> dict[str, str]:
     data = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(data, dict):
@@ -144,6 +162,10 @@ def main() -> int:
     parser.add_argument("--repo", action="append", required=True)
     parser.add_argument("--own-login", action="append", required=True)
     parser.add_argument("--launchplane-login", action="append", default=[])
+    parser.add_argument("--director-login",
+                        help="the Director's own login for mention searches outside the watched repositories")
+    parser.add_argument("--mention-approval",
+                        help="link to the Director's standing approval for those searches under their login")
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--since")
     parser.add_argument("--interval", type=float, default=300)
@@ -170,7 +192,7 @@ def main() -> int:
 
 
 def watch(args, repos, initial, deadline):
-    watermarks = load_state(args.state, repos, initial, rewind=args.since is not None)
+    watermarks = load_state(args.state, [*repos, MENTIONS], initial, rewind=args.since is not None)
     while time.monotonic() < deadline:
         started = utc_now()
         reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True,
@@ -178,7 +200,11 @@ def watch(args, repos, initial, deadline):
                               deadline_at=time.time() + max(0, deadline - time.monotonic()))
         notices, errors, watermarks = scan(repos, watermarks, args.own_login,
                                           args.launchplane_login, started, reader)
-        print(json.dumps({"notices": notices, "errors": errors, "untrusted": True}), flush=True)
+        mentions, gaps, mention_errors, watermarks = scan_mentions(
+            args, repos, watermarks, args.own_login, started, reader)
+        notices, errors = notices + mentions, errors + mention_errors
+        print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps,
+                          "untrusted": True}), flush=True)
         save_state(args.state, watermarks)
         persistent = getattr(args, "persistent", False)
         if args.once or (not persistent and (notices or errors)) or any(

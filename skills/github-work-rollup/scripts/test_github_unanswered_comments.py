@@ -97,6 +97,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "limit_repos": 1000,
         "format": "markdown",
         "output": None,
+        "mention_approval": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -1292,6 +1293,28 @@ def api_comment(comment_id, author, created_at, body="Reply", **extra):
             "html_url": f"https://github.com/outside/project/issues/33#issuecomment-{comment_id}", **extra}
 
 
+MENTION_APPROVAL = "https://github.com/cbusillo/codex-skills/issues/2073#issuecomment-99"
+
+
+def search_item(repo, number):
+    return {"repository_url": f"https://api.github.com/repos/{repo}", "number": number,
+            "html_url": f"https://github.com/{repo}/issues/{number}", "updated_at": "2026-07-24T00:00:00Z",
+            "user": {"login": "maintainer"}}
+
+
+@pytest.fixture(autouse=True)
+def director_search(monkeypatch):
+    """Answer Director-login reads offline; tests set the mentions it finds."""
+    state = {"items": [], "calls": []}
+    def get(endpoint):
+        state["calls"].append(endpoint)
+        if endpoint == "user":
+            return {"login": "cbusillo"}
+        return {"items": state["items"], "total_count": len(state["items"]), "incomplete_results": False}
+    monkeypatch.setattr(github_unanswered_comments.director_mentions, "director_get", get)
+    return state
+
+
 @pytest.fixture
 def outbound_fixture():
     # Outside authored issue (hass-uplift-desk#33) and commented PR (MyQ#1).
@@ -1319,6 +1342,8 @@ def outbound_fixture():
         "repos/outside/project/pulls/1/reviews": [api_comment(8, "reviewer", "2026-07-24T01:00:00Z", submitted_at="2026-07-24T01:00:00Z")],
         "repos/outside/project/issues/2": mentioned,
         "repos/outside/project/issues/2/comments": [api_comment(9, "maintainer", "2026-07-24T00:00:00Z", "@cbusillo can you help?")],
+        "repos/cbusillo/codex-skills/issues/comments/99": {
+            "user": {"login": "cbusillo"}, "body": f"{github_unanswered_comments.director_mentions.APPROVAL_QUESTION} yes"},
     }
     for number in (1, 2, 33):
         for item in routes[f"repos/outside/project/issues/{number}/comments"]:
@@ -1327,10 +1352,40 @@ def outbound_fixture():
     return routes
 
 
-def outbound_settings():
+def outbound_settings(**overrides):
     return github_unanswered_comments.resolve_settings(
-        args(outbound=True, self_login=["cbusillo"], bot_login=["fixture-automation"], until="2026-07-26T20:00:00Z"), {},
+        args(**{"outbound": True, "self_login": ["cbusillo"], "bot_login": ["fixture-automation"],
+                "until": "2026-07-26T20:00:00Z", "mention_approval": MENTION_APPROVAL, **overrides}), {},
     )
+
+
+def test_outbound_lists_mentions_outside_scope_including_private_and_mention_only_threads(
+    monkeypatch, outbound_fixture, director_search,
+):
+    # outside/project#2 only mentions the Director; client/private#4 is visible only to their login.
+    director_search["items"] = [search_item("outside/project", 2), search_item("outside/project", 1),
+                                search_item("client/private", 4)]
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
+    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    assert payload["status"] == "attention"
+    assert [(row["repository"], row["number"]) for row in payload["director_mentions"]] == [
+        ("outside/project", 2), ("client/private", 4)]
+    assert all(row["untrusted"] for row in payload["director_mentions"])
+    rendered = github_unanswered_comments.render_markdown(payload)
+    assert "https://github.com/client/private/issues/4" in rendered
+    from urllib.parse import parse_qs, urlparse
+    assert "-user:cbusillo" in parse_qs(urlparse(director_search["calls"][1]).query)["q"][0]
+
+
+def test_outbound_without_mention_approval_reports_the_gap(monkeypatch, outbound_fixture, director_search):
+    director_search["items"] = [search_item("client/private", 4)]
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
+    payload = github_unanswered_comments.collect_payload(outbound_settings(mention_approval=None))
+    assert payload["status"] == "degraded"
+    assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_mentions"]
+    assert payload["director_mentions"] == []
+    assert director_search["calls"] == []
+    assert "Coverage Gaps" in github_unanswered_comments.render_markdown(payload)
 
 
 def test_outbound_lists_authored_and_commented_threads_after_last_human_activity(monkeypatch, outbound_fixture):
