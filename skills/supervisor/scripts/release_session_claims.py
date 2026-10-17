@@ -461,7 +461,7 @@ def discover_handoff(reader, entry, actor):
         if not command and isinstance(code, str):
             # Decode each invocation separately so its workdir is not lost when
             # one orchestration call contains several exec_command invocations.
-            objects = re.findall(r'\btools\.exec_command\(\s*\{((?:"(?:\\.|[^"\\])*"|[^{}])*)\}', code)
+            objects = re.findall(r'\btools\.exec_command\(\s*\{((?:"(?:\\.|[^"\\])*"|[^{}"])*)\}', code)
             for obj in objects:
                 try:
                     values = {key: json.loads(value) for key, value in re.findall(

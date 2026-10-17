@@ -14,6 +14,8 @@ import importlib
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 from unittest.mock import Mock, patch
 
@@ -596,6 +598,28 @@ class ReleaseTests(unittest.TestCase):
         self.reader.paged_json.return_value = []
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+
+    def test_truncated_orchestration_with_many_quotes_does_not_hang(self):
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(1, {"payload": {"type": "custom_tool_call", "call_id": "truncated",
+            "input": 'await tools.exec_command({cmd: ' + '""' * 80}})
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        # Keep a regressed parser from hanging the test runner indefinitely.
+        script = """
+import json, sys
+from unittest.mock import Mock
+import release_session_claims as helper
+try:
+    helper.discover_handoff(Mock(), json.loads(sys.argv[1]), sys.argv[2])
+except ValueError as error:
+    assert 'no authored handoff' in str(error), error
+else:
+    raise AssertionError('truncated command cannot establish authorship')
+"""
+        result = subprocess.run([sys.executable, "-c", script,
+                                 json.dumps({**self.entry, "handoff_url": None}), ACTOR],
+                                cwd=Path(helper.__file__).parent, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_interrupted_handoff_uses_exact_inventory_ownership_context(self):
         entry = {**self.entry, "handoff_url": None, "_inventory_claims": [self.inventory_row()]}
