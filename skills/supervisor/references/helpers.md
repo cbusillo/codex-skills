@@ -1,7 +1,7 @@
 # Supervisor helpers
 
-Read this before rebuilding a ledger, watcher or digest, or sending terminal
-input. Run every Python helper with `uv run` from any directory using its catalog
+Read this before rebuilding the session registry, goal board, watcher or
+digest, or sending terminal input. Run every Python helper with `uv run` from any directory using its catalog
 path. The status, question and candidate helpers are read-only by default;
 the question helper's explicit `--register` and `--ack` write delivery records.
 iTerm controls
@@ -41,9 +41,21 @@ After verified non-submission, `clear --verified-target` sends Ctrl-U; read
 back empty input before another send. An unknown submission needs readback,
 not a retry.
 
-## Private ledger
+## Local state and the session registry
 
-Create a private JSON array from the handoff's actual session identities. Paths
+The skill's [Local State](../SKILL.md#local-state) lists what stays local.
+Everything else is read from GitHub when needed. The session registry is the
+private JSON file every helper takes as `--ledger`; it identifies sessions and
+holds no status.
+
+To retire a narrative Markdown log, do it once: move it beside the other
+private files under a name that says it is historical (for example
+`archive-ledger-through-2026-10-16.md`), add a first line saying it is
+historical and not authority, and stop writing to it. Start one recovery note
+in its place and overwrite it whenever a pending local action starts or ends.
+Neither file is a recovery source for status, decisions or lessons.
+
+Create the session registry as a private JSON array from the handoff's actual session identities. Paths
 are relative to that ledger file; never commit transcripts, account names,
 briefs or operational coordinates. No helper searches accounts or copies auth.
 Use `iterm_tab.py list` to record the exact window, session and TTY; titles are
@@ -108,6 +120,7 @@ stdout contains a farewell. Other user turns or resumed work invalidate it.
 ## Checks and morning digest
 
 ```sh
+uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
 uv run skills/supervisor/scripts/fleet_counts.py --owner OWNER
 uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json>
 uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --deadline-seconds 1800
@@ -129,6 +142,36 @@ session id and reason for each non-Codex entry, once per unchanged entry in
 that watch run. Codex entries still require valid, unique native ids and
 transcript paths; malformed ledger structure still refuses. Shared completion
 and closure readers retain their strict ledger validation.
+
+### Goal board
+
+`goal_board.py` lists the open issues on OWNER/direction (100 per page) and
+keeps those titled `Track:`, whatever their milestone. It then reads up to
+ten Tracks per aliased GraphQL query: each Track's labels and last 100
+comments, its first 50 native children with their labels, sub-issue counts
+and last 100 comments, and up to five PRs closing each child with their last
+30 comments. Seven Tracks took two requests, 28 points and about five seconds
+on October 16, 2026.
+
+The latest `Director decision` comment counts only from the `--owner` login, the
+configured automation login, or `--decision-author` logins. PR handoff state
+uses the merge train's shared parser: `ready` for the current head, `ready for
+an older head`, `engineering ready, waiting`, or `no handoff`. Merged and
+closed PRs are dropped. A PR that only mentions a child, rather than closing
+it, is not on the board; the [auto-enqueue watcher](#interim-auto-enqueue-watcher)
+still routes it.
+
+`--format json` (default) prints rows and transport diagnostics,
+`--format markdown` the board with titles, and `--format links` the board
+without titles, for public places where Client details must not appear.
+`coverage` gives `discovered`, `read` and `complete`. A failed or partial
+discovery read prints no Tracks and says every Track is unknown. Within a
+read Track, each row's `unread` lists what the read could not settle, and the
+board prints it as `unknown, not refreshed`: more than 50 children or five
+closing PRs, a status label beyond the labels read, or a thread longer than
+the comments read with no decision or handoff among them. The newest decision
+or handoff inside the window is the latest, so a long thread with one stays
+complete. Any unread Track or part makes `complete` false and exits 1.
 
 ### Codex provider capacity stops
 
