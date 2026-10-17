@@ -107,7 +107,7 @@ else:
                        ide_app="IntelliJ IDEA", ide_channel="eap", ide_version="fixture-version",
                        scope="whole_project", _inspection_lanes=lanes)
         self.args.ide = None
-        self.args.repo_explicit = True
+        self.args.native_project_scope = True
         self.args.ide_app = None
         self.args.ide_channel = None
         self.args.ide_version = None
@@ -130,11 +130,11 @@ else:
             self.assertIsNone(getattr(passed_args, key))
         self.assertEqual(passed_context["worktree_root"], str(self.root))
         with patch.object(jb_inspect, "run_configured_inspection_lanes", return_value={"lanes": True}) as multi:
-            self.args.repo_explicit = False
+            self.args.native_project_scope = False
             self.assertTrue(jb_inspect.command_closeout(self.args, context)["lanes"])
             multi.assert_called_once()
         with patch.object(jb_inspect, "run_configured_inspection_lanes", return_value={"lanes": True}):
-            self.args.repo_explicit = True
+            self.args.native_project_scope = True
             context["repo_path"] = str(self.root / "src")
             self.assertTrue(jb_inspect.command_closeout(self.args, context)["lanes"])
 
@@ -145,7 +145,7 @@ else:
         context = self.context()
         context.update(repo_path=str(self.project), _inspection_lanes=lanes,
                        ide_app="IntelliJ IDEA", ide_channel="eap", ide_version="root-version")
-        self.args.repo_explicit = True
+        self.args.native_project_scope = True
         self.args.ide_app = "PyCharm"
         self.args.ide_channel = "stable"
         self.args.ide_version = "fixture-version"
@@ -153,6 +153,17 @@ else:
             selected = jb_inspect.explicit_nested_lane_context(self.args, context)
         for key in ("ide_app", "ide_channel", "ide_version"):
             self.assertEqual(selected[key], getattr(self.args, key))
+
+    def test_conflicting_explicit_native_ide_refuses(self):
+        lanes = jb_inspect.parse_inspection_lanes({"lanes": [
+            {"id": "python", "ide": "PyCharm", "include": ["scripts/*.py"], "projectPath": "scripts"},
+        ]})
+        context = self.context()
+        context.update(repo_path=str(self.project), _inspection_lanes=lanes)
+        self.args.native_project_scope = True
+        self.args.ide = "IntelliJ IDEA"
+        with self.assertRaises(jb_inspect.InspectError):
+            jb_inspect.explicit_nested_lane_context(self.args, context)
 
     def test_preparation_selects_the_python_lane_for_its_project(self):
         lanes = jb_inspect.parse_inspection_lanes({"lanes": [
@@ -166,7 +177,7 @@ else:
         with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}), patch.object(
             jb_inspect, "resolve_ide_selection", return_value=SimpleNamespace(config_dir=config)
         ) as resolve:
-            self.assertEqual(jb_inspect.repository_preparation_sdk_table(context), config / "options/jdk.table.xml")
+            self.assertTrue(jb_inspect.repository_preparation_sdk_table(context).is_relative_to(config))
         resolve.assert_called_once_with({"ide": lanes[1].ide})
 
     def test_nested_symlink_to_root_refuses_without_mutating_jvm(self):

@@ -863,15 +863,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-class ExplicitRepoPath(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None):
-        setattr(namespace, self.dest, values)
-        namespace.repo_explicit = True
-
-
 def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="Emit machine-readable JSON only.")
-    command.add_argument("--repo", default=".", action=ExplicitRepoPath, help="Repo/worktree path to inspect. Defaults to cwd.")
+    command.add_argument("--repo", default=".", help="Repo/worktree path to inspect. Defaults to cwd.")
     command.add_argument("--port", type=int, help="Use a specific IDE built-in server port.")
     command.add_argument("--ide", help="Preferred IDE selector, e.g. PyCharm, IntelliJ, WebStorm.")
     command.add_argument("--ide-app", help="Exact macOS application bundle name to launch, e.g. WebStorm 2026.2 EAP. Defaults to --ide.")
@@ -887,6 +881,7 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--no-ide-launch", action="store_true", help="Require a running IDE; never fall back to launching an application when opening a project.")
     command.add_argument("--no-worktree-check", action="store_true", help="Allow routes outside the current worktree.")
     if include_scope:
+        command.add_argument("--native-project-scope", action="store_true", help="Assess the selected nested lane project with its native scope instead of dispatching the worktree lanes.")
         command.add_argument("--scope", help="Inspection scope. Defaults from repo config or changed_files.")
         command.add_argument("--dir", dest="directory", help="Directory for directory scope.")
         command.add_argument("--file", dest="files", action="append", default=[], help="File for files scope; repeatable.")
@@ -2522,7 +2517,7 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
 def explicit_nested_lane_context(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any] | None:
     lanes = configured_inspection_lanes(context)
     root_value, repo_value = context.get("worktree_root"), context.get("repo_path")
-    if not getattr(args, "repo_explicit", False) or not lanes or not root_value or not repo_value:
+    if not getattr(args, "native_project_scope", False) or not lanes or not root_value or not repo_value:
         return None
     root, project = Path(root_value).resolve(), Path(repo_value).resolve()
     if project == root:
@@ -2536,6 +2531,11 @@ def explicit_nested_lane_context(args: argparse.Namespace, context: dict[str, An
     if len(matching) != 1:
         raise inspection_lane_config_error("The explicit nested project must match exactly one declared lane projectPath.")
     lane = matching[0]
+    lane_product = product_for_selector(lane.ide)
+    for selector in (getattr(args, "ide", None), getattr(args, "ide_app", None)):
+        requested_product = product_for_selector(selector)
+        if lane_product and requested_product and requested_product.key != lane_product.key:
+            raise inspection_lane_config_error("The explicit IDE selector conflicts with the selected nested lane IDE.")
     result = {key: value for key, value in context.items()
               if key not in {"inspection_lanes", "_inspection_lanes", "ide_selection", "ide_config_dir", "ide_app_path"}}
     result.update(ide=lane.ide, ide_app=getattr(args, "ide_app", None),
