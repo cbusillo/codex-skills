@@ -897,6 +897,53 @@ def infer_is_write(
     return method.upper() in ("POST", "PUT", "PATCH", "DELETE")
 
 
+_GH_API_VALUE_SHORTHANDS = {
+    "X": "--method", "f": "--raw-field", "F": "--field", "H": "--header",
+    "p": "--preview", "q": "--jq", "t": "--template",
+}
+_GH_API_VALUE_FLAGS = frozenset(_GH_API_VALUE_SHORTHANDS.values()) | {"--input", "--hostname", "--cache"}
+
+
+def normalize_gh_api_args(args: list[str]) -> Optional[list[str]]:
+    """Spell out `gh api` short flags as gh's flag parser reads them.
+
+    A short flag group such as -iXPOST is -i -X POST, and -fname=x is
+    -f name=x. Returns None for a letter gh does not define, which gh rejects.
+    """
+    normalized: list[str] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        index += 1
+        if token in _GH_API_VALUE_FLAGS:
+            normalized.append(token)
+            if index < len(args):
+                normalized.append(args[index])
+                index += 1
+            continue
+        if not token.startswith("-") or token.startswith("--") or token == "-":
+            normalized.append(token)
+            continue
+        group = token[1:]
+        while group:
+            letter, group = group[0], group[1:]
+            if letter == "i":
+                normalized.append("--include")
+                continue
+            flag = _GH_API_VALUE_SHORTHANDS.get(letter)
+            if flag is None:
+                return None
+            if group:
+                normalized += [flag, group.removeprefix("=")]
+            elif index < len(args):
+                normalized += [flag, args[index]]
+                index += 1
+            else:
+                normalized.append(flag)
+            break
+    return normalized
+
+
 def infer_gh_command_context(args: list[str], *, input_text: Optional[str] = None) -> CommandContext:
     """Infer transport and mutation posture for a delegated gh command."""
     tokens = list(args)
@@ -917,6 +964,10 @@ def infer_gh_command_context(args: list[str], *, input_text: Optional[str] = Non
     command = tokens[0]
     subcommand = tokens[1] if len(tokens) > 1 else ""
     if command == "api":
+        api_args = normalize_gh_api_args(tokens[1:])
+        if api_args is None:
+            return CommandContext(True, "rest_api", "rest_core")
+        tokens = [command, *api_args]
         method = "GET"
         endpoint = ""
         graphql_document: Any = None

@@ -577,6 +577,8 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
             ("api", "/user/repos?per_page=1", "--jq", ".[].name"),
             ("api", "notifications"),
             ("api", "--method", "GET", "notifications/threads/1"),
+            ("api", "-iX", "GET", "notifications"),
+            ("api", "https://api.github.com/user/repos"),
         ):
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)
@@ -597,6 +599,24 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)
             assert "acting as your own GitHub user" not in result.stderr, args
+
+        # A write never takes the read route, however gh's short flags are
+        # grouped (-fname=x is -f name=x; -iXPOST is -i -X POST).
+        for args in (
+            ("api", "user/repos", "-fname=example"),
+            ("api", "user/repos", "-Fname=example"),
+            ("api", "-iXPOST", "user/repos"),
+            ("api", "user/repos", "-iFname=example"),
+        ):
+            result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
+            assert result.returncode == 0, (args, result.stderr)
+            assert result.stdout == "ran-with-token:installation-token\n", args
+            assert "acting as your own GitHub user" not in result.stderr, args
+
+        # Only the github.com API host names a user-scoped path.
+        other_host = run_wrapper(env_file, classifier, identity, "api", "https://api.example.com/user/repos",
+                                 gh_command=fake_gh, extra_env=opt_in)
+        assert "acting as your own GitHub user" not in other_host.stderr
 
         # The declared-login check applies, and required automation auth wins.
         configured = env_file.read_text()

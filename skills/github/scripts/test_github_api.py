@@ -1340,6 +1340,27 @@ def test_legacy_deadline_and_cancellation_are_distinct() -> None:
     assert cancelled.retryable is False
 
 
+def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
+    # gh's flag parser reads -fname=x as -f name=x and -iXPOST as -i -X POST.
+    for args in (
+        ["api", "user/repos", "-fname=example"],
+        ["api", "user/repos", "-Fname=example"],
+        ["api", "-iXPOST", "user/repos"],
+        ["api", "user/repos", "-iFname=example"],
+        ["api", "-iX", "POST", "user/repos"],
+        ["api", "user/repos", "-Z"],
+    ):
+        assert _api.infer_gh_command_context(args).is_write is True, args
+    for args in (
+        ["api", "-iX", "GET", "user/repos"],
+        ["api", "-iq", ".[].name", "user/repos"],
+        ["api", "user/repos", "-H", "Accept: application/json"],
+    ):
+        assert _api.infer_gh_command_context(args).is_write is False, args
+    mutation = _api.infer_gh_command_context(["api", "graphql", "-fquery=mutation { x }"])
+    assert mutation.is_write is True
+
+
 def test_legacy_gh_usage_error_is_a_local_argument_failure() -> None:
     # gh 2.102's stderr for `gh repo fork OWNER/REPO --remote=false`, shortened.
     usage = (
@@ -3128,6 +3149,7 @@ def main() -> None:
         test_legacy_graphql_rate_limit_uses_probe_reset,
         test_legacy_provider_bucket_replaces_requested_bucket,
         test_legacy_deadline_and_cancellation_are_distinct,
+        test_gh_api_short_flag_groups_are_classified_as_gh_reads_them,
         test_legacy_gh_usage_error_is_a_local_argument_failure,
         test_legacy_html_parse_error_is_summarized_as_provider_failure,
         test_infer_gh_command_context_distinguishes_project_reads_and_writes,
