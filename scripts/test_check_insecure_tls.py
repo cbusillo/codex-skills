@@ -114,6 +114,7 @@ build_ssl_context(verify_ssl=False)
 assert ssl._create_default_https_context is not ssl._create_unverified_context
 if ssl._create_default_https_context is ssl._create_unverified_context:
     raise RuntimeError("unverified TLS factory")
+ssl._create_unverified_context = ssl.create_default_context
 '''
         self.assertEqual(checker.findings(source), [])
 
