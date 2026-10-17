@@ -224,11 +224,12 @@ to declare readiness or close out.
 
 If a broad gate is too slow, unavailable, blocked by IDE indexing/tooling,
 likely destructive, or disproportionate for a docs-only change, report it as not
-run with the reason. Slowness is never a reason to skip IDE inspection; when it
-is slow or returns `UNKNOWN`, fix the plugin or the skill rather than dropping
-the gate. Ask before running gates that mutate shared environments or external
-resources. If linting a file for the first time, dry-run first when the
-environment supports it.
+run with the reason. Slowness alone does not justify dropping IDE inspection:
+record a slow or `UNKNOWN` run like any other tool failure and keep working.
+Fix the plugin or skill at its cause once it has stopped work twice, or at once
+when the next milestone depends on it. Ask before running gates that mutate
+shared environments or external resources. If linting a file for the first time,
+dry-run first when the environment supports it.
 
 For code-change readiness, inspection evidence is one of: a clean
 `jetbrains-inspection closeout` result with scope and route, actionable findings
