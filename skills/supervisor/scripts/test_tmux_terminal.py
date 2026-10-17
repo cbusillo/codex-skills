@@ -568,6 +568,10 @@ for line in sys.stdin:
         self.choice = {"provider": "anthropic", "account_id": "anthropic-ab12",
                        "env": {"CLAUDE_CONFIG_DIR": str(self.root / "account")},
                        "storage_root": self.root}
+        # Folders outside ~/Developer launch only when the selected home already trusts them.
+        (self.root / "account").mkdir()
+        (self.root / "account/.claude.json").write_text(json.dumps(
+            {"projects": {str(self.root.resolve()): {"hasTrustDialogAccepted": True}}}))
         self.ledger = self.root / "ledger.json"
 
     def diagnostics(self):
