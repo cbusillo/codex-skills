@@ -734,6 +734,13 @@ uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
   --branch work/<task-slug> --next-action "<action>"
 ```
 
+`--session` is the running session's native ID: `$CLAUDE_CODE_SESSION_ID` on
+Claude Code, `$CODEX_THREAD_ID` (or the root `$CODEX_SESSION_ID`) on Codex.
+Once the running family is identified, a claim under any other value refuses
+with `session_not_native` and names the native ID, because `release-claim` can
+only release a session that exists. A harness that exposes no native ID claims
+as before.
+
 For PR-only work, including Dependabot fixes and bare PRs, pass the PR number,
 `OWNER/REPO#N`, or its exact `https://github.com/OWNER/REPO/pull/N` URL to the same
 command. A PR claim uses the same structured comment, ownership/readback,
