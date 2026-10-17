@@ -123,7 +123,7 @@ unknown), next actor and review requirement:
   ref, or every PR for it is merged or closed and contains its local head. The
   local check needs no GitHub read; other branches use one PR read each from the
   sweep's budget, and a full page of PRs for one branch is a coverage gap. Only
-  worktrees of the sweep's selected repositories or owner are scanned. A worktree with no commits of its own is aged from its
+  worktrees of the sweep's selected repositories or account are scanned. A worktree with no commits of its own is aged from its
   creation, so a session that has only just started stays under the age
   threshold. The root comes from `--worktree-root`, or else from the host's
   configured `hostHelper` root; without one the check is skipped. Each worktree
