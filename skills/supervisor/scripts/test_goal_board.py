@@ -211,10 +211,14 @@ class GoalBoardTests(unittest.TestCase):
         older_body = child(10, comments=window)
         older_body["comments"]["totalCount"] = 145
         older_body["lastEditedAt"] = "2026-10-10T00:00:00Z"
+        # GitHub stamps whole seconds, so an unread status comment may share the body's edit time.
+        tied_body = child(12, comments=window)
+        tied_body["comments"]["totalCount"] = 145
+        tied_body["lastEditedAt"] = window[0]["createdAt"]
         no_body = child(11, comments=window, body="No status here.")
         no_body["comments"]["totalCount"] = 145
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
-                            details(t1=track(1, children=[older_body, no_body])))
+                            details(t1=track(1, children=[older_body, no_body, tied_body])))
         self.assertFalse(board["coverage"]["complete"])
         self.assertEqual({row["next_action"] for row in board["tracks"][0]["children"]}, {goal_board.UNKNOWN})
         self.assertIn(f"next action: {goal_board.UNKNOWN}", goal_board.markdown({**board, "checked_at": "now"}, links_only=True))

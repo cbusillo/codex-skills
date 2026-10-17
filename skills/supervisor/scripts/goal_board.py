@@ -109,8 +109,8 @@ def latest_decision(comments, trusted, unread):
 def next_action(node, trusted, unread):
     """The live Next action from the issue's Current Status, on one line.
 
-    A status comment newer than the body wins, so a long thread without one
-    in the window settles only when the body is newer than that window.
+    A status comment as new as the body wins, so a long thread without one
+    in the window settles only when the body is strictly newer than that window.
     """
     comments = node["comments"]
     body_at = node.get("lastEditedAt") or node["createdAt"]
@@ -123,7 +123,7 @@ def next_action(node, trusted, unread):
     in_body = "Current Status" in github_direction_next.section_map(discussion["body"])
     if truncated(comments) and not in_window and (
             not in_body or not comments["nodes"]
-            or timestamp(body_at) < min(timestamp(comment["createdAt"]) for comment in comments["nodes"])):
+            or timestamp(body_at) <= min(timestamp(comment["createdAt"]) for comment in comments["nodes"])):
         unread.append("next action")
         return UNKNOWN
     if not in_window and not in_body:
