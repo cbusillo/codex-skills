@@ -96,11 +96,13 @@ NEXT_ACTION = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]*)?\**Next action\**:\**[ \t]
 # The role is capitalized; a lowercase "supervisor" is a path, skill or description.
 ROLE = r"(?<![\w/.-])Supervisor(?![\w/-])"
 # The Supervisor routes the work when the action opens with it, it is the
-# subject of a verb, or the action waits on or hands off to it.
+# subject of a verb, or the action waits on or hands off to it. After another
+# verb ("fixes the Supervisor scripts") it is an object, not the subject.
 SUPERVISOR_ACTS = re.compile(
     rf"^(?:[Tt]he\s+)?{ROLE}"
-    rf"|{ROLE}\s+(?:\([^)]*\)\s+)?(?:(?:then|first|also|now|still)\s+)?(?:[a-z][\w-]*s|(?:must|will|should|can|may)\s+[a-z]\w*)\b"
-    rf"|\b(?:[Ww]ait(?:s|ing)?\s+(?:on|for)|[Hh]and(?:s|ed)?\s+(?:it\s+)?(?:off\s+|back\s+)?to)\s+(?:the\s+)?{ROLE}")
+    rf"|(?<!s )(?<!s the ){ROLE}\s+(?:\([^)]*\)\s+)?(?:(?:then|first|also|now|still)\s+)?"
+    rf"(?:[a-z][\w-]*s|(?:must|will|should|can|may)\s+[a-z]\w*)\b"
+    rf"|\b(?:[Ww]ait(?:s|ing)?\s+(?:on|for)|[Hh]and(?:s|ed)?(?:\s+it)?(?:\s*offs?|\s+back)?\s+to)\s+(?:the\s+)?{ROLE}")
 
 
 def supervisor_next_action(body: str | None) -> str | None:

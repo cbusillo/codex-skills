@@ -425,11 +425,13 @@ class OverdueTriggerTests(unittest.TestCase):
             "The Supervisor (who holds the enqueue log) posts the receipt here.",
             "At the recorded event the Supervisor posts both counts.",
             "CP806-C1 follows CI, waits for the Supervisor's OpenAI review on #875, then runs ready.",
+            "After CI, handoff to the Supervisor for landing.",
         ]
         quiet = [
             "Next agent fixes skills/supervisor/scripts/digest_summary.py.",
             "Agent selects the next fixture cluster; the five duplicated supervisor terminal graphs are resolved.",
             "An agent replaces Supervisor accepted-first hand ordering with automatic batching.",
+            "Next agent fixes the Supervisor scripts and runs their tests.",
             "The merge train lands PR #3854; nothing further for the Supervisor to route.",
         ]
         for text in routed:
