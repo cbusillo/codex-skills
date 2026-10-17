@@ -645,6 +645,13 @@ def validate_ready_pr(pr: dict[str, Any], *, repo: str, number: int) -> None:
         raise PrHelperError("Ready handoff requires an open, non-draft PR", repo=repo, pr=number)
     if any(label["name"].casefold() == "merge-blocked" for label in pr["labels"]):
         raise PrHelperError("PR has merge-blocked set", repo=repo, pr=number)
+    # Only a provider-computed conflict refuses; null or UNKNOWN mergeability is not one.
+    merge_state = str(pr.get("mergeable_state") or pr.get("mergeStateStatus") or "").casefold()
+    if pr.get("mergeable") in (False, "CONFLICTING") or merge_state == "dirty":
+        raise PrHelperError(
+            "PR conflicts with its base; refresh it under babysit-pr Conflicts, then post ready for the new head",
+            repo=repo, pr=number, mergeable=pr.get("mergeable"), mergeStateStatus=merge_state.upper() or None,
+        )
 
 
 def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
