@@ -299,9 +299,15 @@ Command model:
   JetBrains config's SDK and recent-project records (plus the explicit config
   override), and sealed/finalizing project-cache ownership markers. A `.venv`
   alone is not a registration. Matching records, unreadable/malformed records,
-  custom storage paths, or local `.idea` project-model/workspace state retain the worktree for the live
+  storage redirects in config `idea.properties`, or local `.idea` project-model/workspace state retain the worktree for the live
   IDE cleanup route. Offline proof is repeated before Git removal and reported
-  as `offline_cleanup_proved`; it never edits global IDE files. Other platforms
+  as `offline_cleanup_proved`, with `offline_records_checked` naming the records
+  read. A running supported IDE without a usable plugin identity also holds
+  offline retirement; restore its plugin route or close it. The offline scan
+  covers standard macOS storage plus the explicit config override; redirects in
+  VM options, environment variables or edited application bundles, and IDEs
+  outside these locations, are not discovered by this scan and need live cleanup
+  proof. It never edits global IDE files. Other platforms
   retain the live-IDE requirement. With `--no-dry-run`, unregister only SDKs proved helper-owned,
   sending the apply only to IDEs whose preview lists one (`sdk_apply_skipped`
   names the rest), recheck every IDE, then remove the clean, unlocked linked worktree with non-force Git removal. Close
