@@ -1241,8 +1241,13 @@ whose main checkout is under `~/Developer`. For a worktree it records both the
 main checkout's root and the worktree's own root, because Claude's docs
 describe both. Symlinks are resolved first, in the launch folder and in a
 worktree's Git pointer, so a link under `~/Developer` that points elsewhere is
-outside that scope. Each write replaces the file only if it is unchanged since
-it was read, retrying a few times, so a running session's save is kept. Any other folder launches only
+outside that scope. Each write swaps the new file in atomically (macOS
+`renamex_np` `RENAME_SWAP`, Linux `renameat2` `RENAME_EXCHANGE`) and gets back
+the file it displaced. If a running session saved in between, its content is
+carried forward and swapped in again, so that save is never discarded. A save
+after the swap replaces the launcher's file whole; the readback then applies
+the key again. This relies on Claude Code saving by renaming a new file over
+`.claude.json`, which its leftover `.claude.json.tmp.*` files show. Any other folder launches only
 when the selected home already trusts its root; otherwise the launch refuses
 and names the home, so you can open `claude` there and review the dialog
 yourself. A configured home without `.claude.json` also refuses before any

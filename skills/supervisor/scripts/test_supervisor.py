@@ -1690,26 +1690,50 @@ class ClaudeTrustTests(unittest.TestCase):
         self.assertIn(str(outside), commands[0])
         self.assertEqual([config.read_bytes() for config in self.configs], before)
 
-    def test_concurrent_config_change_is_kept(self):
-        repository = git_repository(self.developer / "repository")
-        mkstemp = tempfile.mkstemp
-        changed = []
+    def session_save(self):
+        # Another Claude session saves a refreshed login from its own view of the file,
+        # which does not include this launch's trust key.
+        data = json.loads(self.configs[0].read_text())
+        data["oauthAccount"] = {"emailAddress": "refreshed@example.invalid"}
+        saved = self.homes[0] / ".claude.json.tmp.session"
+        saved.write_text(json.dumps(data))
+        os.replace(saved, self.configs[0])
 
-        def concurrent_writer(*args, **kwargs):
-            # Another Claude session saves its config between the launcher's read and rename.
-            if not changed:
-                data = json.loads(self.configs[0].read_text())
-                data["oauthAccount"] = {"emailAddress": "refreshed@example.invalid"}
-                self.configs[0].write_text(json.dumps(data))
-                changed.append(True)
-            return mkstemp(*args, **kwargs)
-
-        with patch.object(iterm_tab.claude_trust.tempfile, "mkstemp", side_effect=concurrent_writer):
-            self.launch(repository)
+    def assert_both_saves_kept(self, repository):
         data = json.loads(self.configs[0].read_text())
         self.assertEqual(data["oauthAccount"], {"emailAddress": "refreshed@example.invalid"})
         self.assertIs(data["projects"][str(repository)]["hasTrustDialogAccepted"], True)
         self.assertEqual(sorted(path.name for path in self.homes[0].iterdir()), [".claude.json"])
+
+    def test_session_save_just_before_the_swap_is_kept(self):
+        repository = git_repository(self.developer / "repository")
+        exchange = iterm_tab.claude_trust.exchange
+        calls = []
+
+        def save_then_exchange(source, target):
+            if not calls and Path(target) == self.configs[0]:
+                self.session_save()
+            calls.append(target)
+            exchange(source, target)
+
+        with patch.object(iterm_tab.claude_trust, "exchange", side_effect=save_then_exchange):
+            self.launch(repository)
+        self.assert_both_saves_kept(repository)
+
+    def test_session_save_just_after_the_swap_is_kept(self):
+        repository = git_repository(self.developer / "repository")
+        exchange = iterm_tab.claude_trust.exchange
+        calls = []
+
+        def exchange_then_save(source, target):
+            exchange(source, target)
+            if not calls and Path(target) == self.configs[0]:
+                self.session_save()
+            calls.append(target)
+
+        with patch.object(iterm_tab.claude_trust, "exchange", side_effect=exchange_then_save):
+            self.launch(repository)
+        self.assert_both_saves_kept(repository)
 
     def test_missing_directory_or_home_config_refuses_without_partial_writes(self):
         command = self.root / "command"

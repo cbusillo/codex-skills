@@ -17,13 +17,19 @@ configured worktree root. Every other folder must already be trusted in the
 selected home. Only that one key changes; logins and other settings are kept.
 """
 
+import ctypes
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 TRUST_KEY = "hasTrustDialogAccepted"
+# Both platforms number their atomic swap flag 2: macOS RENAME_SWAP, Linux RENAME_EXCHANGE.
+EXCHANGE_FLAG = 2
+LINUX_AT_FDCWD = -100
+CARRY_FORWARD_LIMIT = 20
 
 
 def worktree_root():
@@ -86,11 +92,19 @@ def read_projects(path):
     """Return the raw bytes, the parsed config, and its projects object (attached if absent)."""
     try:
         raw = path.read_bytes()
-        data = json.loads(raw)
     except FileNotFoundError:
         raise ValueError(f"Claude home config {path} does not exist; sign in to that home "
                          "interactively once before launching on it") from None
-    except (OSError, ValueError) as error:
+    except OSError as error:
+        raise ValueError(f"cannot read Claude folder trust in {path} ({type(error).__name__}); "
+                         "inspect that config before retrying") from None
+    return parse_projects(raw, path)
+
+
+def parse_projects(raw, path):
+    try:
+        data = json.loads(raw)
+    except ValueError as error:
         raise ValueError(f"cannot read Claude folder trust in {path} ({type(error).__name__}); "
                          "inspect that config before retrying") from None
     projects = data.setdefault("projects", {}) if isinstance(data, dict) else None
@@ -143,33 +157,67 @@ def apply(writes):
         write_trust(path, roots)
 
 
-def write_trust(path, roots, attempts=3):
-    """Replace the file atomically, only if nobody changed it since it was read.
+def exchange(source, target):
+    """Atomically swap two paths, so the caller gets back exactly the file it displaced."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        result = libc.renamex_np(os.fsencode(source), os.fsencode(target), ctypes.c_uint(EXCHANGE_FLAG))
+    elif sys.platform.startswith("linux"):
+        result = libc.renameat2(LINUX_AT_FDCWD, os.fsencode(source), LINUX_AT_FDCWD,
+                                os.fsencode(target), ctypes.c_uint(EXCHANGE_FLAG))
+    else:
+        raise ValueError(f"cannot update {target} safely: no atomic exchange on {sys.platform}")
+    if result != 0:
+        raise ValueError(f"cannot update {target} safely: atomic exchange failed "
+                         f"({os.strerror(ctypes.get_errno())})")
 
-    Claude Code documents no lock for `.claude.json`, so a running session's
-    write between the last comparison and the rename can still win; the
-    readback then refuses the launch instead of reporting trust.
+
+def write_trust(path, roots, attempts=3):
+    """Set the trust key without discarding a save another Claude session makes meanwhile.
+
+    Claude Code documents no lock for `.claude.json` and saves it by renaming a
+    temporary file over it. The new file is swapped in atomically and the file
+    it displaced comes back; if that is not the file this read, a session saved
+    in between, so the key is applied to its content and swapped in again. A
+    save after the swap replaces this file whole, keeping that session's data;
+    the readback then sees the key missing and applies it again.
     """
-    for _ in range(attempts):
-        raw, data, projects = read_projects(path)
+    expected, data, projects = read_projects(path)
+    carried = 0
+    while True:
         for root in roots:
             entry = projects.get(str(root))
             projects[str(root)] = {**(entry if isinstance(entry, dict) else {}), TRUST_KEY: True}
         mode = path.stat().st_mode & 0o777
         handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".claude.json.trust-")
+        keep = False
         try:
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                json.dump(data, stream, indent=2, ensure_ascii=False)
+            body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(body)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(temporary, mode)
-            if path.read_bytes() != raw:
+            exchange(temporary, path)
+            displaced = Path(temporary).read_bytes()
+            if displaced != expected:
+                carried += 1
+                if carried > CARRY_FORWARD_LIMIT:
+                    keep = True
+                    raise ValueError(f"{path} kept changing during the trust update; the last save "
+                                     f"another session made is kept at {temporary}; merge it back "
+                                     "before relaunching")
+                # Path now holds this body; carry the displaced save forward onto it.
+                expected = body
+                _, data, projects = parse_projects(displaced, path)
                 continue
-            os.replace(temporary, path)
         finally:
-            Path(temporary).unlink(missing_ok=True)
-        _, _, projects = read_projects(path)
+            if not keep:
+                Path(temporary).unlink(missing_ok=True)
+        expected, data, projects = read_projects(path)
         if all(trusted(projects, root) for root in roots):
             return
-    raise ValueError(f"Claude folder trust did not persist in {path}; another writer kept "
-                     "changing it, retry the launch")
+        attempts -= 1
+        if attempts <= 0:
+            raise ValueError(f"Claude folder trust did not persist in {path}; another writer kept "
+                             "replacing it, retry the launch")
