@@ -122,6 +122,22 @@ class StrandedTests(unittest.TestCase):
         self.assertIsNone(row["age_hours"])
         self.assertEqual(row["age_basis"], "unknown")
 
+    def test_finished_worktrees_are_grouped_per_repository_after_the_threshold(self):
+        self.records = []
+        old = (self.now - dt.timedelta(days=1)).isoformat()
+        new = (self.now - dt.timedelta(hours=1)).isoformat()
+        row = {"branch": "work/x", "basis": "PR merged", "pull": None, "dirty": False}
+        report = self.report(worktrees=[
+            {**row, "repo": "o/a", "task": "landed", "since": old},
+            {**row, "repo": "o/a", "task": "edited", "since": old, "dirty": True},
+            {**row, "repo": "o/a", "task": "just-started", "since": new},
+            {**row, "repo": "o/b", "task": "undated", "since": None}])
+        rows = {r["repo"]: r for r in report["findings"] if r["kind"] == "finished_worktree"}
+        self.assertEqual({repo: [e["task"] for e in r["evidence"]] for repo, r in rows.items()},
+                         {"o/a": ["landed", "edited"], "o/b": ["undated"]})
+        self.assertIn("1 have local changes", rows["o/a"]["detail"])
+        self.assertIn("2 finished task worktrees in o/a", sweep.markdown(report))
+
     def test_coverage_failure_is_in_markdown_even_with_zero_findings(self):
         self.records = []
         report = self.report(gaps=[{"source": "comments", "reason": "unavailable"}])
@@ -490,6 +506,45 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual([p.path for p in reads if p.path.endswith("/sub_issues")], ["repos/cbusillo/direction/issues/3/sub_issues"])
         self.assertEqual([parse_qs(p.query).get("since") for p in reads if "cm-website" in p.path],
                          [["2026-10-15T12:00:00Z"]])
+
+    def test_finished_worktree_pr_reads_share_the_sweep_budget(self):
+        self.reader.pages[("repos/test/repo/pulls", 1, "all")] = [
+            {"state": "closed", "merged_at": "2026-10-15T00:00:00Z", "closed_at": "2026-10-15T00:00:00Z"}]
+        seen = []
+
+        def finished(root, pulls_for, include):
+            # A narrow sweep scans only its own repositories.
+            self.assertEqual((include("test/repo"), include("other/repo")), (True, False))
+            seen.append(pulls_for("test/repo", "work/x")[0]["state"])
+            try:
+                pulls_for("test/repo", "work/y")
+            except LookupError as exc:
+                return [{"repo": "test/repo", "task": "x", "branch": "work/x", "basis": "PR merged", "dirty": False,
+                         "pull": None, "since": "2026-10-15T00:00:00Z"}], [{"source": "work/y", "reason": str(exc)}]
+            raise AssertionError("second PR read should exceed the budget")
+
+        with patch.object(sweep.audit, "fetch_paginated", return_value=([], False)):
+            baseline = self.collect()["requests"]
+            self.reader.paths.clear()
+            # One request beyond the inventory's own reads: the first PR read fits, the second does not.
+            with patch.object(sweep.landed_worktrees, "finished", finished):
+                report = self.collect(worktree_root=Path("/unused"), max_requests=baseline + 1)
+        self.assertEqual(seen, ["closed"])
+        self.assertIn("head=test:work%2Fx", self.reader.paths[-1])
+        self.assertEqual([r["kind"] for r in report["findings"]], ["finished_worktree"])
+        self.assertIn({"source": "work/y", "reason": "request_budget_exhausted"}, report["coverage_gaps"])
+
+    def test_full_pr_page_for_a_worktree_branch_is_a_coverage_gap(self):
+        self.reader.pages[("repos/test/repo/pulls", 1, "all")] = [{"state": "closed"}] * 100
+
+        def finished(root, pulls_for, include):
+            with self.assertRaisesRegex(LookupError, "page_limit"):
+                pulls_for("test/repo", "work/x")
+            return [], [{"source": "work/x", "reason": "page_limit"}]
+
+        with patch.object(sweep.landed_worktrees, "finished", finished), \
+                patch.object(sweep.audit, "fetch_paginated", return_value=([], False)):
+            self.assertFalse(self.collect(worktree_root=Path("/unused"))["complete"])
 
     def test_second_comment_page_is_read_and_closed_history_inventoried(self):
         self.reader.pages[("repos/test/repo/issues", 1, "open")] = [

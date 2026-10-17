@@ -111,6 +111,15 @@ command, use that exact command. With `hostHelper` configured, the catalog entry
 also forwards `retire [--dry-run] /exact/task/path` to the host helper; it never
 unlocks or deletes a worktree itself. Preserve active, dirty or ambiguous work.
 
+The session that created a worktree usually ends before the merge train lands
+its PR, so [After A Merge](../SKILL.md#after-a-merge) retires it with
+`scripts/landed_worktrees.py`. That helper reads the PR, requires it merged or
+closed, and keeps a worktree whose lock names no retire command or whose branch
+has commits beyond the PR head; the host helper's own checks still decide.
+Portable unlocked worktrees are outside it and follow work-closeout. The
+[daily stranded-work sweep](../../direction/references/stranded-work.md) reports
+finished worktrees the landing step left behind.
+
 ## Claude Desktop folder trust
 
 Worktree location does not grant harness trust. The Desktop report in
