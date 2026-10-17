@@ -1225,6 +1225,26 @@ only these selected-home project entries; it does not use managed, cloud, profil
 or CLI trust overrides as evidence. See the official
 [directory option](https://developers.openai.com/codex/cli/reference/) and
 [project trust setting](https://developers.openai.com/codex/config-reference/).
+
+Claude launches use `cd /absolute/repository && exec claude ...`; a launch
+without that literal absolute `cd` refuses. Claude Code records folder trust as
+`projects["<root>"].hasTrustDialogAccepted` in each home's `.claude.json`
+(`~/.claude.json` for the default home), keyed on the repository root, or the
+main checkout's root for a linked worktree
+([permissions](https://code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder)).
+Trust on a parent folder does not cover a repository inside it. Under the
+Director's decision in [#2100](https://github.com/cbusillo/codex-skills/issues/2100),
+the launcher sets that one key in every configured Claude home, before any
+tab, when the root is under `~/Developer`, or the folder is a linked worktree
+in the configured [worktree root](../../github/references/worktrees.md#per-host-configuration)
+whose main checkout is under `~/Developer`. For a worktree it records both the
+main checkout's root and the worktree's own root, because Claude's docs
+describe both. Symlinks are resolved first, so a link under `~/Developer`
+that points elsewhere is outside that scope. Any other folder launches only
+when the selected home already trusts its root; otherwise the launch refuses
+and names the home, so you can open `claude` there and review the dialog
+yourself. A configured home without `.claude.json` also refuses before any
+write. The launcher leaves every other key, including the login, unchanged.
 Before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
 runs `CODEX_HOME=<selected-home> codex app-server daemon start` for each selected
 home, with a 30-second command timeout. Native `start` reuses a healthy running

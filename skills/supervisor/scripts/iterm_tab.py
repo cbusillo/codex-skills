@@ -23,6 +23,7 @@ import tomllib
 from pathlib import Path
 
 import account_choice
+import claude_trust
 import gui_launch
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
@@ -752,6 +753,19 @@ def check_codex_project(command_text, choice):
         )
 
 
+def claude_trust_writes(command_text, choice, config_path):
+    """Plan folder trust in every configured Claude home, so no launch stops at the dialog."""
+    if choice["provider"] != "anthropic":
+        return []
+    directory = launch_parts(command_text)[1]
+    if directory is None:
+        raise ValueError("Claude launches require cd /absolute/repository && exec claude")
+    def homes():
+        return [account for account in account_choice.load_config(config_path)["accounts"]
+                if account["provider"] == "anthropic"]
+    return claude_trust.plan(directory, choice, homes, codex_git_trust_root)
+
+
 def prepare_launches(args):
     """Validate the full batch and prepare accounts before creating terminals."""
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
@@ -791,8 +805,11 @@ def prepare_launches(args):
             choices = account_choice.select_batch(
                 args.account_provider, args.account_config, args.account, count=len(files)
             )
+        trust_writes = []
         for text, choice in zip(command_texts, choices):
             check_codex_project(text, choice)
+            trust_writes += claude_trust_writes(text, choice, args.account_config)
+        claude_trust.apply(trust_writes)
         if apps[0]:
             home = Path(choices[0]["env"]["CODEX_HOME"]).expanduser()
             if not home.is_absolute() or not home.is_dir():

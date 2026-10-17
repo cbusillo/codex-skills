@@ -394,7 +394,10 @@ including non-dim text, establishes neither its author nor approval.
    Then read each launch's first screen. A folder-trust or hook-trust prompt
    looks like a working session from outside, and the launcher still reports
    success; a launch with no transcript after one minute is blocked
-   ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)).
+   ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)). Claude
+   launches into `~/Developer` repositories and their worktrees get folder
+   trust set before launch; other folders must already be trusted
+   ([#2100](https://github.com/cbusillo/codex-skills/issues/2100)).
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
    issue do not clash. A worker that will claim its anchor needs a claimable
