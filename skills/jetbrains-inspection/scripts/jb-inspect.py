@@ -2479,7 +2479,9 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
 def run_configured_inspection_lanes(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
     lanes = configured_inspection_lanes(context)
     selection = resolve_inspection_lane_selection(args, context)
-    lane_files = selection.get("lane_files") if isinstance(selection.get("lane_files"), dict) else {}
+    lane_files = selection.get("lane_files")
+    if not isinstance(lane_files, dict):
+        lane_files = {}
     if any(isinstance(files, list) and files for files in lane_files.values()):
         with lifecycle_lock(getattr(args, "lifecycle_lock_timeout_ms", DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)):
             repository_preparation = run_repository_preparation(args, context)
@@ -2488,7 +2490,9 @@ def run_configured_inspection_lanes(args: argparse.Namespace, context: dict[str,
         context["_repository_preparation_completed"] = True
     lane_results: list[dict[str, Any]] = []
     for execution_order, lane in enumerate(lanes):
-        selected = lane_files.get(lane.lane_id) if isinstance(lane_files.get(lane.lane_id), list) else []
+        selected = lane_files.get(lane.lane_id)
+        if not isinstance(selected, list):
+            selected = []
         if not selected:
             lane_results.append(noop_inspection_lane_result(lane, execution_order, context))
             continue

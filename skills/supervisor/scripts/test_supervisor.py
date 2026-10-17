@@ -1523,6 +1523,15 @@ class CodexProjectTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), [str(repository.resolve()), args.brief_file[0].read_text()])
 
 
+def launch_terminal_fixture():
+    """One account-selected launch target; each test keeps its own mocks and state."""
+    terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
+    window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
+        return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
+    app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+    return terminal, window, app
+
+
 class TerminalTests(unittest.TestCase):
     def setUp(self):
         # These cases exercise selection/input mechanics. Protocol and startup
@@ -1681,10 +1690,7 @@ class TerminalTests(unittest.TestCase):
             args.account_provider, args.account_config = "google", config_path
             brief = "--Google brief\nKeep $(touch injected) literal."
             args.brief_file[0].write_text(brief)
-            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
-                return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            terminal, window, app = launch_terminal_fixture()
             with (patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                   patch.object(account_choice, "read_snapshot", return_value=(google_snapshot(), None)),
                   patch.object(account_choice, "storage_root", return_value=root)):
@@ -1704,10 +1710,7 @@ class TerminalTests(unittest.TestCase):
         choice = account_choice.choose("google", accounts_config(GOOGLE_TOML), google_snapshot(), None)
         with tempfile.TemporaryDirectory() as folder:
             launch = Path(folder) / "launch.txt"
-            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
-                return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            terminal, window, app = launch_terminal_fixture()
             for command in ("codex", "claude", "HOME=/alt agy", "cd / && env HOME=/alt exec agy",
                             "CODEX_HOME=/alt agy"):
                 launch.write_text(command)
@@ -1774,10 +1777,7 @@ class TerminalTests(unittest.TestCase):
             brief.write_text(content)
             args = account_launch_args(launch)
             args.brief_file = [brief]
-            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
-                return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            terminal, window, app = launch_terminal_fixture()
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value={"provider": "anthropic", "env": {}}),
@@ -1821,10 +1821,7 @@ class TerminalTests(unittest.TestCase):
             launch = root / "launch.txt"
             launch.write_text("codex --remote unix://")
             brief = root / "brief.txt"
-            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(
-                return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            terminal, window, app = launch_terminal_fixture()
             args = argparse.Namespace(command="new", window_id="chosen", command_file=[launch],
                                       brief_file=[brief], account_provider="openai",
                                       account=None, account_config=None)
@@ -2409,9 +2406,7 @@ class TerminalTests(unittest.TestCase):
             terminals[1].async_send_text.assert_not_awaited()
 
     def test_receipt_failure_prevents_command_submission(self):
-        terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
-        window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=SimpleNamespace(tab_id="tab", current_session=terminal)))
-        app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+        terminal, window, app = launch_terminal_fixture()
         choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "launch.txt"
