@@ -147,12 +147,12 @@ def default_tracking_tip(checkout: Path) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def finished(root: Path, pulls_for) -> tuple[list[dict], list[dict]]:
+def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dict], list[dict]]:
     """Worktrees under root that the landing step should have retired, and unread scopes.
 
     pulls_for(slug, branch) returns that branch's PRs, or raises LookupError when
     they cannot be read. A branch already in the default branch's tracking ref
-    needs no GitHub read.
+    needs no GitHub read. include(slug) limits the scan to the caller's scope.
     """
     found: list[dict] = []
     gaps: list[dict] = []
@@ -168,6 +168,8 @@ def finished(root: Path, pulls_for) -> tuple[list[dict], list[dict]]:
                 continue
             seen.add(common)
             slug = github_slug(task)
+            if slug is None or not include(slug):
+                continue
             tip = default_tracking_tip(task)
             try:
                 trees = registered(task)
@@ -177,7 +179,7 @@ def finished(root: Path, pulls_for) -> tuple[list[dict], list[dict]]:
             for tree in trees:
                 if not tree.names_retire_command or not tree.branch or not is_under(tree.path, folder):
                     continue
-                row = {"repo": slug or folder.name, "task": tree.path.name, "branch": tree.branch,
+                row = {"repo": slug, "task": tree.path.name, "branch": tree.branch,
                        "dirty": bool(git(tree.path, "status", "--porcelain").stdout.strip()), "pull": None}
                 if tip and contained(task, tree.head, tip):
                     # No commits of its own: date it from creation or last checkout, so a
@@ -188,8 +190,6 @@ def finished(root: Path, pulls_for) -> tuple[list[dict], list[dict]]:
                     except OSError:
                         since = None
                     found.append({**row, "basis": "in default branch", "since": since.isoformat() if since else None})
-                    continue
-                if slug is None:
                     continue
                 try:
                     pulls = pulls_for(slug, tree.branch)
@@ -233,6 +233,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not isinstance(pull, dict) or not finished_pull(pull):
         print(json.dumps({"ok": False, "error": "PR is not merged or closed; nothing is retired"}))
+        return 2
+    # A sibling clone or fork can share the branch name; act only on this PR's own repository.
+    checkout_slug = github_slug(args.checkout)
+    if not checkout_slug or checkout_slug.casefold() != args.repo.casefold():
+        print(json.dumps({"ok": False, "error": f"checkout origin is {checkout_slug or 'not GitHub'}, not {args.repo}"}))
         return 2
     head = pull.get("head") or {}
     if ((head.get("repo") or {}).get("full_name") or "").casefold() != args.repo.casefold():

@@ -512,7 +512,9 @@ class InventoryTests(unittest.TestCase):
             {"state": "closed", "merged_at": "2026-10-15T00:00:00Z", "closed_at": "2026-10-15T00:00:00Z"}]
         seen = []
 
-        def finished(root, pulls_for):
+        def finished(root, pulls_for, include):
+            # A narrow sweep scans only its own repositories.
+            self.assertEqual((include("test/repo"), include("other/repo")), (True, False))
             seen.append(pulls_for("test/repo", "work/x")[0]["state"])
             try:
                 pulls_for("test/repo", "work/y")
@@ -531,6 +533,18 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("head=test:work%2Fx", self.reader.paths[-1])
         self.assertEqual([r["kind"] for r in report["findings"]], ["finished_worktree"])
         self.assertIn({"source": "work/y", "reason": "request_budget_exhausted"}, report["coverage_gaps"])
+
+    def test_full_pr_page_for_a_worktree_branch_is_a_coverage_gap(self):
+        self.reader.pages[("repos/test/repo/pulls", 1, "all")] = [{"state": "closed"}] * 100
+
+        def finished(root, pulls_for, include):
+            with self.assertRaisesRegex(LookupError, "page_limit"):
+                pulls_for("test/repo", "work/x")
+            return [], [{"source": "work/x", "reason": "page_limit"}]
+
+        with patch.object(sweep.landed_worktrees, "finished", finished), \
+                patch.object(sweep.audit, "fetch_paginated", return_value=([], False)):
+            self.assertFalse(self.collect(worktree_root=Path("/unused"))["complete"])
 
     def test_second_comment_page_is_read_and_closed_history_inventoried(self):
         self.reader.pages[("repos/test/repo/issues", 1, "open")] = [

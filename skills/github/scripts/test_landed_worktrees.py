@@ -129,7 +129,11 @@ class RetireTests(unittest.TestCase):
 
 
 class MainTests(Fixture):
-    def run_main(self, pull):
+    def setUp(self):
+        super().setUp()
+        self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
+
+    def run_main(self, pull, repo="o/sample"):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         reader = mock.Mock()
@@ -139,7 +143,7 @@ class MainTests(Fixture):
                 mock.patch.dict("sys.modules", {"github_read": mock.Mock(GitHubReader=mock.Mock(return_value=reader))}), \
                 mock.patch.object(landed_worktrees, "run_retire") as run, redirect_stdout(out):
             run.return_value = subprocess.CompletedProcess([], 0, "", "")
-            code = landed_worktrees.main(["--repo", "o/sample", "--pr", "7", "--checkout", str(self.repo), "--apply"])
+            code = landed_worktrees.main(["--repo", repo, "--pr", "7", "--checkout", str(self.repo), "--apply"])
         return code, json.loads(out.getvalue()), run
 
     def test_open_pr_retires_nothing(self):
@@ -157,6 +161,15 @@ class MainTests(Fixture):
         self.assertEqual(code, 0)
         self.assertEqual([r["decision"] for r in result["worktrees"]], ["retired"])
         self.assertEqual(run.call_args_list, [mock.call(str(path), dry_run=True), mock.call(str(path), dry_run=False)])
+
+    def test_checkout_of_another_repository_retires_nothing(self):
+        # A sibling repository with the same branch name must not lose its worktree to this PR.
+        path = self.worktree("shared")
+        code, result, run = self.run_main({"state": "closed", "merged_at": "2026-10-16T00:00:00Z",
+                                           "head": {"ref": "work/shared", "sha": self.git(path, "rev-parse", "HEAD"),
+                                                    "repo": {"full_name": "o/other"}}}, repo="o/other")
+        self.assertEqual((code, result["ok"]), (2, False))
+        run.assert_not_called()
 
     def test_fork_head_retires_nothing(self):
         path = self.worktree("fork")
@@ -195,6 +208,9 @@ class FinishedScanTests(Fixture):
         self.assertEqual(sorted(reads), ["work/merged", "work/open", "work/unread"])
         self.assertEqual([g["reason"] for g in gaps], ["request_budget_exhausted"])
         self.assertIsNotNone(next(r for r in found if r["task"] == "untouched")["since"])
+        reads.clear()
+        self.assertEqual(landed_worktrees.finished(self.root, pulls_for, include=lambda slug: slug != "o/sample"), ([], []))
+        self.assertEqual(reads, [])
 
 
 if __name__ == "__main__":

@@ -816,13 +816,16 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
                     gaps=gaps, director_names=director_names, delivery_view=delivery_view,
                     related_comments=related_comments, registers=registers,
-                    worktrees=finished_worktrees(worktree_root, fetch, gaps) if worktree_root else None)
+                    worktrees=finished_worktrees(
+                        worktree_root, fetch, gaps,
+                        lambda slug: slug.casefold() in repos or (owner or "").casefold() == slug.split("/")[0].casefold(),
+                    ) if worktree_root else None)
     result.update({"repositories": repos, "operational_registers": [f"{r['repo']}:{r['path']}" for r in registers], "checked_records": len(records), "attempted_records": attempted_records, "requests": reads,
                    "history_days": history_days, "closed_trigger_history": "all", "quota_reserve": quota_reserve, "policy_reads": policy_reads})
     return result
 
 
-def finished_worktrees(root: pathlib.Path, fetch, gaps: list[dict]) -> list[dict]:
+def finished_worktrees(root: pathlib.Path, fetch, gaps: list[dict], include) -> list[dict]:
     """Finished task worktrees under this host's root; PR reads share the sweep's budget."""
     def pulls_for(slug, branch):
         owner = slug.split("/")[0]
@@ -832,10 +835,13 @@ def finished_worktrees(root: pathlib.Path, fetch, gaps: list[dict]) -> list[dict
             raise LookupError(str(exc)) from exc
         if not isinstance(rows, list):
             raise LookupError("unexpected_response_shape")
+        if len(rows) >= 100:
+            # A full page may hide the PR that contains the head; never conclude from it.
+            raise LookupError("page_limit")
         return rows
 
     try:
-        rows, worktree_gaps = landed_worktrees.finished(root, pulls_for)
+        rows, worktree_gaps = landed_worktrees.finished(root, pulls_for, include)
     except OSError:
         gaps.append({"source": "worktree_root", "reason": "unreadable"})
         return []
