@@ -84,6 +84,13 @@ worktree, and only the nested Python project receives SDK provisioning. Omit
 the field for root preparation. The opt-in Qodana backend currently refuses
 this nested preparation shape; use the configured desktop lanes for it.
 
+An assessment explicitly invoked with `--repo` naming a nested project must
+match exactly one declared lane's `projectPath`. It uses that lane's IDE and
+keeps the requested native scope, including `whole_project`, inside that
+project. An assessment at the Git worktree root still dispatches all selected
+lanes. This lets dedicated smoke projects retain native broad-scope proof
+without widening their request to the parent repository.
+
 When `qualityGate.inspection.prepare` is configured, `open-worktree`,
 `agent-inspect`, `inspect`, and `inspect-closeout` run that exact repository
 command in the exact target worktree before IDE lifecycle open or claim.

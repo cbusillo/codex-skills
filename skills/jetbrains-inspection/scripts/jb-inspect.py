@@ -1059,7 +1059,12 @@ def parse_structured_repository_preparation(
         )
     project_path = "."
     if "projectPath" in python:
-        project_path = parse_inspection_lane_project_path(python["projectPath"], "Python preparation")
+        try:
+            project_path = parse_inspection_lane_project_path(python["projectPath"], "Python preparation")
+        except InspectError as error:
+            raise repository_preparation_config_error(
+                "prepare.python.projectPath must be a safe relative project directory."
+            ) from error
         if project_path is None:
             raise repository_preparation_config_error("Python preparation projectPath must name a relative directory.")
     version = python.get("version")
@@ -1494,10 +1499,21 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
         if "--repo" in argv:
             project = (target / argv[argv.index("--repo") + 1]).resolve()
             if not project.is_relative_to(target) or not project.is_dir():
-                raise repository_preparation_config_error("Python preparation projectPath must stay inside the exact worktree and exist.")
-            for relative in repository_preparation_generated_state(context):
-                if not (target / relative).resolve().is_relative_to(project):
-                    raise repository_preparation_config_error("Python preparation generated state must stay inside its projectPath.")
+                preparation["execution_state"] = "blocked"
+                raise repository_preparation_error(
+                    "repository_preparation_project_unavailable",
+                    "Restore the configured Python project directory inside the exact worktree; no preparation ran.",
+                    preparation,
+                )
+            if project != target:
+                for relative in repository_preparation_generated_state(context):
+                    if not (target / relative).resolve().is_relative_to(project):
+                        preparation["execution_state"] = "blocked"
+                        raise repository_preparation_error(
+                            "repository_preparation_project_unavailable",
+                            "Restore generated-state paths inside the nested Python project; no preparation ran.",
+                            preparation,
+                        )
         sdk_table = repository_preparation_sdk_table(context)
         if sdk_table is not None:
             argv = [*argv, "--sdk-table", str(sdk_table)]
@@ -2482,15 +2498,45 @@ def command_prepare(args: argparse.Namespace, context: dict[str, Any]) -> dict[s
 
 
 def command_closeout(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    nested = explicit_nested_lane_context(args, context)
+    if nested is not None:
+        return run_prepared_inspection(args, nested)
     if configured_inspection_lanes(context):
         return run_configured_inspection_lanes(args, context)
     return run_prepared_inspection(args, context)
 
 
 def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
-    if configured_inspection_lanes(context):
-        return run_configured_inspection_lanes(args, context)
-    return run_prepared_inspection(args, context)
+    return command_closeout(args, context)
+
+
+def explicit_nested_lane_context(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any] | None:
+    lanes = configured_inspection_lanes(context)
+    root_value, repo_value = context.get("worktree_root"), context.get("repo_path")
+    if not lanes or not root_value or not repo_value:
+        return None
+    root, project = Path(root_value).resolve(), Path(repo_value).resolve()
+    if project == root:
+        return None
+    if not project.is_relative_to(root):
+        raise inspection_lane_config_error("The requested nested project must stay inside the exact worktree.")
+    relative = project.relative_to(root).as_posix()
+    matching = [lane for lane in lanes if lane.project_path == relative]
+    if len(matching) != 1:
+        raise inspection_lane_config_error("The explicit nested project must match exactly one declared lane projectPath.")
+    lane = matching[0]
+    result = {key: value for key, value in context.items()
+              if key not in {"inspection_lanes", "_inspection_lanes", "ide_selection", "ide_config_dir", "ide_app_path"}}
+    result.update(ide=lane.ide, inspection_lane=lane.public())
+    args.ide = lane.ide
+    selection = resolve_ide_selection(result)
+    if selection:
+        result["ide_selection"] = selection.public()
+        if selection.config_dir:
+            result["ide_config_dir"] = str(selection.config_dir)
+        if selection.app_path:
+            result["ide_app_path"] = str(selection.app_path)
+    return result
 
 
 def run_configured_inspection_lanes(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:

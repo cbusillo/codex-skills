@@ -95,6 +95,32 @@ else:
         script.write_text('# /// script\n# dependencies = ["example"]\n# ///\n')
         self.assertNotEqual(before, jb_inspect.repository_preparation_command_hash(argv, self.root))
 
+    def test_explicit_nested_assessment_keeps_native_scope_and_declared_ide(self):
+        lanes = jb_inspect.parse_inspection_lanes({"lanes": [
+            {"id": "python", "ide": "PyCharm", "include": ["scripts/*.py"], "projectPath": "scripts"},
+            {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["*"]},
+        ]})
+        context = self.context()
+        context.update(repo_path=str(self.project), project_path=str(self.project),
+                       lifecycle_target_path=str(self.project), scope="whole_project", _inspection_lanes=lanes)
+        self.args.ide = None
+        with (
+            patch.object(jb_inspect, "resolve_ide_selection", return_value=None),
+            patch.object(jb_inspect, "run_configured_inspection_lanes", side_effect=AssertionError("nested scope widened")),
+            patch.object(jb_inspect, "run_prepared_inspection", return_value={"native": True}) as native,
+        ):
+            result = jb_inspect.command_closeout(self.args, context)
+        self.assertTrue(result["native"])
+        passed_args, passed_context = native.call_args.args
+        self.assertEqual(passed_args.ide, lanes[0].ide)
+        self.assertEqual(passed_context["scope"], context["scope"])
+        self.assertEqual(passed_context["project_path"], str(self.project))
+        self.assertEqual(passed_context["worktree_root"], str(self.root))
+        with patch.object(jb_inspect, "run_configured_inspection_lanes", return_value={"lanes": True}) as multi:
+            context["repo_path"] = str(self.root)
+            self.assertTrue(jb_inspect.command_closeout(self.args, context)["lanes"])
+            multi.assert_called_once()
+
     def test_escaping_project_paths_refuse_before_execution(self):
         for value in ("../outside", "/outside", "scripts/../other", "scripts\\other", ""):
             with self.subTest(path=value), self.assertRaises(jb_inspect.InspectError):
