@@ -1578,7 +1578,7 @@ class TerminalTests(unittest.TestCase):
         daemon.start()
         self.addCleanup(daemon.stop)
 
-        async def submit(app, session, command):
+        async def submit(app, session, command, **_):
             await iterm_tab.send(session, command, allow_tabs=True)
 
         startup = patch.object(iterm_tab, "submit_iterm_launch", side_effect=submit)

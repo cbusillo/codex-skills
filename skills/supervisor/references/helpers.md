@@ -957,10 +957,12 @@ no account configuration migration is needed.
 Use `--account` for an explicit override through the same mapping and receipt
 path. Run one agent invocation, without restart loops or commands that continue
 after it exits. Read the launched screen once for folder trust or another
-blocking prompt. The short startup observation reports a visible Codex hook-review
-prompt as `launch_blocked` with `startup.blocked_prompt: hook_trust`, the exact
-terminal identity and screen. It does not answer the prompt or prove readiness;
-a later prompt still needs first-screen/transcript verification. Do not launch
+blocking prompt. For Codex launches the startup observation watches up to 20
+seconds, ending early once the brief's turn shows as running, and reports a
+visible hook-review prompt as `launch_blocked` with
+`startup.blocked_prompt: hook_trust`, the exact terminal identity and screen.
+It does not answer the prompt or prove readiness; a later prompt still needs
+first-screen/transcript verification. Do not launch
 a duplicate after a blocked result. Record the new native thread and exact transcript in the
 ledger. Prefer `codex queue` for Codex nudges with the verified thread id and
 its configured home; never queue exit commands. The terminal helper suppresses

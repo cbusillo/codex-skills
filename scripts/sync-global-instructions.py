@@ -84,7 +84,9 @@ def render_codex_hook_content(config: dict, destination: Path, catalog: Path = R
         retained = []
         for group in existing:
             if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
-                raise ValueError(f"Invalid {event} configuration: {destination}")
+                # Only labeled catalog handlers retire; leave groups we can't read as found.
+                retained.append(group)
+                continue
             handlers = [handler for handler in group["hooks"]
                         if not isinstance(handler, dict) or handler.get("statusMessage") != label]
             if handlers or not group["hooks"]:

@@ -253,17 +253,19 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             inline = settings.get("hooks", {})
             if not isinstance(inline, dict):
                 raise ValueError("Invalid hooks configuration in config.toml")
+            # Compare only the retired events; other inline tables (trust state
+            # with TOML datetimes, for example) never pass through JSON.
+            alerts = {event: inline[event] for event in ("Stop", "Interrupt") if event in inline}
             remaining = json.loads(sync.render_codex_hook_content(
-                {"hooks": inline}, hook_path, ROOT, retire_alerts_only=True))["hooks"]
-            if remaining != inline:
+                {"hooks": alerts}, hook_path, ROOT, retire_alerts_only=True))["hooks"]
+            if remaining != alerts:
                 entry = {"path": str(config_path), "state": "skipped",
                          "reason": "Inline alert retirement needs reconciliation; preview --refresh-instructions --show-diff and replace Stop/Interrupt events with catalog_retired_toml in the config.toml source, then run catalog_runtime.py --update. Hook positions may change; review remaining hooks through /hooks. Regular files can instead use scripts/sync-global-instructions.py --codex-hook --hooks-only."}
                 if show_diff:
                     import tomlkit
-                    entry["catalog_retired_toml"] = tomlkit.dumps({"hooks": {event: groups for event, groups in remaining.items()
-                                                                           if event in ("Stop", "Interrupt")}})
+                    entry["catalog_retired_toml"] = tomlkit.dumps({"hooks": remaining})
                 hook_preview.append(entry)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, TypeError) as error:
             hook_preview.append({"path": str(config_path), "state": "skipped", "reason": str(error)})
     launch_path = home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
     launch_content = None

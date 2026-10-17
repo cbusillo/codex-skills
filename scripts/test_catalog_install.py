@@ -907,10 +907,21 @@ class InstallTests(unittest.TestCase):
         self.install()
         path = self.codex / "hooks.json"
         config = json.loads(path.read_text())
-        config["hooks"]["Stop"] = [{"hooks": None}]
+        config["hooks"]["Stop"] = [{"hooks": None}, *self.legacy_alerts()["Stop"]]
         path.write_text(json.dumps(config))
-        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
-        self.assertIn({"hooks": None}, json.loads(path.read_text())["hooks"]["Stop"])
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        # A group the catalog can't read is left alone; the alert still retires.
+        self.assertEqual(json.loads(path.read_text())["hooks"]["Stop"], [{"hooks": None}])
+        self.assertFalse([entry for entry in receipt["outputs"] if entry.get("state") == "skipped"])
+
+    def test_inline_trust_state_datetime_does_not_stop_instruction_refresh(self):
+        self.install()
+        config = self.codex / "config.toml"
+        original = '[hooks.state]\nreviewed_at = 2026-10-17T07:32:00Z\n'
+        config.write_text(original)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertEqual(config.read_text(), original)
+        self.assertFalse([entry for entry in receipt["outputs"] if entry.get("state") == "skipped"])
 
     def test_concurrent_hook_edit_is_preserved_and_refresh_reports_skip(self):
         self.install()
@@ -1521,7 +1532,7 @@ class UpdateTests(unittest.TestCase):
             skipped = runtime.update(self.checkout)
             self.assertEqual(skipped["state"], "current")
             self.assertIn("alert_refresh", skipped)
-            self.assertIn("alert refresh was skipped", runtime.status_line(self.checkout))
+            self.assertIn("hook source", runtime.status_line(self.checkout))
             self.assertIn("Catalog notice", runtime.status_line(self.checkout))
             hooks.write_text('{"hooks": {}}\n')
             fixed = runtime.update(self.checkout)
@@ -1547,7 +1558,7 @@ class UpdateTests(unittest.TestCase):
             self.assertIn("instruction_refresh", both)
             self.assertIn("alert_refresh", both)
             self.assertIn("instruction refresh", runtime.status_line(self.checkout))
-            self.assertIn("alert refresh", runtime.status_line(self.checkout))
+            self.assertIn("hook source", runtime.status_line(self.checkout))
             self.assertIn("Hand edit.", target.read_text())
             hooks.write_text('{"hooks": {}}\n')
             target.write_bytes((fixture_home / ".claude" / "CLAUDE.md").read_bytes())
@@ -1601,7 +1612,7 @@ class UpdateTests(unittest.TestCase):
         install.write_text(json.dumps({"scheduled_updater": False}))
         head = command("git", "rev-parse", "HEAD", cwd=self.checkout)
         line = runtime.status_line(self.checkout)
-        self.assertIn("alert refresh was skipped", line)
+        self.assertIn("hook source", line)
         self.assertIn("--refresh-instructions", line)
         self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.checkout), head)
         job = self.base / "job.plist"

@@ -436,7 +436,7 @@ async def operate(args):
                                                    "observation_error": type(error).__name__}) from error
                 return {key: snapshot[key] for key in ("dead", "exit_status", "exit_signal", "screen")}
 
-            await iterm_tab.verify_startup(read_startup)
+            await iterm_tab.verify_startup(read_startup, prompt_window=iterm_tab.startup_prompt_window(choice))
             result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}
             if choice:
                 result["account"] = account_choice.public(choice)
