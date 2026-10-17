@@ -9405,6 +9405,156 @@ def test_health_monitoring_malformed_plan_is_rejected(changes: dict[str, object]
     assert "unexpected-private-data" not in json.dumps(receipt)
 
 
+OVERRIDE_REASON = "Private dependency override reason."
+REQUIRED_DERIVED = {"mode": "required", "override": None}
+
+
+def _dependency_arguments(mode: str, source: str, *dependencies: str, reason: str = "") -> list[str]:
+    arguments = [*_monitoring_arguments(), "--dependency-mode", mode, "--dependency-source", source]
+    for dependency in dependencies:
+        arguments += ["--dependency", dependency]
+    return arguments + (["--dependency-override-reason", reason] if reason else [])
+
+
+def _with_dependency_policy(profile: dict[str, Any], policy: object) -> dict[str, Any]:
+    profile["profile"]["lanes"][0]["health_monitoring"]["dependency_health"] = policy
+    return profile
+
+
+@pytest.mark.parametrize("arguments,policy", [
+    (["required", "derived"], REQUIRED_DERIVED),
+    (["informational", "derived"], {"mode": "informational", "override": None}),
+    (["required", "override", "email", "database"],
+     {"mode": "required", "override": {"dependencies": ["database", "email"], "reason": OVERRIDE_REASON}}),
+    (["informational", "override"],
+     {"mode": "informational", "override": {"dependencies": [], "reason": OVERRIDE_REASON}}),
+])
+def test_health_monitoring_dependency_policy_is_reviewed_applied_and_read_back(
+    tmp_path: Path, arguments: list[str], policy: dict[str, Any],
+) -> None:
+    mode, source, *dependencies = arguments
+    reason = OVERRIDE_REASON if source == "override" else ""
+    argv_args = _dependency_arguments(mode, source, *dependencies, reason=reason)
+    current = {"mode": "required" if mode == "informational" else "informational", "override": None}
+    plan = {"current_dependency_health": current, "requested_dependency_health": policy}
+    argv, evidence = _monitoring_review(tmp_path, argv_args, **plan)
+    public = {"mode": mode, "override": None if policy["override"] is None else {
+        "dependencies": policy["override"]["dependencies"]}}
+    assert evidence["request"]["dependency_health"] == public
+    assert evidence["result"]["requested_dependency_health"] == public
+    profiles = iter([_with_dependency_policy(_monitoring_profile(), current),
+                     _with_dependency_policy(_monitoring_profile(applied=True), policy)])
+    status, receipt, posts, _reads = _run_main(argv, post=_monitoring_response("apply", **plan), read=lambda _: next(profiles))
+    assert status == 0, receipt
+    assert posts[0]["body"]["dependency_health"] == policy
+    assert receipt["result"]["read_back"]["dependency_health"] == public
+    assert OVERRIDE_REASON not in json.dumps(evidence) + json.dumps(receipt)
+
+    # A same-key replay against the already-applied lane verifies the same policy.
+    status, replay, posts, _reads = _run_main(
+        argv, post=_monitoring_response("apply", **plan),
+        read=_with_dependency_policy(_monitoring_profile(applied=True), policy),
+    )
+    assert status == 0 and posts[0]["idempotency_key"] == "apply-1", replay
+
+
+def test_health_monitoring_omitted_dependency_policy_is_legacy_and_preserved(tmp_path: Path) -> None:
+    required = {"mode": "required", "override": {"dependencies": ["database"], "reason": OVERRIDE_REASON}}
+    argv, evidence = _monitoring_review(tmp_path)
+    assert "dependency_health" not in evidence["request"]
+    assert "requested_dependency_health" not in evidence["result"]
+
+    def apply(*after_policy: object) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+        profiles = iter([_with_dependency_policy(_monitoring_profile(), required),
+                         _with_dependency_policy(_monitoring_profile(applied=True), *after_policy)])
+        status, receipt, posts, _reads = _run_main(argv, post=_monitoring_response("apply"), read=lambda _: next(profiles))
+        return status, receipt, posts
+
+    status, receipt, posts = apply(required)
+    assert status == 0, receipt
+    assert "dependency_health" not in posts[0]["body"]
+    for changed in (REQUIRED_DERIVED, {**required, "override": {**required["override"], "reason": "Other."}}):
+        status, receipt, _posts = apply(changed)
+        assert (status, receipt["status"]) == (1, "accepted_unverified")
+
+
+def test_health_monitoring_legacy_request_accepts_only_preserving_dependency_review() -> None:
+    preserved = {"current_dependency_health": REQUIRED_DERIVED, "requested_dependency_health": REQUIRED_DERIVED}
+    status, receipt, _posts, _reads = _run_main(
+        ["health-monitoring-dry-run", *_monitoring_arguments()], post=_monitoring_response(**preserved),
+    )
+    assert status == 0 and receipt["result"]["requested_dependency_health"] == REQUIRED_DERIVED
+    for plan in (
+        {**preserved, "requested_dependency_health": {"mode": "informational", "override": None}},
+        {"current_dependency_health": REQUIRED_DERIVED},
+    ):
+        status, receipt, _posts, _reads = _run_main(
+            ["health-monitoring-dry-run", *_monitoring_arguments()], post=_monitoring_response(**plan),
+        )
+        assert status != 0 and receipt["status"] != "accepted"
+
+
+@pytest.mark.parametrize("plan", [
+    {},
+    {"current_dependency_health": None, "requested_dependency_health": {"mode": "informational", "override": None}},
+    {"current_dependency_health": None, "requested_dependency_health": {**REQUIRED_DERIVED, "extra": "private"}},
+    {"current_dependency_health": None, "requested_dependency_health": {
+        "mode": "required", "override": {"dependencies": ["database", "database"], "reason": OVERRIDE_REASON}}},
+])
+def test_health_monitoring_dependency_request_rejects_unmatched_review(plan: dict[str, object]) -> None:
+    status, receipt, _posts, _reads = _run_main(
+        ["health-monitoring-dry-run", *_dependency_arguments("required", "derived")],
+        post=_monitoring_response(**plan),
+    )
+    assert status != 0 and receipt["status"] != "accepted"
+    assert "private" not in json.dumps(receipt.get("result"))
+
+
+@pytest.mark.parametrize("arguments", [
+    [*_monitoring_arguments(), "--dependency-source", "derived"],
+    [*_monitoring_arguments(), "--dependency-mode", "required"],
+    _dependency_arguments("required", "derived", "database"),
+    _dependency_arguments("required", "derived", reason=OVERRIDE_REASON),
+    _dependency_arguments("required", "override", "database"),
+    _dependency_arguments("required", "override", "email", "email", reason=OVERRIDE_REASON),
+    _dependency_arguments("required", "override", reason="x" * 1001),
+])
+def test_health_monitoring_invalid_dependency_request_sends_nothing(arguments: list[str]) -> None:
+    status, _receipt, posts, reads = _run_main(["health-monitoring-dry-run", *arguments])
+    assert status == 2 and not posts and not reads
+
+
+def test_health_monitoring_apply_binds_reviewed_dependency_policy(tmp_path: Path) -> None:
+    arguments = _dependency_arguments("required", "override", "database", reason=OVERRIDE_REASON)
+    plan = {"current_dependency_health": None, "requested_dependency_health": {
+        "mode": "required", "override": {"dependencies": ["database"], "reason": OVERRIDE_REASON}}}
+    argv, _ = _monitoring_review(tmp_path, arguments, **plan)
+    for field, value in (("--dependency-mode", "informational"), ("--dependency", "email"),
+                         ("--dependency-override-reason", "Other reason.")):
+        changed = list(argv)
+        changed[changed.index(field) + 1] = value
+        status, _receipt, posts, reads = _run_main(changed)
+        assert status == 2 and not posts and not reads, field
+    # Dropping the policy from an apply reviewed with one is also unbound.
+    legacy = argv[:argv.index("--dependency-mode")] + argv[argv.index("--idempotency-key"):]
+    status, _receipt, posts, reads = _run_main(legacy)
+    assert status == 2 and not posts and not reads
+
+
+def test_health_monitoring_dependency_refusal_is_reported_without_details() -> None:
+    refusal = urllib.error.HTTPError(
+        "https://launchplane.example.invalid/v1/product-profiles/health-monitoring/apply", 400, "Bad Request",
+        hdrs=Message(), fp=io.BytesIO(json.dumps({"trace_id": "launchplane_req_refused", "error": {
+            "code": "invalid_product_profile", "message": "Updated product profile failed validation."}}).encode()),
+    )
+    arguments = _dependency_arguments("required", "derived")
+    arguments[arguments.index("--enabled")] = "--no-enabled"
+    arguments[arguments.index("--require-runtime-identity")] = "--no-require-runtime-identity"
+    status, receipt, posts, _reads = _run_main(["health-monitoring-dry-run", *arguments], post=refusal)
+    assert status != 0 and len(posts) == 1
+    assert receipt["status"] not in {"accepted", "ok"}
+
+
 
 EVENT_REFERENCE = "event-deploy-" + "e" * 64
 

@@ -169,6 +169,21 @@ registered `--private-endpoint-key`; enabling a private check requires it.
 For a disabled private check an omitted key preserves the existing key.
 No argument accepts an endpoint URL, domain, provider target or full profile.
 
+The lane's dependency coverage policy is optional. Omit every dependency flag
+to preserve it; the request is then identical to one from before the policy
+existed. To change it, pass `--dependency-mode informational|required` with
+`--dependency-source derived|override`. The service replaces the whole policy,
+so the source is always explicit and changing the mode never drops an existing
+override silently. An override takes zero or more `--dependency
+database|email|cache` (zero is an explained none) and a
+`--dependency-override-reason`; `derived` accepts neither. The dry-run shows the
+current and requested mode and override dependencies, and that policy joins the
+reviewed request digest, the saved-evidence check on apply and the read-back.
+Read-back compares the whole stored policy, reason included, against the
+request or, when omitted, against the policy read before apply. The service
+still refuses edits that would leave required coverage without an enabled
+HTTP check; switch to informational in the same reviewed change.
+
 Save the dry-run JSON outside the repository. Apply requires that evidence via
 `--dry-run-evidence-file`, its `plan_sha256` via `--expected-plan-digest`,
 `--reviewed-dry-run`, and a stable `--idempotency-key`. A request digest binds
@@ -179,8 +194,9 @@ After apply it reads the selected lane/check back, compares the intended policy,
 and verifies preservation of the stored public URL and lane fallback URLs
 privately. Private keys must match the requested or preserved registered key.
 
-Receipts contain the lane/check, intent and flags, digests, trace/record ids and
-read-back verification. URLs, endpoint keys and free-text reasons are omitted.
+Receipts contain the lane/check, intent and flags, dependency mode and override
+kinds, digests, trace/record ids and read-back verification. URLs, endpoint keys
+and free-text reasons, including override reasons, are omitted.
 `accepted_unverified` with a nonzero exit means apply was accepted but the
 response or read-back did not verify; inspect the record before any retry.
 An uncertain transport outcome retains the existing helper's reconciliation

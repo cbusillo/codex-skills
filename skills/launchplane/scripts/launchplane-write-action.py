@@ -5602,8 +5602,66 @@ HEALTH_MONITORING_PLAN_FIELDS = {
     "operation", "current_enabled", "requested_enabled", "current_require_runtime_identity",
     "requested_require_runtime_identity", "private_endpoint_key", "resolved_url", "changed",
     "applied", "reason", "source_label", "profile_updated_at_before", "profile_updated_at_after",
-    "profile_sha256_before", "plan_sha256",
+    "profile_sha256_before", "plan_sha256", "current_dependency_health", "requested_dependency_health",
 }
+HEALTH_DEPENDENCY_MODES = {"informational", "required"}
+HEALTH_DEPENDENCY_SOURCES = {"derived", "override"}
+HEALTH_DEPENDENCIES = {"database", "email", "cache"}
+
+
+def _dependency_health_policy(value: object) -> dict[str, object]:
+    """Normalize a lane dependency policy; an absent policy is the service default."""
+    if value is None:
+        return {"mode": "informational", "override": None}
+    source = _require_dict(value)
+    override = source.get("override")
+    if source.keys() - {"mode", "override"} or source.get("mode") not in HEALTH_DEPENDENCY_MODES:
+        raise LaunchplaneSafetyError("invalid_response")
+    if override is None:
+        return {"mode": source["mode"], "override": None}
+    override = _require_dict(override)
+    dependencies = override.get("dependencies")
+    reason = override.get("reason")
+    if (
+        override.keys() != {"dependencies", "reason"} or not isinstance(dependencies, list)
+        or not set(dependencies) <= HEALTH_DEPENDENCIES or len(set(dependencies)) != len(dependencies)
+        or not isinstance(reason, str) or not reason.strip()
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    return {"mode": source["mode"], "override": {"dependencies": sorted(dependencies), "reason": reason.strip()}}
+
+
+def _public_dependency_health(policy: dict[str, object]) -> dict[str, object]:
+    # Override reasons are free text; receipts keep only the mode and dependency kinds.
+    override = policy["override"]
+    return {"mode": policy["mode"], "override": None if override is None else {
+        "dependencies": cast(dict[str, object], override)["dependencies"],
+    }}
+
+
+def _requested_dependency_health(args: argparse.Namespace) -> dict[str, object] | None:
+    mode = getattr(args, "dependency_mode", None)
+    source = getattr(args, "dependency_source", None)
+    dependencies = list(getattr(args, "dependency", None) or [])
+    reason = (getattr(args, "dependency_override_reason", "") or "").strip()
+    if mode is None:
+        if source is not None or dependencies or reason:
+            raise ValueError("dependency_mode_required")
+        return None
+    # The service replaces the whole policy, so an override is never cleared implicitly.
+    if source is None:
+        raise ValueError("dependency_source_required")
+    if source == "derived":
+        if dependencies or reason:
+            raise ValueError("derived_dependency_rejects_override")
+        return {"mode": mode, "override": None}
+    if not reason:
+        raise ValueError("dependency_override_reason_required")
+    if len(reason) > 1000:
+        raise ValueError("dependency_override_reason_too_long")
+    if len(set(dependencies)) != len(dependencies):
+        raise ValueError("duplicate_dependency")
+    return {"mode": mode, "override": {"dependencies": sorted(dependencies), "reason": reason}}
 
 
 def _health_check_token(name: str) -> str:
@@ -5623,6 +5681,10 @@ def health_monitoring_body(
         "enabled": args.enabled, "require_runtime_identity": args.require_runtime_identity,
         "private_endpoint_key": args.private_endpoint_key.strip(),
     }
+    dependency_health = _requested_dependency_health(args)
+    if dependency_health is not None:
+        # Omission keeps the request and its saved evidence identical to legacy calls.
+        body["dependency_health"] = dependency_health
     for field in ("product", "context", "instance", "check_name"):
         if not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(cast(str, body[field])):
             raise ValueError(f"invalid_{field}")
@@ -5646,6 +5708,8 @@ def health_monitoring_body(
             "check_kind", "monitoring_intent", "enabled", "require_runtime_identity",
         )},
     }
+    if dependency_health is not None:
+        request["dependency_health"] = _public_dependency_health(dependency_health)
     if mode == "apply":
         digest = _reviewed_apply_digest(args)
         evidence, reviewed = _load_reviewed_evidence(
@@ -5660,6 +5724,8 @@ def health_monitoring_body(
                 "check_kind", "monitoring_intent", "enabled", "require_runtime_identity",
             ))
             or not re.fullmatch(r"[0-9a-f]{64}", str(reviewed.get("endpoint_sha256", "")))
+            or (dependency_health is not None
+                and reviewed.get("requested_dependency_health") != request["dependency_health"])
         ):
             raise ValueError("reviewed_dry_run_not_apply_eligible")
         body["reviewed_plan_sha256"] = digest
@@ -5691,6 +5757,19 @@ def _project_health_monitoring_plan(
         ))
     ):
         raise LaunchplaneSafetyError("invalid_response")
+    dependency_fields = {"current_dependency_health", "requested_dependency_health"} & source.keys()
+    if dependency_fields and len(dependency_fields) != 2:
+        raise LaunchplaneSafetyError("invalid_response")
+    dependency_review: dict[str, object] = {}
+    if dependency_fields:
+        current = _public_dependency_health(_dependency_health_policy(source["current_dependency_health"]))
+        requested = _public_dependency_health(_dependency_health_policy(source["requested_dependency_health"]))
+        # Without a requested policy the service must preserve the lane's current one.
+        if requested != request.get("dependency_health", current):
+            raise LaunchplaneSafetyError("invalid_response")
+        dependency_review = {"current_dependency_health": current, "requested_dependency_health": requested}
+    elif "dependency_health" in request:
+        raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "status": "ok", "mode": mode, "operation": source["operation"],
         **{field: public_identifier(source.get(field)) for field in (
@@ -5705,6 +5784,7 @@ def _project_health_monitoring_plan(
         "current_require_runtime_identity": _optional_bool(source.get("current_require_runtime_identity")),
         "endpoint_sha256": _canonical_sha256(source["resolved_url"]),
         "plan_sha256": _required_lower_sha256(source.get("plan_sha256"), code="invalid_response"),
+        **dependency_review,
     }
     assert_public_safe_shape(projected)
     return projected
@@ -5712,7 +5792,7 @@ def _project_health_monitoring_plan(
 
 def read_health_monitoring(
     *, settings: dict[str, str], body: dict[str, object], timeout: float
-) -> tuple[dict[str, object], dict[str, object]]:
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     provider = request_launchplane_read(
         service_url=settings["service_url"], settings=settings, query={}, timeout=timeout,
         path=_product_read_path("product-profile-read", product=cast(str, body["product"])),
@@ -5753,8 +5833,10 @@ def read_health_monitoring(
                       or type(public["require_runtime_identity"]) is not bool))
     ):
         raise LaunchplaneSafetyError("invalid_response")
+    dependency_health = _dependency_health_policy(policy.get("dependency_health"))
+    public["dependency_health"] = _public_dependency_health(dependency_health)
     assert_public_safe_shape(public)
-    return public, endpoint
+    return public, endpoint, dependency_health
 
 
 def execute_health_monitoring_apply(
@@ -5764,14 +5846,16 @@ def execute_health_monitoring_apply(
         args, operation="health-monitoring-dry-run", expected_digest=cast(str, body["reviewed_plan_sha256"]),
     )
     before: dict[str, object] = {}
+    before_dependency_health: dict[str, object] = {}
 
     def preflight(settings: dict[str, str]) -> dict[str, object] | None:
-        _policy, endpoint = read_health_monitoring(settings=settings, body=body, timeout=args.timeout)
+        _policy, endpoint, dependency_health = read_health_monitoring(settings=settings, body=body, timeout=args.timeout)
         resolved_url = (endpoint["url"] or endpoint["health_url"] or endpoint["base_url"]) if body["check_kind"] == "public_http" else ""
         if _canonical_sha256(resolved_url) != reviewed["endpoint_sha256"]:
             return {"error_code": "health_endpoint_changed_since_review",
                     "recommendation": "The endpoint changed since review; run a new dry-run."}
         before.update(endpoint)
+        before_dependency_health.update(dependency_health)
         return None
 
     def finish(settings: dict[str, str], _provider: dict[str, Any], payload: dict[str, Any]) -> bool:
@@ -5782,17 +5866,21 @@ def execute_health_monitoring_apply(
             payload["warnings"].append(warning("applied_plan_differs_from_review", "The applied monitoring plan differs from review."))
 
         def read() -> dict[str, object]:
-            policy, endpoint = read_health_monitoring(settings=settings, body=body, timeout=args.timeout)
+            policy, endpoint, dependency_health = read_health_monitoring(settings=settings, body=body, timeout=args.timeout)
             # A new private check may adopt its reviewed registered key. Public URLs,
             # including an empty stored URL with lane fallback, stay byte-for-byte unchanged.
             expected_endpoint = {**before}
             if body["check_kind"] == "private_http" and body["private_endpoint_key"]:
                 expected_endpoint["private_endpoint_key"] = body["private_endpoint_key"]
-            return {**policy, "endpoint_preserved": endpoint == expected_endpoint}
+            # An omitted dependency policy must survive the edit unchanged, reason included.
+            expected_dependency_health = body.get("dependency_health", before_dependency_health)
+            return {**policy, "endpoint_preserved": endpoint == expected_endpoint,
+                    "dependency_health_matches": dependency_health == expected_dependency_health}
 
         verified = attach_read_back(
             payload, read=read, label="health monitoring policy",
-            matches=lambda observed: observed["endpoint_preserved"] is True and all(
+            matches=lambda observed: observed["endpoint_preserved"] is True
+            and observed["dependency_health_matches"] is True and all(
                 observed[field] == body[target] for field, target in (
                     ("monitoring_intent", "monitoring_intent"), ("kind", "check_kind"),
                     ("enabled", "enabled"), ("require_runtime_identity", "require_runtime_identity"),
@@ -9511,6 +9599,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         monitoring.add_argument("--enabled", action=argparse.BooleanOptionalAction, required=True)
         monitoring.add_argument("--require-runtime-identity", action=argparse.BooleanOptionalAction, required=True)
         monitoring.add_argument("--private-endpoint-key", default="")
+        monitoring.add_argument("--dependency-mode", choices=sorted(HEALTH_DEPENDENCY_MODES),
+                                help="Set the lane's dependency coverage policy; omit to preserve it.")
+        monitoring.add_argument("--dependency-source", choices=sorted(HEALTH_DEPENDENCY_SOURCES),
+                                help="Required with --dependency-mode: derived metadata or an explained override.")
+        monitoring.add_argument("--dependency", action="append", choices=sorted(HEALTH_DEPENDENCIES),
+                                help="Override dependency; repeat, or omit for an explained none.")
+        monitoring.add_argument("--dependency-override-reason", default="")
         _add_reviewed_apply_arguments(monitoring, apply=command.endswith("-apply"))
 
     testing_hold_read = subparsers.add_parser(

@@ -1228,7 +1228,8 @@ verification.
   or `prelaunch`), `--enabled` / `--no-enabled`, `--require-runtime-identity` /
   `--no-require-runtime-identity`, and `--reason`. A private check may name an
   existing `--private-endpoint-key`; endpoint URLs and topology fields are never
-  accepted. Apply requires saved dry-run evidence, `--expected-plan-digest`,
+  accepted. Optional `--dependency-mode` with `--dependency-source` sets the
+  lane's dependency coverage policy; omitting them preserves it. Apply requires saved dry-run evidence, `--expected-plan-digest`,
   `--reviewed-dry-run` and an idempotency key. It checks the endpoint before
   sending, then reads back the exact check and lane intent with private endpoint
   comparison. Receipts omit URLs and free-text reasons. Policy verification
