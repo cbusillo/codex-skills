@@ -5032,6 +5032,18 @@ def _summarize_product_read(
     return payload
 
 
+# Launchplane's operation error codes: up to four dot-separated snake_case words.
+PATH_CHECK_DOTTED_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}(?:\.[a-z][a-z0-9_]{0,63}){1,3}$")
+PATH_CHECK_DOTTED_CODE_MAX_LENGTH = 96
+
+
+def _path_check_step_code(value: object) -> str:
+    if (isinstance(value, str) and len(value) <= PATH_CHECK_DOTTED_CODE_MAX_LENGTH
+            and PATH_CHECK_DOTTED_CODE_RE.fullmatch(value)):
+        return value
+    return public_code(value)
+
+
 def _project_path_check(value: object) -> dict[str, object]:
     source = _require_dict(value)
     fields = {"product", "path", "state", "blocked_count", "unknown_count", "steps"}
@@ -5057,8 +5069,6 @@ def _project_path_check(value: object) -> dict[str, object]:
         assert_public_safe_shape({key: item for key, item in step.items() if key not in {"step_id", "record_ids"}})
         if step["state"] not in states or step["fix"] not in fixes:
             raise LaunchplaneSafetyError("invalid_response")
-        if not isinstance(step["code"], str):
-            raise LaunchplaneSafetyError("invalid_response")
         record_ids = step["record_ids"]
         if not isinstance(record_ids, list) or len(record_ids) > 50:
             raise LaunchplaneSafetyError("invalid_response")
@@ -5066,7 +5076,8 @@ def _project_path_check(value: object) -> dict[str, object]:
             {
                 "step_id": public_identifier(step["step_id"]),
                 "state": step["state"],
-                "code": public_code(step["code"]),
+                # A failed testing deploy carries the operation's dotted error code.
+                "code": _path_check_step_code(step["code"]),
                 "description": public_summary_string(step["description"]),
                 "fix": step["fix"],
                 "record_ids": [public_identifier(record_id) for record_id in record_ids],
