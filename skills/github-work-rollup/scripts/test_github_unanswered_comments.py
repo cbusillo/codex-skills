@@ -140,6 +140,31 @@ def test_generic_bot_closeout_neither_addresses_nor_acknowledges() -> None:
     assert result["publicly_addressed"] is False
 
 
+def test_later_reply_skips_planning_records_and_follows_the_latest_edit() -> None:
+    external = comment(
+        comment_id=1,
+        author="outside-user",
+        body="Can I send a corrected sheet?",
+        created_at="2026-07-25T14:59:27Z",
+        updated_at="2026-07-25T16:00:00Z",
+    )
+    before_edit = comment(comment_id=2, author="fixture-automation", body="Thanks, reading it now.",
+                          created_at="2026-07-25T15:30:00Z")
+    record = comment(comment_id=3, author="fixture-automation",
+                     body='Structured wait review\n\n<!-- github-plan:wait {"state": "clear"} -->',
+                     created_at="2026-07-25T17:00:00Z")
+    decision = comment(comment_id=4, author="fixture-automation", body="Director decision: keep going.",
+                       created_at="2026-07-25T17:30:00Z")
+
+    [unanswered] = classify([external, before_edit, record, decision], [external])
+    reply = comment(comment_id=5, author="fixture-automation", body="Yes, please attach it here.",
+                    created_at="2026-07-25T18:00:00Z")
+    [answered] = classify([external, before_edit, record, decision, reply], [external])
+
+    assert unanswered["later_reply_url"] is None
+    assert answered["later_reply_url"] == reply.url
+
+
 def test_unrelated_owner_comment_does_not_clear_external_comment() -> None:
     external = comment(
         comment_id=1,

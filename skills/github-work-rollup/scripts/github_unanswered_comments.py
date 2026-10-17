@@ -62,6 +62,7 @@ EXIT_ATTENTION = 2
 EXIT_DEGRADED = 3
 OPENING_POST = "issue_body"
 WAITING_LABEL = "plan:waiting"
+PLAN_RECORD_MARKER = "<!-- github-plan:"
 DIRECTOR_ROLE_WORDS = ("Director",)
 POSSIBLE_AUTOMATION_LOGIN = re.compile(r"(?:^|[-_])(?:bot|automation)$", re.IGNORECASE)
 REACTIONS_QUERY = """
@@ -864,6 +865,30 @@ def targeted_response_for(
     return None
 
 
+def later_reply_for(
+    external: Comment,
+    comments: list[Comment],
+    actor_logins: set[str],
+    until: datetime,
+) -> Comment | None:
+    """First owner or automation reply after the comment's latest version, targeted or not.
+
+    Planning records and Director questions or decisions are bookkeeping, not replies.
+    """
+    responses = sorted(comments, key=lambda comment: (comment_activity_through(comment, until), comment.comment_id))
+    for response in responses:
+        if (
+            is_director_record(response)
+            or PLAN_RECORD_MARKER in response.body
+            or normalize_login(response.author) not in actor_logins
+            or not response.body.strip()
+        ):
+            continue
+        if comment_timestamp(response.created_at) <= until and response_is_after(response, external, until):
+            return response
+    return None
+
+
 def director_awareness_for(
     external: Comment,
     comments: list[Comment],
@@ -962,6 +987,7 @@ def comment_states_for_thread(
             effective_until,
         )
         awareness = director_awareness_for(comment, comments, owner_logins | bot_logins, effective_until)
+        later_reply = later_reply_for(comment, comments, owner_logins | bot_logins, effective_until)
         if owner_response is not None:
             owner_seen: bool | None = True
             owner_seen_evidence = {
@@ -1035,6 +1061,7 @@ def comment_states_for_thread(
                 "publicly_addressed": publicly_addressed,
                 "public_response_actor": public_response_actor,
                 "public_response_url": public_response.url if public_response is not None else None,
+                "later_reply_url": later_reply.url if later_reply is not None else None,
                 "attention_state": attention_state,
                 "handled_reason": "closed_after_comment" if handled_closed and closed_after else "closed_with_response" if handled_closed else None,
             }
