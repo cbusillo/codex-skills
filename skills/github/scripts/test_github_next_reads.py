@@ -239,16 +239,18 @@ def test_cli_main_thread_inline_interrupt_is_terminal_cancellation() -> None:
 def test_signal_routing_pin_leaves_other_processes_alone() -> None:
     received = []
     previous = signal.signal(signal.SIGTERM, lambda *_: received.append("fixture"))
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    child = None
     try:
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         with self_signals_reach_sender():
             os.kill(child.pid, signal.SIGTERM)
         assert not received, "a signal for another process reached the fixture"
         assert child.wait(timeout=5) == -signal.SIGTERM
     finally:
         signal.signal(signal.SIGTERM, previous)
-        child.kill()
-        child.wait()
+        if child is not None:
+            child.kill()
+            child.wait()
 
 
 def test_cancelled_global_graphql_read_never_launches_transport() -> None:
