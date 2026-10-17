@@ -2061,6 +2061,17 @@ to that repository, as for the Client App's public-read fallback; public
 repositories, unknown visibility, and the registering account's repositories
 keep the App reader, and `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` or
 `--check` keeps it too.
+Under the same per-command opt-in, two commands run as the declared personal
+login whatever credential the repository would select, because an App
+installation token can never act for an account: a `gh api` read of an
+endpoint that answers only for the authenticated account (`user/...`,
+`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`), and
+`gh repo fork` without `--org`, whose fork lands in the person's account.
+Stderr names the endpoint or the fork source. Bare `user` stays the App actor
+probe, a fork into an organization keeps the repository's route, and required
+automation authentication keeps the App. A `gh` usage error, which `gh`
+reports before sending any request, is a `validation_error` with
+`write_outcome: not_started`.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
 `GITHUB_TOKEN` in that order. `--check` reports the selected credential source
 and verifies the current App installation and actor without performing a write.

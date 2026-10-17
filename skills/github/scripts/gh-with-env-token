@@ -769,9 +769,9 @@ target_repository() {
 	fi
 }
 
-# The repository in the endpoint of `gh api`: its first argument that is not an
-# option or an option's value.
-api_endpoint() {
+# The endpoint of `gh api`: its first argument that is not an option or an
+# option's value, without a leading slash.
+api_path() {
 	skip_value=0
 	for argument in "$@"; do
 		if [ "$skip_value" -eq 1 ]; then
@@ -784,24 +784,72 @@ api_endpoint() {
 			;;
 		-*) ;;
 		*)
-			path=${argument#/}
-			case $path in
-			repos/*/*) ;;
-			*) return 1 ;;
-			esac
-			path=${path#repos/}
-			owner=${path%%/*}
-			rest=${path#*/}
-			name=${rest%%[/?#]*}
-			case "$owner/$name" in
-			*'{'* | *'}'* | /* | */) return 1 ;;
-			esac
-			printf '%s/%s\n' "$owner" "$name"
+			printf '%s\n' "${argument#/}"
 			return 0
 			;;
 		esac
 	done
 	return 1
+}
+
+# The repository in the endpoint of `gh api`.
+api_endpoint() {
+	path=$(api_path "$@") || return 1
+	case $path in
+	repos/*/*) ;;
+	*) return 1 ;;
+	esac
+	path=${path#repos/}
+	owner=${path%%/*}
+	rest=${path#*/}
+	name=${rest%%[/?#]*}
+	case "$owner/$name" in
+	*'{'* | *'}'* | /* | */) return 1 ;;
+	esac
+	printf '%s/%s\n' "$owner" "$name"
+}
+
+# A `gh api` read that answers only for the authenticated account, which an
+# App installation token cannot read. Bare `user` stays the App actor probe.
+is_user_scoped_read() {
+	[ "${1:-}" = api ] || return 1
+	! is_write_command "$@" || return 1
+	shift
+	user_scoped_path=$(api_path "$@") || return 1
+	user_scoped_path=${user_scoped_path%%[?#]*}
+	case $user_scoped_path in
+	user/* | notifications | notifications/*) return 0 ;;
+	repos/*/*/subscription)
+		rest=${user_scoped_path#repos/*/}
+		[ "${rest#*/}" = subscription ]
+		return
+		;;
+	esac
+	return 1
+}
+
+# `gh repo fork` creates the fork in the authenticated account unless --org
+# names an organization, so an App installation token cannot make it. Print
+# the source repository, empty for the current one.
+personal_fork_source() {
+	[ "${1:-}" = repo ] && [ "${2:-}" = fork ] || return 1
+	shift 2
+	skip_value=0
+	fork_source=
+	for argument in "$@"; do
+		if [ "$skip_value" -eq 1 ]; then
+			skip_value=0
+			continue
+		fi
+		case $argument in
+		--) break ;;
+		--org | --org=*) return 1 ;;
+		--fork-name | --remote-name) skip_value=1 ;;
+		-*) ;;
+		*) [ -n "$fork_source" ] || fork_source=$(repository_from_reference "$argument") ;;
+		esac
+	done
+	printf '%s\n' "$fork_source"
 }
 
 # gh accepts OWNER/REPO, HOST/OWNER/REPO, and repository URLs.
@@ -979,6 +1027,23 @@ act_as_own_user() {
 	fi
 	run_with_input env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
 }
+
+# Under the caller's opt-in, a read only the person's account can answer and a
+# fork into that account run as the declared personal login, whichever
+# credential the named repository would otherwise select.
+if [ "$own_user_opt_in" -eq 1 ] && [ "$require_automation_auth" -ne 1 ] &&
+	[ "$check_auth" -ne 1 ] && [ -z "$write_actor_repository" ]; then
+	if is_user_scoped_read "$@"; then
+		verify_read_command "$@" || exit 1
+		act_as_own_user "the user-scoped endpoint $user_scoped_path" "$@"
+		exit $?
+	fi
+	if personal_fork_source "$@" >/dev/null; then
+		fork_source=$(personal_fork_source "$@")
+		act_as_own_user "a fork of ${fork_source:-the current repository}" "$@"
+		exit $?
+	fi
+fi
 
 app_variable_count=0
 app_variables='GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH'

@@ -1305,6 +1305,20 @@ def _failure_from_terminal_envelope(payload: Any, *, is_write: bool) -> Optional
     )
 
 
+def _is_gh_usage_error(stderr: str) -> bool:
+    # gh prints the command's usage only for a flag error, which it returns
+    # while validating arguments, before the command sends any request.
+    lines = stderr.splitlines()
+    return any(
+        line == "USAGE" and index + 1 < len(lines) and lines[index + 1].startswith("  gh ")
+        for index, line in enumerate(lines)
+    )
+
+
+def _gh_usage_reason(stderr: str) -> str:
+    return next((line.strip() for line in stderr.splitlines() if line.strip()), "invalid arguments")
+
+
 def _is_pr_create_validation_refusal(stderr: str) -> bool:
     # gh's create diagnostic identifies the mutation. Require the entire
     # response and only known input errors; mixed/partial failures stay unknown.
@@ -1363,6 +1377,13 @@ def classify_legacy_failure(
         retryable = False
         fallback_eligible = False
         write_outcome = not_started
+    elif not stdout.strip() and _is_gh_usage_error(stderr):
+        cause = "validation_error"
+        disposition = "stop"
+        retryable = False
+        fallback_eligible = False
+        write_outcome = not_started
+        message = f"gh rejected the command's arguments before sending any request: {_gh_usage_reason(stderr)}"
     elif (
         is_write and command_started and operation == "github.pr.create"
         and not stdout.strip()

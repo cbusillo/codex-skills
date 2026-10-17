@@ -1340,6 +1340,31 @@ def test_legacy_deadline_and_cancellation_are_distinct() -> None:
     assert cancelled.retryable is False
 
 
+def test_legacy_gh_usage_error_is_a_local_argument_failure() -> None:
+    # gh 2.102's stderr for `gh repo fork OWNER/REPO --remote=false`, shortened.
+    usage = (
+        "the `--remote` flag is unsupported when a repository argument is provided\n"
+        "\n"
+        "Create a fork of a repository.\n"
+        "\n"
+        "USAGE\n"
+        "  gh repo fork [<repository>] [-- <gitflags>...] [flags]\n"
+        "\n"
+        "FLAGS\n"
+        "  --clone                 Clone the fork\n"
+    )
+    failure = _api.classify_legacy_failure(usage, is_write=True)
+    assert failure.cause == "validation_error"
+    assert failure.write_outcome == "not_started"
+    assert failure.retryable is False
+    assert "before sending any request" in failure.message
+    assert "`--remote` flag is unsupported" in failure.message
+
+    # An unexplained failure without gh's usage block keeps its unknown outcome.
+    unexplained = _api.classify_legacy_failure("the `--remote` flag is unsupported", is_write=True)
+    assert unexplained.write_outcome == "unknown"
+
+
 def test_legacy_html_parse_error_is_summarized_as_provider_failure() -> None:
     result = _api.legacy_process_result(
         1,
@@ -3103,6 +3128,7 @@ def main() -> None:
         test_legacy_graphql_rate_limit_uses_probe_reset,
         test_legacy_provider_bucket_replaces_requested_bucket,
         test_legacy_deadline_and_cancellation_are_distinct,
+        test_legacy_gh_usage_error_is_a_local_argument_failure,
         test_legacy_html_parse_error_is_summarized_as_provider_failure,
         test_infer_gh_command_context_distinguishes_project_reads_and_writes,
         test_terminal_envelopes_have_stable_fields_and_redaction,

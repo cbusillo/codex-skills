@@ -539,6 +539,108 @@ def test_write_to_another_owners_repository_without_installation_runs_as_the_per
         assert "refusing to act as your own GitHub user" in required.stderr
 
 
+def own_user_account_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
+    env_file = root / "local.env"
+    env_file.write_text(
+        "GITHUB_APP_ID=12345\n"
+        "GITHUB_APP_INSTALLATION_ID=67890\n"
+        "GITHUB_APP_PRIVATE_KEY_PATH=/fake/app.pem\n"
+        "CODEX_AUTOMATION_LOGIN='catalog-app[bot]'\nGH_WITH_ENV_TOKEN_OWN_USER_LOGIN=contributor-login\n",
+        encoding="utf-8",
+    )
+    # The App works for every repository, as on a public repository or one
+    # with an installation; only the person's account can answer these.
+    identity = root / "identity.py"
+    write(identity, fake_app_identity())
+    classifier = root / "classifier.py"
+    write(classifier, "raise SystemExit(1)\n")
+    fake_gh = root / "gh"
+    write(
+        fake_gh,
+        "#!/bin/sh\n"
+        "if [ \"$*\" = 'api user --jq .login' ]; then\n"
+        "  [ -z \"${GH_TOKEN:-}\" ] && echo contributor-login && exit 0\n"
+        "  exit 42\n"
+        "fi\n"
+        "printf 'ran-with-token:%s\\n' \"${GH_TOKEN:-active-login}\"\n",
+    )
+    return env_file, identity, classifier, fake_gh
+
+
+def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        env_file, identity, classifier, fake_gh = own_user_account_fixture(Path(directory))
+        opt_in = {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}
+
+        for args in (
+            ("api", "repos/energee/node-appletv-remote/subscription"),
+            ("api", "/user/repos?per_page=1", "--jq", ".[].name"),
+            ("api", "notifications"),
+            ("api", "--method", "GET", "notifications/threads/1"),
+        ):
+            result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
+            assert result.returncode == 0, (args, result.stderr)
+            assert result.stdout == "ran-with-token:active-login\n", args
+            assert "acting as your own GitHub user on the user-scoped endpoint" in result.stderr, args
+
+            # Without the opt-in the read keeps the App, as before.
+            default = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh)
+            assert default.returncode == 0, (args, default.stderr)
+            assert default.stdout == "ran-with-token:installation-token\n", args
+
+        # Repository reads, the bare actor probe and writes keep the App.
+        for args in (
+            ("api", "repos/energee/node-appletv-remote/contents/subscription"),
+            ("api", "repos/energee/node-appletv-remote"),
+            ("api", "user"),
+        ):
+            result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
+            assert result.returncode == 0, (args, result.stderr)
+            assert "acting as your own GitHub user" not in result.stderr, args
+
+        # The declared-login check applies, and required automation auth wins.
+        configured = env_file.read_text()
+        env_file.write_text(configured.replace("=contributor-login", "=another-person"))
+        refused = run_wrapper(env_file, classifier, identity, "api", "notifications",
+                              gh_command=fake_gh, extra_env=opt_in)
+        assert refused.returncode != 0 and not refused.stdout, refused
+        env_file.write_text(configured + "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1\n")
+        required = run_wrapper(env_file, classifier, identity, "api", "notifications",
+                               gh_command=fake_gh, extra_env=opt_in)
+        assert required.stdout == "ran-with-token:installation-token\n", required.stderr
+        assert "acting as your own GitHub user" not in required.stderr
+
+
+def test_personal_fork_runs_as_the_person_on_opt_in() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        env_file, identity, classifier, fake_gh = own_user_account_fixture(Path(directory))
+        opt_in = {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}
+
+        for args, source in (
+            (("repo", "fork", "zabuldon/teslajsonpy", "--clone=false", "--default-branch-only"),
+             "zabuldon/teslajsonpy"),
+            (("repo", "fork", "--fork-name", "renamed", "https://github.com/zabuldon/teslajsonpy"),
+             "zabuldon/teslajsonpy"),
+            (("repo", "fork", "--clone=false"), "the current repository"),
+        ):
+            result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
+            assert result.returncode == 0, (args, result.stderr)
+            assert result.stdout == "ran-with-token:active-login\n", args
+            assert f"acting as your own GitHub user on a fork of {source}" in result.stderr, args
+
+        # A fork into an organization is not the person's account.
+        org_fork = run_wrapper(env_file, classifier, identity,
+                               "repo", "fork", "zabuldon/teslajsonpy", "--org", "example-org",
+                               gh_command=fake_gh, extra_env=opt_in)
+        assert "acting as your own GitHub user" not in org_fork.stderr
+
+        # Without the opt-in the fork never runs as the person.
+        default = run_wrapper(env_file, classifier, identity,
+                              "repo", "fork", "zabuldon/teslajsonpy", "--clone=false", gh_command=fake_gh)
+        assert default.stdout == "ran-with-token:installation-token\n", default.stderr
+        assert "acting as your own GitHub user" not in default.stderr
+
+
 def test_app_actor_probe_synthesizes_include_response_without_user_endpoint() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -1149,6 +1251,8 @@ def main() -> None:
         test_app_auth_takes_precedence_and_runs_write_as_verified_app,
         test_app_installation_follows_the_target_repository,
         test_write_to_another_owners_repository_without_installation_runs_as_the_person_on_opt_in,
+        test_user_scoped_read_runs_as_the_person_on_opt_in,
+        test_personal_fork_runs_as_the_person_on_opt_in,
         test_app_actor_probe_synthesizes_include_response_without_user_endpoint,
         test_app_login_mismatch_fails_closed_for_write_and_check,
         test_app_login_comparison_is_case_insensitive,
