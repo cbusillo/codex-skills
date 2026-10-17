@@ -274,14 +274,16 @@ dedicated `tmux -L supervisor` server so controls work while the display sleeps
 or the screen is locked. Existing iTerm sessions keep using the default iTerm
 backend during the transition. Read [tmux launch, viewing and locked-screen
 proof](references/helpers.md#tmux-launches) before the first tmux launch or
-closure. To see the sessions as familiar iTerm tabs, attach from iTerm with
-`tmux -L supervisor -CC attach -t <window-id>` using the returned container id.
+closure. To see the sessions as familiar iTerm tabs, attach read-only from
+iTerm with `tmux -N -L supervisor -CC attach -r -t <container-id>` using the
+returned container id; the running server must be tmux 3.7 or later to enforce
+read-only input.
 Detaching or reattaching leaves agent sessions running; never kill the server
 to disconnect the view.
-The view is read-only. When a worker needs the Director's answers, for example
-a computer-use session, tell the Director at launch that you will relay: bring
-each question to chat as a numbered Q and send the reply with
-`iterm_tab.py send` at a verified idle prompt.
+The Director cannot type into that view. When a worker needs the Director's
+answers, for example a computer-use session, tell the Director at launch that
+you will relay: bring each question to chat as a numbered Q and send the reply
+with `iterm_tab.py send` at a verified idle prompt.
 
 The shared launcher disables Claude Code prompt suggestions with
 `--settings '{"promptSuggestionEnabled": false}'` on both backends. Keep that
@@ -392,9 +394,10 @@ including non-dim text, establishes neither its author nor approval.
    ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)).
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
-   issue do not clash. The anchor must be claimable: for a `plan:waiting`
-   issue, split out a small active child issue, or give the existing wait
-   evidence that `claim --wait-resolved` accepts.
+   issue do not clash. A worker that will claim its anchor needs a claimable
+   one: for a `plan:waiting` issue, split out a small active child issue, or,
+   when the wait is already resolved, give that evidence to
+   `claim --wait-resolved`. Never resolve a wait that still holds.
    Before a launch batch, compare PRs merged with PRs opened in each
    repository over the last few hours. If merges are behind and no merge-path
    fix is available, launch only finishing work. Keep each repository under
