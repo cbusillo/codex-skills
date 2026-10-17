@@ -476,6 +476,131 @@ class ProjectCacheRetirementTests(unittest.TestCase):
 
 
 class SdkRetirementTests(unittest.TestCase):
+    def test_offline_records_hold_registered_sdks_projects_and_caches(self):
+        for kind in ("jdk.table.xml", "inspection-helper-sdks.xml", "recentProjects.xml", "cache", "finalizing", "idea", "receipt"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                root = home / "task"
+                root.mkdir()
+                with (patch.object(jb_inspect.Path, "home", return_value=home),
+                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                      patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
+                    if kind in {"cache", "finalizing"}:
+                        projects = home / "Library/Caches/JetBrains/PyCharm2026.2/projects"
+                        record = (projects / ".inspection-finalizing-id.json" if kind == "finalizing" else
+                                  projects / ".inspection-retired-id/.inspection-helper-owned.json")
+                        record.parent.mkdir(parents=True)
+                        record.write_text(json.dumps({"worktree_path": str(root)}))
+                    elif kind == "idea":
+                        (root / ".idea").mkdir()
+                    elif kind == "receipt":
+                        record = jb_inspect.repository_preparation_receipt_path({"worktree_root": str(root)})
+                        record.parent.mkdir(parents=True, exist_ok=True)
+                        record.write_text("{}")
+                        self.addCleanup(record.unlink)
+                    else:
+                        record = home / "Library/Application Support/JetBrains/PyCharm2026.2/options" / kind
+                        record.parent.mkdir(parents=True)
+                        record.write_text(f'<application><option value="{root}/.venv/bin/python" /></application>')
+                    args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+                    with (patch.object(jb_inspect, "retirement_worktree", return_value=root),
+                          patch.object(jb_inspect, "discover_identities", return_value=[]),
+                          patch.object(jb_inspect.subprocess, "run") as removal):
+                        with self.assertRaises(jb_inspect.InspectError):
+                            jb_inspect.command_retire_sdks(args)
+                        removal.assert_not_called()
+                        self.assertTrue(root.is_dir())
+
+    def test_offline_record_scan_preserves_scope_and_fails_closed_on_unreadable_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "task"
+            options = home / "Library/Application Support/JetBrains/PyCharm2026.2/options"
+            options.mkdir(parents=True)
+            (home / "another-config").mkdir()
+            table = options / "jdk.table.xml"
+            with (patch.object(jb_inspect.Path, "home", return_value=home),
+                  patch.object(jb_inspect.sys, "platform", "darwin"),
+                  patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": str(home / "another-config")})):
+                table.write_text(f'<application><homePath value="$USER_HOME$/task-other/.venv/bin/python" /></application>')
+                jb_inspect.offline_retirement_records(root)
+                table.write_text(f'<application><homePath value="$USER_HOME$/task/.venv/bin/python" /></application>')
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.offline_retirement_records(root)
+                table.write_text("broken xml")
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.offline_retirement_records(root)
+                with patch.object(jb_inspect.Path, "iterdir", side_effect=PermissionError("fixture")):
+                    with self.assertRaises(jb_inspect.InspectError):
+                        jb_inspect.offline_retirement_records(root)
+
+    def test_custom_storage_and_unresolved_cache_ownership_require_live_cleanup(self):
+        for kind in ("custom-storage", "missing-cache-marker", "bad-cache-marker"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                with (patch.object(jb_inspect.Path, "home", return_value=home),
+                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                      patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
+                    if kind == "custom-storage":
+                        config = home / "Library/Application Support/JetBrains/PyCharm2026.2"
+                        config.mkdir(parents=True)
+                        (config / "idea.properties").write_text("idea.system.path=/custom/cache\n")
+                    else:
+                        cache = home / "Library/Caches/JetBrains/PyCharm2026.2/projects/.inspection-retired-id"
+                        cache.mkdir(parents=True)
+                        if kind == "bad-cache-marker":
+                            (cache / ".inspection-helper-owned.json").write_text("{}")
+                    with self.assertRaises(jb_inspect.InspectError):
+                        jb_inspect.offline_retirement_records(home / "task")
+
+    def test_offline_apply_rechecks_records_after_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "task"
+            root.mkdir()
+            calls = []
+            def discover(_port):
+                calls.append(True)
+                if len(calls) == 2:
+                    (root / ".idea").mkdir()
+                return []
+            args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+            with (patch.object(jb_inspect.Path, "home", return_value=home),
+                  patch.object(jb_inspect.sys, "platform", "darwin"),
+                  patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
+                  patch.object(jb_inspect, "retirement_worktree", return_value=root),
+                  patch.object(jb_inspect, "discover_identities", side_effect=discover),
+                  patch.object(jb_inspect.subprocess, "run") as removal):
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.command_retire_sdks(args)
+                removal.assert_not_called()
+
+    def test_unprepared_worktree_retires_without_live_ide_even_with_a_virtualenv(self):
+        for virtualenv in (False, True):
+            with self.subTest(virtualenv=virtualenv), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                primary, root = home / "primary", home / "task"
+                subprocess.run(["git", "init", "-q", str(primary)], check=True)
+                subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
+                                "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "docs"], check=True)
+                (primary / ".git" / "info" / "exclude").write_text(".venv/\n")
+                subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
+                if virtualenv:
+                    (root / ".venv").mkdir()
+                args = Namespace(command="remove-worktree", repo=str(root), dry_run=True, lifecycle_lock_timeout_ms=1000)
+                with (patch.object(jb_inspect.Path, "home", return_value=home),
+                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                      patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
+                      patch.object(jb_inspect, "discover_identities", return_value=[]),
+                      patch.object(jb_inspect, "http_post") as post):
+                    self.assertFalse(jb_inspect.command_retire_sdks(args)["worktree_removed"])
+                    self.assertTrue(root.is_dir())
+                    args.dry_run = False
+                    self.assertTrue(jb_inspect.command_retire_sdks(args)["worktree_removed"])
+                    post.assert_not_called()
+                self.assertFalse(root.exists())
+                subprocess.run(["git", "-C", str(primary), "show-ref", "--verify", "--quiet", "refs/heads/task"], check=True)
+
     @staticmethod
     def identity():
         return {"port": 63342, "session_id": "session", "helper_sdk_lifecycle_version": 1}

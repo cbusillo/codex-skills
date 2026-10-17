@@ -24,6 +24,7 @@ import os
 import plistlib
 import re
 import signal
+import stat
 import shlex
 import shutil
 import subprocess
@@ -11602,8 +11603,90 @@ def finish_raced_worktree_removal(common: Path, root: Path, before: dict[str, tu
                            {"git_error": git_error, "retained_entry_count": len(remaining), "retained_entries": sorted(remaining)[:50]})
 
 
+def offline_retirement_records(root: Path) -> list[str]:
+    """Prove the no-cleanup case from disk; never edit an offline IDE's state."""
+    if sys.platform != "darwin":
+        raise InspectError("Offline retirement record discovery is only supported on macOS; use a live IDE for cleanup.", 3)
+    checked: list[str] = []
+
+    def present(path: Path) -> bool:
+        try:
+            path.lstat()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def children(path: Path) -> list[Path]:
+        try:
+            return list(path.iterdir())
+        except FileNotFoundError:
+            return []
+
+    def refers_to_worktree(value: str) -> bool:
+        value = urllib.parse.unquote(value.removeprefix("file://"))
+        value = value.replace("$USER_HOME$", str(Path.home()))
+        path = Path(os.path.expanduser(value))
+        return path.is_absolute() and (Path(os.path.normpath(path)).is_relative_to(root) or path.resolve().is_relative_to(root))
+
+    def require_unrelated(path: Path, values: list[str]) -> None:
+        checked.append(str(path))
+        if any(refers_to_worktree(value) for value in values):
+            raise InspectError("IDE records reference this worktree; use a live IDE to prove cleanup.", 3,
+                               {"offline_retirement_record": str(path)})
+
+    try:
+        # A virtualenv alone is not an IDE registration. Prepared project state is.
+        for path in (root / ".idea", repository_preparation_receipt_path({"worktree_root": str(root)})):
+            if present(path):
+                raise InspectError("IDE preparation records exist; use a live IDE to prove cleanup.", 3,
+                                   {"offline_retirement_record": str(path)})
+        configs = children(Path.home() / "Library" / "Application Support" / "JetBrains")
+        override = os.environ.get("JETBRAINS_INSPECTION_IDE_CONFIG_DIR")
+        if override:
+            # Add the override, never let it hide other installed IDE records.
+            configs.append(Path(override).expanduser())
+        for config in configs:
+            if not stat.S_ISDIR(config.stat().st_mode):
+                continue
+            for name in ("jdk.table.xml", "inspection-helper-sdks.xml", "recentProjects.xml", "recentProjectDirectories.xml"):
+                path = config / "options" / name
+                if not present(path):
+                    continue
+                document = ElementTree.parse(path)
+                if document.getroot().tag != "application":
+                    raise ValueError("Invalid IDE application records")
+                require_unrelated(path, [value for element in document.iter() for value in element.attrib.values()])
+            # Custom system paths cannot be proved from the standard cache root.
+            properties = config / "idea.properties"
+            if present(properties) and any(re.match(r"\s*idea\.(system|config)\.path\s*=", line)
+                                           for line in properties.read_text().splitlines()):
+                raise InspectError("Custom IDE storage paths require live IDE cleanup proof.", 3,
+                                   {"offline_retirement_record": str(properties)})
+        for system in children(Path.home() / "Library" / "Caches" / "JetBrains"):
+            if not stat.S_ISDIR(system.stat().st_mode):
+                continue
+            for project in children(system / "projects"):
+                marker = project if project.name.startswith(".inspection-finalizing-") else project / ".inspection-helper-owned.json"
+                if not present(marker):
+                    if project.name.startswith(".inspection-retired-"):
+                        raise InspectError("Unresolved IDE cache ownership requires live IDE cleanup proof.", 3)
+                    continue
+                record = json.loads(marker.read_text())
+                if (not isinstance(record, dict) or not isinstance(record.get("worktree_path"), str)
+                        or not Path(record["worktree_path"]).is_absolute()):
+                    raise InspectError("Invalid IDE cache ownership requires live IDE cleanup proof.", 3)
+                require_unrelated(marker, [record["worktree_path"]])
+        return checked
+    except (OSError, ValueError, ElementTree.ParseError) as error:
+        raise InspectError("Cannot read offline IDE records; retain the worktree and restore record access or use a live IDE.", 3,
+                           {"offline_retirement_error": type(error).__name__}) from error
+
+
 def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool) -> list[dict[str, Any]]:
     if not identities:
+        if root is not None:
+            offline_retirement_records(root)
+            return []
         raise InspectError("No live IDE is available to prove SDK cleanup; start the prepared worktree's IDE first.", 3)
     # Validate every session before sending any mutating request.
     for identity in identities:
@@ -11767,6 +11850,7 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     if completed.returncode or root.exists():
                         finish_raced_worktree_removal(common, root, before, completed.stderr)
             return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
+                    "offline_cleanup_proved": root is not None and not identities,
                     "project_cache_preview": cache_preview, "project_cache_cleanup": cache_cleanup,
                     "sdk_preview": preview, "sdk_cleanup": applied, "sdk_apply_skipped": [item["ide"] for item in skipped],
                     "worktree_removed": root is not None and not args.dry_run,

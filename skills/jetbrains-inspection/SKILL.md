@@ -294,7 +294,15 @@ Command model:
   lifecycle lock; unresolved identity or close failures return nonzero.
 - `remove-worktree --repo /exact/task/path`: after the repository cleanup
   checks establish disposition, dry-run SDK retirement through every discovered
-  live IDE. With `--no-dry-run`, unregister only SDKs proved helper-owned,
+  live IDE. With no live IDE on macOS, an unprepared worktree can instead prove
+  there is nothing to clean from local preparation records, every standard
+  JetBrains config's SDK and recent-project records (plus the explicit config
+  override), and sealed/finalizing project-cache ownership markers. A `.venv`
+  alone is not a registration. Matching records, unreadable/malformed records,
+  custom storage paths, or local `.idea` state retain the worktree for the live
+  IDE cleanup route. Offline proof is repeated before Git removal and reported
+  as `offline_cleanup_proved`; it never edits global IDE files. Other platforms
+  retain the live-IDE requirement. With `--no-dry-run`, unregister only SDKs proved helper-owned,
   sending the apply only to IDEs whose preview lists one (`sdk_apply_skipped`
   names the rest), recheck every IDE, then remove the clean, unlocked linked worktree with non-force Git removal. Close
   its IDE project and reconcile its leases first. Primary checkouts, locked apply attempts,
