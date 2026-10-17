@@ -855,6 +855,10 @@ each target repository:
   declaration, and the helpers print `acting as your own GitHub user`.
   Commits keep your git identity, and `gh-pr.py create` adds the
   AI-assistance sentence to the body unless it already says so.
+  For a fork contribution, the commit's identity follows the fork's `origin`
+  unless `git-commit-as-bot --repo UPSTREAM-OWNER/REPO` names the pull
+  request's target; see
+  [Primary App and contributor identity](references/cli-reference.md#primary-app-and-contributor-identity).
   `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` refuses even with the opt-in.
 
 Client fleets may configure a second narrow App by repository owner; read
