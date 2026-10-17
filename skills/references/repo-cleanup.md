@@ -37,7 +37,9 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    A lock whose reason names a retire command was placed by the host's
    worktree helper when it created the checkout. It is not another job's hold.
    When this task created the worktree and its PR is merged or closed, retire
-   the worktree with that command. It replaces the manual unlock and removal
+   the worktree with that command. The landing step retires a landed PR's
+   source worktree the same way through `github`'s After A Merge, since the
+   session that created it has usually ended. It replaces the manual unlock and removal
    in step 6, including the IDE SDK retirement, and restores the lock if it
    fails.
 2. Establish current Git evidence. Resolve the live default branch and pin its

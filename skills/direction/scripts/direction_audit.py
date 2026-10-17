@@ -1848,13 +1848,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-requests", type=int, default=800, help="stranded sweep's global request budget")
     parser.add_argument("--deadline-seconds", type=float, default=600, help="stranded sweep's total read deadline")
     parser.add_argument("--stranded-format", choices=("json", "markdown"), default="json")
+    parser.add_argument("--worktree-root", type=pathlib.Path,
+                        help="flag finished task worktrees under this root; defaults to the host's configured hostHelper root")
     parser.add_argument("--prune-unadopted", action="store_true", help="preview removal of archived or unadopted repositories from the local marker")
     parser.add_argument("--apply-prune", action="store_true", help="apply the pruning preview with a recoverable backup")
     parser.add_argument("--remove-missing-repo", action="append", default=[], metavar="OWNER/REPO",
                         help="owner-approved marker removal when this exact repository returns HTTP 404; repeat per repository")
     args = parser.parse_args(argv)
 
-    if (args.stranded_owner or args.stranded_repo or args.question_queue) and not args.stranded_work_only:
+    if (args.stranded_owner or args.stranded_repo or args.question_queue or args.worktree_root) and not args.stranded_work_only:
         parser.error("stranded inventory scope requires --stranded-work-only")
     if args.stranded_work_only:
         if args.stale_waits_only or args.prune_unadopted or args.apply_prune or args.remove_missing_repo:
@@ -1871,7 +1873,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.question_queue and not re.fullmatch(r"[\w.-]+/[\w.-]+#[1-9][0-9]*", args.question_queue):
             parser.error("--question-queue requires OWNER/REPO#NUMBER")
         import direction_stranded
+        import dev_worktree
 
+        worktree_root = args.worktree_root
+        if worktree_root is None:
+            # Only a host helper's root carries locks that name a retire command.
+            try:
+                root, helper = dev_worktree.configuration()
+                worktree_root = root if helper else None
+            except (dev_worktree.Refused, OSError, ValueError):
+                worktree_root = None
         deadline_at = time.time() + args.deadline_seconds
         reader = github_read.GitHubReader(
             gh_cmd=args.gh, operation="github.direction.stranded_work", strict_actor=True,
@@ -1883,7 +1894,7 @@ def main(argv: list[str] | None = None) -> int:
             owner=args.stranded_owner, director_names=tuple(args.director_name),
             question_queue=args.question_queue,
             policy_reader=lambda repo: direction_stranded.train_policy(repo, deadline_at=deadline_at),
-            director=args.owner,
+            director=args.owner, worktree_root=worktree_root,
         )
         print(direction_stranded.markdown(result) if args.stranded_format == "markdown" else json.dumps(result, indent=2))
         return 0 if result["complete"] else 3

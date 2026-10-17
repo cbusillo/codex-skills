@@ -117,6 +117,16 @@ unknown), next actor and review requirement:
   page caps and exhausted read budgets remain explicit coverage gaps. Archived
   repositories are read too; reopening them would first require unarchiving,
   which this sweep does not do.
+- Finished task worktrees left on this host, one finding per repository with
+  every worktree in its evidence. A worktree counts when its lock names a
+  retire command and its branch is already in the default branch's tracking
+  ref, or every PR for it is merged or closed and contains its local head. The
+  local check needs no GitHub read; other branches use one PR read each from the
+  sweep's budget. A worktree with no commits of its own is aged from its
+  creation, so a session that has only just started stays under the age
+  threshold. The root comes from `--worktree-root`, or else from the host's
+  configured `hostHelper` root; without one the check is skipped. Each worktree
+  is retired with its lock's command, never from the report.
 - Existing train blocked views, aged from their label event, plus structured
   waits naming the Supervisor, Director, Director login or supplied aliases.
   Body-only waits have unknown age because unrelated issue activity must not
