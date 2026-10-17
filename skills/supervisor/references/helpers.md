@@ -1647,6 +1647,23 @@ the matched PID/TTY and Supervisor-owned ledger entry.
 
 Missing handoffs are discovered from the native final response or recorded
 comment-write receipts, then verified against live comment author and dates.
+A comment URL printed by a recognized comment-write call, however its output
+was summarized or chained, is bound only when the comment's body is exactly what
+that call sent and names no other session. What a call sent is a heredoc consumed
+by that comment command's stdin, or the text the session last wrote to its
+`--body-file` (a Write or Edit tool, or a `cat` heredoc redirect). Input to an
+unrelated command in the same shell call does not qualify. Body files are tracked
+by their full lexical path, using the transcript's recorded working directory
+for relative paths; matching basenames is insufficient. Straightforward literal
+shell assignments such as `body=/tmp/handoff.md; gh-comment issue 1 --body-file
+"$body"` are supported within the same call. Unknown variables, shell cwd changes,
+and relative paths without a recorded working directory do not establish a file
+identity. These cases can still use the helper's JSON receipt or the exact-session
+fallback below. When the transcript records the call's start and
+result, the comment must also have been created between them. Other text the
+session typed, such as a search pattern, is not authorship, and neither is a
+shared-bot comment that a chained read prints. The helper's JSON receipt binds
+on its own.
 A fallback source-issue or summary comment must name the exact native ID;
 shared-bot recency alone never qualifies. The summary thread defaults to
 `OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.
