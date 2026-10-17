@@ -512,6 +512,9 @@ Never merge the base into, rebase, or update your own PR branch merely because
 it is `BEHIND`. Refresh only for a real conflict or a check that explicitly
 requires it. The merge train owns freshness on train-routed PRs; follow its
 workflow or assigned handoff rather than refreshing proactively.
+An enforced up-to-date branch-protection rule counts as an explicit requirement
+immediately before an authorized direct merge, after checks and review are
+settled. Do not refresh while that work is still pending.
 
 When a branch update is needed and belongs to this session, use `gh-pr.py view`
 to verify

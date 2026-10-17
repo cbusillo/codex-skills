@@ -186,11 +186,12 @@ For each snapshot:
    head gets its own retry state. See [API notes](references/github-api-notes.md)
    for selection and retry accounting.
 5. **Behind the base** (`update_behind_branch`): this action alone does not
-   justify a refresh. Refresh only for a real conflict or an explicit check
-   requirement under [Merge Readiness](../github/references/repo-workflow.md#merge-readiness),
-   with existing merge authorization and its ownership checks. The merge train
+   justify a refresh. Before an authorized direct merge, apply
+   [Merge Readiness](../github/references/repo-workflow.md#merge-readiness) to
+   verify an explicit update requirement, ownership and scope. The merge train
    owns freshness on train-routed PRs; follow its workflow or assigned handoff.
-   After an authorized update, watch checks on the new head.
+   After an authorized update, watch checks on the new head. Resolve real
+   conflicts through Merge Readiness's local conflict path.
 6. **Evidence still settling**: `check_evidence_incomplete` means check counts
    cannot prove a terminal round; do not rerun from it. `review_readiness_unavailable`
    means everything else is green but review state could not be read; the
