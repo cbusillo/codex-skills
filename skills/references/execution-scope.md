@@ -43,6 +43,18 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
   relevant instruction, and explain which information or authorization is still
   missing. Distinguish a requirement from an interpretation. Complete independent
   authorized work while the dependent action waits.
+- When a permission check refuses an action, such as a harness classifier, a
+  declined permission prompt, or a helper's authorization refusal, stop that
+  action, report the refusal with its exact text, and continue other work.
+  Never redo it through another tool, agent, or identity. A command-policy
+  message that names the helper to run instead is the supported route, not a
+  refusal. When the refusal is wrong for in-scope work, fix its cause as the
+  overall direction says; never ask for a grant to get around it.
+- When delegating to a helper agent, write the actions it may take, including
+  each kind of GitHub write, into the agent's prompt itself. Claude Code's auto
+  mode judges authority from the prompt and treats a file the agent reads as
+  data, so a write authorized only in a brief file is refused. Keep long
+  procedure in the file.
 - Ask for missing information early and continue independent authorized work.
   Before requesting approval, complete the authorized preparation needed to make
   the proposed action concrete and reviewable. For user decisions, explain the

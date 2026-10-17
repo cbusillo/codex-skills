@@ -67,6 +67,18 @@ def running_agent(explicit: str | None = None, *, environ: Mapping[str, str] | N
     return ancestor_agent() if environ is None else None
 
 
+NATIVE_SESSION_VARS = {"claude": ("CLAUDE_CODE_SESSION_ID",), "codex": ("CODEX_THREAD_ID", "CODEX_SESSION_ID")}
+
+
+def native_sessions(agent: str | None, *, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The running family's own native session IDs by variable; empty when unreadable.
+
+    An unidentified harness may hold only an outer harness's inherited ID, so it reads none.
+    """
+    env = os.environ if environ is None else environ
+    return {name: env[name] for name in NATIVE_SESSION_VARS.get(agent or "", ()) if env.get(name)}
+
+
 def assignment_labels(labels: list[Any]) -> list[str]:
     names = {str(item.get("name", "") if isinstance(item, dict) else item).casefold() for item in labels}
     return sorted(names.intersection(LABEL_DEFS))

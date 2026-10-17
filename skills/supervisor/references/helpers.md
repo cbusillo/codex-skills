@@ -1164,7 +1164,15 @@ common shell wrappers. Keep brief text in `--brief-file`, separate from the
 shell settings in `--command-file`.
 A temporary write probe checks receipt storage before any tab is created; it
 is removed and never counted as a launch. A probe failure names the error type
-and asks for write access to the reader's storage root. Each receipt is written
+and asks for write access to the reader's storage root. An EPERM refusal adds
+the likely cause, macOS app-data protection: a process with no app behind it,
+such as a worker under the launchd-started tmux server, cannot reach the App
+Group store, and no wider grant is the fix. EPERM can also come from a file
+flag such as `uchg` on the storage root, so the message keeps the write-access
+check. Launches and model reviews of record for those workers run from the
+Supervisor's terminal session until Context Panel writes receipts for such
+callers ([context-panel#873](https://github.com/cbusillo/context-panel/issues/873)).
+Each receipt is written
 atomically immediately before the launch command is
 submitted, after its tab has a session. A failed or uncertain submit retains its
 receipt; inspect the tab before retrying. Receipts use the snapshot command's

@@ -369,6 +369,9 @@ including non-dim text, establishes neither its author nor approval.
    waiting for the Client's acceptance" until the Client accepts its current
    head, and "Ready for the merge train" only after
    ([codex-skills#1535](https://github.com/cbusillo/codex-skills/issues/1535)).
+   Every brief also carries the refusal rule from
+   [task scope](../references/execution-scope.md): stop a refused action,
+   report its exact text, and never redo it another way.
    Briefs give the installed GitHub skill's helper path and tell sessions to use
    `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
    when the task authorizes a Supervisor handoff,

@@ -2551,6 +2551,14 @@ def claim_once(args: argparse.Namespace) -> None:
 
     agent = github_agent.running_agent(getattr(args, "agent", None))
     override = (getattr(args, "agent_override", None) or "").strip()
+    # release-claim can only release a session that exists; an unreadable ID stays permitted.
+    native = github_agent.native_sessions(agent)
+    if native and claim["session"] not in native.values():
+        found = ", ".join(f"{name}={value}" for name, value in native.items())
+        raise ClassifiedPlanError("session_not_native",
+            f"--session {claim['session']} is not this session's native ID ({found}). Claim with that native ID; "
+            "release-claim can never release a claim made under an invented label.",
+            payload={"native_sessions": native, "running_agent": agent})
 
     def check_agent(assigned_issue: dict[str, Any]) -> None:
         mismatch = github_agent.exclusion(assigned_issue, agent)
