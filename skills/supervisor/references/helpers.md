@@ -147,10 +147,11 @@ and closure readers retain their strict ledger validation.
 
 `goal_board.py` lists the open issues on OWNER/direction (100 per page) and
 keeps those titled `Track:`, whatever their milestone. It then reads up to
-ten Tracks per aliased GraphQL query: each Track's labels and last 30
+ten Tracks per aliased GraphQL query: each Track's labels and last 100
 comments, its first 50 native children with their labels, sub-issue counts
-and last 10 comments, and up to five PRs closing each child with their last 20
-comments. Seven Tracks took two requests and 28 points on October 16, 2026.
+and last 100 comments, and up to five PRs closing each child with their last
+30 comments. Seven Tracks took two requests, 28 points and about five seconds
+on October 16, 2026.
 
 The latest `Director decision` comment counts only from the `--owner` login, the
 configured automation login, or `--decision-author` logins. PR handoff state
@@ -164,12 +165,13 @@ still routes it.
 `--format markdown` the board with titles, and `--format links` the board
 without titles, for public places where Client details must not appear.
 `coverage` gives `discovered`, `read` and `complete`. A failed or partial
-discovery read prints no Tracks and says every Track is unknown. A failed
-Track read, more than 50 children or more than five closing PRs marks that
-part `unknown, not refreshed`. Each of these exits 1. When a thread is longer
-than the comments read (`decision_scan: last N`), the newest decision among
-them is still the latest; with none among them, the board says older
-decisions are unknown. Open the thread before saying it has none.
+discovery read prints no Tracks and says every Track is unknown. Within a
+read Track, each row's `unread` lists what the read could not settle, and the
+board prints it as `unknown, not refreshed`: more than 50 children or five
+closing PRs, a status label beyond the labels read, or a thread longer than
+the comments read with no decision or handoff among them. The newest decision
+or handoff inside the window is the latest, so a long thread with one stays
+complete. Any unread Track or part makes `complete` false and exits 1.
 
 ### Codex provider capacity stops
 

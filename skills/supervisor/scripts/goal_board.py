@@ -26,10 +26,11 @@ from skills.github.scripts.ready_handoff import HEAD, READY, WAITING, handoff_li
 UNKNOWN = "unknown, not refreshed"
 DECISION = re.compile(r"(?i)^\W*director decision\b")
 CHILD_LIMIT = 50
-TRACK_COMMENTS = 30
-CHILD_COMMENTS = 10
+TRACK_COMMENTS = 100
+CHILD_COMMENTS = 100
+LABEL_LIMIT = 50
 PR_LIMIT = 5
-PR_COMMENTS = 20
+PR_COMMENTS = 30
 TRACKS_PER_QUERY = 10
 
 LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $cursor: String) {
@@ -45,21 +46,21 @@ LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $
 COMMENT = "url createdAt updatedAt databaseId body author { __typename login }"
 TRACK_FIELDS = f"""number title url state
       milestone {{ title }}
-      labels(first: 20) {{ nodes {{ name }} }}
+      labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
       comments(last: {TRACK_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
       subIssues(first: {CHILD_LIMIT}) {{
         totalCount
         nodes {{
           number title url state
           repository {{ nameWithOwner }}
-          labels(first: 20) {{ nodes {{ name }} }}
+          labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
           subIssuesSummary {{ total completed }}
           comments(last: {CHILD_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
           closedByPullRequestsReferences(first: {PR_LIMIT}, includeClosedPrs: false) {{
             totalCount
             nodes {{
               number url state isDraft mergeable headRefOid
-              comments(last: {PR_COMMENTS}) {{ nodes {{ {COMMENT} }} }}
+              comments(last: {PR_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
             }}
           }}
         }}
@@ -79,18 +80,31 @@ def login(author):
     return f"{name}[bot]" if author.get("__typename") == "Bot" and not name.endswith("[bot]") else name
 
 
-def status_label(labels):
+def truncated(connection):
+    return connection["totalCount"] > len(connection["nodes"])
+
+
+def status_label(labels, unread):
     names = [node["name"] for node in labels["nodes"]]
-    return next((name for name in names if name.startswith("plan:")), None)
+    found = next((name for name in names if name.startswith("plan:")), None)
+    if found is None and truncated(labels):
+        unread.append("status label")
+        return UNKNOWN
+    return found
 
 
-def latest_decision(comments, trusted):
+def latest_decision(comments, trusted, unread):
+    """The newest decision in the last comments is the latest; none there may hide an older one."""
     found = [node for node in comments["nodes"]
              if login(node.get("author")) in trusted and DECISION.match(node.get("body") or "")]
-    return max(found, key=lambda node: timestamp(node["createdAt"]))["url"] if found else None
+    if found:
+        return max(found, key=lambda node: timestamp(node["createdAt"]))["url"]
+    if truncated(comments):
+        unread.append("older decisions")
+    return None
 
 
-def handoff(pr, trusted):
+def handoff(pr, trusted, unread):
     """Classify the latest trusted handoff with the merge train's shared rules."""
     latest = None
     for node in pr["comments"]["nodes"]:
@@ -101,6 +115,9 @@ def handoff(pr, trusted):
             if latest is None or key > latest[0]:
                 latest = (key, first, node)
     if latest is None:
+        if truncated(pr["comments"]):
+            unread.append(f"handoff on {pr['url']}")
+            return UNKNOWN
         return "no handoff"
     first, node = latest[1:]
     if first.startswith(WAITING):
@@ -110,26 +127,31 @@ def handoff(pr, trusted):
 
 
 def child_row(node, trusted):
+    unread = []
     prs = node["closedByPullRequestsReferences"]
+    if truncated(prs):
+        unread.append(f"closing PRs beyond {PR_LIMIT}")
     return {"repository": node["repository"]["nameWithOwner"], "number": node["number"],
         "title": node["title"], "url": node["url"], "state": node["state"].lower(),
-        "status": status_label(node["labels"]), "sub_issues": node["subIssuesSummary"],
-        "latest_decision": latest_decision(node["comments"], trusted),
-        "decision_scan": "complete" if node["comments"]["totalCount"] <= CHILD_COMMENTS else f"last {CHILD_COMMENTS}",
+        "status": status_label(node["labels"], unread), "sub_issues": node["subIssuesSummary"],
+        "latest_decision": latest_decision(node["comments"], trusted, unread),
         "open_prs": [{"url": pr["url"], "head": pr["headRefOid"], "draft": pr["isDraft"],
-            "mergeable": pr["mergeable"].lower(), "handoff": handoff(pr, trusted)}
+            "mergeable": pr["mergeable"].lower(), "handoff": handoff(pr, trusted, unread)}
             for pr in prs["nodes"] if pr["state"] == "OPEN"],
-        "open_prs_complete": prs["totalCount"] <= PR_LIMIT}
+        "unread": unread}
 
 
 def track_row(node, trusted):
+    unread = []
     children = node["subIssues"]
+    if truncated(children):
+        unread.append(f"children beyond {CHILD_LIMIT}")
     return {"number": node["number"], "title": node["title"], "url": node["url"],
-        "milestone": (node.get("milestone") or {}).get("title"), "status": status_label(node["labels"]),
-        "latest_decision": latest_decision(node["comments"], trusted),
-        "decision_scan": "complete" if node["comments"]["totalCount"] <= TRACK_COMMENTS else f"last {TRACK_COMMENTS}",
+        "milestone": (node.get("milestone") or {}).get("title"),
+        "status": status_label(node["labels"], unread),
+        "latest_decision": latest_decision(node["comments"], trusted, unread),
         "children": [child_row(child, trusted) for child in children["nodes"]],
-        "children_complete": children["totalCount"] <= len(children["nodes"])}
+        "unread": unread}
 
 
 def discover(reader, owner, name, max_pages):
@@ -188,16 +210,16 @@ def goal_board(reader, owner, *, repo="direction", trusted, max_pages=10):
                     "read": False, "status": UNKNOWN})
     read = sum(1 for row in rows if row["read"])
     complete = (not errors and read == len(tracks)
-        and all(row["children_complete"] and all(child["open_prs_complete"] for child in row["children"])
-                for row in rows if row["read"]))
+        and not any(row["unread"] or any(child["unread"] for child in row["children"])
+                    for row in rows if row["read"]))
     return {"tracks": rows, "coverage": {"discovered": len(tracks), "read": read, "complete": complete},
         "errors": errors}
 
 
-def decision_text(row):
-    if row["latest_decision"]:
-        return f"; decision {row['latest_decision']}"
-    return "" if row["decision_scan"] == "complete" else f"; older decisions {UNKNOWN}"
+def unread_text(row):
+    # The status and handoff fields already print their own unknown.
+    return "".join(f"; {part} {UNKNOWN}" for part in row["unread"]
+                   if part != "status label" and not part.startswith("handoff on "))
 
 
 def markdown(board, *, links_only=False):
@@ -210,18 +232,14 @@ def markdown(board, *, links_only=False):
         if not track["read"]:
             lines.append(f"\n- {track['url']}{name}: {UNKNOWN}")
             continue
-        decision = decision_text(track)
-        more = "" if track["children_complete"] else f"; children beyond {CHILD_LIMIT} {UNKNOWN}"
-        lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}{decision}{more}")
+        decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
+        lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}{decision}{unread_text(track)}")
         for child in track["children"]:
-            label = child["status"] or child["state"]
             title = "" if links_only else f" {child['title']}"
+            decision = f"; decision {child['latest_decision']}" if child["latest_decision"] else ""
             prs = "".join(f"; PR {pr['url']} {'draft, ' if pr['draft'] else ''}{pr['handoff']}, mergeable {pr['mergeable']}"
                           for pr in child["open_prs"])
-            if not child["open_prs_complete"]:
-                prs += f"; more PRs {UNKNOWN}"
-            decision = decision_text(child)
-            lines.append(f"  - {child['url']}{title}: {label}{decision}{prs}")
+            lines.append(f"  - {child['url']}{title}: {child['status'] or child['state']}{decision}{prs}{unread_text(child)}")
     for error in board["errors"]:
         lines.append(f"\nError: {error}")
     return "\n".join(lines)

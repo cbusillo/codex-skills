@@ -27,13 +27,13 @@ def comment(body, author=BOT, at="2026-10-16T10:00:00Z", ident=1):
 def pr(number, state="OPEN", comments=()):
     return {"number": number, "url": f"https://github.com/owner/app/pull/{number}", "state": state,
             "isDraft": False, "mergeable": "MERGEABLE", "headRefOid": HEAD,
-            "comments": {"nodes": list(comments)}}
+            "comments": {"totalCount": len(comments), "nodes": list(comments)}}
 
 
 def child(number, prs=(), comments=(), total_prs=None):
     return {"number": number, "title": f"Child {number}", "url": f"https://github.com/owner/app/issues/{number}",
             "state": "OPEN", "repository": {"nameWithOwner": "owner/app"},
-            "labels": {"nodes": [{"name": "plan"}, {"name": "plan:active"}]},
+            "labels": {"totalCount": 2, "nodes": [{"name": "plan"}, {"name": "plan:active"}]},
             "subIssuesSummary": {"total": 0, "completed": 0},
             "comments": {"totalCount": len(comments), "nodes": list(comments)},
             "closedByPullRequestsReferences": {"totalCount": len(prs) if total_prs is None else total_prs,
@@ -43,7 +43,7 @@ def child(number, prs=(), comments=(), total_prs=None):
 def track(number, children=(), comments=(), total_children=None):
     return {"number": number, "title": f"Track: {number}", "url": f"https://github.com/owner/direction/issues/{number}",
             "state": "OPEN", "milestone": {"title": f"Milestone {number}"},
-            "labels": {"nodes": [{"name": "plan"}, {"name": "plan:waiting"}]},
+            "labels": {"totalCount": 2, "nodes": [{"name": "plan"}, {"name": "plan:waiting"}]},
             "comments": {"totalCount": len(comments), "nodes": list(comments)},
             "subIssues": {"totalCount": len(children) if total_children is None else total_children,
                           "nodes": list(children)}}
@@ -110,10 +110,32 @@ class GoalBoardTests(unittest.TestCase):
             self.assertEqual(board["coverage"]["read"], 1)
             self.assertFalse(board["coverage"]["complete"])
             self.assertIn(goal_board.UNKNOWN, goal_board.markdown({**board, "checked_at": "now"}))
-        long_thread = track(1, comments=[comment("Progress note")])
-        long_thread["comments"]["totalCount"] = 45
-        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=long_thread))
+
+    def test_truncated_comments_or_labels_say_unknown_instead_of_a_status(self):
+        long_track = track(1, comments=[comment("Progress note")])
+        long_track["comments"]["totalCount"] = 145
+        many_labels = child(11)
+        many_labels["labels"] = {"totalCount": 60, "nodes": [{"name": "area"}]}
+        long_pr = pr(100, comments=[comment("CI is green")])
+        long_pr["comments"]["totalCount"] = 80
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[many_labels, child(12, prs=[long_pr])])))
+        self.assertFalse(board["coverage"]["complete"])
+        rows = board["tracks"][0]["children"]
+        self.assertEqual(rows[0]["status"], goal_board.UNKNOWN)
+        self.assertEqual(rows[1]["open_prs"][0]["handoff"], goal_board.UNKNOWN)
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=long_track))
+        self.assertFalse(board["coverage"]["complete"])
         self.assertIn(f"older decisions {goal_board.UNKNOWN}", goal_board.markdown({**board, "checked_at": "now"}))
+        # A decision or handoff inside the window is the latest one, so a long thread stays complete.
+        decided = track(1, comments=[comment("Director decision: yes")])
+        decided["comments"]["totalCount"] = 145
+        ready = pr(100, comments=[comment(f"Ready for the merge train\n\nHead: {HEAD}")])
+        ready["comments"]["totalCount"] = 80
+        decided["subIssues"] = {"totalCount": 1, "nodes": [child(12, prs=[ready])]}
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=decided))
+        self.assertTrue(board["coverage"]["complete"])
+        self.assertEqual(board["tracks"][0]["children"][0]["open_prs"][0]["handoff"], "ready")
 
     def test_discovery_failures_refuse_rather_than_return_a_short_board(self):
         for pages in ([ApiResult(ok=False, status=403, body=None)],
