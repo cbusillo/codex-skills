@@ -55,7 +55,15 @@ LOCAL_OPERATOR_ENV_KEYS = {
     "LAUNCHPLANE_LOCAL_OPERATOR_SUBJECT",
     "LAUNCHPLANE_LOCAL_OPERATOR_TOKEN_LABEL",
 }
+NAMES_ONLY_READS = {
+    "context-runtime-settings-read": "settings",
+    "instance-runtime-settings-read": "settings",
+    "context-secrets-read": "secrets",
+    "instance-secrets-read": "secrets",
+}
+NAMES_ONLY_MAX_ITEMS = 500
 READ_ONLY_OPERATIONS = {
+    *NAMES_ONLY_READS,
     "dokploy-inventory-read",
     "merge-train-policy-read",
     "repository-inventory-read",
@@ -5512,6 +5520,62 @@ PRODUCT_READ_SUMMARIZERS = {
 }
 
 
+def summarize_names_only_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    """Project only named metadata fields; never inspect settings values or audit data."""
+    operation = str(request["operation"])
+    field = NAMES_ONLY_READS[operation]
+    if (
+        provider_payload.get("status") != "ok"
+        or provider_payload.get("context") != request["context"]
+        or provider_payload.get("instance") != request["instance"]
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    records = provider_payload.get(field)
+    if not isinstance(records, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected = []
+    names_truncated = False
+    for raw in records[:NAMES_ONLY_MAX_ITEMS]:
+        record = _require_dict(raw)
+        scope = record.get("scope")
+        allowed_scopes = ("global", "context", "instance") if field == "settings" else (
+            "global", "context", "context_instance"
+        )
+        if scope not in allowed_scopes:
+            raise LaunchplaneSafetyError("invalid_response")
+        item: dict[str, object] = {"scope": scope}
+        if field == "settings":
+            for name in ("context", "instance"):
+                value = record.get(name)
+                item[name] = "" if value == "" else public_identifier(value)
+            for name in ("keys", "withheld_keys"):
+                values = record.get(name)
+                if not isinstance(values, list):
+                    raise LaunchplaneSafetyError("invalid_response")
+                names_truncated |= len(values) > NAMES_ONLY_MAX_ITEMS
+                item[name] = [_public_env_key(value) for value in values[:NAMES_ONLY_MAX_ITEMS]]
+        else:
+            for name in ("name", "integration"):
+                item[name] = public_identifier(record.get(name))
+            item["status"] = public_code(record.get("status"))
+        projected.append(item)
+    result = {field: projected, "records_truncated": len(records) > NAMES_ONLY_MAX_ITEMS,
+              "names_truncated": names_truncated}
+    assert_public_safe_shape(result)
+    payload = base_payload(status="ok", operation=operation, request=request)
+    payload["result"] = result
+    payload["summary"] = {
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+        "recommendation": "Names and metadata only; lists reflect caller access, not proof of absence or effective runtime values.",
+    }
+    return payload
+
+
+PRODUCT_READ_SUMMARIZERS.update({command: summarize_names_only_read for command in NAMES_ONLY_READS})
+
+
 def execute_product_read(
     *,
     args: argparse.Namespace,
@@ -9693,6 +9757,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     product_secret_bindings_read.add_argument("--product", required=True)
 
+    for command in NAMES_ONLY_READS:
+        names_read = subparsers.add_parser(command, help="Read names and metadata only; never emit values.")
+        names_read.add_argument("--context", required=True)
+        if command.startswith("instance-"):
+            names_read.add_argument("--instance", required=True)
+
     target_replacement_operation_read = subparsers.add_parser(
         "target-replacement-operation-read",
         help=(
@@ -10244,6 +10314,15 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        if args.command in NAMES_ONLY_READS:
+            context = public_identifier(args.context)
+            instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""
+            request = {"operation": args.command, "context": context, "instance": instance}
+            path = helper_command_path(args.command).format(
+                context=urllib.parse.quote(context, safe=""),
+                instance=urllib.parse.quote(instance, safe=""),
+            )
+            return execute_product_read(args=args, operation=args.command, request=request, path=path)
         from launchplane_route_authority import COMMANDS as route_authority_commands, execute as execute_route_authority
         if args.command in route_authority_commands:
             return execute_route_authority(sys.modules[__name__], args)

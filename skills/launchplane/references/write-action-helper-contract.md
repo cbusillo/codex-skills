@@ -81,6 +81,41 @@ On HTTP 409, restart at zero. No failure yields a partial-success page. Reduce
 budget remains unavailable. Runtime use waits for normal delivery of the service
 route; this command never falls back to direct provider access.
 
+## Names-only settings and secret reads
+
+```bash
+uv run scripts/launchplane-write-action.py context-runtime-settings-read --context example-site
+uv run scripts/launchplane-write-action.py instance-runtime-settings-read --context example-site --instance testing
+uv run scripts/launchplane-write-action.py context-secrets-read --context example-site
+uv run scripts/launchplane-write-action.py instance-secrets-read --context example-site --instance testing
+```
+
+These four local extensions use the existing authenticated GET routes under
+`/v1/contexts/{context}` and `/v1/contexts/{context}/instances/{instance}`.
+They add no permission, workflow fallback or direct storage access. A denial
+retains its error code and trace, with no second request.
+
+`result.settings` contains only each record's scope, context, instance, `keys`
+and `withheld_keys`. `result.secrets` contains only name, integration, scope
+and status. Unknown fields, values, ciphertext, descriptions and audit metadata
+are never projected. Malformed retained metadata fails the read. The envelope
+keeps the requested context/instance and service trace. Both record lists and
+each key list are capped at 500; `records_truncated` and `names_truncated`
+report the bounds. A truncated or access-filtered list cannot prove absence.
+
+The settings endpoint currently transports non-credential plain values too.
+The helper does not access its `values` field and never emits it; this is an
+output projection, not a server-side names-only transport option. Do not use a
+live settings call when the task forbids receiving values. Secret endpoints
+return status metadata, without requesting or decrypting managed values.
+
+Global records returned by the service remain visible in these inventories.
+An empty context/instance on an inherited global record is valid. This is a
+record inventory, not proof that a global key reaches a site's effective
+environment. A product-only binding read cannot replace it when auditing
+legacy global-inclusive paths. No resolver, delivery, or global authorization
+policy changes here.
+
 ## Merge-train enrollment read
 
 `merge-train-policy-read --repo OWNER/REPO` calls the complete active-policy
