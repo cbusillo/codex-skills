@@ -1420,6 +1420,14 @@ caller's own identity can take a product along that path. It makes one GET to
 `product_environment.read` on the product's lane contexts. This is a bounded
 local extension; it writes nothing and grants no authority.
 
+For Odoo operation prerequisites, select `--path testing --intent
+provision|generation|testing-replacement`. Optional `--source-mode ssh|container-export`,
+`--operation-id` and `--task-id` select the exact copy source, original resource
+intent and provision task; these require an intent. The ordinary deployment read
+is unchanged. The service must echo the requested intent; an older service that
+ignores it fails response validation. This is still one read and grants no apply
+authority. Launchplane#3911 owns compatible service delivery.
+
 The service's `check` becomes `result`: product, path, overall state, blocked
 and unknown counts, and ordered steps with `step_id`, state, code, fixed
 description, fix kind, and record ids. Clear steps use `fix: none`; other fix

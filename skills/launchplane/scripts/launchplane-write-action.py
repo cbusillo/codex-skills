@@ -5038,8 +5038,10 @@ def _project_path_check(value: object) -> dict[str, object]:
     step_fields = {"step_id", "state", "code", "description", "fix", "record_ids"}
     states = ("clear", "blocked", "unknown")
     fixes = ("none", "code", "grant", "owner_approval", "client_acceptance", "by_hand", "wait")
-    if set(source) != fields:
+    if fields.difference(source) or set(source).difference(fields | {"intent"}):
         raise LaunchplaneSafetyError("unsafe_response_shape")
+    if "intent" in source and source["intent"] not in ("provision", "generation", "testing-replacement"):
+        raise LaunchplaneSafetyError("invalid_response")
     # Identifier fields have their own validator; keep all other fields strict.
     assert_public_safe_shape({key: item for key, item in source.items() if key not in {"product", "steps"}})
     if source["path"] not in ("testing", "promote") or source["state"] not in states:
@@ -5078,7 +5080,7 @@ def _project_path_check(value: object) -> dict[str, object]:
             raise LaunchplaneSafetyError("invalid_response")
     if source["state"] != state:
         raise LaunchplaneSafetyError("invalid_response")
-    return {
+    projected = {
         "product": public_identifier(source["product"]),
         "path": source["path"],
         "state": state,
@@ -5086,6 +5088,9 @@ def _project_path_check(value: object) -> dict[str, object]:
         "unknown_count": unknown,
         "steps": projected_steps,
     }
+    if "intent" in source:
+        projected["intent"] = source["intent"]
+    return projected
 
 
 def summarize_path_check(
@@ -5103,7 +5108,8 @@ def summarize_path_check(
         ),
     )
     result = _require_dict(payload["result"])
-    if result["product"] != request["product"] or result["path"] != request["path"]:
+    if (result["product"] != request["product"] or result["path"] != request["path"]
+            or result.get("intent") != request.get("intent")):
         raise LaunchplaneSafetyError("invalid_response")
     return payload
 
@@ -9530,6 +9536,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     path_check.add_argument("--product", required=True)
     path_check.add_argument("--path", required=True, choices=("testing", "promote"))
+    path_check.add_argument("--intent", choices=("provision", "generation", "testing-replacement"))
+    path_check.add_argument("--source-mode", choices=("ssh", "container-export"))
+    path_check.add_argument("--operation-id")
+    path_check.add_argument("--task-id")
 
     product_activity_read = subparsers.add_parser(
         "product-activity-read",
@@ -10363,9 +10373,22 @@ def main(argv: list[str]) -> int:
                 "path": args.path,
                 "payload_source": "operator_argument",
             }
+            query = {"path": args.path}
+            if any(value is not None for value in (args.intent, args.source_mode, args.operation_id, args.task_id)):
+                if args.path != "testing" or args.intent is None:
+                    raise LaunchplaneSafetyError("invalid_request")
+                query["intent"] = args.intent
+                request["intent"] = args.intent
+                if args.source_mode is not None:
+                    query["source_mode"] = args.source_mode
+                if args.operation_id is not None:
+                    query["operation_id"] = public_identifier(args.operation_id)
+                if args.task_id is not None:
+                    if re.fullmatch(r"[a-f0-9]{32}", args.task_id) is None:
+                        raise LaunchplaneSafetyError("invalid_request")
+                    query["task_id"] = args.task_id
             return execute_product_read(
-                args=args, operation=args.command, request=request, path=path,
-                query={"path": args.path},
+                args=args, operation=args.command, request=request, path=path, query=query,
             )
         if args.command == "product-profile-read":
             path = _product_read_path(args.command, product=args.product)
