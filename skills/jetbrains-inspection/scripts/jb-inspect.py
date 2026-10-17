@@ -11635,8 +11635,11 @@ def offline_retirement_records(root: Path) -> list[str]:
                                {"offline_retirement_record": str(path)})
 
     try:
-        # A virtualenv alone is not an IDE registration. Prepared project state is.
-        for path in (root / ".idea", repository_preparation_receipt_path({"worktree_root": str(root)})):
+        # Shared inspection profiles/vcs.xml are copied by Git and do not prove
+        # this worktree was prepared. A virtualenv alone is not a registration either.
+        project_state = [path for path in children(root / ".idea")
+                         if path.name in {"misc.xml", "modules.xml", "workspace.xml", ".name"} or path.suffix == ".iml"]
+        for path in [*project_state, repository_preparation_receipt_path({"worktree_root": str(root)})]:
             if present(path):
                 raise InspectError("IDE preparation records exist; use a live IDE to prove cleanup.", 3,
                                    {"offline_retirement_record": str(path)})
@@ -11666,6 +11669,9 @@ def offline_retirement_records(root: Path) -> list[str]:
             if not stat.S_ISDIR(system.stat().st_mode):
                 continue
             for project in children(system / "projects"):
+                if (not project.name.startswith((".inspection-finalizing-", ".inspection-retired-"))
+                        and not stat.S_ISDIR(project.stat().st_mode)):
+                    continue
                 marker = project if project.name.startswith(".inspection-finalizing-") else project / ".inspection-helper-owned.json"
                 if not present(marker):
                     if project.name.startswith(".inspection-retired-"):
@@ -11679,7 +11685,8 @@ def offline_retirement_records(root: Path) -> list[str]:
         return checked
     except (OSError, ValueError, ElementTree.ParseError) as error:
         raise InspectError("Cannot read offline IDE records; retain the worktree and restore record access or use a live IDE.", 3,
-                           {"offline_retirement_error": type(error).__name__}) from error
+                           {"offline_retirement_error": type(error).__name__,
+                            "offline_retirement_record": getattr(error, "filename", None)}) from error
 
 
 def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool) -> list[dict[str, Any]]:

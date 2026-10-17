@@ -493,6 +493,7 @@ class SdkRetirementTests(unittest.TestCase):
                         record.write_text(json.dumps({"worktree_path": str(root)}))
                     elif kind == "idea":
                         (root / ".idea").mkdir()
+                        (root / ".idea/workspace.xml").write_text("<project />")
                     elif kind == "receipt":
                         record = jb_inspect.repository_preparation_receipt_path({"worktree_root": str(root)})
                         record.parent.mkdir(parents=True, exist_ok=True)
@@ -553,6 +554,18 @@ class SdkRetirementTests(unittest.TestCase):
                     with self.assertRaises(jb_inspect.InspectError):
                         jb_inspect.offline_retirement_records(home / "task")
 
+    def test_offline_cache_inventory_ignores_ordinary_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            projects = home / "Library/Caches/JetBrains/PyCharm2026.2/projects"
+            projects.mkdir(parents=True)
+            (projects / ".DS_Store").write_bytes(b"Finder metadata")
+            (projects / "cache-index").write_text("ordinary cache metadata")
+            with (patch.object(jb_inspect.Path, "home", return_value=home),
+                  patch.object(jb_inspect.sys, "platform", "darwin"),
+                  patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
+                jb_inspect.offline_retirement_records(home / "task")
+
     def test_offline_apply_rechecks_records_after_preview(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()
@@ -563,6 +576,7 @@ class SdkRetirementTests(unittest.TestCase):
                 calls.append(True)
                 if len(calls) == 2:
                     (root / ".idea").mkdir()
+                    (root / ".idea/workspace.xml").write_text("<project />")
                 return []
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
             with (patch.object(jb_inspect.Path, "home", return_value=home),
@@ -583,6 +597,12 @@ class SdkRetirementTests(unittest.TestCase):
                 subprocess.run(["git", "init", "-q", str(primary)], check=True)
                 subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
                                 "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "docs"], check=True)
+                (primary / ".idea/inspectionProfiles").mkdir(parents=True)
+                (primary / ".idea/inspectionProfiles/shared.xml").write_text("<component />")
+                (primary / ".idea/vcs.xml").write_text("<project />")
+                subprocess.run(["git", "-C", str(primary), "add", ".idea"], check=True)
+                subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
+                                "user.email=fixture@example.invalid", "commit", "-q", "-m", "shared inspection policy"], check=True)
                 (primary / ".git" / "info" / "exclude").write_text(".venv/\n")
                 subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
                 if virtualenv:

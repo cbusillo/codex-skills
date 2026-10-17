@@ -299,7 +299,7 @@ Command model:
   JetBrains config's SDK and recent-project records (plus the explicit config
   override), and sealed/finalizing project-cache ownership markers. A `.venv`
   alone is not a registration. Matching records, unreadable/malformed records,
-  custom storage paths, or local `.idea` state retain the worktree for the live
+  custom storage paths, or local `.idea` project-model/workspace state retain the worktree for the live
   IDE cleanup route. Offline proof is repeated before Git removal and reported
   as `offline_cleanup_proved`; it never edits global IDE files. Other platforms
   retain the live-IDE requirement. With `--no-dry-run`, unregister only SDKs proved helper-owned,
