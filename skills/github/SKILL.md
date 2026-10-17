@@ -853,6 +853,8 @@ each target repository:
   [Primary App and contributor identity](references/cli-reference.md#primary-app-and-contributor-identity).
   With the opt-in, publishing checks that the active account matches that
   declaration, and the helpers print `acting as your own GitHub user`.
+  With the opt-in, reads of a private repository there that the App cannot
+  see also use that login, scoped to the repository; other reads keep the App.
   Commits keep your git identity, and `gh-pr.py create` adds the
   AI-assistance sentence to the body unless it already says so.
   For a fork contribution, the commit's identity follows the fork's `origin`
