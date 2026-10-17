@@ -460,6 +460,7 @@ def _merge_train_policy_import_response(
     status: str = "active",
     policy_sha256: str = "c" * 64,
     replayed: bool | None = None,
+    source: object = None,
 ) -> dict[str, object]:
     request_payload = _merge_train_policy_import_payload(
         mode=mode,
@@ -478,7 +479,7 @@ def _merge_train_policy_import_response(
             "record": {
                 "record_id": record["record_id"],
                 "status": status,
-                "source": record["source"],
+                "source": record["source"] if source is None else source,
                 "updated_at": record["updated_at"],
                 "policy_sha256": policy_sha256,
                 "repository_count": 1,
@@ -565,6 +566,35 @@ def test_merge_train_policy_import_body_projection_and_redaction() -> None:
         assert exc.code == "unsafe_response_shape"
     else:
         raise AssertionError("expected extra merge-train import response field to fail closed")
+
+
+def test_merge_train_policy_import_accepts_free_text_source_without_emitting_it() -> None:
+    def summarize(source: object) -> dict[str, object]:
+        return write_action.summarize_merge_train_policy_import_success(
+            operation="merge-train-policy-import-dry-run",
+            request={"mode": "dry_run"},
+            current_policy=_merge_train_policy_targets_projection(),
+            provider_payload=_merge_train_policy_import_response(source=source),
+            expected_record_id=f"merge-train-policy-20260829T203000Z-{'c' * 12}",
+            expected_policy_sha256="c" * 64,
+        )
+
+    free_text = "PRIVATE-D1 Q999 private-tap enrollment"
+    evidence = summarize(free_text)
+    evidence_result = evidence["result"]
+    assert isinstance(evidence_result, dict)
+    candidate = evidence_result["candidate"]
+    assert isinstance(candidate, dict)
+    assert candidate["target_count"] == 1
+    assert free_text not in json.dumps(evidence)
+
+    for invalid_source in ("   ", 7):
+        try:
+            summarize(invalid_source)
+        except safety.LaunchplaneSafetyError as exc:
+            assert exc.code == "invalid_response"
+        else:
+            raise AssertionError(f"expected source {invalid_source!r} to fail closed")
 
 
 def test_merge_train_policy_import_apply_requires_bound_evidence() -> None:
