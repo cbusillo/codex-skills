@@ -297,6 +297,10 @@ class ClientAppTests(unittest.TestCase):
             "token = os.environ.get('GH_TOKEN', '')\n"
             "login = 'own-user' if token == 'fake-user-token' or not token else 'app-' + token[-1] + '[bot]'\n"
             "if args[:2] == ['api', 'user']: print(login); raise SystemExit(0)\n"
+            "invisible = [r for r in os.environ.get('FAKE_GH_APP_INVISIBLE', '').split(',') if r]\n"
+            "if token.startswith('fake-token-') and any(a.lstrip('/').startswith('repos/' + r + '/') or a.lstrip('/') == 'repos/' + r or (a == r and '--repo' in args) for r in invisible for a in args):\n"
+            "    if '--include' in args: print('HTTP/2.0 404 Not Found\\n')\n"
+            "    print(json.dumps({'message': 'Not Found', 'status': '404'})); print('gh: Not Found (HTTP 404)', file=sys.stderr); raise SystemExit(1)\n"
             "if '--include' in args: print('HTTP/2.0 200\\n')\n"
             "endpoint = next(('/' + a.lstrip('/') for a in args if a.lstrip('/').startswith(('repos/', 'search/'))), '')\n"
             "if endpoint.startswith('/search/issues'):\n"
@@ -665,7 +669,8 @@ class ClientAppTests(unittest.TestCase):
 
     def test_explicit_other_repository_write_overrides_client_context(self) -> None:
         os.environ.update({"GH_REPO": "host/product", "GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
-                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
+                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
+                           "FAKE_GH_APP_INVISIBLE": "upstream/missing"})
         wrapper = str(Path(identity.__file__).with_name("gh-with-env-token"))
         result = github_issue.create_issue("fixture", "fixture body", repo="client/product",
                                            gh_cmd=wrapper, expected_actor="app-1[bot]")
@@ -683,13 +688,80 @@ class ClientAppTests(unittest.TestCase):
                     repo="upstream/missing", duplicate_of=duplicate,
                     gh_cmd=wrapper, expected_actor="app-1[bot]")
                 self.assertEqual(closed["actor"], "own-user")
-            # The primary route's ordinary reads retain their legacy default installation.
+            # The App cannot see this private repository, so the opted-in read
+            # uses the declared person; without the opt-in it keeps the App.
             read = self.wrapper("api", "/repos/upstream/missing")
-            self.assertEqual(json.loads(read.stdout)["token"], "fake-token-1")
+            self.assertEqual(json.loads(read.stdout)["login"], "own-user")
+            with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: ""}):
+                read = self.wrapper("api", "/repos/upstream/missing")
+            self.assertNotEqual(read.returncode, 0)
             with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}):
                 with self.assertRaises(github_issue.IssueError):
                     github_issue.create_issue("fixture", "fixture body", repo="upstream/missing",
                         gh_cmd=wrapper, expected_actor="app-1[bot]")
+
+    def primary_app_fleet(self) -> None:
+        # The Director's fleet: the primary App only, and "client" registered it.
+        os.environ.pop("GITHUB_CLIENT_APP_OWNERS")
+        os.environ.update({"FAKE_GH_APP_INVISIBLE": "upstream/missing-private,client/missing-private",
+                           "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "own-user"})
+        AppHandler.repositories["/repos/upstream/missing-public"] = (
+            200, {"full_name": "upstream/missing-public", "private": False})
+
+    def test_opted_in_reads_of_app_invisible_private_repository_use_declared_person(self) -> None:
+        self.primary_app_fleet()
+        read = ("api", "/repos/upstream/missing-private/issues/78")
+        result = self.wrapper(*read)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("acting as your own GitHub user", result.stderr)
+        result = self.wrapper(*read, own_user=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["user"]["login"], "own-user")
+        self.assertIn("acting as your own GitHub user on upstream/missing-private", result.stderr)
+        self.assertFalse(any(method == "POST" and "/upstream/" in path for method, path, _ in AppHandler.calls))
+        for declared, flags in (("other-person", ()), ("own-user", ("--require-automation-auth",))):
+            with self.subTest(declared=declared, flags=flags), patch.dict(
+                    os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": declared}):
+                result = self.wrapper(*flags, *read, own_user=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("own-user", result.stdout)
+
+    def test_app_stays_reader_where_it_can_see_or_visibility_is_unknown(self) -> None:
+        self.primary_app_fleet()
+        AppHandler.repositories["/repos/upstream/missing-unknown"] = (403, None)
+        for repo in ("upstream/missing-public", "client/missing-private", "upstream/missing-unknown", "upstream/product"):
+            with self.subTest(repo=repo):
+                result = self.wrapper("api", f"/repos/{repo}", own_user=True)
+                self.assertNotIn("acting as your own GitHub user", result.stderr)
+                if repo != "client/missing-private":
+                    self.assertEqual(json.loads(result.stdout)["login"], "app-1[bot]")
+
+    def test_private_read_fallback_stays_scoped_to_the_invisible_repository(self) -> None:
+        self.primary_app_fleet()
+        with patch.dict(os.environ, {"GH_REPO": "upstream/missing-private"}):
+            for args in (("api", "/search/issues?q=repo:host/private"),
+                         ("issue", "list", "--repo", "upstream/missing-private", "--search", "org:host"),
+                         ("issue", "view", "https://github.com/host/private/issues/1", "--repo", "upstream/missing-private")):
+                with self.subTest(args=args):
+                    # Refused, or read by the App as before; never the person.
+                    result = self.wrapper(*args, own_user=True)
+                    self.assertNotIn("acting as your own GitHub user", result.stderr)
+                    self.assertNotIn("own-user", result.stdout)
+
+    def test_comment_helper_pre_reads_app_invisible_private_repository_as_writer(self) -> None:
+        self.primary_app_fleet()
+        os.environ.update({"GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
+        wrapper = str(Path(identity.__file__).with_name("gh-with-env-token"))
+        with patch.dict(os.environ, {identity.OWN_USER_OPT_IN: "1"}):
+            for kwargs in ({}, {"edit_last": True, "create_if_none": True}, {"dedupe_body": True}):
+                with self.subTest(kwargs=kwargs):
+                    result = github_comment.comment("issue", 78, "fixture", repo="upstream/missing-private",
+                                                    gh_cmd=wrapper, expected_actor="app-1[bot]", **kwargs)
+                    self.assertEqual(result["actor"], "own-user")
+        with self.assertRaises(github_comment.CommentError):
+            github_comment.comment("issue", 78, "fixture", repo="upstream/missing-private",
+                                   gh_cmd=wrapper, expected_actor="app-1[bot]")
 
     def test_configured_client_login_trusts_its_managed_plan_body(self) -> None:
         _, login = self.auth("host/product", write=True)
