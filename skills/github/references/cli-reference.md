@@ -474,7 +474,11 @@ When the task authorizes a Supervisor handoff, use
 instead of hand-writing a merge-train
 comment. The helper reads the current head, check runs, legacy statuses and
 workflow executions, refuses incomplete, pending or failing evidence, and
-refuses a draft, closed PR or `merge-blocked`. It rechecks the head and labels
+refuses a draft, closed PR or `merge-blocked`. It also refuses a PR that GitHub
+computed as conflicting with its base (`mergeable` false or merge state
+`DIRTY`); refresh it under babysit-pr's
+[Conflicts](../../babysit-pr/SKILL.md#conflicts) and post `ready` for the new
+head. Unknown mergeability is not a conflict. It rechecks the head and labels
 before posting through the shared comment writer. This is a handoff to the
 assigned routing agent; it applies no enqueue label and performs no merge.
 Other review and task authorization requirements still apply.
