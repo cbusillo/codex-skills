@@ -245,13 +245,20 @@ def summarize(records: list[dict], harness: str) -> dict:
     running_tasks: dict = {}
     if harness == "claude":
         records = strip_claude_exit_tail(records)
+    previous: dict = {}
     for record in records:
         payload = record.get("payload") or {}
         kind = payload.get("type")
         if harness == "claude":
             track_claude_background_tasks(record, running_tasks)
             message = record.get("message") or {}
-            if record.get("type") == "user":
+            # Compaction writes its summary as a user record right after the boundary;
+            # it is no new request, so only a later real turn changes the verdict.
+            compact_summary = (record.get("isCompactSummary") is True
+                               and previous.get("type") == "system"
+                               and previous.get("subtype") == "compact_boundary")
+            previous = record
+            if record.get("type") == "user" and not compact_summary:
                 result.update(last_text="", at_turn_end=False)
             if record.get("type") == "assistant":
                 usage = message.get("usage")
