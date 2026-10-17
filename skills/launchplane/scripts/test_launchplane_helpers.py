@@ -3261,6 +3261,50 @@ def test_path_check_reads_both_paths_and_preserves_clear_blocked_unknown() -> No
     assert status == 0 and payload["result"] == check
 
 
+@pytest.mark.parametrize("intent", ["provision", "generation", "testing-replacement"])
+def test_path_check_forwards_operation_intent_and_refuses_a_service_ignoring_it(intent: str) -> None:
+    response = _path_check_response()
+    response["check"]["intent"] = intent
+    task_id = "a" * 32
+    argv = ["path-check", "--product", "example-product", "--path", "testing",
+            "--intent", intent, "--source-mode", "ssh", "--operation-id", "initial-testing-fixture",
+            "--task-id", task_id]
+    status, payload, calls = _run_product_read(argv, response)
+    assert status == 0, payload
+    assert calls[0]["query"] == {"path": "testing", "intent": intent, "source_mode": "ssh",
+                                  "operation_id": "initial-testing-fixture", "task_id": task_id}
+    assert payload["result"]["intent"] == intent
+    for selector in ("intent", "source_mode", "operation_id", "task_id"):
+        assert payload["request"][selector] == calls[0]["query"][selector]
+    response["check"].pop("intent")
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 1 and payload["result"] == {}
+
+
+def test_path_check_operation_budget_allows_bounded_probes_and_honors_explicit_timeout() -> None:
+    response = _path_check_response()
+    response["check"]["intent"] = "provision"
+    argv = ["path-check", "--product", "example-product", "--path", "testing", "--intent", "provision"]
+    status, _payload, calls = _run_product_read(argv, response)
+    assert status == 0 and calls[0]["timeout"] == write_action.OPERATION_PATH_CHECK_TIMEOUT_SECONDS
+    requested = 17.5
+    status, _payload, calls = _run_product_read(["--timeout", str(requested), *argv], response)
+    assert status == 0 and calls[0]["timeout"] == requested
+
+
+@pytest.mark.parametrize("extra", [
+    ["--operation-id", "initial-testing-fixture"],
+    ["--intent", "provision", "--task-id", "not-a-task"],
+    ["--intent", "provision", "--operation-id", "../admin"],
+])
+def test_path_check_refuses_incomplete_or_unsafe_operation_selectors_without_a_call(extra: list[str]) -> None:
+    status, _payload, calls = _run_product_read(
+        ["path-check", "--product", "example-product", "--path", "testing", *extra],
+        _path_check_response(),
+    )
+    assert status == 2 and not calls
+
+
 def test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence() -> None:
     mutations = (
         lambda body: body.update(extra="private detail"),

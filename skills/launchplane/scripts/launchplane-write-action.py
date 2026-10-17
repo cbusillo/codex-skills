@@ -5038,8 +5038,10 @@ def _project_path_check(value: object) -> dict[str, object]:
     step_fields = {"step_id", "state", "code", "description", "fix", "record_ids"}
     states = ("clear", "blocked", "unknown")
     fixes = ("none", "code", "grant", "owner_approval", "client_acceptance", "by_hand", "wait")
-    if set(source) != fields:
+    if fields.difference(source) or set(source).difference(fields | {"intent"}):
         raise LaunchplaneSafetyError("unsafe_response_shape")
+    if "intent" in source and source["intent"] not in ("provision", "generation", "testing-replacement"):
+        raise LaunchplaneSafetyError("invalid_response")
     # Identifier fields have their own validator; keep all other fields strict.
     assert_public_safe_shape({key: item for key, item in source.items() if key not in {"product", "steps"}})
     if source["path"] not in ("testing", "promote") or source["state"] not in states:
@@ -5078,7 +5080,7 @@ def _project_path_check(value: object) -> dict[str, object]:
             raise LaunchplaneSafetyError("invalid_response")
     if source["state"] != state:
         raise LaunchplaneSafetyError("invalid_response")
-    return {
+    projected = {
         "product": public_identifier(source["product"]),
         "path": source["path"],
         "state": state,
@@ -5086,6 +5088,9 @@ def _project_path_check(value: object) -> dict[str, object]:
         "unknown_count": unknown,
         "steps": projected_steps,
     }
+    if "intent" in source:
+        projected["intent"] = source["intent"]
+    return projected
 
 
 def summarize_path_check(
@@ -5103,7 +5108,8 @@ def summarize_path_check(
         ),
     )
     result = _require_dict(payload["result"])
-    if result["product"] != request["product"] or result["path"] != request["path"]:
+    if (result["product"] != request["product"] or result["path"] != request["path"]
+            or result.get("intent") != request.get("intent")):
         raise LaunchplaneSafetyError("invalid_response")
     return payload
 
@@ -9329,6 +9335,8 @@ def _add_reviewed_apply_arguments(parser: argparse.ArgumentParser, *, apply: boo
     )
 
 
+OPERATION_PATH_CHECK_TIMEOUT_SECONDS = 300.0
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
@@ -9336,7 +9344,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument(
         "--timeout", type=float, default=argparse.SUPPRESS,
-        help="HTTP timeout seconds (promotion status and Dokploy inventory: 30; controller: 180; other commands: 10).",
+        help="HTTP timeout seconds (operation path checks: 300; promotion status and Dokploy inventory: 30; controller: 180; other commands: 10).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -9530,6 +9538,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     path_check.add_argument("--product", required=True)
     path_check.add_argument("--path", required=True, choices=("testing", "promote"))
+    path_check.add_argument("--intent", choices=("provision", "generation", "testing-replacement"), help="Inspect Odoo operation prerequisites instead of only the testing deploy path.")
+    path_check.add_argument("--source-mode", choices=("ssh", "container-export"), help="Select the planned copy source; requires --intent.")
+    path_check.add_argument("--operation-id", help="Original testing resource preparation or replacement operation; requires --intent.")
+    path_check.add_argument("--task-id", help="Exact provision task id (32 lower-case hex characters); requires --intent.")
 
     product_activity_read = subparsers.add_parser(
         "product-activity-read",
@@ -9883,7 +9895,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = parser.parse_args(argv)
     args.timeout = getattr(
         args, "timeout",
-        180.0 if args.command == "merge-train-controller-run-once"
+        OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
+        else 180.0 if args.command == "merge-train-controller-run-once"
         else 30.0 if args.command in {"product-promotion-status-read", "dokploy-inventory-read"} else 10.0,
     )
     return args
@@ -10363,9 +10376,23 @@ def main(argv: list[str]) -> int:
                 "path": args.path,
                 "payload_source": "operator_argument",
             }
+            query = {"path": args.path}
+            if any(value is not None for value in (args.intent, args.source_mode, args.operation_id, args.task_id)):
+                if args.path != "testing" or args.intent is None:
+                    raise LaunchplaneSafetyError("invalid_request")
+                query["intent"] = args.intent
+                request["intent"] = args.intent
+                if args.source_mode is not None:
+                    query["source_mode"] = args.source_mode
+                if args.operation_id is not None:
+                    query["operation_id"] = public_identifier(args.operation_id)
+                if args.task_id is not None:
+                    if re.fullmatch(r"[a-f0-9]{32}", args.task_id) is None:
+                        raise LaunchplaneSafetyError("invalid_request")
+                    query["task_id"] = args.task_id
+                request.update({key: value for key, value in query.items() if key != "path"})
             return execute_product_read(
-                args=args, operation=args.command, request=request, path=path,
-                query={"path": args.path},
+                args=args, operation=args.command, request=request, path=path, query=query,
             )
         if args.command == "product-profile-read":
             path = _product_read_path(args.command, product=args.product)
