@@ -80,7 +80,7 @@ class CloseAttentionTests(unittest.TestCase):
     def test_replied_targeted_and_automation_comments_pass(self) -> None:
         result = gate.check(REPO, 7, reader=FakeReader(), radar=radar(
             row(later_reply="https://github.com/director/project/issues/7#issuecomment-800"),
-            row(addressed=True), row(author="deploy-bot", author_class="automation"), status="attention"))
+            row(addressed=True), row(author="deploy-bot", author_class="automation")))
         self.assertEqual(result["result"], "passed")
 
     def test_incomplete_coverage_refuses(self) -> None:
@@ -98,7 +98,8 @@ class CloseAttentionTests(unittest.TestCase):
         result = gate.check(REPO, 7, issue={"state": "closed"}, radar=never)
         self.assertEqual(result["result"], "skipped")
 
-    def decide(self, comment: dict[str, Any], reactions: list[dict[str, Any]] | None = None,
+    @staticmethod
+    def decide(comment: dict[str, Any], reactions: list[dict[str, Any]] | None = None,
                url: str = f"{ISSUE_URL}#issuecomment-55") -> dict[str, Any]:
         reader = FakeReader(objects={f"repos/{REPO}/issues/comments/55": comment},
                             pages={f"repos/{REPO}/issues/comments/55/reactions": reactions or []})
