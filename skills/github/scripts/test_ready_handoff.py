@@ -99,6 +99,8 @@ class ReviewRecordTests(unittest.TestCase):
             "Review weighed at `83f8b258`. I reproduced the finding and acted on it.",
             "Review by another model (author: Anthropic Claude Opus): OpenAI via Codex, read-only",
             "Anthropic review of record: Claude Opus 5.5, completed twice. Fixed: errors cannot hide output.",
+            "Review weighed: OpenAI completed the review; no changes needed.",
+            "Review weighed: OpenAI completed the review and found the failed-read bug, now fixed.",
         )
         requests = (
             "Review prompt for the review of record (provider: openai; author: anthropic).",
@@ -113,6 +115,8 @@ class ReviewRecordTests(unittest.TestCase):
             "Review by another model is blocked by #2069; the Supervisor still needs to run it.",
             "Neither provider has completed the review of record yet.",
             "Review of record: OpenAI could not start; retrying from the Supervisor's session.",
+            "Review of record: OpenAI did not complete the review.",
+            "Review of record: OpenAI review is not done.",
             "Review request: please check the Client test notes.",
         )
         for body in neither:

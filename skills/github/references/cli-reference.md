@@ -487,8 +487,8 @@ model` lead), or a change to the base branch's
 `qualityGate.modelReview.requiredPaths` with no outcome posted after the head
 commit. A `Review prompt` or `Review request` lead counts only when its first
 line names the review of record, another model or a provider, and an outcome
-lead whose first sentence says the review is blocked, pending or not done is a
-status update, not an outcome. Only the automation account's and the PR
+lead whose first clause says the review itself is blocked, pending or not done
+is a status update, not an outcome. Only the automation account's and the PR
 author's comments count;
 `supervisor/scripts/auto_enqueue.py` skips the same PRs with reason
 `review_of_record_not_recorded`. It rechecks the head and labels

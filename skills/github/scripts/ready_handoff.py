@@ -48,10 +48,20 @@ REVIEW_OUTCOME = re.compile(
     r"|\bcompleted the review of record\b"
 )
 # A status update that the review is blocked or not done is never an outcome.
+# Only statements about the review itself count, so "no changes needed" or a
+# fixed "failed-read" bug in a completed record does not.
 REVIEW_NOT_DONE = re.compile(
-    r"(?i)\b(?:blocked|pending|waiting|still needs?|needed|requested|not yet|yet|neither"
-    r"|has not|hasn't|could not|couldn't|cannot|can't|failed|unavailable)\b"
+    r"(?i)(?:\b(?:did|does|do|has|have|had|is|was|were|could|can|will|would)(?: not|n't)"
+    r"|\bcannot|\bnot yet|\byet to|\bnever|\bfailed to|\bunable to|\bneither|\bno (?:provider|model|one))"
+    r"(?:\s+[\w`*-]+){0,4}?\s+(?:complete[ds]?|finish(?:ed|es)?|run|ran|start(?:ed|s)?"
+    r"|launch(?:ed|es)?|done|return(?:ed|s)?|reviewed)\b"
+    r"|\b(?:review(?: of record| by another model)?|it)\s+(?:is|was|remains|stays)\s+(?:still\s+)?"
+    r"(?:blocked|pending|waiting|outstanding|incomplete|unavailable|queued|running|in progress"
+    r"|needed|required|requested)\b"
+    r"|\bstill (?:needs?|needed|required)\b"
 )
+# The clause carrying the lead: later clauses describe the work, not the review.
+REVIEW_CLAUSE = re.compile(r"[.!?]\**\s|;|\s+but\s")
 REVIEW_REQUEST = re.compile(
     r"(?i)^review (?:prompt|request)\b|^review of record (?:still )?(?:needed|requested)\b"
 )
@@ -338,8 +348,8 @@ def review_record(body):
     """Classify a review-of-record comment by the leads already in use."""
     lines = (body or "").strip().splitlines()
     first = REVIEW_LEAD.sub("", lines[0]) if lines else ""
-    sentence = re.split(r"[.!?]\**\s", first, maxsplit=1)[0]
-    if REVIEW_OUTCOME.search(first) and not REVIEW_NOT_DONE.search(sentence):
+    clause = REVIEW_CLAUSE.split(first, maxsplit=1)[0]
+    if REVIEW_OUTCOME.search(first) and not REVIEW_NOT_DONE.search(clause):
         return "outcome"
     if (REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)) or SUPERVISOR_RUNS_REVIEW.search(body or ""):
         return "request"
