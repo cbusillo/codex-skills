@@ -331,6 +331,9 @@ Manual-only skills mirror Codex's `agents/openai.yaml` policy in Claude's
 Invoke those workflows with `/shared:skill-name` on Claude. On Codex use the
 name shown in its skill list: `$shared:skill-name` for the new catalog binding,
 or `$skill-name` when a preserved legacy binding lists an unprefixed name.
+Codex reads `[[skills.config]]` enable and disable rules only from the user
+config and session flags, never from a repository's `.codex/config.toml`;
+later rules win.
 Claude's field requires an actual user slash-command invocation.
 The registered hook uses a JSON deny decision and an exit-zero launcher fallback,
 so missing source or a uv startup failure cannot masquerade as a policy denial.
