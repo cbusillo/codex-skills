@@ -1623,11 +1623,14 @@ the matched PID/TTY and Supervisor-owned ledger entry.
 Missing handoffs are discovered from the native final response or recorded
 comment-write receipts, then verified against live comment author and dates.
 A comment URL printed by a recognized comment-write call, however its output
-was summarized or chained, is bound only when the comment was created between
-that call and its recorded result and its body is text the session itself wrote
-before then (a heredoc, `--body`, or a file it wrote), naming no other session.
-A shared-bot comment that a chained read prints is not authorship. A lone URL
-printed without the helper's JSON receipt needs the same written body.
+was summarized or chained, is bound only when the comment's body is exactly what
+that call sent and names no other session. What a call sent is a heredoc on its
+stdin, or the text the session last wrote to its `--body-file` (a Write or Edit
+tool, or a heredoc redirect). When the transcript records the call's start and
+result, the comment must also have been created between them. Other text the
+session typed, such as a search pattern, is not authorship, and neither is a
+shared-bot comment that a chained read prints. The helper's JSON receipt binds
+on its own.
 A fallback source-issue or summary comment must name the exact native ID;
 shared-bot recency alone never qualifies. The summary thread defaults to
 `OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.

@@ -288,20 +288,22 @@ def discover_handoff(reader, entry, actor):
     # Shared-bot comments merely read by the source are not its handoff.
     outputs = []
     writes = set()
-    def is_comment_write(command):
+    # Heredoc bodies are data (often a comment body with apostrophes), not commands.
+    heredoc = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1([^\n]*)\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+    def shell_text(command):
         if isinstance(command, list) and all(isinstance(part, str) for part in command):
             command = command[-1] if len(command) >= 3 and command[-2] in {"-c", "-lc"} and Path(command[0]).name in {"bash", "sh", "zsh"} else shlex.join(command)
-        if not isinstance(command, str):
-            return False
-        # Heredoc bodies are data (often a comment body with apostrophes), not commands.
-        command = re.sub(r"<<-?[ \t]*(['\"]?)(\w+)\1([^\n]*)\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", r"\3", command, flags=re.S)
+        return command if isinstance(command, str) else ""
+    def shell_tokens(command):
         try:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
+            lexer = shlex.shlex(heredoc.sub(r"\3", command), posix=True, punctuation_chars=";&|\n")
             lexer.whitespace_split = True
             lexer.whitespace = " \t\r"
-            tokens = list(lexer)
+            return list(lexer)
         except ValueError:
-            return False
+            return []
+    def is_comment_write(command):
+        tokens = shell_tokens(shell_text(command))
         executable = True
         for index, token in enumerate(tokens):
             if token in {";", "&&", "||", "|", "\n"}:
@@ -325,21 +327,51 @@ def discover_handoff(reader, entry, actor):
                     return True
             # A read earlier in a chained call does not hide a later write.
         return False
-    # A write's output is often summarized or chained with other commands, so a
-    # URL it prints is bound by the comment's creation inside that call instead.
-    # Timing alone does not prove authorship: the comment body must also be text
-    # this session wrote itself (a heredoc, --body, or a file it wrote) before then.
-    started = {}
-    windowed = []
-    authored = []
+    # A write's output is often summarized or chained with other commands, so any
+    # URL it prints is a candidate. Only a comment whose body is exactly what that
+    # call sent binds: a stdin heredoc, or the --body-file the session wrote itself.
+    files = {}
     def flat(text):
         return " ".join(text.split())
-    def add_windowed(call_id, finished_at, value):
-        if call_id not in started or not started[call_id] or not finished_at:
+    def heredoc_target(command, match):
+        line = command[command.rfind("\n", 0, match.start()) + 1:match.start()] + match[3]
+        target = re.search(r"(?<![<>&\d])>>?[ \t]*(['\"]?)([^\s;&|'\"]+)\1", line)
+        return Path(target[2]).name if target else None
+    def note_file_writes(tool_input):
+        command = shell_text(tool_input.get("command") or tool_input.get("cmd")) if isinstance(tool_input, dict) else tool_input
+        for match in heredoc.finditer(command or ""):
+            if target := heredoc_target(command, match):
+                files[target] = match[4]
+        if not isinstance(tool_input, dict) or not isinstance(tool_input.get("file_path"), str):
             return
+        name = Path(tool_input["file_path"]).name
+        if isinstance(tool_input.get("content"), str):
+            files[name] = tool_input["content"]
+        for edit in [tool_input, *(tool_input.get("edits") or [])]:
+            if name in files and isinstance(edit, dict) and isinstance(edit.get("old_string"), str) and isinstance(edit.get("new_string"), str):
+                files[name] = files[name].replace(edit["old_string"], edit["new_string"], -1 if edit.get("replace_all") else 1)
+    def sent_bodies(command):
+        command = shell_text(command)
+        bodies = [m[4] for m in heredoc.finditer(command) if not heredoc_target(command, m)]
+        tokens = shell_tokens(command)
+        for index, token in enumerate(tokens):
+            path = token.split("=", 1)[1] if token.startswith("--body-file=") else (
+                tokens[index + 1] if token in {"--body-file", "<"} and index + 1 < len(tokens) else None)
+            if path and path != "-" and Path(path).name in files:
+                bodies.append(files[Path(path).name])
+        return {flat(body) for body in bodies if flat(body)}
+    started = {}
+    sent = {}
+    printed = []
+    def add_printed(call_id, finished_at, value):
         for repo, number, comment_id in re.findall(HANDOFF.pattern, "\n".join(strings(value))):
-            windowed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}",
-                             release.stamp(started[call_id]), release.stamp(finished_at), len(authored)))
+            printed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}",
+                            started.get(call_id), finished_at, sent.get(call_id, set())))
+    def start_write(call_id, timestamp, command):
+        writes.add(call_id)
+        started[call_id] = started.get(call_id) or timestamp
+        if call_id not in sent:
+            sent[call_id] = sent_bodies(command)
     for record in records:
         payload = record.get("payload") or {}
         arguments = payload.get("arguments") or payload.get("input") or ""
@@ -362,30 +394,28 @@ def discover_handoff(reader, entry, actor):
         if not command and not isinstance(structured, dict) and payload.get("name") in {"exec_command", "functions.exec_command"}:
             command = str(arguments)
         if payload.get("type") in {"function_call", "custom_tool_call"}:
-            authored.extend(flat(t) for t in strings(structured if isinstance(structured, dict) else arguments))
-        if payload.get("type") in {"function_call", "custom_tool_call"} and is_comment_write(command):
-            if payload.get("call_id"):
-                writes.add(payload["call_id"])
-                started[payload["call_id"]] = started.get(payload["call_id"]) or record.get("timestamp")
+            # Use the decoded command, not the orchestration source with its escapes.
+            note_file_writes(shell_text(command))
+            if is_comment_write(command) and payload.get("call_id"):
+                start_write(payload["call_id"], record.get("timestamp"), command)
         if payload.get("type") in {"function_call_output", "custom_tool_call_output"} and payload.get("call_id") in writes:
-            outputs.extend((text, len(authored)) for text in strings(payload.get("output")))
-            add_windowed(payload["call_id"], record.get("timestamp"), payload.get("output"))
+            outputs.extend(strings(payload.get("output")))
+            add_printed(payload["call_id"], record.get("timestamp"), payload.get("output"))
         for block in (record.get("message") or {}).get("content") or []:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "tool_use":
-                authored.extend(flat(t) for t in strings(block.get("input")))
-            if block.get("type") == "tool_use" and is_comment_write(str((block.get("input") or {}).get("command") or (block.get("input") or {}).get("cmd") or "")):
-                if block.get("id"):
-                    writes.add(block["id"])
-                    started[block["id"]] = started.get(block["id"]) or record.get("timestamp")
+                tool_input = block.get("input") or {}
+                note_file_writes(tool_input)
+                command = (tool_input.get("command") or tool_input.get("cmd") or "") if isinstance(tool_input, dict) else ""
+                if is_comment_write(command) and block.get("id"):
+                    start_write(block["id"], record.get("timestamp"), command)
             if block.get("type") == "tool_result" and block.get("tool_use_id") in writes and block.get("is_error") is not True:
-                outputs.extend((text, len(authored)) for text in strings(block.get("content")))
-                add_windowed(block["tool_use_id"], record.get("timestamp"), block.get("content"))
+                outputs.extend(strings(block.get("content")))
+                add_printed(block["tool_use_id"], record.get("timestamp"), block.get("content"))
     receipt_urls = []
-    printed = []
     decoder = json.JSONDecoder()
-    for text, count in outputs:
+    for text in outputs:
         # Consume complete envelopes, not URLs embedded in a subsequent read's body.
         cursor = 0
         while (start := text.find("{", cursor)) >= 0:
@@ -399,18 +429,11 @@ def discover_handoff(reader, entry, actor):
                 url = (value.get("comment") or {}).get("url")
                 if isinstance(url, str) and HANDOFF.fullmatch(url):
                     receipt_urls.append(url)
-        # Older helpers were commonly piped to grep url; accept a single URL whose
-        # body the session wrote, since a chained read can print one too.
-        legacy = list(dict.fromkeys(re.findall(HANDOFF.pattern, text)))
-        if len(legacy) == 1 and "{" not in text:
-            repo, number, comment_id = legacy[0]
-            printed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}", count))
     final_text = session_record.session_status(entry)["last_text"]
     final_urls = [f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
                   for repo, number, comment_id in re.findall(HANDOFF.pattern, final_text)]
     candidates = [*entry.get("_handoffs", []),
-                  *reversed(receipt_urls), *(url for url, _ in reversed(printed)),
-                  *(url for url, _, _, _ in reversed(windowed)), *reversed(final_urls)]
+                  *reversed(receipt_urls), *(url for url, _, _, _ in reversed(printed)), *reversed(final_urls)]
     for url in dict.fromkeys(candidates):
         match = HANDOFF.fullmatch(url)
         if not match:
@@ -426,20 +449,18 @@ def discover_handoff(reader, entry, actor):
         text = evidence.get("body") or ""
         # GitHub stamps whole seconds; allow that truncation plus small clock skew.
         created = release.stamp(evidence.get("created_at") or "1970-01-01T00:00:00Z")
+        slack = timedelta(seconds=2)
         body = flat(OPERATION_MARKER_LINE_RE.sub("", text))
-        def wrote(count):
-            return bool(body) and release.related_sessions_match(text, entry["session_id"]) and any(
-                body in written for written in authored[:count])
-        legacy_receipt = any(u == url and wrote(count) for u, count in printed)
-        in_window = any(u == url and start - timedelta(seconds=2) <= created <= end + timedelta(seconds=2) and wrote(count)
-                        for u, start, end, count in windowed)
+        sent_here = release.related_sessions_match(text, entry["session_id"]) and any(
+            u == url and body in bodies and (not start or not end
+                                             or release.stamp(start) - slack <= created <= release.stamp(end) + slack)
+            for u, start, end, bodies in printed)
         if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
                 and not text.startswith("Claimed by ") and not claim.records(text)
-                and (url in entry.get("_handoffs", []) or url in receipt_urls or legacy_receipt or in_window
-                     or entry["session_id"] in text)):
+                and (url in entry.get("_handoffs", []) or url in receipt_urls or sent_here or entry["session_id"] in text)):
             provenance = ("Supervisor verified inventory handoff" if url in entry.get("_handoffs", [])
-                          else "native comment-write receipt" if url in receipt_urls or legacy_receipt
-                          else "native comment-write window" if in_window else "exact-ID handoff")
+                          else "native comment-write receipt" if url in receipt_urls
+                          else "native comment-write body" if sent_here else "exact-ID handoff")
             return {**entry, "handoff_url": url, "_handoff_provenance": provenance}, evidence
     # A summary without a transcript URL must name the exact native ID.
     threads = {(r["repo"], r["issue"]) for r in entry.get("_inventory_claims", [])}
