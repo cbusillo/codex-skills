@@ -1436,6 +1436,15 @@ def is_review_readiness_unavailable(pr, checks_summary, new_review_items):
     )
 
 
+def has_confirmed_conflict(pr):
+    # Only provider-computed conflict counts; UNKNOWN or unread mergeability stays a wait.
+    availability = pr.get("metadata_availability") or {}
+    return (
+        (pr.get("mergeable") == "CONFLICTING" and availability.get("mergeable") is True)
+        or (pr.get("merge_state_status") == "DIRTY" and availability.get("merge_state_status") is True)
+    )
+
+
 def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries, owner_review_items=(), owner_review_errors=(), allow_no_checks=False):
     actions = []
     if owner_review_errors:
@@ -1517,6 +1526,9 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
         and pr.get("metadata_availability", {}).get("merge_state_status") is True
     ):
         actions.append("update_behind_branch")
+
+    if not pr.get("draft") and has_confirmed_conflict(pr):
+        actions.append("refresh_conflicting_branch")
 
     if not actions:
         actions.append("idle")
@@ -2114,13 +2126,14 @@ def run_watch(args):
 
 
 # Exit codes for --wait-ci; 1 stays the read/command error code from main().
-CI_WAIT_EXIT_CODES = {"green": 0, "failed": 2, "pending": 3, "stopped": 4, "review": 5}
+CI_WAIT_EXIT_CODES = {"green": 0, "failed": 2, "pending": 3, "stopped": 4, "review": 5, "conflict": 6}
 CI_WAIT_NEXT_STEPS = {
     "review": "Handle new_review_items under babysit-pr Review Feedback; the watcher has marked them seen.",
     "green": "CI is green on the head; continue the handoff.",
     "failed": "Diagnose the failure under babysit-pr CI Failures.",
     "pending": "CI is pending, absent or incomplete; run the same command again in this turn.",
     "stopped": "Read actions: the PR closed or the watcher needs help.",
+    "conflict": "The PR conflicts with its base; refresh it under babysit-pr Conflicts, or report the conflict.",
 }
 
 
@@ -2133,6 +2146,9 @@ def ci_wait_outcome(snapshot, *, allow_no_checks=False):
     # The snapshot marks review items seen, so the wait must hand them over rather than poll past them.
     if snapshot.get("new_review_items"):
         return "review"
+    # A conflicting head may never get CI, and green checks on it cannot be handed off.
+    if "refresh_conflicting_branch" in actions:
+        return "conflict"
     # A requested rerun still shows the failed attempt, and an older head's failures are not this head's.
     if "check_rerun_outcome" in actions:
         return None

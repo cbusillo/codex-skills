@@ -123,6 +123,7 @@ what to do:
 - `5` new review feedback arrived: handle `new_review_items` under
   [Review feedback](#review-feedback) first. The watcher has marked them seen,
   so they will not appear again.
+- `6` the PR conflicts with its base: act under [Conflicts](#conflicts).
 - `1` a read or command error, or the state lock stayed busy until the bound:
   report it; the wait was lost.
 
@@ -191,15 +192,17 @@ For each snapshot:
    verify an explicit update requirement, ownership and scope. The merge train
    owns freshness on train-routed PRs; follow its workflow or assigned handoff.
    After an authorized update, watch checks on the new head.
-6. **Evidence still settling**: `check_evidence_incomplete` means check counts
+6. **Conflicting with the base** (`refresh_conflicting_branch`): act under
+   [Conflicts](#conflicts); do not keep polling a conflicting head.
+7. **Evidence still settling**: `check_evidence_incomplete` means check counts
    cannot prove a terminal round; do not rerun from it. `review_readiness_unavailable`
    means everything else is green but review state could not be read; the
    watcher may issue one GraphQL read pinned to the repository, PR, base, and
    head SHA, and a null decision counts only with a clean merge state.
    `awaiting_review` means approval is required. Keep watching in all three.
-7. **Ready** (`ready_to_merge`): read it as ready for a merge decision; see
+8. **Ready** (`ready_to_merge`): read it as ready for a merge decision; see
    [Merge readiness](#merge-readiness). Keep watching while the PR is open.
-8. **After any push or rerun**: restart `--watch` on the new head in the same
+9. **After any push or rerun**: restart `--watch` on the new head in the same
    turn. Report the action as progress, not completion.
 
 ## Stop Or Continue
@@ -210,7 +213,8 @@ This is the only stop rule. Stop only when:
 - the user's help is required: CI infrastructure or an outage the retry budget
   cannot clear, flaky retries exhausted for the current SHA
   (`stop_exhausted_retries`, three by default), permission or authentication
-  failure, an unknown rerun write awaiting authoritative readback, a push that cannot land safely, unclear ownership or overlapping
+  failure, an unknown rerun write awaiting authoritative readback, a conflict
+  this session cannot refresh, a push that cannot land safely, unclear ownership or overlapping
   edits, a review request needing a product decision or coordination, or a
   human comment needing a written reply.
 
@@ -228,6 +232,29 @@ unless a stop condition has been reached.
 Follow the watcher's emitted interval and the
 [Request Use](../github/references/cli-reference.md#request-use) reference.
 Provider cooldowns are managed waits and need no permission.
+
+## Conflicts
+
+`refresh_conflicting_branch` means GitHub computed a conflict with the base
+(`mergeable` `CONFLICTING` or merge state `DIRTY`) on an open, non-draft PR.
+Unknown or unread mergeability never emits it and stays a wait. A conflicting
+head may never get CI, and green checks on it do not qualify a handoff. Train
+routing does not resolve a conflict either.
+
+1. When the PR is this task's own, or the task authorizes refreshing it, merge
+   the base through the local merge path in
+   [Merge Readiness](../github/references/repo-workflow.md#merge-readiness):
+   `git-commit-as-bot --git-command merge`, resolve, `--continue`, then push
+   under [Fixes and pushes](#fixes-and-pushes) after focused checks on the
+   resolution.
+2. Watch the new head. When the task hands off with `ready`, post a fresh
+   `gh-pr.py ready` once it is green; the earlier handoff named the old head.
+3. Otherwise stop and report the conflict plainly: the PR link, head SHA,
+   mergeability and who can refresh it. This covers another session's or
+   person's PR, a fork, overlapping edits, and a resolution that needs a
+   product decision. A finished session's PR is refreshed through the
+   conflict-only refresh claim in
+   [Planning: Claim](../github/references/cli-reference.md#planning-claim).
 
 ## CI Failures
 
