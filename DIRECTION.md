@@ -48,7 +48,9 @@ Whatever blocks that journey is the next piece of work.
 A tool that has stopped work twice, or that the next milestone depends on, is
 fixed at its cause before more work continues. Otherwise, work around it once
 and record it. Our own tools should work the way we expect, not be retried
-until they pass.
+until they pass. IDE inspection stays in the workflow. When it is slow or
+returns UNKNOWN, fix the plugin or the skill; never skip inspection to save
+time or load.
 
 ## Retired
 
