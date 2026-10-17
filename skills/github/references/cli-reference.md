@@ -1891,6 +1891,55 @@ Human warnings and progress remain on stderr, and the process exit code matches
 
 ## Authentication And Identity
 
+### Comment attachments
+
+For a file attached to an issue comment in a repository owned by the Director's
+declared personal login, use the dedicated downloader. GitHub restricts private
+attachments to people with repository access ([GitHub documentation](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files)).
+An installation token reading a comment does not prove it can download its file.
+
+After the Director approves that personal-identity read, set the existing opt-in
+on this command only (a value in `local.env` is not approval):
+
+```sh
+GH_WITH_ENV_TOKEN_OWN_USER=1 uv run scripts/gh-attachment.py \
+  --repo OWNER/REPO --comment COMMENT_ID \
+  --url https://github.com/user-attachments/files/123/answer.csv \
+  --evidence-dir /absolute/private/task-evidence/TASK/download
+```
+
+`COMMENT_ID` is the numeric ID in the comment's `#issuecomment-...` link. Declare
+the person's login with `GH_WITH_ENV_TOKEN_OWN_USER_LOGIN` as for the existing
+own-user route. The helper retrieves that login's existing `gh` credential in
+its own process and verifies `/user`; it never prints or persists the token,
+changes the active login, or delegates an arbitrary personal-auth command.
+No token, new grant, credential copy or browser session is needed from the agent.
+
+Repository and comment verification use automation-only REST reads through the
+shared reader. The canonical repository must still have the requested name and
+a personal owner. The URL must appear in that exact comment. Only the fixed
+`/user` identity read and that attachment GET use the personal token. Binary
+downloads use a separate bounded transport without retries or identity fallback;
+redirects go only to supported GitHub asset hosts over HTTPS, with no personal
+Authorization header forwarded. The personal credential's existing privileges
+are unchanged; the helper's network operations are GET only.
+
+The evidence directory must be absolute, owned by the running user and mode
+0700; an absent directory is created. The helper writes a mode-0600 file named
+with its attachment ID and sanitized filename, refuses overwrites and symlinks,
+and reports only path, byte count and SHA-256 in terminal JSON. File bodies,
+error bodies and signed redirect URLs are withheld. `--max-bytes` defaults to
+100 MiB; failed or oversized reads leave no partial destination file.
+
+This route deliberately refuses other owners, organization repositories,
+automation-only mode, unverified comment links, HTML responses (including login
+pages) and unsupported redirects. A pasted attachment link is evidence of its
+presence in a comment, not independent proof of its original upload repository.
+The helper does not broaden general own-user reads or writes. If the existing
+personal login cannot read the file, report that result; never retry through a
+different credential or browser. Add a new supported asset host only with
+observed redirect evidence and tests.
+
 ### Client fleets with two Apps
 
 Keep the Client's own write App and automation identity in the existing
