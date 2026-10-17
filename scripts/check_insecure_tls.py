@@ -38,6 +38,8 @@ def literal_false(node: ast.AST) -> bool:
 
 
 def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
+    if isinstance(node, (ast.Name, ast.Attribute)) and qualified(node, imports) in {"ssl._create_unverified_context", "ssl._create_stdlib_context"}:
+        return True
     if isinstance(node, (ast.Assign, ast.AnnAssign)):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         value = node.value

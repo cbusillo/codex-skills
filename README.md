@@ -1303,3 +1303,16 @@ review its owned-source scope and pass that explicit file list to the same
 command in CI. Document each omitted path and why on the rollout PR; a blanket
 ignore is not an exception. The reason lint rejects empty comments and bare
 question IDs or URLs; reviewers still judge the explanation and decision link.
+
+When Ruff reports the same library call, add its targeted `# noqa: S501` or
+`# noqa: S323` at that call alongside the reasoned choke-point annotation.
+The checker still requires the reason; no blanket ignore replaces it. The
+shared context-assignment exception needs no duplicate call-site comments.
+
+Adoption needs both the shared checker and Ruff S501, S502, S503, S504 and
+S323 in the repository's existing lint gate; the script alone does not check
+protocol choices. Run it with an interpreter that supports that repository's
+source grammar, for example `uv run --python 3.14 <pinned-script-url>` for
+Python 3.14 source. Do not exclude valid modern source because an older parser
+rejects it. Update the catalog's Ruff pin/selector and its runnable metadata
+command together through the normal reviewed PR path.
