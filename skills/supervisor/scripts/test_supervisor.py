@@ -1570,6 +1570,193 @@ def launch_terminal_fixture():
     return terminal, window, app
 
 
+def git_fixture(*args):
+    subprocess.run(["git", *args], capture_output=True, check=True)
+
+
+def git_repository(path):
+    git_fixture("init", str(path))
+    git_fixture("-C", str(path), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture")
+    return path
+
+
+def claude_projects(config):
+    return json.loads(config.read_text())["projects"]
+
+
+class ClaudeTrustTests(unittest.TestCase):
+    """Folder trust in every configured Claude home, with fixture homes only (codex-skills#2100)."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        self.user = self.root / "user"
+        self.developer = self.user / "Developer"
+        self.worktrees = self.root / "worktrees"
+        for path in (self.developer, self.worktrees):
+            path.mkdir(parents=True)
+        self.homes = [self.root / "claude-main", self.root / "claude-spare"]
+        self.configs = [home / ".claude.json" for home in self.homes] + [self.user / ".claude.json"]
+        for config in self.configs:
+            config.parent.mkdir(exist_ok=True)
+            config.write_text(json.dumps({
+                "oauthAccount": {"emailAddress": "fixture@example.invalid"},
+                "projects": {str(self.developer): {"hasTrustDialogAccepted": True}},
+            }))
+            config.chmod(0o600)
+        accounts = [{"name": "main", "provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(self.homes[0])}},
+                    {"name": "spare", "provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(self.homes[1])}},
+                    {"name": "codex", "provider": "openai", "env": {"CODEX_HOME": str(self.root / "codex")}}]
+        self.choice = {"provider": "anthropic", "env": accounts[0]["env"]}
+        for target in (patch.object(Path, "home", return_value=self.user),
+                       patch.object(iterm_tab.claude_trust, "worktree_root", return_value=self.worktrees),
+                       patch.object(account_choice, "load_config", return_value={"accounts": accounts}),
+                       patch.object(account_choice, "select", side_effect=lambda *_: self.choice),
+                       patch.object(iterm_tab, "check_codex_daemon"),
+                       patch.object(account_choice, "prepare_launch")):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def launch(self, directory):
+        command = self.root / "command"
+        command.write_text(f"cd {shlex.quote(str(directory))} && exec claude")
+        return iterm_tab.prepare_launches(account_launch_args(command))
+
+    def test_repository_under_developer_is_trusted_in_every_claude_home(self):
+        # The October 17 stop: ~/Developer itself was trusted, but not the repository inside it.
+        repository = git_repository(self.developer / "odoo-enterprise-docker")
+        (repository / "addons").mkdir()
+        config = self.configs[1]
+        data = json.loads(config.read_text())
+        data["projects"][str(repository)] = {"allowedTools": ["Read"]}
+        config.write_text(json.dumps(data))
+        data = json.loads(self.configs[2].read_text())
+        del data["projects"]
+        self.configs[2].write_text(json.dumps(data))
+        self.launch(repository / "addons")
+        for config in self.configs:
+            with self.subTest(config=config):
+                data = json.loads(config.read_text())
+                self.assertIs(data["projects"][str(repository)]["hasTrustDialogAccepted"], True)
+                self.assertEqual(data["oauthAccount"], {"emailAddress": "fixture@example.invalid"})
+                self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(claude_projects(self.configs[1])[str(repository)]["allowedTools"], ["Read"])
+        self.assertFalse((self.root / "codex").exists())
+
+    def test_worktree_of_developer_repository_trusts_main_and_worktree_roots(self):
+        repository = git_repository(self.developer / "codex-skills")
+        worktree = self.worktrees / "codex-skills" / "task"
+        git_fixture("-C", str(repository), "worktree", "add", "--detach", str(worktree))
+        self.launch(worktree)
+        for config in self.configs:
+            with self.subTest(config=config):
+                projects = claude_projects(config)
+                self.assertIs(projects[str(repository)]["hasTrustDialogAccepted"], True)
+                self.assertIs(projects[str(worktree)]["hasTrustDialogAccepted"], True)
+
+    def test_folders_outside_developer_refuse_before_any_write_or_launch_step(self):
+        outside = git_repository(self.root / "outside")
+        foreign = self.worktrees / "foreign"
+        git_fixture("-C", str(outside), "worktree", "add", "--detach", str(foreign))
+        escape = self.developer / "escape"
+        escape.symlink_to(outside, target_is_directory=True)
+        plain = self.worktrees / "plain"
+        plain.mkdir()
+        disguised = self.worktrees / "disguised"
+        git_fixture("-C", str(outside), "worktree", "add", "--detach", str(disguised))
+        pointer = (disguised / ".git").read_text().split(":", 1)[1].strip()
+        (disguised / ".git").write_text(f"gitdir: {escape / Path(pointer).relative_to(outside)}\n")
+        before = [config.read_bytes() for config in self.configs]
+        for directory in (outside, foreign, escape, plain, disguised, self.developer.parent):
+            with (self.subTest(directory=directory),
+                  patch.object(account_choice, "prepare_launch") as prepare,
+                  self.assertRaisesRegex(ValueError, "not trusted") as caught):
+                self.launch(directory)
+            prepare.assert_not_called()
+            self.assertIn(str(self.configs[0]), str(caught.exception))
+            self.assertEqual([config.read_bytes() for config in self.configs], before)
+
+    def test_folder_outside_developer_launches_when_the_selected_home_already_trusts_it(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        data = json.loads(self.configs[0].read_text())
+        data["projects"][str(outside)] = {"hasTrustDialogAccepted": True}
+        self.configs[0].write_text(json.dumps(data))
+        before = [config.read_bytes() for config in self.configs]
+        commands, _ = self.launch(outside)
+        self.assertIn(str(outside), commands[0])
+        self.assertEqual([config.read_bytes() for config in self.configs], before)
+
+    def session_save(self):
+        # Another Claude session saves a refreshed login from its own view of the file,
+        # which does not include this launch's trust key.
+        data = json.loads(self.configs[0].read_text())
+        data["oauthAccount"] = {"emailAddress": "refreshed@example.invalid"}
+        saved = self.homes[0] / ".claude.json.tmp.session"
+        saved.write_text(json.dumps(data))
+        os.replace(saved, self.configs[0])
+
+    def assert_both_saves_kept(self, repository):
+        data = json.loads(self.configs[0].read_text())
+        self.assertEqual(data["oauthAccount"], {"emailAddress": "refreshed@example.invalid"})
+        self.assertIs(data["projects"][str(repository)]["hasTrustDialogAccepted"], True)
+        self.assertEqual(sorted(path.name for path in self.homes[0].iterdir()), [".claude.json"])
+
+    def test_session_save_just_before_the_swap_is_kept(self):
+        repository = git_repository(self.developer / "repository")
+        exchange = iterm_tab.claude_trust.exchange
+        calls = []
+
+        def save_then_exchange(source, target):
+            if not calls and Path(target) == self.configs[0]:
+                self.session_save()
+            calls.append(target)
+            exchange(source, target)
+
+        with patch.object(iterm_tab.claude_trust, "exchange", side_effect=save_then_exchange):
+            self.launch(repository)
+        self.assert_both_saves_kept(repository)
+
+    def test_session_save_just_after_the_swap_is_kept(self):
+        repository = git_repository(self.developer / "repository")
+        exchange = iterm_tab.claude_trust.exchange
+        calls = []
+
+        def exchange_then_save(source, target):
+            exchange(source, target)
+            if not calls and Path(target) == self.configs[0]:
+                self.session_save()
+            calls.append(target)
+
+        with patch.object(iterm_tab.claude_trust, "exchange", side_effect=exchange_then_save):
+            self.launch(repository)
+        self.assert_both_saves_kept(repository)
+
+    def test_missing_directory_or_home_config_refuses_without_partial_writes(self):
+        command = self.root / "command"
+        command.write_text("exec claude")
+        with self.assertRaisesRegex(ValueError, "cd /absolute/repository"):
+            iterm_tab.prepare_launches(account_launch_args(command))
+        repository = git_repository(self.developer / "repository")
+        self.configs[1].unlink()
+        before = [self.configs[0].read_bytes(), self.configs[2].read_bytes()]
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            self.launch(repository)
+        self.assertEqual([self.configs[0].read_bytes(), self.configs[2].read_bytes()], before)
+        self.assertFalse(self.configs[1].exists())
+
+    def test_unused_default_home_is_not_created(self):
+        repository = git_repository(self.developer / "repository")
+        self.configs[2].unlink()
+        self.launch(repository)
+        self.assertFalse(self.configs[2].exists())
+        for config in self.configs[:2]:
+            with self.subTest(config=config):
+                self.assertIs(claude_projects(config)[str(repository)]["hasTrustDialogAccepted"], True)
+
+
 class TerminalTests(unittest.TestCase):
     def setUp(self):
         # These cases exercise selection/input mechanics. Protocol and startup
@@ -1584,6 +1771,10 @@ class TerminalTests(unittest.TestCase):
         startup = patch.object(iterm_tab, "submit_iterm_launch", side_effect=submit)
         startup.start()
         self.addCleanup(startup.stop)
+        # Claude folder trust has its own tests (ClaudeTrustTests); keep host homes untouched.
+        trust = patch.object(iterm_tab, "claude_trust_writes", return_value=[])
+        trust.start()
+        self.addCleanup(trust.stop)
 
     def assert_file_settings_argument(self, command, path, brief):
         args = shlex.split(command)

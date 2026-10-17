@@ -16,6 +16,27 @@ request_priority_semantics = "Essential reads and writes retain the main automat
 actor_policy_semantics = "Automation-required operations use the configured bot token, active-human-required operations explicitly clear token environment variables and use the active local gh account, and split-identity operations verify both roles before protected workflow mutation."
 
 [[operations]]
+id = "github.attachment.download"
+request_priority = "essential"
+capabilities = ["metadata_read", "issues_read"]
+permission_mode = "delegated"
+permission_note = "Automation verifies the personally owned repository and exact comment link. Q467 is checked with later withdrawals before fixed personal identity and attachment GETs for Client/staff collaborator comments; output is restricted to task evidence. Other Directors retain the existing per-command route. No App grants or general own-user route changes."
+entrypoint = "github/scripts/gh-attachment.py"
+intent = "Save a private comment attachment into private task evidence without exposing credentials or content."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Automation GET repository/comment, Q467 approval and later decision comments; verified personal GET /user and https://github.com/user-attachments/files/{id}/{name}; credential-free HTTPS asset redirects"
+quota_bucket = "mixed"
+actor_policy = "split_identity_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "manual"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL. Metadata uses the shared reader; a bounded non-retrying binary GET transport never forwards personal credentials to asset hosts."
+source_refs = ["github/scripts/gh-attachment.py:main", "github/scripts/gh-attachment.py:download"]
+test_refs = ["github/scripts/test_github_attachment.py:AttachmentTests"]
+
+[[operations]]
 id = "github.app.setup"
 request_priority = "essential"
 capabilities = ["app_registration"]
