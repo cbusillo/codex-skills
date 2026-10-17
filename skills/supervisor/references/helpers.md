@@ -21,6 +21,11 @@ Relative settings files require an absolute `cd` directory; otherwise use an abs
 Claude launches also scope `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` to the
 launch so an inherited override cannot enable suggestions. Remove explicit
 assignments of that variable from command files; the launcher supplies it.
+Claude launches also get `--autocompact auto` before the brief unless the
+command file already passes `--autocompact` or `--autocompact=VALUE`, which it
+keeps. Claude Code skips its autocompact offer dialog when the window comes
+from a launch flag, and `auto` keeps the window it tunes for the model, so
+nothing is saved to the account's settings.
 Existing sessions may still draw dim suggestions. `read` retains the
 plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
 prompt's text, line index and style (`dim`, `non_dim`, `mixed`, `empty`, or
@@ -115,7 +120,10 @@ parser result or any shutdown verification.
 
 A complete trailing Claude local `/exit` sequence (meta caveat, `/exit` command,
 one stdout wrapper) preserves the preceding close-out verdict, including when
-stdout contains a farewell. Other user turns or resumed work invalidate it.
+stdout contains a farewell. A Claude compaction summary (the
+`isCompactSummary` user record directly after its `compact_boundary` record)
+preserves it too, so a finished session that compacts while idle can still be
+released. Other user turns or any later assistant turn invalidate it.
 
 ## Checks and morning digest
 
@@ -1376,8 +1384,8 @@ rejects quoted, negated, conditional and aborted verdicts. The shared parser use
 by status, candidates and terminal closure ignores one complete trailing
 `<oai-mem-citation>` block when evaluating the verdict, while retaining the full
 response in status output. Text after the block or an incomplete block remains
-unrecognized. A complete Claude local `/exit` record sequence preserves
-the preceding verdict; other commands or new work invalidate it. Read the transcript
+unrecognized. A complete Claude local `/exit` record sequence or a compaction
+summary preserves the preceding verdict; other commands or new work invalidate it. Read the transcript
 and issue handoff yourself under the skill's full shutdown procedure; an
 unrecognized format remains manual verification, never permission to close.
 

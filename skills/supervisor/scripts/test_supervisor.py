@@ -106,6 +106,43 @@ class TranscriptTests(unittest.TestCase):
                     output = {"type": "user", "message": {"content": stdout}}
                     self.assertFalse(read(prefix + tail[:2] + [output])["safe_verdict"])
 
+    def test_claude_compaction_after_closeout_preserves_only_that_verdict(self):
+        # Record shapes from an idle automatic compaction after a close-out (#2068).
+        closeout = "Done.\nSafe to exit: yes"
+        prefix = [{"type": "user", "message": {"content": "Close out."}}, claude(closeout)]
+        compaction = [
+            {"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted",
+             "compactMetadata": {"trigger": "auto"}},
+            {"type": "user", "isCompactSummary": True, "isVisibleInTranscriptOnly": True,
+             "message": {"content": "This session is being continued from a previous conversation."}},
+            {"type": "attachment", "attachment": {"type": "hook_success", "hookName": "SessionStart:compact"}},
+            {"type": "system", "subtype": "informational",
+             "content": "Compacted while idle, before the prompt cache expired"},
+        ]
+        exit_tail = [
+            {"type": "user", "isMeta": True, "message": {"content":
+                "<local-command-caveat>local command</local-command-caveat>"}},
+            {"type": "user", "message": {"content":
+                "<command-name>/exit</command-name>\n"
+                "<command-message>exit</command-message>\n<command-args></command-args>"}},
+            {"type": "user", "message": {"content": "<local-command-stdout>Bye!</local-command-stdout>"}},
+        ]
+        for records in (prefix + compaction, prefix + compaction + exit_tail):
+            with self.subTest(records=records):
+                result = session_record.summarize(records, "claude")
+                self.assertTrue(result["safe_verdict"])
+                self.assertEqual(result["last_text"], closeout)
+        summary_alone = compaction[1:]  # A summary record without its boundary.
+        for records in (
+            prefix + summary_alone,
+            prefix + compaction + [{"type": "user", "message": {"content": "Continue working."}}],
+            prefix + compaction + [claude("Picking the work back up.")],
+            prefix + compaction + [claude("Continuing.", stop_reason="tool_use")] + exit_tail,
+            prefix[:1] + [claude("Still working.")] + compaction,
+        ):
+            with self.subTest(records=records):
+                self.assertFalse(session_record.summarize(records, "claude")["safe_verdict"])
+
     def test_status_recognizes_standalone_bold_final_verdict(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -1555,6 +1592,22 @@ class TerminalTests(unittest.TestCase):
         options, _ = parser.parse_known_args(args[:separator])
         self.assertEqual(options.settings, str(path))
         self.assertEqual(args[separator + 1:], [brief])
+
+    def test_claude_launch_sets_a_launch_window_so_the_autocompact_offer_cannot_block(self):
+        def autocompact(command):
+            args = shlex.split(command)
+            separator = args.index("--")
+            parser = argparse.ArgumentParser(add_help=False)
+            parser.add_argument("--autocompact", action="append")
+            options, _ = parser.parse_known_args(args[:separator])
+            self.assertEqual(args[separator + 1:], ["brief"])
+            return options.autocompact
+
+        self.assertEqual(autocompact(iterm_tab.append_brief("cd /work && exec claude", "brief")), ["auto"])
+        for option in ("--autocompact 500k", "--autocompact=500k"):
+            with self.subTest(option=option):
+                self.assertEqual(autocompact(iterm_tab.append_brief(f"claude {option}", "brief")), ["500k"])
+        self.assertNotIn("--autocompact", iterm_tab.append_brief("codex --remote unix://", "brief"))
 
     def test_claude_launch_preserves_existing_settings_and_overrides_suggestions(self):
         with tempfile.TemporaryDirectory() as folder:

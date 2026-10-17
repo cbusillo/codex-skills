@@ -27,6 +27,7 @@ import gui_launch
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
+CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
 
 
 class SendFailure(ValueError):
@@ -326,6 +327,11 @@ def append_brief(command_text, brief):
         settings = claude_settings(command_text, words)
         if settings is not None:
             command_text += " --settings " + shlex.quote(json.dumps(settings))
+        # A launch-flag window stops the autocompact offer dialog, which an unattended
+        # session cannot answer; "auto" keeps the window Claude Code tunes for the model.
+        if not any(word == CLAUDE_AUTOCOMPACT_OPTION or word.startswith(CLAUDE_AUTOCOMPACT_OPTION + "=")
+                   for word in words[1:]):
+            command_text += f" {CLAUDE_AUTOCOMPACT_OPTION} auto"
     prompt_option = " --prompt-interactive=" if agent == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 
