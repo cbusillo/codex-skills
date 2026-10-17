@@ -1296,9 +1296,9 @@ def api_comment(comment_id, author, created_at, body="Reply", **extra):
 MENTION_APPROVAL = "https://github.com/cbusillo/codex-skills/issues/2073#issuecomment-99"
 
 
-def search_item(repo, number):
+def search_item(repo, number, updated="2026-07-24T00:00:00Z"):
     return {"repository_url": f"https://api.github.com/repos/{repo}", "number": number,
-            "html_url": f"https://github.com/{repo}/issues/{number}", "updated_at": "2026-07-24T00:00:00Z",
+            "html_url": f"https://github.com/{repo}/issues/{number}", "updated_at": updated,
             "user": {"login": "maintainer"}}
 
 
@@ -1343,7 +1343,9 @@ def outbound_fixture():
         "repos/outside/project/issues/2": mentioned,
         "repos/outside/project/issues/2/comments": [api_comment(9, "maintainer", "2026-07-24T00:00:00Z", "@cbusillo can you help?")],
         "repos/cbusillo/codex-skills/issues/comments/99": {
-            "user": {"login": "cbusillo"}, "body": f"{github_unanswered_comments.director_mentions.APPROVAL_QUESTION} yes"},
+            "id": 99, "user": {"login": "cbusillo"}, "created_at": "2026-07-20T00:00:00Z",
+            "issue_url": "https://api.github.com/repos/cbusillo/codex-skills/issues/2073",
+            "body": f"{github_unanswered_comments.director_mentions.APPROVAL_QUESTION} yes"},
     }
     for number in (1, 2, 33):
         for item in routes[f"repos/outside/project/issues/{number}/comments"]:
@@ -1364,7 +1366,8 @@ def test_outbound_lists_mentions_outside_scope_including_private_and_mention_onl
 ):
     # outside/project#2 only mentions the Director; client/private#4 is visible only to their login.
     director_search["items"] = [search_item("outside/project", 2), search_item("outside/project", 1),
-                                search_item("client/private", 4)]
+                                search_item("client/private", 4),
+                                search_item("client/private", 5, updated="2026-07-27T00:00:00Z")]
     monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
     payload = github_unanswered_comments.collect_payload(outbound_settings())
     assert payload["status"] == "attention"
@@ -1374,7 +1377,20 @@ def test_outbound_lists_mentions_outside_scope_including_private_and_mention_onl
     rendered = github_unanswered_comments.render_markdown(payload)
     assert "https://github.com/client/private/issues/4" in rendered
     from urllib.parse import parse_qs, urlparse
-    assert "-user:cbusillo" in parse_qs(urlparse(director_search["calls"][1]).query)["q"][0]
+    query = parse_qs(urlparse(director_search["calls"][1]).query)["q"][0]
+    assert "-user:cbusillo" in query
+    assert "..2026-07-26T20:00:00Z" in query  # the report's --until bounds the search
+
+
+def test_outbound_withdrawn_mention_approval_reports_the_gap(monkeypatch, outbound_fixture, director_search):
+    question = github_unanswered_comments.director_mentions.APPROVAL_QUESTION
+    outbound_fixture["repos/cbusillo/codex-skills/issues/2073/comments"] = [
+        {"id": 100, "user": {"login": "cbusillo"}, "created_at": "2026-07-21T00:00:00Z", "body": f"{question} no"}]
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
+    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    assert payload["status"] == "degraded"
+    assert "withdrew" in payload["coverage"]["errors"][0]["error"]
+    assert director_search["calls"] == []
 
 
 def test_outbound_without_mention_approval_reports_the_gap(monkeypatch, outbound_fixture, director_search):

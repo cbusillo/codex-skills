@@ -1219,9 +1219,12 @@ def outbound_mentions(
     errors: list[dict[str, str]] = []
     def read_comment(repo: str, comment_id: int) -> Any:
         return run_json([GH, "api", f"repos/{repo}/issues/comments/{comment_id}"])
+    def read_later(issue_url: str, since: str) -> list[dict[str, Any]]:
+        return api_list(f"{director_mentions.thread_comments_path(issue_url)}?{urlencode({'since': since})}")
     for login in sorted(outbound_self) or [None]:
         mentions, gap, error = director_mentions.collect(
-            login, format_api_timestamp(settings["since"]), settings.get("mention_approval"), recorders, read_comment,
+            login, format_api_timestamp(settings["since"]), settings.get("mention_approval"), recorders,
+            read_comment, read_later, until=format_api_timestamp(settings["until"]),
             excluded_repositories=excluded_repositories, excluded_owners=outbound_self,
         )
         if gap or error:

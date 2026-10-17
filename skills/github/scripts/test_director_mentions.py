@@ -45,8 +45,16 @@ class FakeGet:
                 "incomplete_results": self.incomplete}
 
 
-def approval(body=f"{director_mentions.APPROVAL_QUESTION} yes", login="cbusillo"):
-    return lambda repo, comment_id: {"user": {"login": login}, "body": body}
+Q = director_mentions.APPROVAL_QUESTION
+
+
+def record(body, login="cbusillo", comment_id=99, created="2026-10-17T12:00:00Z"):
+    return {"id": comment_id, "user": {"login": login}, "body": body, "created_at": created,
+            "issue_url": "https://api.github.com/repos/cbusillo/codex-skills/issues/2073"}
+
+
+def approval(body=f"{Q} yes", login="cbusillo"):
+    return lambda repo, comment_id: record(body, login)
 
 
 class DirectorReadRouteTests(unittest.TestCase):
@@ -87,35 +95,51 @@ class DirectorReadRouteTests(unittest.TestCase):
             self.assertTrue(all(call["token"] is None for call in calls))
 
 
-def approval_gap(url: str | None = APPROVAL_URL, read: Callable[[str, int], Any] | None = None) -> str | None:
-    return director_mentions.approval_gap(url, "cbusillo", {"cbusillo", "shiny-code-app[bot]"}, read or approval())
+def approval_gap(url: str | None = APPROVAL_URL, read: Callable[[str, int], Any] | None = None,
+                 later: list[dict[str, Any]] = ()) -> str | None:
+    return director_mentions.approval_gap(url, "cbusillo", {"cbusillo", "shiny-code-app[bot]"},
+                                          read or approval(), lambda issue_url, since: list(later))
 
 
 class ApprovalTests(unittest.TestCase):
-
     def test_director_reply_or_recorded_decision_approves(self):
-        self.assertIsNone(approval_gap())
-        self.assertIsNone(approval_gap(read=approval(
-            f"Director decision: {director_mentions.APPROVAL_QUESTION} yes, mention searches", "shiny-code-app[bot]")))
+        for body, login in ((f"{Q} yes", "cbusillo"), (f"**{Q} yes**, go ahead.", "cbusillo"),
+                            (f"Director decision: {Q} yes, mention searches", "shiny-code-app[bot]")):
+            with self.subTest(body=body):
+                self.assertIsNone(approval_gap(read=approval(body, login)))
 
-    def test_missing_foreign_unreadable_or_declined_approval_is_a_gap(self):
+    def test_quoted_hedged_or_unauthorized_text_is_not_approval(self):
         def unreadable(*_):
             raise OSError("denied")
-        question = director_mentions.APPROVAL_QUESTION
         for url, read in ((None, None), ("https://example.com/x", None),
                           (APPROVAL_URL, approval(login="client")),
-                          (APPROVAL_URL, approval(f"{question} no")),
-                          (APPROVAL_URL, approval(f"Owner question: {question} yes?", "shiny-code-app[bot]")),
+                          (APPROVAL_URL, approval(f"{Q} no")),
+                          (APPROVAL_URL, approval(f"> {Q} yes\n\nNo, I do not approve this.")),
+                          (APPROVAL_URL, approval(f"{Q} yes, but not unattended")),
+                          (APPROVAL_URL, approval(f"Thinking about it. {Q} yes?")),
+                          (APPROVAL_URL, approval(f"Director decision: {Q} yes was proposed, but the Director declined it.",
+                                                  "shiny-code-app[bot]")),
+                          (APPROVAL_URL, approval(f"Owner question: {Q} yes?", "shiny-code-app[bot]")),
+                          (APPROVAL_URL, approval(f"Director decision: {Q} yes", "client")),
                           (APPROVAL_URL, unreadable)):
             with self.subTest(url=url, read=read):
                 self.assertTrue(approval_gap(url, read))
 
+    def test_later_answer_withdraws_and_unrelated_later_comments_do_not(self):
+        withdrawn = [record(f"{Q} no, stop those searches", comment_id=100, created="2026-10-18T00:00:00Z")]
+        self.assertIn("withdrew", approval_gap(later=withdrawn))
+        unrelated = [record("Thanks", comment_id=100), record(f"{Q} no", "client", 101),
+                     record(f"> {Q} no", comment_id=102)]
+        self.assertIsNone(approval_gap(later=unrelated))
+        renewed = [*withdrawn, record(f"{Q} yes again", comment_id=103, created="2026-10-19T00:00:00Z")]
+        self.assertIsNone(approval_gap(later=renewed))
+
     def test_unapproved_collect_never_searches(self):
         get = FakeGet([item("client/private", 1)])
         mentions, gap, error = director_mentions.collect("cbusillo", "2026-10-17T00:00:00Z", None, set(), approval(),
-                                                         get=get)
+                                                         lambda *_: [], get=get)
         self.assertEqual((mentions, error), ([], None))
-        self.assertIn(director_mentions.APPROVAL_QUESTION, gap)
+        self.assertIn(Q, gap)
         self.assertEqual(get.calls, [])
 
 
@@ -141,6 +165,15 @@ class SearchTests(unittest.TestCase):
         self.assertEqual((mentions, error), ([], None))
         self.assertIn("someone-else", gap)
         self.assertEqual(other.calls, ["user"])
+
+    def test_upper_bound_limits_query_and_results(self):
+        later = {**item("client/private", 2), "updated_at": "2026-10-18T00:00:00Z"}
+        get = FakeGet([item("client/private", 1), later])
+        mentions, _, _ = director_mentions.search("cbusillo", "2026-10-17T00:00:00Z",
+                                                  until="2026-10-17T18:00:00Z", get=get)
+        self.assertEqual([m["number"] for m in mentions], [1])
+        self.assertIn("updated:2026-10-17T00:00:00Z..2026-10-17T18:00:00Z",
+                      parse_qs(urlparse(get.calls[1]).query)["q"][0])
 
     def test_partial_or_capped_search_is_an_error(self):
         for get in (FakeGet([item("client/private", 1)], incomplete=True),
