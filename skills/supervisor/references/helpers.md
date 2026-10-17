@@ -147,9 +147,9 @@ and closure readers retain their strict ledger validation.
 
 `goal_board.py` lists the open issues on OWNER/direction (100 per page) and
 keeps those titled `Track:`, whatever their milestone. It then reads up to
-ten Tracks per aliased GraphQL query: each Track's labels and last 100
-comments, its first 50 native children with their labels, sub-issue counts
-and last 100 comments, and up to five PRs closing each child with their last
+ten Tracks per aliased GraphQL query: each Track's body, labels and last 100
+comments, its first 50 native children with their state, body, labels,
+sub-issue counts and last 100 comments, and up to five PRs closing each child with their last
 30 comments. Seven Tracks took two requests, 28 points and about five seconds
 on October 16, 2026.
 
@@ -161,15 +161,26 @@ closed PRs are dropped. A PR that only mentions a child, rather than closing
 it, is not on the board; the [auto-enqueue watcher](#interim-auto-enqueue-watcher)
 still routes it.
 
+A closed child prints as `closed`; an open planning label left on it is
+noted as `closed (label plan:active is stale)`. Each Track and child row
+carries `next_action`: the `Next action:` line of its Current Status, chosen
+by the shared `gh-plan.py` rule (a newer trusted status comment wins over the
+body), whitespace collapsed and cut to 200 characters. A row without a
+Current Status says `no Current Status`; one without that line says `no Next
+action in Current Status`.
+
 `--format json` (default) prints rows and transport diagnostics,
 `--format markdown` the board with titles, and `--format links` the board
-without titles, for public places where Client details must not appear.
+without titles or next-action text, for public places where Client details
+must not appear.
 `coverage` gives `discovered`, `read` and `complete`. A failed or partial
 discovery read prints no Tracks and says every Track is unknown. Within a
 read Track, each row's `unread` lists what the read could not settle, and the
 board prints it as `unknown, not refreshed`: more than 50 children or five
 closing PRs, a status label beyond the labels read, or a thread longer than
-the comments read with no decision or handoff among them. The newest decision
+the comments read with no decision or handoff among them, or with no
+status comment among them while the body is older than the oldest comment
+read (or has no Current Status). The newest decision
 or handoff inside the window is the latest, so a long thread with one stays
 complete. Any unread Track or part makes `complete` false and exits 1.
 
