@@ -1,0 +1,264 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Rebuild the Supervisor's goal board from every open Track issue on OWNER/direction."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import json
+import math
+from pathlib import Path
+import re
+import sys
+import time
+
+CATALOG = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(CATALOG))
+sys.path.insert(0, str(CATALOG / "skills/github/scripts"))
+from skills.github.scripts import github_read
+from skills.github.scripts.github_identity import automation_login
+from skills.github.scripts.ready_handoff import HEAD, READY, WAITING, handoff_line, timestamp
+
+UNKNOWN = "unknown, not refreshed"
+DECISION = re.compile(r"(?i)^\W*director decision\b")
+CHILD_LIMIT = 50
+TRACK_COMMENTS = 30
+CHILD_COMMENTS = 10
+PR_LIMIT = 5
+PR_COMMENTS = 20
+TRACKS_PER_QUERY = 10
+
+LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(states: [OPEN], first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      totalCount
+      nodes { number title }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}"""
+
+COMMENT = "url createdAt updatedAt databaseId body author { __typename login }"
+TRACK_FIELDS = f"""number title url state
+      milestone {{ title }}
+      labels(first: 20) {{ nodes {{ name }} }}
+      comments(last: {TRACK_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
+      subIssues(first: {CHILD_LIMIT}) {{
+        totalCount
+        nodes {{
+          number title url state
+          repository {{ nameWithOwner }}
+          labels(first: 20) {{ nodes {{ name }} }}
+          subIssuesSummary {{ total completed }}
+          comments(last: {CHILD_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
+          closedByPullRequestsReferences(first: {PR_LIMIT}, includeClosedPrs: false) {{
+            totalCount
+            nodes {{
+              number url state isDraft mergeable headRefOid
+              comments(last: {PR_COMMENTS}) {{ nodes {{ {COMMENT} }} }}
+            }}
+          }}
+        }}
+      }}"""
+
+
+def detail_query(numbers):
+    aliases = "\n".join(f"    t{number}: issue(number: {int(number)}) {{ {TRACK_FIELDS} }}" for number in numbers)
+    return ("query SupervisorGoalBoardTracks($owner: String!, $name: String!) {\n"
+            f"  repository(owner: $owner, name: $name) {{\n{aliases}\n  }}\n}}")
+
+
+def login(author):
+    if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+        return ""
+    name = author["login"].casefold()
+    return f"{name}[bot]" if author.get("__typename") == "Bot" and not name.endswith("[bot]") else name
+
+
+def status_label(labels):
+    names = [node["name"] for node in labels["nodes"]]
+    return next((name for name in names if name.startswith("plan:")), None)
+
+
+def latest_decision(comments, trusted):
+    found = [node for node in comments["nodes"]
+             if login(node.get("author")) in trusted and DECISION.match(node.get("body") or "")]
+    return max(found, key=lambda node: timestamp(node["createdAt"]))["url"] if found else None
+
+
+def handoff(pr, trusted):
+    """Classify the latest trusted handoff with the merge train's shared rules."""
+    latest = None
+    for node in pr["comments"]["nodes"]:
+        lines = (node.get("body") or "").splitlines()
+        first = handoff_line(lines[0]) if lines else ""
+        if login(node.get("author")) in trusted and (first == READY or first.startswith(WAITING)):
+            key = (timestamp(node.get("updatedAt") or node["createdAt"]), node["databaseId"])
+            if latest is None or key > latest[0]:
+                latest = (key, first, node)
+    if latest is None:
+        return "no handoff"
+    first, node = latest[1:]
+    if first.startswith(WAITING):
+        return "engineering ready, waiting"
+    heads = [match.group("sha") for match in HEAD.finditer(node["body"])]
+    return "ready" if heads == [pr["headRefOid"]] else "ready for an older head"
+
+
+def child_row(node, trusted):
+    prs = node["closedByPullRequestsReferences"]
+    return {"repository": node["repository"]["nameWithOwner"], "number": node["number"],
+        "title": node["title"], "url": node["url"], "state": node["state"].lower(),
+        "status": status_label(node["labels"]), "sub_issues": node["subIssuesSummary"],
+        "latest_decision": latest_decision(node["comments"], trusted),
+        "decision_scan": "complete" if node["comments"]["totalCount"] <= CHILD_COMMENTS else f"last {CHILD_COMMENTS}",
+        "open_prs": [{"url": pr["url"], "head": pr["headRefOid"], "draft": pr["isDraft"],
+            "mergeable": pr["mergeable"].lower(), "handoff": handoff(pr, trusted)}
+            for pr in prs["nodes"] if pr["state"] == "OPEN"],
+        "open_prs_complete": prs["totalCount"] <= PR_LIMIT}
+
+
+def track_row(node, trusted):
+    children = node["subIssues"]
+    return {"number": node["number"], "title": node["title"], "url": node["url"],
+        "milestone": (node.get("milestone") or {}).get("title"), "status": status_label(node["labels"]),
+        "latest_decision": latest_decision(node["comments"], trusted),
+        "decision_scan": "complete" if node["comments"]["totalCount"] <= TRACK_COMMENTS else f"last {TRACK_COMMENTS}",
+        "children": [child_row(child, trusted) for child in children["nodes"]],
+        "children_complete": children["totalCount"] <= len(children["nodes"])}
+
+
+def discover(reader, owner, name, max_pages):
+    """List every open issue once; return Track numbers and titles in creation order."""
+    found, cursor, expected, seen, cursors = [], None, None, set(), set()
+    for page in range(max_pages):
+        result = reader.graphql_json(LIST_QUERY, {"owner": owner, "name": name, "cursor": cursor},
+            step=f"goal_board_list_{page + 1}")
+        if not result.ok:
+            raise github_read.GitHubReadError("Track discovery read failed", result=result,
+                diagnostics=reader.diagnostics())
+        body = result.body
+        if not isinstance(body, dict) or body.get("errors"):
+            raise ValueError("Track discovery returned errors or invalid data")
+        issues = body["data"]["repository"]["issues"]
+        if expected is not None and issues["totalCount"] != expected:
+            raise ValueError("open issue inventory changed during pagination; rebuild again")
+        expected = issues["totalCount"]
+        for node in issues["nodes"]:
+            if node["number"] not in seen:
+                seen.add(node["number"])
+                if str(node["title"]).startswith("Track:"):
+                    found.append({"number": node["number"], "title": node["title"]})
+        if not issues["pageInfo"]["hasNextPage"]:
+            if len(seen) != expected:
+                raise ValueError("open issue inventory incomplete")
+            return found
+        cursor = issues["pageInfo"]["endCursor"]
+        if not isinstance(cursor, str) or not cursor or cursor in cursors:
+            raise ValueError("pagination cursor did not advance")
+        cursors.add(cursor)
+    raise ValueError("open issue pagination exceeded page bound")
+
+
+def goal_board(reader, owner, *, repo="direction", trusted, max_pages=10):
+    """Never carry an old status: an unread Track or part of one says unknown."""
+    tracks = discover(reader, owner, repo, max_pages)
+    rows, errors = [], []
+    for start in range(0, len(tracks), TRACKS_PER_QUERY):
+        chunk = tracks[start:start + TRACKS_PER_QUERY]
+        numbers = [track["number"] for track in chunk]
+        result = reader.graphql_json(detail_query(numbers), {"owner": owner, "name": repo},
+            step=f"goal_board_tracks_{start // TRACKS_PER_QUERY + 1}")
+        data = result.body.get("data") if result.ok and isinstance(result.body, dict) else None
+        repository = (data or {}).get("repository") or {}
+        if not result.ok or not isinstance(result.body, dict) or result.body.get("errors"):
+            errors.append(f"Track read failed for #{', #'.join(map(str, numbers))}")
+        for track in chunk:
+            node = repository.get(f"t{track['number']}")
+            try:
+                if not isinstance(node, dict) or node.get("state") != "OPEN":
+                    raise ValueError("missing or no longer open")
+                rows.append({**track_row(node, trusted), "read": True})
+            except (KeyError, TypeError, ValueError, AttributeError):
+                rows.append({**track, "url": f"https://github.com/{owner}/{repo}/issues/{track['number']}",
+                    "read": False, "status": UNKNOWN})
+    read = sum(1 for row in rows if row["read"])
+    complete = (not errors and read == len(tracks)
+        and all(row["children_complete"] and all(child["open_prs_complete"] for child in row["children"])
+                for row in rows if row["read"]))
+    return {"tracks": rows, "coverage": {"discovered": len(tracks), "read": read, "complete": complete},
+        "errors": errors}
+
+
+def decision_text(row):
+    if row["latest_decision"]:
+        return f"; decision {row['latest_decision']}"
+    return "" if row["decision_scan"] == "complete" else f"; older decisions {UNKNOWN}"
+
+
+def markdown(board, *, links_only=False):
+    discovered = board["coverage"]["discovered"]
+    lines = [f"Goal board, checked at {board['checked_at']}. Tracks discovered: "
+             f"{'unknown' if discovered is None else discovered}, read: {board['coverage']['read']}"
+             + ("" if board["coverage"]["complete"] else " (incomplete)") + "."]
+    for track in board["tracks"]:
+        name = "" if links_only else f" {track['title']}"
+        if not track["read"]:
+            lines.append(f"\n- {track['url']}{name}: {UNKNOWN}")
+            continue
+        decision = decision_text(track)
+        more = "" if track["children_complete"] else f"; children beyond {CHILD_LIMIT} {UNKNOWN}"
+        lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}{decision}{more}")
+        for child in track["children"]:
+            label = child["status"] or child["state"]
+            title = "" if links_only else f" {child['title']}"
+            prs = "".join(f"; PR {pr['url']} {'draft, ' if pr['draft'] else ''}{pr['handoff']}, mergeable {pr['mergeable']}"
+                          for pr in child["open_prs"])
+            if not child["open_prs_complete"]:
+                prs += f"; more PRs {UNKNOWN}"
+            decision = decision_text(child)
+            lines.append(f"  - {child['url']}{title}: {label}{decision}{prs}")
+    for error in board["errors"]:
+        lines.append(f"\nError: {error}")
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--owner", required=True)
+    parser.add_argument("--repo", default="direction", help="direction repository name under --owner")
+    parser.add_argument("--decision-author", action="append", default=[],
+        help="trusted decision and handoff author besides the owner and automation login; repeatable")
+    parser.add_argument("--format", choices=("json", "markdown", "links"), default="json",
+        help="links omits titles, for posting where Client details must not appear")
+    parser.add_argument("--deadline-seconds", type=float, default=120)
+    args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", args.repo):
+        parser.error("owner and repo must be GitHub names")
+    if not math.isfinite(args.deadline_seconds) or args.deadline_seconds <= 0:
+        parser.error("deadline must be positive")
+    trusted = {name.casefold() for name in
+               [args.owner, automation_login() or "shiny-code-app[bot]", *args.decision_author]}
+    reader = github_read.GitHubReader(operation="github.supervisor.goal_board", strict_actor=True,
+        gh_prefix_args=github_read.automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
+    checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        board = goal_board(reader, args.owner, repo=args.repo, trusted=trusted)
+    except (github_read.GitHubReadError, ValueError, KeyError, TypeError) as error:
+        board = {"tracks": [], "coverage": {"discovered": None, "read": 0, "complete": False},
+            "errors": [f"Track discovery failed, every Track is {UNKNOWN}: {error}"]}
+    board = {"ok": board["coverage"]["complete"], "owner": args.owner, "repository": f"{args.owner}/{args.repo}",
+        "checked_at": checked_at, **board}
+    if args.format == "json":
+        print(json.dumps({**board, "diagnostics": reader.diagnostics()}))
+    else:
+        print(markdown(board, links_only=args.format == "links"))
+    return 0 if board["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2420,6 +2420,27 @@ retained_graphql_rationale = "One query per repository page supplies aggregate c
 source_refs = ["supervisor/scripts/fleet_counts.py:fleet_counts"]
 test_refs = ["supervisor/scripts/test_fleet_counts.py:test_recorded_pages_count_issues_and_prs_separately", "supervisor/scripts/test_fleet_counts.py:test_failure_after_first_page_has_no_totals"]
 
+[[operations]]
+id = "github.supervisor.goal_board"
+request_priority = "essential"
+capabilities = ["metadata_read", "issues_read", "pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Read-only Track graph on the owner's direction repository and the open PRs closing its children, under the configured automation identity; no grant or identity fallback."
+entrypoint = "supervisor/scripts/goal_board.py"
+intent = "Rebuild the Supervisor's goal board from every open Track issue on each check, after compaction and at takeover, instead of carrying status in a private ledger."
+current_transport = "gh_cli_graphql"
+selected_transport = "gh_cli_graphql"
+endpoint_or_command = "POST /graphql repository.issues open listing, cursor-paginated, then aliased Track issues with subIssues, comments and closedByPullRequestsReferences"
+quota_bucket = "graphql"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "One listing page plus one aliased query per ten Tracks reads the whole Track graph, its decision comments and closing PR handoffs; the REST route needs several calls per Track. GraphQL has no conditional REST cache."
+source_refs = ["supervisor/scripts/goal_board.py:goal_board"]
+test_refs = ["supervisor/scripts/test_goal_board.py:test_every_open_track_across_pages_is_read_with_children_decisions_and_prs", "supervisor/scripts/test_goal_board.py:test_failed_or_partial_track_read_says_unknown_and_never_complete"]
+
 
 
 [[operations]]
