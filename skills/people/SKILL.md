@@ -114,7 +114,11 @@ dots, hyphens and underscores. Tiers in order: exact normalized id or
 name/preferred reference/alias/known misspelling; compact exact match; optional
 conservative fuzzy matching only when explicitly requested and one candidate
 is obvious. A tie at the winning tier returns `ambiguous`, omitting notes and
-detail files.
+detail files, communication style and contact notes. A single match includes
+configured `preferences.communication_style`, `preferences.contact_notes` and
+`notes` as `match.communication_style`, `match.contact_notes` and `match.notes`.
+These fields are optional private context, subject to the same privacy rules
+as detail files. Fuzzy matches remain lookup-only.
 
 Refresh the private index when artifact review or live evidence shows verified
 durable renames, handles, role/relationship corrections or repeatedly unresolved
