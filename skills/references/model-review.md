@@ -81,5 +81,9 @@ A finding is a hypothesis, not a task.
 
 In the pull request or the owning issue, give the reviewers by provider and
 model, what was acted on, what was declined and why, and what was reproduced.
+On a pull request, start that comment with `Review weighed:` or
+`Review of record:`; `ready` refuses a pending or missing review of record
+until one follows the request or the head commit (see
+[ready handoffs](../github/references/cli-reference.md#ready-handoffs)).
 Keep it short; the declined list is what keeps dissent visible without turning
 it into code.
