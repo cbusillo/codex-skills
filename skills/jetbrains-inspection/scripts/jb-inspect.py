@@ -863,9 +863,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class ExplicitRepoPath(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.repo_explicit = True
+
+
 def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="Emit machine-readable JSON only.")
-    command.add_argument("--repo", default=".", help="Repo/worktree path to inspect. Defaults to cwd.")
+    command.add_argument("--repo", default=".", action=ExplicitRepoPath, help="Repo/worktree path to inspect. Defaults to cwd.")
     command.add_argument("--port", type=int, help="Use a specific IDE built-in server port.")
     command.add_argument("--ide", help="Preferred IDE selector, e.g. PyCharm, IntelliJ, WebStorm.")
     command.add_argument("--ide-app", help="Exact macOS application bundle name to launch, e.g. WebStorm 2026.2 EAP. Defaults to --ide.")
@@ -1498,7 +1504,7 @@ def run_repository_preparation(args: argparse.Namespace, context: dict[str, Any]
     if state.get("kind") == "python":
         if "--repo" in argv:
             project = (target / argv[argv.index("--repo") + 1]).resolve()
-            if not project.is_relative_to(target) or not project.is_dir():
+            if not project.is_relative_to(target) or not project.is_dir() or (argv[argv.index("--repo") + 1] != "." and project == target):
                 preparation["execution_state"] = "blocked"
                 raise repository_preparation_error(
                     "repository_preparation_project_unavailable",
@@ -2513,7 +2519,7 @@ def command_run(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, 
 def explicit_nested_lane_context(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any] | None:
     lanes = configured_inspection_lanes(context)
     root_value, repo_value = context.get("worktree_root"), context.get("repo_path")
-    if not lanes or not root_value or not repo_value:
+    if not getattr(args, "repo_explicit", False) or not lanes or not root_value or not repo_value:
         return None
     root, project = Path(root_value).resolve(), Path(repo_value).resolve()
     if project == root:
@@ -2527,8 +2533,12 @@ def explicit_nested_lane_context(args: argparse.Namespace, context: dict[str, An
     lane = matching[0]
     result = {key: value for key, value in context.items()
               if key not in {"inspection_lanes", "_inspection_lanes", "ide_selection", "ide_config_dir", "ide_app_path"}}
-    result.update(ide=lane.ide, inspection_lane=lane.public())
+    result.update(ide=lane.ide, ide_app=None, ide_channel=None, ide_version=None,
+                  inspection_lane=lane.public(), project_path=str(project),
+                  exact_route_path=str(project), lifecycle_target_path=str(project))
     args.ide = lane.ide
+    args.project_path = str(project)
+    args.ide_app = args.ide_channel = args.ide_version = None
     selection = resolve_ide_selection(result)
     if selection:
         result["ide_selection"] = selection.public()
@@ -2536,6 +2546,8 @@ def explicit_nested_lane_context(args: argparse.Namespace, context: dict[str, An
             result["ide_config_dir"] = str(selection.config_dir)
         if selection.app_path:
             result["ide_app_path"] = str(selection.app_path)
+        if selection.app_name:
+            result["ide_app"] = selection.app_name
     return result
 
 

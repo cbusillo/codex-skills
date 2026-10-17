@@ -337,7 +337,7 @@ def preparation(config, private, language):
     if language != "python" or not isinstance(prepare, dict) or set(prepare) != {"python"}:
         raise Blocked("qodana_preparation_unsupported")
     py = prepare["python"]
-    if py.get("projectPath"):
+    if "projectPath" in py:
         raise Blocked("qodana_preparation_unsupported")
     # Reuse the maintained generator, on Linux in the snapshot, without reading
     # any desktop SDK table. Existing config schema is validated by the host.

@@ -101,9 +101,15 @@ else:
             {"id": "jvm", "ide": "IntelliJ IDEA", "include": ["*"]},
         ]})
         context = self.context()
-        context.update(repo_path=str(self.project), project_path=str(self.project),
-                       lifecycle_target_path=str(self.project), scope="whole_project", _inspection_lanes=lanes)
+        context.update(repo_path=str(self.project), project_path=str(self.root),
+                       lifecycle_target_path=str(self.root), exact_route_path=str(self.root),
+                       ide_app="IntelliJ IDEA", ide_channel="eap", ide_version="fixture-version",
+                       scope="whole_project", _inspection_lanes=lanes)
         self.args.ide = None
+        self.args.repo_explicit = True
+        self.args.ide_app = "IntelliJ IDEA"
+        self.args.ide_channel = "eap"
+        self.args.ide_version = "fixture-version"
         with (
             patch.object(jb_inspect, "resolve_ide_selection", return_value=None),
             patch.object(jb_inspect, "run_configured_inspection_lanes", side_effect=AssertionError("nested scope widened")),
@@ -115,11 +121,25 @@ else:
         self.assertEqual(passed_args.ide, lanes[0].ide)
         self.assertEqual(passed_context["scope"], context["scope"])
         self.assertEqual(passed_context["project_path"], str(self.project))
+        self.assertEqual(passed_context["exact_route_path"], str(self.project))
+        self.assertEqual(passed_context["lifecycle_target_path"], str(self.project))
+        self.assertEqual(passed_args.project_path, str(self.project))
+        for key in ("ide_app", "ide_channel", "ide_version"):
+            self.assertIsNone(passed_context[key])
+            self.assertIsNone(getattr(passed_args, key))
         self.assertEqual(passed_context["worktree_root"], str(self.root))
         with patch.object(jb_inspect, "run_configured_inspection_lanes", return_value={"lanes": True}) as multi:
-            context["repo_path"] = str(self.root)
+            self.args.repo_explicit = False
             self.assertTrue(jb_inspect.command_closeout(self.args, context)["lanes"])
             multi.assert_called_once()
+
+    def test_nested_symlink_to_root_refuses_without_mutating_jvm(self):
+        self.project.rmdir()
+        self.project.symlink_to(self.root, target_is_directory=True)
+        before = self.jvm_model.read_bytes()
+        with self.assertRaises(jb_inspect.InspectError):
+            self.prepare(self.context())
+        self.assertEqual(self.jvm_model.read_bytes(), before)
 
     def test_escaping_project_paths_refuse_before_execution(self):
         for value in ("../outside", "/outside", "scripts/../other", "scripts\\other", ""):
