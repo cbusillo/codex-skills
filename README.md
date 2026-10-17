@@ -534,6 +534,23 @@ their shorter timeout. If Codex asks to trust the refreshed hook, use `/hooks`.
 The explicit upgrade adopts plain legacy catalog invocations; custom commands
 remain preserved, and omitting the option retains the installer's existing behavior.
 
+### Codex memory reminder
+
+The same session-start hook on both harnesses advises memory distillation when
+the last recorded distillation is more than 14 days old or `MEMORY.md` exceeds
+30,000 whitespace-delimited words. It does not run distillation or edit memory.
+Compaction and per-prompt reminders skip this check.
+
+Optional `memory-last-check.json` lives beside the direction marker (normally
+`~/.code/`); `MEMORY_MARKER` selects another marker. After a completed
+distillation, record its UTC timestamp as `last_distilled_at`. Optional positive
+integer `max_age_days` and `max_words` override the defaults. `memory_root` may
+name an absolute memory-store path; otherwise both harnesses read
+`~/.codex/memories`, independently of account-home overrides. Configure that
+field if the intended shared store lives elsewhere. A missing completion date
+has unknown age; the size check still works. Missing/unreadable memory is quiet,
+and the hook never writes the marker or any memory file.
+
 ## Execution Environment
 
 Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.12 as its minimum
