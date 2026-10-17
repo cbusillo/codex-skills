@@ -67,10 +67,18 @@ changes on yes.
   question again, even reworded, keep its ID. Restate the question each time
   you list it, so the Director can answer "Q2 yes" without scrolling back. On
   GitHub, the question's link is its ID.
+- When the Director's answer to a multi-option question can be read two ways,
+  say back the chosen and rejected options in one line before recording the
+  `Director decision:`. Before asking again, or saying no decision exists,
+  search `repo:OWNER/direction` and the item's newest Current Status and
+  linked issues for a Director decision.
 - Once the Director agrees to something, carry it out and land it. Wait for the Director only when they asked you to, or when a stop boundary applies. Never add a "show the Director first" step they didn't ask for. When the Director does ask you to wait, say what is waiting and what ends the wait.
 - For a wait the Director asked for, do not invent a deadline or treat silence
   as approval. Continue independent authorized work. "Don't land yet" holds
   merging, not preparation or validation.
+- When your own question proposes a different method or scope, everything that
+  depends on the answer waits, including closing the issue. Continue only
+  independent work.
 - **Filter by whose decision it is, never by how many there are.** A question
   reaches the Director only when it hits a stop boundary, is a product choice,
   or changes something the Director already agreed. Otherwise the agent decides

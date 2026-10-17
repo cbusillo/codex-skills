@@ -492,6 +492,12 @@ future session does not ask again. Keep recovery-critical state in the issue;
 link implementation evidence where it already lives under
 [Agent Comments](../references/talking-with-the-director.md#agent-comments).
 
+When the Director's reply is short or points elsewhere ("as recorded above"),
+read every comment since the question, including bot `Director decision:`
+records, and act on the record's wording. When an issue's finish line
+paraphrases a quoted decision, build to the quote; ask on the issue before
+adding any destructive or behavior-changing rule the quote does not contain.
+
 While another workflow waits on CI, deployment, or review, use independent
 read-only work or isolated preparation within authorization; return to the
 waiting workflow before calling it complete.

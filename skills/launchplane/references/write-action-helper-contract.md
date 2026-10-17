@@ -1535,6 +1535,13 @@ write-intent `record`, and product-config runtime, key-safety, count, and secret
 binding metadata. Secret record ids, provider target details, actor identities,
 instructions, raw findings, and arbitrary nested dictionaries are not copied.
 
+Strict projections check each response object against a fixed field
+allowlist, so one unknown field there fails the whole read with
+`unsafe_response_shape`; some reads, such as activity and target-replacement
+operations, drop or list unknown fields instead. A Launchplane PR that adds a
+field to a strictly projected response lands the matching helper allowlist
+change first and says so in its PR body.
+
 Unexpected successful provider shapes fail closed as `invalid_response` rather
 than being recursively sanitized. For an accepted controller reply that cannot
 be projected, `summary.projection_error_code` and the warning code retain the
