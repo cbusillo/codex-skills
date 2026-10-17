@@ -624,6 +624,32 @@ class ClientAppTests(unittest.TestCase):
                       AppHandler.calls)
         self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
 
+    def test_plan_cross_owner_evidence_read_expects_its_owner_app(self) -> None:
+        # A wait or blocker in another owner's repository is read by that
+        # owner's App, never the command repository's or a borrowed one.
+        for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"):
+            os.environ.pop(f"GITHUB_READER_APP_{suffix}")
+        os.environ.update({"GH_WITH_ENV_TOKEN_GH": str(self.fake_gh()),
+                           "GH_WITH_ENV_TOKEN_PYTHON": sys.executable})
+        for context, target in (("client/product", "host/product"), ("host/product", "client/product"),
+                                ("client/product", "client/other"), ("host/product", "host/other")):
+            with self.subTest(context=context, target=target), \
+                    patch.dict(os.environ, {"GH_REPO": context}), \
+                    patch.multiple(PLAN, CURRENT_OPERATION="github.plan.next", CURRENT_IS_WRITE=False,
+                                   EXPECTED_ACTOR="app-1[bot]", CURRENT_RETRY_FIELDS={}):
+                actor, body = PLAN.api_json_uncached("GET", f"/repos/{target}/issues/5",
+                                                     failed_step="next_wait_evidence")
+                self.assertEqual((actor, body["number"]), ("automation-gh", 5))
+                self.assertEqual(PLAN.CURRENT_RETRY_FIELDS["last_actor"], self.auth(target)[1])
+        with patch.dict(os.environ, {"GH_REPO": "client/product"}), \
+                patch.multiple(PLAN, CURRENT_OPERATION="github.plan.next", CURRENT_IS_WRITE=False,
+                               EXPECTED_ACTOR="app-1[bot]"), \
+                self.assertRaises(PLAN.PlanError) as refused:
+            PLAN.api_json_uncached("GET", "/repos/host/missing/issues/5", failed_step="next_wait_evidence")
+        self.assertEqual(refused.exception.failure.cause, "identity_refused")
+        self.assertIn(("GET", "/repos/host/missing/installation", self.env["GITHUB_CLIENT_APP_ID"]),
+                      AppHandler.calls)
+
     def test_python_bulk_reads_use_reader_then_client_when_reader_absent(self) -> None:
         kwargs = dict(operation="github.plan.index", is_write=False, gh_cmd=github_api.DEFAULT_GH,
                       gh_prefix_args=[], actor="app-1[bot]", expected_actor="app-1[bot]",

@@ -945,6 +945,10 @@ def api_json_uncached(
             cache_enabled=True, cache_revalidate=True,
             deadline_at=read_deadline,
             retry_runtime=NEXT_READS.retry_runtime if NEXT_READS is not None else None,
+            # Transport selects the App from the request path, so a wait or
+            # blocker in another owner's repository is checked against that
+            # owner's App rather than the command repository's.
+            repository=github_api_core.github_http_cache.repository_from_path(path),
         )
         reader.completed_steps = list(completed_steps or [])
         try:

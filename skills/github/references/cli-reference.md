@@ -626,6 +626,10 @@ from `OWNER/direction` keep their existing owner/global identity context.
 Explicit `--repo` still binds that context; qualified issue references take
 precedence over their default repository. The inherited `GH_REPO` is restored
 when the command ends, including on failure.
+Planning reads of another repository, such as wait and blocker evidence that
+`next` follows into a Client-owned repository, expect the App chosen for that
+repository, the same App the transport uses for the request. Write identity
+selection is unchanged.
 
 - `index`: List compact plan issues through paged REST reads, excluding pull
   requests and ordering by most recently updated. Supports `--state`, `--label`,

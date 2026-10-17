@@ -237,6 +237,7 @@ class GitHubReader:
         cache_revalidate: bool = False,
         deadline_at: Optional[float] = None,
         retry_runtime: Optional[github_api_core.RetryRuntime] = None,
+        repository: Optional[str] = None,
     ) -> None:
         self.gh_cmd = gh_cmd
         # Resolve before constructing the opt-in cache: bodies and actor checks
@@ -245,7 +246,7 @@ class GitHubReader:
         try:
             actor, expected_actor, gh_prefix_args = github_api_core.request_identity(
                 operation=operation, is_write=False, gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args,
-                actor=actor, expected_actor=expected_actor,
+                actor=actor, expected_actor=expected_actor, repository=repository,
             )
         except github_identity.GitHubAppError as error:
             self._identity_error = error
