@@ -61,6 +61,25 @@ TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 RUNTIME_HELPER = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 
 
+def agent_tools_warning(catalog: Path, directory: Path, env: Mapping[str, str]) -> str:
+    """Static session-start check only: never connect a browser or change settings."""
+    if not (catalog / ".local/chrome.toml").is_file():
+        return ""
+    helpers = Path(__file__).resolve().parents[1] / "skills/supervisor/scripts/agent_tools.py"
+    try:
+        checker = runpy.run_path(str(helpers))
+        if env.get("CLAUDECODE") == "1":
+            home = Path(env["CLAUDE_CONFIG_DIR"]).expanduser() if env.get("CLAUDE_CONFIG_DIR") else None
+            problems = checker["claude_problems"](home, directory, env)
+        elif env.get("CODEX_HOME"):
+            problems = checker["codex_problems"](Path(env["CODEX_HOME"]).expanduser(), env)
+        else:
+            return ""
+        return "Agent tools unavailable: " + "; ".join(" ".join(p.split()) for p in problems) if problems else ""
+    except (OSError, ValueError, ImportError):
+        return "Agent tools check unavailable; verify catalog-chrome and Computer Use through /mcp."
+
+
 def runtime_catchup_budget() -> float:
     try:
         return float(os.environ[RUNTIME_CATCHUP_TIMEOUT_ENV])
@@ -523,6 +542,9 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             return 0
         # Resolve the runtime catalog from this registered hook, never the task cwd.
         catalog = catalog_root or Path(__file__).resolve().parents[1]
+        tools_line = agent_tools_warning(catalog, Path.cwd(), os.environ)
+        if tools_line:
+            print(tools_line, flush=True)
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         try:
             from scripts.catalog_runtime import status_line

@@ -16,7 +16,7 @@ import subprocess
 import time
 import uuid
 
-BUNDLED_MARKETPLACE = Path(".tmp/bundled-marketplaces/openai-bundled")
+from agent_tools import BUNDLED_MARKETPLACE
 
 
 def declared_app(brief):

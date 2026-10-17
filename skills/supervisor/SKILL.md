@@ -388,6 +388,10 @@ including non-dim text, establishes neither its author nor approval.
    command file to the agent invocation and settings. The launcher validates
    every brief before launch side effects; read the launching procedure in
    [helpers](references/helpers.md#launching-and-nudging).
+   Browser briefs use the pinned `mcp__catalog-chrome__*` route on Claude and
+   local Codex on its account-relative bundle. Add `--require-browser` to their
+   launch and read [tool preflight](references/helpers.md#browser-and-computer-use-preflight).
+   Claude Computer Use needs the Director's confirmation before each use.
    Then read each launch's first screen. A folder-trust or hook-trust prompt
    looks like a working session from outside, and the launcher still reports
    success; a launch with no transcript after one minute is blocked

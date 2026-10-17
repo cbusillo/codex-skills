@@ -382,8 +382,15 @@ def prune_receipts(directory, now, *, max_bytes=1024):
 
 def public(choice):
     """Launch output contains environment names, never private paths."""
-    result = {**{k: v for k, v in choice.items() if k not in {"env", "storage_root", "gui"}},
+    result = {**{k: v for k, v in choice.items() if k not in {"env", "storage_root", "gui", "tools", "require_browser"}},
               "env_keys": sorted(choice["env"])}
+    if "tools" in choice:
+        tools = choice["tools"]
+        result["tools"] = {key: tools[key] for key in ("warnings", "browsers", "route") if key in tools}
+        result["tools"]["warnings"] = [
+            warning.replace(choice["env"].get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"), "<account-home>")
+            .replace(choice["env"].get("CODEX_HOME") or str(Path.home() / ".codex"), "<account-home>")
+            for warning in tools.get("warnings", [])]
     if "gui" in choice:
         gui = choice["gui"]
         result["gui"] = {key: gui[key] for key in ("app", "token", "phase", "screen")}

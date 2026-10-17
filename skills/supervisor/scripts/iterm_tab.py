@@ -480,7 +480,8 @@ def inspect_codex_daemon(home):
 
     deadline = time.monotonic() + 10
     active = 0
-    with unix_connect(str(codex_daemon_endpoint(home)), open_timeout=2, close_timeout=1) as ws:
+    with unix_connect(str(codex_daemon_endpoint(home)), open_timeout=2, close_timeout=1,
+                      max_size=32 * 1024 * 1024) as ws:
         request_id = 0
 
         def request(method, params):
@@ -530,6 +531,7 @@ def inspect_codex_daemon(home):
             raise DaemonRefusal("draining", active)
         if error.get("code") != -32600 or not message.startswith("invalid session id:"):
             raise DaemonRefusal("unknown", active)
+        return result("plugin/list", {"cwds": [str(Path.cwd())], "marketplaceKinds": ["local"]})
 
 
 def check_codex_daemon(choice):
@@ -566,7 +568,19 @@ def check_codex_daemon(choice):
             f"run {command}, then retry the launch"
         ) from error
     try:
-        inspect_codex_daemon(home)
+        inventory = inspect_codex_daemon(home)
+        if isinstance(inventory, dict) and not choice.get("tools", {}).get("remote_endpoint_unverified"):
+            plugins = [plugin for marketplace in inventory.get("marketplaces", [])
+                       for plugin in marketplace.get("plugins", [])]
+            missing = agent_tools.missing_codex_plugins(plugins)
+            tools = choice.setdefault("tools", {"warnings": []})
+            if missing:
+                message = ("remote Codex is missing enabled bundled plugins: " + ", ".join(missing) +
+                           "; use local codex --no-daemon -C with the launcher's account-relative override; "
+                           "-c and -p do not forward marketplace settings through --remote")
+                if choice.get("require_browser"):
+                    raise ValueError(message)
+                tools["warnings"].append(message)
     except Exception as error:
         detail = str(error) if isinstance(error, ValueError) else type(error).__name__
         raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
@@ -697,33 +711,96 @@ def codex_git_trust_root(directory):
     return None
 
 
-def check_claude_tools(command_text, choice, without_browser=False, probes=None):
-    """Refuse a Claude launch whose pinned Chrome server cannot see a browser."""
-    if choice["provider"] != "anthropic" or not CHROME_OPT_IN.is_file():
+def check_claude_tools(command_text, choice, without_browser=False, probes=None, require_browser=False):
+    """Check the pinned route; browser briefs require it, ordinary work gets warnings."""
+    if choice["provider"] != "anthropic":
+        return
+    if not CHROME_OPT_IN.is_file():
+        if require_browser:
+            raise ValueError("required browser has no catalog Chrome setup; see README: Chrome across Claude account homes")
         return
     home_value = choice["env"].get("CLAUDE_CONFIG_DIR")
     home = Path(home_value).expanduser() if home_value else None
     directory = launch_parts(command_text)[1]
     directory = Path(directory).expanduser() if directory else Path.cwd()
-    server = agent_tools.chrome_server(home)
     # The launch exports CLAUDE_CODE_ENABLE_CFC=0, so the built-in server stays off.
     tools = {"warnings": agent_tools.claude_problems(home, directory, {agent_tools.CHROME_ENV: "0"})}
     if without_browser:
         tools["browsers"] = "not checked (--without-browser)"
     else:
-        key = json.dumps(server, sort_keys=True)
-        probes = {} if probes is None else probes
-        if key not in probes:
-            try:
-                probes[key] = agent_tools.connected_browsers(server)
-            except ValueError as error:
+        try:
+            server = agent_tools.chrome_server(home)
+            key = json.dumps(server, sort_keys=True)
+            probes = {} if probes is None else probes
+            if key not in probes:
+                try:
+                    probes[key] = agent_tools.connected_browsers(server)
+                except ValueError as error:
+                    probes[key] = error
+            if isinstance(probes[key], ValueError):
+                raise probes[key]
+            if not probes[key]:
+                raise ValueError("no Chrome browser is connected to the pinned account; "
+                                 "ask Chris to open the Agents profile")
+            tools["browsers"] = len(probes[key])
+            config = agent_tools.read_claude_config(home)
+            if agent_tools.CHROME_SERVER in agent_tools.listed(
+                    agent_tools.project_entry(config, directory), "disabledMcpServers"):
+                raise ValueError("catalog-chrome is disabled for the launch directory; enable it through /mcp")
+        except ValueError as error:
+            if require_browser:
                 raise ValueError(f"Chrome check failed: {error}; no terminal was launched") from None
-        if not probes[key]:
-            raise ValueError("no Chrome browser is connected to the catalog-chrome account; open the "
-                             "Agents Chrome profile and retry, or pass --without-browser for a brief "
-                             "that needs no browser; no terminal was launched")
-        tools["browsers"] = len(probes[key])
+            tools["warnings"].append(str(error))
     choice["tools"] = tools
+
+
+def prepare_codex_tools(command_text, choice, required=False):
+    """Use native local loading; remote sessions keep the daemon's own inventory."""
+    if choice["provider"] != "openai":
+        return command_text
+    choice["require_browser"] = required
+    words = launch_words(command_text)
+    endpoints = [words[index + 1] if word == "--remote" and index + 1 < len(words)
+                 else word.partition("=")[2] for index, word in enumerate(words)
+                 if word == "--remote" or word.startswith("--remote=")]
+    remote = bool(endpoints)
+    if remote and endpoints != ["unix://"]:
+        warning = "explicit remote endpoint's plugins are unverified; use local codex -C for a browser brief"
+        if required:
+            raise ValueError(warning)
+        choice["tools"] = {"warnings": [warning], "remote_endpoint_unverified": True}
+    if remote or (not required and not CHROME_OPT_IN.is_file()):
+        return command_text
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
+    try:
+        market = gui_launch.marketplace(home, Path.home() / ".codex")
+        missing = agent_tools.missing_codex_plugins(
+            agent_tools.codex_plugins(home, Path(market["path"]), codex_directory(words)))
+    except ValueError as error:
+        if required:
+            raise
+        choice["tools"] = {"warnings": [str(error)]}
+        return command_text
+    warnings = ["Codex bundled plugins missing or disabled: " + ", ".join(missing)] if missing else []
+    if required and warnings:
+        raise ValueError(warnings[0] + "; install/enable them through Codex before the browser launch")
+    choice["tools"] = {"warnings": warnings, "marketplace": market, "route": "local"}
+    choice["env"][agent_tools.CODEX_SOURCE_ENV] = market["path"]
+    override = "marketplaces.openai-bundled.source=" + json.dumps(market["path"])
+    return command_text + " --no-daemon -c " + shlex.quote(override)
+
+
+def codex_directory(words):
+    """Parse the one literal workspace used by trust and plugin discovery."""
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("-C", "--cd", action="append")
+    try:
+        options, _ = parser.parse_known_args(words[1:])
+    except argparse.ArgumentError as error:
+        raise ValueError("Codex launches require -C /absolute/repository") from error
+    if not options.cd or len(options.cd) != 1:
+        raise ValueError("Codex launches require exactly one -C /absolute/repository (or --cd)")
+    return Path(options.cd[0])
 
 
 def check_codex_project(command_text, choice):
@@ -735,15 +812,7 @@ def check_codex_project(command_text, choice):
     words, _ = launch_parts(command_text)
     if Path(words[0]).name != "codex":
         raise ValueError("openai account selection requires a direct Codex invocation")
-    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
-    parser.add_argument("-C", "--cd", action="append")
-    try:
-        options, _ = parser.parse_known_args(words[1:])
-    except argparse.ArgumentError as error:
-        raise ValueError("Codex launches require -C /absolute/repository") from error
-    if not options.cd or len(options.cd) != 1:
-        raise ValueError("Codex launches require exactly one -C /absolute/repository (or --cd)")
-    directory = Path(options.cd[0])
+    directory = codex_directory(words)
     if not directory.is_absolute() or not directory.is_dir():
         raise ValueError("Codex -C/--cd must name an existing absolute repository directory")
     home = Path(choice["env"]["CODEX_HOME"]).expanduser()
@@ -792,6 +861,8 @@ def check_codex_project(command_text, choice):
 
 def prepare_launches(args):
     """Validate the full batch and prepare accounts before creating terminals."""
+    if getattr(args, "require_browser", False) and getattr(args, "without_browser", False):
+        raise ValueError("--require-browser and --without-browser cannot be used together")
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
     command_texts = [path.read_text(encoding="utf-8").rstrip("\n") for path in files]
     for text in command_texts:
@@ -832,14 +903,18 @@ def prepare_launches(args):
         probes = {}
         for text, choice in zip(command_texts, choices):
             check_codex_project(text, choice)
-            check_claude_tools(text, choice, getattr(args, "without_browser", False), probes)
+            check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
+                               getattr(args, "require_browser", False))
+        command_texts = [prepare_codex_tools(text, choice, bool(apps[index]) or getattr(args, "require_browser", False))
+                         for index, (text, choice) in enumerate(zip(command_texts, choices))]
         if apps[0]:
             home = Path(choices[0]["env"]["CODEX_HOME"]).expanduser()
             if not home.is_absolute() or not home.is_dir():
                 raise ValueError("GUI launch needs the selected account's existing absolute CODEX_HOME")
             source_path = home / gui_launch.BUNDLED_MARKETPLACE
             override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
-            command_texts[0] += " -c " + shlex.quote(override)
+            if choices[0].get("tools", {}).get("route") != "local":
+                command_texts[0] += " --no-daemon -c " + shlex.quote(override)
         command_texts = [with_account(text, choice, brief)
                          for text, choice, brief in zip(command_texts, choices, briefs)]
     elif getattr(args, "account", None):
@@ -852,12 +927,13 @@ def prepare_launches(args):
         command_texts = [append_brief(text, brief) for text, brief in zip(command_texts, briefs)]
     if choices[0]:
         for choice in choices:
-            check_codex_daemon(choice)
+            if choice.get("tools", {}).get("route") != "local":
+                check_codex_daemon(choice)
         account_choice.prepare_launch(choices[0])
     if apps[0]:
         reservation = gui_launch.reserve(apps[0])
         try:
-            market = gui_launch.marketplace(home, Path.home() / ".codex")
+            market = choices[0].get("tools", {}).get("marketplace") or gui_launch.marketplace(home, Path.home() / ".codex")
             choices[0]["gui"] = {**reservation, "marketplace": market,
                                   "override": override, "screen": "unlocked"}
             command_file = gui_launch.stage_command(reservation, command_texts[0])
@@ -1177,6 +1253,8 @@ def main():
     )
     new.add_argument("--without-browser", action="store_true",
                      help="launch Claude without the connected-browser check, for briefs that need no browser")
+    new.add_argument("--require-browser", action="store_true",
+                     help="require a working browser route before launching a browser brief")
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)
     for name in ("send", "read", "clear"):
