@@ -135,8 +135,10 @@ else:
             multi.assert_called_once()
         with patch.object(jb_inspect, "run_configured_inspection_lanes", return_value={"lanes": True}):
             self.args.native_project_scope = True
-            context["repo_path"] = str(self.root / "src")
-            self.assertTrue(jb_inspect.command_closeout(self.args, context)["lanes"])
+            for project in (self.root / "src", self.root):
+                context["repo_path"] = str(project)
+                with self.subTest(project=project), self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.command_closeout(self.args, context)
 
     def test_explicit_ide_selectors_are_retained_but_root_defaults_are_not(self):
         lanes = jb_inspect.parse_inspection_lanes({"lanes": [

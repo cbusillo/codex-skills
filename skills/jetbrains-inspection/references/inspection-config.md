@@ -87,9 +87,11 @@ this nested preparation shape; use the configured desktop lanes for it.
 An assessment invoked with `--native-project-scope --repo <projectPath>`
 opts into one declared nested project, uses that lane's IDE and
 keeps the requested native scope, including `whole_project`, inside that
-project. An assessment at the Git worktree root still dispatches all selected
-lanes. Without this opt-in, subdirectory invocations also dispatch the worktree lanes. This lets dedicated smoke projects retain native broad-scope proof
-without widening their request to the parent repository.
+project. This lets dedicated smoke projects retain native broad-scope proof
+without widening their request to the parent repository. A native request
+that does not name exactly one nested lane refuses before inspection.
+Without this opt-in, root and subdirectory assessments dispatch the selected
+worktree lanes.
 
 When `qualityGate.inspection.prepare` is configured, `open-worktree`,
 `agent-inspect`, `inspect`, and `inspect-closeout` run that exact repository
