@@ -1425,7 +1425,10 @@ provision|generation|testing-replacement`. Optional `--source-mode ssh|container
 `--operation-id` and `--task-id` select the exact copy source, original resource
 intent and provision task; these require an intent. The ordinary deployment read
 is unchanged. The service must echo the requested intent; an older service that
-ignores it fails response validation. This is still one read and grants no apply
+ignores it fails response validation. Ordinary service responses omit `intent`
+entirely; a null field is not accepted. Validated source/operation/task selectors
+are retained in the request echo so saved diagnostics identify their exact scope.
+This is still one read and grants no apply
 authority. Launchplane#3911 owns compatible service delivery.
 
 The service's `check` becomes `result`: product, path, overall state, blocked

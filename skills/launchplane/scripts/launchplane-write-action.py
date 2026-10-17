@@ -9536,10 +9536,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     path_check.add_argument("--product", required=True)
     path_check.add_argument("--path", required=True, choices=("testing", "promote"))
-    path_check.add_argument("--intent", choices=("provision", "generation", "testing-replacement"))
-    path_check.add_argument("--source-mode", choices=("ssh", "container-export"))
-    path_check.add_argument("--operation-id")
-    path_check.add_argument("--task-id")
+    path_check.add_argument("--intent", choices=("provision", "generation", "testing-replacement"), help="Inspect Odoo operation prerequisites instead of only the testing deploy path.")
+    path_check.add_argument("--source-mode", choices=("ssh", "container-export"), help="Select the planned copy source; requires --intent.")
+    path_check.add_argument("--operation-id", help="Original testing resource preparation or replacement operation; requires --intent.")
+    path_check.add_argument("--task-id", help="Exact provision task id (32 lower-case hex characters); requires --intent.")
 
     product_activity_read = subparsers.add_parser(
         "product-activity-read",
@@ -10387,6 +10387,7 @@ def main(argv: list[str]) -> int:
                     if re.fullmatch(r"[a-f0-9]{32}", args.task_id) is None:
                         raise LaunchplaneSafetyError("invalid_request")
                     query["task_id"] = args.task_id
+                request.update({key: value for key, value in query.items() if key != "path"})
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path, query=query,
             )

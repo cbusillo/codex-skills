@@ -3274,6 +3274,8 @@ def test_path_check_forwards_operation_intent_and_refuses_a_service_ignoring_it(
     assert calls[0]["query"] == {"path": "testing", "intent": intent, "source_mode": "ssh",
                                   "operation_id": "initial-testing-fixture", "task_id": task_id}
     assert payload["result"]["intent"] == intent
+    for selector in ("intent", "source_mode", "operation_id", "task_id"):
+        assert payload["request"][selector] == calls[0]["query"][selector]
     response["check"].pop("intent")
     status, payload, _calls = _run_product_read(argv, response)
     assert status == 1 and payload["result"] == {}
