@@ -1272,7 +1272,7 @@ for this check. An installer success alone does not prove cross-account pairing.
 ## TLS verification lint
 
 Run `scripts/lint-tls.sh` for the complete catalog TLS gate. Its
-`uv run scripts/check_insecure_tls.py` step checks tracked Python files for
+checker step checks tracked Python files for
 hand-built `check_hostname = False` / `CERT_NONE`, unverified contexts and common
 HTTP-client verification-off calls. The catalog validation gate runs it alongside the five Ruff TLS rules.
 It parses Python without executing it; dynamic values, parameter-provided clients and computed monkeypatches
@@ -1321,3 +1321,7 @@ normal reviewed PR path; CI and runnable metadata both call that command.
 For a decorated declaration, put the reason above its first decorator. The
 annotation covers the declaration, and does not exempt unsafe code in its body.
 Factory identity comparisons used as guards do not disable verification.
+
+The complete gate selects tracked source for both linters, so untracked scratch
+files do not change the local result. Ruff also checks tracked stubs/notebooks
+and keeps its configured exclusions; the AST check parses tracked `.py` files.

@@ -147,12 +147,28 @@ class TlsGateTests(unittest.TestCase):
                 shutil.copyfile(Path(__file__).with_name(name), scripts / name)
             (scripts / "run-python-helper.sh").write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
             (scripts / "run-python-helper.sh").chmod(0o755)
-            (binary / "uv").write_text('#!/bin/sh\nexit "${TLS_TEST_RUFF_STATUS:-0}"\n')
+            marker = "SIMULATED_RUFF_DIAGNOSTIC"
+            ruff = binary / "ruff-fixture.py"
+            ruff.write_text(f"""import os, sys
+from pathlib import Path
+if os.environ.get('TLS_TEST_RUFF_STATUS') != '0':
+    raise SystemExit(1)
+files = []
+for argument in sys.argv[1:]:
+    path = Path(argument)
+    if path.is_dir():
+        files.extend(path.rglob('*.py'))
+    elif path.is_file() and path.suffix == '.py':
+        files.append(path)
+raise SystemExit(int(any({marker!r} in path.read_text() for path in files)))
+""")
+            (binary / "uv").write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(ruff))} "$@"\n')
             (binary / "uv").chmod(0o755)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             path = root / "client.py"
             path.write_text("import ssl\nctx = ssl.create_default_context()\n")
             subprocess.run(["git", "-C", str(root), "add", path.name], check=True)
+            (root / "untracked.py").write_text(repr(marker) + "\n")
             env = {**os.environ, "PATH": str(binary) + os.pathsep + os.environ["PATH"], "TLS_TEST_RUFF_STATUS": "0"}
 
             def run():
