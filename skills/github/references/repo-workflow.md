@@ -540,7 +540,9 @@ When a branch update is needed and belongs to this session, use `gh-pr.py view`
 to verify `headRepository` matches the PR repository, the head branch is automation-owned,
 and its own diff remains within the approved change. For a mergeable base update,
 use `scripts/gh-pr.py update-branch <pr>`; the helper observes the asynchronous
-update. For a real conflict, merge the base locally with
+update. Both helpers refuse a refresh this section does not permit; name an
+explicit requirement GitHub cannot see with `--required-by` or
+`--refresh-required`. For a real conflict, merge the base locally with
 `git-commit-as-bot --git-command merge`, resolve it and continue with
 `git-commit-as-bot --git-command merge --continue`, then push with `git-push-as-bot`.
 Re-read the PR to capture the new head SHA, then use `babysit-pr` to wait for

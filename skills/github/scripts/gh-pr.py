@@ -294,6 +294,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("pr", help="PR number or URL.")
     p.add_argument("--wait-seconds", type=int, choices=range(0, 61), default=30, metavar="0..60",
                    help="Seconds to observe the asynchronous update (default: 30).")
+    p.add_argument("--required-by", metavar="REQUIREMENT",
+                   help="The check or rule that requires a fresh base when GitHub does not report the PR behind.")
     p.set_defaults(func=cmd_update_branch)
 
     p = sub.add_parser("merge", help="Merge a PR via the REST merge endpoint.")
@@ -768,6 +770,35 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
     return result_payload
 
 
+def update_branch_refusal(
+    repo: str, number: int, mergeable_state: Any, required_by: Optional[str],
+) -> Optional[github_api_core.FailureDetail]:
+    """Refuse a base update that would only rerun CI.
+
+    GitHub reports "behind" only when the base requires up-to-date branches.
+    Any other refresh needs a named requirement; the merge train owns freshness.
+    """
+    if mergeable_state == "dirty":
+        cause, message = "refresh_conflicting_branch", (
+            "The PR conflicts with its base, which update-branch cannot resolve; merge the base locally "
+            "with git-commit-as-bot --git-command merge, resolve, --continue and push "
+            "(repo-workflow.md Merge Readiness)")
+    elif mergeable_state == "behind" or required_by:
+        return None
+    elif mergeable_state in (None, "unknown"):
+        cause, message = "mergeability_unknown", (
+            f"GitHub has not computed mergeability yet; read it again with gh-pr.py --repo {repo} view {number}")
+    else:
+        cause, message = "refresh_not_required", (
+            f"The base does not require this PR to be up to date (merge state {mergeable_state}), so an update "
+            "would only rerun CI; the merge train owns freshness. Update only for a check or rule that requires "
+            f"it: gh-pr.py --repo {repo} update-branch {number} --required-by \"<that check or rule>\"")
+    return github_api_core.FailureDetail(
+        cause=cause, message=message, retryable=False, fallback_eligible=False,
+        disposition="stop", write_outcome="not_started", failed_step="update_branch_preflight",
+    )
+
+
 def cmd_update_branch(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     path = f"/repos/{repo}/pulls/{number}"
@@ -775,6 +806,12 @@ def cmd_update_branch(args: argparse.Namespace) -> dict[str, Any]:
     expected_head = str((pr.get("head") or {}).get("sha") or "")
     if pr.get("state") != "open" or not FULL_SHA_PATTERN.fullmatch(expected_head):
         raise HelperError("Updating a branch requires an open PR with a full head SHA")
+    refusal = update_branch_refusal(repo, number, pr.get("mergeable_state"), args.required_by)
+    if refusal:
+        raise PrHelperError(
+            refusal.message, failure=refusal, operation="update-branch", repo=repo, pr=number,
+            headSha=expected_head, mergeableState=pr.get("mergeable_state"),
+        )
     # A 202 accepts asynchronous work. Never replay an uncertain update: a
     # changed head alone cannot attribute a concurrent push to this request.
     accepted = rest_result("PUT", f"{path}/update-branch", {"expected_head_sha": expected_head})
@@ -814,7 +851,7 @@ def cmd_update_branch(args: argparse.Namespace) -> dict[str, Any]:
                 "completed_steps": ["update_branch_accepted", "read_head"],
                 "update": {
                     "state": "head_changed" if changed else "accepted_unconfirmed",
-                    "accepted": True, "previousHeadSha": expected_head,
+                    "accepted": True, "previousHeadSha": expected_head, "requiredBy": args.required_by,
                     "newHeadSha": observed_head if changed else None,
                     "next_action": "Wait for checks on the observed head" if changed else
                     "Use gh-pr.py view to observe the head; do not repeat update-branch",

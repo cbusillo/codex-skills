@@ -428,10 +428,15 @@ also include the shared `api_result` diagnostics envelope.
   reads report incomplete counts rather than a complete empty inventory.
 - `scripts/gh-pr.py ready <pr> [--waiting-for-client] [--allow-no-checks]`: Read current-head
   checks and post the [ready handoff](#ready-handoffs) through automation auth.
-- `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60]`: Merge the base
-  into the PR branch only when needed under the freshness, ownership and
-  authorization rules in
-  [Merge Readiness](repo-workflow.md#merge-readiness), through the automation
+- `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60] [--required-by REQUIREMENT]`:
+  Merge the base into the PR branch only when needed under the freshness,
+  ownership and authorization rules in
+  [Merge Readiness](repo-workflow.md#merge-readiness). It updates a PR GitHub
+  reports `behind`, which happens only when the base requires up-to-date
+  branches. Otherwise it stops before any write: `refresh_not_required` unless
+  `--required-by` names the check or rule that needs a fresh base,
+  `refresh_conflicting_branch` for a conflict, which needs the local merge
+  below, and `mergeability_unknown` until GitHub computes it. It works through the automation
   identity using GitHub's
   [update-branch API](https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request-branch)
   and the freshly read `expected_head_sha`. The App also needs Contents write
@@ -2264,7 +2269,16 @@ another checkout. Conflict resolution uses the same mode with `--continue`. New 
 bot environment; replayed commits preserve original authors and use the bot
 committer. Identity selection and credential stripping apply to every mode.
 Use `gh-pr.py update-branch` for authorized PR base updates; these commands do
-not grant protected-branch or train-owned work authority. Raw
+not grant protected-branch or train-owned work authority. On a branch other
+than the default branch, `merge` and `rebase` refuse an `origin`
+default-branch commit that applies without conflicts, and `pull` refuses the
+default branch, because a refresh without a conflict only reruns CI. This
+includes the branch's upstream when no operand is given, which is the base
+until a task branch's first push. Fetch, then merge
+`origin/<default>` to resolve a real conflict, or pass
+`--refresh-required REQUIREMENT` before the Git arguments to name the check or
+rule that requires the refresh. Merging another branch, such as a stack
+parent, is unchanged. Raw
 `merge --ff-only <ref>`, with `--ff-only` first after `merge` and without a
 conflicting fast-forward option, `--abort`, and `--quit` stay allowed
 because they create no commits. Sequencer `--skip` still needs the bot wrapper
