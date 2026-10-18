@@ -101,7 +101,7 @@ class DaemonTests(unittest.TestCase):
     def test_draining_inventory_failure_stays_draining_with_unknown_count(self):
         for kwargs in ({"fail": "thread/loaded/list"}, {"fail": "thread/read"},
                        {"states": {"detached-worker": "future-state"}},
-                       {"inventory_latency": 11},
+                       {"inventory_latency": 10**6},
                        {"pages": {None: {"data": None}}}):
             with self.subTest(kwargs=kwargs), self.assertRaises(iterm_tab.DaemonRefusal) as raised:
                 self.inspect(draining=True, **kwargs)
