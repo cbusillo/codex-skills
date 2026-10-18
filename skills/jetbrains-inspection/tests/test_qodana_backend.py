@@ -363,20 +363,29 @@ class QodanaTests(unittest.TestCase):
                     os.kill(int(pid_file.read_text()), 0)
 
     def test_export_hashing_stops_when_parent_exits_or_deadline_passes(self):
+        # One large tracked file: the lifetime is valid at the member check and
+        # fails only after the first chunk, so the per-chunk check must stop it.
         import tarfile
         archive = self.root / "export.tar"
         payload = self.root / "big.py"
         payload.write_bytes(b"x" * (3 << 20))
         with tarfile.open(archive, "w") as output:
             output.add(payload, arcname="project/big.py")
-        with self.assertRaisesRegex(backend.Blocked, "qodana_timeout"):
-            backend.archive_hashes(archive, None, time.monotonic() - 1)
-        read_end, write_end = os.pipe()
-        os.set_blocking(read_end, False)
-        os.close(write_end)
-        with self.assertRaisesRegex(backend.Blocked, "qodana_parent_gone"):
-            backend.archive_hashes(archive, read_end)
-        os.close(read_end)
+        for variant in ("parent exits", "deadline passes"):
+            with self.subTest(variant=variant):
+                checks = []
+                def expires_after_first_chunk(*_args):
+                    checks.append(1)
+                    return len(checks) > 2
+                if variant == "parent exits":
+                    with patch.object(backend, "parent_gone", side_effect=expires_after_first_chunk), \
+                            self.assertRaisesRegex(backend.Blocked, "qodana_parent_gone"):
+                        backend.archive_hashes(archive, parent_fd=0)
+                else:
+                    clock = iter([0.0, 0.0, 10.0, 10.0, 10.0])
+                    with patch.object(backend.time, "monotonic", side_effect=lambda: next(clock)), \
+                            self.assertRaisesRegex(backend.Blocked, "qodana_timeout"):
+                        backend.archive_hashes(archive, None, deadline=5.0)
         self.assertEqual(set(backend.archive_hashes(archive)), {"big.py"})
 
     def test_input_change_invalidates_decisive_findings(self):
