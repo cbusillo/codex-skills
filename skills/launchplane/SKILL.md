@@ -1162,6 +1162,12 @@ verification.
   inventories can include inherited global records and reflect caller access.
   Read the [names-only contract](references/write-action-helper-contract.md#names-only-settings-and-secret-reads)
   for output bounds and the service's plain-value transport limitation.
+- Native testing rebuild preflight and submission (`testing-rebuild-dry-run` /
+  `testing-rebuild-submit`) reuse `POST /v1/drivers/odoo/target-replacement-plan`
+  and `POST /v1/drivers/odoo/target-replacement-apply`. The fixed testing-only
+  intent, reviewed evidence, audit reason and recovery protocol are in the
+  [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
+  These are bounded local extensions and require deployed native service support.
 - `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`: Bounded
   local-extension read (`target-replacement-operation-read --operation-id`)
   for why a testing or stable Odoo deploy failed: take the id from
