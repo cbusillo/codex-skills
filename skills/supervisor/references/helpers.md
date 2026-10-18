@@ -366,8 +366,9 @@ The independent daily stranded-work sweep owns that fleet-wide backstop.
 
 Registration accepts exact original question URLs so an old discussion's other
 questions are never enqueued incidentally. Each source comment URL is the
-registration identity; `question_id` preserves
-its existing heading's Q ID from the shared counter, if present. Registrations
+registration identity. For automatic numbering and unnumbered-source repair,
+follow [question numbering](../../references/talking-with-the-director.md#decisions-holds-and-work-state).
+Registrations
 store references, not a copy of the question. `director-question:delivery`
 first-line JSON records contain `version: 1`, `event: registered|delivered` and
 `question_url`; `delivered` also carries `delivery_url`. Only the Director and
@@ -1452,18 +1453,27 @@ The launcher does not read tokens or change account configuration. The check
 proves the socket accepts connections; it cannot
 guarantee that the daemon stays running until the launch command executes.
 
-The launcher then connects through the native Unix WebSocket transport, reads
-all loaded threads with `thread/loaded/list` and metadata-only `thread/read`,
-and counts active threads, including workers with no terminal. It checks
+The launcher then connects through the native Unix WebSocket transport and checks
 admission with `thread/resume` using an intentionally invalid native UUID;
 the daemon rejects draining admission before validating that UUID. The normal
 invalid-session-id response proves admission is open without creating a thread,
-running hooks or starting inference. Unknown responses or incomplete reads refuse.
+running hooks or starting inference. Unknown admission responses and admission
+timeouts refuse. One ten-second protocol budget covers initialization, admission,
+the optional `plugin/list` check for browser-required launches, and the thread
+inventory after a draining response. Each step uses the time left in that same
+budget; the known-open path does not read unrelated loaded threads. Thread metadata reads
+can fail or wait independently of admission, and scanning them first made a busy
+account's launch depend on every other loaded thread ([#2182](https://github.com/cbusillo/codex-skills/issues/2182)).
 This protocol check is version-sensitive; an unfamiliar response needs diagnosis,
 not a restart or a fallback that treats the socket as healthy.
 
-Never restart or stop a draining daemon from the launcher. A refusal reports
-the active-thread count when available. Wait for the daemon to finish, or use
+Never restart or stop a draining daemon from the launcher. After draining admission
+is confirmed, the launcher reads all loaded threads with `thread/loaded/list`
+and metadata-only `thread/read` within the remaining protocol budget, including
+workers with no terminal. A refusal reports the active-thread count only after
+the complete inventory succeeds; otherwise it preserves the draining reason,
+reports the count as unknown, and names the failed method or RPC error code when
+available. No inventory result permits restart. Wait for the daemon to finish, or use
 Context Panel's account reader and `--account <name>` to choose another configured
 account explicitly. Before any separately authorized manual restart, freshly
 inspect the daemon's active threads and refuse while one is running or their
@@ -1816,6 +1826,13 @@ and checks the source freeze before forwarding. This includes in-TUI
 A frozen predecessor receives a native RPC error before it can act. Read-only
 thread reads still pass after handoff. No daemon is restarted and no native
 subscriber API is assumed.
+
+A fresh `thread/start` names no thread. The ingress takes the returned thread's
+ownership lease and durable action barrier before the client sees its ID; a
+reply without a usable ID becomes an RPC error. JSON Schema payloads
+(`inputSchema`, `outputSchema`, `requestedSchema`) and null optional thread IDs
+name no target. Wrong-typed or empty IDs refuse, and thread or turn actions
+without an ID still refuse.
 
 Completion releases the operation's lease, so another Supervisor can queue a
 nudge or capacity `continue` while that worker's TUI stays connected. A pending

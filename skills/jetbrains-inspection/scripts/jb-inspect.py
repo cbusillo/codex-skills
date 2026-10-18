@@ -809,7 +809,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent = subparsers.choices["agent-inspect"]
     agent.add_argument("--backend", choices=("auto", "api", "qodana"), default="auto", help="Per-run backend. auto runs local Qodana for qualified Python selections and the Inspection API otherwise.")
     agent.add_argument("--qodana-image", help="Pinned Community Docker image repository@sha256:digest.")
-    agent.add_argument("--qodana-license-file", action="append", default=[], help="Existing local IDE key or paid-plugin license; copied privately then deleted. Never an account/token store.")
+    agent.add_argument("--qodana-license-file", action="append", default=[], help="Removed: returns UNKNOWN without accessing the file. Use an independently Director-activated headless profile; see qodana-backend.md#director-activation.")
     agent.add_argument("--qodana-plugin-zip", action="append", default=[], help="Public plugin package for the disposable profile; does not supply entitlement.")
     agent.add_argument("--qodana-uv", help="Optional existing Linux uv executable matching the container architecture for configured Python preparation.")
     agent.add_argument("--qodana-recover-only", action="store_true", help="Recover proved interrupted Qodana profiles/containers without starting an inspection or lifting a stop.")

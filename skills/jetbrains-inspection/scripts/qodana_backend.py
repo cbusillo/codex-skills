@@ -5,8 +5,8 @@
 # ///
 """Local, disposable Qodana runner behind agent-inspect.
 
-Raw engine output and licensing stay in disposable state. Only selected findings
-and count/hash/resource/cleanup receipts leave it. Python is the one language
+Raw engine output stays in disposable state; credentials are never imported.
+Only selected findings and count/hash/resource/cleanup receipts leave it. Python is the one language
 qualified for GREEN, through a planted canary (codex-skills#2155); others stay
 UNKNOWN without findings (jetbrains-inspection-api#503).
 """
@@ -33,7 +33,6 @@ from xml.etree import ElementTree
 
 PYTHON_IMAGE = "jetbrains/qodana-python-community@sha256:f96231d12dbc0b8aa63dccb994f5c53870e9de0c3ea82b7a13cddf672a966cca"
 IMAGE_RE = re.compile(r"jetbrains/qodana-(python|jvm)-community@sha256:[0-9a-f]{64}\Z")
-LICENSE_RE = re.compile(r"(?:pycharm\.key|idea\.key|plugin_[A-Za-z0-9_-]+\.license)\Z")
 BOUNDARY_RE = re.compile(r"(?:start(?:ing|ed)?|activat(?:e[ds]?|ing|ion)|obtain(?:ing|ed)?|issu(?:e[ds]?|ing))\b.{0,100}\btrial|\btrial\b.{0,100}\b(?:start(?:ing|ed)?|activat(?:e[ds]?|ing|ion)|obtain(?:ing|ed)?|issu(?:e[ds]?|ing))|purchas|buy.{0,30}licen", re.I)
 LOAD_LIMIT = 64
 FINDING_LIMIT = 25
@@ -81,6 +80,10 @@ OTHER_LANGUAGE_RULE_RE = re.compile(r"(?:Css|Sass|Scss|Less|Eslint|Stylelint|Tsl
 
 class Blocked(Exception):
     """A reason code only; never propagate raw process/credential diagnostics."""
+
+    def __init__(self, reason, *, input_path=None):
+        super().__init__(reason)
+        self.input_path = input_path
 
 
 def command(argv, *, cwd=None, env=None, timeout=30):
@@ -270,6 +273,7 @@ def profile_for(repo, name):
             candidates = [explicit]
     matches = []
     for path in candidates:
+        require_public_input(path.relative_to(repo))
         if path.is_symlink():
             continue
         root = ElementTree.parse(path).getroot()
@@ -287,25 +291,35 @@ def profile_for(repo, name):
     return matches[0]
 
 
-def copy_licenses(paths, config, receipt):
-    names = set()
-    for raw in paths:
-        source = Path(raw).expanduser()
-        if source.is_symlink() or not source.is_file() or not LICENSE_RE.fullmatch(source.name) or source.name in names:
-            raise Blocked("qodana_license_source_invalid")
-        names.add(source.name)
-        # copyfile reads the source only; no account store, hash or contents in evidence.
-        shutil.copyfile(source, config / source.name)
-        (config / source.name).chmod(0o400)
-        receipt["license_copy_count"] += 1
+def require_public_input(path):
+    """Reject credential locations by name before reading or copying any bytes.
+
+    This is a location guard, not a secret scanner. Arbitrarily named secrets
+    must stay outside the project snapshot and public plugin packages.
+    """
+    path = Path(path)
+    name = path.name.lower()
+    if (path.suffix.lower() in {".license", ".key", ".pem", ".p12", ".pfx", ".jks", ".keystore"}
+            or name == ".env" or name.startswith(".env.") and name not in {".env.example", ".env.sample", ".env.template"}
+            or name in {"credentials", "credentials.json", "auth.json", "accounts.json", "account.json",
+                        "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+            or any(part.lower() in {".ssh", ".aws", ".gnupg"} for part in path.parts)):
+        # Project/archive paths stay relative; external inputs expose only their
+        # basename, never the caller's home or credential-store location.
+        refused = path.name if path.is_absolute() else path.as_posix()
+        raise Blocked("qodana_credential_input_refused", input_path=safe_text(refused))
 
 
 def unpack_plugins(paths, cache):
     for index, raw in enumerate(paths):
+        source = Path(raw).expanduser()
+        require_public_input(source)
+        require_public_input(source.resolve())
         destination = cache / f"bundle-{index}"
         destination.mkdir(parents=True)
-        with zipfile.ZipFile(Path(raw).expanduser()) as package:
+        with zipfile.ZipFile(source) as package:
             for member in package.infolist():
+                require_public_input(member.filename)
                 target = (destination / member.filename).resolve()
                 if not target.is_relative_to(destination.resolve()) or (member.external_attr >> 16) & 0o170000 == 0o120000:
                     raise Blocked("qodana_plugin_package_invalid")
@@ -374,6 +388,8 @@ def bounded(argv, env, parent_fd=None, stdout=None):
 
 def copy_in(name, private, env, parent_fd=None):
     """Stream inputs into the created container through the Docker API."""
+    for path in private.rglob("*"):
+        require_public_input(path.relative_to(private))
     for entry in COPIED_IN:
         if (private / entry).exists():
             bounded(["docker", "cp", "--archive", str(private / entry), f"{name}:{WORK}/{entry}"], env, parent_fd)
@@ -409,7 +425,7 @@ def copy_out(name, private, env, parent_fd=None):
 def archive_hashes(archive, parent_fd=None, deadline=float("inf")):
     """Hashes of regular files under the exported project, outside .venv and .git.
 
-    Large tracked files must not hold the container and license copies past
+    Large tracked files must not hold the container past
     the deadline or the parent's exit, so both are checked between chunks.
     """
     import tarfile
@@ -433,6 +449,8 @@ def archive_hashes(archive, parent_fd=None, deadline=float("inf")):
 
 def snapshot(repo, project):
     paths = checked(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard"]).decode().split("\0")
+    for relative in filter(None, paths):
+        require_public_input(relative)
     hashes = {}
     for relative in filter(None, paths):
         source = repo / relative
@@ -820,6 +838,8 @@ def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
             execute_worker(argv, name, private, env, timeout, receipt, parent_fd=life_read)
         except Blocked as error:
             reason = str(error)
+            if error.input_path is not None:
+                receipt["refused_input"] = error.input_path
         except BaseException:
             reason = "qodana_worker_failed"
         finally:
@@ -880,8 +900,17 @@ def envelope(host, receipt, findings, reason, gaps, artifact, uncovered=()):
         verdict, "Resolve the reported prerequisite or coverage gap and run a fresh assessment.")
     if receipt.get("boundary_event") or reason == "qodana_trial_or_purchase_stop":
         action = "Stop Qodana work and report the trial/purchase boundary to the Director; do not activate or purchase."
+    if reason in {"qodana_license_unavailable", "qodana_license_import_removed"}:
+        action = ("Owner question: use an independently Director-activated headless profile; "
+                  "never copy credentials. See jetbrains-inspection/references/qodana-backend.md#director-activation. "
+                  "The Director activates it through the product UI using existing entitlements.")
+    elif reason == "qodana_credential_input_refused":
+        action = ("Remove the refused input from the snapshot or public plugin package; "
+                  "keep credentials outside project inputs or ignored by Git. "
+                  "For public files with ambiguous credential names, use --backend api without copying them. "
+                  "See diagnostic.qodana.refused_input. No activation is needed for this refusal.")
     cleanup_clean = receipt["profile_deleted"] and receipt["container_removed"] and not receipt.get("unresolved_record_count") and not receipt.get("cleanup_pending") and not receipt.get("journal_cleanup_failed")
-    coverage = "coverage gaps recorded" if gaps else "execution proved"
+    coverage = "coverage gaps recorded" if gaps else "execution proved" if completed else "execution unproved"
     if uncovered:
         coverage += "; not run: " + ", ".join(uncovered)
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "qodana",
@@ -989,7 +1018,7 @@ def select_backend(args, host, host_default=None):
 
 
 def run(args, host):
-    receipt = {"run_id": str(uuid.uuid4()), "license_copy_count": 0, "profile_deleted": True,
+    receipt = {"run_id": str(uuid.uuid4()), "profile_deleted": True,
                "container_removed": True, "load_pause_count": 0, "cpu_limit": 2, "memory_limit_bytes": 4 * 1024**3,
                "nice": 10, "docker_logging": "none", "helper_revision": host.helper_revision(),
                "backend_revision": "sha256:" + digest(Path(__file__))}
@@ -1002,6 +1031,15 @@ def run(args, host):
     env = safe_env()
     old_handlers = {}
     try:
+        # Deprecated input is recognized only to explain the supported route.
+        # Refuse before stat/read, Docker, recovery or private-profile creation.
+        if args.qodana_license_file:
+            raise Blocked("qodana_license_import_removed")
+        for raw in [args.qodana_uv, *args.qodana_plugin_zip]:
+            if raw:
+                source = Path(raw).expanduser()
+                require_public_input(source)
+                require_public_input(source.resolve())
         if os.name != "posix":
             raise Blocked("qodana_local_platform_unsupported")
         import fcntl
@@ -1088,7 +1126,6 @@ def run(args, host):
         unpack_plugins(args.qodana_plugin_zip, private / "plugins")
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("qodana_host_load_paused")
-        copy_licenses(args.qodana_license_file, private / "config", receipt)
         name = "jb-qodana-" + receipt["run_id"]
         receipt["container_name"] = name
         argv = docker_argv(name, image, private, language, uv_binary)
@@ -1122,6 +1159,8 @@ def run(args, host):
         reason = "qodana_completed" if findings or not gaps else "qodana_coverage_unproven"
     except Blocked as error:
         reason = str(error)
+        if error.input_path is not None:
+            receipt["refused_input"] = error.input_path
     except host.InspectError as error:
         reason = error.payload.get("error_reason", "qodana_scope_invalid")
     except KeyboardInterrupt:

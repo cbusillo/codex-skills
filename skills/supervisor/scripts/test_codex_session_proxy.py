@@ -888,6 +888,44 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
 
+    async def test_fresh_start_owns_its_returned_thread_and_malformed_identities_refuse(self):
+        # The stock TUI's dynamic tools describe threadId in a JSON Schema.
+        schema = {"type": "object", "properties": {"threadId": {"type": "string", "minLength": 1}}, "required": ["threadId"]}
+        tools = [{"type": "namespace", "name": "codex_tui", "tools": [
+            {"type": "function", "name": "read_thread", "inputSchema": schema, "deferLoading": True}]}]
+        with ReceiptFixture() as f:
+            started = str(uuid.uuid4())
+            f.rpc_results["thread/start"] = lambda _request: {"thread": {"id": started}}
+            task, request, response, _ = await self.start_client(f)
+            try:
+                result = await self.send(task, request, response, "thread/start", None,
+                                         dynamicTools=tools, sessionStartSource=None, ephemeral=False)
+                self.assertEqual(result["result"]["thread"]["id"], started)
+                self.assertTrue(closure.action_pending(started))
+                with closure.ownership(started) as owned:
+                    self.assertTrue(owned)
+                result = await self.send(task, request, response, "turn/start", started,
+                                         outputSchema=schema, input=[{"type": "text", "text": "go"}])
+                self.assertIn("result", result)
+                # Request-side targets keep their own references beside the new thread's.
+                for named in (f.session, started):
+                    result = await self.send(task, request, response, "thread/start", None,
+                                             config={"mcp_servers": {"x": {"env": {"threadId": named}}}})
+                    self.assertIn("result", result)
+                    for source in {named, started}:
+                        with closure.ownership(source) as owned:
+                            self.assertTrue(owned)
+                f.rpc_results["thread/start"] = {"thread": {"id": ""}}
+                self.assertIn("error", await self.send(task, request, response, "thread/start", None))
+                for method, params in (("thread/start", {"threadId": 5}), ("thread/start", {"conversationId": ""}),
+                                       ("turn/start", {}), ("turn/start", {"threadId": None}),
+                                       ("turn/start", {"threadId": {"id": started}})):
+                    self.assertIn("error", await self.send(task, request, response, method, None, **params))
+                self.assertEqual([m["method"] for m in f.mutations], ["turn/start"])
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
 
 if __name__ == "__main__":
     unittest.main()
