@@ -35,7 +35,7 @@ HOUSEKEEPING = {"thread/unarchive", "thread/name/set", "thread/metadata/update",
 SCHEMAS = {"inputSchema", "outputSchema", "requestedSchema"}
 
 
-def source_endpoint(session, home):
+def source_endpoint(session, home, *, transcript=None):
     """Validate native recovery identity without taking a lease or changing state."""
     from github_plan_sessions import codex_homes
     import session_record
@@ -46,8 +46,12 @@ def source_endpoint(session, home):
     paths = [p for root in ("sessions", "archived_sessions") for p in (home / root).rglob(f"*{session}*.jsonl")]
     if not paths:
         raise ValueError("source native transcript is unavailable")
-    for path in paths:
+    if transcript is not None:
+        paths.append(transcript)
+    for path in dict.fromkeys(paths):
         session_record.session_status({"session_id": session, "harness": "codex", "transcript": str(path)})
+    if closure.closed_log().exists():
+        closure.resume_record(session, closure.log_rows())
     endpoint = closure.daemon_endpoint(home)
     info = endpoint.stat()
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:

@@ -333,6 +333,17 @@ def replace_rows(rows: list[dict]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def resume_record(session: str, rows: list[dict]) -> dict | None:
+    """Check known source refusals without leases, invalidation or publication."""
+    matches = [r for r in rows if r.get("session_id") == session]
+    if len(matches) > 1:
+        raise ValueError("duplicate closed generations; preserve the source")
+    row = matches[0] if matches else None
+    if row is not None and row.get("successor_admitted"):
+        raise ValueError("this generation handed off its work; start a new thread and claim through gh-plan.py")
+    return row
+
+
 @contextmanager
 def resume_guard(session: str):
     """Invalidate the closed generation before an exact native resume/queue."""
@@ -344,13 +355,8 @@ def resume_guard(session: str):
         if path.exists() and any(r.get("session_id") == session for r in log_rows()):
             with store_lock(path, create=True):
                 rows = log_rows()
-                matches = [r for r in rows if r.get("session_id") == session]
-                if len(matches) > 1:
-                    raise ValueError("duplicate closed generations; preserve the source")
-                if matches:
-                    row = matches[0]
-                    if row.get("successor_admitted"):
-                        raise ValueError("this generation handed off its work; start a new thread and claim through gh-plan.py")
+                row = resume_record(session, rows)
+                if row is not None:
                     row["closure_evidence"] = None
                     row["resumed_at"] = datetime.now(timezone.utc).isoformat()
                     replace_rows(rows)

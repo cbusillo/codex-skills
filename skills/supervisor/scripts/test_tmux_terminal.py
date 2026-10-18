@@ -681,7 +681,7 @@ class TmuxTests(TmuxFixture):
                                           "codex_home": str(home), "transcript": str(transcript)}]))
         helper = self.root / "codex-session.py"
         helper.write_text('''import json, os, sys
-print("RESUMED:" + json.dumps({"argv": sys.argv[1:], "home": os.environ["CODEX_HOME"]}), flush=True)
+print("RESUMED:" + json.dumps({"argv": sys.argv[1:], "home": os.environ["CODEX_HOME"], "account_path": os.environ["FIXTURE_ACCOUNT_PATH"]}), flush=True)
 for line in sys.stdin:
     if line.strip() == "/quit":
         break
@@ -691,7 +691,7 @@ for line in sys.stdin:
         uv.write_text(f"#!{sys.executable}\nimport os, sys\nos.execv(sys.executable, [sys.executable, *sys.argv[2:]])\n")
         uv.chmod(0o700)
         choice = {"provider": "openai", "name": "original", "account_id": "openai-ab12",
-                  "env": {"CODEX_HOME": str(home)}, "storage_root": self.root}
+                  "env": {"CODEX_HOME": "~/codex-account", "FIXTURE_ACCOUNT_PATH": "~/cache"}, "storage_root": self.root}
         with (patch.object(iterm_tab, "__file__", str(self.root / "iterm_tab.py")),
               patch.object(account_choice, "load_config", return_value={"accounts": [choice]}),
               patch.object(account_choice, "select", return_value=choice),
@@ -707,7 +707,7 @@ for line in sys.stdin:
         history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
         received = json.loads(next(line.split("RESUMED:", 1)[1] for line in history.splitlines() if "RESUMED:" in line))
         self.assertEqual(received, {"argv": ["resume", "--session-id", native, "--codex-home", str(home.resolve())],
-                                    "home": str(home)})
+                                    "home": str(home), "account_path": str(self.root / "cache")})
         self.assertEqual(len(list((self.root / "Launch Receipts").glob("*.json"))), 1)
         self.operate("send", session_id=row["session_id"], text="fresh safe turn", text_file=None,
                      verified_target=True, no_submit=False)

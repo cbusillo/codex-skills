@@ -20,7 +20,6 @@ import sys
 import tempfile
 import time
 import tomllib
-import uuid
 from pathlib import Path
 
 import account_choice
@@ -1004,8 +1003,6 @@ def prepare_resume(args):
     from codex_session_proxy import source_endpoint
 
     session = args.resume_session_id
-    if str(uuid.UUID(session)) != session:
-        raise ValueError("use the canonical native thread UUID")
     if (args.account_provider != "openai" or not getattr(args, "ledger", None)
             or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
             or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
@@ -1023,8 +1020,7 @@ def prepare_resume(args):
     transcript = Path(entry["transcript"])
     if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
         raise ValueError("resume transcript is outside the source account")
-    session_record.session_status(entry)
-    source_endpoint(session, home)
+    source_endpoint(session, home, transcript=transcript)
     config = account_choice.load_config(args.account_config)
     accounts = [account for account in config["accounts"] if account["provider"] == "openai"
                 and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
@@ -1039,7 +1035,7 @@ def prepare_resume(args):
     choice["resume_session_id"] = session
     invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),
                   "resume", "--session-id", session, "--codex-home", str(home)]
-    settings = [f"{key}={value}" for key, value in choice["env"].items()]
+    settings = [f"{key}={os.path.expanduser(value)}" for key, value in choice["env"].items()]
     return [shlex.join(["exec", "env", *settings, *invocation])], [choice]
 
 

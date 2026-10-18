@@ -1930,6 +1930,11 @@ It inspects the existing daemon without starting or restarting it, then runs
 the same `codex-session.py resume` helper. Its source lease, action barrier
 and frozen-generation checks remain in force. No command or brief file is
 accepted in this mode; arbitrary helper or shell commands still refuse.
+Known frozen or duplicate source records refuse before account selection,
+receipt preparation or terminal creation. The guarded helper repeats that
+same check under its source lease immediately before acting, covering races
+after the read-only preflight. Account environment paths expand `~` exactly
+as they do for fresh launches.
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id <container-id> --resume-session-id <native-id> --ledger <original-private-ledger.json> --account-provider openai

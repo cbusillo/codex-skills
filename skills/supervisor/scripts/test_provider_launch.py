@@ -65,18 +65,36 @@ class ResumeLaunchTests(unittest.TestCase):
         self.start = self.enterContext(patch.object(iterm_tab, "check_codex_daemon"))
         import github_plan_sessions
         self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.home]))
+        import github_plan_closure
+        self.log = self.root / "closed.json"
+        self.enterContext(patch.object(github_plan_closure, "closed_log", return_value=self.log))
 
     def test_resume_uses_exact_source_helper_and_existing_receipt_route(self):
         commands, choices = iterm_tab.prepare_launches(self.args)
         argv = shlex.split(commands[0])
-        self.assertEqual(argv[:3], ["exec", "env", "CODEX_HOME=" + str(self.home)])
-        self.assertEqual(argv[3:], ["uv", "run", str(Path(iterm_tab.__file__).with_name("codex-session.py").resolve()),
-                                  "resume", "--session-id", self.session, "--codex-home", str(self.home)])
+        helper = str(Path(iterm_tab.__file__).with_name("codex-session.py").resolve())
+        self.assertIn(helper, argv)
+        self.assertEqual(argv[argv.index("--session-id") + 1], self.session)
+        self.assertEqual(argv[argv.index("--codex-home") + 1], str(self.home))
         self.select.assert_called_once_with("openai", None, self.account["name"])
         self.prepare.assert_called_once_with(choices[0])
         self.inspect.assert_called_once_with(self.home)
         self.start.assert_not_called()
         self.assertEqual(choices[0]["resume_session_id"], self.session)
+
+    def test_frozen_or_duplicate_source_refuses_before_receipts_and_daemon_reads(self):
+        for rows in ([{"session_id": self.session, "successor_admitted": True}],
+                     [{"session_id": self.session}, {"session_id": self.session}]):
+            with self.subTest(rows=rows):
+                self.log.write_text(json.dumps(rows))
+                self.log.chmod(0o600)
+                original = self.log.read_bytes()
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_launches(self.args)
+                self.assertEqual(self.log.read_bytes(), original)
+        self.select.assert_not_called()
+        self.prepare.assert_not_called()
+        self.inspect.assert_not_called()
 
     def test_bad_identity_and_launch_options_refuse_before_receipt_preparation(self):
         for changes in ({"supervisor_owned": False}, {"harness": "claude"}, {"codex_home": "relative"},
