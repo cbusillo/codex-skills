@@ -981,10 +981,16 @@ class ReviewWithModelTests(unittest.TestCase):
         scratch.mkdir()
         (scratch / "answer.md").write_text(fixture["answer"])
         elapsed = fixture["provenance"]["duration_seconds"]
-        with patch.object(review_with_model, "run_cli", return_value=proc) as run, \
-                patch("time.monotonic", side_effect=[10, 10 + elapsed]):
-            result = review_with_model.completed_review(
-                review_with_model.review_openai("private prompt", self.repo, None, 1800, scratch))
+        with patch.object(review_with_model, "time") as clock:
+            clock.monotonic.return_value = 10
+
+            def finish(*_args):
+                clock.monotonic.return_value += elapsed
+                return proc
+
+            with patch.object(review_with_model, "run_cli", side_effect=finish) as run:
+                result = review_with_model.completed_review(
+                    review_with_model.review_openai("private prompt", self.repo, None, 1800, scratch))
         self.assertFalse(result["ok"])
         self.assertEqual(result["outcome"], json.loads(fixture["answer"])["status"])
         execution = result["execution"]
@@ -998,6 +1004,14 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertTrue(result["completion_shape"])
         self.assertNotIn("response", result)
         run.assert_called_once()
+
+    def test_failed_command_count_includes_declines_without_an_exit_code(self) -> None:
+        events = [
+            {"type": "item.completed", "item": {"type": "command_execution", "status": status, "exit_code": code}}
+            for status, code in [("completed", 0), ("failed", None), ("declined", None), ("failed", 1)]
+        ]
+        execution = review_with_model.openai_execution("\n".join(map(json.dumps, events)), "", 1, 0)
+        self.assertEqual(execution["failed_commands"], 3)
 
     def test_incomplete_diagnostics_do_not_expose_command_or_partial_review_text(self) -> None:
         self.install("codex", FAKE_CODEX)

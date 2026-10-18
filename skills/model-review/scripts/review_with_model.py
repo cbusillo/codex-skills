@@ -217,7 +217,9 @@ def openai_execution(stdout: str | bytes | None, response: str, elapsed: float,
             "last_event": (types[-1] if types[-1] in known else "unknown") if types else None,
             "terminal_event": terminal[-1] if terminal else None,
             "final_answer_produced": bool(response.strip()),
-            "failed_commands": sum(isinstance(item.get("exit_code"), int) and item["exit_code"] != 0 for item in commands),
+            "failed_commands": sum(item.get("status") in ("failed", "declined")
+                                   or (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
+                                   for item in commands),
             "command_diagnostics": ["github_connection_failed"] if github_failed else []}
 
 
