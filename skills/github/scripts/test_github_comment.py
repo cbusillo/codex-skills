@@ -25,8 +25,7 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 
 import github_api
 import github_comment
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "direction/scripts"))
-import question_id as question_counter
+from skills.direction.scripts import question_id as question_counter
 from github_fixture_support import api_failure, api_success, with_call_stub
 
 

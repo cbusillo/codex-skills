@@ -25,8 +25,8 @@ import github_identity
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "direction/scripts"))
-import question_id
+sys.path.insert(0, str(SCRIPT_DIR.parents[2]))
+from skills.direction.scripts import question_id
 
 DEFAULT_GH = os.environ.get("GH_COMMENT_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 EXPECTED_ACTOR = github_identity.automation_login()
@@ -478,16 +478,14 @@ def _matching_actor_comment(
     actor: str,
     body: str,
 ) -> Optional[dict[str, Any]]:
-    canonical_body = _canonical_comment_body(body)
-    matches = [
-        comment
-        for comment in comments
-        if str((comment.get("user") or {}).get("login") or "").casefold() == actor.casefold()
-        and _canonical_comment_body(comment.get("body")) == (
-            _canonical_comment_body(question_id.number_heading(body, prior_question))
-            if (prior_question := question_id.heading_id(comment.get("body") or "")) else canonical_body
-        )
-    ]
+    matches = []
+    for candidate in comments:
+        if str((candidate.get("user") or {}).get("login") or "").casefold() != actor.casefold():
+            continue
+        prior_question = question_id.heading_id(candidate.get("body") or "")
+        expected = question_id.number_heading(body, prior_question) if prior_question else body
+        if _canonical_comment_body(candidate.get("body")) == _canonical_comment_body(expected):
+            matches.append(candidate)
     if not matches:
         return None
     return max(
