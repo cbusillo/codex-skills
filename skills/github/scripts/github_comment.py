@@ -171,7 +171,7 @@ def _raise_api_failure(
     )
 
 
-def normalized_repo(value: str) -> str:
+def _normalized_repo(value: str) -> str:
     candidate = value.strip().strip("/")
     parts = candidate.split("/")
     if len(parts) == 3 and "." in parts[0]:
@@ -197,7 +197,7 @@ def resolve_repo(
     for candidate in (explicit, os.environ.get("GH_REPO")):
         if candidate:
             try:
-                return normalized_repo(candidate)
+                return _normalized_repo(candidate)
             except ValueError as exc:
                 raise _local_error(
                     str(exc),
@@ -237,7 +237,7 @@ def resolve_repo(
         ) from exc
     if proc.returncode == 0 and proc.stdout.strip():
         try:
-            return normalized_repo(proc.stdout.strip())
+            return _normalized_repo(proc.stdout.strip())
         except ValueError:
             pass
     result = github_api_core.legacy_process_result(

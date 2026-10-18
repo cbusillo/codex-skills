@@ -20,29 +20,10 @@ import unittest
 from unittest.mock import Mock, patch
 
 import release_session_claims as helper
-import github_api
 
 ACTOR = "test-automation[bot]"
 SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
           "claimed_at": "2026-01-01T00:00:00Z"}
-
-
-# Tool results as Codex records them, for writes whose success must be confirmed.
-PATCH_OK = "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess. Updated the following files:\nA /repo/h.md\n"
-PATCH_FAILED = "apply_patch verification failed: Failed to find expected lines in /repo/other.md:\na"
-SHELL_OK = "Process exited with code 0\nOutput:\n"
-SHELL_FAILED = "Process exited with code 1\nOutput:\npermission denied"
-SCRIPT_OK = [{"type": "input_text", "text": "Script completed\nWall time 0.0 seconds\nOutput:\n"},
-             {"type": "input_text", "text": '{"chunk_id":"a1","exit_code":0,"output":""}'}]
-SCRIPT_FAILED = [{"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
-                 {"type": "input_text", "text": "Script error:\npermission denied"}]
-
-
-def claude_result(call_id, ok=True, timestamp=None, content="Done"):
-    """A Claude Code tool result; failures carry is_error, and a missing result is unconfirmed."""
-    record = {"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": call_id, "content": content, "is_error": not ok}]}}
-    return {**record, "timestamp": timestamp} if timestamp else record
 
 
 def comment(number, body, author=ACTOR):
@@ -353,502 +334,81 @@ class ReleaseTests(unittest.TestCase):
                 helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None,
                     "_handoff_thread": ("test/a", 1)}, ACTOR)
 
-    def test_legacy_abbreviated_write_receipt_and_unbound_final_link(self):
+    def test_abbreviated_write_output_and_unbound_final_link_do_not_bind(self):
         records = helper.session_record.read_jsonl(self.transcript)
         records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "body", "input": {"file_path": "handoff.md", "content": "Handoff"}}]}})
-        records.insert(2, claude_result("body"))
-        records.insert(3, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
-        records.insert(4, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
+        records.insert(2, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
+        records.insert(3, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
         # This models receipt shapes only; harness identity and safe exit remain Codex.
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+        self.reader.paged_json.return_value = []
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
         records = helper.session_record.read_jsonl(self.transcript)
-        records[4]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
+        records[3]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
         records[-2]["payload"]["message"] = f"See {self.entry['handoff_url']}\nSafe to exit: yes"
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         self.reader.paged_json.return_value = []
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
 
-    def summarized_write(self, command, output, started="2025-12-31T23:59:59.400Z", finished="2026-01-01T00:00:01.200Z",
-                         body="Handoff: the lane's passwords moved.\nNext: land it.", posted=None):
+    def codex_write(self, command, output, body="Engineering handoff\nReady for merge"):
         # Each call starts from the base transcript, so subtests stay independent.
         self.transcript.write_text(self.base_transcript)
         records = helper.session_record.read_jsonl(self.transcript)
         records[1:1] = [
-            # The session writes the comment body itself before posting it.
-            {"type": "assistant", "timestamp": started, "message": {"content": [
-                {"type": "tool_use", "id": "body", "input": {"file_path": "c.md", "content": body}}]}},
-            claude_result("body", timestamp=started),
-            {"type": "assistant", "timestamp": started, "message": {"content": [
-                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
-            # Claude Code repeats tool blocks in untimestamped records.
-            {"type": "api-request-blob", "message": {"content": [
-                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
-            {"type": "user", "timestamp": finished, "message": {"content": [
-                {"type": "tool_result", "tool_use_id": "write", "content": output, "is_error": False}]}},
+            {"timestamp": "2025-12-31T23:59:59.400Z", "payload": {"type": "function_call", "name": "exec_command",
+                "call_id": "write", "arguments": json.dumps({"cmd": command})}},
+            {"timestamp": "2026-01-01T00:00:01.200Z", "payload": {"type": "function_call_output", "call_id": "write",
+                "output": output}},
         ]
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         self.reader.paged_json.return_value = []
-        # The comment helper appends its operation marker to the posted body.
-        self.reader.get_json.return_value = {**self.reader.get_json.return_value,
-                                             "body": github_api.body_with_operation_marker(posted or body, "0123abcd")}
+        self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": body}
         return {**self.entry, "handoff_url": None}
 
-    def write_records(self, records):
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-
-    def test_summarized_write_created_during_the_call_is_bound(self):
-        other = "https://github.com/test/a/issues/1#issuecomment-98"
-        summary = "python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get(\"url\"))'"
-        shapes = {
-            # LP3912-D2: heredoc body with an apostrophe, then two writes in one call.
-            "two writes after a heredoc": (
-                f"cat > c.md <<'EOF'\nHandoff: the lane's passwords moved.\nNext: land it.\nEOF\ngh-comment -R test/a --body-file c.md issue 2 | {summary}; "
-                f"gh-comment -R test/a --body-file c.md issue 1 | {summary}",
-                f"confirmed {other}\nconfirmed {self.entry['handoff_url']}"),
-            # CS2069-C1: the write chained with a read whose summary prints a dict.
-            "write chained with a read": (
-                f"gh-comment -R test/a issue 1 -R test/a --body-file c.md | {summary}; gh-pr.py --repo test/a checks 2 | {summary}",
-                f"True None {self.entry['handoff_url']}\n{{'summary': {{'pendingCount': 3}}}}"),
-            "body on stdin": (
-                f"gh-comment -R test/a issue 1 --body-file - <<'EOF' | {summary}\nHandoff: the lane's passwords moved.\nNext: land it.\nEOF",
-                f"True None {self.entry['handoff_url']}"),
-            "documented gh-pr.py argument order": (
-                f"gh-pr.py --repo test/a comment 1 --body-file c.md | {summary}",
-                f"True None {self.entry['handoff_url']}"),
-            "hyphenated heredoc delimiter": (
-                f"gh-comment -R test/a issue 1 --body-file - <<'END-BODY' | {summary}\nHandoff: the lane's passwords moved.\nNext: land it.\nEND-BODY",
-                f"True None {self.entry['handoff_url']}"),
-            # A Codex temporary body file whose cleanup trap single-quotes the same variable.
-            "same-call mktemp body file": (
-                "tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT; cat > \"$tmp\" <<'EOF'\nHandoff: the lane's passwords moved.\n"
-                "Next: land it.\nEOF\ngh-comment -R test/a issue 1 --body-file \"$tmp\" | jq -r .comment.url",
-                self.entry["handoff_url"]),
+    def test_a_printed_url_binds_only_through_a_receipt_or_the_exact_session(self):
+        # The printed comment's body is exactly what the write sent, but output text is not a record of the write.
+        receipt = json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})
+        writes = {
+            "heredoc body file": "cat > c.md <<'EOF'\nEngineering handoff\nReady for merge\nEOF\n"
+                                 "gh-comment -R test/a issue 1 --body-file c.md | jq -r .comment.url",
+            "body on stdin": "gh-comment -R test/a issue 1 --body-file - <<'EOF' | jq -r .comment.url\n"
+                             "Engineering handoff\nReady for merge\nEOF",
+            "gh-pr.py comment": "cat > c.md <<'EOF'\nEngineering handoff\nReady for merge\nEOF\n"
+                                "gh-pr.py --repo test/a comment 1 --body-file c.md | jq -r .comment.url",
         }
-        for name, (command, output) in shapes.items():
-            with self.subTest(name):
-                found, _ = helper.discover_handoff(self.reader, self.summarized_write(command, output), ACTOR)
-                self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_another_sessions_comment_created_during_the_call_is_not_bound(self):
-        # Session B posts with the same bot while session A's write is chained with a read.
-        command = "gh-comment -R test/a issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments"
-        outputs = {"bare URL": self.entry["handoff_url"], "read JSON": json.dumps([{"html_url": self.entry["handoff_url"]}])}
-        bodies = {"names its own session": "B's handoff\nSession: session-B", "names no session": "B's handoff"}
-        for (shape, output), (name, other_body) in itertools.product(outputs.items(), bodies.items()):
-            with self.subTest(shape=shape, body=name):
-                entry = self.summarized_write(command, output)
-                self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": other_body}
+        for name, command in writes.items():
+            with self.subTest(name, route="summarized URL"):
                 with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_text_the_session_typed_but_did_not_post_does_not_bind(self):
-        # Another session's comment, printed by a chained read, matches text this session only searched for or typed.
-        shapes = {
-            "search argument": ("rg -F 'Engineering handoff: ready to merge' notes.md; ", "Engineering handoff: ready to merge"),
-            "loop terminator": ("for f in a b; do echo $f; done; ", "done"),
-        }
-        for name, (prefix, other_body) in shapes.items():
-            with self.subTest(name):
-                entry = self.summarized_write(
-                    f"{prefix}gh-comment -R test/a issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/comments/99 --jq .html_url",
-                    self.entry["handoff_url"], posted=other_body)
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_body_file_edited_after_writing_binds_its_final_text(self):
-        entry = self.summarized_write("gh-comment -R test/a issue 1 --body-file /repo/c.md | jq -r .url", self.entry["handoff_url"],
-                                      body="Draft handoff", posted="Final handoff")
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[3:3] = [{"type": "assistant", "timestamp": "2025-12-31T23:59:59.400Z", "message": {"content": [
-            {"type": "tool_use", "id": "edit", "input": {"file_path": "c.md", "old_string": "Draft", "new_string": "Final"}}]}},
-            claude_result("edit")]
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_unrelated_command_heredoc_does_not_bind_a_read_comment(self):
-        commands = (
-            "rg -F -f - notes.md <<'EOF'\nOther handoff\nEOF\n"
-            "gh-comment -R test/a issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments",
-            "gh-comment -R test/a issue 1 3<<'EOF' >/dev/null\nOther handoff\nEOF\n"
-            "gh api repos/test/a/issues/1/comments",
-        )
-        for command in commands:
-            with self.subTest(command=command):
-                entry = self.summarized_write(command, self.entry["handoff_url"], posted="Other handoff")
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_different_absolute_body_paths_do_not_bind_by_basename(self):
-        entry = self.summarized_write(
-            "gh-comment -R test/a issue 1 --body-file /tmp/c.md >/dev/null; gh api repos/test/a/issues/1/comments",
-            self.entry["handoff_url"], posted="Other handoff")
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[1]["message"]["content"][0]["input"].update(file_path="/repo/notes/c.md", content="Other handoff")
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_literal_shell_variable_body_path_binds(self):
-        entry = self.summarized_write(
-            'body=/tmp/c.md; gh-comment -R test/a issue 1 --body-file "$body" | jq -r .comment.url',
-            self.entry["handoff_url"])
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[1]["message"]["content"][0]["input"]["file_path"] = "/tmp/c.md"
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_recorded_workdir_resolves_relative_body_paths(self):
-        for orchestrated, cwd in itertools.product((False, True), ("/repo/notes", "/tmp")):
-            with self.subTest(orchestrated=orchestrated, cwd=cwd):
-                entry = self.summarized_write("gh-comment -R test/a issue 1 --body-file c.md", self.entry["handoff_url"])
-                records = helper.session_record.read_jsonl(self.transcript)
-                records[1]["message"]["content"][0]["input"]["file_path"] = "/repo/notes/c.md"
-                args = {"cmd": "gh-comment -R test/a issue 1 --body-file c.md", "workdir": cwd}
-                # Replace both copies of the native call, retaining its result.
-                records[3] = {"timestamp": records[3]["timestamp"], "payload": {
-                    "type": "custom_tool_call" if orchestrated else "function_call", "call_id": "write",
-                    "input" if orchestrated else "arguments": (
-                        f'await tools.exec_command({{cmd: {json.dumps(args["cmd"])}, workdir: {json.dumps(cwd)}}})'
-                        if orchestrated else json.dumps(args))}}
-                records[4] = {"payload": {"type": "function_call_output", "call_id": "write", "output": self.entry["handoff_url"]}}
-                del records[5]
-                self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-                if cwd == "/repo/notes":
-                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-                else:
-                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                        helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_relative_body_path_without_recorded_cwd_is_ambiguous(self):
-        entry = self.summarized_write("gh-comment -R test/a issue 1 --body-file c.md", self.entry["handoff_url"])
-        records = helper.session_record.read_jsonl(self.transcript)
-        del records[0]["payload"]["cwd"]
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_body_path_variable_must_be_known_and_expandable(self):
-        for path in ("'$body'", '"$unknown"'):
-            with self.subTest(path=path):
-                entry = self.summarized_write(
-                    f"body=/repo/c.md; gh-comment -R test/a issue 1 --body-file {path}", self.entry["handoff_url"])
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_untracked_redirect_contents_do_not_preserve_an_old_file_body(self):
-        for command in ("printf changed > c.md", "cat other.md > c.md <<'EOF'\nOther handoff\nEOF"):
-            with self.subTest(command=command):
-                entry = self.summarized_write(
-                    f"{command}\ngh-comment -R test/a issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments",
-                    self.entry["handoff_url"])
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_codex_orchestrated_heredoc_body_is_bound(self):
-        # Codex functions.exec records the shell command as an escaped JavaScript string literal.
-        command = "cat > c.md <<'EOF'\nEngineering handoff\nReady for merge\nEOF\ngh-comment -R test/a issue 1 --body-file c.md | jq -r .comment.url"
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[1:1] = [
-            {"timestamp": "2025-12-31T23:59:59.400Z", "payload": {"type": "custom_tool_call", "call_id": "write",
-                "input": f"await tools.exec_command({{cmd: {json.dumps(command)}}})"}},
-            {"timestamp": "2026-01-01T00:00:01.200Z", "payload": {"type": "custom_tool_call_output", "call_id": "write",
-                "output": f"{self.entry['handoff_url']}\n{{}}"}},
-        ]
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        self.reader.paged_json.return_value = []
-        self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": "Engineering handoff\nReady for merge"}
-        found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_a_written_comment_that_names_another_session_is_not_its_handoff(self):
-        # For example, a Supervisor attestation about the session it closed.
-        entry = self.summarized_write("gh-comment -R test/a issue 1 --body-file c.md", self.entry["handoff_url"],
-                                      body="Closed session\nSession: session-B\nSafe to exit: yes")
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_a_read_before_the_write_in_one_call_does_not_hide_the_write(self):
-        summary = "python3 -c 'import json,sys; print(json.load(sys.stdin)[\"comment\"][\"url\"])'"
-        entry = self.summarized_write(f"gh-pr.py --repo test/a checks 2; gh-comment -R test/a issue 1 --body-file c.md | {summary}",
-                                      f"{{'summary': {{'pendingCount': 3}}}}\n{self.entry['handoff_url']}")
-        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_url_printed_by_a_write_but_created_outside_the_call_is_not_bound(self):
-        # A read chained into the write may print an older shared-bot comment, bare or in JSON.
-        for output in (self.entry["handoff_url"], f"{self.entry['handoff_url']}\n{{}}"):
-            with self.subTest(output=output):
-                entry = self.summarized_write(
-                    "gh-comment -R test/a issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/comments/99 --jq .html_url",
-                    output, started="2026-01-01T00:00:30Z", finished="2026-01-01T00:00:35Z")
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_untimestamped_duplicate_records_keep_the_call_window(self):
-        # Claude Code repeats records without timestamps, before or after the timestamped copy.
-        command = "gh-comment -R test/a issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/comments/99 --jq .html_url"
-        duplicate = {"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "write", "content": self.entry["handoff_url"], "is_error": False}]}}
-        shapes = {
-            "duplicate result after": lambda r: r.insert(6, duplicate),
-            "duplicate result before": lambda r: r.insert(5, duplicate),
-            "untimestamped call copy first": lambda r: r.insert(3, r.pop(4)),
-            "result never timestamped": lambda r: r[5].pop("timestamp"),
-            "call never timestamped": lambda r: r[3].pop("timestamp"),
-        }
-        # The comment is created at 00:00:00; each bound must reject it on its own.
-        windows = {
-            "created before the call": {"started": "2026-01-01T00:00:30Z", "finished": "2026-01-01T00:00:35Z"},
-            "created after the result": {"started": "2025-12-31T23:59:00Z", "finished": "2025-12-31T23:59:30Z"},
-            "created during the call": {},
-        }
-        for (name, change), (when, window) in itertools.product(shapes.items(), windows.items()):
-            missing = {"result never timestamped": "created after the result", "call never timestamped": "created before the call"}
-            if missing.get(name) == when:
-                continue  # that copy records no bound to check
-            with self.subTest(name, when=when):
-                entry = self.summarized_write(command, self.entry["handoff_url"], **window)
-                records = helper.session_record.read_jsonl(self.transcript)
-                change(records)
-                self.write_records(records)
-                if window:
-                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                        helper.discover_handoff(self.reader, entry, ACTOR)
-                else:
-                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def codex_write(self, *records, body="Engineering handoff\nReady for merge"):
-        self.transcript.write_text(self.base_transcript)
-        base = helper.session_record.read_jsonl(self.transcript)
-        base[1:1] = records
-        self.write_records(base)
-        self.reader.paged_json.return_value = []
-        self.reader.get_json.return_value = {**self.reader.get_json.return_value,
-                                             "body": github_api.body_with_operation_marker(body, "0123abcd")}
-        return {**self.entry, "handoff_url": None}
-
-    def codex_call(self, call_id, command, output=None, **arguments):
-        call = {"timestamp": "2025-12-31T23:59:59.400Z", "payload": {
-            "type": "function_call", "name": "exec_command", "call_id": call_id,
-            "arguments": json.dumps({"cmd": command, **arguments})}}
-        result = {"timestamp": "2026-01-01T00:00:01.200Z", "payload": {
-            "type": "function_call_output", "call_id": call_id, "output": output or self.entry["handoff_url"]}}
-        return [call, result]
-
-    def patch_call(self, call_id, text, output=PATCH_OK):
-        call = {"timestamp": "2025-12-31T23:59:59.000Z", "payload": {
-            "type": "custom_tool_call", "name": "apply_patch", "call_id": call_id,
-            "input": f"*** Begin Patch\n{text}\n*** End Patch\n"}}
-        if output is None:
-            return [call]  # the session ended before the tool reported
-        return [call, {"timestamp": "2025-12-31T23:59:59.200Z", "payload": {
-            "type": "custom_tool_call_output", "call_id": call_id, "output": output}}]
-
-    def test_codex_apply_patch_body_file_binds_until_it_changes(self):
-        add = "*** Add File: {}\n+Engineering handoff\n+Ready for merge"
-        write = self.codex_call("write", "gh-comment -R test/a issue 1 --body-file /repo/h.md | jq -r .comment.url")
-        shapes = {
-            "absolute added path": ([*self.patch_call("add", add.format("/repo/h.md"))], True),
-            "relative added path": ([*self.patch_call("add", add.format("h.md"))], True),
-            "updated after adding": ([*self.patch_call("add", add.format("h.md")),
-                                      *self.patch_call("update", "*** Update File: h.md\n@@\n-Ready for merge\n+Not ready")], False),
-            "moved over after adding": ([*self.patch_call("add", add.format("h.md")),
-                                         *self.patch_call("move", "*** Update File: other.md\n*** Move to: h.md\n@@\n-a\n+b")], False),
-        }
-        for name, (patches, binds) in shapes.items():
-            with self.subTest(name):
-                entry = self.codex_write(*patches, *write)
-                if binds:
-                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-                else:
-                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                        helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_shell_apply_patch_body_file_binds_with_its_exact_text(self):
-        patch = "*** Begin Patch\n*** Add File: h.md\n+Engineering handoff\n+Costs $5 to rerun\n*** End Patch\n"
-        write = self.codex_call("write", "gh-comment -R test/a issue 1 --body-file h.md | jq -r .comment.url")
-        for name, command in {"heredoc": f"apply_patch <<'EOF'\n{patch}EOF", "argv": ["apply_patch", patch]}.items():
-            with self.subTest(name):
-                call = self.codex_call("patch", "", SHELL_OK)
-                call[0]["payload"]["arguments"] = json.dumps({"command": command})
-                entry = self.codex_write(*call, *write, body="Engineering handoff\nCosts $5 to rerun")
+                    helper.discover_handoff(self.reader, self.codex_write(command, self.entry["handoff_url"]), ACTOR)
+            with self.subTest(name, route="full receipt"):
+                found, _ = helper.discover_handoff(self.reader, self.codex_write(command, receipt), ACTOR)
+                self.assertEqual(found["_handoff_provenance"], "native comment-write receipt")
+            with self.subTest(name, route="exact session"):
+                entry = self.codex_write(command, self.entry["handoff_url"],
+                                         body=f"Engineering handoff\nSession: {SOURCE['session']}")
                 found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-                self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_a_failed_or_unconfirmed_file_write_leaves_its_text_unknown(self):
-        # A later write fails to post the missing file and a chained read prints another session's
-        # same-body comment. Each writer counts only once its own result reports success.
-        body = "Engineering handoff\nReady for merge"
-        heredoc = f"cat > /repo/h.md <<'EOF'\n{body}\nEOF"
-        add = "*** Add File: /repo/h.md\n+Engineering handoff\n+Ready for merge"
-        read = "gh api repos/test/a/issues/comments/99 --jq .html_url"
-        codex_write = self.codex_call("write", f"gh-comment -R test/a issue 1 --body-file /repo/h.md >/dev/null; {read}")
-        def orchestrated(output):
-            call = {"timestamp": "2025-12-31T23:59:59.000Z", "payload": {"type": "custom_tool_call", "name": "exec",
-                "call_id": "draft", "input": f"await tools.exec_command({{cmd: {json.dumps(heredoc)}}})"}}
-            return [call] if output is None else [call, {"timestamp": "2025-12-31T23:59:59.200Z", "payload": {
-                "type": "custom_tool_call_output", "call_id": "draft", "output": output}}]
-        def claude(tool_input, ok, then=()):
-            use = {"type": "assistant", "timestamp": "2025-12-31T23:59:59.000Z", "message": {"content": [
-                {"type": "tool_use", "id": "draft", "input": tool_input}]}}
-            result = [] if ok is None else [claude_result("draft", ok=ok, timestamp="2025-12-31T23:59:59.200Z")]
-            write = [{"type": "assistant", "timestamp": "2025-12-31T23:59:59.400Z", "message": {"content": [
-                {"type": "tool_use", "id": "write", "input": {
-                    "command": f"gh-comment -R test/a issue 1 --body-file /repo/h.md >/dev/null; {read}"}}]}},
-                claude_result("write", content=self.entry["handoff_url"], timestamp="2026-01-01T00:00:01.200Z")]
-            return [use, *result, *then, *write]
-        def claude_edit(ok):
-            # The Write succeeded; the Edit that produced the posted text did not.
-            write = claude({"file_path": "/repo/h.md", "content": "Engineering handoff\nDraft"}, True)[:2]
-            edit = [{"type": "assistant", "timestamp": "2025-12-31T23:59:59.100Z", "message": {"content": [
-                {"type": "tool_use", "id": "edit", "input": {"file_path": "/repo/h.md", "old_string": "Draft",
-                                                             "new_string": "Ready for merge"}}]}}]
-            if ok is not None:
-                edit.append(claude_result("edit", ok=ok, timestamp="2025-12-31T23:59:59.150Z"))
-            return [*write, *edit, *claude({"command": "true"}, True)[2:]]
-        shapes = {
-            "apply_patch tool": lambda ok: [*self.patch_call("draft", add + "\n*** Update File: /repo/other.md\n@@\n-a\n+b",
-                                                            {True: PATCH_OK, False: PATCH_FAILED, None: None}[ok]), *codex_write],
-            "shell apply_patch": lambda ok: [*self.codex_call("draft", f"apply_patch <<'EOF'\n*** Begin Patch\n{add}\n*** End Patch\nEOF",
-                                                             {True: SHELL_OK, False: SHELL_FAILED, None: "ok"}[ok]), *codex_write],
-            "shell heredoc": lambda ok: [*self.codex_call("draft", heredoc, {True: SHELL_OK, False: SHELL_FAILED, None: "ok"}[ok]),
-                                         *codex_write],
-            "orchestrated heredoc": lambda ok: [*orchestrated({True: SCRIPT_OK, False: SCRIPT_FAILED, None: None}[ok]), *codex_write],
-            "Claude Write": lambda ok: claude({"file_path": "/repo/h.md", "content": body}, ok),
-            "Claude Bash heredoc": lambda ok: claude({"command": heredoc}, ok),
-            "Claude Edit": claude_edit,
-        }
-        for (name, records), ok in itertools.product(shapes.items(), (True, False, None)):
-            with self.subTest(name, ok=ok):
-                entry = self.codex_write(*records(ok), body=body)
-                if ok:
-                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-                else:
-                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                        helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_a_write_call_that_reports_failure_sends_no_body(self):
-        # The comment helper fails after reading the body; a chained read prints another session's comment.
-        command = ("cat > /repo/h.md <<'EOF'\nEngineering handoff\nReady for merge\nEOF\n"
-                   "gh-comment -R test/a issue 1 --body-file /repo/h.md >/dev/null; "
-                   "gh api repos/test/a/issues/comments/99 --jq .html_url; exit 1")
-        for name, output in {"exit code": f"Process exited with code 1\nOutput:\n{self.entry['handoff_url']}",
-                             "script failure": [{"type": "input_text", "text": "Script failed\nOutput:\n"},
-                                                {"type": "input_text", "text": self.entry["handoff_url"]}]}.items():
-            with self.subTest(name):
-                entry = self.codex_write(*self.codex_call("write", command, output))
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_a_temporary_body_file_from_another_call_does_not_bind(self):
-        # Each mktemp result is a new file, even when a later call reuses the variable name.
-        entry = self.codex_write(
-            *self.codex_call("draft", "tmp=$(mktemp); cat > \"$tmp\" <<'EOF'\nEngineering handoff\nReady for merge\nEOF", "ok"),
-            *self.codex_call("write", 'tmp=$(mktemp); gh-comment -R test/a issue 1 --body-file "$tmp" >/dev/null; '
-                                      "gh api repos/test/a/issues/comments/99 --jq .html_url"))
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
+                self.assertEqual(found["_handoff_provenance"], "exact-ID handoff")
 
     def test_full_write_receipt_survives_shell_outside_the_heredoc_parser(self):
+        # Each write follows syntax the heredoc parser once refused, so the call's receipt was ignored.
         receipt = json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})
+        write = "gh-comment -R test/a issue 1 --body-file /tmp/h.md"
         commands = {
-            "here-string": 'gh-comment -R test/a issue 1 --body-file - <<<"$(cat /tmp/h.md)"',
-            "shift in quoted code": "python3 -c 'print(1<<3)'; gh-comment -R test/a issue 1 --body-file /tmp/h.md",
+            "here-string": f'tr a b <<<"$draft" > /tmp/h.md; {write}',
+            "shift in quoted code": f"python3 -c 'print(1 << 3)'; {write}",
+            "hyphenated heredoc delimiter": f"cat > /tmp/h.md <<'END-BODY'\nOther text\nEND-BODY\n{write}",
             "dynamic delimiter": 'gh-comment -R test/a issue 1 --body-file - <<"$END"\nOther text\n$END',
         }
         for name, command in commands.items():
             with self.subTest(name):
-                entry = self.codex_write(*self.codex_call("write", command, receipt), body="Other text")
-                found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+                found, _ = helper.discover_handoff(self.reader, self.codex_write(command, receipt, body="Other text"), ACTOR)
                 self.assertEqual(found["_handoff_provenance"], "native comment-write receipt")
         # Lines after an unparsed heredoc are its body, not commands.
-        entry = self.codex_write(*self.codex_call(
-            "read", 'cat saved.json <<"$END"\ngh-comment -R test/a issue 1 --body-file c.md\n$END', receipt))
+        entry = self.codex_write('cat saved.json <<"$END"\ngh-comment -R test/a issue 1 --body-file c.md\n$END', receipt)
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_printed_url_must_match_the_target_of_the_write_that_sent_its_body(self):
-        read = "gh api repos/test/a/issues/comments/99 --jq .html_url"
-        commands = {
-            "other issue": f"gh-comment -R test/a issue 2 --body-file c.md >/dev/null; {read}",
-            "other repository": f"gh-comment -R test/b issue 1 --body-file c.md >/dev/null; {read}",
-            "other PR repository": f"gh-pr.py --repo test/b comment 1 --body-file c.md >/dev/null; {read}",
-            "another write's target": ("cat > d.md <<'EOF'\nOther text\nEOF\ngh-comment -R test/a issue 1 --body-file d.md >/dev/null; "
-                                       f"gh-comment -R test/a issue 2 --body-file c.md >/dev/null; {read}"),
-            # Without -R/--repo the helper uses GH_REPO or the cwd's remote, which the transcript cannot prove.
-            "unnamed repository": f"gh-comment issue 1 --body-file c.md >/dev/null; {read}",
-            "GH_REPO environment": f"GH_REPO=test/b gh-comment issue 1 --body-file c.md >/dev/null; {read}",
-            "unnamed PR repository": f"gh-pr.py comment 1 --body-file c.md >/dev/null; {read}",
-        }
-        for name, command in commands.items():
-            with self.subTest(name):
-                entry = self.summarized_write(command, self.entry["handoff_url"])
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_every_argument_form_resolves_the_target_the_helper_writes_to(self):
-        # The comment is on test/a#1; each write binds only when the helper itself would post there.
-        writes = {
-            **{f"gh-comment {form}": f"gh-comment {form.format(r='{r}')} issue 1 --body-file c.md" for form in (
-                "-R {r}", "-R{r}", "--repo {r}", "--repo={r}", "--rep {r}", "--rep={r}",
-                # The last occurrence wins, whatever its form.
-                "--repo=test/x -R {r}", "-R test/x --repo={r}", "--repo test/x -R{r}",
-                "--repo=test/a -R {r}", "-R test/a --repo={r}", "--repo=test/a --rep {r}")},
-            "gh-comment repository after the positionals": "gh-comment issue 1 --body-file c.md -R {r}",
-            # The helper accepts HOST/OWNER/REPO and a .git suffix, and posts to OWNER/REPO.
-            **{f"gh-comment {form}": f"gh-comment {form.format(r='{r}')} issue 1 --body-file c.md" for form in (
-                "-R github.com/{r}", "--repo={r}.git", "-R /{r}/")},
-            "gh-comment repository in a variable": 'repo=github.com/{r}; gh-comment -R "$repo" issue 1 --body-file c.md',
-            **{f"gh-comment {form}": f"gh-comment -R {{r}} issue 1 {form}" for form in (
-                "--body-file=c.md", "--body c.md", "--body-file other.md --body-file c.md")},
-            **{f"gh-pr.py {form}": f"gh-pr.py {form.format(r='{r}')} comment 1 --body-file c.md" for form in (
-                "--repo {r}", "--repo={r}", "--rep {r}", "--repo=test/x --repo {r}",
-                # gh-pr.py comment posts through github_comment, which normalizes the same forms.
-                "--repo github.com/{r}", "--repo={r}.git", "--repo /{r}/")},
-            # A pull request URL names its own repository, over --repo.
-            "gh-pr.py pull request URL": "gh-pr.py --repo test/x comment https://github.com/{r}/pull/1 --body-file c.md",
-            "gh-pr.py pulls URL": "gh-pr.py comment https://github.com/{r}/pulls/1 --body-file=c.md",
-        }
-        for (name, write), repo in itertools.product(writes.items(), ("test/a", "test/b")):
-            with self.subTest(name, repo=repo):
-                entry = self.summarized_write(f"{write.format(r=repo)} | jq -r .comment.url", self.entry["handoff_url"])
-                if repo == "test/a":
-                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-                else:
-                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                        helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_grouped_or_undecodable_working_directory_is_unknown(self):
-        # The session cwd holds c.md, but each write ran elsewhere.
-        # The group closes in its own part, so the write itself parses; only the cwd guard rejects it.
-        for command in ("(cd /other && gh-comment -R test/a issue 1 --body-file c.md; )",
-                        "( cd /other; gh-comment -R test/a issue 1 --body-file c.md; )",
-                        "{ cd /other; gh-comment -R test/a issue 1 --body-file c.md; }"):
-            with self.subTest(command=command):
-                entry = self.summarized_write(command, self.entry["handoff_url"])
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-        for workdir in ("'/other'", "`/other`", "otherDir"):
-            with self.subTest(workdir=workdir):
-                entry = self.summarized_write("gh-comment -R test/a issue 1 --body-file c.md", self.entry["handoff_url"])
-                records = helper.session_record.read_jsonl(self.transcript)
-                records[3] = {"timestamp": records[3]["timestamp"], "payload": {"type": "custom_tool_call", "call_id": "write",
-                    "input": f'await tools.exec_command({{cmd: "gh-comment -R test/a issue 1 --body-file c.md", workdir: {workdir}}})'}}
-                records[4] = {"payload": {"type": "custom_tool_call_output", "call_id": "write", "output": self.entry["handoff_url"]}}
-                del records[5]
-                self.write_records(records)
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
 
     def test_unplanned_active_inventory_followup_is_not_an_all_clear(self):
         entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,

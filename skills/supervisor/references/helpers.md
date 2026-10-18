@@ -1674,37 +1674,16 @@ the matched PID/TTY and Supervisor-owned ledger entry.
 
 Missing handoffs are discovered from the native final response or recorded
 comment-write receipts, then verified against live comment author and dates.
-A comment URL printed by a recognized comment-write call, however its output
-was summarized or chained, is bound only when the comment's body is exactly what
-that call sent to that comment's own repository and issue, and it names no other
-session. The write is read with the comment helper's own argument parser, so its
-target and body file are what the helper used, whatever the flag form or order,
-including the `HOST/OWNER/REPO` and `.git` repository forms that both comment
-helpers accept.
-It must name its repository with `-R`/`--repo` or a pull request URL: without
-one, the helper uses `GH_REPO` or the working directory's remote, which the
-transcript cannot prove. What a call sent is a heredoc consumed by that comment command's stdin,
-or the text the session last wrote to its `--body-file` (a Write or Edit tool, a
-Codex `apply_patch` added file, or a `cat` heredoc redirect). Input to an
-unrelated command in the same shell call does not qualify. Body files are tracked
-by their full lexical path, using the transcript's recorded working directory
-for relative paths; matching basenames is insufficient. Straightforward literal
-shell assignments such as `body=/tmp/handoff.md; gh-comment issue 1 --body-file
-"$body"`, and a `tmp=$(mktemp)` file written and posted in the same call, are
-supported. Unknown or single-quoted variables, shell cwd changes, subshells and
-groups, an orchestration working directory that cannot be decoded, and relative
-paths without a recorded working directory do not establish a file identity.
-A body file counts only after the tool call that wrote it reports success:
-Claude Code's `is_error`, a Codex exit code, `Script completed`, or `apply_patch`'s
-success line. A failed or unconfirmed write leaves the file unknown, and a call
-that reports failure sends no body. A patch applied from Codex orchestration
-code is not read. Shell after an unsupported heredoc is never read as commands,
-so that call establishes no body. These cases can still use the helper's JSON receipt or the
-exact-session fallback below. When the transcript records the call's start or
-result, on any copy of a duplicated record, the comment must also have been
-created within that bound. Other text the session typed, such as a search
-pattern, is not authorship, and neither is a shared-bot comment that a chained
-read prints. The helper's JSON receipt binds on its own.
+Authorship comes only from a positive record of the write: the comment helper's
+full JSON receipt, printed by a recognized comment-write call and read back from
+GitHub, or a comment that names the exact native session ID. A comment URL that a
+write call merely prints, alone or summarized (for example through `jq -r
+.comment.url`), binds only when that comment names the exact session. Its body is
+never matched against what the transcript appears to have sent. Shell syntax
+outside the heredoc parser, such as a here-string, a hyphenated delimiter or `<<`
+inside quotes, does not hide a later write's receipt, and text after an
+unsupported heredoc is never read as commands. Other text the session typed is
+not authorship, and neither is a shared-bot comment that a chained read prints.
 A fallback source-issue or summary comment must name the exact native ID;
 shared-bot recency alone never qualifies. The summary thread defaults to
 `OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.
