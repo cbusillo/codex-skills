@@ -868,6 +868,82 @@ job is absent and its children have ended. To keep it stopped after login,
 remove only its reviewed plist from `~/Library/LaunchAgents/`; retain the
 configuration, holds, watch state and logs for takeover or reconciliation.
 
+## Catalog landing verification
+
+Read this after every landing in the skills catalog, including a service-led
+landing with no local train driver. The Supervisor owns this one landing step;
+an executing worker's green CI or `ready` handoff does not perform it.
+
+At takeover and each regular check, use `github` to inventory merged catalog
+PRs since the last verification linked in the Supervisor handoff. Compare their
+landing SHAs with the verification comments on their owning issues; deduplicate
+PRs from the same batch landing. Run this step for the latest unverified landing
+even when SessionStart catch-up has already updated the runtime. With no prior
+verification record, start at the latest catalog landing and record the earlier
+interval as unverified. If several landings accumulated, report each missed
+earlier SHA on its owning issue and in the Supervisor report as
+**Catalog landing verification NOT VERIFIED: `<skipped-sha>`**, naming the later
+landing that superseded it, then check the latest landing. A later runtime
+passing does not prove an earlier revision passed. Keep a link to the latest
+verification in the next handoff so takeover can repeat this check.
+
+1. Take the full landing SHA from the merged PR or terminal train result, as
+   defined in [After A Merge](../../github/SKILL.md#after-a-merge). Resolve the
+   helper and its source worktree through
+   [runtime checkout reconciliation](../../github/references/cli-reference.md#runtime-checkout-reconciliation):
+   keep the landed source until verification finishes; if it is already retired,
+   use the runtime's own copy, or the copy from a worktree at the fetched tip
+   when the reconciler reports a source mismatch. Run the helper from that
+   same source worktree:
+
+   ```sh
+   uv run <landed-worktree>/skills/github/scripts/reconcile-runtime-checkout.py --repo OWNER/REPO --merged-worktree <landed-worktree> --landing-sha <landing-sha>
+   ```
+
+   A local driver's `runtime_reconciliation` receipt for that same landing can
+   supply this result. Require `synchronized` or `already_current`, and verify
+   that the bound runtime contains the landing commit. `not_applicable`, a
+   missing receipt, or a blocked/failed result is not proof of an updated
+   runtime. Follow the reconciler's reported next action; preserve an unsafe
+   checkout and report the blocked step.
+2. From the reconciled runtime, use the existing [tmux launch procedure](#tmux-launches)
+   to launch one fresh Codex session and one fresh Claude Code session under
+   `tmux -L supervisor`. Reuse the Supervisor's dedicated container and normal
+   launch files, account selection and receipts; use `--without-browser`.
+   Keep Codex's managed daemon route (`codex --remote unix://`) so the smoke
+   exercises fresh native thread creation through the same ingress as workers.
+   Resume, `--version`, and noninteractive reviewer runs do not exercise that
+   path. Never restart a daemon or server to make the check pass.
+3. Anchor each brief on the owning catalog issue without claiming it. Name the
+   landing SHA and request a short acknowledgement as its own first reply,
+   without tools, file changes, claims or product work. Leave the session idle
+   afterward for the Supervisor's closeout message.
+   Record both exact terminal identities and native session/transcript
+   identities in the private registry. Read each first screen
+   for startup failures or blocking prompts, then require a completed assistant
+   turn acknowledging this landing in each native transcript. An echoed brief,
+   live pane or successful launcher return alone is not a pass. Use a bounded
+   observation of at most two minutes per harness; an unfinished turn at that
+   point is a failed smoke, with its session preserved for inspection.
+   After a passing acknowledgement, nudge that exact idle session through the
+   existing targeted send/queue route to post one final issue handoff comment
+   naming the landing SHA and its native session ID, then complete normal safe
+   closeout. Set its ledger `handoff_url` to its own comment before shutdown.
+   Handoff and shutdown use the normal finished-session timing; a delay there
+   keeps the terminal open without turning a passed launch into a failed smoke.
+4. Record the landing SHA, actual runtime SHA, reconciliation receipt and each
+   harness's pass/fail on the owning issue, linking the smoke handoffs.
+   If reconciliation or either launch fails, post
+   **Catalog landing verification FAILED: `<landing-sha>`**, name the failed
+   step/harness and the observed cause, and surface it in the Supervisor's
+   current report. The merge remains landed; landing verification remains
+   incomplete. A permission or authorization refusal stops that action under
+   [task scope](../../references/execution-scope.md); continue independent checks
+   without replaying the refused action elsewhere. Do not answer trust prompts
+   or change access to obtain a pass. Close successful smoke sessions through
+   [finished-session shutdown](#finished-session-shutdown-stages); preserve any
+   uncertain or failed session for the Supervisor's normal recovery.
+
 ## Launching and nudging
 
 ### Opt-in Codex GUI work
