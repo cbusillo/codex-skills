@@ -117,14 +117,15 @@ class QodanaTests(unittest.TestCase):
         return backend.checked_original(argv, **_kwargs)
 
     def completed(self, _argv, _name, private, _env, _timeout, receipt) -> None:
+        """Stands in for the container run and copy_out: results and pyvenv.cfg come back."""
         self.seen.append(private)
         self.assertEqual((private / "project/src/a.py").read_bytes(), (self.repo / "src/a.py").read_bytes())
         self.assertTrue((private / "project/.git/index").is_file())
+        (private / "results").mkdir(exist_ok=True)
         (private / "results/qodana.sarif.json").write_text(json.dumps(sarif([finding(), finding("src/b.py")])) )
         (private / "results/effective.profile.xml").write_text('<profile><inspection_tool class="PyUnresolvedReferencesInspection" enabled="true"/>'
                                                                f'<inspection_tool class="PyTypeHintsInspection" enabled="{self.type_hints_enabled}"/></profile>')
-        (private / "project/.venv").mkdir(exist_ok=True)
-        (private / "project/.venv/pyvenv.cfg").write_text(f"home = /usr/bin\nversion = {self.venv_version}\n")
+        (private / "pyvenv.cfg").write_text(f"home = /usr/bin\nversion = {self.venv_version}\n")
         receipt["container_removed"] = True
 
     def run_backend(self, execute: Callable[..., Any] | None = None):
@@ -342,6 +343,23 @@ os.kill(os.getpid(), signal.SIGKILL)
         self.assertFalse(private.exists())
         self.assertEqual(result["diagnostic"]["qodana"]["recovered_run_count"], 1)
         self.assertTrue(source.is_file())
+
+    def test_recovery_removes_a_container_proved_by_label_and_log_mount(self):
+        state = self.root / "state"
+        state.mkdir()
+        private = self.root / "private-owned"
+        (private / "logs").mkdir(parents=True)
+        receipt = {"run_id": str(uuid.uuid4())}
+        journal = backend.save_run_record(private, receipt)
+        info = [{"Config": {"Labels": {backend.RUN_LABEL: receipt["run_id"]}},
+                 "Mounts": [{"Destination": backend.SHARED_LOGS, "Source": str(private / "logs")}]}]
+        with patch.object(backend, "command", return_value=subprocess.CompletedProcess([], 0, json.dumps(info).encode(), b"")), \
+                patch.object(backend, "remove_container", return_value=True) as remove:
+            recovered = backend.recover_runs(backend.safe_env())
+        remove.assert_called_once()
+        self.assertEqual(recovered["recovered_run_count"], 1)
+        self.assertFalse(private.exists())
+        self.assertFalse(journal.exists())
 
     def test_orphan_recovery_keeps_container_with_wrong_label_or_missing_marker(self):
         state = self.root / "state"
@@ -599,32 +617,33 @@ b.execute([sys.executable, "-c", "import time; time.sleep(20)"], "owned", Path(s
         changed = self.run_backend()
         self.assertEqual(changed["selected_file_count"], 1)
 
-    def test_public_plugin_package_is_mounted_read_only_in_disposable_image(self):
+    def test_public_plugin_package_is_copied_into_the_disposable_container(self):
         package = self.root / "public-plugin.zip"
         with zipfile.ZipFile(package, "w") as archive:
             archive.writestr("test-plugin/lib/test.jar", b"synthetic-public-artifact")
         self.args.qodana_plugin_zip = [str(package)]
-        def inspect_plugins(argv, *rest):
-            mounts = [value for value in argv if ":/opt/idea/plugins/" in value]
-            self.assertTrue(mounts)
-            self.assertTrue(all(value.rsplit(":", 1)[-1] == "ro" for value in mounts))
-            self.completed(argv, *rest)
+        def inspect_plugins(argv, name, private, *rest):
+            copies = []
+            with patch.object(backend, "checked", side_effect=lambda command_argv, **_kwargs: copies.append(command_argv)):
+                backend.copy_in(name, private, {})
+            plugin_copies = [c for c in copies if c[-1].startswith(f"{name}:/opt/idea/plugins/{name}-")]
+            self.assertEqual([Path(c[-2]).name for c in plugin_copies], ["test-plugin"])
+            self.completed(argv, name, private, *rest)
         result = self.run_backend(inspect_plugins)
         self.assertTrue(result["diagnostic"]["qodana"]["profile_deleted"])
 
-    def test_launch_mounts_licenses_read_only_and_keeps_host_project_outside_container(self):
-        def inspect_launch(argv, *rest):
+    def test_container_shares_only_its_log_directory_with_the_host(self):
+        # Docker Desktop keeps host handles on every shared path the engine touches,
+        # after exit (shiny-infra-ops#320); cache, SDK, venv and project stay inside.
+        def inspect_launch(argv, name, private, *rest):
             self.assertNotIn(str(self.repo), " ".join(argv))
-            license_mounts = [value for value in argv if value.startswith(str(source) + ":")]
-            # The host input is copied, so identify the actual private copy by its basename.
-            if not license_mounts:
-                license_mounts = [value for value in argv if Path(value.split(":", 1)[0]).name == source.name]
-            self.assertTrue(license_mounts)
-            self.assertTrue(all(value.rsplit(":", 1)[-1] == "ro" for value in license_mounts))
+            shared = [argv[i + 1].split(":")[0] for i, value in enumerate(argv) if value in {"-v", "--volume", "--mount"}]
+            self.assertEqual(shared, [str(private / "logs")])
+            self.assertEqual((private / "config" / source.name).stat().st_mode & 0o777, 0o400)
             receipt = rest[-1]
             self.assertEqual(float(argv[argv.index("--cpus") + 1]), receipt["cpu_limit"])
             self.assertEqual(argv[argv.index("--log-driver") + 1], receipt["docker_logging"])
-            self.completed(argv, *rest)
+            self.completed(argv, name, private, *rest)
         source = self.root / "plugin_TEST.license"
         source.write_bytes(b"synthetic")
         self.args.qodana_license_file = [str(source)]
@@ -716,15 +735,52 @@ b.execute([sys.executable, "-c", "import time; time.sleep(20)"], "owned", Path(s
     def test_live_process_guard_discards_output_and_terminates_worker(self):
         calls = []
         code = "import time; print('Trial activated', flush=True); time.sleep(30)"
-        with patch.object(backend, "command", side_effect=lambda argv, **kwargs: calls.append(argv) or subprocess.CompletedProcess(argv, 0, b"", b"")):
+        with patch.object(backend, "command", side_effect=lambda argv, **kwargs: calls.append(argv) or subprocess.CompletedProcess(argv, 0, b"", b"")), \
+                patch.object(backend, "start_argv", return_value=[sys.executable, "-u", "-c", code]):
             with self.assertRaisesRegex(backend.Blocked, "qodana_trial_or_purchase_stop"):
-                backend.execute_worker([sys.executable, "-u", "-c", code], "own-container", self.root, backend.safe_env(), 3, {})
+                backend.execute_worker(["docker", "create"], "own-container", self.root, backend.safe_env(), 3, {})
         self.assertTrue(any(call[:3] == ["docker", "rm", "-f"] for call in calls))
 
     def test_child_environment_does_not_forward_licensing_or_context_overrides(self):
         with patch.dict(os.environ, {"QODANA_TOKEN": "synthetic", "QODANA_LICENSE": "synthetic", "DOCKER_HOST": "foreign", "PYCHARM_VM_OPTIONS": "foreign"}):
             env = backend.safe_env()
         self.assertFalse(set(env) & {"QODANA_TOKEN", "QODANA_LICENSE", "DOCKER_HOST", "PYCHARM_VM_OPTIONS"})
+
+
+def docker_vm_descriptors():
+    """Native descriptor count of Docker Desktop's VM processes (macOS libproc)."""
+    import ctypes
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+    list_descriptors, descriptor_record_size = 1, 8  # libproc's descriptor-list flavor and record size
+    pids = subprocess.run(["pgrep", "-f", "com.apple.Virtualization.VirtualMachine"],
+                          capture_output=True, text=True).stdout.split()
+    total = 0
+    for pid in map(int, pids):
+        size = libproc.proc_pidinfo(pid, list_descriptors, 0, None, 0)
+        buffer = ctypes.create_string_buffer(max(size, 0) * 2 + 8)
+        total += max(libproc.proc_pidinfo(pid, list_descriptors, 0, buffer, len(buffer)), 0) // descriptor_record_size
+    return total
+
+
+@unittest.skipUnless(os.environ.get("JB_QODANA_LIVE") == "1" and sys.platform == "darwin",
+                     "live Docker Desktop qualification; set JB_QODANA_LIVE=1")
+class LiveDescriptorTests(unittest.TestCase):
+    """Completed runs must not leave host handles held by Docker Desktop's VM (shiny-infra-ops#320)."""
+
+    def test_completed_runs_do_not_accumulate_docker_vm_descriptors(self):
+        repo = SCRIPTS.parents[2]
+        before = docker_vm_descriptors()
+        self.assertGreater(before, 0, "Docker Desktop's VM is not running")
+        for _ in range(2):
+            result = subprocess.run(["uv", "run", str(SCRIPTS / "jb-inspect.py"), "agent-inspect", "--backend", "qodana",
+                                     "--repo", str(repo), "--scope", "files", "--file",
+                                     "skills/jetbrains-inspection/scripts/prepare-python-project.py", "--timeout-ms", "900000"],
+                                    capture_output=True, text=True)
+            envelope = json.loads(result.stdout)
+            self.assertIn(envelope["agent_result"]["verdict"], {"GREEN", "RED"})
+            self.assertEqual(envelope["cleanup"]["status"], "closed")
+        # Only the small shared log directory may remain held, a few handles per run.
+        self.assertLess(docker_vm_descriptors() - before, 100)
 
 
 if __name__ == "__main__":

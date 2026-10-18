@@ -53,14 +53,15 @@ loads nor obtains one. Native Qodana and macOS Keychain loading are outside this
 backend.
 
 Use `--qodana-plugin-zip` for an existing public plugin ZIP with its distribution
-folder at the top level. The extracted package is mounted read-only under a
-run-specific folder in the image's plugins directory; it never replaces a
+folder at the top level. The extracted package is copied into a run-specific
+folder in the container's plugins directory; it never replaces a
 built-in image plugin or copies a desktop plugin directory. Supply only
 existing IDE keys or paid-plugin activation files through repeatable
 `--qodana-license-file`; no account directory, token store or Keychain source.
 Files are read from their local sources into the private profile, filesystem
-read-only and mounted read-only, then deleted after success, refusal, timeout
-or handled interruption. Never print, log, upload, archive or retain their
+read-only, copied read-only into the container, then deleted with the profile
+and the container's writable layer after success, refusal, timeout or handled
+interruption. Never print, log, upload, archive or retain their
 contents. Do not use this local licensing route on CI. Desktop IDEs and their
 configuration/plugin installations stay untouched.
 
@@ -83,6 +84,19 @@ run's unique container, including its writable layer. On Linux the container
 runs with the caller's UID/GID to keep generated state removable; native Linux
 runtime qualification is separate from this Mac's measured run.
 
+The engine's project, venv, caches, SDK state and results live in the
+container's own layer under `/work`. `docker create` makes the container,
+`docker cp` streams the private snapshot, configuration, licenses and plugins
+in, and the results and the venv's `pyvenv.cfg` come back out after exit.
+Docker Desktop keeps a host handle for every bind-mounted path the engine
+touches, even after the container exits; with the whole profile mounted, runs
+left tens of thousands held and contributed to a host-wide descriptor
+exhaustion ([shiny-infra-ops#320](https://github.com/cbusillo/shiny-infra-ops/issues/320)).
+Only the engine log directory is shared, so the live trial/purchase guard can
+read it, and recovery uses that mount as its ownership proof. The opt-in
+`LiveDescriptorTests` (set `JB_QODANA_LIVE=1`) runs two real inspections and
+fails if Docker Desktop's VM keeps more than a few descriptors per run.
+
 `JETBRAINS_INSPECTION_CACHE_DIR` selects the existing helper cache root; on
 hosts that require external task storage, set it to the task-private directory
 on that volume. Each run uses a fresh `qodana/private-*` directory with
@@ -98,7 +112,7 @@ The state directory is resolved through the operating system's UID home,
 independently of a harness's HOME override. An owner-only journal records each run before
 license copying. After SIGKILL/crash, the next invocation holds the kernel lock
 and recovers only journaled profiles with matching ownership markers and
-containers with the exact run label and private mount, on the journaled local
+containers with the exact run label and that run's log mount, on the journaled local
 Docker socket. The marker is deleted last, so partial cleanup can resume.
 macOS recovery compares volume UUIDs across remounts. A deleted task directory
 on that verified mounted volume can be cleared after container absence is proved.

@@ -38,6 +38,14 @@ BOUNDARY_RE = re.compile(r"(?:start(?:ing|ed)?|activat(?:e[ds]?|ing|ion)|obtain(
 LOAD_LIMIT = 64
 FINDING_LIMIT = 25
 RUN_LABEL = "codex-skills.qodana.run"
+# Engine state lives in the container's own layer under WORK, copied in and
+# out through the Docker API. Docker Desktop's file sharing keeps host handles
+# for every bind-mounted path the engine touches, even after the container
+# exits (shiny-infra-ops#320), so only the small log directory is shared.
+WORK = "/work"
+SHARED_LOGS = "/private/logs"
+COPIED_IN = ("project", "config", "home", "cache", "data", "bin",
+             "qodana.yaml", "profile.xml", "probe.vmoptions", "prepare-python-project.py")
 UV_SPEC_RE = re.compile(r"[0-9A-Za-z.,<>=!~* ]{0,100}\Z")
 # An effective profile and a successful exit are not execution/completeness
 # proof. Python proves execution with a planted canary instead (below).
@@ -218,7 +226,7 @@ def recover_record(path, env):
         info = json.loads(inspection.stdout)[0]
         labels = info.get("Config", {}).get("Labels", {})
         mounts = info.get("Mounts", [])
-        if labels.get(RUN_LABEL) != run_id or not any(m.get("Destination") == "/private" and m.get("Source") == str(private) for m in mounts):
+        if labels.get(RUN_LABEL) != run_id or not any(m.get("Destination") == SHARED_LOGS and m.get("Source") == str(private / "logs") for m in mounts):
             raise Blocked("qodana_recovery_ownership_unproven")
         if not remove_container(name, env):
             raise Blocked("qodana_recovery_incomplete")
@@ -304,34 +312,50 @@ def unpack_plugins(paths, cache):
 
 
 def docker_argv(name, image, private, language, uv_binary=None):
-    argv = ["nice", "-n", "10", "docker", "run", "--pull", "never", "--name", name,
+    """Create, not run: inputs are copied in by copy_in before the container starts."""
+    argv = ["docker", "create", "--pull", "never", "--name", name,
             "--label", "codex-skills.qodana=local", "--label", RUN_LABEL + "=" + name.removeprefix("jb-qodana-"),
             "--log-driver", "none", "--cpus", "2",
             "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "512",
-            "--entrypoint", "/usr/bin/nice", "-v", f"{private}:/private",
-            "-v", f"{private / 'project'}:/data/project",
-            "-e", "HOME=/private/home", "-e", "QODANA_CONF=/private/config", "-e", "QODANA_DATA=/private/data",
-            "-e", f"{'PYCHARM' if language == 'python' else 'IDEA'}_VM_OPTIONS=/private/probe.vmoptions"]
+            "--entrypoint", "/usr/bin/nice", "--workdir", WORK,
+            "-v", f"{private / 'logs'}:{SHARED_LOGS}",
+            "-e", f"HOME={WORK}/home", "-e", f"QODANA_CONF={WORK}/config", "-e", f"QODANA_DATA={WORK}/data",
+            "-e", f"{'PYCHARM' if language == 'python' else 'IDEA'}_VM_OPTIONS={WORK}/probe.vmoptions"]
     if sys.platform != "darwin":
         argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
     if language == "python":
         configured = "bootstrap" in json.loads((private / "qodana.yaml").read_text())
-        argv += ["-e", "QODANA_PYTHON_PATH=" + ("/data/project/.venv/bin/python" if configured else "/usr/bin/python3"),
-                 "-e", "UV_CACHE_DIR=/private/cache/uv"]
+        argv += ["-e", "QODANA_PYTHON_PATH=" + (f"{WORK}/project/.venv/bin/python" if configured else "/usr/bin/python3"),
+                 "-e", f"UV_CACHE_DIR={WORK}/cache/uv"]
     if uv_binary:
-        argv += ["-e", "PATH=/private/bin:/usr/local/bin:/usr/bin:/bin"]
-    for license_copy in (private / "config").iterdir():
-        if LICENSE_RE.fullmatch(license_copy.name):
-            argv += ["-v", f"{license_copy}:/private/config/{license_copy.name}:ro"]
-    for index, plugin in enumerate(sorted((private / "plugins").glob("bundle-*/*"))):
-        # Supported custom-plugin mount, with a run-specific folder name so it
-        # never shadows the image's built-in plugins or uses a build-number cache.
-        argv += ["-v", f"{plugin}:/opt/idea/plugins/{name}-{index}:ro"]
-    argv += [image, "-n", "10", "/opt/idea/bin/qodana", "scan", "--project-dir", "/data/project",
-             "--results-dir", "/private/results", "--cache-dir", "/private/cache",
-             "--config", "/private/qodana.yaml", "--save-report=false",
+        argv += ["-e", f"PATH={WORK}/bin:/usr/local/bin:/usr/bin:/bin"]
+    argv += [image, "-n", "10", "/opt/idea/bin/qodana", "scan", "--project-dir", f"{WORK}/project",
+             "--results-dir", f"{WORK}/results", "--cache-dir", f"{WORK}/cache",
+             "--config", f"{WORK}/qodana.yaml", "--save-report=false",
              "--property", "idea.headless.enable.statistics=false"]
     return argv
+
+
+def copy_in(name, private, env):
+    """Stream inputs into the created container through the Docker API."""
+    for entry in COPIED_IN:
+        if (private / entry).exists():
+            checked(["docker", "cp", "--archive", str(private / entry), f"{name}:{WORK}/{entry}"], env=env, timeout=600)
+    for index, plugin in enumerate(sorted((private / "plugins").glob("bundle-*/*"))):
+        # A run-specific folder name never shadows the image's built-in plugins
+        # or uses a build-number cache.
+        checked(["docker", "cp", "--archive", str(plugin), f"{name}:/opt/idea/plugins/{name}-{index}"], env=env, timeout=600)
+
+
+def start_argv(name):
+    return ["nice", "-n", "10", "docker", "start", "--attach", name]
+
+
+def copy_out(name, private, env):
+    """Results and the prepared interpreter's version come back after exit."""
+    checked(["docker", "cp", f"{name}:{WORK}/results", str(private / "results")], env=env, timeout=600)
+    # Absent when no preparation ran; interpreter_version then reports None.
+    command(["docker", "cp", f"{name}:{WORK}/project/.venv/pyvenv.cfg", str(private / "pyvenv.cfg")], env=env, timeout=60)
 
 
 def snapshot(repo, project):
@@ -391,7 +415,7 @@ def preparation(config, private, language, repo=None, uv_supplied=False):
     # Qodana registers its own SDK from QODANA_PYTHON_PATH. A generated desktop
     # model names an SDK Qodana never registers, leaving the module without one,
     # so valid modern annotations were reported as findings.
-    argv = ["uv", "run", "--no-project", "/private/prepare-python-project.py", "--repo", "/data/project",
+    argv = ["uv", "run", "--no-project", f"{WORK}/prepare-python-project.py", "--repo", f"{WORK}/project",
             "--python", py["version"], "--module-name", py.get("moduleName", "qodana-project"),
             "--no-project-model"]
     if py.get("sync"):
@@ -407,8 +431,8 @@ def preparation(config, private, language, repo=None, uv_supplied=False):
     # The image ships no uv: install the declared range into the disposable
     # profile so a run needs no host-supplied Linux binary.
     install = ["python3", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--quiet",
-               "--target", "/private/tools/uv", "uv" + uv_requirement(repo)]
-    return {"commands": [install, argv], "path": "/private/tools/uv/bin"}
+               "--target", f"{WORK}/tools/uv", "uv" + uv_requirement(repo)]
+    return {"commands": [install, argv], "path": f"{WORK}/tools/uv/bin"}
 
 
 def bootstrap_script(prepared):
@@ -420,9 +444,8 @@ def bootstrap_script(prepared):
 
 
 
-def interpreter_version(project):
+def interpreter_version(config):
     """The prepared venv's major.minor, or None when bootstrap left no venv."""
-    config = project / ".venv/pyvenv.cfg"
     if config.is_symlink() or not config.is_file():
         return None
     for line in config.read_text().splitlines():
@@ -438,7 +461,7 @@ def result_uri(result):
     if not locations:
         return None
     uri = urllib.parse.unquote(locations[0].get("physicalLocation", {}).get("artifactLocation", {}).get("uri", ""))
-    for prefix in ("file:///data/project/", "/data/project/"):
+    for prefix in (f"file://{WORK}/project/", f"{WORK}/project/"):
         if uri.startswith(prefix):
             return uri[len(prefix):]
     return uri
@@ -495,12 +518,7 @@ def collect_findings(results, selected, args):
         if not isinstance(rule, str) or not locations:
             raise Blocked("qodana_finding_identity_unproven")
         physical = locations[0].get("physicalLocation", {})
-        artifact = physical.get("artifactLocation", {})
-        uri = urllib.parse.unquote(artifact.get("uri", ""))
-        if uri.startswith("file:///data/project/"):
-            uri = uri[len("file:///data/project/"):]
-        elif uri.startswith("/data/project/"):
-            uri = uri[len("/data/project/"):]
+        uri = result_uri(result) or ""
         if uri not in selected:
             continue
         region = physical.get("region", {})
@@ -583,7 +601,8 @@ class Monitor:
         self.tail = data[-4096:]
 
     def logs(self):
-        for parent in (self.private / "results", self.private / "logs", self.private / "data"):
+        # The shared log directory live; results once copied out after exit.
+        for parent in (self.private / "results", self.private / "logs"):
             for path in parent.rglob("*.log"):
                 if path.is_symlink() or not path.is_file():
                     continue
@@ -610,7 +629,9 @@ def execute_worker(argv, name, private, env, timeout, receipt, *, parent_fd=None
     process = None
     paused = False
     try:
-        process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        checked(argv, env=env)
+        copy_in(name, private, env)
+        process = subprocess.Popen(start_argv(name), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         os.set_blocking(process.stdout.fileno(), False)
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
@@ -643,6 +664,10 @@ def execute_worker(argv, name, private, env, timeout, receipt, *, parent_fd=None
                     paused = False
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
         receipt["exit_code"] = process.returncode
+        copy_out(name, private, env)
+        monitor.logs()
+        if monitor.boundary:
+            raise Blocked("qodana_trial_or_purchase_stop")
         info = json.loads(checked(["docker", "inspect", name], env=env))[0]
         limits = info["HostConfig"]
         if (limits["NanoCpus"] != receipt["cpu_limit"] * 10**9 or
@@ -828,7 +853,7 @@ def python_proof_gaps(private, hashes, selected, canaries, requested, receipt):
     # A sibling canary cannot vouch for a file the engine skips for its size.
     if any((private / "project" / f).stat().st_size > MAX_ANALYZED_FILE_KB * 1024 for f in selected):
         gaps.append("qodana_selected_file_over_analysis_limit")
-    version = interpreter_version(private / "project")
+    version = interpreter_version(private / "pyvenv.cfg")
     receipt["python_interpreter_version"] = version
     if requested is None:
         gaps.append("python_interpreter_unprepared")
@@ -962,7 +987,7 @@ def run(args, host):
         private.chmod(0o700)
         receipt["profile_deleted"] = False
         journal = save_run_record(private, receipt, env)
-        for name in ("project", "config", "home", "cache", "results", "logs", "data", "bin", "plugins"):
+        for name in ("project", "config", "home", "cache", "logs", "data", "bin", "plugins"):
             (private / name).mkdir(mode=0o700)
         hashes = snapshot(repo, private / "project")
         if not selected <= hashes.keys():
@@ -972,7 +997,7 @@ def run(args, host):
         canaries = plant_canaries(private / "project", selected, language, receipt)
         shutil.copyfile(profile, private / "profile.xml")
         ignored = sorted(set(hashes) - selected)
-        yaml = {"version": "1.0", "profile": {"base": {"path": "/private/profile.xml"},
+        yaml = {"version": "1.0", "profile": {"base": {"path": f"{WORK}/profile.xml"},
                 "inspections": [{"group": "ALL", "ignore": ignored}] if ignored else []}}
         prepared = preparation(config, private, language, repo, bool(args.qodana_uv))
         receipt["uv_source"] = None if not prepared else "supplied" if args.qodana_uv else "provisioned"
@@ -983,7 +1008,8 @@ def run(args, host):
             shutil.copyfile(Path(uv_binary).expanduser(), private / "bin/uv")
             (private / "bin/uv").chmod(0o700)
         (private / "qodana.yaml").write_text(json.dumps(yaml))
-        (private / "probe.vmoptions").write_text("-Xmx1536m\n-XX:ActiveProcessorCount=2\n-XX:-HeapDumpOnOutOfMemoryError\n-Djava.awt.headless=true\n-Duser.home=/private/home\n-Didea.headless.enable.statistics=false\n-Didea.log.path=/private/logs\n"
+        (private / "probe.vmoptions").write_text("-Xmx1536m\n-XX:ActiveProcessorCount=2\n-XX:-HeapDumpOnOutOfMemoryError\n-Djava.awt.headless=true\n-Didea.headless.enable.statistics=false\n"
+                                                  f"-Duser.home={WORK}/home\n-Didea.log.path={SHARED_LOGS}\n"
                                                   f"-Didea.max.intellisense.filesize={MAX_ANALYZED_FILE_KB}\n")
         unpack_plugins(args.qodana_plugin_zip, private / "plugins")
         if os.getloadavg()[0] > LOAD_LIMIT:
