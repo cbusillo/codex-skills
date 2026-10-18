@@ -1877,18 +1877,32 @@ also accepted. Existing direct read-only requests that explicitly say what
 to read and check are prompts themselves. A request without an
 inline prompt may link one same-repository GitHub issue comment; the helper
 follows the chain and refuses missing, untrusted, ambiguous or cyclic links.
+A Prompt section containing only comment links also follows the linked prompt;
+it never sends a bare URL as the review scope.
 It rechecks every prompt comment, the latest request, PR state/head and worktree
 before posting. Prompt identity compares the comment id, authored body, edit time
 and author login; reactions and endpoint-specific fields do not invalidate it.
 Every completed report and its metadata are retained before that final check,
 even when a moved head or edited prompt prevents posting. The existing model
 review helper owns the review timeout from standing policy; dispatch adds no
-outer time limit that could interrupt its cleanup. Renew an obsolete request
-with the current head and prompt; never run a review against a guessed commit or missing prompt.
+outer time limit that could interrupt its cleanup. An unserved obsolete request
+still refuses: renew it with the current head and prompt when another review is
+needed. A served request instead reports `completed_stale` after the head moves,
+with `reviewed_head`, `current_head`, its original completion status/link and
+notification fields. Abbreviations resolve only through unique full heads in
+trusted evidence. Weigh the completed review at its actual head through the
+existing disposition helper to acknowledge it without buying another review.
+That historical result cannot satisfy a new request or readiness at the new
+head. Never run against a guessed commit or missing prompt.
 
 The authoring session must match a trusted structured branch claim on an
 issue recorded for that repository in the ledger or referenced by the PR.
 This supports briefs that name a parent before the worker creates its own issue.
+Claim history uses the shared effective-release and exact-source release checks;
+only a valid same-author, later release ends the original claim. Handoffs do not
+leave released sessions competing as live authors. Untrusted, premature or invalid
+release evidence preserves ownership. A missing current issue/claim binding still
+refuses, rather than silently treating a released historical owner as another run.
 `Author session:` resolves multiple recorded authors on the same branch;
 otherwise exactly one must match. A trusted claim matching the PR branch but
 belonging only to sessions outside this ledger reports `not_owned` without
@@ -1933,7 +1947,10 @@ the same trusted branch-claim binding. Malformed claims or failed GitHub reads
 become `notification_error`, preserving the already-posted completion link.
 The Supervisor sends that authoring session the result through its normal
 exact session route. This helper sends no terminal input, weighs no findings
-and never calls `ready`. Its raw receipt cannot serve as the author's
+and never calls `ready`. Posting removes the inherited per-command own-user
+opt-in before invoking the GitHub helper. An earlier personal-identity approval
+cannot carry into this write; the existing automation App or its refusal remains
+the supported route. Its raw receipt cannot serve as the author's
 head-bound weighed disposition required by readiness.
 
 A trusted weighed disposition at this head after the request ends the queue

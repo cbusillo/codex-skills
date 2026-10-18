@@ -9,6 +9,7 @@ import copy
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,8 @@ from unittest.mock import Mock, patch
 
 import pending_reviews as reviews
 import github_api
+from github_identity import OWN_USER_OPT_IN
+import test_review_with_model as model_fixture
 from github_plan_claim import marker
 from ready_handoff import review_result_body
 
@@ -471,6 +474,86 @@ class DispatchTests(unittest.TestCase):
         self.dispatch()
         self.assertEqual(next(c[1] for c in self.io.calls if c[0] == "review"), "anthropic")
 
+    def test_completed_request_survives_moved_head_without_checkout_or_repeat(self):
+        self.dispatch()
+        self.io.pr["head"]["sha"] = "b" * 40
+        result = reviews.dispatch(self.io, REPO, 7, self.entries, None, TRUSTED, self.evidence, True)
+        self.assertEqual(result["status"], "completed_stale")
+        self.assertEqual(result["reviewed_head"], SHA)
+        self.assertEqual(result["current_head"], self.io.pr["head"]["sha"])
+        self.assertEqual(result["author_session"], SESSION)
+        self.assertEqual(result["completion_comment"], 11)
+        self.assertTrue(result["notification_needed"])
+        self.assertTrue(result["requested_provider_confirmed"])
+        self.io.comments.append(comment(12, review_result_body("Old-head review weighed.", SHA)))
+        self.assertFalse(self.dispatch()["notification_needed"])
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_manual_and_weighed_old_head_completion_are_preserved_without_provider_guess(self):
+        self.io.comments.append(comment(11, f"Review of record, run by the Supervisor\nHead: {SHA}\nCompleted report."))
+        self.io.pr["head"]["sha"] = "b" * 40
+        self.io.request["body"] = self.io.request["body"].replace(SHA, SHA[:9])
+        # The full historical report resolves an abbreviated request without guessing.
+        result = self.dispatch()
+        self.assertEqual(result["status"], "completed_stale")
+        self.assertEqual(result["completion_comment"], 11)
+        self.assertFalse(result["requested_provider_confirmed"])
+        self.io.comments.append(comment(12, review_result_body("Manual review checked at its original head.", SHA)))
+        result = self.dispatch()
+        self.assertFalse(result["needs_attention"])
+        self.assertFalse(result["notification_needed"])
+        # A new request at B cannot be satisfied by completion at A.
+        self.io.request = comment(13, ask()["body"].replace(SHA, self.io.pr["head"]["sha"]))
+        self.io.comments.append(self.io.request)
+        self.assertEqual(self.dispatch(apply=False)["status"], "pending")
+        self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
+
+    def test_released_claim_is_not_a_live_author_during_handoff(self):
+        self.entries.append({**entry(), "session_id": "successor", "harness": "claude"})
+        release = comment(6, "Released claim 5")
+        release["created_at"] = release["updated_at"] = "2026-10-17T21:00:00Z"
+        successor = comment(7, marker({"branch": BRANCH, "session": "successor", "worker": "next",
+                                        "claimed_at": "2026-10-17T22:00:00Z"}))
+        successor["created_at"] = successor["updated_at"] = "2026-10-17T22:00:00Z"
+        self.io.claims += [release, successor]
+        result = self.dispatch(apply=False)
+        self.assertEqual(result["author_session"], "successor")
+        self.assertEqual(result["author_provider"], "anthropic")
+        release["user"]["login"] = "stranger"
+        with self.assertRaises(reviews.ReviewError):
+            self.dispatch()
+        release["user"]["login"] = BOT
+        release["created_at"] = "2026-10-17T19:00:00Z"
+        with self.assertRaises(reviews.ReviewError):
+            self.dispatch()
+        self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+
+    def test_released_outside_claim_cannot_silently_hide_missing_current_issue_binding(self):
+        self.entries[0].pop("issue")
+        self.io.pr["body"] = "Related #99"
+        self.io.claims = [comment(5, marker({"branch": BRANCH, "session": "old-run", "worker": "old",
+                                            "claimed_at": STAMP})), comment(6, "Released claim 5")]
+        self.io.claims[1]["created_at"] = self.io.claims[1]["updated_at"] = "2026-10-17T21:00:00Z"
+        result = reviews.sweep(self.io, self.entries, {REPO: Path(self.temp.name)}, TRUSTED, self.evidence, apply=True)
+        self.assertEqual(result[0]["status"], "refused")
+        self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
+
+    def test_link_only_prompt_section_follows_and_revalidates_actual_prompt(self):
+        for index, fenced in enumerate((False, True)):
+            with self.subTest(fenced=fenced):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / f"linked-section-{index}"
+                link = f"https://github.com/{REPO}/pull/7#issuecomment-9"
+                self.io.request["body"] = f"Supervisor runs the review.\nHead: {SHA}\nPrompt:\n" + (
+                    "```text\n" + link + "\n```" if fenced else link)
+                self.io.sources[9] = comment(9, "Prompt:\nInspect actual linked scope.")
+                self.io.after_review = lambda: self.io.sources[9].update(body="Prompt:\nChanged scope.")
+                with self.assertRaises(reviews.ReviewError):
+                    self.dispatch()
+                prompt = next(c[2] for c in self.io.calls if c[0] == "review")
+                self.assertTrue(prompt.endswith("Review prompt:\nInspect actual linked scope."))
+                self.assert_no_post()
+
     def test_request_for_previous_head_never_launches(self):
         self.io.pr["head"]["sha"] = "b" * 40
         with self.assertRaises(reviews.ReviewError):
@@ -789,6 +872,21 @@ class AdapterTests(unittest.TestCase):
                     self.assertEqual(command[command.index("--author-provider") + 1], author)
                     self.assertEqual(command[command.index("--provider") + 1], reviewer)
 
+    def test_adapter_accepts_real_model_review_cli_metadata_and_completed_output(self):
+        fixture = model_fixture.ReviewWithModelTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        fixture.install("claude", model_fixture.FAKE_CLAUDE)
+        output = fixture.root / "result.md"
+        def real_helper(args, **kwargs):
+            code, metadata = fixture.run_helper(*args[3:], FAKE_CLAUDE_JSON=json.dumps({
+                "result": model_fixture.completed("Completed fixture review.")}))
+            return subprocess.CompletedProcess(args, code, json.dumps(metadata), "")
+        with patch.object(reviews, "run", side_effect=real_helper):
+            metadata = reviews.IO.__new__(reviews.IO).review("openai", fixture.repo, fixture.prompt, output)
+        self.assertTrue(metadata["ok"])
+        self.assertEqual(output.read_text().strip(), "Completed fixture review.")
+
     def test_review_budget_is_owned_by_model_review_helper(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -809,6 +907,17 @@ class AdapterTests(unittest.TestCase):
         with patch.object(reviews, "run", return_value=result) as run:
             self.assertEqual(io.post(REPO, 7, Path("/fixture/comment.md"))["comment"], json.loads(result.stdout)["comment"])
         self.assertEqual(run.call_count, 1)
+
+    def test_post_cannot_inherit_personal_identity_approval_from_supervisor_environment(self):
+        io = reviews.IO.__new__(reviews.IO)
+        result = subprocess.CompletedProcess([], 0, json.dumps(post_payload()), "")
+        fixture_env = {OWN_USER_OPT_IN: "1", "PATH": "/fixture/bin", "REVIEW_FIXTURE": "preserve"}
+        with patch.dict(os.environ, fixture_env, clear=True), patch.object(reviews, "run", return_value=result) as command:
+            io.post(REPO, 7, Path("/fixture/comment.md"))
+            child_env = command.call_args.kwargs["env"]
+            self.assertNotIn(OWN_USER_OPT_IN, child_env)
+            self.assertEqual(child_env["REVIEW_FIXTURE"], "preserve")
+            self.assertEqual(os.environ[OWN_USER_OPT_IN], "1")
 
     def test_post_unknown_does_not_replay(self):
         io = reviews.IO.__new__(reviews.IO)

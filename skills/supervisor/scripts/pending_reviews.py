@@ -25,8 +25,9 @@ sys.path.insert(0, str(ROOT / "skills/github/scripts"))
 sys.path.insert(0, str(ROOT / "skills/model-review/scripts"))
 from github_api import redact_string
 from github_direction_next import issue_references
-from github_identity import automation_login, configured_bot_logins
-from github_plan_claim import live_lines, records, without_operation_marker
+from github_identity import OWN_USER_OPT_IN, automation_login, configured_bot_logins
+from github_plan_claim import exact_released_sources, live_lines, records, without_operation_marker
+from github_plan_release import effective_comments
 from github_read import (GitHubReader, GitHubReadError, GitHubReadShapeError,
                          automation_only_gh_prefix_args, resolve_repo_from_remote)
 from ready_handoff import review_receipt_head, review_record
@@ -239,12 +240,13 @@ def inline_prompt(body):
     # The surrounding request is context, not a substitute for a missing prompt.
     match = re.search(r"(?ims)(?:^|[ \t])(?:Review )?Prompt:\s*\n+```[^\n]*\n(.*?)^```", body)
     if match and match[1].strip():
-        return match[1].strip()
+        text = match[1].strip()
+        return text if COMMENT_LINK.sub("", text).strip() else None
     match = re.search(r"(?ims)(?:^|[ \t])(?:Review )?Prompt:\s*\n+(.*)", body)
     if match:
         text = re.sub(r"(?s)<!--.*?-->", "", match[1]).strip()
         if text:
-            return text
+            return text if COMMENT_LINK.sub("", text).strip() else None
     # Explicit prompt sections win; otherwise resolve a linked prompt before
     # treating quoted context (or legacy direct prose) as the review scope.
     if COMMENT_LINK.search(body):
@@ -283,7 +285,7 @@ def resolve_prompt(io, repo, request, logins):
     raise ReviewError("linked prompt depth exceeded")
 
 
-def bind_head(request, head):
+def declared_heads(request):
     context = re.split(r"(?im)(?:^|[ \t])(?:Review )?Prompt:|^>|^```", request["body"], maxsplit=1)[0]
     explicit = re.findall(r"(?im)^Head(?: SHA)?:\s*`?([0-9a-f]{7,40})\b", context)
     heads = explicit or HEAD.findall(context)
@@ -292,8 +294,67 @@ def bind_head(request, head):
         # head declarations. Abbreviated legacy hashes require code formatting.
         legacy = re.findall(r"\b(?:on|at)\s+(?:`([0-9a-f]{7,40})`|([0-9a-f]{40})\b)", context, re.I)
         heads = [short or full for short, full in legacy]
-    if not heads or any(not head.startswith(value.lower()) for value in heads):
+    return [value.lower() for value in heads]
+
+
+def bind_head(request, head):
+    heads = declared_heads(request)
+    if not heads or any(not head.startswith(value) for value in heads):
         raise ReviewError("request head missing or moved; renew the request with Head: FULL_SHA")
+
+
+def stale_completion(comments, request, current_head, logins):
+    # Resolve abbreviations only against full heads recorded in trusted evidence.
+    heads = set(declared_heads(request))
+    for comment in comments:
+        if not trusted(comment, logins):
+            continue
+        body = comment.get("body") or ""
+        receipt = raw_receipt(body)
+        if receipt:
+            heads.add(receipt["head"])
+        weighed_head = review_receipt_head(body)
+        if weighed_head:
+            heads.add(weighed_head)
+        if reported_review(body):
+            heads.update(declared_heads(comment))
+    completed = []
+    for head in sorted(heads):
+        if len(head) != 40 or head == current_head:
+            continue
+        try:
+            bind_head(request, head)
+        except ReviewError:
+            continue
+        record = completion_record(comments, request, head, logins)
+        if record:
+            completed.append((head, record))
+    if len(completed) > 1:
+        raise ReviewError("ambiguous historical review head; record the exact completed head in the request")
+    return completed[0] if completed else None
+
+
+def live_claim_comments(comments, branches, *, referenced):
+    comments = sorted(effective_comments(comments), key=lambda c: (c["created_at"], c["id"]))
+    cleaned = []
+    for comment in comments:
+        body = comment.get("body") or ""
+        for line in live_lines(body):
+            try:
+                records(line)
+            except ValueError:
+                match = re.fullmatch(r"\s*<!-- github-plan:claim (.*?) -->\s*", line)
+                raw = json.loads(match[1]) if match else None
+                if (referenced and isinstance(raw, dict) and isinstance(raw.get("branch"), str)
+                        and raw["branch"] and raw["branch"] not in branches):
+                    body = body.replace(line, "", 1)
+                    continue
+                raise
+        cleaned.append({**comment, "body": body})
+    # The shared parser verifies author, exact source and release chronology;
+    # invalid abandoned-release receipts restore ownership before this check.
+    ended = {cleaned[index]["id"] for index, _, _ in exact_released_sources(cleaned)}
+    return [comment for comment in cleaned if comment["id"] not in ended]
 
 
 def bind_session(io, repo, branches, entries, logins, request, pr):
@@ -309,26 +370,16 @@ def bind_session(io, repo, branches, entries, logins, request, pr):
                   if ref["repo"].casefold() == repo.casefold())
     matches, outside = {}, set()
     for issue in sorted(issues):
-        for comment in io.paged_json(f"/repos/{repo}/issues/{issue}/comments", step_prefix="author_claims"):
-            if trusted(comment, logins):
-                for line in live_lines(comment.get("body") or ""):
-                    try:
-                        claims = records(line)
-                    except ValueError:
-                        # A referenced issue may carry an incomplete ownership record
-                        # for another branch. Never ignore a matching or unknown branch.
-                        match = re.fullmatch(r"\s*<!-- github-plan:claim (.*?) -->\s*", line)
-                        raw = json.loads(match[1]) if match else None
-                        if (issue not in owned_issues and isinstance(raw, dict)
-                                and isinstance(raw.get("branch"), str) and raw["branch"] and raw["branch"] not in branches):
-                            continue
-                        raise
-                    for claim in claims:
-                        if claim["branch"] in branches:
-                            if claim["session"] in candidates:
-                                matches[claim["session"]] = candidates[claim["session"]]
-                            else:
-                                outside.add(claim["session"])
+        comments = io.paged_json(f"/repos/{repo}/issues/{issue}/comments", step_prefix="author_claims")
+        comments = live_claim_comments([c for c in comments if trusted(c, logins)], branches,
+                                       referenced=issue not in owned_issues)
+        for comment in comments:
+            for claim in records(comment["body"]):
+                if claim["branch"] in branches:
+                    if claim["session"] in candidates:
+                        matches[claim["session"]] = candidates[claim["session"]]
+                    else:
+                        outside.add(claim["session"])
     explicit = re.findall(r"(?im)^Author session:\s*`?([^`\s]+)`?\s*$", request["body"])
     if matches and outside and not explicit:
         raise ReviewError("branch claims include other runs; name Author session: to resolve ownership")
@@ -419,7 +470,8 @@ class IO:
 
     def post(self, repo, number, body):
         result = run(["uv", "run", str(ROOT / "skills/github/scripts/gh-pr.py"), "--repo", repo,
-                      "comment", str(number), "--body-file", str(body)], timeout=180)
+                      "comment", str(number), "--body-file", str(body)], timeout=180,
+                     env={key: value for key, value in os.environ.items() if key != OWN_USER_OPT_IN})
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
@@ -475,6 +527,13 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
     existing = completion_record(comments, request, head, logins)
     if existing:
         return completion_report(existing, io, repo, pr, entries, logins, request, evidence)
+    old = stale_completion(comments, request, head, logins)
+    if old:
+        reviewed_head, record = old
+        historical_pr = {**pr, "head": {**pr["head"], "sha": reviewed_head}}
+        result = completion_report(record, io, repo, historical_pr, entries, logins, request, evidence)
+        return {**result, "status": "completed_stale", "completion_status": result["status"],
+                "reviewed_head": reviewed_head, "current_head": head}
     if checkout is None:
         raise ReviewError("repository checkout missing; pass --checkout OWNER/REPO=/absolute/path")
     bind_head(request, head)
