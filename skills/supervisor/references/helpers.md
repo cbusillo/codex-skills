@@ -1796,3 +1796,84 @@ normal caching and avoid repeated dependency downloads. Direct service commands
 must use the documented temporary-cache watch launcher when they run a watch.
 Apply updated service definitions only at the owning Supervisor's normal
 restart boundary; do not interrupt another session to make cache maintenance run.
+
+## Pending reviews of record
+
+Read this when workers ask the Supervisor to run a review from its authorized
+terminal, including the receipt-store route in [#2069](https://github.com/cbusillo/codex-skills/issues/2069).
+Use `pending_reviews.py` there to discover and dispatch requests across the
+explicit Supervisor-owned repositories in the run's ledger. It does not alter
+the ledger, transcripts, launch files or account configuration. Run it once
+without `--apply` to see pending requests and refused bindings:
+
+```sh
+uv run skills/supervisor/scripts/pending_reviews.py \
+  --ledger /absolute/private/run/ledger.json \
+  --checkout OWNER/REPO=/absolute/repository \
+  --checkout OWNER/OTHER=/absolute/other-repository \
+  --evidence-dir /absolute/private/review-evidence
+```
+
+Add `--apply` to run the pending reviews serially and post completed nonempty
+results. Use the same evidence directory for every invocation for this run:
+its lock prevents concurrent passes, and its launch journal prevents replay
+after interruption, failure or an uncertain comment write. The shared GitHub
+reader owns pagination and transport retries; the comment helper owns write
+reconciliation. This helper never retries inference or an uncertain write.
+Read a refused outcome and its journal; a real permission or authorization
+refusal stops that action. Do not renew a request to evade a denial. A successful
+result retained before an uncertain post remains available for readback and
+manual reconciliation through the existing GitHub helper. Remote receipts let
+a later sweep skip confirmed posts without replaying them.
+
+A request comes from a configured automation identity and contains
+`Supervisor runs the review`, a head SHA (a matching abbreviated SHA is
+accepted), and an explicit prompt. Use this format for new requests:
+
+```text
+Supervisor runs the review.
+Head: FULL_CURRENT_SHA
+Author session: NATIVE_SESSION_ID
+
+Prompt:
+Review the change and the surrounding files. Give a realistic trigger and
+severity for each finding, or none. Does this PR add a test that pins a literal,
+version, wording or config text? Your access is read-only; read whatever files
+you need, and do not modify anything.
+```
+
+A fenced `Prompt:` or quoted prompt is also accepted. A request without an
+inline prompt may link one same-repository GitHub issue comment; the helper
+follows the chain and refuses missing, untrusted, ambiguous or cyclic links.
+It rechecks every prompt comment, the latest request, PR state/head and worktree
+before posting. Renew an obsolete request with the current head and prompt;
+never run a review against a guessed commit or missing prompt.
+
+The authoring session must match a trusted structured branch claim on an
+issue recorded for that repository in the ledger or referenced by the PR.
+This supports briefs that name a parent before the worker creates its own issue. `Author session:` resolves
+multiple recorded authors on the same branch; otherwise exactly one must
+match. The ledger's `author_provider`, when present, records the actual
+provider; otherwise the native `codex`/`claude` harness family records
+OpenAI/Anthropic, as enforced by the launcher. The existing review helper
+checks the standing policy and selects the other provider; there is no Google
+fallback. Worktree matching requires the exact same-repository head, a matching origin
+and a completely clean checkout, including untracked files. It prefers the
+PR branch, otherwise requires one candidate or an explicit absolute `Worktree:`
+path among the registered candidates. A successor branch at the same commit
+is valid; its branch claim can identify the authoring session too.
+It never fetches, creates, cleans or changes a worktree.
+
+The JSON report names `author_session` for notification after `status: posted`.
+The Supervisor sends that session the posted result through its normal exact
+session route. This helper sends no terminal input, weighs no findings and
+never calls `ready`. Its raw receipt deliberately differs from the author's
+head-bound weighed disposition, which remains required by the readiness helper.
+
+Shared paths keep their existing authority: the account reader's policy,
+capacity snapshot and launch-receipt store, the model review policy and the
+GitHub transport's private caches. A refusal there still stops the affected
+review; this helper cannot make workers' receipt-store problem disappear.
+Its own writable state lives only in the caller's private evidence directory.
+An unavailable directory or held lock blocks this sweep; no alternate path,
+account, credential or terminal is chosen automatically.
