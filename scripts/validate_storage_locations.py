@@ -27,14 +27,22 @@ role_words = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(role_words)
 
 UNDEFINED = re.compile(r"\btask[- ]private\b", re.IGNORECASE)
+# "task" at the end of a prose line carries to the next one, so a reflow that
+# wraps the phrase still matches.
+TRAILING_TASK = re.compile(r"\btask-?\s*$", re.IGNORECASE)
 
 
 def findings(text: str) -> list[tuple[int, str]]:
-    return [
-        (number, match.group())
-        for number, line in role_words.prose_lines(text)
-        for match in UNDEFINED.finditer(line)
-    ]
+    found: list[tuple[int, str]] = []
+    previous_number, previous = 0, ""
+    for number, line in role_words.prose_lines(text):
+        carried = TRAILING_TASK.search(previous) if number == previous_number + 1 else None
+        previous_number, previous = number, line
+        if carried:
+            prefix = carried.group().strip()
+            line = prefix + ("" if prefix.endswith("-") else " ") + line.lstrip()
+        found.extend((number, match.group()) for match in UNDEFINED.finditer(line))
+    return found
 
 
 def main() -> int:

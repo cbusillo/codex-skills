@@ -32,6 +32,10 @@ def test_flags_undefined_location_in_prose() -> None:
         "Set it to the task-private directory on that volume.",
         "Keep it in task-private evidence.",
         "---\ndescription: Save output in Task Private storage.\n---\n",
+        "Use the task\nprivate directory.",
+        "Use the task-\nprivate directory.",
+        "> Use the task\n> private directory.",
+        "---\ndescription: >-\n  Use the task\n  private directory.\n---\n",
     ):
         if not module.findings(text):
             raise AssertionError(f"expected a finding: {text!r}")
@@ -43,6 +47,8 @@ def test_ignores_code_and_named_locations() -> None:
         "The old `task-private` folder was removed.",
         "```sh\nls /Volumes/X/task-private\n```\n",
         "Keep it in the session scratchpad or the host's task-evidence location.",
+        "Finish the task\n\nprivate notes stay local.",
+        "Finish the task\n```\nprivate\n```\n",
     ):
         if module.findings(text):
             raise AssertionError(module.findings(text))
