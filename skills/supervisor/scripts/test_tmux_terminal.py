@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import socket
 import shutil
 import signal
 import subprocess
@@ -474,7 +475,7 @@ def fixture_tmux_environment(root):
     config = root / "tmux.conf"
     config.write_text("set-option -g default-shell /bin/sh\nset-option -g default-command 'exec /bin/sh'\n")
     wrapper = binary / "tmux"
-    wrapper.write_text("#!/bin/sh\nunset ENV\nexport ZDOTDIR=" + shlex.quote(str(startup)) + "\nexec "
+    wrapper.write_text("#!/bin/sh\nunset ENV\nexport HOME=" + shlex.quote(str(root)) + "\nexport ZDOTDIR=" + shlex.quote(str(startup)) + "\nexec "
                        + shlex.quote(executable) + " -f " + shlex.quote(str(config)) + ' "$@"\n')
     wrapper.chmod(0o700)
     return {"PATH": str(binary) + os.pathsep + os.environ["PATH"], "TMUX_TMPDIR": str(root)}, startup
@@ -532,6 +533,7 @@ class TmuxFixture(unittest.TestCase):
         opt_in.start()
         self.addCleanup(opt_in.stop)
         environment_values, self.shell_startup = fixture_tmux_environment(self.root)
+        environment_values["HOME"] = str(self.root)
         environment = patch.dict(os.environ, environment_values)
         environment.start()
         self.addCleanup(environment.stop)
@@ -735,11 +737,22 @@ class TmuxTests(TmuxFixture):
     def test_codex_uses_shared_daemon_preflight_and_selected_home(self):
         codex = self.root / "codex"
         self.agent.rename(codex)
-        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote unix:// -C {shlex.quote(str(self.root))}")
         self.choice = {**self.choice, "provider": "openai", "account_id": "openai-ab12",
                        "env": {"CODEX_HOME": str(self.root / "codex-account")}}
         home = Path(self.choice["env"]["CODEX_HOME"])
         home.mkdir()
+        endpoint = iterm_tab.codex_daemon_endpoint(home)
+        endpoint.parent.mkdir()
+        native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+        native_socket.bind(str(endpoint))
+        endpoint.chmod(0o600)
+        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote {shlex.quote('unix://' + str(iterm_tab.codex_daemon_endpoint(home.resolve())))} -C {shlex.quote(str(self.root))}")
+        code = self.root / ".code"
+        (code / "skill-data").mkdir(parents=True)
+        (code / "skill-data/supervisor.toml").write_text(
+            '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+            + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
+        self.enterContext(patch.dict(os.environ, {"CODE_HOME": str(code)}))
         (home / "config.toml").write_text(
             f'[projects.{json.dumps(str(self.root.resolve()))}]\ntrust_level = "trusted"\n'
         )
@@ -754,7 +767,7 @@ class TmuxTests(TmuxFixture):
         self.wait_screen(row["session_id"], "READY:")
         history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
         received = json.loads(next(line.split("READY:", 1)[1] for line in history.splitlines() if "READY:" in line))
-        self.assertEqual(received["codex_home"], self.choice["env"]["CODEX_HOME"])
+        self.assertEqual(Path(received["codex_home"]), Path(self.choice["env"]["CODEX_HOME"]).resolve())
         self.assertEqual(received["brief"], self.brief_text)
 
     def test_early_worker_exit_reports_dead_pane_and_last_output(self):

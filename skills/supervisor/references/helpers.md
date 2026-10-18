@@ -247,7 +247,7 @@ uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json> --capa
 Use the same retry-state path in every watcher restart, check and morning
 digest; retain it through takeover. Only one watcher may operate on it at a
 time. Without `--resume-capacity`, the watcher remains read-only. The exact
-thread nudge uses the existing `codex queue` path described under
+thread nudge uses the coordinated queue path described under
 [launching and nudging](#launching-and-nudging), with the verified home's
 explicit Unix endpoint. It queues only `continue` after 1, 3 and 10 minutes
 of backoff, at most three attempts per native session across restarts. The
@@ -877,8 +877,11 @@ brief's first nonblank line, using the exact app bundle ID, for example
 do not opt that task into GUI work.
 Launch that brief alone with `--account-provider openai` and a local `codex -C`
 command, without `--remote`. The launcher rejects terminal app targets and adds
-the GUI safety instructions to the worker's prompt. Other briefs create no GUI
-state. With the catalog Chrome opt-in, local Codex launches share the marketplace
+the GUI safety instructions to the worker's prompt. GUI commands retain their
+local invocation and client-side overrides; they do not use the managed RPC
+ingress or acquire a managed-client exemption. A live local GUI client therefore
+keeps idle-closure admission conservative. Other briefs create no GUI state.
+With the catalog Chrome opt-in, local Codex launches share the marketplace
 setup described below.
 
 Only one Supervisor GUI worker may run at a time, across account homes and both
@@ -999,11 +1002,36 @@ visible hook-review prompt as `launch_blocked` with
 It does not answer the prompt or prove readiness; a later prompt still needs
 first-screen/transcript verification. Do not launch
 a duplicate after a blocked result. Record the new native thread and exact transcript in the
-ledger. Prefer `codex queue` for Codex nudges with the verified thread id and
+ledger. Use `codex-session.py queue` for Codex nudges with the verified thread id and
 its configured home; never queue exit commands. The terminal helper suppresses
 broadcast input, uses bracketed paste for multiline messages, and sends text
 and Return separately. Verify input and prompt
 before `--verified-target`, then read back once; do not replay an uncertain send.
+
+Codex launch output includes `codex_home`, `pid`, `tty`, `launch_pid`,
+`launch_started_at` and `launch_generation` when the native client PID can be
+identified on the exact launch TTY. Preserve those fields when adding the native
+thread ID and transcript to the ledger. If capture is unavailable, the launch
+still works and ordinary verified closure/release remains supported; it cannot
+supply idle-admission proof. Resume and queue mutations use the source account's
+existing daemon and the same per-thread lease as closure and successor admission:
+
+```sh
+uv run skills/supervisor/scripts/codex-session.py queue --session-id <native-id> --codex-home <source-home> --message <text>
+uv run skills/supervisor/scripts/codex-session.py resume --session-id <native-id> --codex-home <source-home>
+uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
+```
+
+The helper invalidates the old receipt before sending or launching. `status`
+returns the resumed generation's metadata for the ledger; preserve the native
+thread and verified handoff when updating it. A later `finish` accepts that new
+generation, never the old receipt. Terminal `/resume` input names this route
+instead for a single-line Codex command; Claude targets retain their own resume
+command, and multiline pasted reference text is unchanged. When successor
+admission uses a leased idle-closure receipt, that old generation stays frozen
+even if the external claim write needs recovery. Retry the normal claim recovery
+or start a new thread and claim available work; never resume that handed-off
+source. Ordinary unloaded-thread admission keeps its existing recovery behavior.
 
 ### Browser and Computer Use preflight
 
@@ -1037,11 +1065,15 @@ daemon's `plugin/list` for the launch's `-C` directory, refusing inventory
 failure or missing plugins. Source launches skip this unrequested inventory;
 daemon admission remains an independent check. Optional local discovery failure
 warns but keeps the validated local route. An explicit `--no-daemon` is retained
-once and never triggers daemon admission, including without the opt-in. If
-marketplace setup itself fails, the warning names the fallback to the
+once and never triggers daemon admission, including without the opt-in. Local
+interactive clients keep idle-closure admission conservative while live:
+they bypass the managed ingress and receive no managed-client exemption.
+If marketplace setup itself fails, the warning names the fallback to the
 selected-home daemon, or the retained local configuration when `--no-daemon`
 was explicit. Other explicit remote endpoints are
-unverified and cannot satisfy `--require-browser`. Use local `codex -C` for
+unverified and cannot satisfy `--require-browser`. A managed daemon launch also
+refuses an endpoint outside the selected account during preflight; select its
+account or use a supported local `--no-daemon` launch. Use local `codex -C` for
 the supported browser route. Nothing restarts an existing daemon or edits
 shared config. Discovery does not prove a working extension, runtime or OS grant.
 
@@ -1694,8 +1726,154 @@ It does not
 send exit commands or change issue status, waits, blockers, branches or worktrees.
 
 ```sh
-uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --closed-log <private-closed.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
+uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
 ```
+
+The default closed-session log is
+`~/.code/skill-data/supervisor-closed-sessions.json`. Its ownership leases and
+receipt account inventory (`~/.code/skill-data/supervisor.toml`) use this same
+user-wide location even when the caller exports another `CODE_HOME` or
+`CODEX_HOME`. Keep the configured account inventory there; an account-local or
+alternate-runtime config cannot substitute for it. This prevents a later shell
+environment from hiding an admitted predecessor's freeze. `--closed-log` still
+selects an explicit private log for historical or
+resumed-session recovery; successor observation reads only the shared default.
+For Codex entries with a configured absolute `codex_home`, closure also records
+the host boot identity, launch generation and fingerprints of every configured
+native transcript copy. The account set is canonical and independent of the
+caller's account home. Optional receipt enrichment failures do not stop ordinary
+closure or claim release. The mandatory source-action barrier described below
+still applies, and legacy logs are never upgraded by assumption.
+
+An idle-loaded thread can be ended only with that matching receipt, exact
+authored releases of its recorded claims, unchanged transcript copies around a
+second native idle read, fresh process checks and complete native coverage.
+Any active thread, source PID (including reuse), old worker on the source TTY,
+resume process, unknown client, changed generation or unavailable evidence keeps
+it live. A proven new TTY occupant born after closure is not the old worker.
+Unidentified interactive clients, pickers, stdio servers and unobserved daemons
+still refuse. Fresh noninteractive execs cannot attach to the predecessor.
+The supported daemon-routed fresh and resume launchers run each TUI through a
+private local RPC ingress, connected to the existing selected-home daemon. Each
+action holds its targets' ownership leases until its matching native response;
+server approvals hold them until the client's answer has been forwarded.
+Overlapping actions retain each target until all matching operations complete,
+including replies received out of order. Every later action reacquires ownership
+and checks the source freeze before forwarding. This includes in-TUI
+`/resume`, pickers, turn starts and server approval requests with a thread ID.
+A frozen predecessor receives a native RPC error before it can act. Read-only
+thread reads still pass after handoff. No daemon is restarted and no native
+subscriber API is assumed.
+
+Completion releases the operation's lease, so another Supervisor can queue a
+nudge or capacity `continue` while that worker's TUI stays connected. A pending
+operation still refuses those sends; capacity retry defers without spending an
+attempt. Queue never joins or bypasses a busy source lease. Native action
+requests need a request ID so ownership can span acknowledgement.
+
+Observation skips source leases when a durable action barrier already refuses
+end proof, or the recorded worker's exit cannot be verified. Live workers keep
+receiving their own actions and approvals during native inventory and later
+claim round trips. Sources that can contribute end proof still retain ownership
+through final claim publication, so resume cannot race a successful handoff.
+
+The parent ingress and its native client register PID/birth, selected home,
+private socket identity and a digest of the immutable option prefix before
+`--`. Prompt text is not stored or hashed. A matching client on an observed
+daemon no longer globally blocks another thread's proof. A waiting npm wrapper
+may have a native child; both need matching option prefixes and a verified live
+parent birth. Old registrations without the guarded connection, changed options,
+PID reuse, missing ingress or unobserved daemons still refuse. Use
+`codex-session.py` for native resume/queue. Terminal send retains its `/resume`
+route check for targets that may be old unmanaged clients; safety no longer
+depends on that text check for managed clients.
+
+Close, supported resume/queue and admission share a nonblocking per-thread
+ownership lease. Claim retains it through final readback and freezes the source
+before its first external write. Slow closure verification holds only its source
+lease, then compares that source's current record under a brief shared-log lock
+before publication. Other launches and new-thread first turns can continue;
+a thread with no receipt does not take the store lock to invalidate nothing.
+Before forwarding any action, the lease file stores a durable invalidation,
+including when no closure record exists yet. Busy leases and invalidations also
+defeat authored-release/unloaded recovery. Native acknowledgement alone cannot
+clear this barrier: a successful verified closure in the shared log needs a
+fresh final safe verdict after the latest guarded action, including overlapping
+actions, acknowledgements (including native errors) and approval answers, and
+clears it while holding source ownership. An older
+safe message followed only by a newer task-complete record is insufficient.
+Pending queued submissions, malformed queue
+pages or missing queue evidence still refuse native end proof, including when
+the daemon says notLoaded. Queued work must drain or be cancelled, then the
+Supervisor verifies closure normally; never clear the lease file by hand.
+If a guarded send fails without producing a turn, an empty queue does not clear
+the barrier. The ordinary shared-log finish/release route also refuses until a
+fresh final safe verdict exists. Use `codex-session.py resume --session-id ID
+--codex-home HOME` for that exact source, have it complete a fresh safe turn,
+then exit it and retry Supervisor finish with the new launch metadata from
+`codex-session.py status --session-id ID`. This also applies after a native
+error acknowledgement or an unrecognized per-thread action after the last
+verdict. A nonzero child exit alone cannot prove no native work was accepted.
+Preserve claims and artifacts while recovering; do not delete the marker or
+reuse the old verdict. A frozen predecessor still refuses resume: start a new
+thread and claim through gh-plan.py instead.
+If recording generation metadata fails after a native resume, the RPC reports
+that partial outcome and retains the connection and durable invalidation. Retry
+the exact resume for metadata, preserving the source in the meantime.
+The release-discovery operation has its own lock. Global observation creates no log,
+directory or lease file, and receipt file work runs off the native RPC event loop
+with a bounded scan budget. A busy or missing lease, unavailable account config,
+missing/malformed/stale receipt, changed transcript path or changed fingerprint
+preserves the conservative native checks. Moving a transcript to the archive can
+therefore invalidate an old receipt; normal unloaded/authored-release recovery
+remains supported. No daemon is restarted or interrupted.
+Idle execution proof reads at most 100 pages of 20 native items and requires
+complete history; it cannot assume an older background command ended from a
+recent quiet page. Each transcript scan must finish within three seconds, within
+the five-second native observation budget. Longer histories or slower copies
+therefore keep refusing idle admission; they do not weaken ordinary verified
+release or the unloaded recovery path.
+The supported fresh launcher adds the selected account's explicit remote
+endpoint when omitted or given as the documented bare `unix://` shorthand,
+and normalizes an equivalent endpoint through a selected-home symlink.
+The launcher validates this before any terminal or account receipt is created,
+and refuses conflicting endpoints or raw resume/fork
+commands, standalone servers, unknown options and `--no-daemon` before native
+execution. Put an initial literal prompt after `--`, as the brief launcher does.
+The short shared-log mutation lock waits up to one second. A write failure or
+continued contention refuses the managed launch; correct the shared path or
+retry after the writer finishes. It never falls through to a direct connection.
+Runtime registration cleanup removes only this launch's exact generation or
+confirmed dead process rows. Source/admission leases remain nonblocking because
+a claim can retain one during GitHub round-trips. A capacity nudge that has sent
+nothing when a lease is busy defers without spending an attempt.
+
+A queue nudge only invalidates closure. Fork and archive are conservatively
+treated as source attachments too: they own that source's lease, invalidate
+its receipt, and refuse a frozen source. Archive can stop execution, so it stays
+subject to the named source's freeze and ownership checks. This guard checks
+only that source; it does not acquire descendants' leases or prevent archive
+from stopping an independently resumed descendant of an unfrozen parent.
+These operations do not record their client as a new
+worker generation of the source. Read-only history, search, terminal and voice
+list RPCs do not invalidate closure or acquire its lease, including after
+handoff. Rename, metadata, read-state, section, unsubscribe and unarchive RPCs
+also preserve the source generation and take no execution lease. Unarchiving
+moves the transcript, so its old fingerprint still refuses idle admission;
+finish also refuses both the missing original path and a changed path in the
+original closure record. The existing unloaded/authored-release recovery
+remains available. A generation preserved by housekeeping is not a refreshed
+closure proof: if native persistence changes a rollout (including legacy git
+metadata updates), idle admission refuses the old fingerprint and finish
+refuses any record newer than closure. Unchanged transcripts permit
+finish retry; an mtime-only change invalidates idle proof but does not itself
+prevent ordinary finish. Metadata
+updates store preferences; they do not select a turn's access or grant it.
+For an already closed source invalidated by queue, fork or archive, start a
+guarded resume to obtain its real new launch metadata;
+`status` then supplies that metadata for the native ledger. Optional idle-proof
+fingerprints are checked only by admission, so an older boot/account fingerprint
+cannot prevent retrying ordinary verified release with the original closure time.
 
 Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
 For `finish`, discovery also checks original claim comments after their release.

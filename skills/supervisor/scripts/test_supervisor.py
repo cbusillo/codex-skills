@@ -1649,8 +1649,8 @@ class CodexProjectTests(unittest.TestCase):
             receipt.assert_not_called()
 
     def test_prepared_command_preserves_explicit_directory_and_brief(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+            root = Path(folder).resolve()
             repository = root / "brief's repository"
             repository.mkdir()
             fake_codex = root / "codex"
@@ -1664,8 +1664,18 @@ class CodexProjectTests(unittest.TestCase):
             fake_codex.chmod(0o700)
             home = root / "selected"
             write_codex_project_fixture(repository, home)
+            endpoint = iterm_tab.codex_daemon_endpoint(home)
+            endpoint.parent.mkdir()
+            native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+            native_socket.bind(str(endpoint))
+            endpoint.chmod(0o600)
             launch = root / "launch"
-            launch.write_text(f"{shlex.quote(str(fake_codex))} --remote unix:// -C {shlex.quote(str(repository))}")
+            launch.write_text(f"{shlex.quote(str(fake_codex))} -C {shlex.quote(str(repository))}")
+            code = root / ".code"
+            (code / "skill-data").mkdir(parents=True)
+            (code / "skill-data/supervisor.toml").write_text(
+                '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
             args = account_launch_args(launch)
             args.account_provider = "openai"
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
@@ -1674,6 +1684,7 @@ class CodexProjectTests(unittest.TestCase):
                   patch.object(account_choice, "prepare_launch")):
                 commands, _ = iterm_tab.prepare_launches(args)
             result = subprocess.run(["/bin/sh", "-c", commands[0]], cwd=root,
+                                    env={**os.environ, "HOME": str(root), "CODE_HOME": str(code)},
                                     capture_output=True, text=True, check=True)
             self.assertEqual(json.loads(result.stdout), [str(repository.resolve()), args.brief_file[0].read_text()])
 

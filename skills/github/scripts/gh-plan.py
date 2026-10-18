@@ -50,6 +50,7 @@ import github_direction_next
 import github_next_queue
 import github_next_reads
 import github_plan_claim
+import github_plan_closure
 import github_plan_wait
 import github_plan_trigger
 import github_plan_release
@@ -2360,6 +2361,11 @@ def cmd_claim(args: argparse.Namespace) -> None:
 
 
 def claim_once(args: argparse.Namespace) -> None:
+    with github_plan_closure.admission():
+        _claim_once(args)
+
+
+def _claim_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
@@ -2424,6 +2430,7 @@ def claim_once(args: argparse.Namespace) -> None:
     previous_wait = ""
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
+    retained_ended_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
 
@@ -2551,6 +2558,8 @@ def claim_once(args: argparse.Namespace) -> None:
                         and peer.get("sessionId") != claim["session"]]
         if live_sources:
             refuse(live_sources)
+        retained_ended_sources.update(session for session, state in target_inventory.get("session_states", {}).items()
+                                     if state.get("state") == "ended" and state.get("leased_closure"))
         _, own_comments = github_plan_claim.discussion_evidence("", source_comments, claim)
         for checked_number, checked_repo in ((target_number, target_repo), (number, issue_repo)):
             competing = github_plan_claim.artifact_evidence(
@@ -2804,6 +2813,15 @@ def claim_once(args: argparse.Namespace) -> None:
             + f"\n\n[Work record](https://github.com/{issue_repo}/"
               f"{'pull' if record_kind == 'pr' else 'issues'}/{number})"
         )
+        # Freeze the source before any external claim write. If publication
+        # fails, the closed source stays frozen for supported claim recovery.
+        try:
+            github_plan_closure.admit_sources(retained_ended_sources | {session for session, state in inventory.get("session_states", {}).items()
+                                              if state.get("state") == "ended" and state.get("leased_closure")})
+        except (OSError, ValueError) as error:
+            raise ClassifiedPlanError("claim_closure_unavailable",
+                "Source ownership could not be committed; preserve it and retry this claim after the owning operation ends",
+                payload={"closure_error": str(error)}) from error
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
