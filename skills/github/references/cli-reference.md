@@ -91,6 +91,21 @@ reporting only the final status read. Composite diagnostic tools that do not use
 the terminal-envelope CLI contract expose the same aggregate under
 `diagnostics.retry` and per-request evidence under `diagnostics.requests`.
 
+`gh-issue edit --remove-label` reconciles a 404 `Label does not exist` with a
+fresh GET of the issue. The step succeeds with confirmed certainty only when
+the response identifies that issue and contains a valid label list without
+the requested name (case insensitive). This covers already-absent labels and
+a retry after a successful deletion whose response was lost. Other 404s,
+authorization failures, unreadable/malformed readbacks and labels still
+present remain failures. Reconciliation adds one REST read per absent-label
+404; a failed read stops the edit before later mutations. Failure diagnostics
+include reconciliation reads in the operation attempt and wait totals while
+preserving the failed request's certainty. A normal successful
+deletion adds no read beyond the final issue readback. Stdout remains one JSON
+terminal envelope on the first invocation and on a rerun.
+Parse stdout separately from stderr diagnostics; merging them with `2>&1`
+can make a failed command's output invalid as JSON.
+
 For a failed `gh-issue edit`, the aggregate `write_outcome` is
 `partially_applied` when earlier mutations succeeded and requested mutations
 remain, or `applied` when all mutations succeeded but final readback failed.
