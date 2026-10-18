@@ -49,8 +49,8 @@ class CommentError(Exception):
     ):
         super().__init__(github_api_core.redact_string(message))
         self.failure = failure
-        self.api_result = github_api_core.redact_body(api_result) if api_result is not None else None
-        self.payload = github_api_core.redact_body(payload or {})
+        self.api_result: Optional[dict[str, Any]] = github_api_core.redact_body(api_result) if api_result is not None else None
+        self.payload: dict[str, Any] = github_api_core.redact_body(payload or {})
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:

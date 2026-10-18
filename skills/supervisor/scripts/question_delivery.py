@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from typing import Any
 
 import oq
 
@@ -116,7 +117,7 @@ def settled(url, queue_comments, owner, decision_authors):
     return oq.questions([reference], owner, decision_authors, answers, recorded_decisions_only=True)[0]["status"] == "answered"
 
 
-def inventory(source_comments, queue_comments, owner, decision_authors, now=None, *, question_urls=None):
+def inventory(source_comments, queue_comments, owner, decision_authors, now=None, *, question_urls=None) -> dict[str, Any]:
     """Read-only view; a delivery receipt never removes an unanswered question."""
     now = now or datetime.now(timezone.utc)
     trusted = {author.casefold() for author in [owner, *decision_authors]}
@@ -220,7 +221,7 @@ def reconcile(args, fetch):
                                *(source_item(url) for url in sorted(active))]))
     selected = {r["question_url"] for r in existing} | targets
     explicit_discussions = set(args.items) - targets
-    comments_by_url = {}
+    comments_by_url: dict[str, dict[str, Any]] = {}
     errors = []
     for item in items:
         try:
@@ -242,7 +243,7 @@ def reconcile(args, fetch):
     if args.register:
         for target in targets:
             source = comments_by_url.get(target)
-            if not source or not oq.questions([source], args.owner, args.decision_author):
+            if source is None or not oq.questions([source], args.owner, args.decision_author):
                 raise ValueError(f"registration source is not an explicit question: {target}")
             if not question_id(source.get("body") or ""):
                 raise ValueError(f"Question has no heading Q ID; number the original comment before delivery: {target}")
