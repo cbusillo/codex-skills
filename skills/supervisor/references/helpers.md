@@ -1694,8 +1694,12 @@ shell assignments such as `body=/tmp/handoff.md; gh-comment issue 1 --body-file
 supported. Unknown or single-quoted variables, shell cwd changes, subshells and
 groups, an orchestration working directory that cannot be decoded, and relative
 paths without a recorded working directory do not establish a file identity.
-Shell after an unsupported heredoc is never read as commands, so that call
-establishes no body. These cases can still use the helper's JSON receipt or the
+A body file counts only after the tool call that wrote it reports success:
+Claude Code's `is_error`, a Codex exit code, `Script completed`, or `apply_patch`'s
+success line. A failed or unconfirmed write leaves the file unknown, and a call
+that reports failure sends no body. A patch applied from Codex orchestration
+code is not read. Shell after an unsupported heredoc is never read as commands,
+so that call establishes no body. These cases can still use the helper's JSON receipt or the
 exact-session fallback below. When the transcript records the call's start or
 result, on any copy of a duplicated record, the comment must also have been
 created within that bound. Other text the session typed, such as a search

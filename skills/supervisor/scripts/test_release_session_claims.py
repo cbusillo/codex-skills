@@ -27,6 +27,24 @@ SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial"
           "claimed_at": "2026-01-01T00:00:00Z"}
 
 
+# Tool results as Codex records them, for writes whose success must be confirmed.
+PATCH_OK = "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess. Updated the following files:\nA /repo/h.md\n"
+PATCH_FAILED = "apply_patch verification failed: Failed to find expected lines in /repo/other.md:\na"
+SHELL_OK = "Process exited with code 0\nOutput:\n"
+SHELL_FAILED = "Process exited with code 1\nOutput:\npermission denied"
+SCRIPT_OK = [{"type": "input_text", "text": "Script completed\nWall time 0.0 seconds\nOutput:\n"},
+             {"type": "input_text", "text": '{"chunk_id":"a1","exit_code":0,"output":""}'}]
+SCRIPT_FAILED = [{"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
+                 {"type": "input_text", "text": "Script error:\npermission denied"}]
+
+
+def claude_result(call_id, ok=True, timestamp=None, content="Done"):
+    """A Claude Code tool result; failures carry is_error, and a missing result is unconfirmed."""
+    record = {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": call_id, "content": content, "is_error": not ok}]}}
+    return {**record, "timestamp": timestamp} if timestamp else record
+
+
 def comment(number, body, author=ACTOR):
     return {"id": number, "body": body, "user": {"login": author},
             "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
@@ -338,14 +356,15 @@ class ReleaseTests(unittest.TestCase):
     def test_legacy_abbreviated_write_receipt_and_unbound_final_link(self):
         records = helper.session_record.read_jsonl(self.transcript)
         records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "body", "input": {"file_path": "handoff.md", "content": "Handoff"}}]}})
-        records.insert(2, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
-        records.insert(3, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
+        records.insert(2, claude_result("body"))
+        records.insert(3, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
+        records.insert(4, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
         # This models receipt shapes only; harness identity and safe exit remain Codex.
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
         self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
         records = helper.session_record.read_jsonl(self.transcript)
-        records[3]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
+        records[4]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
         records[-2]["payload"]["message"] = f"See {self.entry['handoff_url']}\nSafe to exit: yes"
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         self.reader.paged_json.return_value = []
@@ -361,6 +380,7 @@ class ReleaseTests(unittest.TestCase):
             # The session writes the comment body itself before posting it.
             {"type": "assistant", "timestamp": started, "message": {"content": [
                 {"type": "tool_use", "id": "body", "input": {"file_path": "c.md", "content": body}}]}},
+            claude_result("body", timestamp=started),
             {"type": "assistant", "timestamp": started, "message": {"content": [
                 {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
             # Claude Code repeats tool blocks in untimestamped records.
@@ -442,8 +462,9 @@ class ReleaseTests(unittest.TestCase):
         entry = self.summarized_write("gh-comment -R test/a issue 1 --body-file /repo/c.md | jq -r .url", self.entry["handoff_url"],
                                       body="Draft handoff", posted="Final handoff")
         records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(2, {"type": "assistant", "timestamp": "2025-12-31T23:59:59.400Z", "message": {"content": [
-            {"type": "tool_use", "id": "edit", "input": {"file_path": "c.md", "old_string": "Draft", "new_string": "Final"}}]}})
+        records[3:3] = [{"type": "assistant", "timestamp": "2025-12-31T23:59:59.400Z", "message": {"content": [
+            {"type": "tool_use", "id": "edit", "input": {"file_path": "c.md", "old_string": "Draft", "new_string": "Final"}}]}},
+            claude_result("edit")]
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
         self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
@@ -489,13 +510,13 @@ class ReleaseTests(unittest.TestCase):
                 records[1]["message"]["content"][0]["input"]["file_path"] = "/repo/notes/c.md"
                 args = {"cmd": "gh-comment -R test/a issue 1 --body-file c.md", "workdir": cwd}
                 # Replace both copies of the native call, retaining its result.
-                records[2] = {"timestamp": records[2]["timestamp"], "payload": {
+                records[3] = {"timestamp": records[3]["timestamp"], "payload": {
                     "type": "custom_tool_call" if orchestrated else "function_call", "call_id": "write",
                     "input" if orchestrated else "arguments": (
                         f'await tools.exec_command({{cmd: {json.dumps(args["cmd"])}, workdir: {json.dumps(cwd)}}})'
                         if orchestrated else json.dumps(args))}}
-                records[3] = {"payload": {"type": "function_call_output", "call_id": "write", "output": self.entry["handoff_url"]}}
-                del records[4]
+                records[4] = {"payload": {"type": "function_call_output", "call_id": "write", "output": self.entry["handoff_url"]}}
+                del records[5]
                 self.transcript.write_text("\n".join(json.dumps(r) for r in records))
                 if cwd == "/repo/notes":
                     found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
@@ -575,11 +596,11 @@ class ReleaseTests(unittest.TestCase):
         duplicate = {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "write", "content": self.entry["handoff_url"], "is_error": False}]}}
         shapes = {
-            "duplicate result after": lambda r: r.insert(5, duplicate),
-            "duplicate result before": lambda r: r.insert(4, duplicate),
-            "untimestamped call copy first": lambda r: r.insert(2, r.pop(3)),
-            "result never timestamped": lambda r: r[4].pop("timestamp"),
-            "call never timestamped": lambda r: r[2].pop("timestamp"),
+            "duplicate result after": lambda r: r.insert(6, duplicate),
+            "duplicate result before": lambda r: r.insert(5, duplicate),
+            "untimestamped call copy first": lambda r: r.insert(3, r.pop(4)),
+            "result never timestamped": lambda r: r[5].pop("timestamp"),
+            "call never timestamped": lambda r: r[3].pop("timestamp"),
         }
         # The comment is created at 00:00:00; each bound must reject it on its own.
         windows = {
@@ -621,20 +642,25 @@ class ReleaseTests(unittest.TestCase):
             "type": "function_call_output", "call_id": call_id, "output": output or self.entry["handoff_url"]}}
         return [call, result]
 
+    def patch_call(self, call_id, text, output=PATCH_OK):
+        call = {"timestamp": "2025-12-31T23:59:59.000Z", "payload": {
+            "type": "custom_tool_call", "name": "apply_patch", "call_id": call_id,
+            "input": f"*** Begin Patch\n{text}\n*** End Patch\n"}}
+        if output is None:
+            return [call]  # the session ended before the tool reported
+        return [call, {"timestamp": "2025-12-31T23:59:59.200Z", "payload": {
+            "type": "custom_tool_call_output", "call_id": call_id, "output": output}}]
+
     def test_codex_apply_patch_body_file_binds_until_it_changes(self):
-        def patch(text):
-            return {"timestamp": "2025-12-31T23:59:59.000Z", "payload": {
-                "type": "custom_tool_call", "name": "apply_patch", "call_id": f"patch-{text[:12]}",
-                "input": f"*** Begin Patch\n{text}\n*** End Patch\n"}}
         add = "*** Add File: {}\n+Engineering handoff\n+Ready for merge"
         write = self.codex_call("write", "gh-comment -R test/a issue 1 --body-file /repo/h.md | jq -r .comment.url")
         shapes = {
-            "absolute added path": ([patch(add.format("/repo/h.md"))], True),
-            "relative added path": ([patch(add.format("h.md"))], True),
-            "updated after adding": ([patch(add.format("h.md")),
-                                      patch("*** Update File: h.md\n@@\n-Ready for merge\n+Not ready")], False),
-            "moved over after adding": ([patch(add.format("h.md")),
-                                         patch("*** Update File: other.md\n*** Move to: h.md\n@@\n-a\n+b")], False),
+            "absolute added path": ([*self.patch_call("add", add.format("/repo/h.md"))], True),
+            "relative added path": ([*self.patch_call("add", add.format("h.md"))], True),
+            "updated after adding": ([*self.patch_call("add", add.format("h.md")),
+                                      *self.patch_call("update", "*** Update File: h.md\n@@\n-Ready for merge\n+Not ready")], False),
+            "moved over after adding": ([*self.patch_call("add", add.format("h.md")),
+                                         *self.patch_call("move", "*** Update File: other.md\n*** Move to: h.md\n@@\n-a\n+b")], False),
         }
         for name, (patches, binds) in shapes.items():
             with self.subTest(name):
@@ -651,11 +677,77 @@ class ReleaseTests(unittest.TestCase):
         write = self.codex_call("write", "gh-comment -R test/a issue 1 --body-file h.md | jq -r .comment.url")
         for name, command in {"heredoc": f"apply_patch <<'EOF'\n{patch}EOF", "argv": ["apply_patch", patch]}.items():
             with self.subTest(name):
-                call = self.codex_call("patch", "", "Done")
+                call = self.codex_call("patch", "", SHELL_OK)
                 call[0]["payload"]["arguments"] = json.dumps({"command": command})
                 entry = self.codex_write(*call, *write, body="Engineering handoff\nCosts $5 to rerun")
                 found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
                 self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_a_failed_or_unconfirmed_file_write_leaves_its_text_unknown(self):
+        # A later write fails to post the missing file and a chained read prints another session's
+        # same-body comment. Each writer counts only once its own result reports success.
+        body = "Engineering handoff\nReady for merge"
+        heredoc = f"cat > /repo/h.md <<'EOF'\n{body}\nEOF"
+        add = "*** Add File: /repo/h.md\n+Engineering handoff\n+Ready for merge"
+        read = "gh api repos/test/a/issues/comments/99 --jq .html_url"
+        codex_write = self.codex_call("write", f"gh-comment -R test/a issue 1 --body-file /repo/h.md >/dev/null; {read}")
+        def orchestrated(output):
+            call = {"timestamp": "2025-12-31T23:59:59.000Z", "payload": {"type": "custom_tool_call", "name": "exec",
+                "call_id": "draft", "input": f"await tools.exec_command({{cmd: {json.dumps(heredoc)}}})"}}
+            return [call] if output is None else [call, {"timestamp": "2025-12-31T23:59:59.200Z", "payload": {
+                "type": "custom_tool_call_output", "call_id": "draft", "output": output}}]
+        def claude(tool_input, ok, then=()):
+            use = {"type": "assistant", "timestamp": "2025-12-31T23:59:59.000Z", "message": {"content": [
+                {"type": "tool_use", "id": "draft", "input": tool_input}]}}
+            result = [] if ok is None else [claude_result("draft", ok=ok, timestamp="2025-12-31T23:59:59.200Z")]
+            write = [{"type": "assistant", "timestamp": "2025-12-31T23:59:59.400Z", "message": {"content": [
+                {"type": "tool_use", "id": "write", "input": {
+                    "command": f"gh-comment -R test/a issue 1 --body-file /repo/h.md >/dev/null; {read}"}}]}},
+                claude_result("write", content=self.entry["handoff_url"], timestamp="2026-01-01T00:00:01.200Z")]
+            return [use, *result, *then, *write]
+        def claude_edit(ok):
+            # The Write succeeded; the Edit that produced the posted text did not.
+            write = claude({"file_path": "/repo/h.md", "content": "Engineering handoff\nDraft"}, True)[:2]
+            edit = [{"type": "assistant", "timestamp": "2025-12-31T23:59:59.100Z", "message": {"content": [
+                {"type": "tool_use", "id": "edit", "input": {"file_path": "/repo/h.md", "old_string": "Draft",
+                                                             "new_string": "Ready for merge"}}]}}]
+            if ok is not None:
+                edit.append(claude_result("edit", ok=ok, timestamp="2025-12-31T23:59:59.150Z"))
+            return [*write, *edit, *claude({"command": "true"}, True)[2:]]
+        shapes = {
+            "apply_patch tool": lambda ok: [*self.patch_call("draft", add + "\n*** Update File: /repo/other.md\n@@\n-a\n+b",
+                                                            {True: PATCH_OK, False: PATCH_FAILED, None: None}[ok]), *codex_write],
+            "shell apply_patch": lambda ok: [*self.codex_call("draft", f"apply_patch <<'EOF'\n*** Begin Patch\n{add}\n*** End Patch\nEOF",
+                                                             {True: SHELL_OK, False: SHELL_FAILED, None: "ok"}[ok]), *codex_write],
+            "shell heredoc": lambda ok: [*self.codex_call("draft", heredoc, {True: SHELL_OK, False: SHELL_FAILED, None: "ok"}[ok]),
+                                         *codex_write],
+            "orchestrated heredoc": lambda ok: [*orchestrated({True: SCRIPT_OK, False: SCRIPT_FAILED, None: None}[ok]), *codex_write],
+            "Claude Write": lambda ok: claude({"file_path": "/repo/h.md", "content": body}, ok),
+            "Claude Bash heredoc": lambda ok: claude({"command": heredoc}, ok),
+            "Claude Edit": claude_edit,
+        }
+        for (name, records), ok in itertools.product(shapes.items(), (True, False, None)):
+            with self.subTest(name, ok=ok):
+                entry = self.codex_write(*records(ok), body=body)
+                if ok:
+                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+                else:
+                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                        helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_a_write_call_that_reports_failure_sends_no_body(self):
+        # The comment helper fails after reading the body; a chained read prints another session's comment.
+        command = ("cat > /repo/h.md <<'EOF'\nEngineering handoff\nReady for merge\nEOF\n"
+                   "gh-comment -R test/a issue 1 --body-file /repo/h.md >/dev/null; "
+                   "gh api repos/test/a/issues/comments/99 --jq .html_url; exit 1")
+        for name, output in {"exit code": f"Process exited with code 1\nOutput:\n{self.entry['handoff_url']}",
+                             "script failure": [{"type": "input_text", "text": "Script failed\nOutput:\n"},
+                                                {"type": "input_text", "text": self.entry["handoff_url"]}]}.items():
+            with self.subTest(name):
+                entry = self.codex_write(*self.codex_call("write", command, output))
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
 
     def test_a_temporary_body_file_from_another_call_does_not_bind(self):
         # Each mktemp result is a new file, even when a later call reuses the variable name.
@@ -750,10 +842,10 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(workdir=workdir):
                 entry = self.summarized_write("gh-comment -R test/a issue 1 --body-file c.md", self.entry["handoff_url"])
                 records = helper.session_record.read_jsonl(self.transcript)
-                records[2] = {"timestamp": records[2]["timestamp"], "payload": {"type": "custom_tool_call", "call_id": "write",
+                records[3] = {"timestamp": records[3]["timestamp"], "payload": {"type": "custom_tool_call", "call_id": "write",
                     "input": f'await tools.exec_command({{cmd: "gh-comment -R test/a issue 1 --body-file c.md", workdir: {workdir}}})'}}
-                records[3] = {"payload": {"type": "custom_tool_call_output", "call_id": "write", "output": self.entry["handoff_url"]}}
-                del records[4]
+                records[4] = {"payload": {"type": "custom_tool_call_output", "call_id": "write", "output": self.entry["handoff_url"]}}
+                del records[5]
                 self.write_records(records)
                 with self.assertRaisesRegex(ValueError, "no authored handoff"):
                     helper.discover_handoff(self.reader, entry, ACTOR)

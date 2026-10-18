@@ -409,7 +409,7 @@ def discover_handoff(reader, entry, actor):
                 return None
             return None
         return None
-    def note_patch(patch, cwd):
+    def note_patch(patch, cwd, overlay):
         # A Codex apply_patch added file is its "+" lines; any other change leaves the text unknown.
         lines = patch.splitlines()
         index = 0
@@ -425,13 +425,17 @@ def discover_handoff(reader, entry, actor):
             name = file_identity((heading[2] or heading[3]).strip(), cwd)
             if name is None:
                 continue
-            files.pop(name, None)
+            overlay[name] = None
             if heading[1] == "Add" and all(line.startswith("+") for line in content):
-                files[name] = "\n".join(line[1:] for line in content)
+                overlay[name] = "\n".join(line[1:] for line in content)
     # A write's output is often summarized or chained with other commands, so any
     # URL it prints is a candidate. Only a comment whose body is exactly what that
     # call sent binds: a stdin heredoc, or the --body-file the session wrote itself.
-    files = {}
+    # Text each body file holds once a call that wrote it reported success. A call's
+    # writes stay pending (None = unknown) until its own result confirms them.
+    files, pending = {}, {}
+    def text_of(name, overlay):
+        return overlay[name] if name in overlay else files.get(name)
     session_cwd = next((r.get("payload", {}).get("cwd") for r in records if r.get("type") == "session_meta"), None)
     session_cwd = session_cwd or next((r.get("cwd") for r in records if r.get("cwd")), None)
     def flat(text):
@@ -445,18 +449,20 @@ def discover_handoff(reader, entry, actor):
                 return None
             path = os.path.join(cwd, path)
         return os.path.normpath(path)
-    def note_file_writes(tool_input, cwd):
+    def note_file_writes(tool_input, cwd, overlay):
         if not isinstance(tool_input, dict) or not isinstance(tool_input.get("file_path"), str):
             return
         name = file_identity(tool_input["file_path"], cwd)
         if name is None:
             return
         if isinstance(tool_input.get("content"), str):
-            files[name] = tool_input["content"]
+            overlay[name] = tool_input["content"]
         for edit in [tool_input, *(tool_input.get("edits") or [])]:
-            if name in files and isinstance(edit, dict) and isinstance(edit.get("old_string"), str) and isinstance(edit.get("new_string"), str):
-                files[name] = files[name].replace(edit["old_string"], edit["new_string"], -1 if edit.get("replace_all") else 1)
-    def sent_bodies(command, cwd):
+            if isinstance(edit, dict) and isinstance(edit.get("old_string"), str) and isinstance(edit.get("new_string"), str):
+                text = text_of(name, overlay)
+                overlay[name] = None if text is None else text.replace(
+                    edit["old_string"], edit["new_string"], -1 if edit.get("replace_all") else 1)
+    def sent_bodies(command, cwd, overlay):
         """Return the (body, repository, number) each comment write sent, and whether any write ran."""
         parts, heredocs, complete = shell_parts(shell_text(command))
         bodies, variables, wrote = set(), {}, False
@@ -491,7 +497,7 @@ def discover_handoff(reader, entry, actor):
             stdin = operand("<")
             target = file_identity(operand(">") or operand(">>"), cwd)
             if target:
-                files.pop(target, None)
+                overlay[target] = None
                 # Only cat with stdin alone copies the heredoc bytes unchanged.
                 args, i = [], 1
                 while i < len(tokens):
@@ -501,12 +507,12 @@ def discover_handoff(reader, entry, actor):
                         args.append(tokens[i])
                         i += 1
                 if tokens[0] == "cat" and not args and stdin in heredocs and ">>" not in tokens:
-                    files[target] = heredocs[stdin]
+                    overlay[target] = heredocs[stdin]
             if tokens[0] == "apply_patch":
                 # An argv patch is one single-quoted word; quoting() marked its dollars.
                 shell_patch = heredocs.get(stdin) if tokens[1:] == ["<", stdin] else (
                     tokens[1].replace("\0", "$") if len(tokens) == 2 else None)
-                note_patch(shell_patch or "", cwd)
+                note_patch(shell_patch or "", cwd, overlay)
             target_of_write = comment_target(tokens)
             if target_of_write is None:
                 continue
@@ -523,9 +529,9 @@ def discover_handoff(reader, entry, actor):
             if path == "-":
                 body = heredocs.get(stdin)
                 if body is None:
-                    body = files.get(file_identity(stdin, cwd))
+                    body = text_of(file_identity(stdin, cwd), overlay)
             else:
-                body = files.get(file_identity(path, cwd))
+                body = text_of(file_identity(path, cwd), overlay)
             if body and flat(body):
                 bodies.add((flat(body), repo, number))
         return bodies, wrote
@@ -538,16 +544,39 @@ def discover_handoff(reader, entry, actor):
             finished.setdefault(call_id, timestamp)
         for repo, number, comment_id in re.findall(HANDOFF.pattern, "\n".join(strings(value))):
             printed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}", call_id))
-    def start_write(call_id, timestamp, commands):
+    def start_write(call_id, timestamp, commands, effects=None):
         if call_id not in sent:
             sent[call_id] = set()
+            overlay = pending.setdefault(call_id, {})
+            if effects:
+                effects(overlay)
             for command, cwd in commands:
-                bodies, wrote = sent_bodies(command, cwd)
+                bodies, wrote = sent_bodies(command, cwd, overlay)
                 sent[call_id].update(bodies)
                 if wrote:
                     writes.add(call_id)
         if call_id in writes and timestamp:
             started.setdefault(call_id, timestamp)
+    def finish_call(call_id, succeeded):
+        # Failed or unconfirmed writes leave their files unknown, and a call that
+        # reports failure sent no body we can rely on.
+        for name, text in pending.pop(call_id, {}).items():
+            if succeeded is True and text is not None:
+                files[name] = text
+            else:
+                files.pop(name, None)
+        if succeeded is False:
+            sent[call_id] = set()
+    def reported_success(output):
+        """Whether a Codex tool output reports success: True, False, or None when it does not say."""
+        text = "\n".join(strings(output))
+        if re.search(r"(?m)^(?:Script failed|apply_patch verification failed)\b", text):
+            return False
+        codes = [int(a or b) for a, b in re.findall(
+            r'"exit_code"\s*:\s*(-?\d+)|^(?:Process exited with code|Exit code:)\s*(-?\d+)', text, re.M)]
+        if any(codes):
+            return False
+        return True if codes or re.search(r"(?m)^(?:Script completed|Success\. Updated the following files)\b", text) else None
     for record in records:
         payload = record.get("payload") or {}
         arguments = payload.get("arguments") or payload.get("input") or ""
@@ -559,10 +588,11 @@ def discover_handoff(reader, entry, actor):
         code = structured.get("code", "") if isinstance(structured, dict) else arguments
         cwd = (structured.get("workdir") or structured.get("cwd") or session_cwd) if isinstance(structured, dict) else session_cwd
         commands = [(command, cwd)] if command else []
+        effects = None
         if payload.get("name") == "apply_patch":
             # A patch is file data; text it adds is never a command.
             patch_text = structured.get("input") if isinstance(structured, dict) else arguments
-            note_patch(patch_text if isinstance(patch_text, str) else "", session_cwd)
+            effects = functools.partial(note_patch, patch_text if isinstance(patch_text, str) else "", session_cwd)
         elif not command and isinstance(code, str):
             # Decode each invocation separately so its workdir is not lost when
             # one orchestration call contains several exec_command invocations.
@@ -584,7 +614,9 @@ def discover_handoff(reader, entry, actor):
         if payload.get("type") in {"function_call", "custom_tool_call"}:
             # Use the decoded command, not the orchestration source with its escapes.
             if payload.get("call_id"):
-                start_write(payload["call_id"], record.get("timestamp"), commands)
+                start_write(payload["call_id"], record.get("timestamp"), commands, effects)
+        if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
+            finish_call(payload.get("call_id"), reported_success(payload.get("output")))
         if payload.get("type") in {"function_call_output", "custom_tool_call_output"} and payload.get("call_id") in writes:
             outputs.extend(strings(payload.get("output")))
             add_printed(payload["call_id"], record.get("timestamp"), payload.get("output"))
@@ -594,10 +626,13 @@ def discover_handoff(reader, entry, actor):
             if block.get("type") == "tool_use":
                 tool_input = block.get("input") or {}
                 cwd = (tool_input.get("workdir") or tool_input.get("cwd") or record.get("cwd") or session_cwd) if isinstance(tool_input, dict) else session_cwd
-                note_file_writes(tool_input, cwd)
                 command = (tool_input.get("command") or tool_input.get("cmd") or "") if isinstance(tool_input, dict) else ""
-                if block.get("id") and command:
-                    start_write(block["id"], record.get("timestamp"), [(command, cwd)])
+                if block.get("id"):
+                    start_write(block["id"], record.get("timestamp"), [(command, cwd)] if command else [],
+                                functools.partial(note_file_writes, tool_input, cwd))
+            if block.get("type") == "tool_result":
+                # Claude Code marks a failed tool, including a nonzero shell exit, with is_error.
+                finish_call(block.get("tool_use_id"), block.get("is_error") is not True)
             if block.get("type") == "tool_result" and block.get("tool_use_id") in writes and block.get("is_error") is not True:
                 outputs.extend(strings(block.get("content")))
                 add_printed(block["tool_use_id"], record.get("timestamp"), block.get("content"))
