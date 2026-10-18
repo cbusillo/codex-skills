@@ -15,6 +15,7 @@ CHECK_OPERATION = "work-closeout.claims"
 CLAIM_OPERATION = "github.plan.claim"
 COMMENT = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 SHELL_FIELD = re.compile(r'''\b(?:cmd|command)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?=\s*[,}])''')
+OWNERSHIP_TEXT = re.compile(r"gh-plan\.py[\s\S]*\bclaim\b|gh-pr\.py[\s\S]*\bcreate\b|\bgh\s+pr\s+create\b")
 
 
 class ReceiptCoverageError(ValueError):
@@ -127,16 +128,22 @@ def shell_commands(name, value):
             continue
 
 
-def shell_code(text):
+def shell_code(text, *, bodies=None):
     """Exclude heredoc bodies, retaining commands on both sides of them."""
     code, pending, header = [], [], ""
     for line in text.splitlines(keepends=True):
         if pending:
-            delimiter, tabs, expands = pending[0]
+            delimiter, tabs, expands, executes, body = pending[0]
             if (line.lstrip("\t") if tabs else line).rstrip("\r\n") == delimiter:
+                if executes and OWNERSHIP_TEXT.search("".join(body)):
+                    raise ValueError("unparsed executable heredoc")
+                if bodies is not None:
+                    bodies.append("".join(body))
                 pending.pop(0)
             elif expands and ("$(" in line or "`" in line):
                 raise ValueError("unparsed expanding heredoc")
+            else:
+                body.append(line)
             continue
         header += line
         lexer = shell_lexer(header, posix=False)
@@ -157,7 +164,10 @@ def shell_code(text):
             delimiter = shlex.split(raw[1:] if tabs else raw, comments=False)
             if len(delimiter) != 1:
                 raise ValueError("unparsed heredoc delimiter")
-            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\")))
+            consumers = shell_lexer(header)
+            consumers.whitespace_split = True
+            executes = any(executable_wrapper([word]) for word in consumers)
+            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\"), executes, []))
         code.append(header)
         header = ""
     if pending or header:
@@ -168,18 +178,31 @@ def shell_code(text):
 def opaque_ownership(name, value):
     """Unparsed potentially writing code is uncertainty, never proof of no write."""
     value = arguments(value)
-    writing = r"gh-plan\.py[\s\S]*\bclaim\b|gh-pr\.py[\s\S]*\bcreate\b|\bgh\s+pr\s+create\b"
     for text in shell_texts(name, value):
+        bodies = []
         try:
-            shell_code(text)
+            shell_code(text, bodies=bodies)
         except ValueError:
-            if re.search(writing, text):
+            if OWNERSHIP_TEXT.search(text):
+                return True
+        for argv in shell_commands("exec_command", {"cmd": text}):
+            if executable_wrapper(argv) and (OWNERSHIP_TEXT.search(" ".join(argv))
+                                            or any(OWNERSHIP_TEXT.search(body) for body in bodies)):
                 return True
     if name in {"exec", "functions.exec"} and isinstance(value, str) and "tools.exec_command" in value:
         unparsed = SHELL_FIELD.sub("", value)
         if re.search(r"\b(?:cmd|command)\s*:|\{\s*(?:cmd|command)\s*[,}]", unparsed):
-            return re.search(writing, value) is not None
+            return OWNERSHIP_TEXT.search(value) is not None
     return False
+
+
+def executable_wrapper(argv):
+    if not argv or script(argv) in {"gh-plan.py", "gh-pr.py"}:
+        return False
+    name = Path(argv[0]).name
+    return (name in {"bash", "sh", "zsh", "dash", "ksh", "node", "uv", "env", "timeout", "eval", "xargs", "exec", "command", "nice", "time", "gh-plan.py", "gh-pr.py"}
+            or re.fullmatch(r"python[0-9.]*", name) is not None
+            or re.match(r"[A-Za-z_]\w*=", argv[0]) is not None)
 
 
 def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>\n"):

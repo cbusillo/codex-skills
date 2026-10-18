@@ -64,6 +64,25 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_executable_wrappers_cannot_turn_hidden_ownership_into_no_write(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json'
+        for harness in ("codex", "claude"):
+            for command in ("bash <<'EOF'\n" + writer + "\nEOF",
+                            "'bash' <<'EOF'\n" + writer + "\nEOF",
+                            "sh -s <<'EOF'\n" + writer + "\nEOF",
+                            "cat <<'EOF' | bash\n" + writer + "\nEOF",
+                            "cat > run-claim.sh <<'EOF'\n" + writer + "\nEOF\nbash run-claim.sh",
+                            "bash -c '" + writer + "'", 'env X=1 ' + writer,
+                            'timeout 600 ' + writer, 'X=1 ' + writer,
+                            writer.replace('uv run ', 'uv run --script '),
+                            "python3 - <<'PY'\nimport os\nos.system(" + repr(writer) + ")\nPY"):
+                rows = history(harness, claim(), {**proof(), "harness": harness})
+                if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({}, harness, "tool-0")
+                self.assertTrue(receipts.ownership_state(rows, harness)["pending"], command)
+                self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"], command)
+
     def test_heredoc_bearing_ownership_still_requires_disposition_on_both_harnesses(self):
         for harness in ("codex", "claude"):
             for writer in ('uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json',

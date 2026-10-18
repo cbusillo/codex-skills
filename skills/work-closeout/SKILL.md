@@ -324,8 +324,12 @@ Keep ownership results visible: use one foreground shell command or one
 with shell `&` or drop an inner execution result. A detached writer with no
 recoverable terminal result leaves closeout conditional/no; record that blocker
 and preserve the session rather than rerunning the write to manufacture evidence.
-Quoted heredoc bodies are data; ownership commands before or after them still
-count. Substitutions in unquoted heredocs may execute and remain unparsed.
+Quoted heredoc bodies are data only when they are not passed to an executor,
+including a generated script executed later in the same invocation.
+Potential ownership passed to a shell/interpreter body, command operand or
+execution wrapper stays pending when its execution cannot be established.
+Ownership commands before or after inert bodies still count. Substitutions in
+unquoted heredocs may execute and remain unparsed.
 Potential ownership in unparsed shell or computed code-mode commands stays
 pending. Use the visible foreground form above for future writes; preserve
 conditional/no when original execution evidence cannot be recovered.
