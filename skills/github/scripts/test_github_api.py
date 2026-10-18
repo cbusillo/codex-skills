@@ -1356,6 +1356,8 @@ def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
         ["api", "--jq", "graphql", "user/repos", "-fname=example", "-fquery=query { viewer { login } }"],
         ["api", "user/repos", "other/endpoint"],
         ["api", "user/repos", "--unknown"],
+        ["api", "-i=false", "-XPOST", "user/repos"],
+        ["api", "user/repos", "--input=", "--input", "body.json"],
     ):
         assert _api.infer_gh_command_context(args).is_write is True, args
     for args in (
@@ -1366,6 +1368,10 @@ def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
         ["api", "-f", "per_page=100", "user/repos", "-X", "GET"],
         ["api", "--jq", "graphql", "user/repos"],
         ["api", "--paginate", "--slurp", "-X", "GET", "repos/o/r/pulls"],
+        ["api", "user/repos", "-i=false"],
+        ["api", "user/repos", "-i=true", "--allow-escape-sequences"],
+        ["api", "user/repos", "--input="],
+        ["api", "user/repos", "--input", "body.json", "--input="],
     ):
         assert _api.infer_gh_command_context(args).is_write is False, args
     mutation = _api.infer_gh_command_context(["api", "graphql", "-fquery=mutation { x }"])

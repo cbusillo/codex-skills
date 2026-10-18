@@ -903,7 +903,9 @@ _GH_API_VALUE_SHORTHANDS = {
 }
 _GH_API_BOOLEAN_SHORTHANDS = {"i": "--include"}
 _GH_API_VALUE_FLAGS = frozenset(_GH_API_VALUE_SHORTHANDS.values()) | {"--input", "--hostname", "--cache"}
-_GH_API_BOOLEAN_FLAGS = frozenset({"--include", "--paginate", "--slurp", "--silent", "--verbose"})
+_GH_API_BOOLEAN_FLAGS = frozenset({
+    "--allow-escape-sequences", "--include", "--paginate", "--slurp", "--silent", "--verbose", "--help",
+})
 
 
 @dataclass(frozen=True)
@@ -930,7 +932,8 @@ def parse_gh_api_args(args: list[str]) -> Optional[GhApiCommand]:
     """Read the arguments after `gh api` as gh's flag parser does.
 
     Every option consumes its value, short flags group (-iXPOST is -i -X POST,
-    -fname=x is -f name=x), the last --method wins, and gh takes exactly one
+    -fname=x is -f name=x, -i=false sets only -i), the last --method and
+    --input win, an empty --input sends no body, and gh takes exactly one
     endpoint. Returns None for arguments gh rejects.
     """
     options: list[tuple[str, str]] = []
@@ -961,6 +964,8 @@ def parse_gh_api_args(args: list[str]) -> Optional[GhApiCommand]:
         while group:
             letter, group = group[0], group[1:]
             if letter in _GH_API_BOOLEAN_SHORTHANDS:
+                if group.startswith("="):
+                    break
                 continue
             flag = _GH_API_VALUE_SHORTHANDS.get(letter)
             if flag is None:
@@ -977,11 +982,12 @@ def parse_gh_api_args(args: list[str]) -> Optional[GhApiCommand]:
     if len(positionals) != 1:
         return None
     methods = [value for name, value in options if name == "--method"]
+    inputs = [value for name, value in options if name == "--input"]
     return GhApiCommand(
         endpoint=positionals[0],
         method=methods[-1] if methods else None,
         fields=tuple(value for name, value in options if name in ("--field", "--raw-field")),
-        has_input=any(name == "--input" for name, _ in options),
+        has_input=bool(inputs and inputs[-1]),
     )
 
 

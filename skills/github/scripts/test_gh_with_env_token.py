@@ -474,13 +474,15 @@ def test_api_write_checks_read_arguments_as_gh_does() -> None:
         write(fake_gh, "#!/bin/sh\nprintf '%s\\n' \"$GH_TOKEN\"\n")
         repo = "repos/second-owner/site/issues/1"
         query = "-fquery=query { viewer { login } }"
-        # gh uses the last method; fields without a method send POST; every
-        # option takes its value.
+        # gh uses the last method and the last --input; fields or a nonempty
+        # input without a method send POST; every option takes its value.
         cases = {
             (repo, "-iXGET", "-iXDELETE"): True,
             ("-XGET", repo, "-XDELETE"): True,
             ("-X", "GET", repo, "--method", "DELETE"): True,
             ("--method=GET", "-XPOST", repo): True,
+            (repo, "--input=", "--input", "body.json"): True,
+            ("-i=false", "-XPOST", repo): True,
             (repo, "-fname=x"): True,
             ("-iFname=x", repo): True,
             (repo, "-f", "name=x"): True,
@@ -493,6 +495,9 @@ def test_api_write_checks_read_arguments_as_gh_does() -> None:
             ("--jq", "repos/x/y", repo): False,
             ("-iq", ".x", repo): False,
             (repo, "-H", "Accept: application/json"): False,
+            (repo, "-i=false"): False,
+            (repo, "--allow-escape-sequences"): False,
+            (repo, "--input", "body.json", "--input="): False,
         }
         for args, is_write in cases.items():
             result = run_wrapper(env_file, unused, identity, "api", *args, gh_command=fake_gh)
@@ -620,6 +625,8 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
             ("api", "--method", "GET", "notifications/threads/1"),
             ("api", "-iX", "GET", "notifications"),
             ("api", "https://api.github.com/user/repos"),
+            ("api", "user/repos", "-i=false"),
+            ("api", "user/repos", "--input="),
         ):
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)
