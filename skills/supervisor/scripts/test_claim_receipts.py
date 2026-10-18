@@ -64,6 +64,62 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_hidden_composed_ownership_results_cannot_clear_pending_writers(self):
+        for cell, result in (
+            ('await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 5", yield_time_ms:1000});', ""),
+            ('text(await tools.exec_command({cmd:"gh pr create --title x"})); await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 5"});', {"exit_code": 0, "output": ""}),
+        ):
+            rows = history("codex", claim(), proof())
+            rows[1]["payload"].update(name="functions.exec", arguments=cell)
+            rows[2] = output(result, "codex", "tool-0")
+            self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+            self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+        # Visible foreground execution preserves the supported exit path.
+        rows[1]["payload"]["arguments"] = 'text(await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 5"}));'
+        self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
+        # A normalized helper receipt is not another native execution result.
+        rows[1]["payload"]["arguments"] += 'await tools.exec_command({cmd:"gh pr create --title x"});'
+        rows[2] = output({"exit_code": 0, "output": json.dumps({**claim(), "exit_code": 0})}, "codex", "tool-0")
+        rows[4] = output(proof(("example/a", 1, 10)), "codex", "tool-1")
+        self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+        self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+
+    def test_shell_detached_ownership_never_uses_shell_exit_as_writer_completion(self):
+        for harness in ("codex", "claude"):
+            for command in ("uv run scripts/gh-plan.py --repo example/a claim 5 &",
+                            "nohup gh pr create --title x &"):
+                rows = history(harness, claim(), {**proof(), "harness": harness})
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+                self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+            # Quoted data and ordinary foreground nohup are not detachment.
+            command = 'nohup gh pr create --title "&"'
+            if harness == "codex":
+                rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else:
+                rows[1]["message"]["content"][0]["input"] = {"command": command}
+            self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_visible_composed_ownership_can_finish_through_an_outer_cell_poll(self):
+        rows = history("codex", claim(), proof())
+        rows[1]["payload"].update(name="functions.exec", arguments='text(await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 5"}));')
+        rows[2] = output("Script running with cell ID owning-cell", "codex", "tool-0")
+        poll = {"type": "response_item", "payload": {"type": "function_call", "name": "functions.wait", "call_id": "wait",
+                "arguments": json.dumps({"cell_id": "owning-cell"})}}
+        rows[3:3] = [poll, output({"exit_code": 0, "output": ""}, "codex", "wait")]
+        self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
+        rows[4] = output("", "codex", "wait")
+        self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+        # Each wait returns only new output, so preserve earlier visible results.
+        rows[1]["payload"]["arguments"] += 'text(await tools.exec_command({cmd:"gh pr create --title x"}));'
+        rows[2] = output([{"exit_code": 0, "output": ""}, "Script running with cell ID owning-cell"], "codex", "tool-0")
+        rows[4] = output({"exit_code": 0, "output": ""}, "codex", "wait")
+        self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
+
     def test_every_process_in_an_ownership_batch_must_reach_its_terminal_result(self):
         rows = history("codex", claim())
         rows[1]["payload"].update(name="functions.exec", arguments='text(await tools.exec_command({cmd:"gh pr create --title x"})); text(await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 1 > claim.json"}));')

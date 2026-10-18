@@ -32,8 +32,8 @@ def envelopes(value, depth=0):
         if "operation" in value:
             yield value
             return
-        if isinstance(value.get("session_id"), int):
-            yield value  # exec process handle; links a later write_stdin result
+        if isinstance(value.get("session_id"), int) or isinstance(value.get("exit_code"), int):
+            yield value  # native running or terminal exec result
         for key in ("output", "text", "content", "value", "result"):
             if key in value:
                 yield from envelopes(value[key], depth + 1)
@@ -118,12 +118,12 @@ def shell_commands(name, value):
             for token in lexer:
                 if token and all(c in ";&|\n" for c in token):
                     if command:
-                        yield command
+                        yield command[1:] if command[0] == "nohup" else command
                     command = []
                 else:
                     command.append(token)
             if command:
-                yield command
+                yield command[1:] if command[0] == "nohup" else command
         except ValueError:
             continue
 
@@ -320,6 +320,7 @@ def claim_targets(records, harness):
 def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=False):
     """Bind native outputs and process polls to an actual tool invocation."""
     calls, processes, background, polled, outstanding = {}, {}, set(), {}, {}
+    opaque, required, deferred, visible = set(), {}, {}, {}
     parsed = {}
     for index, value in outputs(records, harness) if receipts is None else receipts:
         parsed.setdefault(index, []).append(value)
@@ -342,6 +343,17 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             if invoked and name == "Bash" and isinstance(value, dict) and value.get("run_in_background"):
                 background.add(source)
             if invoked:
+                # A shell's result cannot attest completion of detached writers.
+                for command in shell_texts(name, value):
+                    lexer = shlex.shlex(command, posix=False, punctuation_chars=";&|<>")
+                    lexer.whitespace_split = True
+                    try:
+                        if "&" in list(lexer):
+                            opaque.add(source)
+                    except ValueError:
+                        opaque.add(source)
+                if name in {"exec", "functions.exec"}:
+                    required[source] = len(list(shell_texts(name, value)))
                 yield index, source, {"_attempt": True}
         for result in results:
             source = calls.get(result)
@@ -353,7 +365,17 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                 b.get("content") for b in (record.get("message") or {}).get("content", [])
                 if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == result])
             handles = {str(v["session_id"]) for v in values if isinstance(v.get("session_id"), int)}
+            outer = set(re.findall(r"Script running with cell ID ([\w-]+)", raw))
             handles.update(re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw))
+            if source in required and (result == source or polled.get(result, set()) & deferred.get(source, set())):
+                visible[source] = visible.get(source, 0) + sum(
+                    not v.get("operation") and (isinstance(v.get("session_id"), int) or isinstance(v.get("exit_code"), int))
+                    for v in values)
+                if outer:
+                    deferred.setdefault(source, set()).update(outer)
+                elif visible[source] < required[source]:
+                    # Dropped inner results leave writers with no recoverable handle.
+                    opaque.add(source)
             for handle in handles:
                 processes[handle] = source
             active = outstanding.setdefault(source, set())
@@ -361,7 +383,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             active.update(handles)
             native_task = record.get("toolUseResult")
             task = (native_task.get("backgroundTaskId") or native_task.get("taskId")) if harness == "claude" and isinstance(native_task, dict) else None
-            yield index, source, {"_result": True, "_pending": bool(active) or bool(task) or source in background,
+            yield index, source, {"_result": True, "_pending": bool(active) or bool(task) or source in background or source in opaque,
                                   "_background_task": task}
             for value in values:
                 yield index, source, value

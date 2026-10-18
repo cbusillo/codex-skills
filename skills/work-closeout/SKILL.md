@@ -319,6 +319,11 @@ checks collected by later polls. Every ownership command must have a terminal
 native result before the check launches; a process handle is still pending.
 Every observed process handle in an ownership batch must finish; one terminal
 poll cannot clear other processes from that batch.
+Keep ownership results visible: use one foreground shell command or one
+`text(await tools.exec_command(...));` cell. Do not launch ownership commands
+with shell `&` or drop an inner execution result. A detached writer with no
+recoverable terminal result leaves closeout conditional/no; record that blocker
+and preserve the session rather than rerunning the write to manufacture evidence.
 Claude background ownership waits for its native terminal task notice; a
 progress notice or a `TaskStop` invocation alone does not prove completion.
 Any later ownership activity requires a new check after its terminal result;

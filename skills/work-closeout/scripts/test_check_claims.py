@@ -76,12 +76,20 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_pending_ownership_is_refused_before_remote_inventory(self):
         from test_claim_receipts import history, SESSION as native_session
-        rows = history("codex", {"operation": helper.claim_receipts.CLAIM_OPERATION})
-        rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run scripts/gh-plan.py --repo test/a claim 1 > claim.json"})
-        rows[2]["payload"]["output"] = "Process running with session ID 123"
-        entry = {"session_id": native_session, "harness": "codex", "_transcript_records": rows}
-        with self.assertRaises(ValueError):
-            helper.check(self.reader, [], entry, ACTOR)
+        for harness in ("codex", "claude"):
+            for command in ("uv run scripts/gh-plan.py --repo test/a claim 1 > claim.json",
+                            "uv run scripts/gh-plan.py --repo test/a claim 1 &",
+                            "nohup gh pr create --title x &"):
+                rows = history(harness, {"operation": helper.claim_receipts.CLAIM_OPERATION})
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    rows[2]["payload"]["output"] = "Process running with session ID 123" if command.endswith("json") else ""
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    rows[2]["message"]["content"][0]["content"] = "Process running with session ID 123" if command.endswith("json") else ""
+                entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+                with self.assertRaises(ValueError):
+                    helper.check(self.reader, [], entry, ACTOR)
         self.reader.get_json.assert_not_called()
         self.reader.paged_json.assert_not_called()
 
