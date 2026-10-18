@@ -436,6 +436,47 @@ def released_explanatory_note(
     return False
 
 
+def attested_handoff_note(text: str, index: int, comments: list[dict[str, Any]]) -> bool:
+    """A released session's closure evidence that names this exact note as its handoff accounts for it."""
+    from github_plan_release import COMMENT_URL, receipt_for, related_sessions_match, stamp, validate_evidence
+    header = re.match(r"Claimed by:?\s+\S+", text, re.IGNORECASE)
+    if not header:
+        return False
+    note = comments[index]
+    for source_index, record, release_index in exact_released_sources(comments):
+        source, release = comments[source_index], comments[release_index]
+        # Only a Supervisor or direction receipt carries closure evidence.
+        receipt = receipt_for(release)
+        author = (source.get("user") or {}).get("login")
+        if (receipt is None or not source_index < index < release_index
+                or (note.get("user") or {}).get("login") != author
+                or not related_sessions_match(text, record["session"])):
+            continue
+        # Claim reads attach evidence fetched from any issue; otherwise use this issue's copy.
+        evidence_ids = {int(m.group(3)) for m in COMMENT_URL.finditer(receipt["evidence_url"])}
+        evidence = release.get("_release_evidence") or next((c for c in comments if c.get("id") in evidence_ids), None)
+        if evidence is None or evidence.get("id") not in evidence_ids:
+            continue
+        try:
+            validate_evidence(receipt, evidence, (release.get("user") or {}).get("login", ""))
+        except (KeyError, ValueError, TypeError):
+            continue
+        handoffs = {int(m.group(3)) for line in (evidence.get("body") or "").splitlines()
+                    if re.match(r"Handoff(?: context \([^)\n]*\))?: ", line)
+                    for m in COMMENT_URL.finditer(line)}
+        if note.get("id") not in handoffs:
+            continue
+        try:
+            if not max(stamp(source.get("updated_at") or source.get("created_at")), stamp(record["claimed_at"])) < stamp(
+                    note.get("created_at")) <= stamp(note.get("updated_at") or note.get("created_at")) < stamp(receipt["evidence_at"]):
+                continue
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not has_ownership_assertion(text[header.end():], own_claim=record):
+            return True
+    return False
+
+
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
     ended_claims: set[int] | None = None,
@@ -515,7 +556,7 @@ def discussion_evidence(
         prose = ownership_text(text, strip_quotes=False)
         legacy = re.match(r"Claimed by:?\s+(\S+)", prose, re.IGNORECASE)
         if legacy and not parsed and has_ownership_assertion(text):
-            if released_explanatory_note(text, index, comments):
+            if released_explanatory_note(text, index, comments) or attested_handoff_note(text, index, comments):
                 continue
             worker = legacy.group(1)
             if legacy_released.get((worker, author), -1) > index:

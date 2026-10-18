@@ -2075,7 +2075,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
     )
     comments = github_plan_release.effective_comments(comments)
     for release_comment, receipt in github_plan_release.receipts(comments):
-        valid = False
+        valid, evidence = False, None
         try:
             evidence_match = github_plan_release.COMMENT_URL.fullmatch(receipt["evidence_url"])
             if evidence_match:
@@ -2091,6 +2091,9 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
             pass
         if not valid:
             comments = [github_plan_release.without_release(c) if c.get("id") == release_comment.get("id") else c for c in comments]
+        else:
+            # Evidence may live on another issue; keep the validated copy with its release.
+            comments = [{**c, "_release_evidence": evidence} if c.get("id") == release_comment.get("id") else c for c in comments]
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
     status = sections.get("Current Status", "")
     if "pull_request" in issue:

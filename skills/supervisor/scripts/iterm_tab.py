@@ -29,6 +29,10 @@ import gui_launch
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
+# Codex draws its first screen seconds after exec (3.3s from an isolated home
+# on Chris-Studio; account and MCP startup add more), so watch for its
+# hook-review prompt until the brief's turn runs, within this bound.
+CODEX_PROMPT_WINDOW = 20.0
 
 
 class SendFailure(ValueError):
@@ -143,21 +147,46 @@ class LaunchFailure(ValueError):
                        "next_action": "List and read these tabs before retrying; earlier launches may be running."}
         if isinstance(error, StartupFailure):
             self.detail["failed_launch"]["startup"] = error.snapshot
+            if error.snapshot.get("blocked_prompt"):
+                self.detail["status"] = "launch_blocked"
         super().__init__(reason)
 
 
 class StartupFailure(ValueError):
     def __init__(self, snapshot):
         self.snapshot = snapshot
-        super().__init__("terminal exited during startup; inspect its last output before retrying"
-                         if snapshot["dead"] else
-                         "startup observation unavailable; submitted agent may be running; inspect before retrying")
+        if snapshot.get("blocked_prompt"):
+            reason = f"startup blocked by {snapshot['blocked_prompt']} prompt; inspect the exact terminal; do not relaunch or grant trust automatically"
+        else:
+            reason = ("terminal exited during startup; inspect its last output before retrying"
+                      if snapshot["dead"] else
+                      "startup observation unavailable; submitted agent may be running; inspect before retrying")
+        super().__init__(reason)
 
 
-async def verify_startup(read, timeout=2.0):
-    """Observe immediate exit; this is not full agent readiness."""
+def startup_prompt_window(choice):
+    """Only Codex shows the hook-review prompt; other launches keep the short check."""
+    return CODEX_PROMPT_WINDOW if choice and choice["provider"] == "openai" else 0.0
+
+
+def running_turn(screen, submitted):
+    """A Codex status row such as "• Working (0s • esc to interrupt)".
+
+    The echoed launch command, brief included, is not evidence; an unknown
+    row format only means the full prompt window is used.
+    """
+    return any(re.match(r"\s*[^\w\s]?\s*\w[\w ]*\(\d+[hms].*\besc to interrupt\b", line)
+               and line.strip() not in submitted.casefold()
+               for line in screen.splitlines())
+
+
+async def verify_startup(read, timeout=2.0, prompt_window=0.0, submitted=""):
+    """Observe immediate exit or native trust prompts; not full readiness."""
     deadline = time.monotonic() + timeout
+    # A running turn is past every startup prompt; stop watching there.
+    watch_until = max(deadline, time.monotonic() + prompt_window)
     last_dead = None
+    collect_until = deadline
     while True:
         try:
             snapshot = await read()
@@ -165,20 +194,32 @@ async def verify_startup(read, timeout=2.0):
             if last_dead is not None:
                 raise StartupFailure({**last_dead, "observation_error": type(error).__name__}) from error
             raise
+        if not snapshot["dead"]:
+            screen = "\n".join(snapshot.get("screen", [])).casefold()
+            choice = r"(?m)^[\s│┃|]*[›❯>]?\s*(?:[12][.)]\s*)?"
+            if (re.search(choice + r"trust all and\s+continue\b", screen)
+                    and re.search(choice + r"continue without trusting\b", screen)):
+                raise StartupFailure({**snapshot, "blocked_prompt": "hook_trust"})
+            if running_turn(screen, submitted):
+                watch_until = deadline
         if snapshot["dead"]:
+            if last_dead is None:
+                # A death seen late in the prompt watch gets the same window
+                # to collect its cause as one seen at launch.
+                collect_until = max(deadline, time.monotonic() + timeout)
             last_dead = snapshot
         # tmux can observe PTY EOF before SIGCHLD supplies the exit status.
         # Keep the failure, but use the remaining window to collect its cause.
         awaiting_status = (last_dead is not None and last_dead.get("exit_status") == ""
                            and not last_dead.get("exit_signal"))
-        if last_dead is not None and (not awaiting_status or time.monotonic() >= deadline):
+        if last_dead is not None and (not awaiting_status or time.monotonic() >= collect_until):
             raise StartupFailure(last_dead)
-        if last_dead is None and time.monotonic() >= deadline:
+        if last_dead is None and time.monotonic() >= watch_until:
             return
-        await asyncio.sleep(min(0.2, max(0, deadline - time.monotonic())))
+        await asyncio.sleep(min(0.2, max(0, (collect_until if last_dead else watch_until) - time.monotonic())))
 
 
-async def submit_iterm_launch(app, session, command):
+async def submit_iterm_launch(app, session, command, prompt_window=0.0):
     import iterm2
 
     last_screen = []
@@ -191,7 +232,8 @@ async def submit_iterm_launch(app, session, command):
         try:
             # Replace the interactive shell so any agent exit ends this exact
             # terminal, even when the launch file didn't itself use exec.
-            await send(session, "exec /bin/zsh -c " + shlex.quote(command), allow_tabs=True)
+            submitted = "exec /bin/zsh -c " + shlex.quote(command)
+            await send(session, submitted, allow_tabs=True)
 
             async def read():
                 nonlocal last_screen
@@ -210,7 +252,9 @@ async def submit_iterm_launch(app, session, command):
                 return {"dead": dead, "screen": last_screen}
 
             try:
-                await verify_startup(read)
+                # The shell echoes the quoted text as sent, wrapped at the
+                # terminal width; compare screen rows against that text.
+                await verify_startup(read, prompt_window=prompt_window, submitted=submitted)
             except StartupFailure:
                 raise
             except Exception as error:
@@ -999,7 +1043,7 @@ async def operate(app, args):
                     account_choice.record_launch(choice)
                     progress["receipt_written"] = True
                 progress.update(submission="unknown", phase="submit_command")
-                await submit_iterm_launch(app, session, command_text)
+                await submit_iterm_launch(app, session, command_text, prompt_window=startup_prompt_window(choice))
                 progress.update(submission="submitted", phase="startup_observed")
             except Exception as error:
                 cancel_unsubmitted_gui(choice, progress)
