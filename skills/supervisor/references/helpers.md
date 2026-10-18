@@ -1457,8 +1457,10 @@ admission with `thread/resume` using an intentionally invalid native UUID;
 the daemon rejects draining admission before validating that UUID. The normal
 invalid-session-id response proves admission is open without creating a thread,
 running hooks or starting inference. Unknown admission responses and admission
-timeouts refuse. The ten-second protocol budget covers initialization and admission;
-the known-open path does not read unrelated loaded threads. Thread metadata reads
+timeouts refuse. One ten-second protocol budget covers initialization, admission,
+the optional `plugin/list` check for browser-required launches, and the thread
+inventory after a draining response. Each step uses the time left in that same
+budget; the known-open path does not read unrelated loaded threads. Thread metadata reads
 can fail or wait independently of admission, and scanning them first made a busy
 account's launch depend on every other loaded thread ([#2182](https://github.com/cbusillo/codex-skills/issues/2182)).
 This protocol check is version-sensitive; an unfamiliar response needs diagnosis,

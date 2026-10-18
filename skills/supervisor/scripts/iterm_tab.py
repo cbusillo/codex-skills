@@ -542,11 +542,11 @@ def inspect_codex_daemon(home, directory=None):
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ValueError(f"daemon {method} timed out; do not restart")
+                    raise ValueError(f"daemon {method} timed out")
                 try:
                     message = json.loads(ws.recv(timeout=remaining))
                 except TimeoutError as error:
-                    raise ValueError(f"daemon {method} timed out; do not restart") from error
+                    raise ValueError(f"daemon {method} timed out") from error
                 if message.get("id") == request_id:
                     return message
 
@@ -555,8 +555,7 @@ def inspect_codex_daemon(home, directory=None):
             if "error" in response or not isinstance(response.get("result"), dict):
                 error = response.get("error")
                 code = error.get("code") if isinstance(error, dict) else None
-                raise ValueError(f"daemon {method} read failed (RPC code {code}); "
-                                 "active threads unknown; do not restart")
+                raise ValueError(f"daemon {method} read failed (RPC code {code})")
             return response["result"]
 
         result("initialize", {"clientInfo": {"name": "supervisor_launch_preflight", "version": "1"}})
@@ -589,18 +588,18 @@ def inspect_codex_daemon(home, directory=None):
             while True:
                 page = result("thread/loaded/list", {"cursor": cursor, "limit": 100})
                 if not isinstance(page.get("data"), list):
-                    raise ValueError("daemon thread inventory unavailable; do not restart")
+                    raise ValueError("daemon thread inventory unavailable")
                 for thread_id in page["data"]:
                     thread = result("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
                     state = thread["status"]["type"]
                     if state not in {"active", "idle", "systemError", "notLoaded"}:
-                        raise ValueError("daemon thread state unknown; do not restart")
+                        raise ValueError("daemon thread state unknown")
                     active += state == "active"
                 cursor = page.get("nextCursor")
                 if cursor is None:
                     break
                 if not isinstance(cursor, str) or cursor in seen:
-                    raise ValueError("daemon thread pagination unavailable; do not restart")
+                    raise ValueError("daemon thread pagination unavailable")
                 seen.add(cursor)
         except Exception as error:
             active = None

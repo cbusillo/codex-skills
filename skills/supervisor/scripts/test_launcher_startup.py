@@ -179,6 +179,8 @@ class DaemonTests(unittest.TestCase):
         self.assertIn("thread/read", raised.exception.inventory_error)
         self.assertIn(str(RPC_FAILURE["error"]["code"]), raised.exception.inventory_error)
         self.assertNotIn(RPC_FAILURE["error"]["message"], raised.exception.inventory_error)
+        clauses = str(raised.exception).split("; ")
+        self.assertEqual(len(clauses), len(set(clauses)))
 
     def test_admission_timeout_names_the_method_without_lifecycle_mutation(self):
         ws = Mock()
