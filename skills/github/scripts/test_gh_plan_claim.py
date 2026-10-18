@@ -2176,6 +2176,57 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def attested_handoff_fixture(self):
+        # codex-skills#2111: claim 6241211301, note 6241527690, evidence 6243185845, release 6243187633.
+        import github_plan_release as release_helper
+        source = {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT},
+                  "created_at": "2026-10-01T00:00:00Z"}
+        note = {"id": 2, "body": "Claimed by trial-alias as a repeat-stop. Implementation: PR #7. "
+                "The review of record is pending with the Supervisor.",
+                "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:01:00Z"}
+        evidence = {"id": 88, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:01:40Z",
+                    "body": "Closed session session-b\nEnded at: 2026-10-01T00:01:30Z\nSafe to exit: yes\n"
+                            "Handoff: https://github.com/owner/repo/issues/42#issuecomment-2",
+                    "issue_url": "https://api.github.com/repos/owner/repo/issues/42"}
+        self.comments = [source, note, evidence]
+        self.closed_pulls[88] = evidence
+        self.comments.append({"id": 3, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:02:00Z",
+            "body": release_helper.prepare_release(
+                source, evidence, self.comments, self.inventory, actor=TEST_BOT, role="supervisor",
+                releaser_session="supervisor-native", evidence_url="https://github.com/owner/repo/issues/42#issuecomment-88",
+                retained_prs=[], related=[])})
+
+    def test_attested_handoff_note_is_accounted_for_by_the_supervisor_release(self):
+        self.attested_handoff_fixture()
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_attested_handoff_note_requires_exact_evidence_author_session_and_chronology(self):
+        for change in ("unnamed_note", "other_comment_named", "foreign_note", "foreign_evidence", "other_session_evidence",
+                       "note_names_other_session", "note_after_end", "note_edited_after_end", "note_before_source",
+                       "worker_release", "unreleased", "second_holder"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.attested_handoff_fixture()
+                source, note, evidence, release = self.comments
+                if change == "unnamed_note": evidence["body"] = evidence["body"].rsplit("\n", 1)[0]
+                if change == "other_comment_named": evidence["body"] = evidence["body"].replace("issuecomment-2", "issuecomment-99")
+                if change == "foreign_note": note["user"]["login"] = "other"
+                if change == "foreign_evidence": evidence["user"] = {"login": "other"}
+                if change == "other_session_evidence": evidence["body"] = evidence["body"].replace("session-b", "session-z")
+                if change == "note_names_other_session": note["body"] += "\nSession: another-session"
+                if change == "note_after_end": note["created_at"] = "2026-10-01T00:01:35Z"
+                if change == "note_edited_after_end": note["updated_at"] = "2026-10-01T00:01:35Z"
+                if change == "note_before_source":
+                    self.comments[:2] = [note, source]
+                    note["created_at"] = "2026-09-30T23:59:00Z"
+                if change == "worker_release": release["body"] = "Released claim 1"
+                if change == "unreleased": self.comments.pop()
+                if change == "second_holder": note["body"] += "\nOwned by another-worker."
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
     def test_readback_rechecks_live_released_status_sessions(self):
         for phase in ("after_post", "after_status"):
             with self.subTest(phase=phase):
