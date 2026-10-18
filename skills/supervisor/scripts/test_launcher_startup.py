@@ -117,6 +117,97 @@ class DaemonTests(unittest.TestCase):
 
 
 class StartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hook_review_is_blocked_even_though_terminal_is_alive(self):
+        snapshot = {"dead": False, "screen": [
+            "2 hooks are new or changed", "Source: /fixture/account/hooks.json",
+            "› 1. Trust all and continue", "  2. Continue without trusting",
+        ]}
+        with self.assertRaises(iterm_tab.StartupFailure) as raised:
+            await iterm_tab.verify_startup(AsyncMock(return_value=snapshot), timeout=0)
+        self.assertEqual(raised.exception.snapshot["blocked_prompt"], "hook_trust")
+        self.assertFalse(raised.exception.snapshot["dead"])
+        self.assertIn("hook_trust", str(raised.exception))
+        failure = iterm_tab.LaunchFailure([], {"session_id": "fixture"}, raised.exception)
+        self.assertEqual(failure.detail["status"], "launch_blocked")
+        self.assertEqual(failure.detail["failed_launch"]["startup"]["screen"], snapshot["screen"])
+
+    async def test_bordered_hook_review_frame_is_blocked(self):
+        snapshot = {"dead": False, "screen": [
+            "╭──────────────────────────────╮", "│ 2 hooks are new or changed   │",
+            "│ › 1. Trust all and continue  │", "│   2. Continue without trusting │",
+        ]}
+        with self.assertRaises(iterm_tab.StartupFailure) as raised:
+            await iterm_tab.verify_startup(AsyncMock(return_value=snapshot), timeout=0)
+        self.assertEqual(raised.exception.snapshot["blocked_prompt"], "hook_trust")
+
+    async def test_codex_hook_review_after_short_check_still_blocks_launch(self):
+        # Codex draws its first screen seconds after exec; the prompt must not
+        # be missed because the immediate-exit check has already passed.
+        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "tty": "fixture",
+               "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
+        terminal = Mock()
+        terminal.run.return_value.stdout = "@1\t%1"
+        terminal.select.return_value = row
+        terminal.send = AsyncMock()
+        starting = {"dead": False, "exit_status": "", "exit_signal": "", "screen": []}
+        prompt = {**starting, "screen": ["› 1. Trust all and continue", "2. Continue without trusting"]}
+        reads = 0
+
+        def prompt_after_three_reads(_):
+            nonlocal reads
+            reads += 1
+            return prompt if reads > 3 else starting
+
+        terminal.read.side_effect = prompt_after_three_reads
+        args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
+        choice = {"provider": "openai", "env": {}}
+        original = iterm_tab.verify_startup
+
+        async def observe(read, **options):
+            # Without the short-check window, only the Codex prompt watch remains.
+            return await original(read, timeout=0, **options)
+
+        with (patch.object(tmux_terminal, "Terminal", return_value=terminal),
+              patch.object(iterm_tab, "prepare_launches", return_value=(["agent"], [choice])),
+              patch.object(iterm_tab.account_choice, "public", return_value={}),
+              patch.object(iterm_tab.account_choice, "record_launch"),
+              patch.object(iterm_tab, "verify_startup", side_effect=observe)):
+            with self.assertRaises(iterm_tab.LaunchFailure) as raised:
+                await tmux_terminal.operate(args)
+        self.assertEqual(raised.exception.detail["status"], "launch_blocked")
+
+    async def test_running_turn_ends_codex_prompt_watch(self):
+        snapshot = {"dead": False, "screen": ["• Working (0s • esc to interrupt)"]}
+        read = AsyncMock(return_value=snapshot)
+        await asyncio.wait_for(iterm_tab.verify_startup(read, timeout=0, prompt_window=60), 5)
+        read.assert_awaited_once()
+
+    async def test_echoed_brief_quoting_status_row_does_not_end_prompt_watch(self):
+        # iTerm echoes the submitted command, brief included, before Codex draws.
+        submitted = "codex -- 'Find why esc to interrupt shows\n• Working (0s • esc to interrupt)\nearly'"
+        echo = ["% codex -- 'Find why esc to interrupt shows", "• Working (0s • esc to interrupt)", "early'"]
+        prompt = [*echo, "› 1. Trust all and continue", "  2. Continue without trusting"]
+        read = AsyncMock(side_effect=[{"dead": False, "screen": echo}] * 3 + [{"dead": False, "screen": prompt}])
+        with self.assertRaises(iterm_tab.StartupFailure) as raised:
+            await iterm_tab.verify_startup(read, timeout=0, prompt_window=5, submitted=submitted)
+        self.assertEqual(raised.exception.snapshot["blocked_prompt"], "hook_trust")
+
+    async def test_death_during_prompt_watch_still_collects_exit_status(self):
+        read = AsyncMock(side_effect=[{"dead": False, "screen": []},
+                                      {"dead": True, "exit_status": "", "screen": ["last output"]},
+                                      {"dead": True, "exit_status": "1", "screen": ["last output"]}])
+        with self.assertRaises(iterm_tab.StartupFailure) as raised:
+            await iterm_tab.verify_startup(read, timeout=0.05, prompt_window=5)
+        self.assertEqual(raised.exception.snapshot["exit_status"], "1")
+
+    async def test_brief_mentioning_hook_trust_without_review_choices_passes(self):
+        snapshot = {"dead": False, "screen": [
+            "Fix 2 hooks are new or changed launch detection",
+            'The report quotes "Trust all and continue" and "Continue without trusting".',
+            "› working on issue 2018",
+        ]}
+        self.assertIsNone(await iterm_tab.verify_startup(AsyncMock(return_value=snapshot), timeout=0))
+
     async def test_dead_pane_reports_exit_status_and_last_output(self):
         snapshot = {"dead": True, "exit_status": "1", "screen": ["bootstrap failed"]}
         with self.assertRaises(iterm_tab.StartupFailure) as raised:
@@ -198,6 +289,31 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         receipt.assert_called_once_with(choice)
         terminal.view.assert_not_called()
 
+    async def test_tmux_hook_review_stops_batch_after_first_submitted_worker(self):
+        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "tty": "fixture",
+               "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
+        terminal = Mock()
+        terminal.run.return_value.stdout = "@1\t%1"
+        terminal.select.return_value = row
+        terminal.send = AsyncMock()
+        terminal.read.return_value = {"dead": False, "exit_status": "", "exit_signal": "",
+                                     "screen": ["› 1. Trust all and continue", "2. Continue without trusting"]}
+        args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
+        choice = {"provider": "openai", "env": {}}
+        with (patch.object(tmux_terminal, "Terminal", return_value=terminal),
+              patch.object(iterm_tab, "prepare_launches", return_value=(["agent1", "agent2"], [choice, choice])),
+              patch.object(iterm_tab.account_choice, "public", return_value={}),
+              patch.object(iterm_tab.account_choice, "record_launch") as receipt):
+            with self.assertRaises(iterm_tab.LaunchFailure) as raised:
+                await tmux_terminal.operate(args)
+        self.assertEqual(raised.exception.detail["status"], "launch_blocked")
+        self.assertEqual(raised.exception.detail["launched"], [])
+        self.assertTrue(raised.exception.detail["failed_launch"]["receipt_written"])
+        self.assertEqual(raised.exception.detail["failed_launch"]["submission"], "submitted")
+        self.assertIn("session_id", raised.exception.detail["failed_launch"])
+        receipt.assert_called_once_with(choice)
+        terminal.send.assert_awaited_once()
+
     async def test_iterm_uses_termination_monitor_without_a_desktop_connection(self):
         queue = asyncio.Queue()
         monitor = SimpleNamespace(async_get=queue.get)
@@ -268,14 +384,46 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                               terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[session])])])
         original = iterm_tab.verify_startup
 
-        async def observe(read):
+        async def observe(read, **options):
             await asyncio.sleep(0)
-            return await original(read, timeout=0)
+            return await original(read, timeout=0, **options)
 
         with (patch.dict("sys.modules", {"iterm2": SimpleNamespace(SessionTerminationMonitor=Mock(return_value=context))}),
               patch.object(iterm_tab, "send", new_callable=AsyncMock),
               patch.object(iterm_tab, "verify_startup", side_effect=observe)):
             await iterm_tab.submit_iterm_launch(app, session, "fake-agent")
+
+    async def test_iterm_echo_of_brief_ending_in_status_row_does_not_end_prompt_watch(self):
+        queue = asyncio.Queue()
+        context = Mock()
+        context.__aenter__ = AsyncMock(return_value=SimpleNamespace(async_get=queue.get))
+        context.__aexit__ = AsyncMock(return_value=False)
+        brief = "Check why the launcher saw this row:\n• Working (0s • esc to interrupt)"
+        command = "codex -C /tmp -- " + shlex.quote(brief)
+        # Captured from zsh at 60 columns after a bracketed paste of the launch text.
+        echo = ["% exec /bin/zsh -c 'codex -C /tmp -- '\"'\"'Check why the laun",
+                "cher saw this row:",
+                "• Working (0s • esc to interrupt)'\"'\"''"]
+        prompt = [*echo, "› 1. Trust all and continue", "  2. Continue without trusting"]
+
+        def contents(lines):
+            return SimpleNamespace(number_of_lines=len(lines), line=lambda i: SimpleNamespace(string=lines[i]))
+
+        session = SimpleNamespace(session_id="exact", async_get_screen_contents=AsyncMock(
+            side_effect=[contents(echo)] * 3 + [contents(prompt)]))
+        app = SimpleNamespace(connection=object(), async_refresh=AsyncMock(),
+                              terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[session])])])
+        original = iterm_tab.verify_startup
+
+        async def observe(read, **options):
+            return await original(read, timeout=0, **options)
+
+        with (patch.dict("sys.modules", {"iterm2": SimpleNamespace(SessionTerminationMonitor=Mock(return_value=context))}),
+              patch.object(iterm_tab, "send", new_callable=AsyncMock),
+              patch.object(iterm_tab, "verify_startup", side_effect=observe)):
+            with self.assertRaises(iterm_tab.StartupFailure) as raised:
+                await iterm_tab.submit_iterm_launch(app, session, command, prompt_window=5)
+        self.assertEqual(raised.exception.snapshot["blocked_prompt"], "hook_trust")
 
     async def test_failed_iterm_monitor_reports_unknown_and_never_dead(self):
         context = Mock()
