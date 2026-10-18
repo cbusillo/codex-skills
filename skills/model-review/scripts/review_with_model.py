@@ -671,8 +671,17 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
 
 def unreachable_links(prompt: str) -> list[str]:
     """Web links in the request, in order and without repeats; reviewers have no network to open them."""
-    found = (match.rstrip(".,;:!?") for match in re.findall(r"https?://[^\s<>()\[\]\"'`]+", prompt))
-    return list(dict.fromkeys(found))
+    return list(dict.fromkeys(trim_link(match) for match in re.findall(r"https?://[^\s<>\"`]+", prompt)))
+
+
+def trim_link(link: str) -> str:
+    """Drop prose punctuation after a link, keeping brackets and quotes the link itself opened."""
+    while link and link[-1] in ".,;:!?')]":
+        opener = {")": "(", "]": "["}.get(link[-1])
+        if opener and link.count(opener) >= link.count(link[-1]):
+            break
+        link = link[:-1]
+    return link
 
 
 def fault_marker(source: Mapping[str, str] = os.environ) -> Path:

@@ -849,6 +849,14 @@ class ReviewWithModelTests(unittest.TestCase):
         told = sent.read_text().replace(f" Context: {link}, and again ({link}).", "")
         self.assertNotEqual(told, without_links, "the reviewer is told the links cannot be opened")
 
+    def test_links_keep_their_own_brackets_and_lose_surrounding_prose(self) -> None:
+        wiki = "https://en.wikipedia.org/wiki/Capability-based_security_(computing)"
+        quoted = "https://example.com/it's-here"
+        prompt = (f"See {wiki}. Also ({wiki}), [the page]({quoted}), '{quoted}' and "
+                  f"<https://example.com/a>; https://example.com/b?x=1&y=[2].")
+        self.assertEqual(review_with_model.unreachable_links(prompt),
+                         [wiki, quoted, "https://example.com/a", "https://example.com/b?x=1&y=[2]"])
+
     def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
         self.install("agy", FAKE_AGY)
         source = self.commit_base_on_main("before\n")
