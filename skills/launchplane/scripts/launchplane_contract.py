@@ -261,6 +261,18 @@ PROJECTED_HELPER_COMMANDS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "context-runtime-settings-read": {
+        "method": "GET", "path": "/v1/contexts/{context}/runtime-settings", "mode": "read",
+    },
+    "instance-runtime-settings-read": {
+        "method": "GET", "path": "/v1/contexts/{context}/instances/{instance}/runtime-settings", "mode": "read",
+    },
+    "context-secrets-read": {
+        "method": "GET", "path": "/v1/contexts/{context}/secrets", "mode": "read",
+    },
+    "instance-secrets-read": {
+        "method": "GET", "path": "/v1/contexts/{context}/instances/{instance}/secrets", "mode": "read",
+    },
     "dokploy-inventory-read": {
         "method": "GET", "path": "/v1/dokploy/inventory", "mode": "read",
     },
