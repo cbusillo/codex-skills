@@ -66,6 +66,11 @@ pwd > "$FAKE_AGY_CWD_FILE"
   diff_path=$(printf '%s' "$2" | sed -n 's/^The changes to review are in \\([^ ]*\\). Read.*/\\1/p')
   [ -n "$diff_path" ] && cat "$diff_path" > "$FAKE_AGY_DIFF_FILE"
 }
+[ -n "$FAKE_AGY_INPUT_NAME" ] && {
+  input_path=$(printf '%s' "$2" | grep -o "/[^ ]*$FAKE_AGY_INPUT_NAME" | head -1)
+  printf '%s' "$input_path" > "$FAKE_AGY_INPUT_FILE.path"
+  [ -n "$input_path" ] && cat "$input_path" > "$FAKE_AGY_INPUT_FILE"
+}
 echo "jetski: some banner text"
 printf '%s' "$FAKE_AGY_JSON"
 """
@@ -795,16 +800,40 @@ class ReviewWithModelTests(unittest.TestCase):
             self.assertEqual((code, result["ok"]), (1, False))
             self.assertIn("command_diagnostic", result)
 
-    def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
-        self.install("agy", FAKE_AGY)
+    def commit_base_on_main(self, text: str) -> Path:
+        """Make the reviewed repository one committed file whose HEAD is origin/main."""
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
         source = self.repo / "example.txt"
-        source.write_text("before\n")
+        source.write_text(text)
         subprocess.run(["git", "-C", str(self.repo), "add", "example.txt"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        return source
+
+    def test_inputs_outside_the_repository_are_copied_where_the_reviewer_can_read(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.commit_base_on_main("base\n")
+        issue = self.root / "saved-issue.md"
+        issue.write_text("# The pending question\n")
+        seen = self.root / "agy-input"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+               "FAKE_AGY_INPUT_NAME": issue.name, "FAKE_AGY_INPUT_FILE": str(seen)}
+        code, result = self.run_helper("run", "--provider", "google", "--repo", str(self.repo),
+                                       "--prompt-file", str(self.prompt), "--input", str(issue), **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertEqual(seen.read_text(), "# The pending question\n")
+        named = Path(Path(f"{seen}.path").read_text())
+        self.assertTrue(named.is_relative_to(self.repo.resolve()), "inputs sit under the reviewer's read root")
+        self.assertFalse(list(self.repo.glob(".model-review-*")), "copied inputs are removed with the scratch")
+        code, result = self.run_helper("run", "--provider", "google", "--repo", str(self.repo),
+                                       "--prompt-file", str(self.prompt), "--input", str(self.root / "absent.md"), **env)
+        self.assertEqual((code, result["ok"], result["phase"]), (1, False, "inputs"))
+
+    def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
+        self.install("agy", FAKE_AGY)
+        source = self.commit_base_on_main("before\n")
         subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
         prompt_file, diff_file = self.root / "agy-prompt", self.root / "agy-diff"
         env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
