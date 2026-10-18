@@ -246,14 +246,27 @@ class QodanaTests(unittest.TestCase):
     def test_headless_preparation_leaves_the_model_to_qodana_and_provisions_declared_uv(self):
         (self.repo / "uv.toml").write_text('required-version = ">=0.11.29,<1"\n')
         config = {"prepare": {"python": {"version": "3.12", "moduleName": "m"}}}
-        with tempfile.TemporaryDirectory() as private:
-            provisioned = backend.preparation(config, Path(private), "python", self.repo)
-            supplied = backend.preparation(config, Path(private), "python", self.repo, uv_supplied=True)
+        private = self.root / "private"
+        private.mkdir()
+        provisioned = backend.preparation(config, private, "python", self.repo)
+        supplied = backend.preparation(config, private, "python", self.repo, uv_supplied=True)
         install, generator = provisioned["commands"]
         self.assertEqual(install[-1], "uv>=0.11.29,<1")
-        self.assertIn("--no-project-model", generator)
         self.assertEqual(supplied["commands"], [generator])
         self.assertIsNone(supplied["path"])
+        # Run the produced preparation on a fresh project: it must leave the IDE model to Qodana.
+        project = self.root / "project"
+        (project / ".venv/bin").mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet", str(project)], check=True)
+        (project / ".gitignore").write_text(".venv/\n")
+        interpreter = project / ".venv/bin/python"
+        interpreter.write_text("#!/bin/sh\necho 3.12\n")
+        interpreter.chmod(0o755)
+        script = generator.index(f"{backend.WORK}/prepare-python-project.py")
+        argv = [sys.executable, str(private / "prepare-python-project.py"),
+                *[str(project) if value == f"{backend.WORK}/project" else value for value in generator[script + 1:]]]
+        subprocess.run(argv, check=True, capture_output=True)
+        self.assertFalse((project / ".idea").exists())
 
     def test_uv_requirement_rejects_shell_text(self):
         (self.repo / "uv.toml").write_text('required-version = ">=0.11; touch /tmp/x"\n')
