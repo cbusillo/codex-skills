@@ -541,10 +541,16 @@ def main() -> int:
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
             if args.backend == "api" and (args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv):
-                return emit_agent_usage_error("Qodana options require an explicit --backend qodana selection.")
+                return emit_agent_usage_error("Qodana options cannot be combined with --backend api.")
+            backend_selection = "explicit"
+            if args.backend == "auto":
+                host_default = os.environ.get("JB_INSPECT_DEFAULT_BACKEND")
+                args.backend, backend_selection = qodana_backend_module().select_backend(
+                    args, sys.modules[__name__], host_default if host_default in {"api", "qodana"} else None)
             if args.backend == "qodana":
                 # Keep headless runs outside all desktop configuration/lifecycle paths.
                 result = command_qodana(args)
+                result["backend_selection"] = backend_selection
                 print(public_json(result))
                 return 0
             context = build_context(args)
@@ -586,14 +592,18 @@ def main() -> int:
     return 2
 
 
-def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
+def qodana_backend_module() -> Any:
     backend_path = Path(__file__).with_name("qodana_backend.py")
     spec = importlib.util.spec_from_file_location("jb_qodana_backend", backend_path)
     if spec is None or spec.loader is None:
         raise RuntimeError("Qodana backend unavailable")
     backend = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(backend)
-    return backend.run(args, sys.modules[__name__])
+    return backend
+
+
+def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
+    return qodana_backend_module().run(args, sys.modules[__name__])
 
 
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
@@ -796,7 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
     agent = subparsers.choices["agent-inspect"]
-    agent.add_argument("--backend", choices=("api", "qodana"), default="api", help="Explicit per-run backend; the Inspection API remains the default.")
+    agent.add_argument("--backend", choices=("auto", "api", "qodana"), default="auto", help="Per-run backend. auto runs local Qodana for qualified Python selections and the Inspection API otherwise.")
     agent.add_argument("--qodana-image", help="Pinned Community Docker image repository@sha256:digest.")
     agent.add_argument("--qodana-license-file", action="append", default=[], help="Existing local IDE key or paid-plugin license; copied privately then deleted. Never an account/token store.")
     agent.add_argument("--qodana-plugin-zip", action="append", default=[], help="Public plugin package for the disposable profile; does not supply entitlement.")

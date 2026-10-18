@@ -230,6 +230,8 @@ def main() -> int:
     parser.add_argument("--pep723-script", action="append", default=[],
                         help="Read inspection dependencies from this worktree-relative script (repeatable).")
     parser.add_argument("--sdk-table", type=Path, help="Read SDK names from the selected IDE's options/jdk.table.xml.")
+    parser.add_argument("--no-project-model", action="store_true",
+                        help="Prepare only .venv; a headless engine builds its own model and SDK from it.")
     args = parser.parse_args()
 
     repo = Path(args.repo).expanduser().resolve()
@@ -251,8 +253,10 @@ def main() -> int:
     if args.sync and not (repo / "pyproject.toml").is_file():
         parser.error("--sync requires pyproject.toml in the repository root")
     sdk_name = registered_sdk_name(repo / ".venv", args.sdk_table)
-    generated_roots = ignored_generated_roots(repo, args.test_root)
-    project_files = render_project_files(repo, args.module_name, args.test_root, sdk_name, generated_roots)
+    project_files: dict[Path, str] = {}
+    if not args.no_project_model:
+        generated_roots = ignored_generated_roots(repo, args.test_root)
+        project_files = render_project_files(repo, args.module_name, args.test_root, sdk_name, generated_roots)
     ensure_ignored_outputs(repo, [repo / ".venv", *project_files])
     validate_existing_venv(repo / ".venv", args.python)
     if args.pep723_script:
@@ -263,7 +267,7 @@ def main() -> int:
         subprocess.run(build_sync_command(args.python, args.extra), cwd=repo, check=True)
     for path, content in project_files.items():
         atomic_write(path, content)
-    if sdk_name is None:
+    if sdk_name is None and project_files:
         print(
             "Python environment prepared; IDE SDK registration is not confirmed. "
             "The generated SDK name is provisional. Inspection must verify registration and assignment. "
