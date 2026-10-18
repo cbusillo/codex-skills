@@ -3421,6 +3421,84 @@ class ClaimTests(unittest.TestCase):
                 self.admit(kind, links, unlinked)
             self.assert_no_writes()
 
+    def test_admission_comment_links_keep_the_exact_evidence(self):
+        first = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        for second in (
+            "https://github.com/owner/other/pull/6#issuecomment-456",
+            "https://github.com/owner/repo/issues/5#issuecomment-456",
+        ):
+            with self.subTest(second=second):
+                self.setUp()
+                self.admit("repeat-stop", (first, second, first.replace("/issues/", "/pull/")))
+                self.assertIn(CLAIM.admission_text("repeat-stop", [first, second]), self.comments[-1]["body"])
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_spellings_of_one_citation_count_as_one_occurrence(self):
+        # GitHub serves one number's issue and PR paths, and owner/repo case-insensitively.
+        for first, second in (
+            ("https://github.com/owner/repo/issues/5#issuecomment-123",
+             "https://github.com/owner/repo/pull/5#issuecomment-123"),
+            ("https://github.com/owner/repo/issues/5#issuecomment-123",
+             "https://github.com/Owner/Repo/issues/5#issuecomment-123"),
+            ("https://github.com/owner/repo/issues/5", "https://github.com/owner/repo/pull/5"),
+        ):
+            with self.subTest(second=second):
+                self.setUp()
+                with self.assertRaises(PLAN.PlanError):
+                    self.admit("repeat-stop", (first, second))
+                self.assert_no_writes()
+
+    def test_walk_does_not_follow_a_comment_link_as_a_graph_node(self):
+        graph = {("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/direction/issues/9#issuecomment-1"}},
+                 ("owner/direction", 9): {"issue": self.TRACK}}
+        (track, _), reads = self.walk(graph)
+        self.assertIsNone(track)
+        self.assertEqual(reads, [("owner/product", 7)])
+
+    def test_comment_evidence_does_not_supply_a_missing_occurrence_or_track(self):
+        link = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        with self.assertRaises(PLAN.PlanError):
+            self.admit("repeat-stop", (link, link))
+        self.assert_no_writes()
+        self.setUp()
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        with patch.object(CLAIM, "admission_track", return_value=(None, True)) as walk, \
+                self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(walk.call_args.args[:2], (("owner/repo", 42), "owner"))
+        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+        self.assert_no_writes()
+
+    def test_invalid_admission_links_refuse_before_writes(self):
+        parent = "https://github.com/owner/repo/issues/5"
+        for link in (
+            parent + "#issuecomment-0", parent + "#issuecomment-nope", parent + "#other-123",
+            parent + "#issuecomment-123/extra", parent + "?query=1#issuecomment-123",
+            parent + "#issuecomment-123\n", parent.replace("https:", "http:"),
+            parent.replace("github.com", "github.com.example.org"),
+            "https://github.com/owner/repo/issues/comments/123",
+        ):
+            with self.subTest(link=link):
+                self.setUp()
+                with self.assertRaises(PLAN.PlanError):
+                    self.admit("spare-capacity", (link,))
+                self.assert_no_writes()
+
+    def test_comment_admission_preserves_ownership_and_wait_refusals(self):
+        link = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        for blocked in ("ownership", "wait"):
+            with self.subTest(blocked=blocked):
+                self.setUp()
+                if blocked == "ownership":
+                    self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+                else:
+                    self.wait = wait_record.reviewed(evidence="Device test pending", waiting_for="Director",
+                                                     ends_when="Device acceptance recorded")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.admit("spare-capacity", (link,))
+                self.assertEqual(caught.exception.code, "claim_conflict" if blocked == "ownership" else "claim_wait_unresolved")
+                self.assert_no_writes()
+
 
 if __name__ == "__main__":
     unittest.main()
