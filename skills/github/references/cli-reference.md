@@ -1265,6 +1265,16 @@ explanations and expose stable `claim_resume_*`, `claim_handoff_*` or
 `claim_native_parent_*` codes. Native blocker and malformed child-history
 refusals also have specific codes.
 
+An unreadable current or historical child (including a 403 or ambiguous 404)
+blocks inheritance: absence of access is not proof that its source claim ended.
+Restore visibility through the record owner's existing process before retrying
+inheritance; do not grant access or skip that record to make the claim pass.
+If visibility cannot be restored, independent work can continue on a separately
+authorized issue and fresh branch, using an ordinary claim without
+`--resume-from` or `--handoff-comment` and without the retained source artifacts.
+That route still enforces its own ownership, waits and blockers; it does not
+release or transfer the unreadable child's source.
+
 For an explicitly authorized **conflict-only refresh** of a finished session's
 PR, claim its **canonical open planning issue**, even when the brief names only
 the PR. Run from a checkout of the PR's repository:

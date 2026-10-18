@@ -1109,6 +1109,11 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_detached_native_child_remains_visible_until_its_claim_ends(self):
+        fixture = json.loads(Path(__file__).with_name("fixtures").joinpath(
+            "launchplane-3948-subissue-timeline.json").read_text())
+        # Replay the captured REST event unchanged, including its child identity.
+        child = fixture["events"][0]["sub_issue"]
+        peer_number, peer_repo = child["number"], child["repository"]["full_name"]
         for phase in ("preflight", "after_post", "after_status"):
             for ended in (False, True):
                 with self.subTest(phase=phase, ended=ended):
@@ -1117,18 +1122,16 @@ class ClaimTests(unittest.TestCase):
                     successor = {**OTHER, "session": "detached-child-session", "branch": "work/detached-source",
                                  "resume_from": str(self.args.resume_from),
                                  "retained_handoff": f"{self.parent['html_url']}#issuecomment-{self.args.handoff_comment}"}
-                    sibling = {**copy.deepcopy(self.issue), "number": 43, "body": "## Current Status\n\n" + CLAIM.marker(successor)}
+                    sibling = {**copy.deepcopy(child), "body": "## Current Status\n\n" + CLAIM.marker(successor)}
                     comments = [{"id": 88, "body": CLAIM.marker(successor), "user": {"login": TEST_BOT},
                                  "created_at": successor["claimed_at"]}]
                     if ended:
                         comments.append({"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT},
                                          "created_at": "2026-10-02T00:00:00Z"})
                     def detached():
-                        self.targets["43"] = sibling
-                        self.target_comments["/repos/owner/repo/issues/43/comments"] = comments
-                        self.timelines["/repos/owner/repo/issues/41/timeline"] = [
-                            {"event": "sub_issue_added", "sub_issue": {"number": 43, "state": "open",
-                             "repository": {"full_name": "owner/repo"}}}]
+                        self.targets[str(peer_number)] = sibling
+                        self.target_comments[f"/repos/{peer_repo}/issues/{peer_number}/comments"] = comments
+                        self.timelines["/repos/owner/repo/issues/41/timeline"] = fixture["events"]
                     if phase == "preflight": detached()
                     else: setattr(self, phase, detached)
                     if ended:
@@ -1140,9 +1143,37 @@ class ClaimTests(unittest.TestCase):
                         self.assertEqual(caught.exception.code, "claim_conflict")
                         self.assertEqual(caught.exception.payload["competing_evidence"][0]["record"], successor)
                         self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
-                                         "https://github.com/owner/repo/issues/43#issuecomment-88")
+                                         f"https://github.com/{peer_repo}/issues/{peer_number}#issuecomment-88")
                         if phase == "preflight": self.assert_no_writes()
                         else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_unreadable_historical_child_blocks_inheritance_but_not_independent_work(self):
+        for status in (403, 404):
+            with self.subTest(status=status):
+                self.setUp()
+                self.parent_handoff_fixture()
+                self.timelines["/repos/owner/repo/issues/41/timeline"] = [
+                    {"event": "sub_issue_added", "sub_issue": {"number": 43, "state": "open",
+                     "repository": {"full_name": "owner/repo"}}}]
+                get_issue = self.get_issue
+                def unreadable_child(ref, repo):
+                    if str(ref) == "43":
+                        raise PLAN.PlanError("Child unreadable", api_result={"status": status})
+                    return get_issue(ref, repo)
+                with patch.object(self, "get_issue", side_effect=unreadable_child):
+                    with self.assertRaises(PLAN.PlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.api_result["status"], status)
+                    self.assert_no_writes()
+                    # Independent work gets its own record and branch, with no inherited assets.
+                    self.issue["number"] = 44
+                    self.args.issue, self.args.branch = "44", "work/issue-44-independent"
+                    self.args.resume_from = self.args.handoff_comment = None
+                    self.run_claim()
+                output = self.emitted.call_args.args[0]
+                self.assertTrue(output["ok"])
+                self.assertNotIn("resume_from", output["claim"])
+                self.assertNotIn("retained_handoff", output["claim"])
 
     def test_native_child_history_errors_refuse_before_writing(self):
         for failure in ("malformed", "unreadable"):
