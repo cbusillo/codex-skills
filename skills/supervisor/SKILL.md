@@ -654,7 +654,7 @@ for recovery or repeat them as fact.
    start without a comment.
    Read [helper setup](references/helpers.md) before rebuilding the session
    registry or running a helper.
-   While workers need the receipt-store route, also schedule the
+   While workers post Supervisor review requests, also schedule the
    [pending-review dispatcher](references/helpers.md#dispatcher-timer) using
    its documented cadence and terminal route, and recreate it at takeover.
 6. Read `stale_wait_report` from the existing
