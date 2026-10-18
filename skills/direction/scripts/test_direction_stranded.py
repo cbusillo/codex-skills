@@ -184,6 +184,16 @@ class StrandedTests(unittest.TestCase):
         self.assertFalse(row["evidence"][0]["resurface"])
         self.assertFalse(self.report(delivery_view={"complete": False, "questions": []})["complete"])
 
+    def test_unnumbered_question_repair_reason_reaches_the_sweep(self):
+        from skills.supervisor.scripts import question_delivery
+        source = self.records[1]["comments"][0]
+        url = source["html_url"]
+        view = question_delivery.inventory(
+            [{**source, "url": url, "author": sweep.login(source)}], [], "cbusillo", self.trusted, now=self.now)
+        result = self.report(delivery_view=view)
+        gap = next(g for g in result["coverage_gaps"] if g["reason"] == "queue_view_incomplete")
+        self.assertEqual(gap.get("unnumbered_sources"), [url])
+
     def test_umbrella_merged_refs_are_one_candidate_per_issue(self):
         record = self.records[2]
         newer = {**record["linked_pulls"][0], "merged_at": "2026-10-15T20:00:00Z",
@@ -815,11 +825,12 @@ class InventoryTests(unittest.TestCase):
                      "created_at": "2026-10-14T00:00:00Z", "registration_url": "https://github.com/test/repo/issues/123#issuecomment-100",
                      "delivery": "unacknowledged", "resurface": True} for u in urls[:2]]
             self.assertEqual(question_urls, set(urls))
-            return {"complete": not missing, "questions": rows, "missing_sources": missing}
+            return {"complete": not (missing or unnumbered), "questions": rows, "missing_sources": missing,
+                    "unnumbered_sources": [urls[0]] if unnumbered else []}
         module = SimpleNamespace(inventory=inventory, records=lambda *_: [{"question_url": u} for u in urls],
                                  settled=lambda url, *_: url == urls[-1],
                                  source_item=lambda url: "test/repo#" + url.split("/issues/")[1].split("#")[0])
-        for budget in (800, 3):
+        for unnumbered, budget in ((False, 800), (False, 3), (True, 800), (True, 3)):
             reader = FakeReader()
             for n, url in enumerate(urls[:2], 1):
                 reader.pages[(f"repos/test/repo/issues/{n}/comments", 1, None)] = [{"id": n, "html_url": url,
@@ -829,7 +840,10 @@ class InventoryTests(unittest.TestCase):
                                        question_queue="test/repo#123", max_requests=budget)
             self.assertTrue(any(row["kind"] == "registered_question" for row in result["findings"]))
             self.assertFalse(any("/issues/3/comments" in path for path in reader.paths))
-            if budget == 800:
+            if unnumbered:
+                gap = next(g for g in result["coverage_gaps"] if g["reason"] == "queue_view_incomplete")
+                self.assertEqual(gap.get("unnumbered_sources"), [urls[0]])
+            elif budget == 800:
                 self.assertTrue(result["complete"], result)
                 queue_index = next(i for i, path in enumerate(reader.paths) if "/issues/123/comments" in path)
                 history_index = next(i for i, path in enumerate(reader.paths) if "state=closed" in path)
