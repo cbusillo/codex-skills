@@ -196,7 +196,7 @@ def test_cli_marker_failure_is_not_a_successful_or_silently_unmarked_audit() -> 
                   redirect_stdout(output), redirect_stderr(errors)):
                 code = module.main(["--repo", "owner/repo", "--gh", "gh"])
             result = json.loads(output.getvalue())
-            assert code != 0 and result["ok"] is False, result
+            assert code == 1 and result["ok"] is False, result
             assert result["marked"] is None and result["run_recorded"] is None
             assert result["dropped"] is None
             assert result["repo"] == "owner/repo" and result["findings"] == findings

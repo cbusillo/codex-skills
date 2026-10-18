@@ -1102,7 +1102,7 @@ id = "github.direction.turn_record"
 request_priority = "essential"
 capabilities = ["issues_read", "issues_write"]
 permission_mode = "fixed"
-permission_note = "Uses the existing Issues read and write grants through gh-with-env-token and gh-issue; no profile expansion. The local marker is written first; a failed list or write is reported as shared.ok false with exit 2 and leaves other machines reminding, never a silent success."
+permission_note = "Uses the existing Issues read and write grants through gh-with-env-token and gh-issue; no profile expansion. The local marker is written first; failed path resolution or local persistence reports local_recorded false with exit 1 and attempts no shared write. A failed shared list or write is reported as shared.ok false with exit 2 and leaves other machines reminding, never a silent success."
 entrypoint = "direction/scripts/direction_mark.py turn --repo OWNER/REPO (shared turn record)"
 intent = "Keep one open issue in OWNER/direction holding the last daily turn, so the session-start reminder on every machine sees it."
 current_transport = "rest_api"
@@ -1116,7 +1116,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL transport; the record is one repository-scoped issue body."
 source_refs = ["direction/scripts/direction_mark.py:share_turn"]
-test_refs = ["direction/scripts/test_direction_mark.py:test_two_machines_one_turn", "direction/scripts/test_direction_mark.py:test_turn_cli_requires_coverage_and_reports_written_repository"]
+test_refs = ["direction/scripts/test_direction_mark.py:test_two_machines_one_turn", "direction/scripts/test_direction_mark.py:test_turn_cli_requires_coverage_and_reports_written_repository", "direction/scripts/test_direction_mark.py:test_turn_cli_reports_local_write_failure_without_sharing", "direction/scripts/test_direction_mark.py:test_turn_cli_reports_marker_path_resolution_failure_without_sharing"]
 
 [[operations]]
 id = "github.direction.audit_rulesets"

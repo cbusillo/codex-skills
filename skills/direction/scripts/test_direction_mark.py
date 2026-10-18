@@ -128,7 +128,7 @@ def test_turn_cli_reports_local_write_failure_without_sharing() -> None:
         with (patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}),
               patch.object(mark, "share_turn") as shared,
               redirect_stdout(output), redirect_stderr(errors)):
-            assert mark.main(["turn", "--repo", "owner/start"]) != 0
+            assert mark.main(["turn", "--repo", "owner/start"]) == 1
         result = json.loads(output.getvalue())
         assert result["ok"] is False and result["local_recorded"] is False
         assert result["marker"] == str(path) and result["error"]
@@ -145,7 +145,7 @@ def test_turn_cli_reports_marker_path_resolution_failure_without_sharing() -> No
           patch.object(Path, "expanduser", side_effect=RuntimeError("Could not determine home directory.")),
           patch.object(mark, "share_turn") as shared,
           redirect_stdout(output), redirect_stderr(errors)):
-        assert mark.main(["turn", "--repo", "owner/start"]) != 0
+        assert mark.main(["turn", "--repo", "owner/start"]) == 1
     result = json.loads(output.getvalue())
     assert result["ok"] is False and result["local_recorded"] is False
     assert result["marker"] == marker and result["error"] in errors.getvalue()
