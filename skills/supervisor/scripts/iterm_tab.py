@@ -24,6 +24,7 @@ from pathlib import Path
 
 import account_choice
 import claude_trust
+import agent_tools
 import gui_launch
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
@@ -33,6 +34,9 @@ CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
 # on Chris-Studio; account and MCP startup add more), so watch for its
 # hook-review prompt until the brief's turn runs, within this bound.
 CODEX_PROMPT_WINDOW = 20.0
+# The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
+CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
+
 
 
 class SendFailure(ValueError):
@@ -382,6 +386,8 @@ def append_brief(command_text, brief):
 
 
 async def send(session, text, submit=True, allow_tabs=False):
+    if resume_input(text):
+        validate_resume_input(text, tty=await session.async_get_variable("tty"))
     validate_text(text, allow_tabs=allow_tabs)
     if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
@@ -516,13 +522,14 @@ class DaemonRefusal(ValueError):
                          "Context Panel account with --account; inspect active threads before any manual restart")
 
 
-def inspect_codex_daemon(home):
+def inspect_codex_daemon(home, directory=None):
     """Read loaded thread states and check admission without creating a thread."""
     from websockets.sync.client import unix_connect
 
     deadline = time.monotonic() + 10
     active = 0
-    with unix_connect(str(codex_daemon_endpoint(home)), open_timeout=2, close_timeout=1) as ws:
+    with unix_connect(str(codex_daemon_endpoint(home)), open_timeout=2, close_timeout=1,
+                      max_size=32 * 1024 * 1024) as ws:
         request_id = 0
 
         def request(method, params):
@@ -572,6 +579,12 @@ def inspect_codex_daemon(home):
             raise DaemonRefusal("draining", active)
         if error.get("code") != -32600 or not message.startswith("invalid session id:"):
             raise DaemonRefusal("unknown", active)
+        if directory is None:
+            return None
+        try:
+            return result("plugin/list", {"cwds": [str(directory)], "marketplaceKinds": ["local"]})
+        except Exception:
+            return {"inventory_error": "Codex plugin inventory unavailable; daemon admission passed"}
 
 
 def check_codex_daemon(choice):
@@ -608,7 +621,21 @@ def check_codex_daemon(choice):
             f"run {command}, then retry the launch"
         ) from error
     try:
-        inspect_codex_daemon(home)
+        inspect_plugins = choice.get("require_browser", False)
+        directory = choice.get("tool_directory") if inspect_plugins else None
+        if inspect_plugins and directory is None:
+            raise ValueError("plugin inventory needs the validated launch directory")
+        inventory = inspect_codex_daemon(home, directory=directory)
+        if inspect_plugins and isinstance(inventory, dict) and not choice.get("tools", {}).get("remote_endpoint_unverified"):
+            plugins = agent_tools.daemon_codex_plugins(inventory)
+            missing = agent_tools.missing_codex_plugins(plugins, agent_tools.CODEX_BROWSER_PLUGINS)
+            choice.setdefault("tools", {"warnings": []})
+            if missing or inventory.get("inventory_error"):
+                message = inventory.get("inventory_error") or (
+                    "daemon-routed Codex is missing enabled bundled plugins: " + ", ".join(missing))
+                raise ValueError(message +
+                                 "; use local codex --no-daemon -C with the launcher's account-relative override; "
+                                 "-c and -p do not forward marketplace settings through --remote")
     except Exception as error:
         detail = str(error) if isinstance(error, ValueError) else type(error).__name__
         raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
@@ -643,14 +670,20 @@ def scoped_exec(command_text):
     return None
 
 
-def with_account(command_text, choice, brief=None):
+def with_account(command_text, choice, brief=None, *, coordinate=False):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
         raise ValueError("account selection needs a one-line launch command")
     default_claude = choice["provider"] == "anthropic" and "CLAUDE_CONFIG_DIR" not in choice["env"]
     checked_keys = set(choice["env"]) | set(account_choice.ACCOUNT_VARIABLES.values())
+    if choice["provider"] == "openai":
+        checked_keys.add(agent_tools.CODEX_SOURCE_ENV)
     if choice["provider"] == "anthropic":
-        checked_keys.add(CLAUDE_SUGGESTION_ENV)
+        checked_keys.update({CLAUDE_SUGGESTION_ENV, agent_tools.CHROME_ENV})
+        if CHROME_OPT_IN.is_file() and "--chrome" in launch_words(command_text)[1:]:
+            raise ValueError("remove --chrome: it starts the built-in Chrome server on this session's own "
+                             "login, which cannot reach the Agents browser; the catalog-chrome server "
+                             "supplies browser tools on every account")
     google = choice["provider"] == "google"
     if google:
         checked_keys.add("HOME")
@@ -665,8 +698,27 @@ def with_account(command_text, choice, brief=None):
     expected = {"openai": "codex", "anthropic": "claude", "google": "agy"}[choice["provider"]]
     if launch_agent(command_text) != expected:
         raise ValueError(f"{choice['provider']} account selection requires a direct {expected} invocation")
+    original_words, directory = launch_parts(command_text)
+    original_tokens = shlex.split(command_text)
+    if directory is not None:
+        original_tokens = original_tokens[original_tokens.index("&&") + 1:]
+    prefix_count = len(original_tokens) - len(original_words)
     if brief is not None:
         command_text = append_brief(command_text, brief)
+    if coordinate and choice["provider"] == "openai":
+        # Preserve assignments and direct invocation prefixes, while the
+        # wrapper registers its own PID before exec starts the native client.
+        tokens = shlex.split(command_text)
+        if directory is not None:
+            tokens = tokens[tokens.index("&&") + 1:]
+        prefix, words = tokens[:prefix_count], tokens[prefix_count:]
+        from codex_session_proxy import managed_argv
+        words = managed_argv(Path(choice["env"]["CODEX_HOME"]), words)
+        wrapper = ["uv", "run", str(Path(__file__).with_name("codex-session.py")), "launch",
+                   "--codex-home", choice["env"]["CODEX_HOME"], "--", *words]
+        command_text = shlex.join([*prefix, *wrapper])
+        if directory is not None:
+            command_text = "cd " + shlex.quote(directory) + " && " + command_text
     settings = " ".join(
         f"{key}={shlex.quote(os.path.expanduser(value))}"
         for key, value in choice["env"].items()
@@ -677,6 +729,8 @@ def with_account(command_text, choice, brief=None):
         prefixes.append(f"export {settings}")
     if choice["provider"] == "anthropic":
         prefixes.append(f"export {CLAUDE_SUGGESTION_ENV}=false")
+        if CHROME_OPT_IN.is_file():
+            prefixes.append(f"export {agent_tools.CHROME_ENV}=0")
         command_text = scoped_exec(command_text) or (
             "( export CLAUDE_ACCOUNT_MOVE_ENABLED=1; " + command_text + "\n)"
         )
@@ -733,6 +787,125 @@ def codex_git_trust_root(directory):
     return None
 
 
+def check_claude_tools(command_text, choice, without_browser=False, probes=None, require_browser=False):
+    """Check the pinned route; browser briefs require it, ordinary work gets warnings."""
+    if choice["provider"] != "anthropic":
+        return
+    # Validate account setters and conflicting flags before spawning a server.
+    with_account(command_text, choice)
+    if not CHROME_OPT_IN.is_file():
+        if require_browser:
+            raise ValueError("required browser has no catalog Chrome setup; see README: Chrome across Claude account homes")
+        return
+    home_value = choice["env"].get("CLAUDE_CONFIG_DIR")
+    home = Path(home_value).expanduser() if home_value else None
+    directory = launch_parts(command_text)[1]
+    if require_browser and (directory is None or not Path(directory).expanduser().is_absolute()):
+        raise ValueError("required Claude browser needs cd /absolute/repository && exec claude")
+    directory = (Path(directory).expanduser() if directory else Path.cwd()).resolve()
+    # The launch exports CLAUDE_CODE_ENABLE_CFC=0, so the built-in server stays off.
+    tools = {"warnings": agent_tools.claude_problems(
+        home, directory, {agent_tools.CHROME_ENV: "0"}, check_computer_use=False)}
+    if without_browser:
+        tools["browsers"] = "not checked (--without-browser)"
+    elif tools["warnings"]:
+        # Static Chrome failures already explain why this route cannot work.
+        # Do not spawn a server or repeat the same diagnostic.
+        if require_browser:
+            raise ValueError("Chrome check failed: " + "; ".join(tools["warnings"]) +
+                             "; no terminal was launched")
+    else:
+        try:
+            server = agent_tools.chrome_server(home)
+            key = json.dumps(server, sort_keys=True)
+            probes = {} if probes is None else probes
+            if key not in probes:
+                try:
+                    probes[key] = agent_tools.connected_browsers(server)
+                except ValueError as error:
+                    probes[key] = error
+            if isinstance(probes[key], ValueError):
+                raise probes[key]
+            if not probes[key]:
+                raise ValueError("no Chrome browser is connected to the pinned account; "
+                                 "ask Chris to open the Agents profile")
+            tools["browsers"] = len(probes[key])
+        except ValueError as error:
+            if require_browser:
+                raise ValueError(f"Chrome check failed: {error}; no terminal was launched") from None
+            tools["warnings"].append(str(error))
+    choice["tools"] = tools
+
+
+def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
+    """Use native local loading; remote sessions keep the daemon's own inventory."""
+    if choice["provider"] != "openai":
+        return command_text
+    choice["require_browser"] = required
+    words = launch_words(command_text)
+    choice["tool_directory"] = str(codex_directory(words).resolve())
+    endpoints = [words[index + 1] if word == "--remote" and index + 1 < len(words)
+                 else word.partition("=")[2] for index, word in enumerate(words)
+                 if word == "--remote" or word.startswith("--remote=")]
+    remote = bool(endpoints)
+    if remote and endpoints != ["unix://"]:
+        warning = "explicit remote endpoint's plugins are unverified; use local codex -C for a browser brief"
+        if required:
+            raise ValueError(warning)
+        choice["tools"] = {"warnings": [warning], "remote_endpoint_unverified": True}
+    must_work = required or gui
+    if remote:
+        return command_text
+    local_flag = "--no-daemon" in words
+    if not must_work and not CHROME_OPT_IN.is_file():
+        if local_flag:
+            choice["tools"] = {"warnings": [], "route": "local"}
+        return command_text
+    needed = ((agent_tools.CODEX_BROWSER_PLUGINS if required else set())
+              | ({agent_tools.COMPUTER_USE} if gui else set())) if must_work else None
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
+    try:
+        market = gui_launch.marketplace(home, Path.home() / ".codex")
+    except ValueError as error:
+        if must_work:
+            raise
+        route = "local" if local_flag else "daemon"
+        detail = ("source launch keeps its explicit local configuration" if local_flag
+                  else "source launch falls back to the selected-home daemon")
+        choice["tools"] = {"warnings": [str(error) + "; " + detail], "route": route}
+        return command_text
+    try:
+        missing = agent_tools.missing_codex_plugins(
+            agent_tools.codex_plugins(home, Path(market["path"]), codex_directory(words)), needed)
+    except ValueError as error:
+        if must_work:
+            raise
+        # The validated local marketplace route still works for source tasks;
+        # an optional discovery failure must not silently switch transports.
+        warnings = [str(error)]
+    else:
+        warnings = ["Codex bundled plugins missing or disabled: " + ", ".join(missing)] if missing else []
+    if must_work and warnings:
+        raise ValueError(warnings[0] + "; install/enable them through Codex before this tool launch")
+    choice["tools"] = {"warnings": warnings, "marketplace": market, "route": "local"}
+    choice["env"][agent_tools.CODEX_SOURCE_ENV] = market["path"]
+    override = "marketplaces.openai-bundled.source=" + json.dumps(market["path"])
+    return command_text + ("" if local_flag else " --no-daemon") + " -c " + shlex.quote(override)
+
+
+def codex_directory(words):
+    """Parse the one literal workspace used by trust and plugin discovery."""
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("-C", "--cd", action="append")
+    try:
+        options, _ = parser.parse_known_args(words[1:])
+    except argparse.ArgumentError as error:
+        raise ValueError("Codex launches require -C /absolute/repository") from error
+    if not options.cd or len(options.cd) != 1:
+        raise ValueError("Codex launches require exactly one -C /absolute/repository (or --cd)")
+    return Path(options.cd[0])
+
+
 def check_codex_project(command_text, choice):
     """Require an explicit, already-trusted directory in the selected Codex home."""
     if choice["provider"] != "openai":
@@ -742,15 +915,7 @@ def check_codex_project(command_text, choice):
     words, _ = launch_parts(command_text)
     if Path(words[0]).name != "codex":
         raise ValueError("openai account selection requires a direct Codex invocation")
-    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
-    parser.add_argument("-C", "--cd", action="append")
-    try:
-        options, _ = parser.parse_known_args(words[1:])
-    except argparse.ArgumentError as error:
-        raise ValueError("Codex launches require -C /absolute/repository") from error
-    if not options.cd or len(options.cd) != 1:
-        raise ValueError("Codex launches require exactly one -C /absolute/repository (or --cd)")
-    directory = Path(options.cd[0])
+    directory = codex_directory(words)
     if not directory.is_absolute() or not directory.is_dir():
         raise ValueError("Codex -C/--cd must name an existing absolute repository directory")
     home = Path(choice["env"]["CODEX_HOME"]).expanduser()
@@ -812,6 +977,11 @@ def claude_trust_writes(command_text, choice, config_path):
 
 def prepare_launches(args):
     """Validate the full batch and prepare accounts before creating terminals."""
+    if getattr(args, "require_browser", False) and getattr(args, "without_browser", False):
+        raise ValueError("--require-browser and --without-browser cannot be used together")
+    if (getattr(args, "require_browser", False)
+            and getattr(args, "account_provider", None) not in {"anthropic", "openai"}):
+        raise ValueError("--require-browser needs --account-provider anthropic or openai")
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
     command_texts = [path.read_text(encoding="utf-8").rstrip("\n") for path in files]
     for text in command_texts:
@@ -850,9 +1020,18 @@ def prepare_launches(args):
                 args.account_provider, args.account_config, args.account, count=len(files)
             )
         trust_writes = []
-        for text, choice in zip(command_texts, choices):
+        probes = {}
+        # Validate command/account/trust inputs for the whole batch first.
+        # Live preflight follows; its reusable marketplace links are persistent.
+        for text, choice, brief in zip(command_texts, choices, briefs):
+            with_account(text, choice, brief)
             check_codex_project(text, choice)
             trust_writes += claude_trust_writes(text, choice, args.account_config)
+        for text, choice in zip(command_texts, choices):
+            check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
+                               getattr(args, "require_browser", False))
+        command_texts = [prepare_codex_tools(text, choice, getattr(args, "require_browser", False), gui=bool(apps[index]))
+                         for index, (text, choice) in enumerate(zip(command_texts, choices))]
         claude_trust.apply(trust_writes)
         if apps[0]:
             home = Path(choices[0]["env"]["CODEX_HOME"]).expanduser()
@@ -860,9 +1039,11 @@ def prepare_launches(args):
                 raise ValueError("GUI launch needs the selected account's existing absolute CODEX_HOME")
             source_path = home / gui_launch.BUNDLED_MARKETPLACE
             override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
-            command_texts[0] += " -c " + shlex.quote(override)
-        command_texts = [with_account(text, choice, brief)
-                         for text, choice, brief in zip(command_texts, choices, briefs)]
+            if choices[0].get("tools", {}).get("route") != "local":
+                command_texts[0] += " --no-daemon -c " + shlex.quote(override)
+        command_texts = [with_account(text, choice, brief,
+                                     coordinate=not app and choice.get("tools", {}).get("route") != "local")
+                         for text, choice, brief, app in zip(command_texts, choices, briefs, apps)]
     elif getattr(args, "account", None):
         raise ValueError("--account needs --account-provider")
     elif any(account_settings(text, account_choice.ACCOUNT_VARIABLES.values())
@@ -873,12 +1054,13 @@ def prepare_launches(args):
         command_texts = [append_brief(text, brief) for text, brief in zip(command_texts, briefs)]
     if choices[0]:
         for choice in choices:
-            check_codex_daemon(choice)
+            if choice.get("tools", {}).get("route") != "local":
+                check_codex_daemon(choice)
         account_choice.prepare_launch(choices[0])
     if apps[0]:
         reservation = gui_launch.reserve(apps[0])
         try:
-            market = gui_launch.marketplace(home, Path.home() / ".codex")
+            market = choices[0].get("tools", {}).get("marketplace") or gui_launch.marketplace(home, Path.home() / ".codex")
             choices[0]["gui"] = {**reservation, "marketplace": market,
                                   "override": override, "screen": "unlocked"}
             command_file = gui_launch.stage_command(reservation, command_texts[0])
@@ -897,6 +1079,60 @@ def prepare_launches(args):
                                  "inspect shared GUI state before release") from error
             raise
     return command_texts, choices
+
+
+def resume_input(text):
+    return "\n" not in text and re.match(r"^\s*/resume(?:\s|$)", text, re.IGNORECASE)
+
+
+def validate_resume_input(text, *, tty=None):
+    if resume_input(text):
+        if isinstance(tty, str) and tty:
+            from close_ttys import inventory
+            commands = [command.split() for _, terminal, command in inventory()
+                        if terminal == tty.removeprefix("/dev/")]
+            # A positively identified Claude-only target keeps its own resume
+            # command. Unknown or mixed targets retain the conservative route.
+            claude = any(argv and (Path(argv[0]).name in {"claude", "claude.js"} or
+                         len(argv) > 1 and Path(argv[0]).name in {"node", "nodejs", "bun"} and Path(argv[1]).name in {"claude", "claude.js"}) for argv in commands)
+            codex = any(Path(arg).name.startswith("codex") for argv in commands for arg in argv)
+            if claude and not codex:
+                return
+        raise ValueError("Run codex-session.py resume --session-id <native-id> --codex-home <source-home> instead; TUI resume bypasses ownership coordination")
+
+
+def source_launch_metadata(result, choice):
+    if not choice or choice.get("provider") != "openai":
+        return result
+    home = choice["env"]["CODEX_HOME"]
+    result["codex_home"] = str(Path(home).expanduser().resolve())
+    try:
+        from close_ttys import inventory
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        if github not in sys.path:
+            sys.path.append(github)
+        import github_plan_closure
+        from github_plan_sessions import codex_argv_start
+        tty = result.get("tty")
+        if not isinstance(tty, str) or not tty:
+            raise ValueError("launch TTY is unavailable")
+        candidates = [(pid, codex_argv_start(command.split())) for pid, terminal, command in inventory()
+                      if terminal == tty.removeprefix("/dev/") and codex_argv_start(command.split()) is not None]
+        # The guarded parent is a Python helper on the same TTY. Prefer the
+        # native executable over the wrapper when both are visible.
+        matches = [pid for pid, kind in candidates if kind == 0]
+        if not matches:
+            proxies = {r.get("launch_pid"): r for r in github_plan_closure.log_rows()
+                       if r.get("record_kind") == "managed_proxy" and r.get("codex_home") == result["codex_home"]}
+            matches = [pid for pid, _ in candidates if pid in proxies and
+                       github_plan_closure.process_started_at(pid).isoformat() == proxies[pid].get("launch_started_at")]
+        if len(matches) != 1:
+            raise ValueError("native client PID is not unique on the launch TTY")
+        result.update(github_plan_closure.launch_metadata(matches[0], result["session_id"], home))
+        result["pid"] = matches[0]
+    except (OSError, ValueError, ImportError, subprocess.SubprocessError):
+        result["launch_identity_unavailable"] = True
+    return result
 
 
 def cancel_unsubmitted_gui(choice, progress):
@@ -1054,6 +1290,12 @@ async def operate(app, args):
                       "tab_id": tab.tab_id, "session_id": session.session_id}
             if choice:
                 result["account"] = account_choice.public(choice)
+            if choice and choice.get("provider") == "openai":
+                try:
+                    result["tty"] = await session.async_get_variable("tty")
+                except (AttributeError, OSError, ValueError):
+                    result["launch_identity_unavailable"] = True
+                source_launch_metadata(result, choice)
             results.append(result)
         return results[0] if len(results) == 1 else results
     if args.command == "window" and previous_tab:
@@ -1196,6 +1438,10 @@ def main():
         choices=account_choice.PROVIDERS,
         help="launch on Context Panel's use-next account or ranked batch order",
     )
+    new.add_argument("--without-browser", action="store_true",
+                     help="launch Claude without the connected-browser check, for briefs that need no browser")
+    new.add_argument("--require-browser", action="store_true",
+                     help="require a working browser route before launching a browser brief")
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)
     for name in ("send", "read", "clear"):

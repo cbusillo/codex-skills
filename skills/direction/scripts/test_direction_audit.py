@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import types
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from typing import Any, Self
@@ -170,6 +170,39 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
             assert kinds(result) == ["coverage_incomplete"]
             assert not result["ok"]
         assert calls and all(request[0] == "api" and request[-2:] == ["--method", "GET"] for request in calls)
+
+
+def test_cli_marker_failure_is_not_a_successful_or_silently_unmarked_audit() -> None:
+    module = load()
+    findings = [{"kind": "direction_drift", "detail": "An open issue contradicts the adopted direction"}]
+    for held, archived, unresolved in ((False, False, False), (True, False, False), (False, True, False),
+                                       (False, False, True), (True, False, True), (False, True, True)):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "not-a-directory"
+            parent.write_text("keep")
+            marker = parent / "marker.json"
+            output, errors = StringIO(), StringIO()
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  patch.object(module, "merged_direction", return_value=DIRECTION),
+                  patch.object(module, "gh_json", return_value={"login": "owner"}),
+                  patch.object(module, "fetch_paginated", return_value=([], False)),
+                  patch.object(module, "fetch_rulesets", return_value=([], False)),
+                  patch.object(module, "fetch_audit_issues", return_value=([], ["milestone_issue_events"] if held else [])),
+                  patch.object(module, "previous_audit_stamp", return_value=None),
+                  patch.object(module, "audit", return_value={"ok": False, "findings": findings}),
+                  patch.object(module, "stale_wait_report", return_value={"repository": {"archived": archived}}),
+                  patch.object(module.direction_mark, "marker_path", side_effect=RuntimeError("Could not determine home directory."))
+                  if unresolved else nullcontext(),
+                  redirect_stdout(output), redirect_stderr(errors)):
+                code = module.main(["--repo", "owner/repo", "--gh", "gh"])
+            result = json.loads(output.getvalue())
+            assert code == 1 and result["ok"] is False, result
+            assert result["marked"] is None and result["run_recorded"] is None
+            assert result["dropped"] is None
+            assert result["repo"] == "owner/repo" and result["findings"] == findings
+            assert str(marker) in result["marker_error"]
+            assert result["marker_error"] in errors.getvalue()
+            assert parent.read_text() == "keep"
 
 
 def test_default_reader_error_exposes_read_only_owner_remedy() -> None:
@@ -2486,6 +2519,76 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
     assert not partial["complete"] and not partial["items"] and partial["unavailable"]
 
 
+def test_stale_wait_report_records_bare_reference_to_another_repository_as_unresolved() -> None:
+    # direction#3 wrote "#104" for odoo-tenant-cm-website#104; it does not exist here.
+    module = load()
+    rows = [
+        {**issue(3, "Bare reference meant elsewhere", labels=("plan", "plan:active"),
+                 body="## Current Status\nNext action: Website agents finish #104 company identity.\nWaiting for: None.\n"),
+         "updated_at": "2026-10-05T00:00:00Z"},
+        {**issue(4, "Named repository that is missing", labels=("plan", "plan:active"),
+                 body="## Current Status\nNext action: Finish owner/site#104 company identity.\nWaiting for: None.\n"),
+         "updated_at": "2026-10-05T00:00:00Z"},
+        {**issue(5, "Parked on a bare reference", labels=("plan", "plan:waiting"),
+                 body="## Current Status\nState: Waiting.\nWaiting for: #104 to close.\n"),
+         "updated_at": "2026-10-05T00:00:00Z"},
+    ]
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        if "/dependencies/blocked_by" in path:
+            return []
+        if path in {"repos/owner/catalog/issues/104", "repos/owner/site/issues/104"}:
+            raise module.ReferenceNotFound(f"gh api {path} failed: gh: Not Found (HTTP 404)")
+        raise AssertionError(path)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
+    assert report["unavailable"] == [{"number": 4, "source": "active_linked_pr", "reason": "unavailable"}]
+    assert report["unresolved_references"] == [
+        {"number": 3, "source": "active_linked_pr", "reason": "unresolved_reference", "reference": "#104"},
+        {"number": 5, "source": "wait_reference", "reason": "unresolved_reference", "reference": "#104"},
+    ]
+    assert not report["items"]
+    report = module.stale_wait_report([rows[0], rows[2]], "owner/catalog", fetch=current_repository_fetch(fetch))
+    assert report["complete"] and not report["unavailable"] and not report["items"]
+    # Any other read failure still leaves the issue unread.
+    def outage(args: list[str]) -> Any:
+        if args[1].endswith("/issues/104"):
+            raise module.AuditError("gh: HTTP 502")
+        return fetch(args)
+    report = module.stale_wait_report([rows[0]], "owner/catalog", fetch=current_repository_fetch(outage))
+    assert not report["complete"] and report["unavailable"] and not report["unresolved_references"]
+
+
+def test_active_follow_up_naming_its_origin_pr_is_not_a_merged_status() -> None:
+    # context-panel#864 was filed from PR #863's review minutes before #863 merged,
+    # and #863's body named it as the follow-up.
+    module = load()
+    origin = "## Current Status\nState: Active; not started.\nNext action: Add fixtures for the four cases before changing copy.\nWaiting for: None.\nLast verified: 2026-10-16, from PR #863 review.\n"
+    row = {**issue(864, "Follow-up from a PR review", labels=("plan", "plan:active"), body=origin,
+                   created="2026-10-16T15:22:41Z"), "updated_at": "2026-10-16T15:22:41Z"}
+    def fetch_with(body: str, opened: str = "2026-10-16T15:20:04Z") -> Any:
+        def fetch(args: list[str]) -> Any:
+            if args[1] == "repos/owner/catalog/issues/863":
+                return {"state": "closed", "pull_request": {}}
+            if args[1] == "repos/owner/catalog/pulls/863":
+                return {"merged_at": "2026-10-16T16:01:43Z", "created_at": opened, "base": {"ref": "main"}, "body": body}
+            raise AssertionError(args[1])
+        return current_repository_fetch(fetch)
+    for body in ("Refs #850", "- Follow-up implementation is in #864, which this session has not started."):
+        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with(body))
+        assert report["complete"] and not report["items"], body
+    # A keyword line counts whenever the PR was opened,
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with("Refs #864"))
+    assert [item["number"] for item in report["items"]] == [864]
+    # and a prose mention counts from a PR opened after the issue.
+    for body in ("This change implements #864.", "## Related issue\n#864"):
+        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with(body, opened="2026-10-16T15:30:00Z"))
+        assert [item["number"] for item in report["items"]] == [864], body
+    # The Next action naming the PR still counts.
+    named = {**row, "body": origin.replace("Add fixtures", "After PR #863, add fixtures")}
+    report = module.stale_wait_report([named], "owner/catalog", fetch=fetch_with("Refs #850"))
+    assert [item["number"] for item in report["items"]] == [864]
+
+
 def test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps() -> None:
     module = load()
     actions = (
@@ -2768,6 +2871,37 @@ def test_edited_supervisor_closeout_waits_find_their_own_landed_source() -> None
             assert found[3073]["evidence"][0]["url"].endswith("/pull/3087")
     assert json.dumps(rows, sort_keys=True) == before
     assert not any("issues/1211/comments" in path for path in calls)
+
+
+def test_unresolved_delegated_acceptance_keeps_the_hold() -> None:
+    # The acceptance owner cannot be found here, so the delegation is unproven.
+    module = load()
+    row = {**issue(10, "Landed source, acceptance delegated", labels=("plan:active",), body=
+                   "## Current Status\nState: Source complete.\nNext action: Supervisor lands PR #20.\n"
+                   "Blocked by: None.\nWaiting for: Supervisor landing; Client acceptance belongs to #104. "
+                   "No new Director decision is open.\n"),
+           "updated_at": "2026-10-07T20:00:00Z", "issue_dependencies_summary": {"total_blocked_by": 0}}
+    def fetch(delegate: Any) -> Any:
+        def read(args: list[str]) -> Any:
+            path = args[1]
+            if path == "repos/owner/catalog/issues/104":
+                if isinstance(delegate, Exception):
+                    raise delegate
+                return delegate
+            if path == "repos/owner/catalog/issues/20":
+                return {"state": "closed", "pull_request": {}}
+            if path == "repos/owner/catalog/pulls/20":
+                return {"merged_at": "2026-10-08T12:00:00Z", "base": {"ref": "main"}, "body": "Fixes #10"}
+            raise AssertionError(path)
+        return current_repository_fetch(read)
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch(
+        module.ReferenceNotFound("gh: Not Found (HTTP 404)")))
+    assert report["complete"] and [ref["reference"] for ref in report["unresolved_references"]] == ["#104"]
+    [found] = report["items"]
+    assert found["recorded_hold_pending"] and not found["selection_exclusion"]
+    # A delegate that exists here still releases the delivery step.
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch({"state": "open"}))
+    assert report["items"][0]["selection_exclusion"] and not report["items"][0]["recorded_hold_pending"]
 
 
 def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history() -> None:

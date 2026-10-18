@@ -16,7 +16,7 @@ import subprocess
 import time
 import uuid
 
-BUNDLED_MARKETPLACE = Path(".tmp/bundled-marketplaces/openai-bundled")
+from agent_tools import BUNDLED_MARKETPLACE
 
 
 def declared_app(brief):
@@ -132,13 +132,13 @@ def release(path, token):
 def marketplace(home, default_home):
     source, link = default_home / BUNDLED_MARKETPLACE, home / BUNDLED_MARKETPLACE
     if not source.is_dir():
-        raise ValueError("default bundled marketplace is missing; restore it through Codex before GUI launch")
+        raise ValueError("default bundled marketplace is missing; restore it through Codex before launch")
     if home.resolve() == default_home.resolve():
         return {"path": str(link), "source": str(source), "link": "default_home"}
     # Never create paths through a redirected account parent or replace existing data.
     for parent in (home / ".tmp", home / ".tmp/bundled-marketplaces"):
         if parent.is_symlink():
-            raise ValueError("bundled marketplace parent is a symlink; inspect it before GUI launch")
+            raise ValueError("bundled marketplace parent is a symlink; inspect it before launch")
     if link.is_symlink():
         if link.resolve() != source.resolve():
             raise ValueError("bundled marketplace link has another target; preserve it")

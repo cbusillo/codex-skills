@@ -272,14 +272,35 @@ uv run <skill-dir>/scripts/direction_mark.py turn --repo OWNER/REPO
 
 It writes the local marker, then keeps the shared turn record current: one
 open issue titled "Daily direction turns" in the covered repository account's
-`OWNER/direction`, written through the automation helpers. Exit 2 means the
-local turn was recorded but the shared record was not, so other machines keep
-reminding; report its `shared.error` to the Director.
+`OWNER/direction`, written through the automation helpers. Exit 2 with the
+local-turn JSON receipt described below means the local turn was recorded but
+the shared record was not, so other machines keep
+reminding; report its `shared.error` to the Director. Exit 1 reports a local
+write failure with the destination and error; no shared write is attempted.
 Only the direction agent runs that, at the end of a turn the Director took part
 in; an executing agent that runs it clears a reminder the Director never acted
 on. Weekly audits are not marked by hand. The audit script stamps its own
 completion for the repository it audited, so an audit stamp means a real
 read-only audit ran; it never updates the daily turn or its coverage.
+
+Before calling a daily turn complete, check the command's exit status and JSON
+receipt for its marker path, timestamp, and covered repository. For a weekly
+audit, completion is recorded only when `run_recorded` is non-null. An archived
+repository instead needs `marked_skipped: "archived"` with a non-null `dropped`
+receipt confirming removal. Any other result means no completion was recorded,
+including a held window with unknown archive state or an unadopted repository.
+Report that receipt in the final response. If the command was omitted, exited 1,
+or returned `marker_error`, say plainly that completion was not recorded and
+include the error or missing step; do not report the turn or audit as complete.
+Daily exit 2 with a JSON receipt containing `marker`, `turn` and `turn_repo`
+means the turn was recorded locally but not shared. An exit code alone never
+proves recording: if the receipt is missing, report completion as unconfirmed
+and include the diagnostic. Audit exit 3 reports findings; use its receipts to
+determine whether completion was recorded.
+Loading this skill for a wording review or a direction-file change alone does
+not perform the daily procedure or weekly audit. Say which was actually done;
+do not stamp a turn just because direction was discussed.
+
 The marker is per machine. Its `audits` map holds where each repository's next
 audit window starts, and `audit_runs` holds when an audit last ran. An audit
 whose reads were incomplete records its run with a `held` reason and leaves
@@ -337,7 +358,10 @@ uv run <skill-dir>/scripts/direction_audit.py --repo OWNER/REPO
 
 It reads the merged `DIRECTION.md` from the default branch, never a checkout.
 It writes nothing to GitHub; it only stamps this repository's audit in the
-local marker. When the Director explicitly selects `--gh gh` or declares
+local marker. Exit 1 with `marker_error` still carries the audit's findings;
+report them along with the persistence failure. Exit 1 with only `error` means
+the reads failed before producing an audit result.
+When the Director explicitly selects `--gh gh` or declares
 their own login with `--automation`, `limits` names
 `owner_acts_as_automation`: milestone additions by that login are treated as
 Director decisions because the audit cannot tell who used it. This is a known attribution
@@ -424,7 +448,10 @@ It reports closed native blockers, merged PRs or completed issues that the
 Current Status waits on, and explicit waits on agents or capacity instead of
 people or events, only when no recorded hold or open native blocker remains.
 `complete`, `inventory_complete`, and `unavailable` expose
-missing coverage. The report reads GitHub's repository archive state into
+missing coverage. A bare `#N` that does not exist in the audited repository
+usually means another repository; it is listed in `unresolved_references` and
+does not make the issue unread. Write cross-repository references as
+`owner/repo#N` or a URL so they are checked. The report reads GitHub's repository archive state into
 `repository.archived` and `repository.disposition`. Archived repositories return
 all inventoried open issue rows under `frozen_issues`, with no stale-reconciliation
 `items` or prerequisite reads; historical labels and waits remain untouched.
@@ -435,9 +462,13 @@ Unknown prose, elapsed time, unrelated merged PRs, and
 acceptance or live-test waits do not establish completion. These are review
 prompts, separate from audit findings and exit status: read the full issue and
 current evidence before correcting a status through `github-plan`. Nothing is
-closed, relabeled, or released automatically. Active records with PRs named in Current Status
-merged into the default branch after their GitHub `updated_at` carry
-`merged_active_pr` evidence and `completion_proven: false`. Agent routing,
+closed, relabeled, or released automatically. Active records whose Next action
+names a PR, or whose Current Status elsewhere names a PR that delivers the issue,
+carry `merged_active_pr` evidence and `completion_proven: false` when
+that PR merged into the default branch after their GitHub `updated_at`. Delivery means a
+`Refs`/`Fixes`/`Closes`/`Resolves`/`Implements` line, or a mention in a PR
+opened after the issue. A follow-up that only mentions the PR it came from is
+not reported, even when that PR's body names the follow-up. Agent routing,
 landing and closeout waits are also reported after the named implementation PR
 merged, irrespective of later status edits. A closeout handoff naming its PR only
 in comments uses a bounded complete discussion read and the PR's own issue

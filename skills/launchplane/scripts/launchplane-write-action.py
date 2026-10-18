@@ -4498,9 +4498,11 @@ def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str,
 
 
 def summarize_http_error(
-    *, operation: str, request: dict[str, object], exc: urllib.error.HTTPError
+    *, operation: str, request: dict[str, object], exc: urllib.error.HTTPError,
+    provider_payload: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    provider_payload = _error_payload_from_http(exc)
+    if provider_payload is None:
+        provider_payload = _error_payload_from_http(exc)
     status = _status_for_http_error(exc.code, provider_payload)
     error = provider_payload.get("error")
     if not isinstance(error, dict):
@@ -9518,6 +9520,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="HTTP timeout seconds (operation path checks: 300; promotion status and Dokploy inventory: 30; controller: 180; other commands: 10).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
+    add_testing_rebuild_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -10319,6 +10323,9 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        from launchplane_testing_rebuild import COMMANDS as testing_rebuild_commands, execute as execute_testing_rebuild
+        if args.command in testing_rebuild_commands:
+            return execute_testing_rebuild(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
             instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""

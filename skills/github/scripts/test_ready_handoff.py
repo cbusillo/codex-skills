@@ -311,6 +311,17 @@ class ReadyTests(unittest.TestCase):
         self.review_comment("Review request for the Google login button UI.", 6)
         self.post()
 
+    def test_supervisor_delegation_is_distinct_from_generic_requests_and_code_examples(self):
+        for body in ("Review request for another model", "Review prompt for model-review"):
+            self.assertEqual(ready_handoff.review_record(body), "request")
+            self.assertFalse(ready_handoff.supervisor_review_request(body))
+        directive = "Supervisor runs the review."
+        self.assertTrue(ready_handoff.supervisor_review_request(directive))
+        for example in (f"> {directive}", f"    {directive}", f"```text\n{directive}\n```",
+                        f"~~~text\n{directive}\n~~~", f"<!-- {directive} -->"):
+            self.assertFalse(ready_handoff.supervisor_review_request(example))
+            self.assertIsNone(ready_handoff.review_record(example))
+
     def test_untrusted_review_request_does_not_hold_ready(self):
         self.review_comment("Supervisor runs the review.", 1, login="drive-by")
         self.post()

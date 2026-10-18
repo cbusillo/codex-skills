@@ -16,12 +16,16 @@ import subprocess
 import tempfile
 import time
 import uuid
+import sys
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 from session_record import session_status
 from iterm_tab import codex_daemon_endpoint
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
+import github_plan_closure
 
 BACKOFF_SECONDS = (60, 180, 600)
 
@@ -148,12 +152,13 @@ def queue_continue(entry: dict, home: Path, endpoint: Path, expected: dict) -> N
     # Reuse the catalog's preferred exact-thread nudge. No terminal composer is
     # touched, no daemon is started, and no authentication material is read.
     verified_target(entry, expected)
-    subprocess.run(
-        ["codex", "queue", "--remote", "unix://" + str(endpoint),
-         "--thread", entry["session_id"], "--message", "continue"],
-        env={**os.environ, "CODEX_HOME": str(home)},
-        check=True, capture_output=True, text=True, timeout=10,
-    )
+    with github_plan_closure.resume_guard(entry["session_id"]):
+        subprocess.run(
+            ["codex", "queue", "--remote", "unix://" + str(endpoint),
+             "--thread", entry["session_id"], "--message", "continue"],
+            env={**os.environ, "CODEX_HOME": str(home)},
+            check=True, capture_output=True, text=True, timeout=10,
+        )
 
 
 def readback_continue(entry: dict, before_size: int, timeout: float = 10) -> bool:
@@ -182,6 +187,7 @@ def resume(entry: dict, status: dict, state: dict, path: Path, now: float) -> di
     if summary["state"] not in {"backoff", "retry_due"} or entry.get("supervisor_owned") is not True:
         return summary
     native_id = entry["session_id"]
+    previous = state.get(native_id)
     if now < summary["retry_at"]:
         return summary
     home, endpoint = verified_target(entry, status)
@@ -192,6 +198,13 @@ def resume(entry: dict, status: dict, state: dict, path: Path, now: float) -> di
     try:
         queue_continue(entry, home, endpoint, status)
         row["phase"] = "confirmed" if readback_continue(entry, status["size"]) else "uncertain"
+    except github_plan_closure.LeaseBusy:
+        if previous is None:
+            state.pop(native_id, None)
+        else:
+            state[native_id] = previous
+        save_state(path, state)
+        return {"attempts": summary["attempts"], "state": "ownership_busy"}
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         row["phase"] = "uncertain"
     try:

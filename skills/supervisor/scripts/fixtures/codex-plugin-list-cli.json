@@ -1,0 +1,53 @@
+{
+  "provenance": {
+    "cli": "codex-cli 0.163.0",
+    "route": "codex plugin list --marketplace openai-bundled --json with account-relative source override",
+    "redaction": "Projection retains only marketplace and plugin names plus installed/enabled flags; paths, interface and account data omitted"
+  },
+  "response": {
+    "installed": [
+      {
+        "name": "codex-app-tools",
+        "installed": true,
+        "enabled": true,
+        "marketplaceName": "openai-bundled"
+      },
+      {
+        "name": "browser",
+        "installed": true,
+        "enabled": true,
+        "marketplaceName": "openai-bundled"
+      },
+      {
+        "name": "unified-computer-use",
+        "installed": true,
+        "enabled": true,
+        "marketplaceName": "openai-bundled"
+      },
+      {
+        "name": "chrome",
+        "installed": true,
+        "enabled": true,
+        "marketplaceName": "openai-bundled"
+      },
+      {
+        "name": "computer-use",
+        "installed": true,
+        "enabled": true,
+        "marketplaceName": "openai-bundled"
+      },
+      {
+        "name": "code-review",
+        "installed": true,
+        "enabled": true,
+        "marketplaceName": "openai-bundled"
+      },
+      {
+        "name": "visualize",
+        "installed": true,
+        "enabled": true,
+        "marketplaceName": "openai-bundled"
+      }
+    ]
+  }
+}
