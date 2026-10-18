@@ -50,11 +50,11 @@ REVIEW_OUTCOME = re.compile(
 # An outcome needs an affirmative result. Examine only the text preceding
 # that result for unfinished review status; the findings describe the code.
 REVIEW_RESULT = re.compile(
-    r"(?i)\b(?:completed|finished|reviewed|found|identified)\b"
+    r"(?i)\b(?:found|reviewed)\b[^\n]*[;,]\s*(?:now )?fixed\b"
     r"|\brun by (?:the )?supervisor\b"
-    r"|\b(?:no findings|none(?: to act on)?|nothing to act on|no changes needed)\b(?!\s+yet)"
+    r"|\b(?:no findings|none(?: to act on)?|nothing to act on|no changes needed)\b(?=[ \t*_`]*(?:[.,;!]|$|\n))"
     r"|\bfindings?\s*:(?=\s|$)|\bfindings? (?:acted on|fixed|addressed|declined)\b"
-    r"|\bacted on\b|\bis correct\b"
+    r"|\bacted on\b|\bis correct\b|\bfixed\s*:"
 )
 REVIEW_UNFINISHED = re.compile(
     r"(?i)\b(?:not|never|neither|cannot|unable|pending|blocked|requested|needed|waiting"
@@ -386,7 +386,15 @@ def review_record(body):
 
 def review_required_patterns(config):
     """Read qualityGate.modelReview.requiredPaths from the base branch's config."""
-    value = ((config.get("qualityGate") or {}).get("modelReview") or {}).get("requiredPaths", [])
+    if not isinstance(config, dict):
+        raise ValueError("Review configuration must be an object")
+    gate = config.get("qualityGate", {})
+    if not isinstance(gate, dict):
+        raise ValueError("qualityGate must be an object")
+    review = gate.get("modelReview", {})
+    if not isinstance(review, dict):
+        raise ValueError("qualityGate.modelReview must be an object")
+    value = review.get("requiredPaths", [])
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         raise ValueError("qualityGate.modelReview.requiredPaths must list path patterns")
     return tuple(value)
@@ -444,7 +452,7 @@ def review_of_record_gap(comments, trusted, *, required_files=(), head=None):
     return ""
 
 
-def review_evidence_gap(repo, number, *, base, head, comments, trusted, read_json, read_pages, missing):
+def review_evidence_gap(repo, number, *, base, head, comments, trusted, read_json, read_pages, missing, file_inventory=None):
     """Read the base branch's review paths and the changed files they govern.
 
     The base branch's config decides, so a PR cannot drop its own requirement.
@@ -465,7 +473,7 @@ def review_evidence_gap(repo, number, *, base, head, comments, trusted, read_jso
         patterns = review_required_patterns(config)
     files = []
     if patterns:
-        inventory = read_pages(f"/repos/{repo}/pulls/{number}/files")
+        inventory = file_inventory if file_inventory is not None else read_pages(f"/repos/{repo}/pulls/{number}/files")
         expected = read_json(f"/repos/{repo}/pulls/{number}")["changed_files"]
         if type(expected) is not int or expected < 0 or len(inventory) != expected:
             raise ValueError("Review path coverage is incomplete: changed-file count does not match inventory")

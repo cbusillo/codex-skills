@@ -92,13 +92,13 @@ class ReviewRecordTests(unittest.TestCase):
             "**Review of record (OpenAI): no findings.** The Supervisor ran it",
             "Anthropic review of record: Claude Opus 5.5, no findings.",
             "EXEC-CS review of record: Anthropic `claude-opus-5-5`, read-only\n\nNo findings.",
-            "Anthropic **claude-opus-5-5** completed the review of record (CLI-confirmed model).",
+            "Anthropic **claude-opus-5-5** completed the review of record (CLI-confirmed model).\n\nNo findings.",
             "Review weighed at `83f8b258`. I reproduced the finding and acted on it.",
             "Review by another model (author: Anthropic Claude Opus): OpenAI via Codex, read-only\n\nNo findings.",
             "Anthropic review of record: Claude Opus 5.5, completed twice. Fixed: errors cannot hide output.",
             "Review weighed: OpenAI completed the review; no changes needed.",
             "Review weighed: OpenAI completed the review and found the failed-read bug, now fixed.",
-            "Review weighed: OpenAI completed the review and found that the helper did not run required checks.",
+            "Review weighed: OpenAI completed the review and found that the helper did not run required checks; fixed.",
         )
         outcomes += (
             "Review weighed: OpenAI, after two retries, completed the review; no findings.",
@@ -144,6 +144,10 @@ class ReviewRecordTests(unittest.TestCase):
             "Review of record: OpenAI declined to review (policy).",
             "Review of record: OpenAI refused to review (policy).",
             "Review of record: OpenAI found the diff too large; rerunning at `aaaaaaaa`.",
+            "Review of record: OpenAI completed the launch probe; the review is still running.",
+            "Review of record: OpenAI found the diff too large; will rerun.",
+            "Review of record: OpenAI reviewed 3 of 10 files; 7 remain.",
+            "Review of record: Anthropic, no findings so far; 7 files remain.",
             "Review of record: OpenAI reviewed 3 of 10 files, still running.",
             "Review of record: OpenAI reviewed 3 of 10 files. Still running.",
             "Review weighed: OpenAI reviewed 3 of 10 files and is still running.",
@@ -308,7 +312,7 @@ class ReadyTests(unittest.TestCase):
     def test_completed_review_with_code_defect_allows_ready(self):
         self.review_comment("Review prompt for the review of record.", 6)
         self.review_comment(
-            f"Review weighed: OpenAI completed the review and found that the helper did not run required checks.\n\nHead: {SHA}", 7,
+            f"Review weighed: OpenAI completed the review and found that the helper did not run required checks; fixed.\n\nHead: {SHA}", 7,
         )
         self.post()
 
@@ -355,6 +359,10 @@ class ReadyTests(unittest.TestCase):
         for body in (
             "Review of record: OpenAI declined to review (policy).",
             "Review of record: OpenAI found the diff too large; rerunning at `aaaaaaaa`.",
+            "Review of record: OpenAI completed the launch probe; the review is still running.",
+            "Review of record: OpenAI found the diff too large; will rerun.",
+            "Review of record: OpenAI reviewed 3 of 10 files; 7 remain.",
+            "Review of record: Anthropic, no findings so far; 7 files remain.",
             "Review of record: OpenAI reviewed 3 of 10 files, still running.",
             "Review of record: OpenAI reviewed 3 of 10 files. Still running.",
             "Review weighed: OpenAI reviewed 3 of 10 files and is still running.",
@@ -395,6 +403,12 @@ class ReadyTests(unittest.TestCase):
         self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
         self.reader.files = [{"filename": "docs/AGENTS-old.md", "previous_filename": "AGENTS.md"}]
         self.refuse()
+
+    def test_nonobject_review_configuration_refuses_without_traceback(self):
+        for config in ([], "bad", {"qualityGate": [1]}, {"qualityGate": {"modelReview": [1]}}):
+            with self.subTest(config=config):
+                self.reader.config = config
+                self.refuse()
 
     def test_unreadable_review_paths_refuse(self):
         self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": "AGENTS.md"}}}

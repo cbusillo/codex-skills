@@ -191,7 +191,7 @@ class Fake:
     def qualified(self, *_args):
         return self.qualify
 
-    def review_gap(self, _target, pull, _trusted):
+    def review_gap(self, _target, pull, _trusted, *, file_inventory=None):
         return self.review_gaps.get(pull["number"], "")
 
     def queue(self, _target):
@@ -1552,8 +1552,6 @@ class QualificationTests(unittest.TestCase):
                         diagnostics={},
                     )
                 return {"content": base64.b64encode(json.dumps(config).encode()).decode()}
-            if path.endswith("/pulls/1"):
-                return self.pull
             raise AssertionError(path)
 
         self.io.get = get
@@ -1573,12 +1571,23 @@ class QualificationTests(unittest.TestCase):
         self.assertTrue(gap())
         self.pull["changed_files"] = 1
         self.assertEqual(gap(), "")
+        original_pages = self.io.pages
+        def comments_only(path):
+            if path.endswith("/comments"):
+                return self.comments
+            raise AssertionError("Supplied file inventory should not be read again")
+        self.io.pages = comments_only
+        self.assertEqual(self.io.review_gap(TARGET, self.pull, set(), file_inventory=files), "")
+        self.io.pages = original_pages
         files = [{"filename": "skills/github/SKILL.md"}]
         self.comments.pop()
         self.comments.pop()
         self.assertTrue(gap())
         config = {"qualityGate": {"modelReview": {"requiredPaths": [""]}}}
         self.assertTrue(gap())
+        for malformed in ([], "bad", {"qualityGate": [1]}, {"qualityGate": {"modelReview": [1]}}):
+            config = malformed
+            self.assertTrue(gap())
 
     def test_cli_defaults_accept_automation_review_of_dependency_head(self):
         self.pull["user"]["login"] = "dependabot[bot]"

@@ -564,7 +564,7 @@ class Live:
             return False
         return True
 
-    def review_gap(self, target, pr, extra_trusted):
+    def review_gap(self, target, pr, extra_trusted, *, file_inventory=None):
         """Name a pending or missing review of record; ready refuses the same gap."""
         repo, number = target["repo"], pr["number"]
         try:
@@ -572,7 +572,10 @@ class Live:
                 repo, number, base=target["base"], head=pr["head"]["sha"],
                 comments=self.pages(f"/repos/{repo}/issues/{number}/comments"),
                 trusted={pr["user"]["login"].casefold()} | extra_trusted,
-                read_json=self.get, read_pages=self.pages,
+                # Review coverage needs the PR snapshot's file count, not a
+                # second mergeability recovery with its shared sleep budget.
+                read_json=lambda path: pr if path == f"/repos/{repo}/pulls/{number}" else self.get(path),
+                read_pages=self.pages, file_inventory=file_inventory,
                 missing=lambda error: isinstance(error, GitHubReadError) and error.result.status == 404,
             )
         except (KeyError, TypeError, ValueError) as error:
@@ -792,7 +795,8 @@ def run_pass(io, args, emit, *, state=None):
                     in author_allowed[pr["number"]]["ineligible_reasons"]
                 )
                 if io.qualified(target, pr, set(args.handoff_login), agent_review_required):
-                    review_gap = io.review_gap(target, pr, set(args.handoff_login))
+                    files = io.pages(f"/repos/{repo}/pulls/{pr['number']}/files")
+                    review_gap = io.review_gap(target, pr, set(args.handoff_login), file_inventory=files)
                     if review_gap:
                         emit(
                             "skipped",
@@ -804,7 +808,6 @@ def run_pass(io, args, emit, *, state=None):
                             },
                         )
                         continue
-                    files = io.pages(f"/repos/{repo}/pulls/{pr['number']}/files")
                     if len(files) != pr["changed_files"] or not files:
                         emit(
                             "skipped",
