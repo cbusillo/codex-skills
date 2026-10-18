@@ -165,11 +165,13 @@ def test_dry_run_from_another_service_cannot_authorize_submit():
     ("data_source_mode", "existing"), ("instance", "prod"),
 ])
 def test_dry_run_does_not_claim_a_completed_or_different_copy(field, value):
-    response = plan_receipt()
+    response = helper._ServiceResponse(plan_receipt(), 202)
     response["result"][field] = value
     code, output, post, read, _ = invoke(response, args=arguments(command=rebuild.PLAN_COMMAND))
     assert code != 0
     assert output["status"] != "ok"
+    assert output["summary"]["trace_id"] == response["trace_id"]
+    assert output["summary"]["http_status"] == response.http_status
     post.assert_called_once()
     read.assert_not_called()
     assert "PRIVATE_SENTINEL" not in json.dumps(output)

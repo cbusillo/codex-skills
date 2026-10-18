@@ -131,6 +131,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     if mode != "dry-run":
         body["reviewed_plan_sha256"] = digest
     response: dict[str, Any] | None = None
+    readback: dict[str, Any] | None = None
     result: dict[str, object] | None = None
     applied = False
 
@@ -151,7 +152,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             readback = call("readback")
             project(h, readback, private, "readback", digest)
             result["read_back_matches"] = True
-            result["read_back_trace_id"] = h.public_trace_id(readback.get("trace_id"))
+            result["read_back_trace_id"] = h.service_response_diagnostics(readback).get("trace_id", "")
         status = "replan_required" if result.get("replan_required") else "accepted"
         output = h.base_payload(status=status, operation=args.command, request=request)
         output["result"] = result
@@ -163,8 +164,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             output["summary"]["idempotency_key_fingerprint"] = h.repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
         if type(response.get("replayed")) is bool:
             output["summary"]["replayed"] = response["replayed"]
-        if response.get("original_trace_id"):
-            output["summary"]["original_trace_id"] = h.public_trace_id(response["original_trace_id"])
+        original = h.service_response_diagnostics({"trace_id": response.get("original_trace_id")})
+        if original.get("trace_id"):
+            output["summary"]["original_trace_id"] = original["trace_id"]
         h.assert_public_safe_shape(output["summary"])
         h.emit(output)
         return 1 if status == "replan_required" else 0
@@ -186,7 +188,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     except h.ServiceResponseError as error:
         diagnostics = h.service_response_diagnostics(error)
     except (h.LaunchplaneSafetyError, ValueError):
-        diagnostics = {}
+        diagnostics = h.service_response_diagnostics(readback if applied else response)
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
         if mode != "apply":
             h.emit_read_transport_error(operation=args.command, request=request, timeout=args.timeout, exc=error)
@@ -204,5 +206,5 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         output["summary"]["recommendation"] = RECOVERY
         h.emit(output)
     else:
-        h.emit_invalid_response(operation=args.command, request=request)
+        h.emit_invalid_response(operation=args.command, request=request, diagnostics=diagnostics)
     return 1

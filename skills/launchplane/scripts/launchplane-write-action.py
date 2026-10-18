@@ -4619,16 +4619,19 @@ def emit_read_transport_error(
     emit(payload)
 
 
-def emit_invalid_response(*, operation: str, request: dict[str, object]) -> None:
-    emit(
-        unavailable_payload(
-            operation=operation,
-            request=request,
-            status="invalid",
-            code="invalid_response",
-            message="Launchplane returned an invalid response.",
-        )
+def emit_invalid_response(
+    *, operation: str, request: dict[str, object], diagnostics: dict[str, object] | None = None,
+) -> None:
+    payload = unavailable_payload(
+        operation=operation,
+        request=request,
+        status="invalid",
+        code="invalid_response",
+        message="Launchplane returned an invalid response.",
     )
+    payload["summary"].update(diagnostics or {})
+    assert_public_safe_shape(payload["summary"])
+    emit(payload)
 
 
 def read_payload_file(path: str) -> dict[str, object]:

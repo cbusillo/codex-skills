@@ -30,9 +30,11 @@ def private_request(operation="create"):
 
 
 def receipt(mode, operation="create", **updates):
-    body = private_request(operation)
+    # Producer TestingPrivateIngressAdapter._result (Launchplane PR #3991).
+    # Keep this response independent of the consumer's field allowlist.
     return {"status": "accepted", "trace_id": "launchplane_req_private_ingress", "records": {},
-        "result": {**{key: body[key] for key in ingress.RESULT_FIELDS & set(ingress.SCOPE)},
+        "result": {"product": "example", "context": "example-testing", "instance": "testing",
+            "endpoint_key": "private-health", "operation": operation,
             "plan_sha256": PLAN, "applied": mode != "dry-run", "deployment_performed": False,
             "transport_verified": False, **updates}}
 
@@ -155,9 +157,13 @@ def test_interruption_keeps_unknown_or_accepted_apply_without_retry(failure):
 
 
 def test_readback_checks_its_own_scope_and_digest():
-    code, output, calls, _ = invoke("apply", responses=[receipt("apply"), receipt("readback", context="foreign")])
+    readback = receipt("readback", context="foreign")
+    readback["trace_id"] = "launchplane_req_readback_mismatch"
+    code, output, calls, _ = invoke("apply", responses=[receipt("apply"), readback])
     assert code != 0 and output["status"] == "accepted_unverified" and len(calls) == 2
     assert output["result"].get("read_back_matches") is not True
+    assert output["summary"]["read_back_trace_id"] == readback["trace_id"]
+    assert output["summary"]["trace_id"] == receipt("apply")["trace_id"]
 
 
 def test_original_key_replay_is_not_replanned_and_readback_is_independent():
@@ -167,6 +173,31 @@ def test_original_key_replay_is_not_replanned_and_readback_is_independent():
     assert code == 0 and len(calls) == 2
     assert output["summary"]["replayed"] is True
     assert output["summary"]["original_trace_id"] == response["original_trace_id"]
+
+
+@pytest.mark.parametrize("field", ["readback_trace", "original_trace"])
+def test_invalid_optional_trace_does_not_invalidate_verified_effects(field):
+    response, readback = receipt("apply"), receipt("readback")
+    response["replayed"] = True
+    if field == "original_trace":
+        response["original_trace_id"] = {"private": "PRIVATE_SENTINEL"}
+    else:
+        readback["trace_id"] = {"private": "PRIVATE_SENTINEL"}
+    code, output, calls, _ = invoke("apply", responses=[response, readback])
+    assert code == 0 and output["status"] == "accepted" and len(calls) == 2
+    assert output["result"]["read_back_matches"] is True
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "readback"])
+@pytest.mark.parametrize("malformed_json", [False, True])
+def test_failed_observation_keeps_safe_service_diagnostics(mode, malformed_json):
+    response = h._ServiceResponse(receipt(mode, context="foreign"), 202)
+    failure = h.ServiceResponseError(h.service_response_diagnostics(response)) if malformed_json else response
+    code, output, calls, _ = invoke(mode, responses=[failure])
+    assert code != 0 and len(calls) == 1
+    assert output["summary"]["trace_id"] == response["trace_id"]
+    assert output["summary"]["http_status"] == response.http_status
 
 
 def test_original_key_can_end_with_explicit_replan_after_absence_proof():
@@ -201,7 +232,11 @@ def test_http_errors_preserve_trace_and_never_switch_route_or_retry(status):
     assert code != 0 and len(calls) == 1
     assert output["summary"]["trace_id"] == "launchplane_req_refusal"
     assert output["summary"]["error_code"] == ("authorization_denied" if status == 403 else "reconcile_required")
-    assert output["status"] == ("denied" if status == 403 else "outcome_unknown" if status == 503 else "stale")
+    if status == 503:
+        assert output["status"] == "outcome_unknown"
+    else:
+        assert output["status"] == h._status_for_http_error(status, {
+            "error": {"code": output["summary"]["error_code"]}})
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 

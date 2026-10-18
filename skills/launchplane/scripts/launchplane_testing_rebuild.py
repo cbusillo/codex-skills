@@ -117,6 +117,7 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
     if settings is None:
         return 2
     replacement = {key: value for key, value in h._require_dict(body["replacement"]).items() if key != "verify_health"}
+    response = None
     try:
         response = h.request_launchplane(service_url=settings["service_url"],
             path=h.helper_command_path(PLAN_COMMAND), settings=settings,
@@ -134,7 +135,8 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
         output["summary"] = h.service_response_diagnostics(error)
         h.emit(output)
     except (h.LaunchplaneSafetyError, ValueError):
-        h.emit_invalid_response(operation=PLAN_COMMAND, request=request)
+        h.emit_invalid_response(operation=PLAN_COMMAND, request=request,
+            diagnostics=h.service_response_diagnostics(response))
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
         h.emit_read_transport_error(operation=PLAN_COMMAND, request=request, timeout=args.timeout, exc=error)
     return 1

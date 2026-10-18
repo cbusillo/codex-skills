@@ -37,6 +37,8 @@ including an external link to another external file, is accepted.
 existing Director-agent identity dependency. It adds no permission or provider
 fallback. Source contract agreement does not prove deployed compatibility;
 confirm normal service delivery before operational use.
+`SERVICE_API_HELPER_COMMANDS` validates these explicit bindings against that
+producer surface and its modes without rewriting the vendored advertisement.
 
 Each command requires `--payload-file /absolute/private/request.json`. Its
 exact fields are `product`, `context`, `instance` (only `testing`),
@@ -57,6 +59,9 @@ Evidence binds the full normalized request including its reason and resource
 IDs, the configured service, operation and returned plan. Receipts show the
 same product/context/testing instance, endpoint and edge keys, operation and
 digests; they omit the reason, numeric resource IDs, URLs and provider topology.
+The edge key in the receipt comes from the submitted request, not an echoed
+service field. Its verification rests on the service-owned plan digest and
+provider readback; the helper does not independently inspect the edge provider.
 The helper's binding checks are local review consistency checks; the service
 remains authorization and plan authority.
 
