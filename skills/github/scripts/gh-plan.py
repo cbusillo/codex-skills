@@ -4258,8 +4258,15 @@ def next_wait_context(
                             raise direction_audit.AuditError("unknown wait reference state")
                         references[url] = {**reference, "state": state, "closed_at": target.get("closed_at"),
                                            "state_reason": target.get("state_reason")}
-                    except direction_audit.AuditError:
+                    except direction_audit.AuditError as exc:
                         references[url] = {**reference, "state": "unknown"}
+                        if direction_audit.bare_reference_missing(exc, not reference.get("bare")):
+                            # Absent here, so read; the wait stays pending on its unknown state.
+                            unresolved_row = {"repo": repo, "number": item["number"], "source": "wait_reference",
+                                              "reason": "unresolved_reference", "reference": f"#{reference['number']}"}
+                            if unresolved_row not in unresolved:
+                                unresolved.append(unresolved_row)
+                            continue
                         unavailable.append({"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"})
                         complete = False
     return {"read_only": True, "complete": complete, "checked": checked, "items": reports,

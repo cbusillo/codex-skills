@@ -2593,6 +2593,28 @@ def test_bare_reference_missing_here_keeps_post_merge_evidence_complete() -> Non
     with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG, api_json=fetch("permission_denied")):
         report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
     assert not report["complete"] and report["unavailable"] and not report["unresolved_references"]
+    # A parked wait on the same bare reference is read, and its wait stays pending.
+    parked = global_issue("someone/product", 11, labels=["plan", "plan:waiting"],
+                          body="## Current Status\nState: Waiting.\nWaiting for: #104 to close.\n")
+    def waiting(cause: str) -> Any:
+        read = fetch(cause)
+        def wrapped(method: str, path: str, **kwargs: Any) -> Any:
+            if "/dependencies/blocked_by" in path:
+                return "automation-gh", []
+            return read(method, path, **kwargs)
+        return wrapped
+    with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG, api_json=waiting("not_found")):
+        report = module.next_wait_context([parked], scan_limit=1, inventory_complete=True)
+    candidates = [module.compact_list_issue(parked["repo"], parked)]
+    module.exclude_landed_candidates(candidates, [], report)
+    assert report["complete"] and not report["unavailable"] and not report["items"]
+    assert {ref["source"] for ref in report["unresolved_references"]} == {"wait_reference"}
+    assert report["references"]["https://github.com/someone/product/issues/104"]["state"] == "unknown"
+    assert "post_merge_evidence_complete" not in candidates[0]
+    named = {**parked, "body": parked["body"].replace("#104", "someone/product#104")}
+    with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG, api_json=waiting("not_found")):
+        report = module.next_wait_context([named], scan_limit=1, inventory_complete=True)
+    assert not report["complete"] and report["unavailable"] and not report["unresolved_references"]
 
 
 def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output() -> None:
