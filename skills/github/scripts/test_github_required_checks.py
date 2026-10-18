@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import tempfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,7 +48,7 @@ class CheckClient(FakeClient):
 
 def plan(client, target="classic", checks=None):
     return rules.build_check_plan("owner/repo", target, checks or [{"context": "new", "app_id": 55}],
-                                  rules.check_snapshot(client, "owner/repo"))
+                                  rules.check_snapshot(client, "owner/repo", target))
 
 
 def refused(call, cause):
@@ -79,6 +81,7 @@ def test_classic_preserves_requirements_bindings_strictness_and_other_protection
 def test_ruleset_preserves_every_rule_parameter_and_bypass():
     landing = response_ruleset(rules.standard_specs(77)[0], 12)
     landing["name"] = "Custom quality checks"
+    landing["rules"].extend([{"type": "deletion"}, {"type": "future_rule", "parameters": {"opaque": [None, {}]}}])
     landing["rules"].append({"type": "required_status_checks", "parameters": {
         "strict_required_status_checks_policy": True, "do_not_enforce_on_create": True,
         "required_status_checks": [{"context": "old", "integration_id": 44}]}})
@@ -110,7 +113,11 @@ def test_managed_targets_refuse_and_separate_checks_survive_standard_apply():
     reviewed = plan(client, "new")
     rules.run_check_plan(client, reviewed, apply=True)
     created = copy.deepcopy(client.repos["owner/repo"][-1])
+    client.repos["owner/repo"][0]["enforcement"] = "disabled"
+    before_writes = len(client.writes)
     rules.apply_repository(client, "owner/repo", specs)
+    assert len(client.writes) == before_writes + 1
+    assert client.writes[-1] == ("update", specs[0].key, 1)
     assert created in client.repos["owner/repo"]
     assert rules.run_check_plan(client, reviewed, apply=False)["verified"]
 
@@ -168,7 +175,7 @@ def test_unbound_classic_checks_stay_explicit_and_conflicting_bindings_refuse():
     assert rules.run_check_plan(client, reviewed, apply=True)["verified"]
     refused(lambda: plan(client, checks=[{"context": "old", "app_id": 33}]), "validation_error")
     del client.protection["required_status_checks"]["checks"]
-    refused(lambda: plan(client), "validation_error")
+    refused(lambda: plan(client), "invalid_response")
 
 
 def test_incomplete_or_ambiguous_ruleset_refuses():
@@ -229,6 +236,145 @@ def test_second_preflight_catches_a_concurrent_change_before_the_mutation():
     reviewed = plan(client)
     refused(lambda: rules.run_check_plan(client, reviewed, apply=True), "plan_state_drift")
     assert client.writes == []
+
+
+MISSING = object()
+MALFORMED_SNAPSHOTS = [
+    (("repository", "owner"), None),
+    (("repository", "owner", "login"), None),
+    (("repository", "default_branch"), []),
+    (("repository", "id"), True),
+    (("protection",), []),
+    (("protection", "required_status_checks"), []),
+    (("protection", "required_status_checks", "strict"), None),
+    (("protection", "required_status_checks", "contexts"), None),
+    (("protection", "required_status_checks", "contexts"), [{}]),
+    (("protection", "required_status_checks", "checks"), MISSING),
+    (("protection", "required_status_checks", "checks"), [None]),
+    (("rulesets",), None),
+    (("rulesets",), [None]),
+    (("rulesets", 0, "id"), MISSING),
+    (("rulesets", 0, "name"), []),
+    (("rulesets", 0, "bypass_actors"), MISSING),
+    (("rulesets", 0, "bypass_actors"), None),
+    (("rulesets", 0, "conditions"), MISSING),
+    (("rulesets", 0, "conditions"), None),
+    (("rulesets", 0, "conditions", "ref_name"), None),
+    (("rulesets", 0, "conditions", "ref_name", "include"), None),
+    (("rulesets", 0, "conditions", "ref_name", "exclude"), [None]),
+    (("rulesets", 0, "rules"), None),
+    (("rulesets", 0, "rules"), [None]),
+    (("rulesets", 0, "rules", 0, "type"), MISSING),
+    (("rulesets", 0, "rules", 0, "type"), ""),
+    (("rulesets", 0, "rules", 0, "parameters"), None),
+    (("rulesets", 0, "rules", 0, "parameters", "strict_required_status_checks_policy"), []),
+    (("rulesets", 0, "rules", 0, "parameters", "required_status_checks"), None),
+    (("rulesets", 0, "rules", 0, "parameters", "required_status_checks"), [None]),
+]
+
+
+def corrupt(snapshot, mutation):
+    result = copy.deepcopy(snapshot)
+    path, value = mutation
+    parent = result
+    for key in path[:-1]:
+        parent = parent[key]
+    if value is MISSING:
+        del parent[path[-1]]
+    else:
+        parent[path[-1]] = copy.deepcopy(value)
+    return result
+
+
+class SnapshotClient(CheckClient):
+    def __init__(self):
+        current = response_ruleset(rules.standard_specs(77)[0], 12)
+        current["name"] = "Custom quality checks"
+        current["rules"] = [{"type": "required_status_checks", "parameters": {
+            "strict_required_status_checks_policy": True, "required_status_checks": [
+                {"context": "old", "integration_id": 44}]}}]
+        super().__init__(rulesets=[current])
+        self.reads = 0
+        self.corrupt_at = 0
+        self.mutation = None
+        self.snapshot = None
+
+    def request(self, method, path, **kwargs):
+        if method == "GET" and path == "/repos/owner/repo":
+            self.reads += 1
+            self.snapshot = {"repository": self.repository, "protection": self.protection,
+                             "rulesets": self.repos["owner/repo"]}
+            self.snapshot = (corrupt(self.snapshot, self.mutation) if self.reads == self.corrupt_at
+                             else copy.deepcopy(self.snapshot))
+        if method == "GET":
+            return copy.deepcopy(self.snapshot["protection" if path.endswith("/protection") else "repository"])
+        return super().request(method, path, **kwargs)
+
+    def list_rulesets(self, repo):
+        return copy.deepcopy(self.snapshot["rulesets"])
+
+
+def terminal(cli, client, arguments):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with (patch.object(rules, "RulesetClient", return_value=client),
+          redirect_stdout(stdout), redirect_stderr(stderr)):
+        code = cli.main(arguments)
+    result = json.loads(stdout.getvalue())
+    assert code != 0 and not result["ok"], result
+    assert "Traceback" not in stderr.getvalue()
+    return result
+
+
+def test_malformed_snapshots_share_one_terminal_contract_at_every_phase():
+    cli = load_cli()
+    with tempfile.TemporaryDirectory() as directory:
+        checks, output = Path(directory) / "checks.json", Path(directory) / "plan.json"
+        checks.write_text(json.dumps([{"context": "new", "app_id": 55}]))
+        for mutation in MALFORMED_SNAPSHOTS:
+            # Malformed live planning responses never leave a reviewable plan.
+            output.unlink(missing_ok=True)
+            client = SnapshotClient()
+            client.mutation, client.corrupt_at = mutation, 1
+            result = terminal(cli, client, ["checks-plan", "--repo", "owner/repo", "--target", "012",
+                                           "--checks-file", str(checks), "--out", str(output)])
+            assert result["failure"]["cause"] == "invalid_response", (mutation, result)
+            assert not output.exists() and client.writes == []
+
+            # Even a recomputed digest cannot authorize structurally invalid saved input.
+            reviewed = plan(SnapshotClient(), "012")
+            malformed = copy.deepcopy(reviewed)
+            malformed["before"] = corrupt(reviewed["before"], mutation)
+            output.write_text(json.dumps(malformed))
+            common = ["--plan-file", str(output), "--plan-digest", rules.check_plan_digest(malformed)]
+            client = SnapshotClient()
+            result = terminal(cli, client, ["checks-apply", *common, "--confirm-owner-admin-write"])
+            assert result["failure"]["cause"] == "validation_error", (mutation, result)
+            assert client.actor is None and client.reads == 0 and client.writes == []
+
+            output.write_text(json.dumps(reviewed))
+            common = ["--plan-file", str(output), "--plan-digest", rules.check_plan_digest(reviewed)]
+            for phase in (1, 2, 3):
+                client = SnapshotClient()
+                client.mutation, client.corrupt_at = mutation, phase
+                result = terminal(cli, client, ["checks-apply", *common, "--confirm-owner-admin-write"])
+                assert result["failure"]["cause"] == "invalid_response", (mutation, phase, result)
+                assert result["failure"]["write_outcome"] == ("unknown" if phase == 3 else "not_started")
+                assert len(client.writes) == (1 if phase == 3 else 0)
+
+            client = SnapshotClient()
+            rules.run_check_plan(client, reviewed, apply=True)
+            client.corrupt_at, client.mutation = client.reads + 1, mutation
+            result = terminal(cli, client, ["checks-readback", *common])
+            assert result["failure"]["cause"] == "invalid_response", (mutation, result)
+            assert len(client.writes) == 1
+
+
+def test_uninterpreted_ruleset_conditions_stay_opaque():
+    client = CheckClient(rulesets=[response_ruleset(rules.standard_specs(77)[0], 12)])
+    client.repos["owner/repo"][0]["conditions"] = None
+    reviewed = plan(client, "new")
+    assert rules.run_check_plan(client, reviewed, apply=True)["verified"]
+    assert client.repos["owner/repo"][0]["conditions"] is None
 
 
 def test_cli_plan_apply_readback_use_the_existing_owner_and_confirmation():

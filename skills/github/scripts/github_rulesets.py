@@ -667,35 +667,67 @@ def normalize_checks(value: Any, *, binding: str) -> list[dict[str, Any]]:
 
 
 def _classic_checks(value: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(value.get("strict"), bool):
+    if not isinstance(value, dict) or not isinstance(value.get("strict"), bool):
         _check_error("classic checks lack strictness", "invalid_response")
     # Do not infer App bindings from the legacy contexts list.
     checks = normalize_checks(value.get("checks"), binding="app_id")
-    if set(value.get("contexts", [])) != {item["context"] for item in checks}:
+    contexts = value.get("contexts")
+    if (not isinstance(contexts, list) or not all(isinstance(item, str) for item in contexts)
+            or set(contexts) != {item["context"] for item in checks}):
         _check_error("classic contexts and App-bound checks disagree", "invalid_response")
     return {**value, "checks": checks, "contexts": sorted(set(value["contexts"]))}
 
 
-def check_snapshot(client: RulesetClientProtocol, repo: str) -> dict[str, Any]:
-    try:
-        return _check_snapshot(client, repo)
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
-        raise RulesetError("invalid required-check snapshot response", cause="invalid_response") from exc
-
-
-def _check_snapshot(client: RulesetClientProtocol, repo: str) -> dict[str, Any]:
+def check_snapshot(client: RulesetClientProtocol, repo: str, target: str) -> dict[str, Any]:
     path = f"/repos/{repo_path(repo)}"
     repository = client.request("GET", path, operation="github.rulesets.checks.read")
-    owner = repository.get("owner", {}) if isinstance(repository, dict) else {}
-    if (owner.get("type") != "User" or owner.get("login", "").casefold() != repo.split("/")[0].casefold()
-            or repository.get("archived") is not False or not repository.get("default_branch")
-            or str(repository.get("full_name", "")).casefold() != repo.casefold()):
-        _check_error("required-check plans need an active repository owned by the verified human", "owner_actor_mismatch")
+    # Validate metadata before consuming the default branch to fetch protection.
+    _check_repository(repository, repo)
     branch = repository["default_branch"]
     protection = client.request(
         "GET", f"{path}/branches/{urllib.parse.quote(branch, safe='')}/protection",
         operation="github.rulesets.checks.read", allow_unprotected=True,
     )
+    return normalize_check_snapshot({"repository": repository, "protection": protection,
+                                     "rulesets": client.list_rulesets(repo)}, repo, target,
+                                    cause="invalid_response")
+
+
+def _check_repository(repository: Any, repo: str) -> None:
+    if (not isinstance(repository, dict) or not isinstance(repository.get("id"), int)
+            or isinstance(repository["id"], bool) or repository["id"] <= 0
+            or not isinstance(repository.get("owner"), dict)
+            or not all(isinstance(repository["owner"].get(key), str) and repository["owner"][key]
+                       for key in ("login", "type"))
+            or not all(isinstance(repository.get(key), str) and repository[key]
+                       for key in ("default_branch", "full_name"))
+            or not isinstance(repository.get("archived"), bool)):
+        _check_error("invalid required-check repository metadata", "invalid_response")
+    owner = repository["owner"]
+    if (owner["type"] != "User" or owner["login"].casefold() != repo.split("/")[0].casefold()
+            or repository["archived"] or repository["full_name"].casefold() != repo.casefold()):
+        _check_error("required-check plans need an active repository owned by the verified human", "owner_actor_mismatch")
+
+
+def normalize_check_snapshot(value: Any, repo: str, target: str, *, cause: str) -> dict[str, Any]:
+    """One structural contract for live responses and the reviewed before image."""
+    try:
+        return _normalize_check_snapshot(value, repo, target)
+    except RulesetError as exc:
+        if exc.cause == "owner_actor_mismatch":
+            raise
+        raise RulesetError(str(exc), cause=cause) from exc
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise RulesetError("invalid required-check snapshot structure", cause=cause) from exc
+
+
+def _normalize_check_snapshot(value: Any, repo: str, target: str) -> dict[str, Any]:
+    target_id = None if target in {"classic", "new"} else positive_int(target, "target ruleset id")
+    if not isinstance(value, dict) or set(value) != {"repository", "protection", "rulesets"}:
+        _check_error("invalid required-check snapshot fields")
+    repository = value["repository"]
+    _check_repository(repository, repo)
+    protection = copy.deepcopy(value["protection"])
     if protection is not None:
         if not isinstance(protection, dict):
             _check_error("invalid branch protection response", "invalid_response")
@@ -703,18 +735,40 @@ def _check_snapshot(client: RulesetClientProtocol, repo: str) -> dict[str, Any]:
         if protection.get("required_status_checks") is not None:
             protection["required_status_checks"] = _classic_checks(protection["required_status_checks"])
     rulesets = []
-    for item in client.list_rulesets(repo):
-        if not all(key in item for key in RULESET_FIELDS):
+    if not isinstance(value["rulesets"], list):
+        _check_error("rulesets must be a list")
+    for item in value["rulesets"]:
+        if not isinstance(item, dict) or not all(key in item for key in RULESET_FIELDS):
             _check_error("incomplete ruleset detail, including bypass actors", "invalid_response")
+        if (not all(isinstance(item[key], str) and item[key] for key in ("name", "target", "enforcement"))
+                or not isinstance(item["bypass_actors"], list) or not isinstance(item["rules"], list)):
+            _check_error("invalid ruleset fields")
         normalized = {"id": positive_int(item.get("id"), "ruleset id"),
                       **{key: copy.deepcopy(item[key]) for key in RULESET_FIELDS}}
+        if normalized["id"] == target_id:
+            conditions = normalized["conditions"]
+            refs = conditions.get("ref_name") if isinstance(conditions, dict) else None
+            if (not isinstance(refs, dict) or not all(isinstance(refs.get(key), list)
+                    and all(isinstance(ref, str) for ref in refs[key]) for key in ("include", "exclude"))):
+                _check_error("selected ruleset needs ref_name include and exclude string lists")
         for rule in normalized["rules"]:
-            if rule.get("type") == "required_status_checks":
-                parameters = rule["parameters"]
+            if not isinstance(rule, dict) or not isinstance(rule.get("type"), str) or not rule["type"]:
+                _check_error("each ruleset rule needs a nonempty string type")
+            if rule["type"] == "required_status_checks":
+                parameters = rule.get("parameters")
+                if (not isinstance(parameters, dict)
+                        or not isinstance(parameters.get("required_status_checks"), list)
+                        or not isinstance(parameters.get("strict_required_status_checks_policy"), bool)):
+                    _check_error("invalid required-status-check parameters")
+                for check in parameters["required_status_checks"]:
+                    if not isinstance(check, dict):
+                        _check_error("each required status check must be an object")
                 parameters["required_status_checks"] = normalize_checks([
                     {**check, "integration_id": check.get("integration_id")}
                     for check in parameters["required_status_checks"]], binding="integration_id")
         rulesets.append(normalized)
+    if len({item["id"] for item in rulesets}) != len(rulesets):
+        _check_error("duplicate ruleset ids")
     return {
         "repository": {key: repository[key] for key in ("id", "full_name", "default_branch", "archived", "owner")},
         "protection": protection,
@@ -729,6 +783,9 @@ def check_plan_digest(plan: Mapping[str, Any]) -> str:
 
 def build_check_plan(repo: str, target: str, checks: Any, before: dict[str, Any]) -> dict[str, Any]:
     repo_path(repo)
+    if not isinstance(target, str):
+        _check_error("target must be classic, new or a ruleset id")
+    before = normalize_check_snapshot(before, repo, target, cause="validation_error")
     additions = normalize_checks(checks, binding="app_id")
     if not additions:
         _check_error("at least one required check is needed")
@@ -830,7 +887,7 @@ def _matches_check_after(plan: dict[str, Any], live: dict[str, Any]) -> bool:
 
 def run_check_plan(client: RulesetClientProtocol, plan: dict[str, Any], *, apply: bool) -> dict[str, Any]:
     repo = plan["repo"]
-    live = check_snapshot(client, repo)
+    live = check_snapshot(client, repo, plan["target"])
     if _matches_check_after(plan, live):
         return {"repo": repo, "changed": False, "verified": True, "applied": []}
     if live != plan["before"]:
@@ -842,7 +899,7 @@ def run_check_plan(client: RulesetClientProtocol, plan: dict[str, Any], *, apply
         # Fresh comparison immediately before the single mutation. GitHub exposes
         # no conditional-write token for these endpoints; the final API race is
         # reported as a limit, never described as a server-side transaction.
-        if check_snapshot(client, repo) != live:
+        if check_snapshot(client, repo, plan["target"]) != live:
             _check_error("protection changed during preflight", "plan_state_drift")
         attempted = True
         if plan["target"] == "classic":
@@ -855,7 +912,7 @@ def run_check_plan(client: RulesetClientProtocol, plan: dict[str, Any], *, apply
                 client.create_ruleset(repo, spec)
             else:
                 client.update_ruleset(repo, positive_int(plan["target"], "ruleset id"), spec)
-        if not _matches_check_after(plan, check_snapshot(client, repo)):
+        if not _matches_check_after(plan, check_snapshot(client, repo, plan["target"])):
             _check_error("required-check readback differs from the reviewed result", "post_write_verification_failed")
     except Exception as exc:
         cause = exc.cause if isinstance(exc, RulesetError) else "invalid_response"

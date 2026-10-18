@@ -99,7 +99,7 @@ def run_checks(args: argparse.Namespace, client: github_rulesets.RulesetClientPr
         github_rulesets.normalize_checks(checks, binding="app_id")
         owner, _ = github_rulesets.resolve_repositories(client=client, repos=[args.repo], all_owned=False, owner=None)
         plan = github_rulesets.build_check_plan(args.repo, args.target, checks,
-                                               github_rulesets.check_snapshot(client, args.repo))
+                                               github_rulesets.check_snapshot(client, args.repo, args.target))
         try:
             with args.out.open("x") as stream:
                 json.dump(plan, stream, indent=2, sort_keys=True, allow_nan=False)
