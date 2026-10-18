@@ -2840,6 +2840,37 @@ def test_edited_supervisor_closeout_waits_find_their_own_landed_source() -> None
     assert not any("issues/1211/comments" in path for path in calls)
 
 
+def test_unresolved_delegated_acceptance_keeps_the_hold() -> None:
+    # The acceptance owner cannot be found here, so the delegation is unproven.
+    module = load()
+    row = {**issue(10, "Landed source, acceptance delegated", labels=("plan:active",), body=
+                   "## Current Status\nState: Source complete.\nNext action: Supervisor lands PR #20.\n"
+                   "Blocked by: None.\nWaiting for: Supervisor landing; Client acceptance belongs to #104. "
+                   "No new Director decision is open.\n"),
+           "updated_at": "2026-10-07T20:00:00Z", "issue_dependencies_summary": {"total_blocked_by": 0}}
+    def fetch(delegate: Any) -> Any:
+        def read(args: list[str]) -> Any:
+            path = args[1]
+            if path == "repos/owner/catalog/issues/104":
+                if isinstance(delegate, Exception):
+                    raise delegate
+                return delegate
+            if path == "repos/owner/catalog/issues/20":
+                return {"state": "closed", "pull_request": {}}
+            if path == "repos/owner/catalog/pulls/20":
+                return {"merged_at": "2026-10-08T12:00:00Z", "base": {"ref": "main"}, "body": "Fixes #10"}
+            raise AssertionError(path)
+        return current_repository_fetch(read)
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch(
+        module.ReferenceNotFound("gh: Not Found (HTTP 404)")))
+    assert report["complete"] and [ref["reference"] for ref in report["unresolved_references"]] == ["#104"]
+    [found] = report["items"]
+    assert found["recorded_hold_pending"] and not found["selection_exclusion"]
+    # A delegate that exists here still releases the delivery step.
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch({"state": "open"}))
+    assert report["items"][0]["selection_exclusion"] and not report["items"][0]["recorded_hold_pending"]
+
+
 def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history() -> None:
     module = load()
     row = {**issue(3, "Closeout", labels=("plan:active",), body=

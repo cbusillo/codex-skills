@@ -742,10 +742,13 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
         return mentioned and not (opened and created and opened.tzinfo and created.tzinfo and opened < created)
 
     agent_wait = agent_delivery_wait(status, repo, issue["number"])
+    # A delegate we cannot find leaves the delegated acceptance unproven, so it stays a hold.
+    delegate_unresolved = False
     if agent_wait and ";" in agent_wait:
         for (target_repo, number) in references(agent_wait):
             target = read_reference(target_repo, number)
             if target is UNRESOLVED:
+                delegate_unresolved = True
                 continue
             if not isinstance(target, dict) or target.get("state") not in {"open", "closed"}:
                 raise AuditError("unreadable delegated acceptance issue")
@@ -843,7 +846,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     delivery = bool(clauses and raw_clauses[-1].strip() and re.fullmatch(first, clauses[0], re.I)
                     and set(references(next_action[1])).issubset(pulls)
                     and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
-    hold_pending = False
+    hold_pending = delegate_unresolved
     if agent_wait and next_action:
         hold_pending |= bool(re.search(r"\b(?:after|until|once|when|accept\w*|approv\w*|decision)\b", next_action[1], re.I))
     for match in re.finditer(
