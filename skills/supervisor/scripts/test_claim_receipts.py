@@ -109,6 +109,94 @@ def ordinary_read_history(harness):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_codex_native_shell_surfaces_enforce_and_accept_claim_checks(self):
+        for tool in ("shell_command", "shell", "local_shell_call"):
+            for owning in (claim(), {"operation": "github.pr.create", "ok": True}):
+                with self.subTest(tool=tool, operation=owning["operation"]):
+                    rows = history("codex", owning, proof(("example/a", 1, 10)))
+                    for index in (1, 3):
+                        payload = rows[index]["payload"]
+                        command = json.loads(payload["arguments"])["cmd"]
+                        if tool == "local_shell_call":
+                            payload.update(type=tool, action={"type": "exec", "command": ["/bin/bash", "-lc", command]})
+                            payload.pop("arguments")
+                            rows[index + 1]["payload"]["type"] = "local_shell_call_output"
+                        else:
+                            payload.update(name=tool, arguments=json.dumps({"command": command} if tool == "shell_command" else {"cmd": ["/bin/bash", "-lc", command]}))
+                    without_check = [*rows[:3], *rows[-2:]]
+                    self.assertFalse(session_record.summarize(without_check, "codex")["safe_verdict"])
+                    self.assertTrue(receipts.ownership_state(rows, "codex")["indices"])
+                    self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
+
+    def test_visible_foreground_wrappers_finish_and_preserve_claim_disposition(self):
+        helper = "/catalog/gh-plan.py --repo example/a claim 1"
+        commands = ("timeout 300 uv run " + helper, "GH_PROMPT_DISABLED=1 uv run " + helper,
+                    "env X=1 uv run " + helper, "uv run --directory /repo " + helper,
+                    "uv run --script " + helper, "uv run python3 " + helper)
+        for harness in ("codex", "claude"):
+            for command in commands:
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, claim(), {**proof(("example/a", 1, 10)), "harness": harness})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": "timeout 300 uv run scripts/check_claims.py"})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                        rows[3]["message"]["content"][0]["input"] = {"command": "timeout 300 uv run scripts/check_claims.py"}
+                    rows[2] = output({"exit_code": 0, "output": json.dumps(claim())}, harness, "tool-0")
+                    self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
+                    self.assertEqual(receipts.target_records(rows, harness), {("example/a", 1)})
+                    self.assertTrue(receipts.acceptance(rows, harness, SESSION)["clear"])
+                    # A completed command still needs its own exact release proof.
+                    missing = [*rows[:3], *rows[-(2 if harness == "codex" else 1):]]
+                    self.assertFalse(receipts.acceptance(missing, harness, SESSION)["clear"])
+
+    def test_claim_search_operand_does_not_become_an_ownership_action(self):
+        for harness in ("codex", "claude"):
+            for command in ("uv run gh-plan.py --repo example/a search claim",
+                            "timeout 60 uv run gh-plan.py --repo=example/a search claim",
+                            "uv run gh-plan.py show 1 --sections claim"):
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+                    self.assertTrue(receipts.acceptance(rows, harness, SESSION)["clear"])
+
+    def test_wrapped_pr_creation_keeps_repository_and_created_pr_provenance(self):
+        url = "https://github.com/example/a/pull/2"
+        for harness in ("codex", "claude"):
+            for command, result in (("timeout 300 gh pr create --repo example/a", url),
+                                    ("timeout 300 uv run gh-pr.py --repo example/a create",
+                                     json.dumps({"operation": "github.pr.create", "ok": True, "url": url}))):
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    rows[2] = output({"exit_code": 0, "output": result}, harness, "tool-0")
+                    self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
+                    self.assertEqual(receipts.target_repositories(rows, harness), {"example/a"})
+                    self.assertEqual(receipts.created_prs(rows, harness), {url})
+
+    def test_unexpanded_helper_executable_requires_ownership_disposition(self):
+        for harness in ("codex", "claude"):
+            for helper, action in (("gh-plan.py", "claim 1"), ("gh-pr.py", "create")):
+                for variable in ('$GHP', '${GHP}'):
+                    with self.subTest(harness=harness, helper=helper, variable=variable):
+                        command = 'GHP=/catalog/' + helper + '; uv run "' + variable + '" --repo example/a ' + action
+                        rows = history(harness, {}, {**proof(), "harness": harness})
+                        if harness == "codex":
+                            rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        else:
+                            rows[1]["message"]["content"][0]["input"] = {"command": command}
+                        rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                        self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+                        self.assertFalse(receipts.acceptance(rows, harness, SESSION)["clear"])
+
     def test_claude_shared_result_record_does_not_decode_an_unrelated_deep_read(self):
         rows = history("claude", claim(), {**proof(("example/a", 1, 10)), "harness": "claude"})
         rows[3]["message"]["content"].append({"type": "tool_use", "id": "read", "name": "Bash", "input": {"command": "cat saved.json"}})
@@ -409,9 +497,7 @@ class ReceiptTests(unittest.TestCase):
                             "sh -s <<'EOF'\n" + writer + "\nEOF",
                             "cat <<'EOF' | bash\n" + writer + "\nEOF",
                             "cat > run-claim.sh <<'EOF'\n" + writer + "\nEOF\nbash run-claim.sh",
-                            "bash -c '" + writer + "'", 'env X=1 ' + writer,
-                            'timeout 600 ' + writer, 'X=1 ' + writer,
-                            writer.replace('uv run ', 'uv run --script '),
+                            "bash -c '" + writer + "'",
                             "python3 - <<'PY'\nimport os\nos.system(" + repr(writer) + ")\nPY"):
                 rows = history(harness, claim(), {**proof(), "harness": harness})
                 if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})

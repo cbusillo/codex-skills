@@ -58,7 +58,7 @@ def raw_outputs(records, harness, *, call_id=None):
     for index, record in enumerate(records):
         if harness == "codex":
             payload = record.get("payload") or {}
-            if (payload.get("type") in {"function_call_output", "custom_tool_call_output"}
+            if (payload.get("type") in {"function_call_output", "custom_tool_call_output", "local_shell_call_output"}
                     and (call_id is None or payload.get("call_id") == call_id)):
                 for value in envelopes(payload.get("output")):
                     yield index, {**value, "_tool_call_id": payload.get("call_id")}
@@ -94,7 +94,9 @@ def calls_and_results(record, harness):
     payload = record.get("payload") or {}
     if harness == "codex":
         calls = [(payload.get("call_id"), payload.get("name"), payload.get("arguments") or payload.get("input"))] if payload.get("type") in {"function_call", "custom_tool_call"} else []
-        results = [payload.get("call_id")] if payload.get("type") in {"function_call_output", "custom_tool_call_output"} else []
+        if payload.get("type") == "local_shell_call":
+            calls = [(payload.get("call_id") or payload.get("id"), "local_shell_call", payload.get("action"))]
+        results = [payload.get("call_id")] if payload.get("type") in {"function_call_output", "custom_tool_call_output", "local_shell_call_output"} else []
     else:
         message = record.get("message")
         blocks = (message.get("content") or []) if isinstance(message, dict) else []
@@ -114,8 +116,12 @@ def arguments(value):
 
 def shell_texts(name, value):
     value = arguments(value)
-    if name in {"exec_command", "Bash"} and isinstance(value, dict):
+    if name in {"exec_command", "Bash", "shell", "shell_command", "local_shell_call"} and isinstance(value, dict):
         texts = [value.get("cmd") or value.get("command") or ""]
+        if isinstance(texts[0], list):
+            argv = texts[0]
+            texts = ([argv[2]] if len(argv) == 3 and Path(argv[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}
+                     and argv[1] in {"-c", "-lc"} else [shlex.join(argv)])
     elif name in {"exec", "functions.exec"} and isinstance(value, str):
         texts = []
         for m in SHELL_FIELD.finditer(value):
@@ -259,7 +265,8 @@ def opaque_ownership(name, value):
                 return True
         for argv in shell_commands("exec_command", {"cmd": text}):
             child = unwrapped_command(argv)
-            if child != argv and ownership_command(child) and not ownership_command(argv):
+            executable = helper_argv(argv)
+            if executable and executable[0].startswith("$") and any(word in {"claim", "create"} for word in executable[1:]):
                 return True
             if child and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}:
                 if any(executable_content(word) for i, word in enumerate(child[1:], 1)
@@ -438,7 +445,7 @@ def native_calls(records, harness):
                     yield identifier, method, args, args.get("workdir") or args.get("cwd") or cwd
                 continue
             args = arguments(value)
-            yield identifier, name, value, (args.get("workdir") or args.get("cwd") or cwd) if isinstance(args, dict) else cwd
+            yield identifier, name, value, (args.get("workdir") or args.get("cwd") or args.get("working_directory") or cwd) if isinstance(args, dict) else cwd
 
 
 def native_path(path, cwd):
@@ -521,14 +528,20 @@ def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>\n"):
 
 
 def script(argv):
+    argv = helper_argv(argv)
     if not argv:
         return ""
-    name = Path(argv[0]).name
-    if name == "uv" and len(argv) > 2 and argv[1] == "run":
-        return Path(argv[2]).name
-    if re.fullmatch(r"python[0-9.]*", name) and len(argv) > 1:
-        return Path(argv[1]).name
-    return name
+    return Path(argv[0]).name
+
+
+def helper_argv(argv):
+    """The helper and its arguments after transparent foreground launchers."""
+    argv = unwrapped_command(argv)
+    if argv and re.fullmatch(r"python[0-9.]*", Path(argv[0]).name):
+        argv = argv[1:]
+        while argv and argv[0] in {"-u", "-B", "-I", "-E", "-s", "-S"}:
+            argv = argv[1:]
+    return argv
 
 
 def composed_calls(value):
@@ -737,13 +750,24 @@ def ownership_state(records, harness, *, file_candidates=()):
 
 
 def ownership_command(argv):
-    verb = "claim" if script(argv) == "gh-plan.py" else "create"
-    owning = (script(argv) == "gh-plan.py" and "claim" in argv
-              or script(argv) == "gh-pr.py" and "create" in argv
-              or argv[:3] == ["gh", "pr", "create"])
+    helper = helper_argv(argv)
+    if not helper:
+        return False
+    name, action = Path(helper[0]).name, helper[1:]
+    while action:
+        if action[0] == "--repo" and len(action) > 1:
+            action = action[2:]
+        elif action[0].startswith("--repo="):
+            action = action[1:]
+        else:
+            break
+    verb = "claim" if name == "gh-plan.py" else "create"
+    owning = (name == "gh-plan.py" and action[:1] == ["claim"]
+              or name == "gh-pr.py" and action[:1] == ["create"]
+              or helper[:3] == ["gh", "pr", "create"])
     # Only the observed bare action help form is exempt. Elsewhere a flag-like
     # word may be an option value rather than a help request.
-    help_only = argv[-2:] in ([verb, "--help"], [verb, "-h"]) and argv.count(verb) == 1
+    help_only = action[-2:] in ([verb, "--help"], [verb, "-h"]) and action.count(verb) == 1
     return owning and not help_only
 
 
@@ -753,7 +777,7 @@ def target_repositories(records, harness):
         calls, _ = calls_and_results(record, harness)
         for _, name, value in calls:
             for argv in shell_commands(name, value):
-                if script(argv) not in {"gh-plan.py", "gh-pr.py"} and argv[:2] not in (["gh", "pr"], ["gh", "issue"]):
+                if script(argv) not in {"gh-plan.py", "gh-pr.py"} and helper_argv(argv)[:2] not in (["gh", "pr"], ["gh", "issue"]):
                     continue
                 for i, token in enumerate(argv):
                     repo = argv[i + 1] if token in {"--repo", "-R"} and i + 1 < len(argv) else token.removeprefix("--repo=") if token.startswith("--repo=") else ""
@@ -1000,7 +1024,8 @@ def created_prs(records, harness):
             and isinstance(value.get("url"), str)
             and re.fullmatch(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", value["url"])}
     def creating(name, value):
-        return any(argv[:3] == ["gh", "pr", "create"] for argv in shell_commands(name, value))
+        return any(helper_argv(argv)[:3] == ["gh", "pr", "create"] and ownership_command(argv)
+                   for argv in shell_commands(name, value))
     for index, _, value in bound_outputs(records, harness, creating):
         if value.get("_result"):
             found.update(re.findall(r"https://github\.com/[^/\s\"\\]+/[^/\s\"\\]+/pull/[1-9]\d*", json.dumps(records[index])))

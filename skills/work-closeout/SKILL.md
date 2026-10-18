@@ -335,6 +335,9 @@ Keep ownership results visible: use one foreground shell command or one
 with shell `&` or drop an inner execution result. A detached writer with no
 recoverable terminal result leaves closeout conditional/no; record that blocker
 and preserve the session rather than rerunning the write to manufacture evidence.
+Foreground timeout/env/uv launchers retain native completion and helper scope.
+Use a literal helper path: a whole shell-variable executable leaves its writer
+unresolved and keeps the verdict conditional/no.
 Quoted heredoc bodies are data only when they are not passed to an executor,
 including a generated script executed later in the same invocation.
 Native file writes and patches are linked to execution of that same native path,

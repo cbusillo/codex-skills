@@ -106,6 +106,29 @@ class NativeHistoryTests(unittest.TestCase):
         self.write(self.child, rows)
         self.assertFalse(self.status()["safe_verdict"])
 
+    def test_malformed_native_child_source_refuses_without_losing_turn_status(self):
+        malformed = ({"subagent": "worker"}, {"subagent": {"thread_spawn": "worker"}})
+        for source in malformed:
+            with self.subTest(index_source=source):
+                with sqlite3.connect(self.database) as db:
+                    db.execute("UPDATE threads SET source=? WHERE id='child'", (json.dumps(source),))
+                result = self.status()
+                self.assertTrue(result["at_turn_end"])
+                self.assertTrue(result["declared_safe_verdict"])
+                self.assertFalse(result["safe_verdict"])
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE threads SET source=? WHERE id='child'", (
+                json.dumps({"subagent": {"thread_spawn": {"parent_thread_id": "root"}}}),))
+        for source in ("cli", *malformed):
+            with self.subTest(rollout_source=source):
+                rows = records("codex", "child", parent="root")
+                rows[0]["payload"]["source"] = source
+                self.write(self.child, rows)
+                result = self.status()
+                self.assertTrue(result["at_turn_end"])
+                self.assertTrue(result["declared_safe_verdict"])
+                self.assertFalse(result["safe_verdict"])
+
     def test_child_owned_and_root_alias_claims_require_a_bound_parent_check(self):
         for owner_session in ("child", "root"):
             with self.subTest(owner_session=owner_session):

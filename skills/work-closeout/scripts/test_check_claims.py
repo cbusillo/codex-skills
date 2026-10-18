@@ -7,6 +7,7 @@
 import contextlib
 import io
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -33,6 +34,33 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_completed_wrapped_claim_reaches_inventory_and_still_requires_exact_release(self):
+        from test_claim_receipts import history, output, SESSION as native_session
+        source = comment(10, helper.claim.marker({**SOURCE, "session": native_session}))
+        release = comment(11, "Released claim 10\n\nSession: " + native_session, at="2026-01-01T00:02:00Z")
+        for harness in ("codex", "claude"):
+            for launcher in ("timeout 300 uv run", "uv run --directory /repo"):
+                with self.subTest(harness=harness, launcher=launcher):
+                    self.comments = [source]
+                    rows = history(harness, {})
+                    command = launcher + " /catalog/gh-plan.py --repo test/a claim 1 > claim.json"
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                    for row in rows:
+                        row["timestamp"] = SOURCE["claimed_at"]
+                    entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                        held = helper.check(self.reader, [], entry, ACTOR)
+                        self.assertFalse(held["claims_clear"], held)
+                        self.assertTrue(held["coverage"]["complete"], held)
+                        self.comments.append(release)
+                        released = helper.check(self.reader, [], entry, ACTOR)
+                    self.assertTrue(released["claims_clear"], released)
+                    self.assertEqual({r["claim_comment"] for r in released["released_claims"]}, {10})
+
     def test_finished_claim_with_ordinary_tests_and_reads_reaches_terminal_inventory(self):
         from test_claim_receipts import ordinary_read_history, history, claim as native_claim, SESSION as native_session
         self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
@@ -547,6 +575,73 @@ class ClaimCloseoutTests(unittest.TestCase):
                     code = helper.main(["--owner", "test", "--harness", harness, "--session", SESSION, "--transcript", str(transcript)])
                 self.assertEqual(code, 0, output.getvalue())
                 self.assertTrue(json.loads(output.getvalue())["claims_clear"])
+
+    def test_claude_symlink_snapshot_proof_matches_the_canonical_ledger(self):
+        from test_claim_history import records
+        from test_claim_receipts import claim as native_claim
+        with tempfile.TemporaryDirectory() as tmp:
+            canonical = Path(tmp) / "canonical"
+            canonical.mkdir()
+            alias = Path(tmp) / "alias"
+            alias.symlink_to(canonical, target_is_directory=True)
+            root = canonical / (SESSION + ".jsonl")
+            child = canonical / SESSION / "subagents" / "agent-fixture.jsonl"
+            child.parent.mkdir(parents=True)
+            value = native_claim(REPO)
+            value["claim"]["session"] = SESSION
+            child.write_text("".join(json.dumps(r) + "\n" for r in records("claude", SESSION, value)))
+            self.comments.append(self.release)
+            for checker_path, ledger_path in ((alias / root.name, root), (root, alias / root.name)):
+                with self.subTest(checker_path=checker_path):
+                    root_rows = records("claude", SESSION, delegate=True)
+                    root.write_text("".join(json.dumps(r) + "\n" for r in root_rows))
+                    output = io.StringIO()
+                    with patch.object(helper.github_agent, "running_agent", return_value="claude"), \
+                            patch.object(helper.github_agent, "native_sessions", return_value={"native": SESSION}), \
+                            patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                            patch.object(helper, "GitHubReader", return_value=self.reader), \
+                            patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])), \
+                            contextlib.redirect_stdout(output):
+                        code = helper.main(["--harness", "claude", "--session", SESSION,
+                                            "--transcript", str(checker_path)])
+                    report = json.loads(output.getvalue())
+                    self.assertEqual(code, 0, report)
+                    self.assertTrue(report["claims_clear"], report)
+                    root.write_text("".join(json.dumps(r) + "\n" for r in records("claude", SESSION, report, delegate=True)))
+                    status = helper.session_record.session_status({"harness": "claude", "session_id": SESSION,
+                                                                  "transcript": str(ledger_path)})
+                    self.assertTrue(status["safe_verdict"], status)
+
+    def test_cli_malformed_codex_child_metadata_is_a_structured_refusal(self):
+        from test_claim_history import records
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            root, child = home / "root.jsonl", home / "child.jsonl"
+            root.write_text("".join(json.dumps(r) + "\n" for r in records("codex", SESSION, delegate=True)))
+            with sqlite3.connect(home / "state_5.sqlite") as db:
+                db.executescript("CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT, source TEXT); "
+                                 "CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT PRIMARY KEY);")
+                db.execute("INSERT INTO threads VALUES(?,?,?)", (SESSION, str(root), json.dumps("cli")))
+                db.execute("INSERT INTO threads VALUES(?,?,?)", ("child", str(child), json.dumps(
+                    {"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}})))
+                db.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, "child"))
+            for source in ("cli", {"subagent": "worker"}, {"subagent": {"thread_spawn": "worker"}}):
+                with self.subTest(source=source):
+                    rows = records("codex", "child", parent=SESSION)
+                    rows[0]["payload"]["source"] = source
+                    child.write_text("".join(json.dumps(r) + "\n" for r in rows))
+                    output = io.StringIO()
+                    with patch.object(helper.github_agent, "running_agent", return_value="codex"), \
+                            patch.object(helper.github_agent, "native_sessions", return_value={"native": SESSION}), \
+                            patch.object(helper.claim_history, "codex_homes", return_value=[home]), \
+                            patch.object(helper, "GitHubReader") as reader, contextlib.redirect_stdout(output):
+                        code = helper.main(["--harness", "codex", "--session", SESSION,
+                                            "--transcript", str(root)])
+                    report = json.loads(output.getvalue())
+                    self.assertNotEqual(code, 0)
+                    self.assertFalse(report["claims_clear"], report)
+                    self.assertFalse(report["coverage"]["complete"], report)
+                    reader.assert_not_called()
 
     def test_cli_has_no_all_clear_on_partial_inventory_or_auth_failure(self):
         with tempfile.TemporaryDirectory() as tmp:

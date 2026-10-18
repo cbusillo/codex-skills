@@ -25,6 +25,19 @@ def fingerprint(records):
     return hashlib.sha256(json.dumps(records, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def source_parent(source):
+    """Validate native nested source data before reading its parent edge."""
+    if not isinstance(source, dict):
+        raise ValueError("native child source is not an object")
+    subagent = source.get("subagent", {})
+    if not isinstance(subagent, dict):
+        raise ValueError("native child subagent source is not an object")
+    spawn = subagent.get("thread_spawn", {})
+    if not isinstance(spawn, dict):
+        raise ValueError("native child thread-spawn source is not an object")
+    return spawn.get("parent_thread_id")
+
+
 def codex_homes(path):
     homes = {Path.home() / ".codex", Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))}
     homes.update(p.parent for p in path.parents if p.name in {"sessions", "archived_sessions"})
@@ -44,13 +57,14 @@ def collect(path, harness, session, records, read, *, homes=None):
     Claude's session-local subagent files retain the inherited session identity.
     The callback owns native identity and stable/complete-record validation.
     """
+    path = Path(path).expanduser().resolve()
     nodes = [{"session_id": session, "harness": harness, "transcript": str(path), "records": records}]
     paths = []
     if harness == "claude":
         children = sorted((path.parent / session / "subagents").glob("agent-*.jsonl"))
         if not children and delegated(records, harness):
             raise ValueError("native delegated histories are unavailable")
-        paths = [(session, child, None) for child in children]
+        paths = [(session, child.resolve(), None) for child in children]
     else:
         with ExitStack() as stack:
             databases = []
@@ -88,7 +102,7 @@ def collect(path, harness, session, records, read, *, homes=None):
                         if not child_id or not rollout or not source:
                             raise ValueError("native child index lacks its rollout")
                         native_source = json.loads(source)
-                        if not isinstance(native_source, dict) or native_source.get("subagent", {}).get("thread_spawn", {}).get("parent_thread_id") != parent:
+                        if source_parent(native_source) != parent:
                             raise ValueError("native child index parent differs")
                         child = Path(rollout).expanduser().resolve()
                         if (child_id, child) not in seen_paths:
@@ -105,7 +119,7 @@ def collect(path, harness, session, records, read, *, homes=None):
                 raise ValueError("child rollout lacks native metadata")
             for meta in metadata:
                 parents = [value for value in (meta.get("parent_thread_id"),
-                           meta.get("source", {}).get("subagent", {}).get("thread_spawn", {}).get("parent_thread_id")) if value]
+                           source_parent(meta.get("source", {}))) if value]
                 if not parents or any(value != parent for value in parents):
                     raise ValueError("child rollout parent differs from its native edge")
         import session_record

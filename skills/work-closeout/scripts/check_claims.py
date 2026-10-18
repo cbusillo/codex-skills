@@ -277,9 +277,10 @@ def main(argv=None):
         native = github_agent.native_sessions(args.harness)
         if not native or args.session not in native.values():
             raise ValueError("closeout must use the running harness's native session ID")
-        entry = {"harness": args.harness, "session_id": args.session, "transcript": str(args.transcript)}
-        root_records = transcript_snapshot(args.transcript, args.harness, args.session)
-        entry["_claim_histories"] = claim_history.collect(args.transcript, args.harness, args.session, root_records, transcript_snapshot)
+        transcript = args.transcript.expanduser().resolve()
+        entry = {"harness": args.harness, "session_id": args.session, "transcript": str(transcript)}
+        root_records = transcript_snapshot(transcript, args.harness, args.session)
+        entry["_claim_histories"] = claim_history.collect(transcript, args.harness, args.session, root_records, transcript_snapshot)
         entry["_transcript_records"] = [r for node in entry["_claim_histories"] for r in node["records"]]
         entry["_extra_repositories"] = args.repository
         actor = github_identity.automation_login()
