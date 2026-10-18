@@ -466,8 +466,9 @@ def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None,
     """
     if direction_text is None:
         return None
-    path = direction_mark.marker_path()
+    path: pathlib.Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
     try:
+        path = direction_mark.marker_path()
         # Retain closures that happen while listings are being fetched for the
         # next audit instead of skipping ahead to the completion time.
         direction_mark.mark_audit(path, repo, started_at, held)
@@ -478,8 +479,9 @@ def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None,
 
 def drop_archived(repo: str) -> str | None:
     """Remove a repository this audit confirmed archived from the local marker."""
-    path = direction_mark.marker_path()
+    path: pathlib.Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
     try:
+        path = direction_mark.marker_path()
         direction_mark.drop_audit(path, repo)
         return str(path)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:

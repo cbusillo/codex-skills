@@ -137,6 +137,21 @@ def test_turn_cli_reports_local_write_failure_without_sharing() -> None:
         assert parent.read_text() == "keep"
 
 
+def test_turn_cli_reports_marker_path_resolution_failure_without_sharing() -> None:
+    mark = load(SCRIPT, "direction_mark_path_failure")
+    marker = "~unresolvable-user/marker.json"
+    output, errors = io.StringIO(), io.StringIO()
+    with (patch.dict(os.environ, {"DIRECTION_MARKER": marker}),
+          patch.object(Path, "expanduser", side_effect=RuntimeError("Could not determine home directory.")),
+          patch.object(mark, "share_turn") as shared,
+          redirect_stdout(output), redirect_stderr(errors)):
+        assert mark.main(["turn", "--repo", "owner/start"]) != 0
+    result = json.loads(output.getvalue())
+    assert result["ok"] is False and result["local_recorded"] is False
+    assert result["marker"] == marker and result["error"] in errors.getvalue()
+    shared.assert_not_called()
+
+
 class FakeGitHub:
     """gh-with-env-token and gh-issue stand-ins backed by one issue list, as OWNER/direction would be."""
 

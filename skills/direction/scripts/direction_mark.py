@@ -196,8 +196,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("kind", choices=["turn"], help="only a daily turn can be marked by hand")
     parser.add_argument("--repo", required=True, type=covered_repo, help="OWNER/REPO covered by the daily turn")
     args = parser.parse_args(argv)
-    path = marker_path()
+    path: Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
     try:
+        path = marker_path()
         written = mark_turn(path, args.repo, dt.datetime.now(dt.timezone.utc))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         error = f"Could not record daily direction marker at {path}: {exc}"
