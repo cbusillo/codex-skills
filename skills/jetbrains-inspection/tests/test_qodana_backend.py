@@ -185,7 +185,8 @@ class QodanaTests(unittest.TestCase):
     def test_community_uncovered_inspection_blocks_green_until_accepted(self):
         # Q481 pending: the result names DuplicatedCode and stays UNKNOWN on clean code.
         self.enable_duplicated_code()
-        pending = self.run_backend(self.clean_with_canary())
+        with patch.object(backend, "PYTHON_ACCEPTED_UNCOVERED", frozenset()):
+            pending = self.run_backend(self.clean_with_canary())
         self.assertEqual(pending["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(pending["uncovered_inspections"], ["DuplicatedCode"])
         self.assertIn("effective_profile_missing:DuplicatedCode", pending["proof_failures"])
@@ -902,7 +903,16 @@ class LiveDescriptorTests(unittest.TestCase):
                                      "skills/jetbrains-inspection/scripts/prepare-python-project.py", "--timeout-ms", "900000"],
                                     capture_output=True, text=True)
             envelope = json.loads(result.stdout)
-            self.assertIn(envelope["agent_result"]["verdict"], {"GREEN", "RED"})
+            # While Q481 is open, Community-uncovered inspections alone may leave a clean run UNKNOWN.
+            pending = {"effective_profile_missing:" + rule
+                       for rule in backend.PYTHON_COMMUNITY_UNCOVERED - backend.PYTHON_ACCEPTED_UNCOVERED}
+            verdict = envelope["agent_result"]["verdict"]
+            if verdict == "UNKNOWN":
+                self.assertEqual(envelope["diagnostic"]["error_reason"], "qodana_coverage_unproven")
+                self.assertTrue(envelope["proof_failures"])
+                self.assertLessEqual(set(envelope["proof_failures"]), pending)
+            else:
+                self.assertIn(verdict, {"GREEN", "RED"})
             self.assertEqual(envelope["cleanup"]["status"], "closed")
         # Only the small shared log directory may remain held, a few handles per run.
         after = docker_vm_descriptors()
