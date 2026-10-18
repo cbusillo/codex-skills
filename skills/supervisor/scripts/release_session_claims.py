@@ -439,7 +439,8 @@ def discover_handoff(reader, entry, actor):
         text = evidence.get("body") or ""
         verified = url in entry.get("_handoffs", [])
         writer = github_api.recorded_writer(text, entry["session_id"])
-        if writer is False and not verified:
+        # A verified URL does not verify the comment's current body.
+        if writer is False:
             continue
         if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
                 and not text.startswith("Claimed by ") and not claim.records(text)

@@ -1686,7 +1686,8 @@ final line is a record; a marker anywhere else is caller text. A comment URL tha
 alone or summarized (for example through `jq -r .comment.url`), binds when the
 comment's final marker records this session, or when the comment names the exact
 session. A comment whose final marker records another session never binds to this
-session by transcript or summary. Its body is never matched against what
+session by any route, including a verified inventory handoff URL: verifying a
+URL does not verify the body later written there. Its body is never matched against what
 the transcript appears to have sent. Shell syntax
 outside the heredoc parser, such as a here-string, a hyphenated delimiter or `<<`
 inside quotes, does not hide a later write's receipt, and text after an

@@ -448,6 +448,22 @@ class ReleaseTests(unittest.TestCase):
             helper.discover_handoff(self.reader, self.written_entry(records, body), ACTOR)
         self.assertIs(helper.github_api.recorded_writer(body, "child-thread"), True)
 
+    def test_inventory_handoff_rewritten_by_another_session_does_not_bind(self):
+        # The Supervisor verified the URL, not the body another session later wrote there.
+        url = self.entry["handoff_url"]
+        entry = {**self.entry, "handoff_url": None, "_inventory": True, "_handoffs": [url]}
+        for writer, bound in (("another-session", False), (SOURCE["session"], True), (None, True)):
+            with self.subTest(writer=writer):
+                self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body":
+                    helper.github_api.body_with_operation_marker("Engineering handoff", "ab" * 16, writer)}
+                self.reader.paged_json.return_value = []
+                if bound:
+                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+                    self.assertEqual(found["_handoff_provenance"], "Supervisor verified inventory handoff")
+                else:
+                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                        helper.discover_handoff(self.reader, entry, ACTOR)
+
     def test_fallbacks_check_the_comment_they_return_not_only_the_listing(self):
         # A listing only nominates; another session may edit the comment before it is read back.
         def written(text, writer):
