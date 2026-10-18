@@ -164,6 +164,44 @@ class LocalMergeTests(unittest.TestCase):
         self.assertIn("--git-command merge origin/main", result.stderr)
         self.assertEqual(self.head_parents(), 1)
 
+    def test_implicit_upstream_base_is_checked(self) -> None:
+        # A task branch started from origin/main tracks it until its first push.
+        self.run_git(self.repo, "branch", "-q", "--set-upstream-to", "origin/main")
+        self.advance_main("other.txt", "main\n")
+        for args in (("merge", "--no-edit"), ("pull", "--no-rebase", "--no-edit"), ("rebase", "--no-autostash")):
+            with self.subTest(args=args):
+                result = self.bot("--git-command", *args)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("--refresh-required", result.stderr)
+        self.assertEqual(self.head_parents(), 1)
+
+    def test_missing_origin_head_still_finds_the_base(self) -> None:
+        self.advance_main("other.txt", "main\n")
+        # Newer Git recreates origin/HEAD on fetch, so remove it afterwards.
+        self.run_git(self.repo, "remote", "set-head", "origin", "--delete")
+        result = self.bot("--git-command", "merge", "--no-edit", "origin/main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.head_parents(), 1)
+
+    def test_conflict_free_rebase_onto_the_base_is_refused(self) -> None:
+        self.advance_main("other.txt", "main\n")
+        before = self.run_git(self.repo, "rev-parse", "HEAD")
+        for args in (("origin/main",), ("--onto", "origin/main", "HEAD~1")):
+            with self.subTest(args=args):
+                result = self.bot("--git-command", "rebase", *args)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(self.run_git(self.repo, "rev-parse", "HEAD"), before)
+        result = self.bot("--git-command", "rebase", "--refresh-required", "strict base rule", "origin/main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.run_git(self.repo, "rev-parse", "HEAD~1"), self.run_git(self.repo, "rev-parse", "origin/main"))
+
+    def test_rebasing_own_commits_is_not_a_base_refresh(self) -> None:
+        self.write(self.repo, "task.txt", "task two\n")
+        self.run_git(self.repo, "commit", "-q", "-am", "task two")
+        self.advance_main("other.txt", "main\n")
+        result = self.bot("--git-command", "rebase", "HEAD~1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

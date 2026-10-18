@@ -106,41 +106,77 @@ refuse_refresh() {
 	exit 1
 }
 
+# Refuse when the commit brings the default branch in without conflicts.
+check_refresh_commit() {
+	commit=$("$git_bin" rev-parse -q --verify "$1^{commit}" 2>/dev/null) || return 0
+	"$git_bin" merge-base --is-ancestor "$commit" "$default_ref" 2>/dev/null || return 0
+	! "$git_bin" merge-base --is-ancestor "$commit" HEAD 2>/dev/null || return 0
+	# merge-tree exits 1 for a conflict; any other failure leaves the merge to Git.
+	merge_tree_status=0
+	"$git_bin" merge-tree --write-tree HEAD "$commit" >/dev/null 2>&1 || merge_tree_status=$?
+	[ "$merge_tree_status" -ne 0 ] || refuse_refresh "$1 brings $default_branch into $current_branch without conflicts"
+}
+
+refuse_pull() {
+	refuse_refresh "pulling $default_branch into $current_branch cannot be checked for a conflict first; fetch, then use --git-command merge origin/$default_branch"
+}
+
 check_base_refresh() {
 	[ -z "$refresh_required" ] || return 0
-	case "$git_command" in merge | pull) ;; *) return 0 ;; esac
-	default_ref=$("$git_bin" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null) || return 0
+	case "$git_command" in merge | pull | rebase) ;; *) return 0 ;; esac
+	# origin/HEAD is optional, for example after remote add and fetch.
+	if default_ref=$("$git_bin" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null); then :
+	elif "$git_bin" rev-parse -q --verify refs/remotes/origin/main >/dev/null; then default_ref=refs/remotes/origin/main
+	elif "$git_bin" rev-parse -q --verify refs/remotes/origin/master >/dev/null; then default_ref=refs/remotes/origin/master
+	else return 0
+	fi
 	default_branch=${default_ref#refs/remotes/origin/}
 	current_branch=$("$git_bin" symbolic-ref -q --short HEAD 2>/dev/null) || return 0
 	[ "$current_branch" != "$default_branch" ] || return 0
 	takes_value=
-	positional=0
+	operands=0
+	onto=
+	rebase_upstream=
 	for arg in "$@"; do
-		if [ -n "$takes_value" ]; then takes_value=; continue; fi
-		case "$arg" in
-		--continue | --abort | --quit) return 0 ;;
-		-m | -F | -s | -X | --file | --strategy | --strategy-option | --cleanup | --into-name | --depth) takes_value=1; continue ;;
-		-*) continue ;;
-		esac
-		positional=$((positional + 1))
-		if [ "$git_command" = pull ]; then
-			# The first operand names the remote; a fetched refspec cannot be
-			# checked for conflicts before it merges.
-			[ "$positional" -gt 1 ] || continue
-			case "${arg#+}" in
-			"$default_branch" | "$default_branch":* | "refs/heads/$default_branch" | "refs/heads/$default_branch":*)
-				refuse_refresh "pulling $default_branch into $current_branch cannot be checked for a conflict first; fetch, then use --git-command merge origin/$default_branch" ;;
-			esac
+		if [ -n "$takes_value" ]; then
+			[ "$takes_value" != onto ] || onto=$arg
+			takes_value=
 			continue
 		fi
-		commit=$("$git_bin" rev-parse -q --verify "$arg^{commit}" 2>/dev/null) || continue
-		"$git_bin" merge-base --is-ancestor "$commit" "$default_ref" 2>/dev/null || continue
-		! "$git_bin" merge-base --is-ancestor "$commit" HEAD 2>/dev/null || continue
-		# merge-tree exits 1 for a conflict; any other failure leaves the merge to Git.
-		merge_tree_status=0
-		"$git_bin" merge-tree --write-tree HEAD "$commit" >/dev/null 2>&1 || merge_tree_status=$?
-		[ "$merge_tree_status" -ne 0 ] || refuse_refresh "$arg merges into $current_branch without conflicts"
+		case "$arg" in
+		--continue | --abort | --quit | --skip | --edit-todo | --show-current-patch | --root) return 0 ;;
+		--onto) takes_value=onto; continue ;;
+		--onto=*) onto=${arg#--onto=}; continue ;;
+		-m | -F | -s | -X | -x | --exec | --file | --strategy | --strategy-option | --cleanup | --into-name | --depth) takes_value=1; continue ;;
+		-*) continue ;;
+		esac
+		operands=$((operands + 1))
+		case "$git_command" in
+		merge) check_refresh_commit "$arg" ;;
+		rebase) [ "$operands" -gt 1 ] || rebase_upstream=$arg ;;
+		pull)
+			# The first operand names the remote; a fetched refspec cannot be
+			# checked for conflicts before it merges.
+			[ "$operands" -gt 1 ] || continue
+			case "${arg#+}" in
+			"$default_branch" | "$default_branch":* | "refs/heads/$default_branch" | "refs/heads/$default_branch":*) refuse_pull ;;
+			esac
+			;;
+		esac
 	done
+	# Without an operand, Git takes the branch's upstream, which is the base
+	# until a task branch's first push.
+	upstream='@{upstream}'
+	case "$git_command" in
+	merge) [ "$operands" -gt 0 ] || check_refresh_commit "$upstream" ;;
+	rebase) check_refresh_commit "${onto:-${rebase_upstream:-$upstream}}" ;;
+	pull)
+		if [ "$operands" -le 1 ] &&
+			[ "$("$git_bin" rev-parse -q --symbolic-full-name "$upstream" 2>/dev/null)" = "$default_ref" ]; then
+			refuse_pull
+		fi
+		;;
+	esac
 }
 check_base_refresh "$@"
 

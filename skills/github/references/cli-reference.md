@@ -2237,9 +2237,11 @@ bot environment; replayed commits preserve original authors and use the bot
 committer. Identity selection and credential stripping apply to every mode.
 Use `gh-pr.py update-branch` for authorized PR base updates; these commands do
 not grant protected-branch or train-owned work authority. On a branch other
-than the default branch, `merge` refuses an `origin` default-branch commit that
-merges without conflicts, and `pull` refuses the default branch, because a
-refresh without a conflict only reruns CI. Fetch, then merge
+than the default branch, `merge` and `rebase` refuse an `origin`
+default-branch commit that applies without conflicts, and `pull` refuses the
+default branch, because a refresh without a conflict only reruns CI. This
+includes the branch's upstream when no operand is given, which is the base
+until a task branch's first push. Fetch, then merge
 `origin/<default>` to resolve a real conflict, or pass
 `--refresh-required REQUIREMENT` before the Git arguments to name the check or
 rule that requires the refresh. Merging another branch, such as a stack
