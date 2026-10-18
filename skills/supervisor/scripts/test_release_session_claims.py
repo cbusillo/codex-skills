@@ -708,6 +708,23 @@ else:
         with self.assertRaises(ValueError):
             helper.validate_closure(self.entry, SOURCE["session"])
 
+    def test_record_closure_uses_verified_verdict_time_and_preserves_it_on_retry(self):
+        observed = helper.session_record.session_status(self.entry)
+        log = self.root / "timed-close.json"
+        supplied = {**self.entry, "verdict_at": self.entry["ended_at"]}
+        closed = helper.record_closure(log, supplied, "supervisor")
+        self.assertEqual(closed["verdict_at"], observed["timestamp"])
+        self.assertEqual(json.loads(log.read_text())[0]["verdict_at"], observed["timestamp"])
+        retried = helper.record_closure(log, supplied, "supervisor")
+        self.assertEqual(retried["verdict_at"], closed["verdict_at"])
+        self.assertEqual(retried["ended_at"], closed["ended_at"])
+
+    def test_recorded_verdict_time_must_match_transcript_but_legacy_log_still_works(self):
+        observed = helper.validate_closure(self.entry, "supervisor")
+        helper.validate_closure({**self.entry, "verdict_at": observed["timestamp"]}, "supervisor")
+        with self.assertRaises(ValueError):
+            helper.validate_closure({**self.entry, "verdict_at": self.entry["ended_at"]}, "supervisor")
+
     def test_conditional_verdict_and_resumed_transcript_refuse(self):
         original = self.transcript.read_text()
         self.transcript.write_text(original.replace("Safe to exit: yes", "Safe to exit: yes, if CI passes"))

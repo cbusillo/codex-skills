@@ -137,8 +137,42 @@ uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json>
 ```
 
 Rebuild the ~23-minute check and morning digest using the harness's scheduler.
-For each check, read statuses, verify turn-end notices, nudge stalls with exact
-facts, gather Director questions and perform the skill's finished-session step.
+On a turn-end notice, immediately enter the skill's
+[finished-session procedure](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
+for its exact session. Do not collect notices until the next check. Codex
+notices include `closeout_request` only when the latest completed response has
+an unqualified verdict, the ledger says Supervisor-owned and no background
+task remains. Those notices bypass `--idle-seconds` and arrive on the next
+watch poll (45 seconds by default); ordinary turn ends retain the idle delay.
+The request names the session, harness, known handoff URL, completed-verdict
+timestamp (`verdict_at`, or null if absent) and verification skill. It does not
+establish input, handoff or process proof. Timestamped closeout notices dedup
+by completed response rather than transcript size: trailing usage metadata does
+not request verification again. A later verdict or changed ownership/handoff
+does. A watcher restart may repeat a notice; coalesce it with any verification
+already in progress and never replay an uncertain send.
+
+For Claude's native `notify_when_idle` notice, read back only the matched
+session through the same candidate router:
+
+```sh
+uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json> --session-id <native-id>
+```
+
+A missing or mismatched native identity, malformed transcript, later work,
+unqualified-verdict failure or live background task cannot request shutdown.
+Candidates with a recognized verdict and live tasks expose `closeout_blockers`
+with their task ids and `next_action: ask_worker_to_resolve_background_tasks`.
+Report and nudge them using the finished-session procedure rather than silently
+waiting for the next scan. Exact-session reads retain strict whole-ledger
+validation; a malformed unrelated entry must be reconciled against its launch
+receipt before any notice query can proceed.
+Run the full existing verification before sending keys. A notice containing
+`closeout_request: null` is still useful for stall or capacity handling and
+never authorizes closing. No script here sends an exit command automatically.
+
+For each scheduled check, scan all sessions as a fallback for missed notices,
+nudge stalls with exact facts and gather Director questions.
 The watcher exits at its wall-clock bound; re-arm it with the harness's built-in
 monitor/scheduler. A new watcher may repeat a notice. `clean: null` means a turn
 ended, not that work succeeded; an abort is also a notice. Use Claude Code's
@@ -843,11 +877,12 @@ brief's first nonblank line, using the exact app bundle ID, for example
 do not opt that task into GUI work.
 Launch that brief alone with `--account-provider openai` and a local `codex -C`
 command, without `--remote`. The launcher rejects terminal app targets and adds
-the GUI safety instructions to the worker's prompt. GUI commands retain that
-local invocation and its client-side overrides; they do not use the managed RPC
+the GUI safety instructions to the worker's prompt. GUI commands retain their
+local invocation and client-side overrides; they do not use the managed RPC
 ingress or acquire a managed-client exemption. A live local GUI client therefore
-keeps idle-closure admission conservative. Other briefs keep the
-existing launch path and create no marketplace links or GUI state.
+keeps idle-closure admission conservative. Other briefs create no GUI state.
+With the catalog Chrome opt-in, local Codex launches share the marketplace
+setup described below.
 
 Only one Supervisor GUI worker may run at a time, across account homes and both
 terminal backends. The launcher refuses a locked screen or unavailable lock
@@ -863,12 +898,12 @@ before every GUI action and stop immediately if locked or unknown. No agent
 unlocks the screen. Missing app approval, Accessibility or Screen Recording
 permission is Chris's action; neither the launcher nor the worker grants it.
 
-During a real GUI launch only, the launcher validates the default home's current
+During GUI launches and enrolled local Codex launches, the launcher validates the default home's current
 `~/.codex/.tmp/bundled-marketplaces/openai-bundled` directory and creates the
 selected `CODEX_HOME`'s corresponding path as a symlink to it. A matching link
 is reused; an occupied path, redirected parent or different link target refuses
 without replacement. The link stays after the task ends and is validated again
-on later GUI launches; non-GUI launches neither create nor change it. It also passes the account-relative
+on later local launches. It also passes `--no-daemon` and the account-relative
 `-c marketplaces.openai-bundled.source="<account-home>/.tmp/bundled-marketplaces/openai-bundled"`
 override to that Codex process. The link alone does not load the marketplace.
 No shared `config.toml`, authentication, permissions or catalog installation is
@@ -997,6 +1032,71 @@ admission uses a leased idle-closure receipt, that old generation stays frozen
 even if the external claim write needs recovery. Retry the normal claim recovery
 or start a new thread and claim available work; never resume that handed-off
 source. Ordinary unloaded-thread admission keeps its existing recovery behavior.
+
+### Browser and Computer Use preflight
+
+Page checks stay headless. For a GUI brief explicitly naming the Agents Chrome
+profile, add `--require-browser` to `iterm_tab.py new`. Ordinary
+source briefs get warnings and keep working. `--without-browser` skips Claude's
+bounded connected-browser listing; the two flags cannot be combined. Neither
+flag permits an unbriefed browser or desktop action.
+
+With `.local/chrome.toml` present, Claude launches reject `--chrome` and export
+`CLAUDE_CODE_ENABLE_CFC=0`, keeping the built-in account-specific server off.
+Use `mcp__catalog-chrome__*` on the pinned Agents route. Preflight checks the
+selected home and project and calls only `list_connected_browsers`, once per
+server in a batch. Empty, failed, malformed and timed-out replies cannot pass
+a required-browser launch. Unrequested Computer Use settings are not a launch
+warning; enabling it and using Claude Computer Use remain Chris's actions.
+Codex is the default for screen work. Under Q475, run Claude Computer Use only
+in a visible iTerm tab with Chris's approval for that session, never under the
+launchd tmux server. Tool discovery alone does not authorize screen use.
+Do not change his logins, Chrome profiles, app settings or privacy grants.
+
+Local Codex launches with this opt-in, or an explicit browser/GUI brief, validate
+the account-relative link and pass its source override plus `--no-daemon`.
+The [native flag](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+ensures the process loads that config even if a daemon already runs. Preflight
+lists enabled, installed bundled plugins from that home. A desktop GUI brief
+requires `computer-use`; `--require-browser` requires `chrome` and `browser`.
+A brief asking for both must have both sets. Remote launches keep
+their endpoint; `--require-browser` makes `--remote unix://` check the selected
+daemon's `plugin/list` for the launch's `-C` directory, refusing inventory
+failure or missing plugins. Source launches skip this unrequested inventory;
+daemon admission remains an independent check. Optional local discovery failure
+warns but keeps the validated local route. An explicit `--no-daemon` is retained
+once and never triggers daemon admission, including without the opt-in. Local
+interactive clients keep idle-closure admission conservative while live:
+they bypass the managed ingress and receive no managed-client exemption.
+If marketplace setup itself fails, the warning names the fallback to the
+selected-home daemon, or the retained local configuration when `--no-daemon`
+was explicit. Other explicit remote endpoints are
+unverified and cannot satisfy `--require-browser`. Use local `codex -C` for
+the supported browser route. Nothing restarts an existing daemon or edits
+shared config. Discovery does not prove a working extension, runtime or OS grant.
+
+Session start makes static Chrome-route checks only and prints one loud line
+on a conflict. Unrequested Computer Use availability is left to launch
+preflight. Direct Claude sessions must omit `--chrome` and start with
+`CLAUDE_CODE_ENABLE_CFC=0`; the hook reports a conflicting saved setting rather
+than changing it. Local launcher Codex sessions carry their source override into the
+hook's diagnostic environment, where it can check that override. Without this
+marker, remote or direct Codex setup is left to launch preflight rather than
+printing unverified marketplace uncertainty on every startup.
+The hook never calls a GUI tool.
+
+**Remote config research, Codex 0.163.0 (#2119):** `thread/start` accepts a
+`config` map, and its
+[processor](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server/src/request_processors/thread_processor.rs)
+loads it into the thread's config stack. A throwaway, unauthenticated app-server
+loaded one fake bundled MCP server through that map while the same fixture
+without the override loaded none. Both threads were ephemeral, unsubscribed
+and the process exited; no model turn or real GUI server ran. This proves the
+protocol path, not tool use in the stock remote TUI. That TUI's
+[forwarding code](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/tui/src/app_server_session.rs)
+filters out `marketplaces` for both CLI `-c` and a `-p` profile. A profile can
+supply supported model choices remotely, but cannot repair marketplace loading
+there. The native local flag avoids needing a custom remote thread client.
 
 ### tmux launches
 
@@ -1229,7 +1329,7 @@ Successful launch output reports environment variable names, without their
 private path values. A daemon refusal includes the selected home in its recovery
 diagnostic; keep that diagnostic out of public comments.
 
-For Codex's shared app server, launch with `codex --remote unix:// -C /absolute/repository`: the empty
+For source work on Codex's shared app server, launch with `codex --remote unix:// -C /absolute/repository`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
 its own daemon. A fixed socket or WebSocket endpoint attaches to that server's
 account regardless of the exported home. Keep the per-session `-c` settings:
@@ -1286,7 +1386,7 @@ when the selected home already trusts its root; otherwise the launch refuses
 and names the home, so you can open `claude` there and review the dialog
 yourself. A configured home without `.claude.json` also refuses before any
 write; a default home without one is skipped, never created. The launcher leaves every other key, including the login, unchanged.
-Before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
+For daemon-routed launches, before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
 runs `CODEX_HOME=<selected-home> codex app-server daemon start` for each selected
 home, with a 30-second command timeout. Native `start` reuses a healthy running
 daemon; it also brings one back after a reboot. It does not use `bootstrap`,
@@ -1722,8 +1822,9 @@ original closure record. The existing unloaded/authored-release recovery
 remains available. A generation preserved by housekeeping is not a refreshed
 closure proof: if native persistence changes a rollout (including legacy git
 metadata updates), idle admission refuses the old fingerprint and finish
-refuses any record newer than closure. The finish-retry benefit applies only
-when all required transcripts remain unchanged. Metadata
+refuses any record newer than closure. Unchanged transcripts permit
+finish retry; an mtime-only change invalidates idle proof but does not itself
+prevent ordinary finish. Metadata
 updates store preferences; they do not select a turn's access or grant it.
 For an already closed source invalidated by queue, fork or archive, start a
 guarded resume to obtain its real new launch metadata;
@@ -1761,8 +1862,13 @@ time in a private JSON log, posts/readbacks the required `Closed session` /
 `Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
 the maintained `release-claim` preview and apply. The original observed exit
 time survives retries. The log has the ledger's array schema plus `ended_at`
-(timezone-qualified ISO timestamp) and `process_exit_verified: true`; retain
+(timezone-qualified ISO timestamp), the verified completed response's
+`verdict_at`, and `process_exit_verified: true`; retain
 the native transcript path, PID/TTY and exact issue-comment `handoff_url`.
+Use `ended_at - verdict_at` for the one-day shutdown-latency measurement.
+Retries preserve both original times. Legacy records without `verdict_at`
+remain valid and need their original native transcript to reconstruct it;
+never substitute notice arrival or log-write time for the verdict.
 Repeat finish previews use the existing log's original closure time. If a
 session truly resumes and closes again, verify its new PID/TTY, transcript and
 handoff, then use a fresh `--closed-log` file for that newly observed closure;

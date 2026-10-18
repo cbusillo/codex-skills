@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
+import agent_tools
 import gui_launch
 import iterm_tab
 import tmux_terminal
@@ -48,6 +49,10 @@ class GuiLaunchTests(unittest.TestCase):
         patch.dict(os.environ, {"ZDOTDIR": str(self.root), "HOME": str(self.home)}).start()
         patch.object(Path, "home", return_value=self.home).start()
         patch.object(gui_launch, "state_path", return_value=self.state).start()
+        patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent-opt-in").start()
+        patch.object(agent_tools, "codex_plugins", return_value=[
+            {"name": name, "marketplaceName": "openai-bundled", "enabled": True, "installed": True}
+            for name in agent_tools.CODEX_PLUGINS]).start()
         self.unlocked = patch.object(gui_launch, "require_unlocked").start()
         self.choice = {"provider": "openai", "env": {"CODEX_HOME": str(self.account)},
                        "account_id": "openai-a", "storage_root": str(self.root)}
@@ -72,6 +77,21 @@ class GuiLaunchTests(unittest.TestCase):
             '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
             + 'env={CODEX_HOME=' + json.dumps(str(self.account)) + '}\n')
         patch.dict(os.environ, {"CODE_HOME": str(code)}).start()
+
+    def test_desktop_only_gui_does_not_require_browser_plugins(self):
+        with patch.object(agent_tools, "codex_plugins", return_value=[{
+                "name": agent_tools.COMPUTER_USE, "marketplaceName": "openai-bundled",
+                "enabled": True, "installed": True}]):
+            _, choices = iterm_tab.prepare_launches(self.args)
+        self.assertEqual(choices[0]["tools"]["warnings"], [])
+        gui_launch.release(Path(choices[0]["gui"]["state_path"]), choices[0]["gui"]["token"])
+
+    def test_gui_still_refuses_when_computer_use_is_missing(self):
+        with patch.object(agent_tools, "codex_plugins", return_value=[{
+                "name": name, "marketplaceName": "openai-bundled", "enabled": True, "installed": True}
+                for name in agent_tools.CODEX_BROWSER_PLUGINS]):
+            with self.assertRaises(ValueError):
+                iterm_tab.prepare_launches(self.args)
 
     def test_selected_home_override_reaches_agent_and_receipt_without_config_changes(self):
         fake = self.root / "codex"
@@ -105,6 +125,31 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertFalse(command.exists())
         self.assertEqual((self.account / "config.toml").read_bytes(), self.config_before)
         self.assertEqual((self.account / "auth.json").read_text(), "opaque fixture")
+
+    def test_source_local_launch_reaches_native_client_without_managed_wrapper(self):
+        fake = self.root / "codex"
+        fake.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                        "print(json.dumps([sys.argv[1:], os.getenv('CODEX_HOME')]))\n")
+        fake.chmod(0o755)
+        self.brief.write_text("Implement source changes only.")
+        for opt_in in (False, True):
+            with self.subTest(chrome_opt_in=opt_in):
+                if opt_in:
+                    iterm_tab.CHROME_OPT_IN.touch()
+                self.command.write_text("exec " + shlex.quote(str(fake)) + " --no-daemon -C "
+                                        + shlex.quote(str(self.repo)))
+                commands, choices = iterm_tab.prepare_launches(self.args)
+                result = subprocess.run(["/bin/sh", "-c", commands[0]], capture_output=True,
+                                        text=True, check=True)
+                argv, home = json.loads(result.stdout)
+                self.assertEqual(home, str(self.account))
+                self.assertEqual(argv.count("--no-daemon"), 1)
+                self.assertFalse(any(a == "--remote" or a.startswith("--remote=") for a in argv))
+                self.assertEqual(argv[-2:], ["--", self.brief.read_text()])
+                self.assertEqual(choices[0]["tools"]["route"], "local")
+                self.assertNotIn("gui", choices[0])
+                self.daemon.assert_not_called()
+                self.unlocked.assert_not_called()
 
     def test_nongui_launch_does_not_probe_or_create_gui_paths(self):
         self.brief.write_text("Implement source changes only.")
@@ -181,8 +226,8 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertEqual(list((self.root / "Launch Receipts").iterdir()), [])
 
     def test_rollback_failure_preserves_original_cause_and_recovery_token(self):
-        original = ValueError("fake marketplace failure")
-        with patch.object(gui_launch, "marketplace", side_effect=original), \
+        original = ValueError("fake command staging failure")
+        with patch.object(gui_launch, "stage_command", side_effect=original), \
                 patch.object(gui_launch, "release", side_effect=OSError("fake rollback failure")):
             with self.assertRaises(ValueError) as raised:
                 iterm_tab.prepare_launches(self.args)

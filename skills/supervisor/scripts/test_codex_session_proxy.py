@@ -299,6 +299,16 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     (f.root / "stop").touch()
                     await asyncio.wait_for(task, 8)
 
+    async def test_mtime_change_refuses_idle_proof_but_allows_ordinary_finish_retry(self):
+        with ReceiptFixture() as f:
+            before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
+            self.assertIsNotNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
+            stat = f.transcript.stat()
+            os.utime(f.transcript, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+            self.assertIsNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
+            closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+            self.assertEqual(closed["ended_at"], before["ended_at"])
+
     async def test_persisted_metadata_preserves_generation_but_refuses_stale_closure(self):
         with ReceiptFixture() as f:
             before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
@@ -352,7 +362,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(f.transcript.exists())
                     self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
                     self.assertIsNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
-                    with self.assertRaises(FileNotFoundError):
+                    with self.assertRaises((OSError, ValueError)):
                         await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
                     with self.assertRaises(ValueError):
                         await asyncio.to_thread(f.release.record_closure, f.log,
