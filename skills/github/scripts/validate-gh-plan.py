@@ -5224,7 +5224,7 @@ def test_update_branch_guards_head_and_reports_async_state() -> None:
         calls: list[tuple[str, str, Any]] = []
         old_head, new_head = "a" * 40, "b" * 40
         metadata = {
-            "number": 12, "state": "open", "title": "Demo",
+            "number": 12, "state": "open", "mergeable_state": "behind", "title": "Demo",
             "head": {"sha": old_head, "ref": "topic", "repo": {"full_name": "owner/repo"}},
             "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
         }
@@ -5239,7 +5239,7 @@ def test_update_branch_guards_head_and_reports_async_state() -> None:
                 expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core",
             )
         with patch.object(pr.github_api_core, "call_gh", fake_call), patch.object(pr.time, "sleep"):
-            result = pr.cmd_update_branch(types.SimpleNamespace(repo="owner/repo", pr="12", wait_seconds=wait_seconds))
+            result = pr.cmd_update_branch(types.SimpleNamespace(repo="owner/repo", pr="12", wait_seconds=wait_seconds, required_by=None))
         assert calls == [
             ("GET", "/repos/owner/repo/pulls/12", None),
             ("PUT", "/repos/owner/repo/pulls/12/update-branch", {"expected_head_sha": old_head}),
@@ -5265,13 +5265,13 @@ def test_update_branch_unknown_write_and_rejection_never_replay() -> None:
             ) if method == "PUT" else None
             return pr.github_api_core.ApiResult(
                 ok=method == "GET", status=status if method == "PUT" else 200,
-                body={"state": "open", "head": {"sha": "a" * 40}},
+                body={"state": "open", "mergeable_state": "behind", "head": {"sha": "a" * 40}},
                 operation=kwargs.get("operation"), actor=pr.EXPECTED_ACTOR,
                 expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core", failure=failure,
             )
         with patch.object(pr.github_api_core, "call_gh", fake_call):
             try:
-                pr.cmd_update_branch(types.SimpleNamespace(repo="owner/repo", pr="12", wait_seconds=0))
+                pr.cmd_update_branch(types.SimpleNamespace(repo="owner/repo", pr="12", wait_seconds=0, required_by=None))
             except pr.PrHelperError as exc:
                 assert exc.failure.write_outcome == outcome, exc
             else:
@@ -5290,7 +5290,7 @@ def test_update_branch_failed_observation_preserves_accepted_nonretryable_write(
         ) if len(calls) == 3 else None
         return pr.github_api_core.ApiResult(
             ok=failure is None, status=502 if failure else (202 if method == "PUT" else 200),
-            body={"state": "open", "head": {"sha": "a" * 40}},
+            body={"state": "open", "mergeable_state": "behind", "head": {"sha": "a" * 40}},
             operation=kwargs.get("operation"), actor=pr.EXPECTED_ACTOR,
             expected_actor=pr.EXPECTED_ACTOR, host="github.com", bucket="rest_core", failure=failure,
         )
