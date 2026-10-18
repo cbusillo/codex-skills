@@ -303,29 +303,60 @@ class QodanaTests(unittest.TestCase):
         self.assertIn("odoo_model_roots_interpreter_unproven", gaps)
         self.assertIn("odoo_effective_default_unproven", gaps)
 
-    def test_license_copies_private_read_only_and_deleted_for_success_failure_and_interrupt(self):
-        source = self.root / "plugin_TEST.license"
-        source.write_bytes(b"synthetic-private-license-do-not-print")
-        before = source.stat()
-        self.args.qodana_license_file = [str(source)]
-        for error in (None, backend.Blocked("qodana_timeout"), KeyboardInterrupt()):
-            with self.subTest(error=type(error).__name__):
-                def attempt(*args):
-                    private = args[2]
-                    copy = private / "config" / source.name
-                    self.assertEqual(copy.stat().st_mode & 0o777, 0o400)
-                    self.assertEqual(copy.read_bytes(), source.read_bytes())
-                    self.completed(*args)
-                    if error:
-                        raise error
-                result = self.run_backend(attempt)
-                self.assertTrue(result["diagnostic"]["qodana"]["profile_deleted"])
-                self.assertEqual(result["diagnostic"]["qodana"]["license_copy_count"], 1)
-                self.assertNotIn(source.read_text(), json.dumps(result))
-                self.assertEqual(source.stat().st_mtime_ns, before.st_mtime_ns)
-                self.assertTrue(all(not p.exists() for p in self.seen))
-                if error:
+    def test_removed_license_flag_refuses_before_file_or_docker_access(self):
+        self.args.qodana_license_file = [str(self.root / "plugin_TEST.license")]
+        with patch.object(backend, "checked") as checked, \
+                patch.object(backend.shutil, "copyfile") as copy, \
+                patch.object(backend, "execute") as execute:
+            result = backend.run(self.args, host)
+        checked.assert_not_called()
+        copy.assert_not_called()
+        execute.assert_not_called()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("Owner question:", result["agent_result"]["next_action"])
+        self.assertFalse((self.root / "state").exists())
+
+    def test_snapshot_refuses_credential_locations_before_any_read_or_copy(self):
+        for name in ("pycharm.key", "plugin_TEST.license", ".env", ".env.local",
+                     ".ssh/id_ed25519", ".aws/credentials", "credentials.json", "account.json"):
+            with self.subTest(name=name), \
+                    patch.object(backend, "checked", return_value=("src/a.py\0" + name + "\0").encode()), \
+                    patch.object(backend.shutil, "copyfile") as copy, \
+                    patch.object(backend, "digest") as read:
+                with self.assertRaises(backend.Blocked):
+                    backend.snapshot(self.repo, self.root / "snapshot")
+                copy.assert_not_called()
+                read.assert_not_called()
+
+    def test_explicit_inputs_cannot_disguise_a_credential_as_uv_or_plugin(self):
+        alias = self.root / "public-input"
+        alias.symlink_to(self.root / "pycharm.key")
+        for option in ("qodana_uv", "qodana_plugin_zip"):
+            for value in (str(self.root / "pycharm.key"), str(alias)):
+                with self.subTest(option=option, value=value):
+                    setattr(self.args, option, [value] if option.endswith("zip") else value)
+                    with patch.object(backend, "checked") as checked:
+                        result = backend.run(self.args, host)
+                    checked.assert_not_called()
                     self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+                    setattr(self.args, option, [] if option.endswith("zip") else None)
+
+    def test_plugin_members_are_checked_before_extraction(self):
+        from types import SimpleNamespace
+        with patch.object(backend.zipfile, "ZipFile") as archive:
+            package = archive.return_value.__enter__.return_value
+            package.infolist.return_value = [SimpleNamespace(filename="plugin/plugin_TEST.license", external_attr=0)]
+            with self.assertRaises(backend.Blocked):
+                backend.unpack_plugins([self.root / "public.zip"], self.root / "plugins")
+            package.extractall.assert_not_called()
+
+    def test_container_copy_refuses_private_credential_locations(self):
+        private = self.root / "private"
+        (private / "config/pycharm.key").mkdir(parents=True)
+        with patch.object(backend, "bounded") as transfer:
+            with self.assertRaises(backend.Blocked):
+                backend.copy_in("fixture", private, {})
+            transfer.assert_not_called()
 
     def test_preparation_rewriting_a_selected_source_in_the_container_is_not_decisive(self):
         def rewritten(*args):
@@ -421,21 +452,18 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(result["cleanup"]["status"], "failed")
         self.assertFalse(result["diagnostic"]["qodana"]["profile_deleted"])
 
-    def test_host_lock_refuses_second_worker_before_license_copy(self):
+    def test_host_lock_refuses_second_worker_before_execution(self):
         import fcntl
         with (self.root / "worker.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             result = self.run_backend()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
-        self.assertEqual(result["diagnostic"]["qodana"]["license_copy_count"], 0)
         self.assertFalse(self.seen)
 
-    def test_killed_helper_license_state_is_recovered_before_another_task(self):
+    def test_killed_helper_private_state_is_recovered_before_another_task(self):
         state = self.root / "state"
         state.mkdir()
         private = self.root / "private-killed"
-        source = self.root / "plugin_TEST.license"
-        source.write_bytes(b"synthetic-license-copy")
         child = '''import importlib.util, os, signal, sys
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("backend", sys.argv[1])
@@ -443,20 +471,19 @@ b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
 b.state_dir = lambda: Path(sys.argv[2])
 b.storage_identity = lambda anchor: {"fixture_anchor": str(anchor)}
 private = Path(sys.argv[3]); private.mkdir(); (private / "config").mkdir()
-receipt = {"run_id": sys.argv[5], "license_copy_count": 0}
+receipt = {"run_id": sys.argv[4]}
 b.save_run_record(private, receipt)
-b.copy_licenses([sys.argv[4]], private / "config", receipt)
+(private / "config/state.dat").write_bytes(b"synthetic-private-state")
 os.kill(os.getpid(), signal.SIGKILL)
 '''
         result = subprocess.run([sys.executable, "-c", child, str(SCRIPTS / "qodana_backend.py"),
-                                 str(state), str(private), str(source), str(uuid.uuid4())], capture_output=True)
+                                 str(state), str(private), str(uuid.uuid4())], capture_output=True)
         self.assertLess(result.returncode, 0)
-        self.assertTrue((private / "config" / source.name).is_file())
+        self.assertTrue((private / "config/state.dat").is_file())
         with patch.object(backend, "command", return_value=subprocess.CompletedProcess([], 1, b"", b"No such container")):
             result = self.run_backend()
         self.assertFalse(private.exists())
         self.assertEqual(result["diagnostic"]["qodana"]["recovered_run_count"], 1)
-        self.assertTrue(source.is_file())
 
     def test_recovery_removes_a_container_proved_by_label_and_log_mount(self):
         state = self.root / "state"
@@ -502,7 +529,7 @@ os.kill(os.getpid(), signal.SIGKILL)
         private = self.root / "private-partial"
         private.mkdir()
         (private / "config").mkdir()
-        (private / "config/plugin_TEST.license").write_bytes(b"synthetic")
+        (private / "config/state.dat").write_bytes(b"synthetic")
         backend.save_run_record(private, {"run_id": str(uuid.uuid4())})
         with patch.object(backend.shutil, "rmtree", side_effect=PermissionError):
             with self.assertRaises(PermissionError):
@@ -656,7 +683,7 @@ os.kill(os.getpid(), signal.SIGKILL)
         private = self.root / "private-guardian"
         private.mkdir()
         (private / "config").mkdir()
-        (private / "config/plugin_TEST.license").write_bytes(b"synthetic")
+        (private / "config/state.dat").write_bytes(b"synthetic")
         run_id = str(uuid.uuid4())
         backend.save_run_record(private, {"run_id": run_id})
         paused = self.root / "paused"
@@ -697,7 +724,7 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
             parent.stdout.close()
             parent.stderr.close()
 
-    def test_repeated_signals_during_cleanup_do_not_interrupt_license_deletion(self):
+    def test_repeated_signals_during_cleanup_do_not_interrupt_profile_deletion(self):
         original = backend.delete_private
         def signal_during_delete(private):
             signal.raise_signal(signal.SIGTERM)
@@ -714,7 +741,6 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
             result = self.run_backend(execute)
         execute.assert_not_called()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
-        self.assertEqual(result["diagnostic"]["qodana"]["license_copy_count"], 0)
 
     def test_scope_modes_and_legacy_config_fallback_resolve_real_file_sets(self):
         (self.repo / ".github/github.json").write_text(json.dumps({"jetbrains": {"scopePreference": "whole_project"}}))
@@ -761,15 +787,12 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
                     fields = dict(field.partition("=")[::2] for field in argv[i + 1].split(","))
                     shared.append(fields.get("source") or fields.get("src", ""))
             self.assertEqual(shared, [str(private / "logs")])
-            self.assertEqual((private / "config" / source.name).stat().st_mode & 0o777, 0o400)
             receipt = rest[-1]
             self.assertEqual(float(argv[argv.index("--cpus") + 1]), receipt["cpu_limit"])
             self.assertEqual(argv[argv.index("--log-driver") + 1], receipt["docker_logging"])
             self.completed(argv, name, private, *rest)
-        source = self.root / "plugin_TEST.license"
-        source.write_bytes(b"synthetic")
-        self.args.qodana_license_file = [str(source)]
-        self.run_backend(inspect_launch)
+        result = self.run_backend(inspect_launch)
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
 
     def test_sarif_failure_missing_and_ambiguous_do_not_report_green_or_red(self):
         for kind in ("missing", "failure", "ambiguous"):
@@ -798,15 +821,12 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
         execute.assert_not_called()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(result["diagnostic"]["error_reason"], "qodana_host_load_paused")
-        self.assertEqual(result["diagnostic"]["qodana"]["license_copy_count"], 0)
 
-    def test_mutable_or_paid_image_and_account_stores_are_refused(self):
+    def test_mutable_or_paid_images_are_refused(self):
         self.args.qodana_image = "jetbrains/qodana-js:latest"
         result = self.run_backend()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertFalse(self.seen)
-        with self.assertRaises(backend.Blocked):
-            backend.copy_licenses([str(self.root / "account.json")], self.root, {"license_copy_count": 0})
 
     def test_default_api_dispatch_does_not_load_qodana(self):
         output = io.StringIO()
@@ -841,7 +861,7 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
         dry_run.observe(b"Trial dry-run: request was declined. Error code = EXISTING_LICENSE_IS_EXPIRED\n")
         self.assertFalse(dry_run.license_refused)
 
-    def test_trial_stop_records_hold_and_deletes_license_profile(self):
+    def test_trial_stop_records_hold_and_deletes_profile(self):
         def stopped(*args):
             self.completed(*args)
             raise backend.Blocked("qodana_trial_or_purchase_stop")
