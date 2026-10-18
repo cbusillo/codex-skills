@@ -28,6 +28,7 @@ from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 import release_session_claims as sessions
 import session_record
 import claim_receipts
+import claim_history
 
 
 def transcript_snapshot(path, harness, session):
@@ -48,12 +49,7 @@ def transcript_snapshot(path, harness, session):
 
 def receipt_history(path, harness, session):
     records = transcript_snapshot(path, harness, session)
-    # Stock Claude stores delegated tools outside the parent transcript, with
-    # the inherited native ID. Read that session's own subagent directory only.
-    if harness == "claude":
-        for child in sorted((path.parent / session / "subagents").glob("agent-*.jsonl")):
-            records.extend(transcript_snapshot(child, harness, session))
-    return records
+    return [r for node in claim_history.collect(path, harness, session, records, transcript_snapshot) for r in node["records"]]
 
 
 def explicit_pr_numbers(text, repo):
@@ -94,10 +90,14 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
     return verified
 
 
-def check_record(reader, repo, number, session, actor, *, pulls_cache=None, created_prs=()):
-    issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="closeout_claim_record")
-    comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_claim_history")
-    comments = sessions.verified_comments(reader, comments)
+def check_record(reader, repo, number, session, actor, *, pulls_cache=None, created_prs=(), data_cache=None):
+    if data_cache is None:
+        data_cache = {}
+    if (repo, number) not in data_cache:
+        issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="closeout_claim_record")
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_claim_history")
+        data_cache[(repo, number)] = issue, sessions.verified_comments(reader, comments)
+    issue, comments = data_cache[(repo, number)]
     sources = [c for c in comments if any(r["session"] == session for r in claim.records(c.get("body") or ""))]
     if sessions.active_claims(reader, repo, number, session, actor, comments=comments, verified=True):
         raise ValueError(f"{repo}#{number}: session still holds a claim; post its exact authored release and read it back")
@@ -143,7 +143,8 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, crea
             handoffs = [evidence]
         else:
             handoffs = retained_handoff(comments, source, pulls, repo=repo, number=number, is_pr=is_pr) if pulls else [evidence]
-        result.append({"repository": repo, "record": number, "claim_comment": source["id"],
+        result.append({"repository": repo, "record": number, "claim_comment": source["id"], "source_session": session,
+                       "worker": record["worker"], "branch": record["branch"],
                        "release_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}",
                        "handoff_urls": [f"https://github.com/{repo}/issues/{number}#issuecomment-{h['id']}" for h in handoffs],
                        "retained_prs": [p["html_url"] for p in pulls]})
@@ -153,7 +154,15 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, crea
 def check(reader, owner, entry, actor, *, reader_for_repo=None):
     # No caller-supplied narrowed issue/repo list may turn partial discovery
     # into an all-clear. Use the existing paged, non-search inventory.
-    expected, errors = claim_receipts.sources(entry.get("_transcript_records", []), entry["harness"], entry["session_id"])
+    histories = entry.get("_claim_histories") or [{"session_id": entry["session_id"], "harness": entry["harness"],
+                                                "records": entry.get("_transcript_records", [])}]
+    native_sessions = {node["session_id"] for node in histories}
+    expected, errors = [], []
+    for node in histories:
+        for native in native_sessions:
+            found, missing = claim_receipts.sources(node["records"], node["harness"], native)
+            expected.extend(found)
+            errors.extend(missing)
     records = entry.get("_transcript_records", [])
     native_repos = {r["repository"] for r in expected}
     native_issues = {(r["repository"], r["record"]) for r in expected}
@@ -167,13 +176,19 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
                     native_issues.add((repo, number))
     native_repos.update(entry.get("_extra_repositories", []))
     native_repos.update(claim_receipts.target_repositories(records, entry["harness"]))
-    if claim_receipts.unscoped_claim_invocations(records, entry["harness"]) and not entry.get("_extra_repositories"):
-        raise ValueError("claim invocation lacks repository readback; supply its exact additive --repository context")
-    for repo, number in claim_receipts.target_records(records, entry["harness"]):
+    targets = [t for node in histories for t in claim_receipts.claim_targets(node["records"], node["harness"])]
+    unresolved = [t for t in targets if t["repository"] is None]
+    if unresolved and not entry.get("_extra_repositories"):
+        raise ValueError("claim invocation lacks canonical command scope; --repository may add inventory but cannot prove its destination; use conditional/no")
+    expanded = set()
+    for target in targets:
+        repo, number = target["repository"], target["number"]
         if repo:
             native_issues.add((repo, number))
         else:
-            native_issues.update((context, number) for context in native_repos)
+            expanded.update((context, number) for context in entry.get("_extra_repositories", []))
+    confirmed_issues = set(native_issues)
+    native_issues.update(expanded)
     installed = reader.paged_json("/installation/repositories", collection_key="repositories", step_prefix="closeout_default_repositories")
     default_repos = {r["full_name"] for r in installed}
     if not default_repos:
@@ -194,27 +209,41 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
         for repo in sorted(scope):
             selected = reader if repo in default_repos else (reader_for_repo or repository_reader)(repo, reader.deadline_at)
             readers[repo] = selected
-            found, _ = sessions.discover(selected, account, [entry], repos=[repo])
+            entries = ([{**entry, "session_id": node["session_id"], "_transcript_records": node["records"]} for node in histories]
+                       if "_transcript_records" in entry else [entry])
+            found, _ = sessions.discover(selected, account, entries, repos=[repo])
             issues.update(found)
             repos.add(repo)
-    released, blocked, pulls_cache = [], [], {}
-    created = claim_receipts.created_prs(entry.get("_transcript_records", []), entry["harness"])
+    released, blocked, pulls_cache, data_cache = [], [], {}, {}
+    created = set().union(*(claim_receipts.created_prs(node["records"], node["harness"]) for node in histories))
     for repo, number in sorted(issues):
         try:
             selected = readers[repo]
             source_actor = selected.expected_actor
             if not source_actor:
                 raise ValueError("repository's configured automation identity is unknown")
-            released.extend(check_record(selected, repo, number, entry["session_id"], source_actor,
-                                         pulls_cache=pulls_cache, created_prs=created))
+            for native in sorted(native_sessions):
+                released.extend(check_record(selected, repo, number, native, source_actor,
+                                             pulls_cache=pulls_cache, created_prs=created, data_cache=data_cache))
         except ValueError as error:
             blocked.append(str(error))
+        except GitHubReadError as error:
+            if (repo, number) in expanded - confirmed_issues and getattr(error.result, "status", None) in {404, 410}:
+                continue  # A guessed pair is not source evidence; still reconcile below.
+            raise
     observed = {(r["repository"], r["record"], r["claim_comment"]) for r in released}
     if any((r["repository"], r["record"], r["claim_comment"]) not in observed for r in expected) and not blocked:
         blocked.append("native source claims were not verified in the installed repository scope")
+    for target in unresolved:
+        # An older claim with the same identity/number cannot establish where
+        # this opaque invocation wrote. Added repositories are inventory scope,
+        # not an attestation of the invocation's unknown working directory.
+        blocked.append(f"claim invocation {target['invocation']} lacks canonical command scope; added repositories cannot prove its destination; preserve ownership and use conditional/no")
     return {"operation": claim_receipts.CHECK_OPERATION, "ok": not blocked, "claims_clear": not blocked,
             "session_id": entry["session_id"], "harness": entry["harness"],
-            "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": True,
+            "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": not unresolved,
+                         "session_ids": sorted(native_sessions),
+                         "histories": [{k: node[k] for k in ("session_id", "transcript", "digest")} for node in histories[1:]],
                          "scope": "default installation plus native and explicitly added repositories"},
             "receipt_reconciliation": not blocked,
             "released_claims": released, "blocked": blocked}
@@ -246,7 +275,9 @@ def main(argv=None):
         if not native or args.session not in native.values():
             raise ValueError("closeout must use the running harness's native session ID")
         entry = {"harness": args.harness, "session_id": args.session, "transcript": str(args.transcript)}
-        entry["_transcript_records"] = receipt_history(args.transcript, args.harness, args.session)
+        root_records = transcript_snapshot(args.transcript, args.harness, args.session)
+        entry["_claim_histories"] = claim_history.collect(args.transcript, args.harness, args.session, root_records, transcript_snapshot)
+        entry["_transcript_records"] = [r for node in entry["_claim_histories"] for r in node["records"]]
         entry["_extra_repositories"] = args.repository
         actor = github_identity.automation_login()
         if not actor:

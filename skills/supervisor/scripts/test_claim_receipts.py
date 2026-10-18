@@ -46,7 +46,17 @@ def history(harness, *values):
     middle = []
     for index, value in enumerate(values):
         call_id = f"tool-{index}"
-        command = "uv run scripts/check_claims.py" if value.get("operation") == receipts.CHECK_OPERATION else "uv run scripts/gh-plan.py claim 1"
+        if value.get("operation") == receipts.CHECK_OPERATION:
+            command = "uv run scripts/check_claims.py"
+        elif value.get("operation") == receipts.CLAIM_OPERATION:
+            url = ((value.get("claim_comment") or {}).get("comment") or {}).get("url", "")
+            match = receipts.COMMENT.fullmatch(url)
+            number = int(match[2]) if match else (value.get("issue") or {}).get("number", 1)
+            command = f"uv run scripts/gh-plan.py claim {number}"
+        elif value.get("operation") == "github.pr.create":
+            command = "uv run scripts/gh-pr.py create"
+        else:
+            command = "uv run scripts/gh-plan.py show 1"
         invocation = ({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": call_id, "arguments": json.dumps({"cmd": command})}}
                       if harness == "codex" else {"type": "assistant", "sessionId": SESSION, "message": {"content": [{"type": "tool_use", "id": call_id, "name": "Bash", "input": {"command": command}}]}})
         middle.extend([invocation, output(value, harness, call_id)])
@@ -54,6 +64,19 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_batched_numeric_claims_cannot_share_one_canonical_receipt(self):
+        command = "cd /local && uv run /catalog/gh-plan.py claim 2; cd /foreign && uv run /catalog/gh-plan.py claim 2 > claim.json"
+        for harness in ("codex", "claude"):
+            rows = history(harness, claim(number=2))
+            if harness == "codex":
+                rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else:
+                rows[1]["message"]["content"][0]["input"] = {"command": command}
+            self.assertEqual(len(receipts.unscoped_claim_invocations(rows, harness)), 2)
+        rows = history("codex", claim(number=2))
+        rows[1]["payload"].update(name="functions.exec", arguments='await Promise.all([tools.exec_command({cmd:"uv run /catalog/gh-plan.py claim 2"}), tools.exec_command({cmd:"uv run /catalog/gh-plan.py claim 2 > claim.json"})])')
+        self.assertEqual(len(receipts.unscoped_claim_invocations(rows, "codex")), 2)
+
     def test_shutdown_refuses_a_claimed_session_that_only_says_safe(self):
         for harness in ("codex", "claude"):
             result = session_record.summarize(history(harness, claim()), harness)
@@ -143,7 +166,7 @@ class ReceiptTests(unittest.TestCase):
         records[4]["message"]["content"][0]["is_error"] = True
         self.assertFalse(session_record.summarize(records, "claude")["safe_verdict"])
 
-    def test_delegated_work_requires_inventory_even_without_parent_claim_receipts(self):
+    def test_a_checker_report_cannot_replace_unread_child_history(self):
         records = history("claude")
         records[1:1] = [
             {"type": "assistant", "sessionId": SESSION, "message": {"content": [{"type": "tool_use", "name": "Agent", "id": "child", "input": {"prompt": "complete assigned work"}}]}},
@@ -152,7 +175,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertFalse(session_record.summarize(records, "claude")["safe_verdict"])
         checked = history("claude", {**proof(), "harness": "claude"})
         records[-1:-1] = checked[1:-1]
-        self.assertTrue(session_record.summarize(records, "claude")["safe_verdict"])
+        self.assertFalse(session_record.summarize(records, "claude")["safe_verdict"])
 
     def test_a_redirected_claim_or_delegation_needs_a_complete_inventory(self):
         for harness in ("codex", "claude"):

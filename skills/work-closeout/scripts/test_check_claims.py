@@ -11,6 +11,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 import check_claims as helper
 
@@ -305,7 +306,16 @@ class ClaimCloseoutTests(unittest.TestCase):
             return [source, comment(identifier + 1, f"Released claim {identifier}", actor, at="2026-01-01T00:02:00Z")]
         local_comments, client_comments = rows(REPO, 10, ACTOR), rows(foreign, 20, client_actor)
         client = Mock(expected_actor=client_actor)
-        client.get_json.return_value = {"body": "", "number": 2}
+        def missing():
+            return helper.GitHubReadError("fixture record unavailable", result=SimpleNamespace(status=404), diagnostics={})
+        def client_get(path, **kw):
+            if path != f"/repos/{foreign}/issues/2": raise missing()
+            return {"body": "", "number": 2}
+        def local_get(path, **kw):
+            if path != f"/repos/{REPO}/issues/1": raise missing()
+            return {"body": "", "number": 1}
+        client.get_json.side_effect = client_get
+        self.reader.get_json.side_effect = local_get
         def pages(repo, comments, endpoint, **kw):
             if endpoint == "/installation/repositories":
                 if repo == foreign: raise AssertionError("foreign installation enumeration must not use the default token")
@@ -329,9 +339,81 @@ class ClaimCloseoutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: client)
         entry["_extra_repositories"] = [foreign]
-        self.assertTrue(helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: client)["claims_clear"])
+        opaque = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: client)
+        self.assertFalse(opaque["claims_clear"])  # Inventory cannot prove the lost invocation's scope.
+        self.assertFalse(opaque["coverage"]["complete"])
+        wrong = Mock(expected_actor=client_actor)
+        wrong.paged_json.return_value = []
+        wrong.get_json.return_value = {"body": "", "number": 2}
+        entry["_extra_repositories"] = ["unrelated/x"]
+        self.assertFalse(helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: wrong)["claims_clear"])
+        wrong.get_json.side_effect = missing()
+        self.assertFalse(helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: wrong)["claims_clear"])
+        entry["_extra_repositories"] = [foreign]
         client_comments.pop()  # The explicit route must still refuse a held claim.
         self.assertFalse(helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: client)["claims_clear"])
+
+    def test_an_older_released_claim_cannot_resolve_an_opaque_command(self):
+        from test_claim_receipts import claim as native_claim, history, SESSION as native_session
+        self.source["body"] = helper.claim.marker({**SOURCE, "session": native_session})
+        self.comments.append(self.release)
+        self.release["body"] = "Released claim 10\n\nSession: " + native_session
+        def pages(path, **kw):
+            if path == "/installation/repositories": return [{"full_name": REPO}]
+            if path.endswith("/issues/comments"):
+                return [{**c, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"} for c in self.comments]
+            if path.endswith("/issues") or path.endswith("/pulls"): return []
+            return self.comments
+        self.reader.paged_json.side_effect = pages
+        for harness in ("codex", "claude"):
+            rows = history(harness, native_claim(REPO), native_claim(REPO))
+            command = "cd /foreign && uv run /catalog/gh-plan.py claim 1 --worker worker --branch work/task > claim.json"
+            if harness == "codex":
+                rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
+                rows[4]["payload"]["output"] = ""
+            else:
+                rows[3]["message"]["content"][0]["input"] = {"command": command}
+                rows[4]["message"]["content"][0]["content"] = ""
+            for row in rows: row["timestamp"] = SOURCE["claimed_at"]
+            entry = {"harness": harness, "session_id": native_session, "_transcript_records": rows,
+                     "_extra_repositories": [REPO]}
+            report = helper.check(self.reader, [], entry, ACTOR)
+            self.assertFalse(report["claims_clear"], report)
+            self.assertFalse(report["coverage"]["complete"])
+            # The same problem inside one native call must also remain opaque.
+            batched = f"uv run /catalog/gh-plan.py claim 1; {command}"
+            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": batched})
+            else: rows[1]["message"]["content"][0]["input"] = {"command": batched}
+            entry["_transcript_records"] = rows[:3] + rows[5:]
+            self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+
+    def test_codex_child_thread_ownership_is_included_in_the_parent_readback(self):
+        from test_claim_history import records, claim_history
+        from test_claim_receipts import claim as native_claim
+        child = "native-child"
+        value = native_claim(REPO)
+        value["claim"]["session"] = child
+        root_records = records("codex", SESSION, delegate=True)
+        child_records = records("codex", child, value, parent=SESSION)
+        self.source["body"] = helper.claim.marker({**SOURCE, "session": child})
+        def pages(path, **kw):
+            if path == "/installation/repositories": return [{"full_name": REPO}]
+            if path.endswith("/issues/comments"):
+                return [{**c, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"} for c in self.comments]
+            if path.endswith("/issues") or path.endswith("/pulls"): return []
+            return self.comments
+        self.reader.paged_json.side_effect = pages
+        nodes = [{"session_id": SESSION, "harness": "codex", "records": root_records},
+                 {"session_id": child, "harness": "codex", "records": child_records,
+                  "transcript": "/fixture/child.jsonl", "digest": claim_history.fingerprint(child_records)}]
+        entry = {"session_id": SESSION, "harness": "codex", "_claim_histories": nodes,
+                 "_transcript_records": root_records + child_records, "_extra_repositories": [REPO]}
+        self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+        self.comments.append({**self.release, "body": "Released claim 10\nSession: " + child})
+        report = helper.check(self.reader, [], entry, ACTOR)
+        self.assertTrue(report["claims_clear"], report)
+        self.assertEqual(set(report["coverage"]["session_ids"]), {SESSION, child})
+        self.assertEqual([r["source_session"] for r in report["released_claims"]], [child])
 
     def test_claude_sidechain_claims_are_included_in_the_native_inventory(self):
         from test_claim_receipts import history, claim as native_claim

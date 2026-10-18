@@ -16,6 +16,10 @@ CLAIM_OPERATION = "github.plan.claim"
 COMMENT = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 
 
+class ReceiptCoverageError(ValueError):
+    pass
+
+
 def envelopes(value, depth=0):
     """Unwrap native text blocks and exec results, stopping at helper envelopes.
 
@@ -23,7 +27,7 @@ def envelopes(value, depth=0):
     Both native harnesses and Codex's composed exec output use these wrappers.
     """
     if depth > 16:
-        raise ValueError("tool output nesting exceeds receipt coverage")
+        raise ReceiptCoverageError("tool output nesting exceeds receipt coverage")
     if isinstance(value, dict):
         if "operation" in value:
             yield value
@@ -131,16 +135,10 @@ def script(argv):
 
 
 def ownership_activity(records, harness):
-    """Missing/redirected outputs and delegated writes still require readback."""
-    delegates = set()
+    """Missing/redirected ownership writes still require readback."""
     for index, record in enumerate(records):
         calls, results = calls_and_results(record, harness)
-        if delegates.intersection(results):
-            yield index
         for identifier, name, value in calls:
-            if name in {"Agent", "Task", "spawn_agent", "collaboration.spawn_agent"}:
-                delegates.add(identifier)
-                yield index
             for argv in shell_commands(name, value):
                 if (script(argv) == "gh-plan.py" and "claim" in argv
                         or script(argv) == "gh-pr.py" and "create" in argv
@@ -167,23 +165,49 @@ def target_repositories(records, harness):
 
 
 def target_records(records, harness):
-    targets = set()
+    return {(target["repository"], target["number"]) for target in claim_targets(records, harness)}
+
+
+def claim_targets(records, harness):
+    """Resolve numeric operands with their own invocation's canonical receipts."""
+    def claiming(name, value):
+        return any(script(argv) == "gh-plan.py" and "claim" in argv for argv in shell_commands(name, value))
+    canonical = {}
+    for _, source, value in bound_outputs(records, harness, claiming):
+        if value.get("operation") != CLAIM_OPERATION:
+            continue
+        issue = value.get("issue") or {}
+        repo, number = issue.get("repo"), issue.get("number")
+        url = ((value.get("claim_comment") or {}).get("comment") or {}).get("url") or (value.get("claim_comment") or {}).get("url")
+        match = COMMENT.fullmatch(url or "")
+        if match:
+            repo, number = match[1], int(match[2])
+        if isinstance(repo, str) and re.fullmatch(r"[\w.-]+/[\w.-]+", repo) and type(number) is int and number > 0:
+            canonical.setdefault(source, set()).add((repo, number))
+    targets = []
     for record in records:
         calls, _ = calls_and_results(record, harness)
-        for _, name, value in calls:
-            for argv in shell_commands(name, value):
-                if script(argv) != "gh-plan.py" or "claim" not in argv:
-                    continue
+        for identifier, name, value in calls:
+            commands = [argv for argv in shell_commands(name, value) if script(argv) == "gh-plan.py" and "claim" in argv]
+            for argv in commands:
                 target = argv[argv.index("claim") + 1:]
                 if not target:
                     continue
                 url = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)", target[0])
                 if url:
-                    targets.add((url[1], int(url[2])))
+                    resolved = {(url[1], int(url[2]))}
                 elif re.fullmatch(r"[1-9]\d*", target[0]):
                     repos = {argv[i + 1] for i, token in enumerate(argv[:-1]) if token in {"--repo", "-R"}}
                     repos.update(token.removeprefix("--repo=") for token in argv if token.startswith("--repo="))
-                    targets.update((repo, int(target[0])) for repo in repos or {None})
+                    # A native invocation can contain several shell commands.
+                    # Its receipts do not identify which command produced them.
+                    own = canonical.get(identifier, set()) if len(commands) == 1 else set()
+                    resolved = {(repo, int(target[0])) for repo in repos} or {
+                        pair for pair in own if pair[1] == int(target[0])} or {(None, int(target[0]))}
+                else:
+                    continue
+                for repo, number in resolved:
+                    targets.append({"invocation": identifier, "repository": repo, "number": number})
     return targets
 
 
@@ -232,28 +256,7 @@ def check_outputs(records, harness, *, receipts=None):
 
 def unscoped_claim_invocations(records, harness):
     """A different claim's receipt cannot fill a redirected invocation's gap."""
-    def commands(name, value):
-        return [argv for argv in shell_commands(name, value) if script(argv) == "gh-plan.py" and "claim" in argv]
-    pending, receipts = {}, {}
-    for _, source, value in bound_outputs(records, harness, lambda name, value: bool(commands(name, value))):
-        if value.get("_attempt"):
-            pending[source] = True
-        elif value.get("operation") == CLAIM_OPERATION:
-            issue_repo = (value.get("issue") or {}).get("repo")
-            url = ((value.get("claim_comment") or {}).get("comment") or {}).get("url") or (value.get("claim_comment") or {}).get("url")
-            if isinstance(issue_repo, str) and re.fullmatch(r"[\w.-]+/[\w.-]+", issue_repo) or COMMENT.fullmatch(url or ""):
-                receipts[source] = receipts.get(source, 0) + 1
-    unknown = []
-    for record in records:
-        calls, _ = calls_and_results(record, harness)
-        for identifier, name, value in calls:
-            attempted = commands(name, value)
-            if identifier not in pending or not attempted:
-                continue
-            targets = target_records([record], harness)
-            if any(repo is None for repo, _ in targets) and receipts.get(identifier, 0) < len(attempted):
-                unknown.append(identifier)
-    return unknown
+    return [target["invocation"] for target in claim_targets(records, harness) if target["repository"] is None]
 
 
 def sources(records, harness, session, *, parsed=None):
@@ -296,19 +299,44 @@ def created_prs(records, harness):
     return found
 
 
-def acceptance(records, harness, session):
+def acceptance(records, harness, session, *, histories=None, history_error=None):
+    try:
+        if history_error:
+            return {"clear": False, "reason": "child_history_unavailable", "detail": history_error}
+        import claim_history
+        if histories is None and claim_history.delegated(records, harness):
+            return {"clear": False, "reason": "child_history_unavailable"}
+        return _acceptance(records, harness, session, histories)
+    except (ReceiptCoverageError, RecursionError):
+        return {"clear": False, "reason": "receipt_coverage_exceeded"}
+
+
+def _acceptance(records, harness, session, histories):
     """A claimed session needs fresh passing evidence for all its source claims.
 
     Plain safe-exit prose stays recognizable; it is insufficient for shutdown
     acceptance when this native history contains claim ownership.
     """
     parsed = list(outputs(records, harness))
-    expected, errors = sources(records, harness, session, parsed=parsed)
+    histories = histories or [{"session_id": session, "harness": harness, "records": records}]
+    sessions = {h["session_id"] for h in histories}
+    expected, errors = [], []
+    root_expected = []
+    child_activity = False
+    for node in histories:
+        for native in sessions:
+            found, missing = sources(node["records"], node["harness"], native)
+            expected.extend(found)
+            errors.extend(missing)
+            if node is histories[0]:
+                root_expected.extend(found)
+        if node is not histories[0] and list(ownership_activity(node["records"], node["harness"])):
+            child_activity = True
     activity = list(ownership_activity(records, harness))
-    if not expected and not errors and not activity:
+    if not expected and not errors and not activity and not child_activity:
         return {"clear": True, "reason": "no_claim_receipts"}
     keys = {(r["repository"], r["record"], r["claim_comment"]) for r in expected}
-    last_claim = max([r["index"] for r in expected] + activity + [-1])
+    last_claim = max([r["index"] for r in root_expected] + activity + [-1])
     last_claim = max([last_claim, *(i for i, v in parsed if v.get("operation") == CLAIM_OPERATION
                                   or v.get("operation") == "github.pr.create" and v.get("ok"))])
     checks = list(check_outputs(records, harness, receipts=parsed))
@@ -320,8 +348,11 @@ def acceptance(records, harness, session):
         coverage = value.get("coverage") or {}
         observed = {(r.get("repository"), r.get("record"), r.get("claim_comment"))
                     for r in value.get("released_claims", []) if isinstance(r, dict)}
+        required = {(h["session_id"], h["transcript"], h["digest"]) for h in histories[1:]}
+        covered = {(h.get("session_id"), h.get("transcript"), h.get("digest")) for h in coverage.get("histories", [])}
         clear = (value.get("ok") is True and value.get("claims_clear") is True
                  and coverage.get("complete") is True and keys <= observed
+                 and required <= covered and (not required or sessions <= set(coverage.get("session_ids", [])))
                  and (not errors or value.get("receipt_reconciliation") is True))
         return {"clear": clear, "reason": "verified_claim_disposition" if clear else "claim_disposition_not_clear"}
     return {"clear": False, "reason": "claim_disposition_not_checked"}

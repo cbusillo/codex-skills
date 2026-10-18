@@ -251,7 +251,10 @@ changed and no refused request is retried under another identity. Repeated
 another installation; `--owner ACCOUNT` requires that account to be covered, and
 refuses if no repository context is known. Neither option narrows native scope.
 Claude's native session subagent directory is included because its delegated
-tools may inherit the parent's session ID.
+tools may inherit the parent's session ID. Codex's native read-only parent/child
+index supplies child thread IDs and rollouts, including descendants and closed
+edges. Child-owned claims and claims using the inherited root session ID are
+both included. Missing native graph/schema/rollout evidence refuses coverage.
 Missing native identity or a different running harness refuses an all-clear.
 Preserve its coverage
 and released-claim links as closeout evidence; it proves claim disposition only,
@@ -270,17 +273,31 @@ claim. Run the check after the write; only exit 0 with `claims_clear: true`
 and complete coverage permits an all-clear. Leave its JSON visible in the native
 tool output; use `tee` if a saved copy is needed. The Supervisor's safe-verdict
 reader requires that fresh invocation result to cover every native source claim.
-Claim invocations with redirected or missing outputs, and delegated work, also
-require readback; absence of a receipt alone does not exempt them. Missing source
+Claim invocations with redirected or missing outputs also require readback;
+absence of a receipt alone does not exempt them. Delegation alone uses local
+child histories: with no ownership activity in parent or children, keep the
+existing N/A path without GitHub access. For claimed children, the parent checks
+all native IDs after each child finishes and disposes of its own ownership.
+Child snapshots are bound into the parent's check; later child activity requires
+a fresh check. Missing source
 receipts are reconciled through complete session inventory in the known repository
-scope. When an invocation lacks its own repository evidence, add its exact
-`--repository` and check again; another invocation's receipt cannot fill that gap.
+scope. Add `--repository` to inventory another known repository. That flag does
+not prove the destination of an opaque numeric invocation, even if it contains
+an older released claim with identical session, worker and branch. If original
+command scope and its own receipt are both unavailable, retain conditional/no,
+record the blocker and next actor, and continue independent work. Do not repeat
+a write to manufacture evidence for the earlier invocation. For future claims,
+put `--repo OWNER/REPO` in each command and keep receipts visible with `tee`.
+A numeric claim with its own canonical receipt uses only that receipt's
+repository; batched commands need explicit repository operands because their
+shared native output cannot bind receipts to individual shell commands.
+Another invocation's receipt cannot fill a missing scope gap.
 A saved report read with `cat`, an earlier proof before another claim or PR was
 created, and final-answer prose do not satisfy shutdown acceptance. For long
 checks, use the shell tool's sufficient foreground timeout (at least 600 seconds
 on Claude Bash), or Codex's process handle and `write_stdin` polls. Keep all result
-JSON visible; do not background Claude Bash checks. Sessions without claim or
-delegation activity keep their existing exit path.
+JSON visible; do not background Claude Bash checks. Quiet no-GitHub child
+histories keep the existing exit path.
 
 An open PR need not merge before a session exits. Its exact authored release
 must name the retained PR, and the check verifies the same repository, source
@@ -304,8 +321,13 @@ Supervisor/Direction releases as well as exact source-authored releases, rereadi
 their closure evidence and retained PR state. A bare exact release supplied by
 the claim helper remains valid; an explicit conflicting session field refuses.
 For missing native identity, ambiguous resume/fork histories or inaccessible
-scope, preserve the terminal and use the existing verified post-process recovery
-route for claims. Do not edit native transcripts or substitute another session ID.
+scope, preserve the active process and terminal, record conditional/no and the
+blocker on the item, and continue independent work. Post-process recovery applies
+only to a session that already exited; it is not a way to force an unaccepted
+session to exit. Follow the Supervisor's
+[claim-gated verdict procedure](../supervisor/references/helpers.md#claim-gated-verdicts)
+when it is overseeing the worker. Do not edit native transcripts or substitute
+another session ID.
 
 ## Consuming Readiness Evidence
 
