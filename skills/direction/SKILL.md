@@ -291,8 +291,11 @@ including a held window with unknown archive state or an unadopted repository.
 Report that receipt in the final response. If the command was omitted, exited 1,
 or returned `marker_error`, say plainly that completion was not recorded and
 include the error or missing step; do not report the turn or audit as complete.
-Daily exit 2 means the turn was recorded locally but not shared. Audit exit 3
-reports findings; use its receipts to determine whether completion was recorded.
+Daily exit 2 with a JSON receipt containing `marker`, `turn` and `turn_repo`
+means the turn was recorded locally but not shared. An exit code alone never
+proves recording: if the receipt is missing, report completion as unconfirmed
+and include the diagnostic. Audit exit 3 reports findings; use its receipts to
+determine whether completion was recorded.
 Loading this skill for a wording review or a direction-file change alone does
 not perform the daily procedure or weekly audit. Say which was actually done;
 do not stamp a turn just because direction was discussed.
