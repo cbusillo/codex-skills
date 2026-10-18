@@ -26,11 +26,18 @@ NON_THREAD_REQUESTS = {"account/chatgptAuthTokens/refresh", "attestation/generat
 # spawn subtree, including descendants that may have independently resumed.
 HOUSEKEEPING = {"thread/unarchive", "thread/name/set", "thread/metadata/update",
                 "thread/readState/update", "thread/unsubscribe", "thread/section/move"}
+# JSON Schema payloads (dynamic tools, turn output, elicitation) describe
+# fields such as threadId; they never name a thread.
+SCHEMAS = {"inputSchema", "outputSchema", "requestedSchema"}
 
 
 def thread_targets(value):
     if isinstance(value, dict):
         for key, child in value.items():
+            if key in SCHEMAS or (key in {"threadId", "conversationId", "threadIds"} and child is None):
+                # Optional identities may be null. Thread actions with no
+                # target still refuse at the request check.
+                continue
             if key in {"threadId", "conversationId"}:
                 if not isinstance(child, str) or not child:
                     raise ValueError("native thread identity is unavailable")
@@ -190,7 +197,7 @@ class Ingress:
                                 reads[asyncio.create_task(client.recv())] = "client"
                                 continue
                             if identity is not None:
-                                requests[identity] = guarded, session
+                                requests[identity] = guarded, session, method == "thread/start"
                             await native.send(raw)
                             reads[asyncio.create_task(client.recv())] = "client"
                         else:
@@ -208,8 +215,21 @@ class Ingress:
                                     continue
                             # Bidirectional ID namespaces remain independent.
                             completed = requests.pop(identity, None) if not method else None
-                            guarded, session = completed if completed is not None else (set(), None)
+                            guarded, session, started = completed if completed is not None else (set(), None, False)
                             try:
+                                if started and "result" in message:
+                                    # A fresh thread has no identity until native
+                                    # acknowledgement. Own it before the client
+                                    # learns it, as every later action does.
+                                    thread = message["result"].get("thread") if isinstance(message["result"], dict) else None
+                                    target = thread.get("id") if isinstance(thread, dict) else None
+                                    try:
+                                        if not isinstance(target, str) or not target:
+                                            raise ValueError("started native thread identity is unavailable")
+                                        guarded = acquire({target})
+                                    except (OSError, ValueError) as error:
+                                        raw = json.dumps({"id": identity, "error": {"code": -32603,
+                                            "message": "native thread start succeeded but its ownership lease was not created: " + str(error)}})
                                 for target in guarded:
                                     closure.set_action_pending(target, True)
                                 if session and "result" in message and self.child_metadata:

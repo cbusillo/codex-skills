@@ -1817,6 +1817,13 @@ A frozen predecessor receives a native RPC error before it can act. Read-only
 thread reads still pass after handoff. No daemon is restarted and no native
 subscriber API is assumed.
 
+A fresh `thread/start` names no thread. The ingress takes the returned thread's
+ownership lease and durable action barrier before the client sees its ID; a
+reply without a usable ID becomes an RPC error. JSON Schema payloads
+(`inputSchema`, `outputSchema`, `requestedSchema`) and null optional thread IDs
+name no target. Wrong-typed or empty IDs refuse, and thread or turn actions
+without an ID still refuse.
+
 Completion releases the operation's lease, so another Supervisor can queue a
 nudge or capacity `continue` while that worker's TUI stays connected. A pending
 operation still refuses those sends; capacity retry defers without spending an
