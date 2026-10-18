@@ -385,6 +385,36 @@ local extensions until the vendored artifact is refreshed.
   other unlisted field is dropped and counted under
   `bindings[].<unlisted field>`, and a binding without a usable key, context
   or scope is omitted and counted.
+- `testing-rebuild-submit --product --copy-source --artifact-id --source-git-ref
+  --idempotency-key` queues one testing rebuild through
+  `POST /v1/drivers/odoo/target-replacement-apply`. It fixes the instance to
+  `testing`, strategy to `replace-and-cutover` and health verification on.
+  `--copy-source` is `empty`, `production` (sanitized production copy) or
+  `upstream` (the lane's configured upstream). The build/source pair must use
+  an immutable 40- or 64-character hexadecimal source commit. Empty allows
+  initialization of independent empty storage. No target, host, credential,
+  arbitrary payload or health-bypass argument is accepted.
+
+  Use the configured service identity and existing service authorization.
+  This command adds no grant and never invokes a provider or local live-target
+  CLI. It requires a deployed service that supports native testing rebuilds;
+  missing capability or a denial is reported, with no legacy rebuild,
+  alternate identity or workflow fallback.
+
+  The receipt must agree with the submitted product, testing instance,
+  original key and build/source intent. Output reuses the bounded operation
+  projection below, retaining the operation ID and service trace while dropping
+  raw authorization, poll URLs and request/provider evidence. Acceptance is not
+  completion. Poll `target-replacement-operation-read --operation-id ID` using
+  that original ID until the service reports its outcome; a failure or pending
+  reconciliation does not authorize a different rebuild.
+
+  The helper sends once. A timeout, unsafe redirect, malformed/misaligned receipt,
+  interrupted exchange or server error reports `outcome_unknown`. Keep the
+  original key and arguments. Read the original operation if its ID is known;
+  otherwise the service's identical-key submission can recover its existing
+  admission receipt. Do not choose a new key or replay a denied action. The
+  helper does not retry, poll automatically, rotate secrets or retire storage.
 - `target-replacement-operation-read --operation-id` calls
   `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}` with no
   query. The service authorizes it as `operations.read` on product

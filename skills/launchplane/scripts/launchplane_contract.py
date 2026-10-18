@@ -459,6 +459,11 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/drivers/odoo/target-replacement-plan",
         "mode": "read",
     },
+    "testing-rebuild-submit": {
+        "method": "POST",
+        "path": "/v1/drivers/odoo/target-replacement-apply",
+        "mode": "apply",
+    },
     "product-repository-identity-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/repository-identity/apply",

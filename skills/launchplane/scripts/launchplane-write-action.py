@@ -9518,6 +9518,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="HTTP timeout seconds (operation path checks: 300; promotion status and Dokploy inventory: 30; controller: 180; other commands: 10).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
+    add_testing_rebuild_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -10319,6 +10321,9 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        from launchplane_testing_rebuild import COMMAND as testing_rebuild_command, execute as execute_testing_rebuild
+        if args.command == testing_rebuild_command:
+            return execute_testing_rebuild(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
             instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""
