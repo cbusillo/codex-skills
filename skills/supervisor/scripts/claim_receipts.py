@@ -111,7 +111,7 @@ def shell_commands(name, value):
     texts = shell_texts(name, value)
     for text in texts:
         try:
-            lexer = shell_lexer(shell_code(text), punctuation_chars=";&|\n")
+            lexer = shell_lexer(shell_code(text))
             lexer.whitespace = " \t\r"
             lexer.whitespace_split = True
             command = []
@@ -203,6 +203,71 @@ def executable_wrapper(argv):
     return (name in {"bash", "sh", "zsh", "dash", "ksh", "node", "uv", "env", "timeout", "eval", "xargs", "exec", "command", "nice", "time", "gh-plan.py", "gh-pr.py"}
             or re.fullmatch(r"python[0-9.]*", name) is not None
             or re.match(r"[A-Za-z_]\w*=", argv[0]) is not None)
+
+
+def file_writes(name, value):
+    """Read file provenance from native writes, never from current disk contents."""
+    value = arguments(value)
+    if name in {"Write", "Edit"} and isinstance(value, dict):
+        yield value.get("file_path", ""), value.get("content") or value.get("new_string") or ""
+    patches = []
+    if name in {"apply_patch", "functions.apply_patch"} and isinstance(value, str):
+        patches.append(value)
+    if name in {"exec", "functions.exec"} and isinstance(value, str):
+        for match in re.finditer(r'''tools\.apply_patch\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''', value):
+            try:
+                patches.append(ast.literal_eval(match[1]))
+            except (SyntaxError, ValueError):
+                pass
+    for patch in patches:
+        for match in re.finditer(r"(?m)^\*\*\* (?:Add|Update) File: (.+)\n([\s\S]*?)(?=^\*\*\* |\Z)", patch):
+            yield match[1], match[2]
+    for text in shell_texts(name, value):
+        if not OWNERSHIP_TEXT.search(text):
+            continue
+        try:
+            lexer = shell_lexer(shell_code(text))
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            continue  # Existing opaque ownership handles unparsed shell text.
+        for index, token in enumerate(tokens[:-1]):
+            if token in {">", ">>"}:
+                yield tokens[index + 1], text
+
+
+def ownership_file_candidates(histories):
+    return {Path(path).name for node in histories for record in node["records"]
+            for _, name, value in calls_and_results(record, node["harness"])[0]
+            for path, content in file_writes(name, value) if path and OWNERSHIP_TEXT.search(content)}
+
+
+def file_ownership_executions(records, harness, *, file_candidates=()):
+    """Link script candidates to later executions across native tool calls."""
+    candidates, invocations = set(file_candidates), set()
+    for record in records:
+        for identifier, name, value in calls_and_results(record, harness)[0]:
+            for path, content in file_writes(name, value):
+                if path and OWNERSHIP_TEXT.search(content):
+                    candidates.add(Path(path).name)
+            if not candidates:
+                continue
+            commands = list(shell_commands(name, value))
+            operands = []
+            for argv in commands:
+                redirected = False
+                for word in argv:
+                    if redirected:
+                        redirected = False
+                    elif word in {">", ">>", "<<", "<<<"}:
+                        redirected = True
+                    else:
+                        operands.append(word)
+            referenced = {Path(word).name for word in operands} & candidates
+            if referenced and (any(executable_wrapper(argv) or argv[0] in {"source", "."} for argv in commands)
+                               or any(Path(argv[0]).name in candidates for argv in commands)):
+                invocations.add(identifier)
+    return invocations
 
 
 def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>\n"):
@@ -299,7 +364,7 @@ def ownership_activity(records, harness):
     yield from ownership_state(records, harness)["indices"]
 
 
-def ownership_state(records, harness):
+def ownership_state(records, harness, *, file_candidates=()):
     """Track launches through their terminal native result, including process polls."""
     no_writes = no_write_claims(records, harness)
     def owning(name, value):
@@ -307,7 +372,8 @@ def ownership_state(records, harness):
                    or script(argv) == "gh-pr.py" and "create" in argv
                    or argv[:3] == ["gh", "pr", "create"] for argv in shell_commands(name, value))
     indices, pending, events = [], set(), {}
-    for index, source, value in bound_outputs(records, harness, owning, isolated_polls=True):
+    for index, source, value in bound_outputs(records, harness, owning, isolated_polls=True,
+                                             opaque_calls=file_ownership_executions(records, harness, file_candidates=file_candidates)):
         if source in no_writes:
             continue
         events.setdefault(index, []).append((source, value))
@@ -428,7 +494,7 @@ def claim_targets(records, harness):
     return targets
 
 
-def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=False):
+def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=False, opaque_calls=()):
     """Bind native outputs and process polls to an actual tool invocation."""
     calls, processes, background, polled, outstanding = {}, {}, set(), {}, {}
     opaque, required, deferred, visible = set(), {}, {}, {}
@@ -438,7 +504,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
     for index, record in enumerate(records):
         invocations, results = calls_and_results(record, harness)
         for call_id, name, value in invocations:
-            invoked = predicate(name, value)
+            invoked = call_id in opaque_calls or predicate(name, value)
             value = arguments(value)
             polls = set()
             if name in {"write_stdin", "wait", "functions.wait"} and isinstance(value, dict):
@@ -454,7 +520,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             if invoked and name == "Bash" and isinstance(value, dict) and value.get("run_in_background"):
                 background.add(source)
             if invoked:
-                if opaque_ownership(name, value):
+                if call_id in opaque_calls or opaque_ownership(name, value):
                     opaque.add(source)
                 # A shell's result cannot attest completion of detached writers.
                 for command in shell_texts(name, value):
@@ -602,6 +668,7 @@ def _acceptance(records, harness, session, histories):
     expected, errors = [], []
     root_expected = []
     child_activity, pending = False, False
+    file_candidates = ownership_file_candidates(histories)
     for node in histories:
         for native in sessions:
             found, missing = sources(node["records"], node["harness"], native)
@@ -609,7 +676,7 @@ def _acceptance(records, harness, session, histories):
             errors.extend(missing)
             if node is histories[0]:
                 root_expected.extend(found)
-        state = ownership_state(node["records"], node["harness"])
+        state = ownership_state(node["records"], node["harness"], file_candidates=file_candidates)
         pending = pending or state["pending"]
         if node is not histories[0] and state["indices"]:
             child_activity = True

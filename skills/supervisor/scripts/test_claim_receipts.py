@@ -63,7 +63,66 @@ def history(harness, *values):
     return [start, *middle, *end]
 
 
+def file_execution_histories(harness):
+    writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json'
+    child, parent = history(harness, claim()), history(harness, claim())
+    if harness == "codex":
+        child[1]["payload"].update(name="apply_patch", arguments='*** Begin Patch\n*** Add File: /repo/run-claim.sh\n+' + writer + '\n*** End Patch')
+        parent[1]["payload"]["arguments"] = json.dumps({"cmd": "bash /repo/run-claim.sh"})
+    else:
+        child[1]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run-claim.sh", "content": writer})
+        parent[1]["message"]["content"][0]["input"] = {"command": "bash /repo/run-claim.sh"}
+    child[2], parent[2] = output({}, harness, "tool-0"), output({}, harness, "tool-0")
+    return [{"harness": harness, "session_id": SESSION, "records": rows} for rows in (parent, child)]
+
+
 class ReceiptTests(unittest.TestCase):
+    def test_file_provenance_covers_execution_in_another_native_history(self):
+        for harness in ("codex", "claude"):
+            nodes = file_execution_histories(harness)
+            result = receipts.acceptance(nodes[0]["records"], harness, SESSION, histories=nodes)
+            self.assertFalse(result["clear"])
+            if harness == "codex":
+                nodes[0]["records"][1]["payload"]["arguments"] = json.dumps({"cmd": "cat /repo/run-claim.sh"})
+            else:
+                nodes[0]["records"][1]["message"]["content"][0]["input"] = {"command": "cat /repo/run-claim.sh"}
+            self.assertTrue(receipts.acceptance(nodes[0]["records"], harness, SESSION, histories=nodes)["clear"])
+
+    def test_generated_ownership_script_execution_is_not_limited_to_bash(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json'
+        for harness in ("codex", "claude"):
+            for execute in ('source run-claim.sh', '. run-claim.sh', 'chmod +x run-claim.sh && ./run-claim.sh'):
+                rows = history(harness, claim())
+                command = "cat > run-claim.sh <<'EOF'\n" + writer + "\nEOF\n" + execute
+                if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({}, harness, "tool-0")
+                self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"], command)
+
+    def test_native_file_writes_are_linked_to_later_script_execution(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json'
+        patch_text = '*** Begin Patch\n*** Add File: /repo/run-claim.sh\n+' + writer + '\n*** End Patch'
+        for harness, command, composed in ((h, c, m) for h, m in (("codex", False), ("codex", True), ("claude", False))
+                                            for c in ("bash /repo/run-claim.sh > out.json", "bash < /repo/run-claim.sh", "cat < /repo/run-claim.sh | bash",
+                                                      "bash <run-claim.sh", "cat <run-claim.sh | bash", "bash run-claim.sh>out.json")):
+            rows = history(harness, claim())
+            if harness == "codex":
+                rows[1]["payload"].update(name="functions.exec" if composed else "apply_patch",
+                                         arguments='text(await tools.apply_patch(' + json.dumps(patch_text) + '));' if composed else patch_text)
+            else:
+                rows[1]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run-claim.sh", "content": writer})
+            rows[2] = output({}, harness, "tool-0")
+            self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+            executed = history(harness, claim())[1:3]
+            if harness == "codex":
+                executed[0]["payload"].update(call_id="execute", arguments=json.dumps({"cmd": command}))
+            else:
+                executed[0]["message"]["content"][0].update(id="execute", input={"command": command})
+            executed[1] = output({}, harness, "execute")
+            rows[3:3] = executed
+            self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+            self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+
     def test_executable_wrappers_cannot_turn_hidden_ownership_into_no_write(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json'
         for harness in ("codex", "claude"):

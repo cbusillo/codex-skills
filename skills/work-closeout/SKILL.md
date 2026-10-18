@@ -326,6 +326,10 @@ recoverable terminal result leaves closeout conditional/no; record that blocker
 and preserve the session rather than rerunning the write to manufacture evidence.
 Quoted heredoc bodies are data only when they are not passed to an executor,
 including a generated script executed later in the same invocation.
+Native file writes and patches are also linked to later script execution in
+this history. Executing a file containing potential ownership stays conditional/no
+when its writer provenance cannot be established, including source, direct and
+interpreter execution. A file merely written or read as data is not execution.
 Potential ownership passed to a shell/interpreter body, command operand or
 execution wrapper stays pending when its execution cannot be established.
 Ownership commands before or after inert bodies still count. Substitutions in

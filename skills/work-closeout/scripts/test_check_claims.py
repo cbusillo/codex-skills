@@ -33,6 +33,17 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_child_written_script_execution_refuses_before_inventory(self):
+        from test_claim_receipts import file_execution_histories, SESSION as native_session
+        for harness in ("codex", "claude"):
+            nodes = file_execution_histories(harness)
+            entry = {"session_id": native_session, "harness": harness,
+                     "_transcript_records": nodes[0]["records"], "_claim_histories": nodes}
+            with self.assertRaises(ValueError):
+                helper.check(self.reader, [], entry, ACTOR)
+        self.reader.get_json.assert_not_called()
+        self.reader.paged_json.assert_not_called()
+
     def test_shorthand_redirected_client_claim_is_inventoried_with_its_own_actor(self):
         from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
         foreign, number, client_actor = "client/repo", 7, "client-fixture[bot]"
