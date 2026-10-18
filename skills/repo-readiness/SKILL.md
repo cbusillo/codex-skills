@@ -98,8 +98,8 @@ inspection, browser, CI, deployment, or security gates.
    `../references/background-review-reporting.md`. Match the observation to the
    active branch, PR, and head SHA before using it as evidence. Do not declare a
    branch, PR, release, or handoff green while findings against the current
-   target are not yet accounted for (fixed, deferred, tracked, or declined with
-   a recorded reason) or while a matching review is `in flight`.
+   target are not yet accounted for under `../references/model-review.md` or
+   while a matching review is `in flight`.
    When no lifecycle evidence is visible before a possible post-turn trigger,
    report `not yet observable`; do not infer a skipped or not-emitted outcome,
    and do not delay the final response solely waiting for that trigger. If a
