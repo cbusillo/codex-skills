@@ -651,6 +651,15 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual([data["reason"] for data in skipped], ["review_of_record_not_recorded"])
         self.assertEqual(skipped[0]["detail"], fake.review_gaps[1])
 
+    def test_incomplete_inventory_reports_coverage_instead_of_review(self):
+        fake = Fake(count=1)
+        fake.pulls[1]["changed_files"] = 2
+        fake.review_gaps[1] = "review-of-record evidence unavailable: incomplete inventory"
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        skipped = [data for event, data in self.events if event == "skipped"]
+        self.assertEqual([data["reason"] for data in skipped], ["file_inventory_changed_or_incomplete"])
+
     def test_review_request_appearing_before_label_stops_batch(self):
         fake = Fake(count=1)
         fake.before = lambda io: io.review_gaps.update({1: "requested"}) if io.calls > 1 else None

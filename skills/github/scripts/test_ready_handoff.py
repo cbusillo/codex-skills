@@ -101,6 +101,7 @@ class ReviewRecordTests(unittest.TestCase):
             "Review weighed: OpenAI completed the review and found that the helper did not run required checks; fixed.",
         )
         outcomes += (
+            "Review of record: OpenAI\n\nFixed: the helper declined to review drafts.",
             "Review weighed: OpenAI, after two retries, completed the review; no findings.",
             "Review of record: OpenAI\n\nOnce rerun on the fix, no findings.",
             "Review weighed: findings declined with reasons.",
@@ -147,6 +148,9 @@ class ReviewRecordTests(unittest.TestCase):
             "Review of record: OpenAI completed the launch probe; the review is still running.",
             "Review of record: OpenAI found the diff too large; will rerun.",
             "Review of record: OpenAI reviewed 3 of 10 files; 7 remain.",
+            "Review of record: OpenAI, to be run by the Supervisor at head `aaaaaaaa`.",
+            "Review of record: OpenAI, being run by the Supervisor; in progress.",
+            "Review weighed: findings to be acted on after the rerun.",
             "Review of record: Anthropic, no findings so far; 7 files remain.",
             "Review of record: OpenAI reviewed 3 of 10 files, still running.",
             "Review of record: OpenAI reviewed 3 of 10 files. Still running.",
@@ -316,6 +320,11 @@ class ReadyTests(unittest.TestCase):
         )
         self.post()
 
+    def test_multiline_fixed_code_refusal_is_a_completed_disposition(self):
+        self.review_comment("Review prompt for the review of record.", 6)
+        self.review_comment(f"Review of record: OpenAI\n\nHead: {SHA}\n\nFixed: the helper declined to review drafts.", 7)
+        self.post()
+
     def test_product_review_request_does_not_hold_ready(self):
         self.review_comment("Review request for the Google login button UI.", 6)
         self.post()
@@ -362,6 +371,9 @@ class ReadyTests(unittest.TestCase):
             "Review of record: OpenAI completed the launch probe; the review is still running.",
             "Review of record: OpenAI found the diff too large; will rerun.",
             "Review of record: OpenAI reviewed 3 of 10 files; 7 remain.",
+            "Review of record: OpenAI, to be run by the Supervisor at head `aaaaaaaa`.",
+            "Review of record: OpenAI, being run by the Supervisor; in progress.",
+            "Review weighed: findings to be acted on after the rerun.",
             "Review of record: Anthropic, no findings so far; 7 files remain.",
             "Review of record: OpenAI reviewed 3 of 10 files, still running.",
             "Review of record: OpenAI reviewed 3 of 10 files. Still running.",

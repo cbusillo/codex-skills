@@ -59,7 +59,7 @@ REVIEW_RESULT = re.compile(
 REVIEW_UNFINISHED = re.compile(
     r"(?i)\b(?:not|never|neither|cannot|unable|pending|blocked|requested|needed|waiting"
     r"|outstanding|incomplete|unavailable|queued|running|errored|failed|retrying|rerunning|declined|refused"
-    r"|will|would|until)\b(?![-\w])|\btimed out\b"
+    r"|will|would|until)\b(?![-\w])|\b(?:timed out|to be|being|in progress)\b"
 )
 # A provider refusal or a continuation explicitly saying this review is still
 # running overrides result words from partial file coverage or launch probes.
@@ -371,7 +371,7 @@ def review_record(body):
     if (
         REVIEW_OUTCOME.search(first) and result
         and not REVIEW_UNFINISHED.search(prefix)
-        and not REVIEW_PROGRESS.search(result_text)
+        and not REVIEW_PROGRESS.search(prefix + "\n" + first)
     ):
         return "outcome"
     explicit_request = REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)

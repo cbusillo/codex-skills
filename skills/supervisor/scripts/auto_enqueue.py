@@ -796,6 +796,16 @@ def run_pass(io, args, emit, *, state=None):
                 )
                 if io.qualified(target, pr, set(args.handoff_login), agent_review_required):
                     files = io.pages(f"/repos/{repo}/pulls/{pr['number']}/files")
+                    if len(files) != pr["changed_files"] or not files:
+                        emit(
+                            "skipped",
+                            {
+                                "repository": repo,
+                                "pr": pr["number"],
+                                "reason": "file_inventory_changed_or_incomplete",
+                            },
+                        )
+                        continue
                     review_gap = io.review_gap(target, pr, set(args.handoff_login), file_inventory=files)
                     if review_gap:
                         emit(
@@ -805,16 +815,6 @@ def run_pass(io, args, emit, *, state=None):
                                 "pr": pr["number"],
                                 "reason": "review_of_record_not_recorded",
                                 "detail": review_gap,
-                            },
-                        )
-                        continue
-                    if len(files) != pr["changed_files"] or not files:
-                        emit(
-                            "skipped",
-                            {
-                                "repository": repo,
-                                "pr": pr["number"],
-                                "reason": "file_inventory_changed_or_incomplete",
                             },
                         )
                         continue
