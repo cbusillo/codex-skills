@@ -146,6 +146,16 @@ class ReminderSaveTests(unittest.TestCase):
                 self.save([done], **overrides)
             self.assertEqual(self.decisions(), [[]])
 
+    def test_next_default_check_in_after_completion_saves_without_title(self):
+        done = self.item("done", completed=True)
+        receipt = self.save([done], **{k: v for k, v in self.fields(due="2026-10-21T09:00").items()
+                                       if k != "fallback"})
+        self.assertTrue(receipt["created"])
+        self.assertEqual(self.decisions(), [[{"action": "create", "id": None}]])
+        repeating = self.fields(repeat_days=2)["title"]
+        self.assertNotEqual(repeating, self.fields(repeat_days=3)["title"])
+        self.assertNotEqual(repeating, self.fields(repeat_days=2, due="2026-10-21T09:00")["title"])
+
     def test_incomplete_match_is_still_found_beside_completed_ones(self):
         reminders = [self.item("done", completed=True, title="earlier check-in"), self.item("open", completed=False),
                      self.item("other", completed=False, same_target=False, title="other")]
