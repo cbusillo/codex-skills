@@ -2486,6 +2486,70 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
     assert not partial["complete"] and not partial["items"] and partial["unavailable"]
 
 
+def test_stale_wait_report_records_bare_reference_to_another_repository_as_unresolved() -> None:
+    # direction#3 wrote "#104" for odoo-tenant-cm-website#104; it does not exist here.
+    module = load()
+    rows = [
+        {**issue(3, "Bare reference meant elsewhere", labels=("plan", "plan:active"),
+                 body="## Current Status\nNext action: Website agents finish #104 company identity.\nWaiting for: None.\n"),
+         "updated_at": "2026-10-05T00:00:00Z"},
+        {**issue(4, "Named repository that is missing", labels=("plan", "plan:active"),
+                 body="## Current Status\nNext action: Finish owner/site#104 company identity.\nWaiting for: None.\n"),
+         "updated_at": "2026-10-05T00:00:00Z"},
+        {**issue(5, "Parked on a bare reference", labels=("plan", "plan:waiting"),
+                 body="## Current Status\nState: Waiting.\nWaiting for: #104 to close.\n"),
+         "updated_at": "2026-10-05T00:00:00Z"},
+    ]
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        if "/dependencies/blocked_by" in path:
+            return []
+        if path in {"repos/owner/catalog/issues/104", "repos/owner/site/issues/104"}:
+            raise module.ReferenceNotFound(f"gh api {path} failed: gh: Not Found (HTTP 404)")
+        raise AssertionError(path)
+    report = module.stale_wait_report(rows, "owner/catalog", fetch=current_repository_fetch(fetch))
+    assert report["unavailable"] == [{"number": 4, "source": "active_linked_pr", "reason": "unavailable"}]
+    assert report["unresolved_references"] == [
+        {"number": 3, "source": "active_linked_pr", "reason": "unresolved_reference", "reference": "#104"},
+        {"number": 5, "source": "wait_reference", "reason": "unresolved_reference", "reference": "#104"},
+    ]
+    assert not report["items"]
+    report = module.stale_wait_report([rows[0], rows[2]], "owner/catalog", fetch=current_repository_fetch(fetch))
+    assert report["complete"] and not report["unavailable"] and not report["items"]
+    # Any other read failure still leaves the issue unread.
+    def outage(args: list[str]) -> Any:
+        if args[1].endswith("/issues/104"):
+            raise module.AuditError("gh: HTTP 502")
+        return fetch(args)
+    report = module.stale_wait_report([rows[0]], "owner/catalog", fetch=current_repository_fetch(outage))
+    assert not report["complete"] and report["unavailable"] and not report["unresolved_references"]
+
+
+def test_active_follow_up_naming_its_origin_pr_is_not_a_merged_status() -> None:
+    # context-panel#864 was filed from PR #863's review minutes before #863 merged.
+    module = load()
+    origin = "## Current Status\nState: Active; not started.\nNext action: Add fixtures for the four cases before changing copy.\nWaiting for: None.\nLast verified: 2026-10-16, from PR #863 review.\n"
+    row = {**issue(864, "Follow-up from a PR review", labels=("plan", "plan:active"), body=origin),
+           "updated_at": "2026-10-16T15:22:41Z"}
+    def fetch_with(body: str) -> Any:
+        def fetch(args: list[str]) -> Any:
+            if args[1] == "repos/owner/catalog/issues/863":
+                return {"state": "closed", "pull_request": {}}
+            if args[1] == "repos/owner/catalog/pulls/863":
+                return {"merged_at": "2026-10-16T15:40:00Z", "base": {"ref": "main"}, "body": body}
+            raise AssertionError(args[1])
+        return current_repository_fetch(fetch)
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with("Refs #850"))
+    assert report["complete"] and not report["items"]
+    # The same mention still counts when the PR implements the issue,
+    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with("Refs #864"))
+    assert [item["number"] for item in report["items"]] == [864]
+    # or when the Next action itself names the PR.
+    named = {**row, "body": origin.replace("Add fixtures", "After PR #863, add fixtures")}
+    report = module.stale_wait_report([named], "owner/catalog", fetch=fetch_with("Refs #850"))
+    assert [item["number"] for item in report["items"]] == [864]
+
+
 def test_active_delivery_grammar_preserves_wrapped_and_inflected_remaining_steps() -> None:
     module = load()
     actions = (
