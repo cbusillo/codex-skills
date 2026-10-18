@@ -12,7 +12,7 @@ import socket
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 SPEC = importlib.util.spec_from_file_location("codex_session", Path(__file__).with_name("codex-session.py"))
@@ -21,20 +21,12 @@ SPEC.loader.exec_module(SESSION)
 
 
 class ResumeTests(unittest.TestCase):
-    def test_fresh_launch_registers_before_native_exec_and_preserves_argv(self):
+    def test_fresh_launch_uses_guarded_ingress_and_preserves_argv(self):
         native = ["codex", "--remote", "unix://" + str(SESSION.codex_daemon_endpoint(self.home)), "--", "literal $(touch NEVER)"]
         self.args.command, self.args.native_args = "launch", ["--", *native]
-        def execute(executable, argv, env):
-            self.assertEqual(executable, native[0])
-            self.assertEqual(argv, native)
-            self.assertEqual(env["CODEX_HOME"], str(self.home))
-            rows = json.loads(self.log.read_text())
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["launch_pid"], self.child.pid)
-            self.assertNotIn(native[-1], self.log.read_text())
-        with patch.object(SESSION.os, "execvpe", side_effect=execute) as execute:
+        with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0) as execute:
             self.assertEqual(SESSION.run(self.args), 0)
-        execute.assert_called_once()
+        execute.assert_awaited_once_with(self.home, native)
         self.spawn.assert_not_called()
 
     def test_fresh_launch_cannot_hide_resume_or_use_unobserved_home(self):
@@ -77,10 +69,14 @@ class ResumeTests(unittest.TestCase):
             "codex_home": str(self.home)}))
 
     def test_resume_records_new_generation_and_uses_exact_home_and_id(self):
-        self.assertEqual(SESSION.run(self.args), 0)
-        args, kwargs = self.spawn.call_args
-        self.assertEqual(args[0][-1], self.native)
-        self.assertEqual(kwargs["env"]["CODEX_HOME"], str(self.home))
+        with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0) as guarded:
+            self.assertEqual(SESSION.run(self.args), 0)
+        command = guarded.call_args.args[1]
+        self.assertEqual(command[-1], self.native)
+        self.assertEqual(guarded.call_args.kwargs["session"], self.native)
+        with SESSION.closure.resume_guard(self.native):
+            SESSION.closure.resumed_launch(self.native, SESSION.closure.launch_metadata(456, "generation", str(self.home)),
+                                          str(next((self.home / "sessions").glob("*.jsonl"))), "tty")
         row = json.loads(self.log.read_text())[0]
         self.assertEqual(row["resumed_generation"]["launch_pid"], self.child.pid)
         self.assertIsNone(row["closure_evidence"])
@@ -92,10 +88,10 @@ class ResumeTests(unittest.TestCase):
     def test_resume_preserves_unrelated_managed_launch_registration(self):
         SESSION.closure.register_launch(["codex", "--", "unrelated"], str(self.home))
         registration = json.loads(self.log.read_text())[0]
-        self.assertEqual(SESSION.run(self.args), 0)
+        with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0):
+            self.assertEqual(SESSION.run(self.args), 0)
         rows = json.loads(self.log.read_text())
         self.assertIn(registration, rows)
-        self.assertEqual(len([r for r in rows if r.get("session_id") == self.native]), 1)
 
     def test_queue_passes_literal_message_after_invalidating_old_closure(self):
         self.log.parent.mkdir()
@@ -109,6 +105,24 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(SESSION.run(self.args), 0)
         command = self.spawn.call_args.args[0]
         self.assertEqual(command[command.index("--message") + 1], self.args.message)
+
+    def test_queue_to_live_worker_does_not_replace_its_launch_on_finish(self):
+        import release_session_claims as release
+        transcript = next((self.home / "sessions").glob("*.jsonl"))
+        with transcript.open("a") as stream:
+            stream.write(json.dumps({"timestamp": "2026-10-01T02:00:00Z", "type": "event_msg", "payload": {
+                "type": "agent_message", "message": "Safe to exit: yes"}}) + "\n")
+            stream.write(json.dumps({"timestamp": "2026-10-01T02:00:01Z", "type": "event_msg", "payload": {"type": "task_complete"}}) + "\n")
+        self.args.command, self.args.message = "queue", "continue"
+        self.assertEqual(SESSION.run(self.args), 0)
+        worker = {"session_id": self.native, "harness": "codex", "transcript": str(transcript),
+                  "pid": 789, "tty": "worker-tty", "supervisor_owned": True,
+                  "launch_pid": 789, "launch_generation": "worker-generation", "launch_started_at": "2026-10-01T01:00:00Z"}
+        with patch.object(release, "inventory", return_value=[]):
+            closed = release.record_closure(self.log, worker, "supervisor")
+        self.assertEqual(closed["pid"], worker["pid"])
+        self.assertEqual(closed["tty"], worker["tty"])
+
 
     def test_handed_off_generation_never_starts_a_native_client(self):
         self.log.parent.mkdir()

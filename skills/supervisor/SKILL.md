@@ -52,6 +52,9 @@ resources:
   - path: scripts/codex-session.py
     kind: script
     description: Register a fresh managed native launch, resume or queue an exact thread under the closure/admission ownership lease, or read its new launch metadata.
+  - path: scripts/codex_session_proxy.py
+    kind: script
+    description: Private per-client native RPC ingress that holds source ownership for attachments and actions; imported by codex-session.py.
   - path: references/helpers.md
     kind: reference
     description: Local state, session registry schema, goal board, helper usage and shutdown stages.
@@ -152,7 +155,8 @@ policy:
       match:
         shell_regex: >-
           (?x)^\s*(?:\S*/)?codex\s+
-          (?:(?:--remote|--cd|-C)\s+\S+\s+)*
+          (?:(?:(?:--(?:remote|cd|config|profile|model|sandbox|ask-for-approval|enable|disable|add-dir|image)|-[cCpmsai])
+          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--[\w-]+|exec)\s+)*
           (?:resume\b|queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
       action: require_preferred
       message: Native resume and queue mutations must invalidate closure evidence under the same ownership lease as successor admission. Use the exact-thread helper with the source account home.

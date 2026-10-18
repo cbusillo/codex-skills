@@ -830,8 +830,8 @@ class ClaimTests(unittest.TestCase):
             from datetime import datetime, timezone
             born = datetime(2026, 10, 1, tzinfo=timezone.utc)
             with patch.object(github_plan_closure, "process_started_at", return_value=born):
-                github_plan_closure.register_launch(native, str(fixture.home))
-                fixture.commands = str(os.getpid()) + " " + " ".join(native)
+                fixture.managed(native)
+                fixture.commands = "456 " + " ".join(native)
                 self.run_claim()
             self.assertTrue(self.emitted.call_args.args[0]["ok"])
             self.assertTrue(self.emitted.call_args.args[0]["retained_artifacts"])
@@ -2300,6 +2300,27 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(output["ok"])
         self.assertEqual((output["claim"]["resume_from"], output["claim"]["branch"]), ("1", OWNER["branch"]))
         self.assertTrue(output["claim"]["retained_handoff"].endswith("#issuecomment-2"))
+
+    def test_admission_freezes_sources_proven_only_by_retained_pr_comments(self):
+        self.retained_pr_fixture()
+        target = {**OTHER, "session": "pr-only-source", "branch": "work/retained-42"}
+        self.target_comments["/repos/owner/repo/issues/99/comments"] = [
+            {"id": 77, "body": CLAIM.marker(target), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]},
+            {"id": 78, "body": "Released claim 77", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T01:00:00Z"}]
+        def observe(inventory, comments):
+            if any(target["session"] in c.get("body", "") for c in comments):
+                inventory["session_states"] = {target["session"]: {"state": "ended", "leased_closure": True}}
+            return inventory
+        self.observe_inventory = observe
+        with patch.object(PLAN.github_plan_closure, "admit_sources") as freeze:
+            self.run_claim()
+        self.assertIn(target["session"], freeze.call_args.args[0])
+
+    def test_busy_closure_publication_is_classified_before_claim_writes(self):
+        with patch.object(PLAN.github_plan_closure, "admit_sources", side_effect=PLAN.github_plan_closure.LeaseBusy("held")):
+            with self.assertRaises(PLAN.ClassifiedPlanError):
+                self.run_claim()
+        self.assert_no_writes()
 
     def test_released_handoff_route_preserves_real_and_unproved_holders(self):
         for change in ("unreleased", "foreign_release", "unnamed_pr", "foreign_pr", "second_pr", "live_session",

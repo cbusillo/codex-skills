@@ -138,7 +138,7 @@ def load_ledger(path: Path, *, harness: str | None = None,
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise TypeError("ledger entry must be an object")
-        if closed_log and entry.get("record_kind") == "managed_launch" and "session_id" not in entry:
+        if closed_log and entry.get("record_kind") in {"managed_launch", "managed_proxy"} and "session_id" not in entry:
             continue
         if harness is not None and entry.get("harness") != harness:
             if skipped is not None:

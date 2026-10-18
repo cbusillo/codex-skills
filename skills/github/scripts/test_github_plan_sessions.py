@@ -9,6 +9,7 @@ from contextlib import ExitStack
 import json
 import os
 import socket
+import sys
 from pathlib import Path
 import tempfile
 import threading
@@ -33,6 +34,10 @@ class ReceiptFixture:
         self.execution_items = []
         self.incomplete = False
         self.failure = None
+        self.mutations = []
+        self.approval_target = None
+        self.approval_results = []
+        self.approval_on_resume = False
 
     def __enter__(self):
         self.stack = ExitStack()
@@ -46,7 +51,8 @@ class ReceiptFixture:
             {"type": "event_msg", "timestamp": "2026-10-01T02:00:00Z", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
             {"type": "event_msg", "timestamp": "2026-10-01T02:00:01Z", "payload": {"type": "task_complete"}},
         ]) + "\n")
-        self.log = self.root / "shared/closed.json"
+        self.log = self.root / "shared/skill-data/supervisor-closed-sessions.json"
+        self.stack.enter_context(patch.dict(os.environ, {"CODE_HOME": str(self.log.parent.parent)}))
         self.stack.enter_context(patch.object(CLOSURE, "closed_log", return_value=self.log))
         self.stack.enter_context(patch.object(CLOSURE, "host_identity", return_value={"boot": "fixture-boot", "uid": os.getuid()}))
         self.stack.enter_context(patch.object(SESSIONS, "codex_homes", side_effect=lambda **_kw: sorted(self.homes)))
@@ -58,7 +64,9 @@ class ReceiptFixture:
                       "pid": 123, "tty": "fixture-tty", "supervisor_owned": True, "codex_home": str(self.home),
                       "launch_pid": 123, "launch_generation": "source-generation", "launch_started_at": "2026-10-01T01:00:00Z"}
         self.release.record_closure(self.log, self.entry, "supervisor")
-        self.stack.enter_context(patch.object(SESSIONS.subprocess, "run", side_effect=lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout=self.commands)))
+        real_run = SESSIONS.subprocess.run
+        self.stack.enter_context(patch.object(SESSIONS.subprocess, "run", side_effect=lambda argv, **kw:
+            SimpleNamespace(returncode=0, stdout=self.commands) if argv[:2] == ["ps", "-axo"] or argv[:3] == ["ps", "-ww", "-axo"] else real_run(argv, **kw)))
         ready = threading.Event()
 
         async def serve():
@@ -69,6 +77,9 @@ class ReceiptFixture:
                 await ws.prepare(request)
                 async for frame in ws:
                     request = frame.json()
+                    if "method" not in request:
+                        self.approval_results.append(request)
+                        continue
                     method = request["method"]
                     if method == "initialized": continue
                     if method == "initialize": result = {}
@@ -76,8 +87,18 @@ class ReceiptFixture:
                     elif method == "thread/items/list": result = {"data": [{"item": item, "turnId": "source-turn"} for item in self.execution_items], "nextCursor": None}
                     elif method == "thread/read": result = {"thread": {
                         "id": self.session, "cwd": "/retained/source", "path": str(self.transcript), "status": {"type": self.native_state}}}
+                    elif method == "thread/resume":
+                        self.mutations.append(request)
+                        target = request["params"]["threadId"]
+                        if self.approval_on_resume:
+                            await ws.send_json({"id": request["id"], "method": "execCommandApproval",
+                                                "params": {"conversationId": target}})
+                        result = {"thread": {"id": target, "path": str(self.transcript if target == self.session else self.home / "sessions" / (target + ".jsonl"))}}
                     else: raise AssertionError("unexpected native mutation: " + method)
                     await ws.send_json({"id": request["id"], "result": result})
+                    if method == "initialize" and self.approval_target:
+                        await ws.send_json({"id": "approval", "method": "execCommandApproval",
+                                            "params": {"conversationId": self.approval_target}})
                 return ws
             app = web.Application()
             app.router.add_get("/", handler)
@@ -112,14 +133,72 @@ class ReceiptFixture:
     def observe(self):
         return SESSIONS.observe({self.session}, set())
 
+    def managed(self, native):
+        """Registry-coordinate fixture; the ingress's wire behavior has its own tests."""
+        binding = self.root / "fixture-ingress.sock"
+        sock = socket.socket(socket.AF_UNIX)
+        self.stack.callback(sock.close)
+        sock.bind(str(binding))
+        binding.chmod(0o600)
+        proxy = CLOSURE.register_proxy(str(self.home), str(binding))
+        native[native.index("--remote") + 1] = "unix://" + str(binding)
+        with patch.object(CLOSURE.os, "getpid", return_value=456):
+            CLOSURE.register_launch(native, str(self.home), proxy=proxy)
+
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
+    def test_short_mutation_contention_waits_without_failing_the_second_launch(self):
+        import fcntl
+        with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
+            held, release = threading.Event(), threading.Event()
+            def writer():
+                with CLOSURE.store_lock(f.log):
+                    held.set()
+                    release.wait(3)
+            future = pool.submit(writer)
+            self.assertTrue(held.wait(3))
+            original = fcntl.flock
+            def contend(stream, operation):
+                try:
+                    return original(stream, operation)
+                except BlockingIOError:
+                    release.set()
+                    raise
+            try:
+                with patch.object(fcntl, "flock", side_effect=contend):
+                    CLOSURE.register_launch(["codex", "--", "task"], str(f.home))
+            finally:
+                release.set()
+                future.result(timeout=3)
+            self.assertTrue(any(r.get("launch_pid") == os.getpid() for r in CLOSURE.log_rows()))
+
+    def test_registration_prunes_only_confirmed_dead_runtime_rows(self):
+        with ReceiptFixture() as f:
+            with SESSIONS.subprocess.Popen([sys.executable, "-c", "pass"]) as child:
+                child.wait()
+            dead = {"record_kind": "managed_launch", "launch_pid": child.pid}
+            with CLOSURE.store_lock(f.log):
+                CLOSURE.replace_rows([*CLOSURE.log_rows(), dead])
+            CLOSURE.register_launch(["codex", "--", "task"], str(f.home))
+            rows = CLOSURE.log_rows()
+            self.assertNotIn(dead, rows)
+            self.assertTrue(any(r.get("session_id") == f.session for r in rows))
+
+    def test_registration_without_guarded_attachment_is_not_process_coverage(self):
+        with ReceiptFixture() as f:
+            native = ["codex", "--remote", "unix://" + str(f.home / "app-server-control/app-server-control.sock"), "--", "task"]
+            born = datetime(2026, 10, 1, tzinfo=timezone.utc)
+            with patch.object(CLOSURE.os, "getpid", return_value=456), patch.object(CLOSURE, "process_started_at", return_value=born):
+                CLOSURE.register_launch(native, str(f.home))
+                f.commands = "456 " + " ".join(native)
+                self.assert_live(f)
+
     def test_managed_unrelated_interactive_client_has_exact_process_birth_and_observed_home(self):
         with ReceiptFixture() as f:
             native = ["codex", "--remote", "unix://" + str(f.home / "app-server-control/app-server-control.sock"), "--", "unrelated task"]
             born = datetime(2026, 10, 1, tzinfo=timezone.utc)
-            with patch.object(CLOSURE.os, "getpid", return_value=456), patch.object(CLOSURE, "process_started_at", return_value=born):
-                CLOSURE.register_launch(native, str(f.home))
+            with patch.object(CLOSURE, "process_started_at", return_value=born):
+                f.managed(native)
                 f.commands = "456 " + " ".join(native)
                 self.assert_ended(f)
                 f.commands = "456 python3 /fixture/codex " + " ".join(native[1:])
@@ -128,7 +207,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 self.assert_ended(f)
                 with patch.object(CLOSURE, "process_started_at", return_value=datetime(2026, 10, 2, tzinfo=timezone.utc)):
                     self.assert_live(f)
-                f.commands += " changed-input"
+                f.commands = "456 codex --remote unix:///changed -- task"
                 self.assert_live(f)
             self.assertNotIn("unrelated task", f.log.read_text())
 

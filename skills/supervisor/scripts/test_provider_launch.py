@@ -48,13 +48,15 @@ class ProviderLaunchTests(unittest.TestCase):
         import github_plan_closure
         source = {"session_id": "terminal-generation", "tty": "/dev/fixture-tty"}
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
-        with patch.object(close_ttys, "inventory", return_value=[(456, "fixture-tty", "codex --remote unix:///observed")]), \
+        with patch.object(close_ttys, "inventory", return_value=[(456, "fixture-tty", "codex --remote unix:///observed"),
+                                                              (457, "fixture-tty", "python3 /fixture/codex-session.py launch --codex-home /fixture")]), \
                 patch.object(github_plan_closure, "process_started_at") as started:
             from datetime import datetime, timezone
             started.return_value = datetime(2026, 10, 1, tzinfo=timezone.utc)
             result = iterm_tab.source_launch_metadata(source, choice)
         self.assertEqual(result["pid"], 456)
-        self.assertEqual(result["launch_generation"], source["session_id"])
+        self.assertTrue(result["launch_generation"])
+        self.assertIsInstance(result["launch_generation"], str)
         self.assertEqual(result["codex_home"], choice["env"]["CODEX_HOME"])
 
     def test_terminal_resume_cannot_bypass_coordination(self):

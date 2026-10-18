@@ -25,6 +25,16 @@ FIXTURE = Path(__file__).parent / "fixtures" / "codex-capacity-stop.jsonl"
 
 
 class CapacityTests(unittest.TestCase):
+    def test_ownership_busy_before_send_does_not_spend_or_uncertainly_record_an_attempt(self):
+        state = {}
+        now = self.now + 100000
+        with patch.object(capacity_retry.time, "time", return_value=now), patch.object(
+                capacity_retry, "queue_continue", side_effect=capacity_retry.github_plan_closure.LeaseBusy("owned")):
+            result = capacity_retry.resume(self.entry, session_record.session_status(self.entry), state, self.state_path, now)
+        self.assertEqual(result["attempts"], 0)
+        self.assertFalse(state)
+        self.assertEqual(capacity_retry.load_state(self.state_path), {})
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
         self.addCleanup(self.temporary.cleanup)

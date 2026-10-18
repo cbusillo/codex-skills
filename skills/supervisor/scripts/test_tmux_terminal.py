@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import socket
 import shutil
 import signal
 import subprocess
@@ -735,6 +736,11 @@ class TmuxTests(TmuxFixture):
                        "env": {"CODEX_HOME": str(self.root / "codex-account")}}
         home = Path(self.choice["env"]["CODEX_HOME"])
         home.mkdir()
+        endpoint = iterm_tab.codex_daemon_endpoint(home)
+        endpoint.parent.mkdir()
+        native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+        native_socket.bind(str(endpoint))
+        endpoint.chmod(0o600)
         self.command.write_text(f"exec {shlex.quote(str(codex))} --remote {shlex.quote('unix://' + str(home.resolve() / 'app-server-control/app-server-control.sock'))} -C {shlex.quote(str(self.root))}")
         code = self.root / "codex-launch-registry"
         (code / "skill-data").mkdir(parents=True)

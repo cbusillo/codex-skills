@@ -2396,6 +2396,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     previous_wait = ""
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
+    retained_ended_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
 
@@ -2523,6 +2524,8 @@ def _claim_once(args: argparse.Namespace) -> None:
                         and peer.get("sessionId") != claim["session"]]
         if live_sources:
             refuse(live_sources)
+        retained_ended_sources.update(session for session, state in target_inventory.get("session_states", {}).items()
+                                     if state.get("state") == "ended" and state.get("leased_closure"))
         _, own_comments = github_plan_claim.discussion_evidence("", source_comments, claim)
         for checked_number, checked_repo in ((target_number, target_repo), (number, issue_repo)):
             competing = github_plan_claim.artifact_evidence(
@@ -2778,8 +2781,13 @@ def _claim_once(args: argparse.Namespace) -> None:
         )
         # Freeze the source before any external claim write. If publication
         # fails, the closed source stays frozen for supported claim recovery.
-        github_plan_closure.admit_sources({session for session, state in inventory.get("session_states", {}).items()
-                                          if state.get("state") == "ended" and state.get("leased_closure")})
+        try:
+            github_plan_closure.admit_sources(retained_ended_sources | {session for session, state in inventory.get("session_states", {}).items()
+                                              if state.get("state") == "ended" and state.get("leased_closure")})
+        except (OSError, ValueError) as error:
+            raise ClassifiedPlanError("claim_closure_unavailable",
+                "Source ownership could not be committed; preserve it and retry this claim after the owning operation ends",
+                payload={"closure_error": str(error)}) from error
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,

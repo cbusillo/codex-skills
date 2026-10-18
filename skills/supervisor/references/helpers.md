@@ -1633,16 +1633,25 @@ resume process, unknown client, changed generation or unavailable evidence keeps
 it live. A proven new TTY occupant born after closure is not the old worker.
 Unidentified interactive clients, pickers, stdio servers and unobserved daemons
 still refuse. Fresh noninteractive execs cannot attach to the predecessor.
-The Supervisor's supported fresh launch also registers its exact PID, birth,
-configured remote endpoint and a digest of argv before replacing itself with
-the native client. This registration lives in the same shared log, without
-prompt text. A matching managed client on an observed daemon does not globally
-block another thread's proof. PID reuse, changed argv, an unobserved endpoint or
-an unmanaged TUI keeps refusing. Direct native queue, resume pickers and TUI
-`/resume` are outside the supported lifecycle: use `codex-session.py` instead.
-The terminal send helpers reject `/resume`; agents and the Supervisor must not
-type it directly. These are cooperating client leases, not daemon-enforced
-subscriber evidence; the stock API supplies no such evidence.
+The supported fresh and resume launchers run each TUI through a private local
+RPC ingress, connected to the existing selected-home daemon. It holds a thread's
+ownership lease from its first attachment/action until that client disconnects,
+and invalidates closure before forwarding the action. This includes in-TUI
+`/resume`, pickers, turn starts and server approval requests with a thread ID.
+A frozen predecessor receives a native RPC error before it can act. Read-only
+thread reads still pass after handoff. No daemon is restarted and no native
+subscriber API is assumed.
+
+The parent ingress and its native client register PID/birth, selected home,
+private socket identity and a digest of the immutable option prefix before
+`--`. Prompt text is not stored or hashed. A matching client on an observed
+daemon no longer globally blocks another thread's proof. A waiting npm wrapper
+may have a native child; both need matching option prefixes and a verified live
+parent birth. Old registrations without the guarded connection, changed options,
+PID reuse, missing ingress or unobserved daemons still refuse. Use
+`codex-session.py` for native resume/queue. Terminal send retains its `/resume`
+route check for targets that may be old unmanaged clients; safety no longer
+depends on that text check for managed clients.
 
 Close, supported resume/queue and admission share a nonblocking per-thread
 ownership lease. Claim retains it through final readback and freezes the source
@@ -1654,13 +1663,30 @@ missing/malformed/stale receipt, changed transcript path or changed fingerprint
 preserves the conservative native checks. Moving a transcript to the archive can
 therefore invalidate an old receipt; normal unloaded/authored-release recovery
 remains supported. No daemon is restarted or interrupted.
+Idle execution proof reads at most 100 pages of 20 native items and requires
+complete history; it cannot assume an older background command ended from a
+recent quiet page. Each transcript scan must finish within three seconds, within
+the five-second native observation budget. Longer histories or slower copies
+therefore keep refusing idle admission; they do not weaken ordinary verified
+release or the unloaded recovery path.
 The supported fresh launcher adds the selected account's explicit remote
 endpoint when omitted, and refuses conflicting endpoints or raw resume/fork
 commands, standalone servers, unknown options and `--no-daemon` before native
 execution. Put an initial literal prompt after `--`, as the brief launcher does.
-A shared-log write failure refuses that
-managed launch; correct the shared path or retry after its brief mutation lock
-is free. It never falls through to an unregistered native client.
+The short shared-log mutation lock waits up to one second. A write failure or
+continued contention refuses the managed launch; correct the shared path or
+retry after the writer finishes. It never falls through to a direct connection.
+Runtime registration cleanup removes only this launch's exact generation or
+confirmed dead process rows. Source/admission leases remain nonblocking because
+a claim can retain one during GitHub round-trips. A capacity nudge that has sent
+nothing when a lease is busy defers without spending an attempt.
+
+A queue nudge only invalidates closure. It never substitutes the queue process
+for the actual worker PID/TTY or creates a new worker generation. For an already
+closed thread, start a guarded resume to obtain its real new launch metadata;
+`status` then supplies that metadata for the native ledger. Optional idle-proof
+fingerprints are checked only by admission, so an older boot/account fingerprint
+cannot prevent retrying ordinary verified release with the original closure time.
 
 Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
 For `finish`, discovery also checks original claim comments after their release.

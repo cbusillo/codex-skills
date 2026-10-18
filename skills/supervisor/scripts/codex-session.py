@@ -1,12 +1,13 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["websockets==17.2"]
 # ///
 """Exact-thread Codex resume and queue operations under the ownership lease."""
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -20,9 +21,24 @@ import github_plan_closure as closure
 from github_plan_sessions import codex_homes
 from iterm_tab import codex_daemon_endpoint
 import session_record
+from codex_session_proxy import run_client
 
 
 def run(args) -> int:
+    if args.command == "native":
+        home = args.codex_home.resolve(strict=True)
+        native = args.native_args[1:] if args.native_args[:1] == ["--"] else args.native_args
+        rows = closure.log_rows()
+        proxies = [r for r in rows if r.get("record_kind") == "managed_proxy"
+                   and r.get("launch_pid") == args.proxy_parent and r.get("endpoint") == str(args.proxy)
+                   and r.get("codex_home") == str(home)]
+        if len(proxies) != 1 or os.getppid() != args.proxy_parent or closure.process_started_at(args.proxy_parent).isoformat() != proxies[0]["launch_started_at"]:
+            raise ValueError("native client has no current guarded parent")
+        if not native or Path(native[0]).name != "codex":
+            raise ValueError("native bootstrap requires the selected codex executable")
+        closure.register_launch(native, str(home), proxy=proxies[0])
+        os.execvpe(native[0], native, {**os.environ, "CODEX_HOME": str(home)})
+        return 0
     if args.command == "launch":
         home = args.codex_home.expanduser().resolve(strict=True)
         native = args.native_args
@@ -53,9 +69,7 @@ def run(args) -> int:
             remotes = [endpoint]
         if remotes != [endpoint]:
             raise ValueError("managed launch needs the selected account's exact --remote endpoint")
-        closure.register_launch(native, str(home))
-        os.execvpe(native[0], native, {**os.environ, "CODEX_HOME": str(home)})
-        return 0
+        return asyncio.run(run_client(home, native))
     if str(uuid.UUID(args.session_id)) != args.session_id:
         raise ValueError("use the canonical native thread UUID")
     if args.command == "status":
@@ -82,33 +96,32 @@ def run(args) -> int:
                    "--thread", args.session_id, "--message", message]
     else:
         command += ["resume", args.session_id]
+        with closure.resume_guard(args.session_id):
+            pass
+        return asyncio.run(run_client(home, command, session=args.session_id))
     with closure.resume_guard(args.session_id):
         with subprocess.Popen(command, env={**os.environ, "CODEX_HOME": str(home)}) as child:
-            try:
-                metadata = closure.launch_metadata(child.pid, uuid.uuid4().hex, str(home))
-                tty = os.ttyname(0).removeprefix("/dev/") if os.isatty(0) else "?"
-                closure.resumed_launch(args.session_id, metadata, str(paths[0].resolve()), tty)
-            except (OSError, ValueError, subprocess.SubprocessError):
-                # The old receipt is already invalidated. Preserve the live
-                # child and let native/process observations refuse admission.
-                pass
-            return child.wait()
+            return child.wait()  # A nudge is not the worker's launch generation.
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("launch", "resume", "queue", "status"))
+    parser.add_argument("command", choices=("launch", "native", "resume", "queue", "status"))
     parser.add_argument("--session-id")
     parser.add_argument("--codex-home", type=Path)
+    parser.add_argument("--proxy", type=Path)
+    parser.add_argument("--proxy-parent", type=int)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--message")
     group.add_argument("--message-file", type=Path)
     args, native = parser.parse_known_args()
     args.native_args = native
-    if args.command != "launch" and (native or not args.session_id):
+    if args.command not in {"launch", "native"} and (native or not args.session_id):
         parser.error("use --session-id with resume, queue or status; native argv belongs to launch")
     if args.command != "status" and args.codex_home is None:
         parser.error("resume and queue require --codex-home")
+    if args.command == "native" and (args.proxy is None or args.proxy_parent is None):
+        parser.error("native is the internal guarded child bootstrap")
     if args.command == "queue" and args.message is None and args.message_file is None:
         parser.error("queue requires --message or --message-file")
     try:

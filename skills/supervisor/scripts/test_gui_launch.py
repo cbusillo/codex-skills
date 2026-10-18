@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import plistlib
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -29,12 +30,17 @@ import tmux_terminal
 
 class GuiLaunchTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(prefix="gui-", dir="/tmp")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.home = self.root / "owner"
         self.account = self.root / "account with spaces"
         self.account.mkdir()
+        endpoint = iterm_tab.codex_daemon_endpoint(self.account)
+        endpoint.parent.mkdir()
+        native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+        native_socket.bind(str(endpoint))
+        endpoint.chmod(0o600)
         self.source = self.home / ".codex" / gui_launch.BUNDLED_MARKETPLACE
         self.source.mkdir(parents=True)
         self.state = self.root / "private/gui.json"

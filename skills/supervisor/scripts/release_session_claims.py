@@ -115,8 +115,8 @@ def validate_closure(entry, supervisor_session):
             raise ValueError("source resumed or has newer activity in a configured native transcript")
         if session_record.session_status({**entry, "transcript": str(path)}) != other:
             raise ValueError("native transcript changed during closure verification")
-    if entry.get("closure_evidence") and closure.evidence(entry) != entry["closure_evidence"]:
-        raise ValueError("host, account or native transcripts changed since closure")
+    # Optional host/boot/account fingerprints belong to idle admission only.
+    # Ordinary release still revalidates exit and every required native copy.
     return status
 
 
@@ -136,10 +136,11 @@ def transcript_roots(harness, configured, explicit):
 
 
 def record_closure(path, entry, supervisor_session, *, persist=True):
-    with closure.store_lock(path, create=persist):
-        if path.resolve() != closure.closed_log().resolve():
+    if path.resolve() != closure.closed_log().resolve():
+        with closure.store_lock(path, create=persist):
             return _record_closure(path, entry, supervisor_session, persist=persist)
-        with closure.ownership(entry["session_id"], create=persist):
+    with closure.ownership(entry["session_id"], create=persist):
+        with closure.store_lock(path, create=persist):
             return _record_closure(path, entry, supervisor_session, persist=persist)
 
 
@@ -147,7 +148,7 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
     """Observe exit now; never replace an older actual closure time on retry."""
     records = [{k: v for k, v in e.items() if not k.startswith("_")}
                for e in session_record.load_ledger(path, closed_log=True)] if path.exists() else []
-    launches = [r for r in json.loads(path.read_text()) if r.get("record_kind") == "managed_launch" and "session_id" not in r] if path.exists() else []
+    launches = [r for r in json.loads(path.read_text()) if r.get("record_kind") in {"managed_launch", "managed_proxy"} and "session_id" not in r] if path.exists() else []
     existing = [r for r in records if r["session_id"] == entry["session_id"]]
     if existing and existing[0].get("resumed_at"):
         resumed = existing[0].get("resumed_generation") or {}

@@ -1532,7 +1532,7 @@ class CodexProjectTests(unittest.TestCase):
             receipt.assert_not_called()
 
     def test_prepared_command_preserves_explicit_directory_and_brief(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
             root = Path(folder).resolve()
             repository = root / "brief's repository"
             repository.mkdir()
@@ -1547,6 +1547,11 @@ class CodexProjectTests(unittest.TestCase):
             fake_codex.chmod(0o700)
             home = root / "selected"
             write_codex_project_fixture(repository, home)
+            endpoint = iterm_tab.codex_daemon_endpoint(home)
+            endpoint.parent.mkdir()
+            native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+            native_socket.bind(str(endpoint))
+            endpoint.chmod(0o600)
             launch = root / "launch"
             launch.write_text(f"{shlex.quote(str(fake_codex))} -C {shlex.quote(str(repository))}")
             code = root / "code"

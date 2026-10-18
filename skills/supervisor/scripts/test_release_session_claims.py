@@ -32,6 +32,15 @@ def comment(number, body, author=ACTOR):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_optional_admission_proof_is_not_a_dependency_of_release_retry(self):
+        log = self.root / "closed.json"
+        saved = {**self.entry, "closure_evidence": {"host": "old-boot"}}
+        log.write_text(json.dumps([saved]))
+        for unavailable in (ValueError("account set changed"), TimeoutError("scan budget"), OSError("config unreadable")):
+            with self.subTest(unavailable=type(unavailable).__name__), patch.object(helper.closure, "evidence", side_effect=unavailable):
+                result = helper.record_closure(log, self.entry, "supervisor")
+                self.assertEqual(result["ended_at"], saved["ended_at"])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

@@ -280,7 +280,7 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
     process_text = None
     sources = []
     try:
-        process_read = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True, timeout=5)
+        process_read = subprocess.run(["ps", "-ww", "-axo", "pid=,args="], capture_output=True, text=True, timeout=5)
         if process_read.returncode == 0:
             peers.extend(process_sessions(process_read.stdout, sessions))
             process_text = process_read.stdout
@@ -299,7 +299,7 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
     for peer in peers:
         states[peer["sessionId"]] = {"state": "live", "source": peer["source"]}
     try:
-        final_process = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True, timeout=5)
+        final_process = subprocess.run(["ps", "-ww", "-axo", "pid=,args="], capture_output=True, text=True, timeout=5)
         if final_process.returncode != 0:
             process_text = None
         elif process_text is not None:

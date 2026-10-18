@@ -187,6 +187,7 @@ def resume(entry: dict, status: dict, state: dict, path: Path, now: float) -> di
     if summary["state"] not in {"backoff", "retry_due"} or entry.get("supervisor_owned") is not True:
         return summary
     native_id = entry["session_id"]
+    previous = state.get(native_id)
     if now < summary["retry_at"]:
         return summary
     home, endpoint = verified_target(entry, status)
@@ -197,6 +198,13 @@ def resume(entry: dict, status: dict, state: dict, path: Path, now: float) -> di
     try:
         queue_continue(entry, home, endpoint, status)
         row["phase"] = "confirmed" if readback_continue(entry, status["size"]) else "uncertain"
+    except github_plan_closure.LeaseBusy:
+        if previous is None:
+            state.pop(native_id, None)
+        else:
+            state[native_id] = previous
+        save_state(path, state)
+        return {"attempts": summary["attempts"], "state": "ownership_busy"}
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         row["phase"] = "uncertain"
     try:

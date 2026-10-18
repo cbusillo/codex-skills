@@ -102,34 +102,107 @@ def log_rows() -> list[dict]:
     return rows
 
 
-def register_launch(argv: list[str], home: str) -> None:
+def argv_signature(argv: list[str]) -> str:
+    # ps cannot preserve argv boundaries or literal prompt whitespace. Only
+    # the immutable option prefix binds a client; the ingress guards attaches.
+    prefix = argv[1:argv.index("--")] if "--" in argv else argv[1:]
+    return hashlib.sha256(" ".join(" ".join(prefix).split()).encode()).hexdigest()
+
+
+def remote_endpoints(argv: list[str]) -> list[str]:
+    prefix = argv[:argv.index("--")] if "--" in argv else argv
+    return ([prefix[i + 1] for i, arg in enumerate(prefix[:-1]) if arg == "--remote"]
+            + [arg.split("=", 1)[1] for arg in prefix if arg.startswith("--remote=")])
+
+
+def prune_registrations(rows: list[dict]) -> list[dict]:
+    def alive(row):
+        if type(row.get("launch_pid")) is not int or row["launch_pid"] <= 0:
+            return True
+        try:
+            os.kill(row["launch_pid"], 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except (OSError, KeyError, TypeError):
+            return True  # Unknown identity is never deleted as presumed dead.
+    return [row for row in rows if row.get("record_kind") not in {"managed_launch", "managed_proxy"} or alive(row)]
+
+
+def register_proxy(home: str, endpoint: str) -> dict:
+    metadata = launch_metadata(os.getpid(), os.urandom(16).hex(), home)
+    row = {"record_kind": "managed_proxy", **metadata, "endpoint": endpoint,
+           "argv_digest": argv_signature(sys.argv)}
+    with store_lock(closed_log(), create=True):
+        rows = prune_registrations(log_rows() if closed_log().exists() else [])
+        rows = [r for r in rows if r.get("record_kind") != "managed_proxy" or r.get("launch_pid") != os.getpid()]
+        replace_rows([*rows, row])
+    return row
+
+
+def remove_registration(pid: int, generation: str) -> None:
+    with store_lock(closed_log(), create=True):
+        rows = log_rows()
+        replace_rows(prune_registrations([r for r in rows if not (
+            r.get("record_kind") in {"managed_launch", "managed_proxy"}
+            and r.get("launch_pid") == pid and r.get("launch_generation") == generation)]))
+
+
+def register_launch(argv: list[str], home: str, *, proxy: dict | None = None) -> None:
     """Register the managed fresh client's identity before exec replaces us."""
+    if proxy and remote_endpoints(argv) != ["unix://" + proxy["endpoint"]]:
+        raise ValueError("managed native client must use its guarded ingress")
     metadata = launch_metadata(os.getpid(), os.urandom(16).hex(), home)
     path = closed_log()
     with store_lock(path, create=True):
-        rows = log_rows() if path.exists() else []
+        rows = prune_registrations(log_rows() if path.exists() else [])
         # Reap only older records for this PID. PID and birth must both match
         # at observation; other clients' live records are never reassigned.
         rows = [r for r in rows if r.get("record_kind") != "managed_launch" or r.get("launch_pid") != os.getpid()]
         rows.append({"record_kind": "managed_launch", **metadata,
-                     "argv_digest": hashlib.sha256(" ".join(argv[1:]).encode()).hexdigest()})
+                     "argv_digest": argv_signature(argv), "proxy": proxy})
         replace_rows(rows)
 
 
 def managed_launch(pid: int, argv: list[str], sockets: set[str]) -> bool:
-    """Only a cooperating fresh remote client with the same process birth."""
+    """Only an exact client whose actions pass a currently live guarded ingress."""
     try:
-        rows = log_rows()
-        matches = [r for r in rows if r.get("record_kind") == "managed_launch" and r.get("launch_pid") == pid]
+        identity = log_identity(closed_log().lstat())
+        cache = LOG_CACHE.get()
+        rows = cache[1] if cache and cache[0] == identity else log_rows()
+        LOG_CACHE.set((identity, rows))
+        matches = [r for r in rows if r.get("record_kind") in {"managed_launch", "managed_proxy"} and r.get("launch_pid") == pid]
+        if not matches and any(r.get("record_kind") == "managed_launch" and isinstance(r.get("proxy"), dict) for r in rows):
+            # The npm launcher waits for a native child instead of exec'ing.
+            # Both processes must have the same guarded option prefix, and the
+            # recorded parent must still have its original process birth.
+            parent = int(subprocess.run(["ps", "-p", str(pid), "-o", "ppid="], check=True,
+                                        capture_output=True, text=True, timeout=2).stdout.strip())
+            matches = [r for r in rows if r.get("record_kind") == "managed_launch" and r.get("launch_pid") == parent]
+            if len(matches) != 1 or not (
+                process_started_at(parent).isoformat() == matches[0]["launch_started_at"]
+                and process_started_at(parent) <= process_started_at(pid) <= datetime.now(timezone.utc)
+            ):
+                return False
         if len(matches) != 1:
             return False
         row = matches[0]
-        if hashlib.sha256(" ".join(argv[1:]).encode()).hexdigest() != row["argv_digest"]:
+        if argv_signature(argv) != row["argv_digest"]:
             return False
         endpoint = str(Path(row["codex_home"]) / "app-server-control/app-server-control.sock")
         if endpoint not in sockets:
             return False
-        return process_started_at(pid).isoformat() == row["launch_started_at"]
+        if row["launch_pid"] == pid and process_started_at(pid).isoformat() != row["launch_started_at"]:
+            return False
+        proxy = row if row["record_kind"] == "managed_proxy" else row.get("proxy")
+        if not isinstance(proxy, dict) or proxy not in rows:
+            return False
+        if row["record_kind"] == "managed_launch" and remote_endpoints(argv) != ["unix://" + proxy["endpoint"]]:
+            return False
+        info = Path(proxy["endpoint"]).lstat()
+        return (stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
+                and proxy["codex_home"] == row["codex_home"]
+                and process_started_at(proxy["launch_pid"]).isoformat() == proxy["launch_started_at"])
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         return False
 
@@ -147,7 +220,15 @@ def store_lock(path: Path, *, create: bool = False):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
             raise ValueError("unsafe closed-session mutation lock")
-        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise LeaseBusy("shared closure log is busy; retry without native execution") from None
+                time.sleep(0.01)
         yield
 
 

@@ -893,8 +893,11 @@ def source_launch_metadata(result, choice):
         tty = result.get("tty")
         if not isinstance(tty, str) or not tty:
             raise ValueError("launch TTY is unavailable")
-        matches = [pid for pid, terminal, command in inventory()
-                   if terminal == tty.removeprefix("/dev/") and codex_argv_start(command.split()) is not None]
+        candidates = [(pid, codex_argv_start(command.split())) for pid, terminal, command in inventory()
+                      if terminal == tty.removeprefix("/dev/") and codex_argv_start(command.split()) is not None]
+        # The guarded parent is a Python helper on the same TTY. Prefer the
+        # native executable over the wrapper when both are visible.
+        matches = [pid for pid, kind in candidates if kind == 0] or [pid for pid, _ in candidates]
         if len(matches) != 1:
             raise ValueError("native client PID is not unique on the launch TTY")
         result.update(github_plan_closure.launch_metadata(matches[0], result["session_id"], home))
