@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_comment
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "direction/scripts"))
-from question_id import QUESTION, counter_path
+from question_id import counter_path, heading_id
 
 COMMENT_URL = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/([1-9][0-9]*)#issuecomment-([1-9][0-9]*)")
 MARKER = re.compile(r"<!-- director-question:delivery (\{[^\n]*\}) -->")
@@ -37,12 +37,7 @@ def source_item(url):
 
 def question_id(body):
     """Only the heading's own ID, never another question mentioned in its context."""
-    heading = body.lstrip().lstrip("*")
-    for prefix in oq.QUESTION_PREFIXES:
-        if heading.startswith(prefix):
-            match = QUESTION.match(heading[len(prefix):].lstrip(" *"))
-            return match[0] if match else None
-    return None
+    return heading_id(body)
 
 
 def records(comments, trusted):
@@ -159,6 +154,8 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
         url = question["url"]
         if question_urls is not None and url not in question_urls:
             continue
+        if not question_id(question["question"]):
+            raise ValueError(f"Question has no heading Q ID; number the original comment before delivery: {url}")
         source_item(url)
         created = question.get("created_at")
         age = None

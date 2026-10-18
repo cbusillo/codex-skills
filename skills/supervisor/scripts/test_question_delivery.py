@@ -22,7 +22,11 @@ from github_fixture_support import api_success, with_call_stub
 class DeliveryTests(unittest.TestCase):
     def setUp(self):
         self.fixture = json.loads((Path(__file__).parent / "fixtures/question-delivery-week-2026-10-15.json").read_text())
-        self.questions = self.fixture["questions"]
+        # Keep the historical evidence unchanged; queue exercises use repaired
+        # copies, while the refusal regression below uses the original source.
+        self.questions = [{**q, "body": q["body"] if delivery.question_id(q["body"])
+                           else q["body"].replace("question:", "question: Q1.", 1)}
+                          for q in self.fixture["questions"]]
         self.queue = self.fixture["queue"]
         self.owner = self.fixture["owner"]
         self.authors = self.fixture["decision_authors"]
@@ -66,7 +70,21 @@ class DeliveryTests(unittest.TestCase):
         takeover = self.run_queue(items=[])
         self.assertEqual(takeover["questions"], replay["questions"])
         self.assertEqual({q["question_id"] for q in first["questions"] if q["question_id"]},
-                         {delivery.question_id(self.questions[0]["body"])})
+                         {delivery.question_id(q["body"]) for q in self.questions})
+
+    def test_unnumbered_source_refuses_reads_registration_and_ack_without_writes(self):
+        original = next(q for q in self.fixture["questions"] if not delivery.question_id(q["body"]))
+        # A reference to another question in the context is not this one's ID.
+        self.sources[delivery.source_item(original["url"])] = [{**original, "body": original["body"] + " See Q327."}]
+        for options in ({}, {"register": True}, {"ack": original["url"],
+                         "delivery_url": "https://discord.com/channels/1/2/3"}):
+            self.comments.clear()
+            if options.get("ack"):
+                self.post(self.queue, delivery.marker_body("registered", original["url"]))
+            before = list(self.comments)
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                self.run_queue(**options)
+            self.assertEqual(self.comments, before)
 
     def test_original_timestamps_expose_four_hour_delay_and_utc_conversion(self):
         report = delivery.inventory(self.questions, [], self.owner, self.authors,

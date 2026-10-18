@@ -54,7 +54,20 @@ changes on yes.
 - When a decision belongs to the Director, ask a direct question that says what
   is being decided, your recommendation, and what each choice changes. Separate
   what the Director must do by hand from what you will do after the answer.
-- In chat, get each new question's short ID from the
+- Every new question has a shared-counter Q ID in chat and on GitHub.
+  GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
+  bodies starting with `Owner question:` or `Director question:` automatically;
+  an existing heading ID stays unchanged, including on edits and repeat delivery.
+  A Q ID mentioned only in the context is not the question's own ID.
+  The helpers allocate only after GitHub confirms the comment was saved, then
+  add the ID through an exact-comment edit. The locked counter stores the
+  comment URL and its assignment together. Failed creation consumes no number;
+  interrupted numbering reports the saved URL and any assigned ID. Read that
+  comment, then repair through `gh-comment ... --edit-comment ID` with its full
+  body, rather than creating another comment or allocating another ID. Delivery
+  refuses an unnumbered original; repair it before registering or presenting it.
+  Briefs link this reference instead of repeating numbering instructions.
+  In chat, get each new question's short ID from the
   [shared question counter](../direction/scripts/question_id.py):
   `uv run <direction-skill-dir>/scripts/question_id.py next`.
   Both harnesses use one counter in the shared Code home (`CODE_HOME`, or
@@ -65,8 +78,8 @@ changes on yes.
   the highest number it finds; never seed from a number remembered in chat.
   An ID never changes and is never reused: when you ask the same
   question again, even reworded, keep its ID. Restate the question each time
-  you list it, so the Director can answer "Q2 yes" without scrolling back. On
-  GitHub, the question's link is its ID.
+  you list it, so the Director can answer "Q2 yes" without scrolling back.
+  Keep the original GitHub comment link alongside its Q ID.
 - When the Director's answer to a multi-option question can be read two ways,
   say back the chosen and rejected options in one line before recording the
   `Director decision:`. Before asking again, or saying no decision exists,

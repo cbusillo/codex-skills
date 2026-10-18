@@ -19,6 +19,20 @@ from pathlib import Path
 
 QUESTION = re.compile(r"\bQ([1-9][0-9]*)\b")
 ITEM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
+QUESTION_HEADING = re.compile(r"^\s*\*{0,2}(?:Owner|Director) question:[ \t]*\*{0,2}[ \t]*")
+
+
+def heading_id(body: str) -> str | None:
+    heading = QUESTION_HEADING.match(body)
+    match = QUESTION.match(body, heading.end()) if heading else None
+    return match[0] if match else None
+
+
+def number_heading(body: str, question: str) -> str:
+    heading = QUESTION_HEADING.match(body)
+    if not heading or heading_id(body):
+        return body
+    return body[:heading.end()] + question + ". " + body[heading.end():]
 
 
 def counter_path() -> Path:
@@ -51,7 +65,8 @@ def github_seed(items: list[str]) -> tuple[int, list[str]]:
     return highest, sources
 
 
-def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: bool = True) -> int:
+def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: bool = True,
+           question_url: str | None = None) -> int:
     """Lock a stable sidecar across read, increment, and atomic replacement."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
@@ -69,8 +84,20 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
         if seed is not None:
             state["last_id"] = max(state["last_id"], seed[0])
             state["seed_sources"] = list(dict.fromkeys([*state["seed_sources"], *seed[1]]))
+        if question_url is not None:
+            if not allocate or not question_url:
+                raise ValueError("A confirmed question URL requires allocation")
+            assignments = state.setdefault("questions", {})
+            if (not isinstance(assignments, dict) or any(
+                    not isinstance(url, str) or type(number) is not int or not 0 < number <= state["last_id"]
+                    for url, number in assignments.items())):
+                raise ValueError("Invalid question assignments; preserve the counter before recovery")
+            if question_url in assignments:
+                return assignments[question_url]
         if allocate:
             state["last_id"] += 1
+        if question_url is not None:
+            state["questions"][question_url] = state["last_id"]
         descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".pending-", dir=path.parent)
         try:
             with os.fdopen(descriptor, "w") as stream:

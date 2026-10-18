@@ -25,6 +25,8 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 
 import github_api
 import github_comment
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "direction/scripts"))
+import question_id as question_counter
 from github_fixture_support import api_failure, api_success, with_call_stub
 
 
@@ -1101,7 +1103,88 @@ def test_recent_reconciliation_includes_clock_skew_boundary_and_paginates() -> N
     with_call_stub(callback, run, allow_retry=True)
 
 
+def test_question_numbering_follows_confirmed_write_and_repairs_same_assignment() -> None:
+    counter = question_counter
+    with tempfile.TemporaryDirectory() as directory, patch.object(counter, "counter_path", return_value=pathlib.Path(directory) / "counter.json"):
+        path = counter.counter_path()
+        seed = counter.update(path, seed=(50, ["fixture"]), allocate=False)
+        saved = {}
+        reject_create = True
+        reject_number = False
+
+        def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if endpoint == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "GET":
+                if "/comments/" in endpoint:
+                    return success(saved)
+                return success([saved] if saved else [])
+            if method == "POST":
+                # The initial write must not consume a number, even if rejected.
+                assert json.loads(path.read_text())["last_id"] == seed
+                if reject_create:
+                    return failure(422, {"message": "invalid"}, is_write=True)
+                saved.update(comment_body(1001, body=body["body"]))
+                saved["issue_url"] = "https://api.github.com/repos/owner/repo/issues/42"
+                return success(dict(saved))
+            assert method == "PATCH"
+            if reject_number:
+                return failure(422, {"message": "invalid"}, is_write=True)
+            saved["body"] = body["body"]
+            return success(dict(saved))
+
+        def run(_calls: list[dict[str, Any]]) -> None:
+            nonlocal reject_create, reject_number
+            text = "Owner question: Continue? Context mentions Q7."
+            try:
+                github_comment.comment("issue", 42, text, repo="owner/repo", gh_cmd="fake-gh")
+            except github_comment.CommentError:
+                pass
+            else:
+                raise AssertionError("rejected creation must fail")
+            assert json.loads(path.read_text())["last_id"] == seed
+            reject_create, reject_number = False, True
+            try:
+                github_comment.comment("pr", 42, text, repo="owner/repo", gh_cmd="fake-gh")
+            except github_comment.CommentError as error:
+                assert error.payload["url"] == saved["html_url"]
+                assigned = error.payload["question_id"]
+            else:
+                raise AssertionError("failed numbering must report the saved question")
+            assert assigned == f"Q{seed + 1}"
+            assert counter.heading_id(saved["body"]) is None
+            reject_number = False
+            result = github_comment.comment("issue", 42, text, repo="owner/repo", edit_comment=saved["id"], gh_cmd="fake-gh")
+            assert result["question_id"] == assigned
+            assert counter.heading_id(saved["body"]) == assigned
+            assert json.loads(path.read_text())["last_id"] == seed + 1
+            repeated = github_comment.comment("issue", 42, text, repo="owner/repo", dedupe_body=True, gh_cmd="fake-gh")
+            assert repeated["comment_action"] == "existing"
+            # Rewording an existing question keeps its heading ID.
+            github_comment.comment("pr", 42, "Director question: Continue now?", repo="owner/repo", edit_last=True, gh_cmd="fake-gh")
+            assert counter.heading_id(saved["body"]) == assigned
+            assert json.loads(path.read_text())["last_id"] == seed + 1
+
+        with_call_stub(callback, run)
+
+
+def test_numbered_questions_are_unchanged_without_counter_access() -> None:
+    for markdown in ("Owner question: Q12. Continue?", "**Director question:** Q13. Continue?"):
+        def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if endpoint == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "GET":
+                return success([])
+            assert github_comment._canonical_comment_body(body["body"]) == markdown
+            return success(comment_body(1001, body=body["body"]))
+
+        with patch.object(question_counter, "update", side_effect=AssertionError("already numbered")):
+            with_call_stub(callback, lambda _calls: github_comment.comment("issue", 42, markdown, repo="owner/repo", gh_cmd="fake-gh"))
+
+
 TESTS: list[Callable[[], None]] = [
+    test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
+    test_numbered_questions_are_unchanged_without_counter_access,
     test_recent_reconciliation_includes_clock_skew_boundary_and_paginates,
     test_append_filters_old_pages_but_dedupe_and_edit_last_keep_full_history,
     test_own_user_actor_is_resolved_before_edit_selection_and_dedupe,
