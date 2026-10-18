@@ -1252,6 +1252,12 @@ live sessions. The claim records the handoff's actual parent URL, writes only
 the child's claim/status/labels, and preserves the parent's waits and labels.
 The child's own waits and blockers and the retained PRs' holds still apply.
 Without `--handoff-comment`, resume stays on the claimed record.
+Both same-record and child successors also read the source issue's native
+children. Another child's claim for that same source or handoff refuses until
+an exact authored release or verified native session completion accounts for
+it; positive live-session evidence still refuses. Unrelated child work does
+not block the source. Cross-record inference applies only to ordinary
+successors. Conflict-only refresh continues to use the source's canonical issue.
 
 For an explicitly authorized **conflict-only refresh** of a finished session's
 PR, claim its **canonical open planning issue**, even when the brief names only
