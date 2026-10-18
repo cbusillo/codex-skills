@@ -34,7 +34,9 @@ def github_seed(items: list[str]) -> tuple[int, list[str]]:
     for item in items:
         if not ITEM.fullmatch(item):
             raise ValueError("--seed-from must be OWNER/REPO#NUMBER")
-        run = subprocess.run(["uv", "run", str(helper), "show", item, "--full"],
+        # Name the repository so the read never depends on the working directory.
+        repo, number = item.split("#")
+        run = subprocess.run(["uv", "run", str(helper), "--repo", repo, "show", number, "--full"],
                              capture_output=True, text=True, check=True, timeout=120)
         result = json.loads(run.stdout)
         if (result.get("ok") is not True or result.get("disposition") != "complete"

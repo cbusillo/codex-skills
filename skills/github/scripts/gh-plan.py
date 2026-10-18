@@ -6205,6 +6205,10 @@ def main() -> None:
     previous_repo = os.environ.get("GH_REPO")
     try:
         target_repo = command_repository(args)
+        if target_repo and not args.repo and getattr(args, "issue", None) and not repo_from_git():
+            # Without a GitHub checkout a qualified issue is the only repository
+            # the command names, so it is also the default for its other references.
+            args.repo = target_repo
         # Bind readers, probes and transport before any cache is prepared.
         if target_repo:
             os.environ["GH_REPO"] = target_repo
