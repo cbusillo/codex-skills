@@ -57,13 +57,13 @@ def outputs(records, harness):
             payload = record.get("payload") or {}
             if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
                 for value in envelopes(payload.get("output")):
-                    yield index, value
+                    yield index, {**value, "_tool_call_id": payload.get("call_id")}
         else:
             message = record.get("message")
             for block in (message.get("content") or []) if isinstance(message, dict) else []:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     for value in envelopes(block.get("content")):
-                        yield index, {**value, "_tool_error": block.get("is_error") is True}
+                        yield index, {**value, "_tool_call_id": block.get("tool_use_id"), "_tool_error": block.get("is_error") is True}
 
 
 def calls_and_results(record, harness):
@@ -88,8 +88,7 @@ def arguments(value):
     return value
 
 
-def shell_commands(name, value):
-    """Only shell tools execute commands; tool prompts and echo operands do not."""
+def shell_texts(name, value):
     value = arguments(value)
     if name in {"exec_command", "Bash"} and isinstance(value, dict):
         texts = [value.get("cmd") or value.get("command") or ""]
@@ -102,6 +101,12 @@ def shell_commands(name, value):
                 pass
     else:
         return
+    yield from texts
+
+
+def shell_commands(name, value):
+    """Only shell tools execute commands; tool prompts and echo operands do not."""
+    texts = shell_texts(name, value)
     for text in texts:
         if "<<" in text:
             continue  # Heredoc bodies are data, not checker invocations.
@@ -134,13 +139,48 @@ def script(argv):
     return ""
 
 
+def single_composed_call(value, method):
+    """Recognize the supported one-tool/one-output cell, without evaluating JS."""
+    native = arguments(value)
+    if not isinstance(native, str):
+        return False
+    native = re.sub(r"\A// @exec:[^\n]*\n", "", native)
+    literal = r'''(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+|true|false|null)'''
+    field = rf"\w+\s*:\s*{literal}"
+    obj = rf"\{{\s*(?:{field}(?:\s*,\s*{field})*\s*,?)?\s*\}}"
+    return re.fullmatch(rf"\s*text\(\s*await\s+tools\.{method}\(\s*{obj}\s*\)\s*\)\s*;?\s*", native) is not None
+
+
+def isolated_command(name, value, helper):
+    """One helper invocation, optionally piped to tee, with no other output source."""
+    commands, texts = list(shell_commands(name, value)), list(shell_texts(name, value))
+    if (not commands or script(commands[0]) != helper or len(commands) > 2
+            or any(argv[0] != "tee" for argv in commands[1:]) or len(texts) != 1
+            or "$(" in texts[0] or "`" in texts[0]):
+        return False
+    lexer = shlex.shlex(texts[0], posix=True, punctuation_chars=";&|<>\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    try:
+        operators = [t for t in lexer if t and all(c in ";&|<>\n" for c in t)]
+    except ValueError:
+        return False
+    if operators not in ([], ["|"]):
+        return False
+    native = arguments(value)
+    if name in {"exec", "functions.exec"} and isinstance(native, str):
+        return single_composed_call(value, "exec_command")
+    return True
+
+
 def ownership_activity(records, harness):
     """Missing/redirected ownership writes still require readback."""
+    no_writes = no_write_claims(records, harness)
     for index, record in enumerate(records):
         calls, results = calls_and_results(record, harness)
         for identifier, name, value in calls:
             for argv in shell_commands(name, value):
-                if (script(argv) == "gh-plan.py" and "claim" in argv
+                if (script(argv) == "gh-plan.py" and "claim" in argv and identifier not in no_writes
                         or script(argv) == "gh-pr.py" and "create" in argv
                         or argv[:3] == ["gh", "pr", "create"]):
                     yield index
@@ -168,6 +208,25 @@ def target_records(records, harness):
     return {(target["repository"], target["number"]) for target in claim_targets(records, harness)}
 
 
+def claim_commands(name, value):
+    return [argv for argv in shell_commands(name, value) if script(argv) == "gh-plan.py" and "claim" in argv]
+
+
+def no_write_claims(records, harness):
+    """A unique bound terminal refusal can prove that no ownership was written."""
+    reports, single = {}, set()
+    for record in records:
+        for identifier, name, value in calls_and_results(record, harness)[0]:
+            if len(claim_commands(name, value)) == 1 and isolated_command(name, value, "gh-plan.py"):
+                single.add(identifier)
+    for _, source, value in bound_outputs(records, harness, lambda n, v: bool(claim_commands(n, v)), isolated_polls=True):
+        if value.get("operation") == CLAIM_OPERATION:
+            reports.setdefault(source, []).append(value)
+    return {source for source, values in reports.items() if source in single and len(values) == 1
+            and values[0].get("ok") is False and values[0].get("write_outcome") == "not_started"
+            and not values[0].get("completed_steps") and not values[0].get("claim_comment")}
+
+
 def claim_targets(records, harness):
     """Resolve numeric operands with their own invocation's canonical receipts."""
     def claiming(name, value):
@@ -185,10 +244,13 @@ def claim_targets(records, harness):
         if isinstance(repo, str) and re.fullmatch(r"[\w.-]+/[\w.-]+", repo) and type(number) is int and number > 0:
             canonical.setdefault(source, set()).add((repo, number))
     targets = []
+    no_writes = no_write_claims(records, harness)
     for record in records:
         calls, _ = calls_and_results(record, harness)
         for identifier, name, value in calls:
-            commands = [argv for argv in shell_commands(name, value) if script(argv) == "gh-plan.py" and "claim" in argv]
+            if identifier in no_writes:
+                continue
+            commands = claim_commands(name, value)
             for argv in commands:
                 target = argv[argv.index("claim") + 1:]
                 if not target:
@@ -211,7 +273,7 @@ def claim_targets(records, harness):
     return targets
 
 
-def bound_outputs(records, harness, predicate, *, receipts=None):
+def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=False):
     """Bind native outputs and process polls to an actual tool invocation."""
     calls, processes = {}, {}
     parsed = {}
@@ -226,20 +288,29 @@ def bound_outputs(records, harness, predicate, *, receipts=None):
             if name in {"write_stdin", "wait", "functions.wait"} and isinstance(value, dict):
                 polls.update(str(value[k]) for k in ("session_id", "cell_id") if k in value)
             elif name in {"exec", "functions.exec"} and isinstance(value, str):
-                polls.update(re.findall(r'''\b(?:session_id|cell_id)\s*:\s*["']?([\w-]+)''', value))
+                if not isolated_polls or any(single_composed_call(value, method) for method in ("write_stdin", "wait")):
+                    polls.update(re.findall(r'''\b(?:session_id|cell_id)\s*:\s*["']?([\w-]+)''', value))
+            if isolated_polls and len(polls) > 1:
+                polls.clear()
             source = call_id if invoked else next((processes[p] for p in polls if p in processes), None)
             calls[call_id] = source
             if invoked:
                 yield index, source, {"_attempt": True}
-        source = next((calls[result] for result in results if calls.get(result)), None)
-        if source is not None:
+        for result in results:
+            source = calls.get(result)
+            if source is None:
+                continue
             yield index, source, {"_result": True}
             for value in parsed.get(index, []):
+                if value.get("_tool_call_id") != result:
+                    continue
                 if isinstance(value.get("session_id"), int):
                     processes[str(value["session_id"])] = source
                 yield index, source, value
             # Stock shell/orchestration tools may expose their handle as text.
-            raw = json.dumps(record)
+            raw = json.dumps((record.get("payload") or {}).get("output")) if harness == "codex" else json.dumps([
+                b.get("content") for b in (record.get("message") or {}).get("content", [])
+                if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == result])
             for handle in re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw):
                 processes[handle] = source
 
@@ -247,10 +318,22 @@ def bound_outputs(records, harness, predicate, *, receipts=None):
 def check_outputs(records, harness, *, receipts=None):
     """A saved report or tool prompt cannot attest a fresh executing check."""
     predicate = lambda name, value: any(script(argv) == "check_claims.py" for argv in shell_commands(name, value))
-    for index, _, value in bound_outputs(records, harness, predicate, receipts=receipts):
+    isolated = set()
+    for record in records:
+        calls, _ = calls_and_results(record, harness)
+        for identifier, name, value in calls:
+            if isolated_command(name, value, "check_claims.py"):
+                isolated.add(identifier)
+    parsed = list(outputs(records, harness)) if receipts is None else receipts
+    counts = {}
+    for index, value in parsed:
+        if value.get("operation") == CHECK_OPERATION:
+            counts[index] = counts.get(index, 0) + 1
+    for index, source, value in bound_outputs(records, harness, predicate, receipts=parsed, isolated_polls=True):
         if value.get("_attempt"):
             yield index, {"operation": CHECK_OPERATION, "_attempt": True}
-        elif value.get("operation") == CHECK_OPERATION and not value.get("_tool_error"):
+        elif (source in isolated and counts.get(index) == 1
+              and value.get("operation") == CHECK_OPERATION and not value.get("_tool_error")):
             yield index, value
 
 
@@ -337,7 +420,10 @@ def _acceptance(records, harness, session, histories):
         return {"clear": True, "reason": "no_claim_receipts"}
     keys = {(r["repository"], r["record"], r["claim_comment"]) for r in expected}
     last_claim = max([r["index"] for r in root_expected] + activity + [-1])
-    last_claim = max([last_claim, *(i for i, v in parsed if v.get("operation") == CLAIM_OPERATION
+    no_writes = no_write_claims(records, harness)
+    no_write_indices = {i for i, source, _ in bound_outputs(records, harness, lambda n, v: bool(claim_commands(n, v)), receipts=parsed)
+                        if source in no_writes}
+    last_claim = max([last_claim, *(i for i, v in parsed if v.get("operation") == CLAIM_OPERATION and i not in no_write_indices
                                   or v.get("operation") == "github.pr.create" and v.get("ok"))])
     checks = list(check_outputs(records, harness, receipts=parsed))
     last_attempt = max((i for i, v in checks if v.get("_attempt")), default=-1)

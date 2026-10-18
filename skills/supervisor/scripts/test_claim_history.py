@@ -71,6 +71,13 @@ class NativeHistoryTests(unittest.TestCase):
     def test_codex_delegation_without_github_work_keeps_the_local_exit_path(self):
         self.assertTrue(self.status()["safe_verdict"])
 
+    def test_indexed_children_are_read_without_a_recognized_top_level_spawn(self):
+        value = claim()
+        value["claim"]["session"] = "child"
+        self.write(self.root, records("codex", "root"))
+        self.write(self.child, records("codex", "child", value, parent="root"))
+        self.assertFalse(self.status()["safe_verdict"])
+
     def test_transitive_closed_edges_are_included(self):
         grand = self.home / "sessions" / "grand.jsonl"
         self.write(grand, records("codex", "grand", parent="child"))

@@ -58,6 +58,19 @@ class ClaimCloseoutTests(unittest.TestCase):
     def check(self):
         return helper.check_record(self.reader, REPO, 1, SESSION, ACTOR)
 
+    def test_a_confirmed_no_write_refusal_does_not_make_inventory_incomplete(self):
+        from test_claim_receipts import history, SESSION as native_session
+        for harness in ("codex", "claude"):
+            refused = {"operation": helper.claim_receipts.CLAIM_OPERATION, "ok": False,
+                       "write_outcome": "not_started", "completed_steps": []}
+            rows = history(harness, refused)
+            for row in rows: row["timestamp"] = SOURCE["claimed_at"]
+            entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+            with patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+                report = helper.check(self.reader, [], entry, ACTOR)
+            self.assertTrue(report["claims_clear"], report)
+            self.assertTrue(report["coverage"]["complete"])
+
     def test_held_claim_blocks_even_when_hygiene_and_transcript_say_safe(self):
         for harness in ("claude", "codex"):
             with self.subTest(harness=harness):

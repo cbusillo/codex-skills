@@ -52,8 +52,6 @@ def collect(path, harness, session, records, read, *, homes=None):
             raise ValueError("native delegated histories are unavailable")
         paths = [(session, child, None) for child in children]
     else:
-        if not delegated(records, harness):
-            return nodes
         with ExitStack() as stack:
             databases = []
             for home in codex_homes(path) if homes is None else homes:
@@ -97,7 +95,7 @@ def collect(path, harness, session, records, read, *, homes=None):
                             paths.append((child_id, child, parent))
                             seen_paths.add((child_id, child))
                         pending.append(child_id)
-                if not found_parent:
+                if not found_parent and (parent != session or delegated(records, harness)):
                     raise ValueError("native parent is absent from configured child indexes")
     for child_id, child, parent in paths:
         child_records = read(child, harness, child_id)

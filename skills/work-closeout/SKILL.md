@@ -274,7 +274,12 @@ and complete coverage permits an all-clear. Leave its JSON visible in the native
 tool output; use `tee` if a saved copy is needed. The Supervisor's safe-verdict
 reader requires that fresh invocation result to cover every native source claim.
 Claim invocations with redirected or missing outputs also require readback;
-absence of a receipt alone does not exempt them. Delegation alone uses local
+absence of a receipt alone does not exempt them. A single bound terminal claim
+failure with `ok: false`, `write_outcome: not_started`, no completed steps and
+no claim-comment receipt proves that invocation wrote no ownership; it needs
+no release or remote check by itself. Ambiguous batch output, missing output
+and partial or uncertain writes retain the disposition requirement.
+Delegation alone uses local
 child histories: with no ownership activity in parent or children, keep the
 existing N/A path without GitHub access. For claimed children, the parent checks
 all native IDs after each child finishes and disposes of its own ownership.
@@ -293,7 +298,16 @@ repository; batched commands need explicit repository operands because their
 shared native output cannot bind receipts to individual shell commands.
 Another invocation's receipt cannot fill a missing scope gap.
 A saved report read with `cat`, an earlier proof before another claim or PR was
-created, and final-answer prose do not satisfy shutdown acceptance. For long
+created, and final-answer prose do not satisfy shutdown acceptance. Run the
+checker as its own native shell invocation, optionally piped to `tee`, with
+one checker envelope visible in the output. Do not combine it or its process
+polls with commands that read saved reports; a mixed batch cannot attest
+freshness. In Codex composed execution, use one
+`text(await tools.exec_command({cmd: "CHECK COMMAND"}));` cell with literal
+arguments and one output. Poll with one
+`text(await tools.write_stdin({session_id: PROCESS_ID}));` cell, using the
+literal returned process ID. Keep cached output and other polls in separate
+native invocations. For long
 checks, use the shell tool's sufficient foreground timeout (at least 600 seconds
 on Claude Bash), or Codex's process handle and `write_stdin` polls. Keep all result
 JSON visible; do not background Claude Bash checks. Quiet no-GitHub child

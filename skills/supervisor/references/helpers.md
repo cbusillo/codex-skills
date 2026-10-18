@@ -138,6 +138,18 @@ Codex's native parent/child index and rollouts. Missing, active or changed child
 history refuses acceptance; fix the identified local evidence before asking
 for another verdict. There is no GitHub read merely because delegation occurred.
 
+If an interrupted child has no native turn end, use the harness's built-in
+resume for that exact child when available. Have it reconcile its ownership
+and finish a quiet native turn, then rerun the parent's check. Do not delete
+history, synthesize completion events, or treat a closed edge alone as proof
+that background work ended. Codex's native `turn_aborted` already marks a turn
+end for child activity; it does not authorize the parent's safe verdict.
+Claude interrupted/resumed or legacy sidechain histories remain unqualified;
+when native resume cannot repair missing evidence, keep conditional/no with
+the blocker and next actor. A child's partial trailing record is read strictly
+by the Supervisor: the running check may inspect a complete prefix, but that
+prefix alone cannot authorize acceptance. Wait for a complete, quiet history.
+
 If the check cannot clear, have the worker record conditional/no, the exact
 blocker, next actor and retained artifacts on the item. Preserve its process and
 terminal, stop repeating the nudge, and continue independent work or other

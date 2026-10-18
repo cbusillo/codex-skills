@@ -64,6 +64,93 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_claim_and_checker_polls_require_one_tool_and_one_output(self):
+        refused = {"operation": receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "not_started"}
+        checked = proof(("example/a", 1, 10))
+        for value in (refused, checked):
+            for cell in ('text(await tools.write_stdin({session_id:123})); text(await tools.exec_command({cmd:"cat saved.json"}));',
+                         'text(await tools.write_stdin({session_id:123})); text(await tools.write_stdin({session_id:456}));',
+                         'text(await tools.write_stdin({session_id:123})); text(load("saved-proof"));'):
+                rows = history("codex", value) if value is refused else history("codex", claim(), value)
+                rows[-3]["payload"]["output"] = "Process running with session ID 123"
+                poll = {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "functions.exec", "call_id": "poll", "input": cell}}
+                rows[-2:-2] = [poll, output(value, "codex", "poll")]
+                self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+            rows = history("codex", value) if value is refused else history("codex", claim(), value)
+            rows[-4]["payload"].update(name="functions.exec", arguments='text(await tools.exec_command({cmd:"uv run scripts/' + ('gh-plan.py claim 1' if value is refused else 'check_claims.py') + '"})); text(load("saved-proof"));')
+            self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+
+    def test_claude_parallel_result_blocks_keep_each_tools_output_separate(self):
+        refused = {"operation": receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "not_started"}
+        checked = {**proof(("example/a", 1, 10)), "harness": "claude"}
+        for value in (refused, checked):
+            rows = history("claude", value) if value is refused else history("claude", claim(), value)
+            rows[-3]["message"]["content"].append({"type": "tool_use", "id": "old", "name": "Bash", "input": {"command": "cat saved.json"}})
+            result = rows[-2]["message"]["content"]
+            result[0]["content"] = ""
+            result.append(output(value, "claude", "old")["message"]["content"][0])
+            self.assertFalse(session_record.summarize(rows, "claude")["safe_verdict"])
+
+    def test_bound_no_write_refusals_do_not_create_ownership_or_stale_a_proof(self):
+        for harness in ("codex", "claude"):
+            refused = {"operation": receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "not_started", "completed_steps": []}
+            for cause in ("claim_conflict", "invalid_branch", "missing_next_action", "argument_error"):
+                value = {**refused, "error_code": cause}
+                rows = history(harness, value)
+                self.assertEqual(list(receipts.ownership_activity(rows, harness)), [])
+                self.assertEqual(receipts.claim_targets(rows, harness), [])
+                self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+                checked = {**proof(("example/a", 1, 10)), "harness": harness}
+                self.assertTrue(session_record.summarize(history(harness, claim(), checked, value), harness)["safe_verdict"])
+            for change in ({"write_outcome": "unknown"}, {"write_outcome": None},
+                           {"completed_steps": ["post_claim"]}, {"claim_comment": {"url": "https://github.com/example/a/issues/1#issuecomment-10"}}):
+                self.assertFalse(session_record.summarize(history(harness, {**refused, **change}), harness)["safe_verdict"])
+            rows = history(harness, refused)
+            if harness == "codex": rows[2]["payload"]["call_id"] = "unrelated"
+            else: rows[2]["message"]["content"][0]["tool_use_id"] = "unrelated"
+            self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_saved_proof_in_a_check_batch_cannot_clear_redirected_later_ownership(self):
+        for harness in ("codex", "claude"):
+            saved = {**proof(("example/a", 1, 10)), "harness": harness}
+            for command in ("uv run scripts/check_claims.py; cat saved.json",
+                            "uv run scripts/check_claims.py || cat saved.json",
+                            "uv run scripts/check_claims.py; tee visible.json < saved.json"):
+                rows = history(harness, claim(), saved, claim(number=2), saved)
+                rows[6] = output({}, harness, "tool-2")  # Redirected ownership has no source key.
+                if harness == "codex": rows[7]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[7]["message"]["content"][0]["input"] = {"command": command}
+                self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+            rows = history(harness, claim(), saved)
+            rows[4] = output([{**saved, "claims_clear": False}, saved], harness, "tool-1")
+            self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+            rows[4] = output(saved, harness, "tool-1")
+            if harness == "codex": rows[3]["payload"]["arguments"] = json.dumps({"cmd": "uv run scripts/check_claims.py | tee proof.json"})
+            else: rows[3]["message"]["content"][0]["input"] = {"command": "uv run scripts/check_claims.py | tee proof.json"}
+            self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_composed_check_and_poll_batches_cannot_adopt_saved_output(self):
+        for cell in ('text(await tools.exec_command({cmd:"uv run scripts/check_claims.py"})); text(await tools.exec_command({cmd:"cat saved.json"}));',
+                     'text(await tools.exec_command({cmd:"uv run scripts/check_claims.py"})); text(await tools.exec_command({cmd:other}));'):
+            rows = history("codex", claim(), proof(("example/a", 1, 10)))
+            rows[3]["payload"].update(name="functions.exec", arguments=cell)
+            self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+        rows = history("codex", claim(), proof(("example/a", 1, 10)))
+        rows[4]["payload"]["output"] = "Process running with session ID 123"
+        poll = {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "functions.exec", "call_id": "poll", "input":
+                'text(await tools.write_stdin({session_id:123})); text(await tools.exec_command({cmd:"cat saved.json"}));'}}
+        rows[-2:-2] = [poll, output(proof(("example/a", 1, 10)), "codex", "poll")]
+        self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+
+    def test_a_no_write_receipt_in_a_batch_cannot_exempt_an_opaque_claim(self):
+        for harness in ("codex", "claude"):
+            refused = {"operation": receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "not_started"}
+            rows = history(harness, refused)
+            command = "uv run scripts/gh-plan.py claim 1 > claim.json; cat refused.json"
+            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+            self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+
     def test_batched_numeric_claims_cannot_share_one_canonical_receipt(self):
         command = "cd /local && uv run /catalog/gh-plan.py claim 2; cd /foreign && uv run /catalog/gh-plan.py claim 2 > claim.json"
         for harness in ("codex", "claude"):
