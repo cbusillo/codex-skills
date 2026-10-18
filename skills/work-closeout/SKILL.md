@@ -319,6 +319,11 @@ checks collected by later polls. Every ownership command must have a terminal
 native result before the check launches; a process handle is still pending.
 Every observed process handle in an ownership batch must finish; one terminal
 poll cannot clear other processes from that batch.
+Historical Codex cells containing only literal, serial `text(await tools...)`
+calls can bind each ownership poll to its own complete native result wrapper.
+Unrelated read output and nested saved JSON cannot complete that writer. A
+cell with hidden, computed, missing or ambiguous results retains the refusal;
+checker acceptance still requires the isolated check and poll forms above.
 Keep ownership results visible: use one foreground shell command or one
 `text(await tools.exec_command(...));` cell. Do not launch ownership commands
 with shell `&` or drop an inner execution result. A detached writer with no

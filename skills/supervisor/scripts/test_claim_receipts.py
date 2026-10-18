@@ -77,6 +77,51 @@ def file_execution_histories(harness):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_dynamic_read_does_not_borrow_ownership_words_from_another_command(self):
+        rows = history("codex", {})
+        rows[1]["payload"].update(name="functions.exec", arguments=
+            'for (const ref of [1, 2]) { text(await tools.exec_command({cmd:`uv run gh-plan.py show ${ref} --full`})); }'
+            'text(await tools.exec_command({cmd:"rg claim docs.md"}));')
+        self.assertFalse(receipts.ownership_state(rows, "codex")["indices"])
+
+    def test_ownership_help_is_read_only_on_both_harnesses(self):
+        for harness in ("codex", "claude"):
+            for command in ('uv run gh-plan.py claim --help', 'uv run gh-pr.py create --help', 'gh pr create --help'):
+                rows = history(harness, {})
+                if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                self.assertFalse(receipts.ownership_state(rows, harness)["indices"], command)
+                self.assertFalse(receipts.claim_targets(rows, harness), command)
+            rows = history(harness, {})
+            command = 'gh pr create --title --help'
+            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+            self.assertTrue(receipts.ownership_state(rows, harness)["indices"])
+
+    def test_ownership_completion_does_not_require_wrappers_for_unrelated_reads(self):
+        rows = history("codex", claim())
+        rows[1]["payload"].update(name="functions.exec", arguments=
+            'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo example/a claim 1"}));'
+            'text((await tools.exec_command({cmd:"cat docs.md"})).output);')
+        rows[2] = output({"exit_code": 0, "output": json.dumps(claim())}, "codex", "tool-0")
+        self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
+
+    def test_visible_serial_poll_results_bind_only_their_own_native_wrapper(self):
+        for writer_finished in (False, True):
+            rows = history("codex", claim())
+            rows[2] = output({"session_id": 123, "output": ""}, "codex", "tool-0")
+            poll = {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "functions.exec", "call_id": "poll", "input":
+                'text(await tools.exec_command({cmd:"cat docs.md"}));'
+                'text(await tools.write_stdin({session_id:123,chars:""}));'}}
+            # The first read may print an old terminal/check report. Only the
+            # second native wrapper describes the actual writer's process.
+            read = {"exit_code": 0, "output": json.dumps({"exit_code": 0, "output": json.dumps(proof())})}
+            writer = {"exit_code": 0, "output": json.dumps(claim())} if writer_finished else {"session_id": 123, "output": ""}
+            result = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "poll", "output": [
+                {"type": "input_text", "text": json.dumps(value)} for value in (read, writer)]}}
+            rows[-2:-2] = [poll, result]
+            self.assertEqual(receipts.ownership_state(rows, "codex")["pending"], not writer_finished)
+
     def test_file_provenance_covers_execution_in_another_native_history(self):
         for harness in ("codex", "claude"):
             nodes = file_execution_histories(harness)

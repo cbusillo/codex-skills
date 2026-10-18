@@ -192,7 +192,7 @@ def opaque_ownership(name, value):
     if name in {"exec", "functions.exec"} and isinstance(value, str) and "tools.exec_command" in value:
         unparsed = SHELL_FIELD.sub("", value)
         if re.search(r"\b(?:cmd|command)\s*:|\{\s*(?:cmd|command)\s*[,}]", unparsed):
-            return OWNERSHIP_TEXT.search(value) is not None
+            return OWNERSHIP_TEXT.search(unparsed) is not None
     return False
 
 
@@ -313,16 +313,85 @@ def script(argv):
     return ""
 
 
-def single_composed_call(value, method):
-    """Recognize the supported one-tool/one-output cell, without evaluating JS."""
+def composed_calls(value):
+    """Read only a complete sequence of visible, literal, serial native calls."""
     native = arguments(value)
     if not isinstance(native, str):
-        return False
+        return []
     native = re.sub(r"\A// @exec:[^\n]*\n", "", native)
     literal = r'''(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+|true|false|null)'''
     field = rf"\w+\s*:\s*{literal}"
     obj = rf"\{{\s*(?:{field}(?:\s*,\s*{field})*\s*,?)?\s*\}}"
-    return re.fullmatch(rf"\s*text\(\s*await\s+tools\.{method}\(\s*{obj}\s*\)\s*\)\s*;?\s*", native) is not None
+    call = rf"text\(\s*(?P<paren>\()?\s*await\s+tools\.(?P<method>exec_command|write_stdin|wait)\(\s*(?P<args>{obj})\s*\)\s*(?(paren)\)\s*\.output)\s*\)\s*;?\s*"
+    found, cursor = [], 0
+    while cursor < len(native.rstrip()):
+        match = re.compile(r"\s*" + call).match(native, cursor)
+        if match is None:
+            return []
+        fields = {}
+        for item in re.finditer(rf"(\w+)\s*:\s*({literal})", match["args"]):
+            raw = item[2]
+            try:
+                fields[item[1]] = {"true": True, "false": False, "null": None}.get(raw) if raw in {"true", "false", "null"} else ast.literal_eval(raw)
+            except (SyntaxError, ValueError):
+                return []
+        found.append((match["method"], fields, bool(match["paren"])))
+        cursor = match.end()
+    return found
+
+
+def single_composed_call(value, method):
+    calls = composed_calls(value)
+    return len(calls) == 1 and calls[0][0] == method and not calls[0][2]
+
+
+def serial_ownership_records(records):
+    """Bind visible serial call results before tracking ownership process handles.
+
+    Never split a computed/hidden call or borrow nested stdout as a native result.
+    Checker receipts still use their separate isolated-invocation contract.
+    """
+    expanded, positions, launches = [], [], {}
+    for index, record in enumerate(records):
+        calls, results = calls_and_results(record, "codex")
+        for identifier, name, value in calls:
+            serial = composed_calls(value) if name in {"exec", "functions.exec"} else []
+            if len(serial) > 1 and not any(stdout for _, _, stdout in serial):
+                launches[identifier] = serial
+        split = None
+        for identifier in results:
+            if identifier not in launches:
+                continue
+            raw = (record.get("payload") or {}).get("output")
+            wrappers = []
+            for block in raw if isinstance(raw, list) else []:
+                if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+                    continue
+                try:
+                    value = json.loads(block["text"])
+                except ValueError:
+                    continue
+                if isinstance(value, dict) and not value.get("operation") and (type(value.get("exit_code")) is int or type(value.get("session_id")) is int):
+                    wrappers.append(value)
+            if len(wrappers) == len(launches[identifier]):
+                split = []
+                for part, ((method, args, _), wrapper) in enumerate(zip(launches[identifier], wrappers)):
+                    source = f"{identifier}:serial:{part}"
+                    split.extend([
+                        {"payload": {"type": "function_call", "name": method, "call_id": source, "arguments": json.dumps(args)}},
+                        {"payload": {"type": "function_call_output", "call_id": source, "output": json.dumps(wrapper)}}])
+        if split is not None:
+            expanded.extend(split)
+            positions.extend([index] * len(split))
+        else:
+            expanded.append(record)
+            positions.append(index)
+    # Remove only launches whose result was actually split. An incomplete cell
+    # retains the original pending/opaque behavior.
+    split_ids = {r["payload"]["call_id"].split(":serial:")[0] for r in expanded if ":serial:" in str(r.get("payload", {}).get("call_id", ""))}
+    kept = [(r, p) for r, p in zip(expanded, positions)
+            if not any(identifier in split_ids for identifier, _, _ in calls_and_results(r, "codex")[0])]
+    return [r for r, _ in kept], [p for _, p in kept]
 
 
 def isolated_command(name, value, helper):
@@ -366,11 +435,12 @@ def ownership_activity(records, harness):
 
 def ownership_state(records, harness, *, file_candidates=()):
     """Track launches through their terminal native result, including process polls."""
+    positions = list(range(len(records)))
+    if harness == "codex":
+        records, positions = serial_ownership_records(records)
     no_writes = no_write_claims(records, harness)
     def owning(name, value):
-        return opaque_ownership(name, value) or any(script(argv) == "gh-plan.py" and "claim" in argv
-                   or script(argv) == "gh-pr.py" and "create" in argv
-                   or argv[:3] == ["gh", "pr", "create"] for argv in shell_commands(name, value))
+        return opaque_ownership(name, value) or any(ownership_command(argv) for argv in shell_commands(name, value))
     indices, pending, events = [], set(), {}
     for index, source, value in bound_outputs(records, harness, owning, isolated_polls=True,
                                              opaque_calls=file_ownership_executions(records, harness, file_candidates=file_candidates)):
@@ -402,7 +472,18 @@ def ownership_state(records, harness, *, file_candidates=()):
                     if not any(source in owners for owners in tasks.values()):
                         pending.discard(source)
                         indices.append(index)
-    return {"indices": indices, "pending": bool(pending)}
+    return {"indices": [positions[i] for i in indices], "pending": bool(pending)}
+
+
+def ownership_command(argv):
+    verb = "claim" if script(argv) == "gh-plan.py" else "create"
+    owning = (script(argv) == "gh-plan.py" and "claim" in argv
+              or script(argv) == "gh-pr.py" and "create" in argv
+              or argv[:3] == ["gh", "pr", "create"])
+    # Only the observed bare action help form is exempt. Elsewhere a flag-like
+    # word may be an option value rather than a help request.
+    help_only = argv[-2:] in ([verb, "--help"], [verb, "-h"]) and argv.count(verb) == 1
+    return owning and not help_only
 
 
 def target_repositories(records, harness):
@@ -428,7 +509,7 @@ def target_records(records, harness):
 
 
 def claim_commands(name, value):
-    return [argv for argv in shell_commands(name, value) if script(argv) == "gh-plan.py" and "claim" in argv]
+    return [argv for argv in shell_commands(name, value) if script(argv) == "gh-plan.py" and ownership_command(argv)]
 
 
 def no_write_claims(records, harness):
@@ -449,7 +530,7 @@ def no_write_claims(records, harness):
 def claim_targets(records, harness):
     """Resolve explicit references; bind unscoped numbers to their own receipts."""
     def claiming(name, value):
-        return any(script(argv) == "gh-plan.py" and "claim" in argv for argv in shell_commands(name, value))
+        return bool(claim_commands(name, value))
     canonical = {}
     for _, source, value in bound_outputs(records, harness, claiming):
         if value.get("operation") != CLAIM_OPERATION:
@@ -532,7 +613,10 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                     except ValueError:
                         opaque.add(source)
                 if name in {"exec", "functions.exec"}:
-                    required[source] = len(list(shell_texts(name, value)))
+                    serial = composed_calls(value)
+                    required[source] = (sum(not stdout for _, _, stdout in serial)
+                        if serial and not any(stdout and predicate(method, args) for method, args, stdout in serial)
+                        else len(list(shell_texts(name, value))))
                 yield index, source, {"_attempt": True}
         for result in results:
             source = calls.get(result)
