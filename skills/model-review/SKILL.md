@@ -91,6 +91,9 @@ budget, and put both results in the PR's review note.
    review stops with an EPERM refusal there. The Supervisor then runs the review
    from its terminal session against the task worktree, and the authoring session
    weighs the findings ([#2069](https://github.com/cbusillo/codex-skills/issues/2069)).
+   For this route, post the [Supervisor review request](../supervisor/references/helpers.md#worker-review-request)
+   on the PR before waiting; read that section for the canonical format and
+   author follow-through.
    No fixed review-home
    export is needed in a Supervisor launch file. Google uses the account reader's
    single existing agy login binding, without an account override.
