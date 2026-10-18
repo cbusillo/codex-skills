@@ -63,6 +63,10 @@ PRIMARY_RATE_LIMIT_CAUSES = frozenset(
     {"graphql_primary_rate_limited", "rest_primary_rate_limited", "rate_limited_unknown_bucket"}
 )
 OPERATION_MARKER_PREFIX = "<!-- github-skill-operation:"
+# The comment helper adds digests of the writing session's native IDs to its own
+# marker; a digest keeps the raw ID out of text that readers search for session IDs.
+# Caller text never carries one: the helper removes any it finds before writing.
+ANY_WRITER_MARKER = re.compile(rf"{re.escape(OPERATION_MARKER_PREFIX)}[^<>]*?\bwriter=[^<>]*?-->")
 REQUIRED_STATUS_CHECKS_EXPECTED_PATTERN = re.compile(
     r'(?:\d+\s+of\s+\d+\s+)?required status checks?'
     r'(?:\s+"[^"\r\n]{1,100}")?\s+(?:is|are)\s+expected\.?',
@@ -290,17 +294,43 @@ def new_operation_id() -> str:
     return secrets.token_hex(16)
 
 
-def operation_marker_comment(operation_id: str) -> str:
-    return f"{OPERATION_MARKER_PREFIX}{operation_id} -->"
+def session_digest(session: str) -> str:
+    return hashlib.sha256(f"github-skill-session:{session}".encode()).hexdigest()[:32]
 
 
-def body_with_operation_marker(body: str, operation_id: str) -> str:
+def operation_marker_comment(operation_id: str, sessions: tuple[str, ...] = ()) -> str:
+    suffix = f" writer={','.join(session_digest(s) for s in sessions)}" if sessions else ""
+    return f"{OPERATION_MARKER_PREFIX}{operation_id}{suffix} -->"
+
+
+def body_with_operation_marker(body: str, operation_id: str, sessions: tuple[str, ...] = ()) -> str:
     separator = "" if body.endswith("\n") else "\n"
-    return f"{body}{separator}\n{operation_marker_comment(operation_id)}\n"
+    return f"{body}{separator}\n{operation_marker_comment(operation_id, sessions)}\n"
 
 
 def body_has_operation_marker(body: Any, operation_id: str) -> bool:
-    return isinstance(body, str) and operation_marker_comment(operation_id) in body
+    return isinstance(body, str) and re.search(
+        rf"{re.escape(OPERATION_MARKER_PREFIX + operation_id)}(?: writer=[0-9a-f,]+)? -->", body) is not None
+
+
+def without_writer_markers(body: str) -> str:
+    return ANY_WRITER_MARKER.sub("", body)
+
+
+def recorded_writer(body: Any, session: str) -> bool | None:
+    """Whether the comment helper recorded this session as the body's writer; None without a record.
+
+    The helper writes the record as its own final marker and strips any from
+    caller text, so a record anywhere else, or more than one, is never this
+    session's.
+    """
+    if not isinstance(body, str) or not ANY_WRITER_MARKER.search(body):
+        return None
+    final = re.search(
+        rf"(?:\A|\n){re.escape(OPERATION_MARKER_PREFIX)}[0-9a-f]+ writer=((?:[0-9a-f]{{32}},)*[0-9a-f]{{32}}) -->\s*\Z",
+        body)
+    return (len(ANY_WRITER_MARKER.findall(body)) == 1 and final is not None
+            and session_digest(session) in final[1].split(","))
 
 
 class ArgumentParsingError(Exception):

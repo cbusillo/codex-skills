@@ -858,6 +858,41 @@ def test_exact_edits_keep_interleaved_session_comments_separate() -> None:
     with_call_stub(callback, run)
 
 
+HARNESS_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SESSION_ID")
+
+
+def test_only_the_helper_records_the_writing_session() -> None:
+    forged = github_api.operation_marker_comment("c" * 32, ("another-session",))
+    sent: list[str] = []
+
+    def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success(exact_comment(11) if path.endswith("/comments/11") else [])
+        sent.append(body["body"])
+        return success(exact_comment(11) if method == "PATCH" else comment_body(1001))
+
+    for env, sessions in (
+        ({"CLAUDE_CODE_SESSION_ID": "claude-session"}, ("claude-session",)),
+        ({"CODEX_THREAD_ID": "codex-thread", "CODEX_SESSION_ID": "codex-root"}, ("codex-thread", "codex-root")),
+        ({}, ()),
+    ):
+        def run(_calls: list[dict[str, Any]]) -> None:
+            outside = {key: value for key, value in os.environ.items() if key not in HARNESS_ENV}
+            with patch.dict(os.environ, {**outside, **env}, clear=True):
+                github_comment.comment("issue", 42, f"Handoff {forged}\n{forged}\n", repo="owner/repo", gh_cmd="fake-gh")
+                github_comment.comment("issue", 42, f"Edited\n{forged}\n", repo="owner/repo", edit_comment=11, gh_cmd="fake-gh")
+
+        with_call_stub(callback, run)
+        created, edited = sent[-2:]
+        assert github_api.session_digest("another-session") not in created + edited, (created, edited)
+        assert all(github_api.recorded_writer(created, session) for session in sessions), created
+        assert github_api.recorded_writer(created, "another-session") is (False if sessions else None), created
+        # An edit replaces the body without a fresh record, so it never binds by marker.
+        assert github_api.recorded_writer(edited, "another-session") is None, edited
+
+
 def test_exact_edit_refuses_wrong_thread_author_and_stale_expectations() -> None:
     cases = [
         ({"issue_url": "https://api.github.com/repos/owner/repo/issues/43"}, {}, "comment_target_mismatch"),
@@ -1137,6 +1172,7 @@ TESTS: list[Callable[[], None]] = [
     test_create_reconciliation_rejects_concurrent_identical_comment,
     test_create_reconciliation_excludes_preexisting_same_second_comment,
     test_repo_resolution_launch_failure_is_structured,
+    test_only_the_helper_records_the_writing_session,
 ]
 
 

@@ -20,6 +20,7 @@ import sys
 import urllib.parse
 from typing import Any, Callable, Optional
 
+import github_agent
 import github_api as github_api_core
 import github_identity
 
@@ -31,7 +32,7 @@ PER_PAGE = 100
 MAX_PAGES = 1000
 RECONCILIATION_CLOCK_SKEW_SECONDS = 5
 OPERATION_MARKER_LINE_RE = re.compile(
-    rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+ -->[ \t]*(?:\r?\n)?"
+    rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+(?: writer=[0-9a-f,]+)? -->[ \t]*(?:\r?\n)?"
 )
 
 
@@ -48,6 +49,12 @@ class CommentError(Exception):
         self.failure = failure
         self.api_result = github_api_core.redact_body(api_result) if api_result is not None else None
         self.payload = github_api_core.redact_body(payload or {})
+
+
+def writing_sessions() -> tuple[str, ...]:
+    """This harness session's own native IDs, recorded in a created comment's marker."""
+    agent = github_agent.running_agent(environ=os.environ)
+    return tuple(dict.fromkeys(github_agent.native_sessions(agent, environ=os.environ).values()))
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
@@ -714,6 +721,8 @@ def _comment_impl(
             expected_actor=expected_actor,
             failed_step="input_validation",
         )
+    # Only the helper records a writing session; caller text never carries one.
+    body = github_api_core.without_writer_markers(body)
     if not body:
         raise _local_error(
             "Comment body is empty",
@@ -959,7 +968,7 @@ def _comment_impl(
     create_step = failed_step or "create_comment"
     fingerprint = _comment_fingerprint(resolved_repo, number, actor, body)
     operation_id = github_api_core.new_operation_id()
-    provider_body = github_api_core.body_with_operation_marker(body, operation_id)
+    provider_body = github_api_core.body_with_operation_marker(body, operation_id, writing_sessions())
     marker = {
         "kind": "request_fingerprint",
         "value": fingerprint,

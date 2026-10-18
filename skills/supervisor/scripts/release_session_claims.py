@@ -28,6 +28,7 @@ from close_ttys import idle_terminal_command, inventory
 
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
+import github_api
 import github_identity
 import github_plan_claim as claim
 import github_plan_release as release
@@ -286,9 +287,11 @@ def discover_handoff(reader, entry, actor):
             for child in value:
                 yield from strings(child)
     # Shared-bot comments merely read by the source are not its handoff. Authorship
-    # comes only from a positive record: the comment helper's own JSON receipt printed
-    # by a comment-write call, read back from GitHub below, or a comment that names
-    # the exact session. A URL that a write call merely prints is not such a record.
+    # comes only from a positive record, read back from GitHub below: the session
+    # marker the comment helper recorded in the comment, the helper's own JSON
+    # receipt printed by a comment-write call, or a comment that names the exact
+    # session. A URL that a write call merely prints is not such a record, and a
+    # comment the helper recorded for another session is never this one's.
     outputs = []
     writes = set()
     # Heredoc bodies are data (often a comment body with apostrophes), not commands.
@@ -434,10 +437,15 @@ def discover_handoff(reader, entry, actor):
                 continue
             raise
         text = evidence.get("body") or ""
+        verified = url in entry.get("_handoffs", [])
+        writer = github_api.recorded_writer(text, entry["session_id"])
+        if writer is False and not verified:
+            continue
         if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
                 and not text.startswith("Claimed by ") and not claim.records(text)
-                and (url in entry.get("_handoffs", []) or url in receipt_urls or entry["session_id"] in text)):
-            provenance = ("Supervisor verified inventory handoff" if url in entry.get("_handoffs", [])
+                and (verified or writer or url in receipt_urls or entry["session_id"] in text)):
+            provenance = ("Supervisor verified inventory handoff" if verified
+                          else "helper-recorded session marker" if writer
                           else "native comment-write receipt" if url in receipt_urls else "exact-ID handoff")
             return {**entry, "handoff_url": url, "_handoff_provenance": provenance}, evidence
     # A summary without a transcript URL must name the exact native ID.
@@ -456,7 +464,8 @@ def discover_handoff(reader, entry, actor):
         comments = cache[(repo, number)]
         for evidence in reversed(comments):
             text = evidence.get("body") or ""
-            if ((evidence.get("user") or {}).get("login") == actor and re.search(rf"(?im)^(?:Native[ _-]*)?Session(?:[ _-]*ID)?[ \t]*[:=][ \t]*{re.escape(entry["session_id"])}[ \t]*$", text)
+            if ((evidence.get("user") or {}).get("login") == actor and github_api.recorded_writer(text, entry["session_id"]) is not False
+                    and re.search(rf"(?im)^(?:Native[ _-]*)?Session(?:[ _-]*ID)?[ \t]*[:=][ \t]*{re.escape(entry["session_id"])}[ \t]*$", text)
                     and release.related_sessions_match(text, entry["session_id"])
                     and not text.startswith("Claimed by ") and not claim.records(text)
                     and re.search(r"(?im)^(?:\*\*)?(?:Safe to exit: yes|Ready for the merge train|Engineering ready|(?:Engineering )?handoff\b|handed off\b|engineering complete\b|completed\b)", text)
@@ -475,6 +484,7 @@ def discover_handoff(reader, entry, actor):
             continue
         parsed = claim.records(source.get("body") or "")
         if (len(parsed) == 1 and parsed[0]["session"] == entry["session_id"]
+                and github_api.recorded_writer(source.get("body") or "", entry["session_id"]) is not False
                 and release.stamp(source.get("updated_at") or source.get("created_at")) <= release.stamp(entry["ended_at"])):
             url = source.get("html_url") or f"https://github.com/{row['repo']}/issues/{row['issue']}#issuecomment-{source['id']}"
             checked = handoff(reader, {**entry, "handoff_url": url}, actor)

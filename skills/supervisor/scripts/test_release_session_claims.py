@@ -352,6 +352,12 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
 
+    def written_entry(self, records, body):
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        self.reader.paged_json.return_value = []
+        self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": body}
+        return {**self.entry, "handoff_url": None}
+
     def codex_write(self, command, output, body="Engineering handoff\nReady for merge"):
         # Each call starts from the base transcript, so subtests stay independent.
         self.transcript.write_text(self.base_transcript)
@@ -362,10 +368,7 @@ class ReleaseTests(unittest.TestCase):
             {"timestamp": "2026-01-01T00:00:01.200Z", "payload": {"type": "function_call_output", "call_id": "write",
                 "output": output}},
         ]
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        self.reader.paged_json.return_value = []
-        self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": body}
-        return {**self.entry, "handoff_url": None}
+        return self.written_entry(records, body)
 
     def test_a_printed_url_binds_only_through_a_receipt_or_the_exact_session(self):
         # The printed comment's body is exactly what the write sent, but output text is not a record of the write.
@@ -390,6 +393,52 @@ class ReleaseTests(unittest.TestCase):
                                          body=f"Engineering handoff\nSession: {SOURCE['session']}")
                 found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
                 self.assertEqual(found["_handoff_provenance"], "exact-ID handoff")
+
+    def claude_write(self, command, output, body):
+        self.transcript.write_text(self.base_transcript)
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[1:1] = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "write", "content": output, "is_error": False}]}},
+        ]
+        return self.written_entry(records, body)
+
+    def test_a_summarized_write_binds_only_through_its_own_session_marker(self):
+        # The helper records the writer's session in its final marker; caller text never carries one.
+        def marked(text, *sessions):
+            return helper.github_api.body_with_operation_marker(text, "ab" * 16, sessions)
+        handoff = "Engineering handoff\nReady for merge"
+        command = "gh-comment -R test/a issue 1 --body-file c.md | jq -r .comment.url"
+        url = self.entry["handoff_url"]
+        for harness in (self.codex_write, self.claude_write):
+            with self.subTest(harness.__name__, body="own marker"):
+                found, _ = helper.discover_handoff(self.reader, harness(command, url, marked(handoff, "root", SOURCE["session"])), ACTOR)
+                self.assertEqual(found["_handoff_provenance"], "helper-recorded session marker")
+            unbound = {
+                "missing marker": handoff,
+                "another session's marker": marked(f"{handoff}\nSession: {SOURCE['session']}", "another-session"),
+                "marker in caller text": marked(marked(handoff, SOURCE["session"]) + "Signed", "another-session"),
+                "caller marker without the helper's": marked(handoff, SOURCE["session"]) + "Signed",
+                "two own markers": marked(marked(handoff, SOURCE["session"]), SOURCE["session"]),
+            }
+            for name, body in unbound.items():
+                with self.subTest(harness.__name__, body=name):
+                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                        helper.discover_handoff(self.reader, harness(command, url, body), ACTOR)
+
+    def test_exact_session_summary_written_by_another_session_does_not_bind(self):
+        summary = f"Engineering handoff\nSession: {SOURCE['session']}"
+        entry = {**self.entry, "handoff_url": None, "_handoff_thread": ("test/a", 1)}
+        other = helper.github_api.body_with_operation_marker(summary, "ab" * 16, ("another-session",))
+        self.reader.paged_json.return_value = [{**comment(10, other), "html_url": self.entry["handoff_url"]}]
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, entry, ACTOR)
+        own = helper.github_api.body_with_operation_marker(summary, "ab" * 16, (SOURCE["session"],))
+        self.reader.paged_json.return_value = [{**comment(10, own), "html_url": self.entry["handoff_url"]}]
+        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+        self.assertEqual(found["_handoff_provenance"], "exact-ID summary")
 
     def test_full_write_receipt_survives_shell_outside_the_heredoc_parser(self):
         # Each write follows syntax the heredoc parser once refused, so the call's receipt was ignored.

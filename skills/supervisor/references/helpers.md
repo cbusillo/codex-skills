@@ -1674,12 +1674,19 @@ the matched PID/TTY and Supervisor-owned ledger entry.
 
 Missing handoffs are discovered from the native final response or recorded
 comment-write receipts, then verified against live comment author and dates.
-Authorship comes only from a positive record of the write: the comment helper's
-full JSON receipt, printed by a recognized comment-write call and read back from
-GitHub, or a comment that names the exact native session ID. A comment URL that a
-write call merely prints, alone or summarized (for example through `jq -r
-.comment.url`), binds only when that comment names the exact session. Its body is
-never matched against what the transcript appears to have sent. Shell syntax
+Authorship comes only from a positive record of the write, read back from
+GitHub: the writer marker the comment helper records, the helper's full JSON
+receipt printed by a recognized comment-write call, or a comment that names the
+exact native session ID. When the helper creates a comment, it adds digests of the
+writing session's native IDs (`CLAUDE_CODE_SESSION_ID`, or Codex's
+`CODEX_THREAD_ID` and `CODEX_SESSION_ID`) to its operation marker. It strips any
+such record from caller text, and an edit records none. A comment URL that a
+write call prints, alone or summarized (for example through `jq -r
+.comment.url`), binds when that comment's final marker records this session, or
+when the comment names the exact session. A comment whose marker records another
+session, or that has more than one marker or one before its end, never binds to
+this session by transcript or summary. Its body is never matched against what
+the transcript appears to have sent. Shell syntax
 outside the heredoc parser, such as a here-string, a hyphenated delimiter or `<<`
 inside quotes, does not hide a later write's receipt, and text after an
 unsupported heredoc is never read as commands. Other text the session typed is
