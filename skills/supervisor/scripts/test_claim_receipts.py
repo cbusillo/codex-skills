@@ -64,6 +64,49 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_shorthand_claim_detachment_cannot_hide_behind_the_hash(self):
+        command = 'uv run /catalog/gh-plan.py claim client/repo#7 > claim.json 2>&1 &'
+        for harness in ("codex", "claude"):
+            rows = history(harness, claim(), {**proof(), "harness": harness})
+            if harness == "codex":
+                rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else:
+                rows[1]["message"]["content"][0]["input"] = {"command": command}
+            rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+            self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+            self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_shorthand_claim_cannot_adopt_a_saved_no_write_refusal(self):
+        refused = {"operation": receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "not_started"}
+        for harness in ("codex", "claude"):
+            rows = history(harness, refused)
+            command = 'uv run /catalog/gh-plan.py claim client/repo#7 > claim.json; cat refused.json'
+            if harness == "codex":
+                rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else:
+                rows[1]["message"]["content"][0]["input"] = {"command": command}
+            self.assertFalse(receipts.no_write_claims(rows, harness))
+            self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_hash_references_preserve_scope_and_shell_comments_remain_data(self):
+        for harness in ("codex", "claude"):
+            for scope, ref in (('', 'client/repo#7'), ('--repo client/repo ', "'#7'"), ('--repo client/repo ', '"#7"'),
+                               ('', '\\\n client/repo#7'), ('--repo \\\n client/repo ', "'#7'"), ('', '"client/repo\\\n#7"')):
+                rows = history(harness, claim())
+                command = 'uv run /catalog/gh-plan.py ' + scope + 'claim ' + ref + ' > claim.json'
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({}, harness, "tool-0")
+                self.assertEqual(receipts.target_records(rows, harness), {("client/repo", 7)})
+                self.assertIn("client/repo", receipts.target_repositories(rows, harness))
+        for command in ('echo quiet # ; uv run /catalog/gh-plan.py claim client/repo#7 &',
+                        'echo "#" # ; uv run /catalog/gh-plan.py claim client/repo#7 &'):
+            self.assertFalse(receipts.claim_commands("Bash", {"command": command}))
+        command = 'uv run /catalog/gh-plan.py claim client/repo#7 # ignored &'
+        self.assertTrue(receipts.isolated_command("Bash", {"command": command}, "gh-plan.py"))
+
     def test_hidden_composed_ownership_results_cannot_clear_pending_writers(self):
         for cell, result in (
             ('await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 5", yield_time_ms:1000});', ""),

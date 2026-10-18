@@ -33,6 +33,38 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_shorthand_redirected_client_claim_is_inventoried_with_its_own_actor(self):
+        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
+        foreign, number, client_actor = "client/repo", 7, "client-fixture[bot]"
+        local = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                 comment(11, "Released claim 10", at="2026-01-01T00:02:00Z")]
+        held = comment(20, helper.claim.marker({**SOURCE, "session": native_session}), client_actor)
+        client_comments = [held]
+        client = Mock(expected_actor=client_actor)
+        client.get_json.return_value = {"body": "", "number": number}
+        client.paged_json.side_effect = lambda path, **kw: [] if path.endswith("/pulls") else client_comments
+        self.reader.paged_json.side_effect = lambda path, **kw: [{"full_name": REPO}] if path == "/installation/repositories" else [] if path.endswith("/pulls") else local
+        for harness in ("codex", "claude"):
+            rows = history(harness, native_claim(REPO), native_claim(foreign, number, 20))
+            command = f'uv run /catalog/gh-plan.py claim {foreign}#{number} > claim.json'
+            if harness == "codex":
+                rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else:
+                rows[3]["message"]["content"][0]["input"] = {"command": command}
+            rows[4] = output({}, harness, "tool-1")
+            for row in rows: row["timestamp"] = SOURCE["claimed_at"]
+            entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+            with patch.object(helper.sessions, "discover", side_effect=lambda reader, owner, entries, repos: ({(REPO, 1)} if repos == [REPO] else set(), repos)):
+                report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
+                self.assertFalse(report["claims_clear"], report)
+                self.assertIn(foreign, report["coverage"]["repositories"])
+                client_comments.append(comment(21, "Released claim 20", client_actor, at="2026-01-01T00:02:00Z"))
+                released = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
+                self.assertTrue(released["claims_clear"], released)
+                self.assertTrue(released["coverage"]["complete"])
+                self.assertEqual({r["repository"] for r in released["released_claims"]}, {REPO, foreign})
+                client_comments.pop()
+
     def setUp(self):
         self.source = comment(10, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
         self.release = comment(11, "Released claim 10\n\nSession: " + SESSION, at="2026-01-01T00:02:00Z")
@@ -79,6 +111,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         for harness in ("codex", "claude"):
             for command in ("uv run scripts/gh-plan.py --repo test/a claim 1 > claim.json",
                             "uv run scripts/gh-plan.py --repo test/a claim 1 &",
+                            "uv run scripts/gh-plan.py claim test/a#1 > claim.json 2>&1 &",
                             "nohup gh pr create --title x &"):
                 rows = history(harness, {"operation": helper.claim_receipts.CLAIM_OPERATION})
                 if harness == "codex":

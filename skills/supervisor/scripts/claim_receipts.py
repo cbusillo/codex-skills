@@ -111,7 +111,7 @@ def shell_commands(name, value):
         if "<<" in text:
             continue  # Heredoc bodies are data, not checker invocations.
         try:
-            lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|\n")
+            lexer = shell_lexer(text, punctuation_chars=";&|\n")
             lexer.whitespace = " \t\r"
             lexer.whitespace_split = True
             command = []
@@ -126,6 +126,38 @@ def shell_commands(name, value):
                 yield command[1:] if command[0] == "nohup" else command
         except ValueError:
             continue
+
+
+def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>\n"):
+    """Preserve word-internal hashes; only unquoted word-start # is a comment."""
+    cleaned, quote, escaped, boundary, comment = [], None, False, True, False
+    for char in text:
+        if comment:
+            if char != "\n":
+                continue
+            comment = False
+        if escaped:
+            escaped = False
+            if char == "\n":
+                cleaned.pop()  # Shell continuation is removed before tokenization.
+                continue
+            boundary = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote, boundary = char, False
+        elif char == "#" and boundary:
+            comment = True
+            continue
+        else:
+            boundary = char.isspace() or char in ";&|<>()"
+        cleaned.append(char)
+    lexer = shlex.shlex("".join(cleaned), posix=posix, punctuation_chars=punctuation_chars)
+    lexer.commenters = ""
+    return lexer
 
 
 def script(argv):
@@ -156,7 +188,7 @@ def isolated_command(name, value, helper):
     texts = list(shell_texts(name, value))
     if len(texts) != 1 or "$(" in texts[0] or "`" in texts[0]:
         return False
-    lexer = shlex.shlex(texts[0].strip(), posix=True, punctuation_chars=";&|<>\n")
+    lexer = shell_lexer(texts[0].strip())
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     try:
@@ -231,7 +263,7 @@ def ownership_state(records, harness):
 
 
 def target_repositories(records, harness):
-    repos = set()
+    repos = {target["repository"] for target in claim_targets(records, harness) if target["repository"]}
     for record in records:
         calls, _ = calls_and_results(record, harness)
         for _, name, value in calls:
@@ -272,7 +304,7 @@ def no_write_claims(records, harness):
 
 
 def claim_targets(records, harness):
-    """Resolve numeric operands with their own invocation's canonical receipts."""
+    """Resolve explicit references; bind unscoped numbers to their own receipts."""
     def claiming(name, value):
         return any(script(argv) == "gh-plan.py" and "claim" in argv for argv in shell_commands(name, value))
     canonical = {}
@@ -299,17 +331,19 @@ def claim_targets(records, harness):
                 target = argv[argv.index("claim") + 1:]
                 if not target:
                     continue
-                url = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)", target[0])
-                if url:
-                    resolved = {(url[1], int(url[2]))}
-                elif re.fullmatch(r"[1-9]\d*", target[0]):
+                explicit = (re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)", target[0])
+                            or re.fullmatch(r"([^/\s]+/[^#\s]+)#([1-9]\d*)", target[0]))
+                if explicit:
+                    resolved = {(explicit[1], int(explicit[2]))}
+                elif re.fullmatch(r"#?[1-9]\d*", target[0]):
+                    number = int(target[0].removeprefix("#"))
                     repos = {argv[i + 1] for i, token in enumerate(argv[:-1]) if token in {"--repo", "-R"}}
                     repos.update(token.removeprefix("--repo=") for token in argv if token.startswith("--repo="))
                     # A native invocation can contain several shell commands.
                     # Its receipts do not identify which command produced them.
                     own = canonical.get(identifier, set()) if len(commands) == 1 else set()
-                    resolved = {(repo, int(target[0])) for repo in repos} or {
-                        pair for pair in own if pair[1] == int(target[0])} or {(None, int(target[0]))}
+                    resolved = {(repo, number) for repo in repos} or {
+                        pair for pair in own if pair[1] == number} or {(None, number)}
                 else:
                     continue
                 for repo, number in resolved:
@@ -345,7 +379,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             if invoked:
                 # A shell's result cannot attest completion of detached writers.
                 for command in shell_texts(name, value):
-                    lexer = shlex.shlex(command, posix=False, punctuation_chars=";&|<>")
+                    lexer = shell_lexer(command, posix=False)
                     lexer.whitespace_split = True
                     try:
                         if "&" in list(lexer):
