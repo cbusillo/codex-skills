@@ -2499,7 +2499,7 @@ def claim_once(args: argparse.Namespace) -> None:
 
         def uses_source(record: dict[str, str]) -> bool:
             return (record.get("resume_from") == str(args.resume_from)
-                    or record.get("retained_handoff") == handoff_url)
+                    or handoff_id is not None and record.get("retained_handoff") == handoff_url)
 
         for child in children:
             related = compact_relationship_issue(child, "handoff child")
@@ -2537,6 +2537,8 @@ def claim_once(args: argparse.Namespace) -> None:
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str) -> set[str]:
         nonlocal retained_waits
         if not handoff_id:
+            if args.resume_from and record_kind == "issue":
+                check_handoff_successors(number, inventory)
             return set()
         source_number, source_comments, source_status = resume_source(current_comments, current_status)
         _, target_pulls = collect_paged_rest_items(

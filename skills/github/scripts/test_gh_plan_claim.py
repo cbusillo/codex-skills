@@ -1056,7 +1056,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(len(self.comments), 1)  # Same-session recovery reuses its claim.
 
     def test_parent_handoff_refuses_an_unreleased_native_child_successor(self):
-        for claimant in ("sibling", "parent"):
+        for claimant in ("sibling", "parent", "parent_without_handoff"):
             with self.subTest(claimant=claimant):
                 self.setUp()
                 self.parent_handoff_fixture()
@@ -1068,11 +1068,15 @@ class ClaimTests(unittest.TestCase):
                 self.children["/repos/owner/repo/issues/41/sub_issues"].append(self.targets["43"])
                 self.target_comments["/repos/owner/repo/issues/43/comments"] = [
                     {"id": 88, "body": CLAIM.marker(successor), "user": {"login": TEST_BOT}}]
-                if claimant == "parent":
+                if claimant.startswith("parent"):
                     self.issue = self.targets.pop("41")
                     self.comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
                     self.args.issue = "41"
                     self.args.wait_resolved = "Source-only follow-through; preserve parent qualification waits"
+                if claimant == "parent_without_handoff":
+                    self.args.handoff_comment = None
+                    self.pulls[0]["head"]["ref"] = CLAIM.records(self.comments[0]["body"])[0]["branch"]
+                    self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
