@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -134,22 +135,82 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(result["finding_count"], 1)
         artifact = json.loads(Path(result["findings_artifact"]["path"]).read_text())
         self.assertEqual(artifact["problems"], result["findings"])
-        self.assertIn("effective_profile_missing:DuplicatedCode", result["proof_failures"])
+        self.assertEqual(result["uncovered_inspections"], ["DuplicatedCode"])
         self.assertTrue(all(not p.exists() for p in self.seen))
 
-    def test_zero_findings_with_measured_profile_gap_never_green(self):
-        def empty(*args):
+    @staticmethod
+    def canary(private):
+        [path] = (private / "project").rglob("_jb_qodana_canary_*.py")
+        return path.relative_to(private / "project").as_posix()
+
+    def clean_with_canary(self, *canary_rules, extra=()):
+        def attempt(*args):
             self.completed(*args)
-            (args[2] / "results/qodana.sarif.json").write_text(json.dumps(sarif([])))
-        result = self.run_backend(empty)
+            canary = self.canary(args[2])
+            results = [finding(canary, rule=rule) for rule in canary_rules] + list(extra)
+            (args[2] / "results/qodana.sarif.json").write_text(json.dumps(sarif(results)))
+        return attempt
+
+    def test_clean_python_run_with_canary_proof_is_green_and_names_uncovered(self):
+        result = self.run_backend(self.clean_with_canary("PyUnresolvedReferencesInspection"))
+        self.assertEqual(result["agent_result"]["verdict"], "GREEN")
+        self.assertEqual(result["helper_exit_code"], 0)
+        self.assertEqual(result["proof_failures"], [])
+        self.assertEqual(result["uncovered_inspections"], ["DuplicatedCode"])
+        self.assertEqual(result["finding_count"], 0)
+        self.assertEqual(sorted(p.name for p in (self.repo / "src").iterdir()), ["a.py", "b.py"])
+
+    def test_zero_findings_without_canary_finding_never_green(self):
+        result = self.run_backend(self.clean_with_canary())
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
-        self.assertIn("effective_profile_missing:DuplicatedCode", result["proof_failures"])
+        self.assertIn("python_canary_execution_unproven", result["proof_failures"])
         self.assertFalse(result["agent_result"]["retry_policy"]["retry"])
+
+    def test_wrong_language_level_makes_findings_not_decisive(self):
+        # A model without the prepared interpreter flags valid `X | None` hints.
+        result = self.run_backend(self.clean_with_canary(
+            "PyUnresolvedReferencesInspection", "PyTypeHintsInspection", extra=[finding()]))
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["diagnostic"]["error_reason"], "qodana_python_language_level_mismatch")
+        self.assertEqual(result["finding_count"], 0)
+
+    def test_enabled_python_inspection_missing_from_engine_blocks_green(self):
+        profile = self.repo / ".idea/inspectionProfiles/Project_Default.xml"
+        profile.write_text(profile.read_text().replace(
+            "</profile>", '<inspection_tool class="PyUnusedLocalVariableInspection" enabled="true"/>'
+                          '<inspection_tool class="CssUnknownProperty" enabled="true"/></profile>'))
+        result = self.run_backend(self.clean_with_canary("PyUnresolvedReferencesInspection"))
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["proof_failures"], ["effective_profile_missing:PyUnusedLocalVariableInspection"])
+
+    def test_lane_gap_only_for_files_outside_pycharm_lanes(self):
+        config = {"lanes": [{"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*.kt"]},
+                            {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]}
+        self.assertEqual(backend.lane_gaps(host, config, {"src/a.py"}), [])
+        self.assertEqual(backend.lane_gaps(host, config, {"src/a.py", "src/A.kt"}), ["qodana_lane_models_unqualified"])
+        nested = {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "projectPath": "src"}]}
+        self.assertEqual(backend.lane_gaps(host, nested, {"src/a.py"}), ["qodana_lane_models_unqualified"])
+
+    def test_headless_preparation_leaves_the_model_to_qodana_and_provisions_declared_uv(self):
+        (self.repo / "uv.toml").write_text('required-version = ">=0.11.29,<1"\n')
+        config = {"prepare": {"python": {"version": "3.12", "moduleName": "m"}}}
+        with tempfile.TemporaryDirectory() as private:
+            provisioned = backend.preparation(config, Path(private), "python", self.repo)
+            supplied = backend.preparation(config, Path(private), "python", self.repo, uv_supplied=True)
+        install, _, generator = provisioned.partition(" && export PATH=/private/tools/uv/bin:$PATH && ")
+        self.assertEqual(shlex.split(install)[-1], "uv>=0.11.29,<1")
+        self.assertIn("--no-project-model", shlex.split(generator))
+        self.assertEqual(supplied, generator)
+
+    def test_uv_requirement_rejects_shell_text(self):
+        (self.repo / "uv.toml").write_text('required-version = ">=0.11; touch /tmp/x"\n')
+        with self.assertRaises(backend.Blocked):
+            backend.uv_requirement(self.repo)
 
     def test_odoo_generic_xml_or_loaded_profile_does_not_prove_named_coverage(self):
         results = self.root / "results"
         results.mkdir()
-        gaps = backend.coverage_gaps("python", {"addon/views.xml"}, {"OdooPy", "OdooXml"}, results)
+        gaps, _uncovered = backend.coverage_gaps("python", {"addon/views.xml"}, {"OdooPy", "OdooXml"}, results)
         self.assertIn("OdooXml_execution_unproven", gaps)
         self.assertIn("odoo_model_roots_interpreter_unproven", gaps)
         self.assertIn("odoo_effective_default_unproven", gaps)
@@ -376,6 +437,29 @@ os.kill(os.getpid(), signal.SIGKILL)
         context.assert_not_called()
         api.assert_not_called()
         self.assertEqual(json.loads(output.getvalue())["agent_result"]["verdict"], "UNKNOWN")
+
+    def select(self, *argv, image_present=True, host_default=None):
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), *argv])
+        real = backend.command
+        def docker(command_argv, **kwargs):
+            if command_argv[0] != "docker":
+                return real(command_argv, **kwargs)
+            return subprocess.CompletedProcess(command_argv, 0 if image_present else 1, b"[]", b"")
+        with patch.object(backend, "command", side_effect=docker):
+            return backend.select_backend(args, host, host_default)
+
+    def test_default_backend_runs_python_headless_and_keeps_the_api_elsewhere(self):
+        python = ("--scope", "files", "--file", "src/a.py")
+        self.assertEqual(self.select(*python), ("qodana", "python_qualified"))
+        self.assertEqual(self.select(*python, image_present=False), ("api", "qodana_image_unavailable"))
+        self.assertEqual(self.select(*python, host_default="api"), ("api", "host_default"))
+        (self.repo / "src/App.kt").write_text("fun main() {}\n")
+        self.assertEqual(self.select("--scope", "files", "--file", "src/a.py", "--file", "src/App.kt"),
+                         ("api", "selection_not_python_only"))
+        (self.repo / "addon").mkdir()
+        (self.repo / "addon/__manifest__.py").write_text("{}\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "addon/__manifest__.py"], check=True)
+        self.assertEqual(self.select(*python), ("api", "odoo_not_yet_qualified"))
 
     def test_detached_monitor_deletes_copies_when_parent_is_killed_during_load_pause(self):
         import time

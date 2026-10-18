@@ -3,11 +3,12 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Local, disposable Qodana runner used only by agent-inspect's explicit backend.
+"""Local, disposable Qodana runner behind agent-inspect.
 
 Raw engine output and licensing stay in disposable state. Only selected findings
-and count/hash/resource/cleanup receipts leave it. No language is qualified for
-GREEN yet (jetbrains-inspection-api#503).
+and count/hash/resource/cleanup receipts leave it. Python is the one language
+qualified for GREEN, through a planted canary (codex-skills#2155); others stay
+UNKNOWN without findings (jetbrains-inspection-api#503).
 """
 from __future__ import annotations
 
@@ -37,11 +38,27 @@ BOUNDARY_RE = re.compile(r"(?:start(?:ing|ed)?|activat(?:e[ds]?|ing|ion)|obtain(
 LOAD_LIMIT = 64
 FINDING_LIMIT = 25
 RUN_LABEL = "codex-skills.qodana.run"
-# An effective profile and a successful exit are not execution/completeness proof.
+UV_SPEC_RE = re.compile(r"[0-9A-Za-z.,<>=!~* ]{0,100}\Z")
+# An effective profile and a successful exit are not execution/completeness
+# proof. Python proves execution with a planted canary instead (below).
 PARITY_GAPS = {
-    "python": ["python_parity_unqualified", "measured_python_DuplicatedCode_HttpUrlsUsage_gap_unqualified", "python_clean_completeness_unproven"],
+    "python": [],
     "jvm": ["jvm_module_source_roots_parity_unproven", "jvm_intended_feature_coverage_unproven"],
 }
+# Planted in the private snapshot next to the selected Python files. Its
+# unresolved name must be reported, which proves the engine inspected files in
+# scope with a loaded Python model; a type-hint finding on its valid 3.10+
+# annotations means the module was analyzed at the wrong language level.
+CANARY_SOURCE = ("def _jb_qodana_canary(value: int | None = None) -> dict[str, int] | None:\n"
+                 "    unused_probe = 1\n"
+                 "    return {\"value\": value or 0, \"probe\": _jb_qodana_unresolved_probe}\n")
+CANARY_REQUIRED_RULE = "PyUnresolvedReferencesInspection"
+CANARY_LANGUAGE_LEVEL_RULE = "PyTypeHintsInspection"
+# Enabled in common profiles but not run by the Python Community image
+# (jetbrains-inspection-api#503). GREEN names them as uncovered.
+PYTHON_COMMUNITY_UNCOVERED = frozenset({"DuplicatedCode", "HttpUrlsUsage"})
+# Tools for other file types cannot apply to a selection of only .py files.
+OTHER_LANGUAGE_RULE_RE = re.compile(r"(?:Css|Sass|Scss|Less|Eslint|Stylelint|Tslint|JS|Js|TypeScript|Html|Vue|Angular|Kotlin|Java|Groovy|Gradle|Xml|Json|Yaml|Sql)(?:[A-Z_]|\Z)")
 
 
 class Blocked(Exception):
@@ -292,9 +309,10 @@ def docker_argv(name, image, private, language, uv_binary=None):
         argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
     if language == "python":
         configured = "bootstrap" in json.loads((private / "qodana.yaml").read_text())
-        argv += ["-e", "QODANA_PYTHON_PATH=" + ("/data/project/.venv/bin/python" if configured else "/usr/bin/python3")]
+        argv += ["-e", "QODANA_PYTHON_PATH=" + ("/data/project/.venv/bin/python" if configured else "/usr/bin/python3"),
+                 "-e", "UV_CACHE_DIR=/private/cache/uv"]
     if uv_binary:
-        argv += ["-e", "PATH=/private/bin:/usr/local/bin:/usr/bin:/bin", "-e", "UV_CACHE_DIR=/private/cache/uv"]
+        argv += ["-e", "PATH=/private/bin:/usr/local/bin:/usr/bin:/bin"]
     for license_copy in (private / "config").iterdir():
         if LICENSE_RE.fullmatch(license_copy.name):
             argv += ["-v", f"{license_copy}:/private/config/{license_copy.name}:ro"]
@@ -330,7 +348,26 @@ def snapshot(repo, project):
     return hashes
 
 
-def preparation(config, private, language):
+def uv_requirement(repo):
+    """The repository's declared uv version range, or "" when it declares none."""
+    import tomllib
+    sources = ((repo / "uv.toml", ()), (repo / "pyproject.toml", ("tool", "uv")))
+    for path, keys in sources:
+        if not path.is_file():
+            continue
+        table = tomllib.loads(path.read_text())
+        for key in keys:
+            table = table.get(key, {})
+        spec = table.get("required-version")
+        if spec is None:
+            continue
+        if not isinstance(spec, str) or not UV_SPEC_RE.fullmatch(spec):
+            raise Blocked("qodana_uv_requirement_invalid")
+        return spec
+    return ""
+
+
+def preparation(config, private, language, repo=None, uv_supplied=False):
     prepare = config.get("prepare")
     if not prepare:
         return None
@@ -343,8 +380,12 @@ def preparation(config, private, language):
     # any desktop SDK table. Existing config schema is validated by the host.
     generator = Path(__file__).with_name("prepare-python-project.py")
     shutil.copyfile(generator, private / generator.name)
+    # Qodana registers its own SDK from QODANA_PYTHON_PATH. A generated desktop
+    # model names an SDK Qodana never registers, leaving the module without one,
+    # so valid modern annotations were reported as findings.
     argv = ["uv", "run", "--no-project", "/private/prepare-python-project.py", "--repo", "/data/project",
-            "--python", py["version"], "--module-name", py.get("moduleName", "qodana-project")]
+            "--python", py["version"], "--module-name", py.get("moduleName", "qodana-project"),
+            "--no-project-model"]
     if py.get("sync"):
         argv += ["--sync"]
     for script in py.get("pep723Scripts", []):
@@ -353,7 +394,55 @@ def preparation(config, private, language):
         argv += ["--test-root", root]
     for extra in py.get("extras", []):
         argv += ["--extra", extra]
-    return shlex.join(argv)
+    if uv_supplied:
+        return shlex.join(argv)
+    # The image ships no uv: install the declared range into the disposable
+    # profile so a run needs no host-supplied Linux binary.
+    install = ["python3", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--quiet",
+               "--target", "/private/tools/uv", "uv" + uv_requirement(repo)]
+    return shlex.join(install) + " && export PATH=/private/tools/uv/bin:$PATH && " + shlex.join(argv)
+
+
+def interpreter_version(project):
+    """The prepared venv's major.minor, or None when bootstrap left no venv."""
+    config = project / ".venv/pyvenv.cfg"
+    if config.is_symlink() or not config.is_file():
+        return None
+    for line in config.read_text().splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() in {"version", "version_info"}:
+            match = re.match(r"\s*(\d+\.\d+)", value)
+            return match.group(1) if match else None
+    return None
+
+
+def result_uri(result):
+    locations = result.get("locations")
+    if not locations:
+        return None
+    uri = urllib.parse.unquote(locations[0].get("physicalLocation", {}).get("artifactLocation", {}).get("uri", ""))
+    for prefix in ("file:///data/project/", "/data/project/"):
+        if uri.startswith(prefix):
+            return uri[len(prefix):]
+    return uri
+
+
+def canary_gaps(results, canary, expected_effective):
+    """Execution proof from the planted canary; observed rule IDs are safe receipts."""
+    reports = list(results.rglob("qodana.sarif.json"))
+    if len(reports) != 1 or reports[0].is_symlink():
+        return ["python_canary_execution_unproven"], []
+    runs = json.loads(reports[0].read_text()).get("runs") or [{}]
+    rules = sorted({safe_text(r.get("ruleId")) for r in runs[0].get("results") or []
+                    if isinstance(r, dict) and result_uri(r) == canary})
+    gaps = []
+    if CANARY_REQUIRED_RULE not in expected_effective:
+        gaps.append("python_canary_rule_not_enabled:" + CANARY_REQUIRED_RULE)
+    elif CANARY_REQUIRED_RULE not in rules:
+        gaps.append("python_canary_execution_unproven")
+    if CANARY_LANGUAGE_LEVEL_RULE in rules:
+        gaps.append("python_language_level_mismatch")
+    return gaps, rules
 
 
 def collect_findings(results, selected, args):
@@ -402,22 +491,51 @@ def collect_findings(results, selected, args):
     return findings
 
 
-def coverage_gaps(language, selected, expected, results, odoo_project=False):
-    gaps = list(PARITY_GAPS[language])
+def effective_rules(results):
     profiles = list(results.rglob("effective.profile.xml"))
     if len(profiles) != 1:
+        return None
+    tools = ElementTree.parse(profiles[0]).getroot().iter("inspection_tool")
+    return {t.get("class") for t in tools if t.get("enabled") == "true"}
+
+
+def coverage_gaps(language, selected, expected, results, odoo_project=False):
+    """Gaps that block GREEN, plus profile inspections GREEN names as uncovered."""
+    gaps = list(PARITY_GAPS[language])
+    uncovered = []
+    actual = effective_rules(results)
+    python_only = language == "python" and all(Path(f).suffix == ".py" for f in selected)
+    if actual is None:
         gaps.append("effective_profile_unavailable")
     else:
-        tools = ElementTree.parse(profiles[0]).getroot().iter("inspection_tool")
-        actual = {t.get("class") for t in tools if t.get("enabled") == "true"}
-        gaps.extend("effective_profile_missing:" + str(rule) for rule in sorted(expected - actual))
+        for rule in sorted(expected - actual):
+            if python_only and OTHER_LANGUAGE_RULE_RE.match(str(rule)):
+                continue
+            if python_only and rule in PYTHON_COMMUNITY_UNCOVERED:
+                uncovered.append(rule)
+            else:
+                gaps.append("effective_profile_missing:" + str(rule))
     if odoo_project or any(Path(f).name == "__manifest__.py" for f in selected) or expected & {"OdooPy", "OdooXml"}:
         gaps += ["odoo_effective_default_unproven", "odoo_model_roots_interpreter_unproven", "OdooXml_execution_unproven",
                  "odoo_optional_integrations_unqualified"]
     supported = {".py"} if language == "python" else {".java", ".kt", ".kts", ".gradle"}
     if any(Path(f).suffix not in supported for f in selected):
         gaps.append("selected_language_coverage_unqualified")
-    return gaps
+    return gaps, uncovered
+
+
+def lane_gaps(host, config, selected):
+    """Lanes route to IDEs; Qodana's Python model covers only files a PyCharm lane owns."""
+    if not config.get("lanes"):
+        return []
+    lanes = host.parse_inspection_lanes(config)
+    for path in selected:
+        owners = [candidate for candidate in lanes
+                  if any(host.inspection_lane_pattern_matches(path, pattern) for pattern in candidate.include)]
+        # The first matching lane owns a file, as in the API lane router.
+        if not owners or owners[0].ide.strip().lower() != "pycharm" or owners[0].project_path:
+            return ["qodana_lane_models_unqualified"]
+    return []
 
 
 class Monitor:
@@ -628,17 +746,24 @@ def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
             os.close(result_read)
 
 
-def envelope(host, receipt, findings, reason, gaps, artifact):
-    verdict = "RED" if findings and reason == "qodana_completed" else "UNKNOWN"
-    action = "Fix current findings; retain the recorded coverage gaps." if verdict == "RED" else "Resolve the reported prerequisite or qualify coverage before using Qodana as a gate; the API remains the default."
+def envelope(host, receipt, findings, reason, gaps, artifact, uncovered=()):
+    completed = reason == "qodana_completed"
+    verdict = "RED" if findings and completed else "GREEN" if completed and not gaps else "UNKNOWN"
+    action = {"RED": "Fix current findings; retain the recorded coverage gaps.",
+              "GREEN": "None; the selected Python scope is clean apart from the named uncovered inspections."}.get(
+        verdict, "Resolve the reported prerequisite or coverage gap and run a fresh assessment.")
     if receipt.get("boundary_event") or reason == "qodana_trial_or_purchase_stop":
         action = "Stop Qodana work and report the trial/purchase boundary to the Director; do not activate or purchase."
     cleanup_clean = receipt["profile_deleted"] and receipt["container_removed"] and not receipt.get("unresolved_record_count") and not receipt.get("cleanup_pending") and not receipt.get("journal_cleanup_failed")
+    coverage = "coverage gaps recorded" if gaps else "execution proved"
+    if uncovered:
+        coverage += "; not run: " + ", ".join(uncovered)
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "qodana",
-            "status": "findings" if verdict == "RED" else "error", "helper_exit_code": host.classify_run_exit({"verdict": verdict}),
-            "agent_result": {"verdict": verdict, "bucket": "findings" if verdict == "RED" else "environment_blocked",
+            "status": {"RED": "findings", "GREEN": "clean"}.get(verdict, "error"), "helper_exit_code": host.classify_run_exit({"verdict": verdict}),
+            "agent_result": {"verdict": verdict, "bucket": {"RED": "findings", "GREEN": "clean"}.get(verdict, "environment_blocked"),
                              "retry_policy": {"retry": False, "max_attempts": 0, "wait_ms": 0}, "terminal": True,
-                             "next_action": action, "agent_report": f"{verdict}: {reason}; {len(findings)} findings; coverage remains unqualified."},
+                             "next_action": action, "agent_report": f"{verdict}: {reason}; {len(findings)} findings; {coverage}."},
+            "uncovered_inspections": list(uncovered),
             "scope": receipt.get("scope"), "selected_file_count": receipt.get("selected_file_count"),
             "finding_count": len(findings), "findings": findings[:FINDING_LIMIT], "findings_limit": FINDING_LIMIT,
             "findings_truncated": len(findings) > FINDING_LIMIT, "findings_artifact": artifact,
@@ -650,12 +775,54 @@ def envelope(host, receipt, findings, reason, gaps, artifact):
             "diagnostic": {"error_reason": reason, "qodana": receipt}}
 
 
+def scope_selection(args, host):
+    repo = Path(host.git_root(Path(args.repo).expanduser().resolve()) or args.repo).resolve()
+    repository_config = host.read_repo_config(repo)
+    config = repository_config.get("qualityGate", {}).get("inspection", {})
+    host.parse_repository_preparation(config)
+    scope = args.scope or host.first_scope(config.get("scopePreference")) or host.first_scope(repository_config.get("jetbrains", {}).get("scopePreference")) or "changed_files"
+    selected = set()
+    for raw in host.inspection_scope_paths(args, repo, scope):
+        path = host.normalize_inspection_lane_path(raw, repo)
+        if path.is_file():
+            selected.add(path.relative_to(repo).as_posix())
+    return repo, config, scope, selected
+
+
+def select_backend(args, host, host_default=None):
+    """Default backend for one agent-inspect run: (backend, reason).
+
+    Python is the qualified language (codex-skills#2155): a selection of only
+    Python files, outside Odoo and owned by PyCharm lanes, runs headless when
+    the pinned image is already local. Everything else keeps the API. A host
+    may pin the choice with JB_INSPECT_DEFAULT_BACKEND.
+    """
+    if args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv:
+        return "qodana", "qodana_options_supplied"
+    if host_default:
+        return host_default, "host_default"
+    try:
+        repo, config, _scope, selected = scope_selection(args, host)
+        if not selected or any(not f.endswith(".py") for f in selected):
+            return "api", "selection_not_python_only"
+        tracked = checked(["git", "-C", str(repo), "ls-files", "-z", "--", "*__manifest__.py", "__manifest__.py"])
+        if tracked.strip(b"\0"):
+            return "api", "odoo_not_yet_qualified"
+        if lane_gaps(host, config, selected):
+            return "api", "lane_not_pycharm"
+        if command(["docker", "image", "inspect", PYTHON_IMAGE], env=safe_env()).returncode != 0:
+            return "api", "qodana_image_unavailable"
+    except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
+        return "api", "qodana_selection_unavailable"
+    return "qodana", "python_qualified"
+
+
 def run(args, host):
     receipt = {"run_id": str(uuid.uuid4()), "license_copy_count": 0, "profile_deleted": True,
                "container_removed": True, "load_pause_count": 0, "cpu_limit": 2, "memory_limit_bytes": 4 * 1024**3,
                "nice": 10, "docker_logging": "none", "helper_revision": host.helper_revision(),
                "backend_revision": "sha256:" + digest(Path(__file__))}
-    findings, gaps, reason, artifact = [], [], "qodana_prerequisite_failed", None
+    findings, gaps, uncovered, reason, artifact = [], [], [], "qodana_prerequisite_failed", None
     private = None
     root = None
     journal = None
@@ -694,18 +861,8 @@ def run(args, host):
             raise Blocked("qodana_recovery_only_no_inspection")
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("qodana_host_load_paused")
-        repo = Path(host.git_root(Path(args.repo).expanduser().resolve()) or args.repo).resolve()
-        repository_config = host.read_repo_config(repo)
-        config = repository_config.get("qualityGate", {}).get("inspection", {})
-        host.parse_repository_preparation(config)
-        scope = args.scope or host.first_scope(config.get("scopePreference")) or host.first_scope(repository_config.get("jetbrains", {}).get("scopePreference")) or "changed_files"
+        repo, config, scope, selected = scope_selection(args, host)
         receipt["scope"] = scope
-        raw_paths = host.inspection_scope_paths(args, repo, scope)
-        selected = set()
-        for raw in raw_paths:
-            path = host.normalize_inspection_lane_path(raw, repo)
-            if path.is_file():
-                selected.add(path.relative_to(repo).as_posix())
         receipt["selected_file_count"] = len(selected)
         receipt["selected_files"] = sorted(selected)
         if not selected:
@@ -739,11 +896,20 @@ def run(args, host):
         if not selected <= hashes.keys():
             raise Blocked("qodana_scope_snapshot_incomplete")
         receipt["source_manifest_sha256"] = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+        canary = None
+        python_files = sorted(f for f in selected if f.endswith(".py"))
+        if language == "python" and python_files:
+            # Snapshot-only; never written to the source worktree.
+            canary_id = str(receipt["run_id"]).replace("-", "")[:12]
+            canary = (Path(python_files[0]).parent / f"_jb_qodana_canary_{canary_id}.py").as_posix()
+            (private / "project" / canary).write_text(CANARY_SOURCE)
+            checked(["git", "-C", str(private / "project"), "add", "--", canary])
         shutil.copyfile(profile, private / "profile.xml")
         ignored = sorted(set(hashes) - selected)
         yaml = {"version": "1.0", "profile": {"base": {"path": "/private/profile.xml"},
                 "inspections": [{"group": "ALL", "ignore": ignored}] if ignored else []}}
-        bootstrap = preparation(config, private, language)
+        bootstrap = preparation(config, private, language, repo, bool(args.qodana_uv))
+        receipt["uv_source"] = None if not bootstrap else "supplied" if args.qodana_uv else "provisioned"
         if bootstrap:
             yaml["bootstrap"] = bootstrap
         uv_binary = args.qodana_uv
@@ -765,9 +931,18 @@ def run(args, host):
         receipt["container_removed"] = False
         argv += ["--timeout", str(max(1, args.timeout_ms))]
         guardian = execute(argv, name, private, env, max(1, args.timeout_ms / 1000), receipt, lock_fd=lock.fileno())
-        gaps = coverage_gaps(language, selected, expected, private / "results", any(Path(f).name == "__manifest__.py" for f in hashes))
-        if config.get("lanes"):
-            gaps.append("qodana_lane_models_unqualified")
+        receipt["python_interpreter_version"] = interpreter_version(private / "project")
+        gaps, uncovered = coverage_gaps(language, selected, expected, private / "results", any(Path(f).name == "__manifest__.py" for f in hashes))
+        gaps += lane_gaps(host, config, selected)
+        if canary is None:
+            if language == "python":
+                gaps.append("python_canary_execution_unproven")
+        else:
+            canary_failures, receipt["canary_rules"] = canary_gaps(private / "results", canary, expected & (effective_rules(private / "results") or set()))
+            gaps += canary_failures
+            if "python_language_level_mismatch" in canary_failures:
+                # Findings from a model without the right interpreter are not decisive.
+                raise Blocked("qodana_python_language_level_mismatch")
         findings = collect_findings(private / "results", selected, args)
         if any(digest(private / "project" / f) != hashes[f] for f in selected):
             raise Blocked("qodana_snapshot_inputs_changed")
@@ -778,7 +953,7 @@ def run(args, host):
             raise Blocked("qodana_source_inputs_changed")
         if digest(profile) != receipt["profile_sha256"]:
             raise Blocked("qodana_profile_inputs_changed")
-        reason = "qodana_completed" if findings else "qodana_coverage_unproven"
+        reason = "qodana_completed" if findings or not gaps else "qodana_coverage_unproven"
     except Blocked as error:
         reason = str(error)
     except host.InspectError as error:
@@ -828,4 +1003,4 @@ def run(args, host):
             artifact = {"status": "complete", "path": str(artifact_path), "sha256": digest(artifact_path), "finding_count": len(findings)}
         except OSError:
             reason = "qodana_findings_artifact_unavailable"
-    return envelope(host, receipt, findings, reason, gaps, artifact)
+    return envelope(host, receipt, findings, reason, gaps, artifact, uncovered)

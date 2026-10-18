@@ -1,8 +1,11 @@
 # Local Qodana backend
 
-Read before selecting `agent-inspect --backend qodana`, diagnosing its result,
-or changing the runner. The API remains the default. No language is qualified
-for a default switch by this backend's availability.
+Read before diagnosing a Qodana result or changing the runner. `agent-inspect`
+selects this backend by default for a selection of only Python files when the
+pinned image is local, outside Odoo repositories and PyCharm-only lanes
+([#2155](https://github.com/cbusillo/codex-skills/issues/2155)); other
+selections keep the API. The envelope's `backend_selection` names the reason.
+`--backend api|qodana` or `JB_INSPECT_DEFAULT_BACKEND=api|qodana` overrides it.
 
 ```sh
 uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
@@ -27,12 +30,16 @@ profile; it adds only the requested scope exclusions. It does not load a
 repository's Qodana bootstrap, baseline, fixes or upload configuration.
 
 Structured `qualityGate.inspection.prepare.python` runs the maintained Python
-generator inside the Linux snapshot, without desktop SDK-table access. String
-preparation and non-Python preparation report UNKNOWN until their isolated
-execution is supported. For Python, provide `--qodana-uv /path/to/linux/uv` when
-the image has no compatible uv on PATH; the binary must match the image's
-architecture and the repository's declared uv requirement. It is copied into
-and removed with the private run. This does not prepare or alter the host IDE.
+generator inside the Linux snapshot, without desktop SDK-table access. It
+prepares only `.venv`: Qodana registers its own SDK from that interpreter, and
+a generated desktop model names an SDK Qodana never registers, which analysed
+modern annotations at the wrong language level. String preparation and
+non-Python preparation report UNKNOWN until their isolated execution is
+supported. The image has no uv, so the run installs the repository's declared
+`required-version` range (`uv.toml` or `[tool.uv]`) from PyPI into the private
+profile. `--qodana-uv /path/to/linux/uv` supplies an existing binary instead;
+it must match the image's architecture and that range. Either is removed with
+the private run. This does not prepare or alter the host IDE.
 
 The default image is the pinned Python Community image used by the reviewed
 [parity report](https://github.com/cbusillo/jetbrains-inspection-api/issues/503#issuecomment-6158381880).
@@ -123,9 +130,22 @@ The backend returns the normal schema-v1 agent envelope with additive
 line, coverage gaps and separate cleanup receipts. It does not feed Qodana
 observations into the API-only strict deployment qualification log. A current
 finding from a completed run can prove RED with coverage gaps preserved.
-Zero findings always report UNKNOWN while clean completeness is unqualified.
-Unsupported filters, unavailable/malformed SARIF, changed inputs and cleanup
-failures likewise remain UNKNOWN; no automatic retry is authorized.
+
+Python proves execution with a canary planted in the private snapshot beside
+the first selected Python file. Its unresolved name must be reported by
+`PyUnresolvedReferencesInspection`, and its valid 3.10+ annotations must not be
+reported by `PyTypeHintsInspection`; such a report means the wrong language
+level, and no finding from that run is decisive. `canary_rules` in the receipt
+lists the rule IDs seen on it. Zero findings are GREEN only when the run
+completed, the canary proved execution, every selected file is Python, and
+every enabled profile inspection is in the effective profile. Inspections for
+other file types do not apply to a Python-only selection. `DuplicatedCode` and
+`HttpUrlsUsage`, which the Community image does not run, are listed in
+`uncovered_inspections` rather than blocking GREEN; any other missing enabled
+inspection, such as a renamed ID, keeps the result UNKNOWN. JVM and other
+languages report UNKNOWN on zero findings. Unsupported filters,
+unavailable/malformed SARIF, changed inputs and cleanup failures remain
+UNKNOWN; no automatic retry is authorized.
 
 Carry the [full difference inventory](https://github.com/cbusillo/jetbrains-inspection-api/issues/503#issuecomment-6158434269)
 forward: Python's effective profile omitted `DuplicatedCode` and `HttpUrlsUsage`;
@@ -133,7 +153,7 @@ Odoo lacks frozen-default, interpreter/model-root and named OdooXml execution
 proof, and optional integrations differ. A loaded plugin, an enabled inspection,
 or generic XML findings do not prove named Odoo coverage. This backend checks
 requested IDs against the effective profile as additional gap evidence and
-retains the measured gaps. Qualification and any language default switch are
+retains the measured gaps. Odoo, Kotlin/JVM and TypeScript qualification are
 separate work under [the parent goal](https://github.com/cbusillo/codex-skills/issues/1833).
 
 Qodana's [profile documentation](https://www.jetbrains.com/help/qodana/inspection-profiles.html)

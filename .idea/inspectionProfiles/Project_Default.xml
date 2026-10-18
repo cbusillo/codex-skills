@@ -148,7 +148,7 @@
       <scope name="JetBrains Inspection Helper" level="WEAK WARNING" enabled="false" />
       <scope name="Tests" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
-    <inspection_tool class="PyUnusedLocalInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+    <inspection_tool class="PyUnusedLocalVariableInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Generated" level="WEAK WARNING" enabled="false" />
     </inspection_tool>
     <inspection_tool class="SpellCheckingInspection" enabled="true" level="TYPO" enabled_by_default="true">

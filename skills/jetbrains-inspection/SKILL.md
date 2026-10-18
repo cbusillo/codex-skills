@@ -1,6 +1,6 @@
 ---
 name: jetbrains-inspection
-description: Use JetBrains inspections through the local Inspection API or an explicitly selected local Qodana backend; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
+description: Use JetBrains inspections through local headless Qodana (the Python default) or the local Inspection API; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
 metadata:
   short-description: Run JetBrains IDE inspections safely
 resources:
@@ -108,15 +108,19 @@ Use this skill to run and interpret JetBrains IDE inspections through the local
 inspection plugin HTTP API. The script-backed helper is the primary agent
 interface; prefer it over direct curl or MCP tool calls.
 
-The Inspection API remains the default. To run headless Qodana locally, read
-[local Qodana](references/qodana-backend.md) first, then explicitly select
-`agent-inspect --backend qodana` for that run. It uses an isolated per-run
-profile and the same agent envelope. Existing local IDE/plugin license files
-may be copied read-only into that profile, never printed, logged or archived,
-and deleted after the run. Stop on trial start, activation or purchase. Run
-one capped, niced Qodana worker at a time and pause above load1 64. Coverage
-that cannot be proved remains UNKNOWN; backend availability does not qualify
-a language default switch or plugin retirement.
+`agent-inspect` runs a selection of only Python files through headless local
+Qodana when its pinned image is in local Docker, with no desktop IDE; Odoo
+repositories, other languages and non-PyCharm lanes keep the Inspection API.
+`--backend api|qodana` chooses explicitly, and the host setting
+`JB_INSPECT_DEFAULT_BACKEND=api|qodana` pins the default. Read
+[local Qodana](references/qodana-backend.md) before diagnosing a Qodana result
+or changing the runner. It uses an isolated per-run profile and the same agent
+envelope. Existing local IDE/plugin license files may be copied read-only into
+that profile, never printed, logged or archived, and deleted after the run.
+Stop on trial start, activation or purchase. Run one capped, niced Qodana
+worker at a time and pause above load1 64. Coverage that cannot be proved
+remains UNKNOWN. A Python GREEN names the profile inspections the engine does
+not run in `uncovered_inspections`; report them with the verdict.
 
 When IDE configuration appears in the change set, use
 `../references/ide-configuration-policy.md` before deciding whether to keep,
