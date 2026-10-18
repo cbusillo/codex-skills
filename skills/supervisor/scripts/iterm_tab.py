@@ -232,7 +232,8 @@ async def submit_iterm_launch(app, session, command, prompt_window=0.0):
         try:
             # Replace the interactive shell so any agent exit ends this exact
             # terminal, even when the launch file didn't itself use exec.
-            await send(session, "exec /bin/zsh -c " + shlex.quote(command), allow_tabs=True)
+            submitted = "exec /bin/zsh -c " + shlex.quote(command)
+            await send(session, submitted, allow_tabs=True)
 
             async def read():
                 nonlocal last_screen
@@ -251,7 +252,9 @@ async def submit_iterm_launch(app, session, command, prompt_window=0.0):
                 return {"dead": dead, "screen": last_screen}
 
             try:
-                await verify_startup(read, prompt_window=prompt_window, submitted=command)
+                # The shell echoes the quoted text as sent, wrapped at the
+                # terminal width; compare screen rows against that text.
+                await verify_startup(read, prompt_window=prompt_window, submitted=submitted)
             except StartupFailure:
                 raise
             except Exception as error:

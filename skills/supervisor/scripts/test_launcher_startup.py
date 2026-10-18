@@ -393,6 +393,38 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
               patch.object(iterm_tab, "verify_startup", side_effect=observe)):
             await iterm_tab.submit_iterm_launch(app, session, "fake-agent")
 
+    async def test_iterm_echo_of_brief_ending_in_status_row_does_not_end_prompt_watch(self):
+        queue = asyncio.Queue()
+        context = Mock()
+        context.__aenter__ = AsyncMock(return_value=SimpleNamespace(async_get=queue.get))
+        context.__aexit__ = AsyncMock(return_value=False)
+        brief = "Check why the launcher saw this row:\n• Working (0s • esc to interrupt)"
+        command = "codex -C /tmp -- " + shlex.quote(brief)
+        # Captured from zsh at 60 columns after a bracketed paste of the launch text.
+        echo = ["% exec /bin/zsh -c 'codex -C /tmp -- '\"'\"'Check why the laun",
+                "cher saw this row:",
+                "• Working (0s • esc to interrupt)'\"'\"''"]
+        prompt = [*echo, "› 1. Trust all and continue", "  2. Continue without trusting"]
+
+        def contents(lines):
+            return SimpleNamespace(number_of_lines=len(lines), line=lambda i: SimpleNamespace(string=lines[i]))
+
+        session = SimpleNamespace(session_id="exact", async_get_screen_contents=AsyncMock(
+            side_effect=[contents(echo)] * 3 + [contents(prompt)]))
+        app = SimpleNamespace(connection=object(), async_refresh=AsyncMock(),
+                              terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[session])])])
+        original = iterm_tab.verify_startup
+
+        async def observe(read, **options):
+            return await original(read, timeout=0, **options)
+
+        with (patch.dict("sys.modules", {"iterm2": SimpleNamespace(SessionTerminationMonitor=Mock(return_value=context))}),
+              patch.object(iterm_tab, "send", new_callable=AsyncMock),
+              patch.object(iterm_tab, "verify_startup", side_effect=observe)):
+            with self.assertRaises(iterm_tab.StartupFailure) as raised:
+                await iterm_tab.submit_iterm_launch(app, session, command, prompt_window=5)
+        self.assertEqual(raised.exception.snapshot["blocked_prompt"], "hook_trust")
+
     async def test_failed_iterm_monitor_reports_unknown_and_never_dead(self):
         context = Mock()
         context.__aenter__ = AsyncMock(return_value=SimpleNamespace(async_get=AsyncMock(side_effect=OSError)))
