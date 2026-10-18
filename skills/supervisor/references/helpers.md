@@ -877,8 +877,9 @@ brief's first nonblank line, using the exact app bundle ID, for example
 do not opt that task into GUI work.
 Launch that brief alone with `--account-provider openai` and a local `codex -C`
 command, without `--remote`. The launcher rejects terminal app targets and adds
-the GUI safety instructions to the worker's prompt. Other briefs keep the
-existing launch path and create no marketplace links or GUI state.
+the GUI safety instructions to the worker's prompt. Other briefs create no GUI
+state. With the catalog Chrome opt-in, local Codex launches share the marketplace
+setup described below.
 
 Only one Supervisor GUI worker may run at a time, across account homes and both
 terminal backends. The launcher refuses a locked screen or unavailable lock
@@ -894,12 +895,12 @@ before every GUI action and stop immediately if locked or unknown. No agent
 unlocks the screen. Missing app approval, Accessibility or Screen Recording
 permission is Chris's action; neither the launcher nor the worker grants it.
 
-During a real GUI launch only, the launcher validates the default home's current
+During GUI launches and enrolled local Codex launches, the launcher validates the default home's current
 `~/.codex/.tmp/bundled-marketplaces/openai-bundled` directory and creates the
 selected `CODEX_HOME`'s corresponding path as a symlink to it. A matching link
 is reused; an occupied path, redirected parent or different link target refuses
 without replacement. The link stays after the task ends and is validated again
-on later GUI launches; non-GUI launches neither create nor change it. It also passes the account-relative
+on later local launches. It also passes `--no-daemon` and the account-relative
 `-c marketplaces.openai-bundled.source="<account-home>/.tmp/bundled-marketplaces/openai-bundled"`
 override to that Codex process. The link alone does not load the marketplace.
 No shared `config.toml`, authentication, permissions or catalog installation is
@@ -1003,6 +1004,69 @@ its configured home; never queue exit commands. The terminal helper suppresses
 broadcast input, uses bracketed paste for multiline messages, and sends text
 and Return separately. Verify input and prompt
 before `--verified-target`, then read back once; do not replay an uncertain send.
+
+### Browser and Computer Use preflight
+
+Page checks stay headless. For a GUI brief explicitly naming the Agents Chrome
+profile, add `--require-browser` to `iterm_tab.py new`. Ordinary
+source briefs get warnings and keep working. `--without-browser` skips Claude's
+bounded connected-browser listing; the two flags cannot be combined. Neither
+flag permits an unbriefed browser or desktop action.
+
+With `.local/chrome.toml` present, Claude launches reject `--chrome` and export
+`CLAUDE_CODE_ENABLE_CFC=0`, keeping the built-in account-specific server off.
+Use `mcp__catalog-chrome__*` on the pinned Agents route. Preflight checks the
+selected home and project and calls only `list_connected_browsers`, once per
+server in a batch. Empty, failed, malformed and timed-out replies cannot pass
+a required-browser launch. Unrequested Computer Use settings are not a launch
+warning; enabling it and using Claude Computer Use remain Chris's actions.
+Codex is the default for screen work. Under Q475, run Claude Computer Use only
+in a visible iTerm tab with Chris's approval for that session, never under the
+launchd tmux server. Tool discovery alone does not authorize screen use.
+Do not change his logins, Chrome profiles, app settings or privacy grants.
+
+Local Codex launches with this opt-in, or an explicit browser/GUI brief, validate
+the account-relative link and pass its source override plus `--no-daemon`.
+The [native flag](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
+ensures the process loads that config even if a daemon already runs. Preflight
+lists enabled, installed bundled plugins from that home. A desktop GUI brief
+requires `computer-use`; `--require-browser` requires `chrome` and `browser`.
+A brief asking for both must have both sets. Remote launches keep
+their endpoint; `--require-browser` makes `--remote unix://` check the selected
+daemon's `plugin/list` for the launch's `-C` directory, refusing inventory
+failure or missing plugins. Source launches skip this unrequested inventory;
+daemon admission remains an independent check. Optional local discovery failure
+warns but keeps the validated local route. An explicit `--no-daemon` is retained
+once and never triggers daemon admission, including without the opt-in. If
+marketplace setup itself fails, the warning names the fallback to the
+selected-home daemon, or the retained local configuration when `--no-daemon`
+was explicit. Other explicit remote endpoints are
+unverified and cannot satisfy `--require-browser`. Use local `codex -C` for
+the supported browser route. Nothing restarts an existing daemon or edits
+shared config. Discovery does not prove a working extension, runtime or OS grant.
+
+Session start makes static Chrome-route checks only and prints one loud line
+on a conflict. Unrequested Computer Use availability is left to launch
+preflight. Direct Claude sessions must omit `--chrome` and start with
+`CLAUDE_CODE_ENABLE_CFC=0`; the hook reports a conflicting saved setting rather
+than changing it. Local launcher Codex sessions carry their source override into the
+hook's diagnostic environment, where it can check that override. Without this
+marker, remote or direct Codex setup is left to launch preflight rather than
+printing unverified marketplace uncertainty on every startup.
+The hook never calls a GUI tool.
+
+**Remote config research, Codex 0.163.0 (#2119):** `thread/start` accepts a
+`config` map, and its
+[processor](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/app-server/src/request_processors/thread_processor.rs)
+loads it into the thread's config stack. A throwaway, unauthenticated app-server
+loaded one fake bundled MCP server through that map while the same fixture
+without the override loaded none. Both threads were ephemeral, unsubscribed
+and the process exited; no model turn or real GUI server ran. This proves the
+protocol path, not tool use in the stock remote TUI. That TUI's
+[forwarding code](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/tui/src/app_server_session.rs)
+filters out `marketplaces` for both CLI `-c` and a `-p` profile. A profile can
+supply supported model choices remotely, but cannot repair marketplace loading
+there. The native local flag avoids needing a custom remote thread client.
 
 ### tmux launches
 
@@ -1235,7 +1299,7 @@ Successful launch output reports environment variable names, without their
 private path values. A daemon refusal includes the selected home in its recovery
 diagnostic; keep that diagnostic out of public comments.
 
-For Codex's shared app server, launch with `codex --remote unix:// -C /absolute/repository`: the empty
+For source work on Codex's shared app server, launch with `codex --remote unix:// -C /absolute/repository`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
 its own daemon. A fixed socket or WebSocket endpoint attaches to that server's
 account regardless of the exported home. Keep the per-session `-c` settings:
@@ -1292,7 +1356,7 @@ when the selected home already trusts its root; otherwise the launch refuses
 and names the home, so you can open `claude` there and review the dialog
 yourself. A configured home without `.claude.json` also refuses before any
 write; a default home without one is skipped, never created. The launcher leaves every other key, including the login, unchanged.
-Before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
+For daemon-routed launches, before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
 runs `CODEX_HOME=<selected-home> codex app-server daemon start` for each selected
 home, with a 30-second command timeout. Native `start` reuses a healthy running
 daemon; it also brings one back after a reboot. It does not use `bootstrap`,

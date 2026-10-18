@@ -38,6 +38,61 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
     return {"turn": turn, "audits": {repo.replace("__", "/"): stamp for repo, stamp in audits.items()}}
 
 
+class AgentToolsReminderTests(unittest.TestCase):
+    def test_tool_checker_exceptions_do_not_escape_startup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".local").mkdir()
+            (root / ".local/chrome.toml").touch()
+            for error in (RecursionError(), SyntaxError(), TypeError()):
+                with mock.patch.object(hook.runpy, "run_path", side_effect=error):
+                    self.assertTrue(hook.agent_tools_warning(root, root, {"CLAUDECODE": "1"}))
+
+    def test_unrequested_desktop_tools_and_unverified_daemon_setup_are_quiet(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".local").mkdir()
+            (root / ".local/chrome.toml").touch()
+            config = root / ".claude.json"
+            config.write_text(json.dumps({"mcpServers": {"catalog-chrome": {"command": "fixture"}}}))
+            env = {"CLAUDECODE": "1", "CLAUDE_CONFIG_DIR": str(root)}
+            self.assertEqual(hook.agent_tools_warning(root, root, env), "")
+            self.assertEqual(hook.agent_tools_warning(root, root, {"CODEX_HOME": str(root)}), "")
+
+    def test_claude_startup_reports_tools_once_without_processes_or_setting_writes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".local").mkdir()
+            (root / ".local/chrome.toml").touch()
+            home = root / "account"
+            home.mkdir()
+            config = home / ".claude.json"
+            config.write_text(json.dumps({"claudeInChromeDefaultEnabled": True}))
+            env = {"CLAUDECODE": "1", "CLAUDE_CONFIG_DIR": str(home)}
+            before = config.read_bytes()
+            with mock.patch.object(subprocess, "Popen", side_effect=AssertionError("no live probes")):
+                warning = hook.agent_tools_warning(root, root, env)
+            self.assertEqual(len(warning.splitlines()), 1)
+            self.assertTrue(warning)
+            self.assertEqual(config.read_bytes(), before)
+            self.assertEqual(hook.agent_tools_warning(root, root, {"CODEX_HOME": str(home)}), "")
+            (root / ".local/chrome.toml").unlink()
+            self.assertEqual(hook.agent_tools_warning(root, root, env), "")
+
+    def test_static_diagnostic_is_wired_into_session_start_only(self):
+        for kwargs, emitted in (({}, True), ({"skills_only": True}, False), ({"turn": True}, False)):
+            output = io.StringIO()
+            with (mock.patch.object(hook, "agent_tools_warning", return_value="fixture-tool-warning") as check,
+                  mock.patch.object(hook, "marker_path", return_value=Path("/missing/fixture-marker")),
+                  mock.patch.object(hook, "direction_root", return_value=Path.cwd()),
+                  mock.patch.object(hook, "origin_repo", return_value=None),
+                  mock.patch.object(hook, "memory_reminder", return_value=""),
+                  contextlib.redirect_stdout(output)):
+                self.assertEqual(hook.main(**kwargs), 0)
+            self.assertEqual("fixture-tool-warning" in output.getvalue(), emitted)
+            self.assertEqual(check.called, emitted)
+
+
 class MemoryReminderTests(unittest.TestCase):
     def test_session_start_reports_due_memory_on_both_harnesses_without_writes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
