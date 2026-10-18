@@ -1267,8 +1267,9 @@ For enrolled homes, local Supervisor Codex launches add `--no-daemon`, validate
 the account-relative bundle link, pass its marketplace source override, and
 check installed/enabled plugins. Desktop GUI briefs require `computer-use`;
 `--require-browser` needs `chrome` and `browser`. Briefs asking for both need both sets.
-`--remote unix://` launches inspect their selected daemon's `plugin/list`;
-missing plugins warn for source work and refuse `--require-browser`. Explicit
+`--remote unix://` source launches check daemon admission without unrequested
+plugin warnings. With `--require-browser`, they inspect the selected daemon's
+`plugin/list` and refuse missing plugins. Explicit
 other endpoints stay unverified. Use local `codex -C /absolute/repository` for
 a browser brief. See [launcher tools and remote research](skills/supervisor/references/helpers.md#browser-and-computer-use-preflight).
 Discovery is separate from a working browser connection, OS permission and app

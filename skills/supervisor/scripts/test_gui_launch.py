@@ -29,21 +29,6 @@ import tmux_terminal
 
 
 class GuiLaunchTests(unittest.TestCase):
-    def test_desktop_only_gui_does_not_require_browser_plugins(self):
-        with patch.object(agent_tools, "codex_plugins", return_value=[{
-                "name": agent_tools.COMPUTER_USE, "marketplaceName": "openai-bundled",
-                "enabled": True, "installed": True}]):
-            _, choices = iterm_tab.prepare_launches(self.args)
-        self.assertEqual(choices[0]["tools"]["warnings"], [])
-        gui_launch.release(Path(choices[0]["gui"]["state_path"]), choices[0]["gui"]["token"])
-
-    def test_gui_still_refuses_when_computer_use_is_missing(self):
-        with patch.object(agent_tools, "codex_plugins", return_value=[{
-                "name": name, "marketplaceName": "openai-bundled", "enabled": True, "installed": True}
-                for name in agent_tools.CODEX_BROWSER_PLUGINS]):
-            with self.assertRaises(ValueError):
-                iterm_tab.prepare_launches(self.args)
-
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -80,6 +65,21 @@ class GuiLaunchTests(unittest.TestCase):
                                        account_provider="openai", account_config=None, account=None)
         patch.object(account_choice, "select", return_value=self.choice).start()
         self.daemon = patch.object(iterm_tab, "check_codex_daemon").start()
+
+    def test_desktop_only_gui_does_not_require_browser_plugins(self):
+        with patch.object(agent_tools, "codex_plugins", return_value=[{
+                "name": agent_tools.COMPUTER_USE, "marketplaceName": "openai-bundled",
+                "enabled": True, "installed": True}]):
+            _, choices = iterm_tab.prepare_launches(self.args)
+        self.assertEqual(choices[0]["tools"]["warnings"], [])
+        gui_launch.release(Path(choices[0]["gui"]["state_path"]), choices[0]["gui"]["token"])
+
+    def test_gui_still_refuses_when_computer_use_is_missing(self):
+        with patch.object(agent_tools, "codex_plugins", return_value=[{
+                "name": name, "marketplaceName": "openai-bundled", "enabled": True, "installed": True}
+                for name in agent_tools.CODEX_BROWSER_PLUGINS]):
+            with self.assertRaises(ValueError):
+                iterm_tab.prepare_launches(self.args)
 
     def test_selected_home_override_reaches_agent_and_receipt_without_config_changes(self):
         fake = self.root / "codex"

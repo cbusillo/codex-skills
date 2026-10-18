@@ -984,7 +984,7 @@ With `.local/chrome.toml` present, Claude launches reject `--chrome` and export
 Use `mcp__catalog-chrome__*` on the pinned Agents route. Preflight checks the
 selected home and project and calls only `list_connected_browsers`, once per
 server in a batch. Empty, failed, malformed and timed-out replies cannot pass
-a required-browser launch. An unavailable Computer Use project setting is a
+a required-browser launch. Unrequested Computer Use settings are not a launch
 warning; enabling it and using Claude Computer Use remain Chris's actions.
 Codex is the default for screen work. Under Q475, run Claude Computer Use only
 in a visible iTerm tab with Chris's approval for that session, never under the
@@ -998,10 +998,12 @@ ensures the process loads that config even if a daemon already runs. Preflight
 lists enabled, installed bundled plugins from that home. A desktop GUI brief
 requires `computer-use`; `--require-browser` requires `chrome` and `browser`.
 A brief asking for both must have both sets. Remote launches keep
-their endpoint; with the opt-in or `--require-browser`, `--remote unix://` checks
-the selected daemon's `plugin/list` for the launch's `-C` directory. Inventory
-failure or missing plugins warns for source work and refuses required-browser
-work; daemon admission remains an independent check. Other explicit remote endpoints are
+their endpoint; `--require-browser` makes `--remote unix://` check the selected
+daemon's `plugin/list` for the launch's `-C` directory, refusing inventory
+failure or missing plugins. Source launches skip this unrequested inventory;
+daemon admission remains an independent check. Optional local discovery failure
+warns but keeps the validated local route. If marketplace setup itself fails,
+the warning names the fallback to the selected-home daemon. Other explicit remote endpoints are
 unverified and cannot satisfy `--require-browser`. Use local `codex -C` for
 the supported browser route. Nothing restarts an existing daemon or edits
 shared config. Discovery does not prove a working extension, runtime or OS grant.

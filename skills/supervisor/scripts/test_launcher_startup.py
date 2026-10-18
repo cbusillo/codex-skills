@@ -26,6 +26,14 @@ ADMISSION_OPEN = json.loads((Path(__file__).parent / "fixtures" / "codex-admissi
 
 
 class DaemonTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.opt = Path(folder.name) / "opt-in"
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", self.opt)
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
+
     def test_captured_native_plugin_inventory_passes_required_browser_check(self):
         fixture = json.loads((Path(__file__).parent / "fixtures/codex-plugin-list-local.json").read_text())["response"]
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"},
@@ -35,14 +43,6 @@ class DaemonTests(unittest.TestCase):
               patch.object(iterm_tab, "inspect_codex_daemon", return_value=fixture)):
             iterm_tab.check_codex_daemon(choice)
         self.assertEqual(choice["tools"]["warnings"], [])
-
-    def setUp(self):
-        folder = tempfile.TemporaryDirectory()
-        self.addCleanup(folder.cleanup)
-        self.opt = Path(folder.name) / "opt-in"
-        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", self.opt)
-        opt_in.start()
-        self.addCleanup(opt_in.stop)
 
     def inspect(self, *, draining=False, pages=None, states=None, probe=None, fail=None, directory=None):
         pages = pages or {None: {"data": ["detached-worker"], "nextCursor": None}}
@@ -99,20 +99,21 @@ class DaemonTests(unittest.TestCase):
         self.assertEqual(inventory["params"]["cwds"], ["/fixture/project"])
         self.assertTrue(self.inventory["inventory_error"])
 
-    def test_missing_remote_plugins_warn_for_source_work_and_refuse_browser_work(self):
+    def test_source_daemon_skips_plugins_and_required_browser_refuses_missing_plugins(self):
         self.opt.touch()
         for required in (False, True):
             choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"},
                       "require_browser": required, "tool_directory": "/fixture/project"}
             with (patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
                   patch.object(iterm_tab.socket, "socket"),
-                  patch.object(iterm_tab, "inspect_codex_daemon", return_value={"marketplaces": []})):
+                  patch.object(iterm_tab, "inspect_codex_daemon", return_value={"marketplaces": []}) as inspect):
                 if required:
                     with self.assertRaises(ValueError):
                         iterm_tab.check_codex_daemon(choice)
                 else:
                     iterm_tab.check_codex_daemon(choice)
-                    self.assertTrue(choice["tools"]["warnings"])
+                    self.assertEqual(choice.get("tools", {}).get("warnings", []), [])
+                    inspect.assert_called_once_with(Path("/fixture/account"), directory=None)
 
     def test_draining_daemon_with_detached_active_worker_refuses(self):
         with self.assertRaises(iterm_tab.DaemonRefusal) as raised:

@@ -619,23 +619,20 @@ def check_codex_daemon(choice):
             f"run {command}, then retry the launch"
         ) from error
     try:
-        inspect_plugins = CHROME_OPT_IN.is_file() or choice.get("require_browser")
+        inspect_plugins = choice.get("require_browser", False)
         directory = choice.get("tool_directory") if inspect_plugins else None
         if inspect_plugins and directory is None:
             raise ValueError("plugin inventory needs the validated launch directory")
         inventory = inspect_codex_daemon(home, directory=directory)
-        if isinstance(inventory, dict) and not choice.get("tools", {}).get("remote_endpoint_unverified"):
+        if inspect_plugins and isinstance(inventory, dict) and not choice.get("tools", {}).get("remote_endpoint_unverified"):
             plugins = agent_tools.daemon_codex_plugins(inventory)
-            needed = agent_tools.CODEX_BROWSER_PLUGINS if choice.get("require_browser") else None
-            missing = agent_tools.missing_codex_plugins(plugins, needed)
-            tools = choice.setdefault("tools", {"warnings": []})
+            missing = agent_tools.missing_codex_plugins(plugins, agent_tools.CODEX_BROWSER_PLUGINS)
+            choice.setdefault("tools", {"warnings": []})
             if missing or inventory.get("inventory_error"):
                 message = inventory.get("inventory_error") or ("daemon-routed Codex is missing enabled bundled plugins: " + ", ".join(missing) +
                            "; use local codex --no-daemon -C with the launcher's account-relative override; "
                            "-c and -p do not forward marketplace settings through --remote")
-                if choice.get("require_browser"):
-                    raise ValueError(message)
-                tools["warnings"].append(message)
+                raise ValueError(message)
     except Exception as error:
         detail = str(error) if isinstance(error, ValueError) else type(error).__name__
         raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
@@ -785,7 +782,8 @@ def check_claude_tools(command_text, choice, without_browser=False, probes=None,
         raise ValueError("required Claude browser needs cd /absolute/repository && exec claude")
     directory = (Path(directory).expanduser() if directory else Path.cwd()).resolve()
     # The launch exports CLAUDE_CODE_ENABLE_CFC=0, so the built-in server stays off.
-    tools = {"warnings": agent_tools.claude_problems(home, directory, {agent_tools.CHROME_ENV: "0"})}
+    tools = {"warnings": agent_tools.claude_problems(
+        home, directory, {agent_tools.CHROME_ENV: "0"}, check_computer_use=False)}
     if without_browser:
         tools["browsers"] = "not checked (--without-browser)"
     else:
@@ -839,14 +837,22 @@ def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
     home = Path(choice["env"]["CODEX_HOME"]).expanduser()
     try:
         market = gui_launch.marketplace(home, Path.home() / ".codex")
+    except ValueError as error:
+        if must_work:
+            raise
+        choice["tools"] = {"warnings": [str(error) + "; source launch falls back to the selected-home daemon"]}
+        return command_text
+    try:
         missing = agent_tools.missing_codex_plugins(
             agent_tools.codex_plugins(home, Path(market["path"]), codex_directory(words)), needed)
     except ValueError as error:
         if must_work:
             raise
-        choice["tools"] = {"warnings": [str(error)]}
-        return command_text
-    warnings = ["Codex bundled plugins missing or disabled: " + ", ".join(missing)] if missing else []
+        # The validated local marketplace route still works for source tasks;
+        # an optional discovery failure must not silently switch transports.
+        warnings = [str(error)]
+    else:
+        warnings = ["Codex bundled plugins missing or disabled: " + ", ".join(missing)] if missing else []
     if must_work and warnings:
         raise ValueError(warnings[0] + "; install/enable them through Codex before this tool launch")
     choice["tools"] = {"warnings": warnings, "marketplace": market, "route": "local"}

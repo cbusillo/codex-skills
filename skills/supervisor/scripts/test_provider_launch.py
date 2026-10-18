@@ -198,7 +198,7 @@ class ProviderLaunchTests(unittest.TestCase):
             server = {"command": "fixture"}
             (home / ".claude.json").write_text(json.dumps({
                 "mcpServers": {agent_tools.CHROME_SERVER: server},
-                "projects": {str(repo): {"enabledMcpServers": [agent_tools.COMPUTER_USE]}}}))
+                "projects": {str(repo): {}}}))
             choice = {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(home)}}
             command = "cd " + shlex.quote(str(repo)) + " && claude"
             with (patch.object(iterm_tab, "CHROME_OPT_IN", opt_in),
@@ -288,6 +288,17 @@ class ProviderLaunchTests(unittest.TestCase):
                     iterm_tab.prepare_codex_tools("codex -C /fixture/repo", choice, required=True)
                 iterm_tab.prepare_codex_tools("codex -C /fixture/repo", choice)
                 self.assertTrue(choice["tools"]["warnings"])
+                inventory.side_effect = ValueError("fixture discovery unavailable")
+                command = iterm_tab.prepare_codex_tools("codex -C /fixture/repo", choice)
+                self.assertIn("--no-daemon", shlex.split(command))
+                self.assertEqual(choice["tools"]["route"], "local")
+                self.assertTrue(choice["tools"]["warnings"])
+                inventory.side_effect = None
+                fallback = {"provider": "openai", "env": {"CODEX_HOME": str(account)}}
+                with patch.object(iterm_tab.gui_launch, "marketplace", side_effect=ValueError("fixture setup unavailable")):
+                    command = iterm_tab.prepare_codex_tools("codex -C /fixture/repo", fallback)
+                self.assertNotIn("--no-daemon", shlex.split(command))
+                self.assertIn("daemon", " ".join(fallback["tools"]["warnings"]))
                 inventory.reset_mock()
                 remote = "codex --remote unix:// -C /fixture/repo"
                 self.assertEqual(iterm_tab.prepare_codex_tools(remote, choice, required=True), remote)
