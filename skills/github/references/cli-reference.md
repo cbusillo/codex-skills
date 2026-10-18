@@ -478,7 +478,27 @@ refuses a draft, closed PR or `merge-blocked`. It also refuses a PR that GitHub
 computed as conflicting with its base (`mergeable` false or merge state
 `DIRTY`); refresh it under babysit-pr's
 [Conflicts](../../babysit-pr/SKILL.md#conflicts) and post `ready` for the new
-head. Unknown mergeability is not a conflict. It rechecks the head and labels
+head. Unknown mergeability is not a conflict. It also refuses while a
+[review by another model](../../references/model-review.md) is pending or
+missing: a review request comment (a `Review prompt` or `Review request` lead,
+`Review of record needed`, or an affirmative "Supervisor runs the review"
+on its own line, optionally after "so") with no later
+outcome comment identifying the current head (a `Review of record:`,
+`Review weighed` or `Review by another model` lead), or a change to the base
+branch's `qualityGate.modelReview.requiredPaths` with no outcome naming the current
+head. Record `Head: <full SHA>` on its own line, or identify the head (at least
+seven hex characters) in the outcome's first line with `Head`/`Head SHA`,
+or `at` followed by a backticked SHA. Commit dates do not identify
+reviewed source. Generic request leads need explicit model-review context,
+not a product name. An outcome needs an actual result or disposition, such as
+no findings, findings acted on/fixed/declined, or the Supervisor's recorded run.
+Work verbs such as completed, found or reviewed are insufficient by themselves. An unfinished
+status does not count as an outcome; descriptions of the code after the result
+do not negate it. Only the automation account's and the PR author's comments
+count; a refusal names the accepted identities. Required-path coverage also
+refuses an incomplete changed-file inventory, including GitHub's file-list cap.
+`supervisor/scripts/auto_enqueue.py` skips the same PRs with reason
+`review_of_record_not_recorded`. It rechecks the head and labels
 before posting through the shared comment writer. This is a handoff to the
 assigned routing agent; it applies no enqueue label and performs no merge.
 Other review and task authorization requirements still apply.
