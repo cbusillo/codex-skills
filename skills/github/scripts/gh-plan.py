@@ -1534,6 +1534,27 @@ def close_relationship_preflight(
     return actor, preflight
 
 
+def section_machine_markers(text: str) -> dict[str, list[str]]:
+    """Live helper records by kind, recognized as each kind's reader does; examples are not records."""
+    found: dict[str, list[str]] = {}
+    claims = github_plan_claim.live_lines(text)
+    if claims:
+        found["github-plan:claim"] = claims
+    for _, line in github_plan_wait.live_lines(text, prefix="<!-- "):
+        match = re.match(r"<!-- (github-plan:[\w-]+|github-skill-operation):?", line)
+        if match and match.group(1) != "github-plan:claim" and line.strip() not in PLAN_RESERVED_MARKERS:
+            found.setdefault(match.group(1), []).append(line)
+    return found
+
+
+def with_carried_markers(old_text: str, new_text: str) -> str:
+    """Keep the section's wait, claim and other helper records unless the caller supplies that kind."""
+    supplied = section_machine_markers(new_text)
+    carried = [line for kind, lines in section_machine_markers(old_text).items()
+               if kind not in supplied for line in lines]
+    return "\n\n".join(part for part in (new_text.strip(), "\n".join(carried)) if part)
+
+
 def replace_section(body: str, section: str, new_text: str) -> str:
     body = body or ""
     if any(marker in new_text for marker in PLAN_RESERVED_MARKERS):
@@ -1541,7 +1562,9 @@ def replace_section(body: str, section: str, new_text: str) -> str:
     pattern = re.compile(rf"(?ms)^##\s+{re.escape(section)}\s*\n.*?(?=^##\s+|\Z)")
     replacement = f"## {section}\n\n{new_text.strip()}\n\n"
     if pattern.search(body):
-        return pattern.sub(lambda _match: replacement, body).rstrip() + "\n"
+        return pattern.sub(
+            lambda match: f"## {section}\n\n{with_carried_markers(match.group(0), new_text)}\n\n",
+            body).rstrip() + "\n"
     if body and not body.endswith("\n"):
         body += "\n"
     return f"{body}\n{replacement}".lstrip()
@@ -2053,7 +2076,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
     )
     comments = github_plan_release.effective_comments(comments)
     for release_comment, receipt in github_plan_release.receipts(comments):
-        valid = False
+        valid, evidence = False, None
         try:
             evidence_match = github_plan_release.COMMENT_URL.fullmatch(receipt["evidence_url"])
             if evidence_match:
@@ -2069,6 +2092,9 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
             pass
         if not valid:
             comments = [github_plan_release.without_release(c) if c.get("id") == release_comment.get("id") else c for c in comments]
+        else:
+            # Evidence may live on another issue; keep the validated copy with its release.
+            comments = [{**c, "_release_evidence": evidence} if c.get("id") == release_comment.get("id") else c for c in comments]
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
     status = sections.get("Current Status", "")
     if "pull_request" in issue:
@@ -2361,11 +2387,19 @@ def _claim_once(args: argparse.Namespace) -> None:
     admission_unlinked = getattr(args, "admission_unlinked", None)
     if (admission_links or admission_unlinked is not None) and not admission:
         raise PlanError("--admission-link and --admission-unlinked require --admission")
-    if any(not github_plan_claim.ISSUE_URL.fullmatch(link) for link in admission_links):
-        raise PlanError("--admission-link must be an exact GitHub issue or pull request URL")
+    admission_targets = {link: github_plan_claim.admission_link_target(link) for link in admission_links}
+    if None in admission_targets.values():
+        raise PlanError("--admission-link must be https://github.com/OWNER/REPO/issues/N or "
+                        "https://github.com/OWNER/REPO/pull/N, optionally followed by #issuecomment-ID "
+                        "(N and ID are positive integers)")
     if admission_unlinked is not None and (admission != "milestone" or not admission_unlinked.strip()
                                            or any(c in admission_unlinked for c in "\n\r")):
         raise PlanError("--admission-unlinked records one nonempty line for milestone admission")
+    # Spellings of one issue, PR or comment cite one occurrence; keep the first as written.
+    first_spellings: dict[tuple[str, int, int | None], str] = {}
+    for link, target in admission_targets.items():
+        first_spellings.setdefault(target, link)
+    admission_links = list(first_spellings.values())
     if admission == "repeat-stop" and len(admission_links) < 2:
         raise PlanError("Repeat-stop admission needs both occurrences: pass --admission-link once for each")
     refresh_pr = getattr(args, "refresh_pr", None)
@@ -6012,7 +6046,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,
                    help="Which overall Order rule admits this work; milestone requires a native link into a milestone Track graph")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL",
-                   help="Issue or PR evidence for the admission; repeat-stop needs both occurrences")
+                   help="Issue or PR URL, optionally with #issuecomment-ID; preserves the cited comment; repeat-stop needs both occurrences")
     p.add_argument("--admission-unlinked", metavar="REASON",
                    help="Why milestone work cannot be linked into its Track graph yet")
     p.set_defaults(func=cmd_claim)
@@ -6223,6 +6257,10 @@ def main() -> None:
     previous_repo = os.environ.get("GH_REPO")
     try:
         target_repo = command_repository(args)
+        if target_repo and not args.repo and getattr(args, "issue", None) and not repo_from_git():
+            # Without a GitHub checkout a qualified issue is the only repository
+            # the command names, so it is also the default for its other references.
+            args.repo = target_repo
         # Bind readers, probes and transport before any cache is prepared.
         if target_repo:
             os.environ["GH_REPO"] = target_repo

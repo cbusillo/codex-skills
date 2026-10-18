@@ -793,8 +793,9 @@ to retrieve the complete saved Client reason; add `--decision-id ID` for a
 historical decision. This narrow read uses the existing private admin config
 and the product's `product_profile.read` permission. It is a bounded local
 extension of `/v1/product-review`, separate from the public-safe context output.
-The output contains Client prose: keep it in task-private evidence unless its
-publication is authorized. A failed read means unavailable, not no feedback.
+The output contains Client prose: unless its publication is authorized, keep
+it only where [task artifacts](../references/repo-cleanup.md#task-artifacts-and-retention)
+go, the session scratchpad or the host's named task-evidence location. A failed read means unavailable, not no feedback.
 The PR watcher uses this reader to verify its GitHub projection and receipt.
 
 ## Stable Deploy Identity
@@ -1152,6 +1153,15 @@ verification.
   product's own stable-lane secret into another of its lanes without
   collecting the value; see the
   [write-action contract](references/write-action-helper-contract.md#copying-a-managed-runtime-secret).
+- `GET /v1/contexts/{context}/runtime-settings` and `/secrets`, with their
+  `/instances/{instance}/...` variants: names-only local-extension reads
+  (`context-runtime-settings-read`, `instance-runtime-settings-read`,
+  `context-secrets-read`, `instance-secrets-read`). Supply `--context` and,
+  for instance commands, `--instance`. Settings show `keys` and `withheld_keys`
+  by record scope; secrets show name, integration, scope and status. These
+  inventories can include inherited global records and reflect caller access.
+  Read the [names-only contract](references/write-action-helper-contract.md#names-only-settings-and-secret-reads)
+  for output bounds and the service's plain-value transport limitation.
 - `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`: Bounded
   local-extension read (`target-replacement-operation-read --operation-id`)
   for why a testing or stable Odoo deploy failed: take the id from

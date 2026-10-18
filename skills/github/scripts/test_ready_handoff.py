@@ -6,14 +6,17 @@
 """Ready comments round-trip through the watcher and never hide red CI."""
 
 import argparse
+import base64
 import copy
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from github_read import GitHubReadShapeError
+from github_api import ApiResult
+from github_read import GitHubReadError, GitHubReadShapeError
 from ready_handoff import READY, handoff_body, latest_ready
 import ready_handoff
 
@@ -24,14 +27,18 @@ spec.loader.exec_module(helper)
 
 SHA = "a" * 40
 REPO = "example/tool"
+PR = {"number": 1, "state": "open", "draft": False, "labels": [], "changed_files": 1, "head": {"sha": SHA}, "base": {"ref": "main"}, "user": {"login": "engineer"}}
 
 
 class Reader:
     def __init__(self):
-        self.pr = {"number": 1, "state": "open", "draft": False, "labels": [], "head": {"sha": SHA}}
+        self.pr = copy.deepcopy(PR)
         self.checks: list[dict[str, Any]] = [{"id": 1, "name": "unit", "status": "completed", "conclusion": "success"}]
         self.statuses = []
         self.runs = []
+        self.comments: list[dict[str, Any]] = []
+        self.config = None
+        self.files = [{"filename": "src/tool.py"}]
         self.current_pr = None
         self.pr_reads = 0
         self.unavailable = False
@@ -47,6 +54,10 @@ class Reader:
             return copy.deepcopy(self.current_pr if self.pr_reads > 1 and self.current_pr else self.pr)
         if path.endswith("/status"):
             return {"state": "success"}
+        if f"/contents/{ready_handoff.REVIEW_CONFIG_PATH}?ref=main" in path:
+            if self.config is None:
+                raise GitHubReadError("Not Found", result=ApiResult(ok=False, status=404, body=None), diagnostics={})
+            return {"content": base64.b64encode(json.dumps(self.config).encode()).decode()}
         raise AssertionError(path)
 
     def paged_json(self, path, **_kwargs):
@@ -58,6 +69,10 @@ class Reader:
             return self.statuses
         if path.endswith("/actions/runs"):
             return self.runs
+        if path.endswith("/issues/1/comments"):
+            return self.comments
+        if path.endswith("/pulls/1/files"):
+            return self.files
         raise AssertionError(path)
 
     @staticmethod
@@ -67,6 +82,73 @@ class Reader:
     @staticmethod
     def retry_summary():
         return None
+
+
+class ReviewRecordTests(unittest.TestCase):
+    def test_explicit_result_accepts_all_weighed_disposition_formats(self):
+        for body in (
+            "Acted on: the cache bug.\nDeclined: the wording nit, not reproducible.",
+            "Review weighed: two findings deferred to #123",
+            "Review weighed: one finding unresolved (could not test), tracked in #456",
+            "Review weighed: declined both findings: not reproducible.",
+        ):
+            with self.subTest(body=body):
+                record = ready_handoff.review_result_body(body, SHA)
+                self.assertEqual(ready_handoff.review_record(record), "outcome")
+                self.assertEqual(ready_handoff.review_receipt_head(record), SHA)
+
+    def test_prose_does_not_attest_completion_or_weighing(self):
+        for body in (
+            "Review of record: OpenAI reviewed 3 of 10 files; no findings. 7 files remain.",
+            "Review of record: OpenAI launched\n\nPreliminary findings: none yet; still running.",
+            "Review of record: OpenAI, run by the Supervisor\n\n3 findings: not yet weighed.",
+            "Review weighed: no findings.",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNone(ready_handoff.review_record(f"{body}\n\nHead: {SHA}"))
+
+    def test_request_leads_remain_supported_without_product_or_quote_false_holds(self):
+        for body in ("Review prompt for the Anthropic review of record.",
+                     "Review of record needed: OpenAI.",
+                     "The helper fails, so **Supervisor runs the review**:"):
+            self.assertEqual(ready_handoff.review_record(body), "request")
+        for body in ("Review request: OpenAI API key docs", "> Supervisor runs the review.",
+                     "No model review is needed; the Supervisor runs the review only for skill paths."):
+            self.assertIsNone(ready_handoff.review_record(body))
+
+    def test_quoted_malformed_or_unbound_completion_is_not_evidence(self):
+        record = ready_handoff.review_result_body("Acted on: all findings.", SHA)
+        for body in ("> " + record, "```\n" + record + "\n```", record.replace(SHA, SHA[:7]),
+                     record.replace(ready_handoff.REVIEW_RESULT, "Review result: pending")):
+            self.assertNotEqual(ready_handoff.review_record(body), "outcome")
+
+
+class ReviewCommentTests(unittest.TestCase):
+    def args(self, head):
+        return argparse.Namespace(repo=REPO, pr="1", body_file="fixture", reviewed_head=head,
+            edit_last=False, edit_comment=None, expected_body_file=None,
+            expected_updated_at=None, create_if_none=False)
+
+    def test_existing_comment_writer_posts_head_bound_disposition(self):
+        body = "Acted on: cache bug.\nDeclined: wording nit."
+        with (patch.object(helper, "resolve_pr", return_value=(REPO, 1)),
+              patch.object(helper, "read_text_file", return_value=body),
+              patch.object(helper, "shared_comment", return_value={"url": "fixture"}) as writer):
+            helper.cmd_comment(self.args(SHA))
+        posted = writer.call_args.args[3]
+        self.assertEqual(posted, ready_handoff.review_result_body(body, SHA))
+        self.assertEqual(ready_handoff.review_receipt_head(posted), SHA)
+
+    def test_invalid_head_and_edit_mode_refuse_before_writing(self):
+        for head, edit in (("short", False), (SHA, True)):
+            args = self.args(head)
+            args.edit_last = edit
+            with (patch.object(helper, "resolve_pr", return_value=(REPO, 1)),
+                  patch.object(helper, "read_text_file", return_value="Acted on: all."),
+                  patch.object(helper, "shared_comment") as writer):
+                with self.assertRaises(helper.PrHelperError):
+                    helper.cmd_comment(args)
+                writer.assert_not_called()
 
 
 class ReadyTests(unittest.TestCase):
@@ -148,14 +230,14 @@ class ReadyTests(unittest.TestCase):
     def test_hold_closed_and_draft_refuse(self):
         for change in ({"labels": [{"name": "merge-blocked"}]}, {"state": "closed"}, {"draft": True}):
             with self.subTest(change=change):
-                self.reader.pr = {"number": 1, "state": "open", "draft": False, "labels": [], "head": {"sha": SHA}, **change}
+                self.reader.pr = {**PR, **change}
                 self.refuse()
 
     def test_conflicting_base_refuses(self):
         for change in ({"mergeable": False, "mergeable_state": "dirty"}, {"mergeable": False}, {"mergeable_state": "dirty"}):
             with self.subTest(change=change):
                 self.reader.pr_reads = 0
-                self.reader.pr = {"number": 1, "state": "open", "draft": False, "labels": [], "head": {"sha": SHA}, **change}
+                self.reader.pr = {**PR, **change}
                 self.assertIn("babysit-pr Conflicts", self.refuse())
 
     def test_conflict_found_by_fresh_read_refuses(self):
@@ -166,7 +248,7 @@ class ReadyTests(unittest.TestCase):
         for change in ({"mergeable": None, "mergeable_state": "unknown"}, {"mergeable": True, "mergeable_state": "clean"}, {"mergeable": True, "mergeable_state": "blocked"}):
             with self.subTest(change=change):
                 self.reader.pr_reads = 0
-                self.reader.pr = {"number": 1, "state": "open", "draft": False, "labels": [], "head": {"sha": SHA}, **change}
+                self.reader.pr = {**PR, **change}
                 self.post()
 
     def test_push_or_hold_during_reads_refuses(self):
@@ -175,6 +257,158 @@ class ReadyTests(unittest.TestCase):
                 self.reader.pr_reads = 0
                 self.reader.current_pr = {**self.reader.pr, **change}
                 self.refuse()
+
+    def review_comment(self, body, minute, login="engineer", *, reviewed_head=None):
+        if reviewed_head is not None:
+            body = ready_handoff.review_result_body(body, reviewed_head)
+        self.reader.comments.append({
+            "id": len(self.reader.comments) + 1, "user": {"login": login}, "body": body,
+            "created_at": f"2026-01-01T00:{minute:02d}:00Z",
+        })
+
+    def test_pending_review_of_record_refuses_until_a_later_outcome(self):
+        self.review_comment("Review prompt for the OpenAI review of record. **Supervisor runs the review.**", 1)
+        self.refuse()
+        self.review_comment("Review by another model is blocked by #2069; the Supervisor still needs to run it.", 2)
+        self.refuse()
+        self.review_comment("**Review of record: OpenAI, run by the Supervisor** at head `aaaaaaa`.", 3)
+        self.refuse()
+        self.review_comment("Acted on: both findings. Declined: none.", 3, reviewed_head=SHA)
+        self.post()
+        self.writer.reset_mock()
+        self.review_comment("Review of record still needed after the fix push.", 4)
+        self.refuse()
+
+    def test_unfinished_status_never_clears_a_requested_or_required_review(self):
+        for status in (
+            "Review of record: pending.",
+            "Review of record: OpenAI is still running.",
+            "Review of record: OpenAI; could not complete the review.",
+        ):
+            for requested in (False, True):
+                with self.subTest(status=status, requested=requested):
+                    self.reader.comments = []
+                    self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+                    self.reader.files = [{"filename": "AGENTS.md"}]
+                    if requested:
+                        self.review_comment("Review prompt for the review of record.", 6)
+                    self.review_comment(f"{status}\n\nHead: {SHA}", 7)
+                    self.refuse()
+
+    def test_completed_review_with_code_defect_allows_ready(self):
+        self.review_comment("Review prompt for the review of record.", 6)
+        self.review_comment(
+            f"Review weighed: OpenAI completed the review and found that the helper did not run required checks; fixed.\n\nHead: {SHA}", 7, reviewed_head=SHA,
+        )
+        self.post()
+
+    def test_multiline_fixed_code_refusal_is_a_completed_disposition(self):
+        self.review_comment("Review prompt for the review of record.", 6)
+        self.review_comment(f"Review of record: OpenAI\n\nHead: {SHA}\n\nFixed: the helper declined to review drafts.", 7, reviewed_head=SHA)
+        self.post()
+
+    def test_product_review_request_does_not_hold_ready(self):
+        self.review_comment("Review request for the Google login button UI.", 6)
+        self.post()
+
+    def test_untrusted_review_request_does_not_hold_ready(self):
+        self.review_comment("Supervisor runs the review.", 1, login="drive-by")
+        self.post()
+
+    def test_review_required_paths_need_an_outcome_for_the_current_head(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["skills/*/SKILL.md"]}}}
+        self.post()
+        self.writer.reset_mock()
+        self.reader.files = [{"filename": "skills/github/SKILL.md"}]
+        self.refuse()
+        self.review_comment(f"Review weighed: none to act on.\n\nHead: {'b' * 40}", 4, reviewed_head="b" * 40)
+        self.refuse()
+        self.review_comment(f"Review weighed at `{SHA}`: nothing to act on.", 6, reviewed_head=SHA)
+        self.post()
+
+    def test_push_invalidates_a_requested_review_without_required_paths(self):
+        self.review_comment("Review prompt for the review of record.", 1)
+        self.review_comment("Acted on: all findings.", 2, reviewed_head=SHA)
+        self.post()
+        self.writer.reset_mock()
+        changed_head = "b" * 40
+        self.reader.pr["head"]["sha"] = changed_head
+        self.refuse()
+        self.review_comment("Deferred: tracked with reasons after weighing the fix.", 3, reviewed_head=changed_head)
+        self.post()
+
+    def test_old_review_cannot_cover_a_previously_unpushed_commit(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "AGENTS.md"}]
+        # B may be committed before this review but pushed after it. Dates do
+        # not identify the reviewed source; the outcome covers only A.
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {'b' * 40}", 6, reviewed_head="b" * 40)
+        self.refuse()
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7, reviewed_head=SHA)
+        self.post()
+
+    def test_no_head_or_untrusted_owner_outcome_is_not_current_evidence(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "AGENTS.md"}]
+        self.review_comment("Review weighed: no findings.", 6)
+        self.refuse()
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7, login="repository-owner", reviewed_head=SHA)
+        self.refuse()
+
+    def test_provider_refusal_and_progress_with_a_head_cannot_clear_ready(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "AGENTS.md"}]
+        for body in (
+            "Review of record: OpenAI declined to review (policy).",
+            "Review of record: OpenAI reviewed 3 of 10 files; no findings. 7 files remain.",
+            "Review of record: OpenAI launched\n\nPreliminary findings: none yet; still running.",
+            "Review of record: OpenAI, run by the Supervisor\n\n3 findings: not weighed yet.",
+        ):
+            with self.subTest(body=body):
+                self.reader.comments = []
+                self.review_comment(f"{body}\n\nHead: {SHA}", 7)
+                self.refuse()
+
+    def test_timing_summary_and_explicit_head_allow_ready(self):
+        self.review_comment("Review prompt for the review of record.", 6)
+        self.review_comment(f"Review weighed: OpenAI, after two retries, completed the review; no findings.\n\nHead: {SHA}", 7, reviewed_head=SHA)
+        self.post()
+
+    def test_bare_date_or_hex_word_cannot_identify_a_reviewed_head(self):
+        self.review_comment("Review prompt for the review of record.", 6)
+        for marker in ("20261017", "deadbeef"):
+            with self.subTest(marker=marker):
+                self.reader.pr["head"]["sha"] = marker + "a" * (40 - len(marker))
+                self.reader.comments = self.reader.comments[:1]
+                self.review_comment(f"Review weighed at {marker}: no findings.", 7)
+                self.refuse()
+                self.review_comment(f"Review weighed at `{self.reader.pr['head']['sha']}`: no findings.", 8, reviewed_head=self.reader.pr["head"]["sha"])
+                self.post()
+                self.writer.reset_mock()
+
+    def test_incomplete_or_missing_file_count_refuses_required_path_coverage(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "src/tool.py"}]
+        # A matching path may be omitted by GitHub's 3000-file ceiling.
+        self.reader.pr["changed_files"] = 3001
+        self.refuse()
+        self.reader.pr.pop("changed_files")
+        self.refuse()
+
+    def test_renamed_review_required_path_still_needs_an_outcome(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "docs/AGENTS-old.md", "previous_filename": "AGENTS.md"}]
+        self.refuse()
+
+    def test_nonobject_review_configuration_refuses_without_traceback(self):
+        for config in ([], "bad", {"qualityGate": [1]}, {"qualityGate": {"modelReview": [1]}}):
+            with self.subTest(config=config):
+                self.reader.config = config
+                self.refuse()
+
+    def test_unreadable_review_paths_refuse(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": "AGENTS.md"}}}
+        self.refuse()
 
     def test_waiting_for_client_invalidates_ready_without_bypassing_ci(self):
         self.args.waiting_for_client = True

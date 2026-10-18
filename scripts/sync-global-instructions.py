@@ -43,7 +43,7 @@ MISSING_LOCAL_RECOVERY = (
     "(.local/global-instructions.md by default, or the --local-source path). "
     "The explicit --allow-missing-local override overwrites existing instruction files and drops any private instructions."
 )
-HOOK_TRUST_NOTICE = "Trust is Codex-managed and unchanged. Migrated, new, or changed hooks may be skipped until reviewed through Codex /hooks; review them before relying on enforcement. Disabled choices are not copied: keep previously disabled hooks off when reviewing migrated definitions."
+HOOK_TRUST_NOTICE = "Trust is Codex-managed and unchanged. Migrated, new, or changed hooks may be skipped until reviewed through Codex /hooks; review them before relying on enforcement. Retiring obsolete alerts can shift remaining Stop/Interrupt hook positions; review them on each account path through /hooks. Disabled choices are not copied: keep previously disabled hooks off when reviewing migrated definitions."
 
 
 class HookOutputs(dict[Path, str]):
@@ -61,48 +61,50 @@ def render(source: Path, local_source: Path) -> str:
     return "\n\n".join(section for section in sections if section) + "\n"
 
 
-def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_session_start: bool = False, alerts_only: bool = False, config: dict | None = None) -> str:
+def render_codex_hook(destination: Path, catalog: Path = ROOT, *, include_session_start: bool = False, retire_alerts_only: bool = False, config: dict | None = None) -> str:
     """Bind catalog declarations, preserving unrelated hooks and host trust."""
     if destination.is_symlink() or (destination.exists() and not destination.is_file()):
         raise ValueError(f"Refusing a symlink or non-file destination: {destination}")
     if config is None:
         config = json.loads(destination.read_text()) if destination.exists() else {}
-    return render_codex_hook_content(config, destination, catalog, include_session_start=include_session_start, alerts_only=alerts_only)
+    return render_codex_hook_content(config, destination, catalog, include_session_start=include_session_start, retire_alerts_only=retire_alerts_only)
 
 
-def render_codex_hook_content(config: dict, destination: Path, catalog: Path = ROOT, *, include_session_start: bool = False, alerts_only: bool = False) -> str:
+def render_codex_hook_content(config: dict, destination: Path, catalog: Path = ROOT, *, include_session_start: bool = False, retire_alerts_only: bool = False) -> str:
     """Render already-read definitions without writing or resolving the destination."""
     config = copy.deepcopy(config)
     if not isinstance(config, dict) or not isinstance(config.get("hooks", {}), dict):
         raise ValueError(f"Invalid hooks configuration: {destination}")
     hooks = config.setdefault("hooks", {})
     source = json.loads((catalog / "hooks" / "hooks.json").read_text())["hooks"]
-    events = ["Stop", "Interrupt"] if alerts_only else ["PreToolUse", "Stop", "Interrupt", "SessionStart"]
-    for event in events:
+    for event, label in (("Stop", "codex-skills stop alert"), ("Interrupt", "codex-skills interrupt alert")):
         existing = hooks.get(event, [])
         if not isinstance(existing, list):
             raise ValueError(f"Invalid {event} configuration: {destination}")
-        # Claude has no Interrupt event; Codex binds its native event to the
-        # same alert declaration. Keep one maintained command source.
-        declarations = copy.deepcopy(source["Stop" if event == "Interrupt" else event]) if event != "SessionStart" or include_session_start else []
-        label = {"PreToolUse": HOOK_LABEL, "SessionStart": "codex-skills session start",
-                 "Stop": "codex-skills stop alert", "Interrupt": "codex-skills interrupt alert"}[event]
+        retained = []
+        for group in existing:
+            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                # Only labeled catalog handlers retire; leave groups we can't read as found.
+                retained.append(group)
+                continue
+            handlers = [handler for handler in group["hooks"]
+                        if not isinstance(handler, dict) or handler.get("statusMessage") != label]
+            if handlers or not group["hooks"]:
+                retained.append({**group, "hooks": handlers})
+        if event in hooks:
+            hooks[event] = retained
+    for event in ([] if retire_alerts_only else ["PreToolUse", "SessionStart"]):
+        existing = hooks.get(event, [])
+        if not isinstance(existing, list):
+            raise ValueError(f"Invalid {event} configuration: {destination}")
+        declarations = copy.deepcopy(source[event]) if event != "SessionStart" or include_session_start else []
+        label = {"PreToolUse": HOOK_LABEL, "SessionStart": "codex-skills session start"}[event]
         if event == "SessionStart":
             declarations = [group for group in declarations if group.get("matcher") != "compact"]
         for group in declarations:
             for handler in group["hooks"]:
-                environment = ["env", f"CLAUDE_PLUGIN_ROOT={catalog}"]
-                if event in ("Stop", "Interrupt"):
-                    environment.append("CODEX_SKILLS_HARNESS=codex")
-                handler["command"] = shlex.join([*environment, "sh", "-c", handler["command"]])
+                handler["command"] = shlex.join(["env", f"CLAUDE_PLUGIN_ROOT={catalog}", "sh", "-c", handler["command"]])
                 handler["statusMessage"] = label
-        if event in ("Stop", "Interrupt"):
-            positions = [index for index, group in enumerate(existing) if (
-                isinstance(group, dict) and isinstance(group.get("hooks"), list) and len(group["hooks"]) == 1
-                and isinstance(group["hooks"][0], dict) and group["hooks"][0].get("statusMessage") == label
-            )]
-            if positions and len(positions) != len(declarations):
-                raise ValueError(f"Conflicting catalog {event} entries; inspect {destination} before rerunning. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to preserve hooks and keep working")
         def managed(group):
             return (isinstance(group, dict) and isinstance(group.get("hooks"), list) and len(group["hooks"]) == 1
                     and isinstance(group["hooks"][0], dict) and group["hooks"][0].get("statusMessage") == label)

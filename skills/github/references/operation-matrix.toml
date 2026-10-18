@@ -1123,7 +1123,7 @@ id = "github.direction.turn_record"
 request_priority = "essential"
 capabilities = ["issues_read", "issues_write"]
 permission_mode = "fixed"
-permission_note = "Uses the existing Issues read and write grants through gh-with-env-token and gh-issue; no profile expansion. The local marker is written first; a failed list or write is reported as shared.ok false with exit 2 and leaves other machines reminding, never a silent success."
+permission_note = "Uses the existing Issues read and write grants through gh-with-env-token and gh-issue; no profile expansion. The local marker is written first; failed path resolution or local persistence reports local_recorded false with exit 1 and attempts no shared write. A failed shared list or write is reported as shared.ok false with exit 2 and leaves other machines reminding, never a silent success."
 entrypoint = "direction/scripts/direction_mark.py turn --repo OWNER/REPO (shared turn record)"
 intent = "Keep one open issue in OWNER/direction holding the last daily turn, so the session-start reminder on every machine sees it."
 current_transport = "rest_api"
@@ -1137,7 +1137,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL transport; the record is one repository-scoped issue body."
 source_refs = ["direction/scripts/direction_mark.py:share_turn"]
-test_refs = ["direction/scripts/test_direction_mark.py:test_two_machines_one_turn", "direction/scripts/test_direction_mark.py:test_turn_cli_requires_coverage_and_reports_written_repository"]
+test_refs = ["direction/scripts/test_direction_mark.py:test_two_machines_one_turn", "direction/scripts/test_direction_mark.py:test_turn_cli_requires_coverage_and_reports_written_repository", "direction/scripts/test_direction_mark.py:test_turn_cli_reports_local_write_failure_without_sharing", "direction/scripts/test_direction_mark.py:test_turn_cli_reports_marker_path_resolution_failure_without_sharing"]
 
 [[operations]]
 id = "github.direction.audit_rulesets"
@@ -1380,7 +1380,7 @@ entrypoint = "github/scripts/gh-issue edit"
 intent = "Edit issue source content or metadata, requiring an explicit override before replacing another author's title or body."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/issues/{number} ownership preflight for title/body changes; PATCH /repos/{repo}/issues/{number}; POST/DELETE issue label and assignee endpoints; final GET reconciliation"
+endpoint_or_command = "GET /repos/{repo}/issues/{number} ownership preflight for title/body changes; PATCH /repos/{repo}/issues/{number}; POST/DELETE issue label and assignee endpoints; on DELETE label 404 Label does not exist, GET the issue and confirm a valid label list lacks the name before counting removal complete; final GET reconciliation"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "update"
@@ -1389,7 +1389,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No retained GraphQL transport; issue body replacement maps directly to the REST issue update endpoint."
 source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:edit_issue"]
-test_refs = ["github/scripts/test_github_api.py:test_retry_idempotent_write_recovers_from_unknown_network_failure", "github/scripts/test_github_issue.py:test_edit_uses_rest_membership_endpoints_and_reads_after_write", "github/scripts/test_github_issue.py:test_edit_partial_failure_preserves_completed_steps_and_guidance", "github/scripts/test_github_issue.py:test_edit_rejects_cross_author_source_content_without_override", "github/scripts/test_github_issue.py:test_edit_allows_explicit_cross_author_source_content_override", "github/scripts/test_github_issue.py:test_metadata_only_edit_does_not_require_source_content_ownership", "github/scripts/test_github_issue.py:test_mutation_parsers_accept_self_contained_targets_without_repo_resolution", "github/scripts/test_github_issue.py:test_state_and_edit_commands_return_with_open_idle_stdin", "github/scripts/test_github_issue.py:test_edit_body_file_can_clear_the_body", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
+test_refs = ["github/scripts/test_github_api.py:test_retry_idempotent_write_recovers_from_unknown_network_failure", "github/scripts/test_github_issue.py:test_edit_uses_rest_membership_endpoints_and_reads_after_write", "github/scripts/test_github_issue.py:test_edit_partial_failure_preserves_completed_steps_and_guidance", "github/scripts/test_github_issue.py:test_edit_absent_label_removal_completes_requested_edit", "github/scripts/test_github_issue.py:test_edit_retried_label_removal_confirms_unseen_success", "github/scripts/test_github_issue.py:test_edit_label_removal_requires_readable_absence", "github/scripts/test_github_issue.py:test_edit_label_removal_does_not_reconcile_denials_or_unrelated_404", "github/scripts/test_github_issue.py:test_edit_failure_after_reconciled_removal_preserves_remaining_intent", "github/scripts/test_github_issue.py:test_edit_rejects_cross_author_source_content_without_override", "github/scripts/test_github_issue.py:test_edit_allows_explicit_cross_author_source_content_override", "github/scripts/test_github_issue.py:test_metadata_only_edit_does_not_require_source_content_ownership", "github/scripts/test_github_issue.py:test_mutation_parsers_accept_self_contained_targets_without_repo_resolution", "github/scripts/test_github_issue.py:test_state_and_edit_commands_return_with_open_idle_stdin", "github/scripts/test_github_issue.py:test_edit_body_file_can_clear_the_body", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
 id = "github.issue.close"

@@ -35,6 +35,8 @@ LITERAL_TEXTS = (
     "```python\npattern = r\"\\d+\\s+\"\n```\nTrailing backslash: \\",
 )
 
+CLAIM = {"worker": "w", "session": "s", "branch": "work/x", "claimed_at": "2026-10-17T00:00:00+00:00"}
+
 
 class UnreadableStdin(io.StringIO):
     def read(self, size: int = -1) -> str:
@@ -198,6 +200,47 @@ class SectionTests(unittest.TestCase):
                     self.assertEqual(sections["Finish Line"], "")
                     self.assertEqual(sections["Objective"], "Keep this.")
                     self.assertEqual(sections["Scope"], "Keep that.")
+
+    def update_status(self, status_tail: str, new_status: str) -> str:
+        self.issue["body"] = ("## Objective\n\nKeep this.\n\n## Current Status\n\nState: Active, unclaimed.\n"
+                              f"Waiting for: None.\n\n{status_tail}\n")
+        code, _, edit, errors = self.run_update("--body", new_status, section="Current Status")
+        self.assertEqual(code, 0, errors)
+        return edit.call_args.kwargs["body"]
+
+    def assert_records(self, body: str, wait: dict[str, Any]) -> None:
+        self.assertEqual(PLAN.github_plan_wait.current({**self.issue, "body": body}, [], {"fixture-bot[bot]"}), wait)
+        self.assertEqual(PLAN.github_plan_claim.records(body), [CLAIM])
+
+    def test_status_update_keeps_in_section_wait_and_claim_records(self) -> None:
+        wait = PLAN.github_plan_wait.reviewed(evidence="Reviewed; no hold.")
+        operation = "<!-- github-skill-operation:2a5d1b4b00ec3279bf551b52063031b6 -->"
+        body = self.update_status("\n".join(
+            (PLAN.github_plan_claim.marker(CLAIM), PLAN.github_plan_wait.marker(wait), "", operation)),
+            "State: Done.\nWaiting for: None.")
+        self.assert_records(body, wait)
+        self.assertIn(operation, body)
+        self.assertTrue(PLAN.section_map(body)["Current Status"].startswith("State: Done."))
+
+    def test_supplied_record_replaces_only_its_own_kind(self) -> None:
+        old = PLAN.github_plan_wait.reviewed(evidence="Old review.")
+        new = PLAN.github_plan_wait.reviewed(evidence="New review.", waiting_for="Chris", ends_when="He answers")
+        body = self.update_status(PLAN.github_plan_claim.marker(CLAIM) + "\n" + PLAN.github_plan_wait.marker(old),
+                                  "State: Waiting.\n\n" + PLAN.github_plan_wait.marker(new))
+        self.assert_records(body, new)
+
+    def test_indented_claims_are_recognized_as_the_claim_reader_does(self) -> None:
+        successor = {**CLAIM, "worker": "next", "session": "s2"}
+        body = self.update_status(" " + PLAN.github_plan_claim.marker(CLAIM), "State: Done.")
+        self.assertEqual(PLAN.github_plan_claim.records(body), [CLAIM])
+        body = self.update_status(PLAN.github_plan_claim.marker(CLAIM),
+                                  "State: Active.\n " + PLAN.github_plan_claim.marker(successor))
+        self.assertEqual(PLAN.github_plan_claim.records(body), [successor])
+
+    def test_fenced_marker_examples_are_not_carried(self) -> None:
+        example = PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Example."))
+        body = self.update_status(f"```text\n{example}\n```", "State: Done.")
+        self.assertEqual(PLAN.section_map(body)["Current Status"], "State: Done.")
 
     def test_undecodable_stdin_fails_before_mutation(self) -> None:
         with io.TextIOWrapper(io.BytesIO(b"\xff"), encoding="utf-8") as stream:

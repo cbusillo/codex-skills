@@ -2205,6 +2205,78 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def attested_handoff_fixture(self, *, elsewhere=False, terminated=False):
+        # codex-skills#2111: claim 6241211301, note 6241527690, evidence 6243185845, release 6243187633.
+        import github_plan_release as release_helper
+        import github_plan_termination as termination
+        source = {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT},
+                  "created_at": "2026-10-01T00:00:00Z"}
+        note = {"id": 2, "body": "Claimed by trial-alias as a repeat-stop. Implementation: PR #7. "
+                "The review of record is pending with the Supervisor.",
+                "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:01:00Z"}
+        body = "Closed session session-b\nEnded at: 2026-10-01T00:01:30Z\nSafe to exit: yes"
+        if terminated:
+            body = termination.body({"session_id": "session-b", "pid": 4242, "host": "fixture-host", "cause": "host crash",
+                                     "retained_artifacts": [], "last_activity_at": "2026-10-01T00:01:20Z",
+                                     "ended_at": "2026-10-01T00:01:30Z", "checked_at": "2026-10-01T00:07:00Z",
+                                     "terminal_state": "pane dead"})
+        thread = "owner/control/issues/884" if elsewhere else "owner/repo/issues/42"
+        evidence = {"id": 88, "user": {"login": TEST_BOT},
+                    "created_at": "2026-10-01T00:07:10Z" if terminated else "2026-10-01T00:01:40Z",
+                    "body": body + "\nHandoff: https://github.com/owner/repo/issues/42#issuecomment-2",
+                    "issue_url": f"https://api.github.com/repos/{thread}"}
+        self.comments = [source, note] + ([] if elsewhere else [evidence])
+        self.closed_pulls[88] = evidence
+        self.comments.append({"id": 3, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:08:00Z",
+            "body": release_helper.prepare_release(
+                source, evidence, self.comments, self.inventory, actor=TEST_BOT, role="supervisor",
+                releaser_session="supervisor-native", evidence_url=f"https://github.com/{thread}#issuecomment-88",
+                retained_prs=[], related=[])})
+
+    def test_attested_handoff_note_is_accounted_for_by_the_supervisor_release(self):
+        for elsewhere, terminated in ((False, False), (True, False), (False, True)):
+            with self.subTest(elsewhere=elsewhere, terminated=terminated):
+                self.setUp()
+                self.attested_handoff_fixture(elsewhere=elsewhere, terminated=terminated)
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_external_or_terminated_evidence_must_still_name_the_note(self):
+        for elsewhere, terminated in ((True, False), (False, True)):
+            with self.subTest(elsewhere=elsewhere, terminated=terminated):
+                self.setUp()
+                self.attested_handoff_fixture(elsewhere=elsewhere, terminated=terminated)
+                self.closed_pulls[88]["body"] = self.closed_pulls[88]["body"].replace("issuecomment-2", "issuecomment-99")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
+    def test_attested_handoff_note_requires_exact_evidence_author_session_and_chronology(self):
+        for change in ("unnamed_note", "other_comment_named", "foreign_note", "foreign_evidence", "other_session_evidence",
+                       "note_names_other_session", "note_after_end", "note_edited_after_end", "note_before_source",
+                       "worker_release", "unreleased", "second_holder"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.attested_handoff_fixture()
+                source, note, evidence, release = self.comments
+                if change == "unnamed_note": evidence["body"] = evidence["body"].rsplit("\n", 1)[0]
+                if change == "other_comment_named": evidence["body"] = evidence["body"].replace("issuecomment-2", "issuecomment-99")
+                if change == "foreign_note": note["user"]["login"] = "other"
+                if change == "foreign_evidence": evidence["user"] = {"login": "other"}
+                if change == "other_session_evidence": evidence["body"] = evidence["body"].replace("session-b", "session-z")
+                if change == "note_names_other_session": note["body"] += "\nSession: another-session"
+                if change == "note_after_end": note["created_at"] = "2026-10-01T00:01:35Z"
+                if change == "note_edited_after_end": note["updated_at"] = "2026-10-01T00:01:35Z"
+                if change == "note_before_source":
+                    self.comments[:2] = [note, source]
+                    note["created_at"] = "2026-09-30T23:59:00Z"
+                if change == "worker_release": release["body"] = "Released claim 1"
+                if change == "unreleased": self.comments.pop()
+                if change == "second_holder": note["body"] += "\nOwned by another-worker."
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
+
     def test_readback_rechecks_live_released_status_sessions(self):
         for phase in ("after_post", "after_status"):
             with self.subTest(phase=phase):
@@ -3470,6 +3542,84 @@ class ClaimTests(unittest.TestCase):
             with self.assertRaises(PLAN.PlanError):
                 self.admit(kind, links, unlinked)
             self.assert_no_writes()
+
+    def test_admission_comment_links_keep_the_exact_evidence(self):
+        first = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        for second in (
+            "https://github.com/owner/other/pull/6#issuecomment-456",
+            "https://github.com/owner/repo/issues/5#issuecomment-456",
+        ):
+            with self.subTest(second=second):
+                self.setUp()
+                self.admit("repeat-stop", (first, second, first.replace("/issues/", "/pull/")))
+                self.assertIn(CLAIM.admission_text("repeat-stop", [first, second]), self.comments[-1]["body"])
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_spellings_of_one_citation_count_as_one_occurrence(self):
+        # GitHub serves one number's issue and PR paths, and owner/repo case-insensitively.
+        for first, second in (
+            ("https://github.com/owner/repo/issues/5#issuecomment-123",
+             "https://github.com/owner/repo/pull/5#issuecomment-123"),
+            ("https://github.com/owner/repo/issues/5#issuecomment-123",
+             "https://github.com/Owner/Repo/issues/5#issuecomment-123"),
+            ("https://github.com/owner/repo/issues/5", "https://github.com/owner/repo/pull/5"),
+        ):
+            with self.subTest(second=second):
+                self.setUp()
+                with self.assertRaises(PLAN.PlanError):
+                    self.admit("repeat-stop", (first, second))
+                self.assert_no_writes()
+
+    def test_walk_does_not_follow_a_comment_link_as_a_graph_node(self):
+        graph = {("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/direction/issues/9#issuecomment-1"}},
+                 ("owner/direction", 9): {"issue": self.TRACK}}
+        (track, _), reads = self.walk(graph)
+        self.assertIsNone(track)
+        self.assertEqual(reads, [("owner/product", 7)])
+
+    def test_comment_evidence_does_not_supply_a_missing_occurrence_or_track(self):
+        link = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        with self.assertRaises(PLAN.PlanError):
+            self.admit("repeat-stop", (link, link))
+        self.assert_no_writes()
+        self.setUp()
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        with patch.object(CLAIM, "admission_track", return_value=(None, True)) as walk, \
+                self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(walk.call_args.args[:2], (("owner/repo", 42), "owner"))
+        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+        self.assert_no_writes()
+
+    def test_invalid_admission_links_refuse_before_writes(self):
+        parent = "https://github.com/owner/repo/issues/5"
+        for link in (
+            parent + "#issuecomment-0", parent + "#issuecomment-nope", parent + "#other-123",
+            parent + "#issuecomment-123/extra", parent + "?query=1#issuecomment-123",
+            parent + "#issuecomment-123\n", parent.replace("https:", "http:"),
+            parent.replace("github.com", "github.com.example.org"),
+            "https://github.com/owner/repo/issues/comments/123",
+        ):
+            with self.subTest(link=link):
+                self.setUp()
+                with self.assertRaises(PLAN.PlanError):
+                    self.admit("spare-capacity", (link,))
+                self.assert_no_writes()
+
+    def test_comment_admission_preserves_ownership_and_wait_refusals(self):
+        link = "https://github.com/owner/repo/issues/5#issuecomment-123"
+        for blocked in ("ownership", "wait"):
+            with self.subTest(blocked=blocked):
+                self.setUp()
+                if blocked == "ownership":
+                    self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+                else:
+                    self.wait = wait_record.reviewed(evidence="Device test pending", waiting_for="Director",
+                                                     ends_when="Device acceptance recorded")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.admit("spare-capacity", (link,))
+                self.assertEqual(caught.exception.code, "claim_conflict" if blocked == "ownership" else "claim_wait_unresolved")
+                self.assert_no_writes()
 
 
 if __name__ == "__main__":

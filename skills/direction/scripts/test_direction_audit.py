@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import types
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from typing import Any, Self
@@ -170,6 +170,39 @@ def test_owner_only_cli_audit_uses_explicit_reader_and_returns_known_limit() -> 
             assert kinds(result) == ["coverage_incomplete"]
             assert not result["ok"]
         assert calls and all(request[0] == "api" and request[-2:] == ["--method", "GET"] for request in calls)
+
+
+def test_cli_marker_failure_is_not_a_successful_or_silently_unmarked_audit() -> None:
+    module = load()
+    findings = [{"kind": "direction_drift", "detail": "An open issue contradicts the adopted direction"}]
+    for held, archived, unresolved in ((False, False, False), (True, False, False), (False, True, False),
+                                       (False, False, True), (True, False, True), (False, True, True)):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "not-a-directory"
+            parent.write_text("keep")
+            marker = parent / "marker.json"
+            output, errors = StringIO(), StringIO()
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  patch.object(module, "merged_direction", return_value=DIRECTION),
+                  patch.object(module, "gh_json", return_value={"login": "owner"}),
+                  patch.object(module, "fetch_paginated", return_value=([], False)),
+                  patch.object(module, "fetch_rulesets", return_value=([], False)),
+                  patch.object(module, "fetch_audit_issues", return_value=([], ["milestone_issue_events"] if held else [])),
+                  patch.object(module, "previous_audit_stamp", return_value=None),
+                  patch.object(module, "audit", return_value={"ok": False, "findings": findings}),
+                  patch.object(module, "stale_wait_report", return_value={"repository": {"archived": archived}}),
+                  patch.object(module.direction_mark, "marker_path", side_effect=RuntimeError("Could not determine home directory."))
+                  if unresolved else nullcontext(),
+                  redirect_stdout(output), redirect_stderr(errors)):
+                code = module.main(["--repo", "owner/repo", "--gh", "gh"])
+            result = json.loads(output.getvalue())
+            assert code == 1 and result["ok"] is False, result
+            assert result["marked"] is None and result["run_recorded"] is None
+            assert result["dropped"] is None
+            assert result["repo"] == "owner/repo" and result["findings"] == findings
+            assert str(marker) in result["marker_error"]
+            assert result["marker_error"] in errors.getvalue()
+            assert parent.read_text() == "keep"
 
 
 def test_default_reader_error_exposes_read_only_owner_remedy() -> None:

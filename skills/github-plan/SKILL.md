@@ -250,7 +250,10 @@ active issue labels and continuing background jobs do not lift a hold.
    that milestone's Track graph before the claim, or with the reason it cannot
    be), a `repeat-stop` with both occurrences, or `spare-capacity`. Name the
    real kind: work that clears a milestone blocker is milestone work once
-   linked, not spare capacity. Claim using exactly the branch the worktree helper will create
+   linked, not spare capacity. Evidence may cite a decision comment, for example
+   `--admission spare-capacity --admission-link https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
+   The claim retains that exact comment URL; admission grants no authority.
+   Claim using exactly the branch the worktree helper will create
    (`work/<task-slug>` for the catalog's `github/scripts/dev-worktree`). Read
    [task worktrees](../github/references/worktrees.md) for its callable path,
    private per-host root setting and host integration. On a host with a guarded

@@ -6,10 +6,12 @@
 """Prove shared allocation, lock serialization, and fresh GitHub seeding."""
 
 import fcntl
+import importlib.util
 import json
 import multiprocessing
 import os
 import queue
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +19,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import question_id as counter
+
+PLAN_SCRIPTS = Path(__file__).resolve().parents[2] / "github/scripts"
+sys.path.insert(0, str(PLAN_SCRIPTS))
+SPEC = importlib.util.spec_from_file_location("gh_plan_for_seed", PLAN_SCRIPTS / "gh-plan.py")
+assert SPEC and SPEC.loader
+PLAN = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(PLAN)
 
 
 def allocate_many(path, barrier, results):
@@ -109,6 +118,28 @@ class QuestionCounterTests(unittest.TestCase):
             for text in [record["body"], *(c["body"] for c in record["comments"])]
             for m in counter.QUESTION.finditer(text)))
         self.assertEqual(sources, [record["url"] for record in records])
+
+    def test_seed_read_resolves_its_repository_outside_any_checkout(self):
+        record = {"body": "Q601", "comments": [], "url": "https://github.com/owner/launchplane/issues/3601"}
+        outside = Path(self.temporary.name) / "outside"
+        outside.mkdir()
+
+        def show(command, **_kwargs):
+            # Resolve the read the way gh-plan show does, where `gh repo view`
+            # cannot name a repository either.
+            args = PLAN.build_parser().parse_args(command[3:])
+            with patch.object(PLAN, "run_raw", return_value=(None, "", "")):
+                resolved = PLAN.issue_ref(args.issue, PLAN.default_repo(args.repo))
+            self.assertEqual(resolved, ("owner/launchplane", 3601))
+            return SimpleNamespace(stdout=json.dumps({"ok": True, "disposition": "complete",
+                                                      "outcome_certainty": "confirmed", "issue": record}))
+
+        previous = Path.cwd()
+        os.chdir(outside)
+        self.addCleanup(os.chdir, previous)
+        with patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": self.temporary.name}), \
+                patch.object(counter.subprocess, "run", side_effect=show):
+            self.assertEqual(counter.github_seed(["owner/launchplane#3601"]), (601, [record["url"]]))
 
     def test_incomplete_or_empty_github_read_cannot_seed(self):
         for result in ({"ok": False}, {"ok": True, "disposition": "complete", "outcome_certainty": "confirmed",

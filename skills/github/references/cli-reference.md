@@ -91,6 +91,21 @@ reporting only the final status read. Composite diagnostic tools that do not use
 the terminal-envelope CLI contract expose the same aggregate under
 `diagnostics.retry` and per-request evidence under `diagnostics.requests`.
 
+`gh-issue edit --remove-label` reconciles a 404 `Label does not exist` with a
+fresh GET of the issue. The step succeeds with confirmed certainty only when
+the response identifies that issue and contains a valid label list without
+the requested name (case insensitive). This covers already-absent labels and
+a retry after a successful deletion whose response was lost. Other 404s,
+authorization failures, unreadable/malformed readbacks and labels still
+present remain failures. Reconciliation adds one REST read per absent-label
+404; a failed read stops the edit before later mutations. Failure diagnostics
+include reconciliation reads in the operation attempt and wait totals while
+preserving the failed request's certainty. A normal successful
+deletion adds no read beyond the final issue readback. Stdout remains one JSON
+terminal envelope on the first invocation and on a rerun.
+Parse stdout separately from stderr diagnostics; merging them with `2>&1`
+can make a failed command's output invalid as JSON.
+
 For a failed `gh-issue edit`, the aggregate `write_outcome` is
 `partially_applied` when earlier mutations succeeded and requested mutations
 remain, or `applied` when all mutations succeeded but final readback failed.
@@ -478,7 +493,40 @@ refuses a draft, closed PR or `merge-blocked`. It also refuses a PR that GitHub
 computed as conflicting with its base (`mergeable` false or merge state
 `DIRTY`); refresh it under babysit-pr's
 [Conflicts](../../babysit-pr/SKILL.md#conflicts) and post `ready` for the new
-head. Unknown mergeability is not a conflict. It rechecks the head and labels
+head. Unknown mergeability is not a conflict. It also refuses while a
+[review by another model](../../references/model-review.md) is pending or
+missing: a review request comment (a `Review prompt` or `Review request` lead,
+`Review of record needed`, or an affirmative "Supervisor runs the review"
+on its own line, optionally after "so") with no later
+weighed-outcome record for the current head, or a change to the base branch's
+`qualityGate.modelReview.requiredPaths` with no such record. Only the PR author
+and automation identity count; refusals name those identities. A raw Supervisor
+review report does not attest that its findings have been weighed.
+
+Post the disposition through the existing comment command:
+
+```sh
+uv run scripts/gh-pr.py --repo OWNER/REPO comment N --body-file disposition.md --reviewed-head FULL_REVIEWED_SHA
+```
+
+`--reviewed-head` explicitly attests that the completed review has been weighed
+for that full SHA. The helper prepends `Review result: weighed` and `Head: SHA`
+to the free-text disposition in one new comment. Use it only after weighing
+all findings; future plans, launches and partial reviews use ordinary comments.
+Every disposition format remains supported in the body, including Acted on,
+Declined, Deferred, Tracked and Unresolved. The gate reads the exact generated
+header, never infers completion from those words. Quoted examples and old
+unmarked prose do not count. Post a new comment rather than editing an earlier
+record, so ordering against requests is explicit.
+
+A push invalidates the earlier head's record even without requiredPaths.
+Record a weighed outcome for the new head; whether the model itself must run
+again follows the model-review policy and task instructions. If a completed
+legacy review already covers the head, weigh it and post through this command;
+no rerun is needed solely to add metadata. Required-path coverage also refuses
+an incomplete changed-file inventory, including GitHub's file-list cap.
+`supervisor/scripts/auto_enqueue.py` skips the same PRs with reason
+`review_of_record_not_recorded`. It rechecks the head and labels
 before posting through the shared comment writer. This is a handoff to the
 assigned routing agent; it applies no enqueue label and performs no merge.
 Other review and task authorization requirements still apply.
@@ -855,7 +903,13 @@ Unreadable admission graph nodes or relationships also accept that explanation
 and record incomplete verification. Ownership, actor authentication, waits and
 native blockers retain their independent refusals.
 `repeat-stop` needs both occurrences as `--admission-link URL`; any kind may
-add links. Admission records why the work was taken; it grants no authority.
+add links. Links accept `https://github.com/OWNER/REPO/issues/N` or
+`https://github.com/OWNER/REPO/pull/N`, optionally followed by
+`#issuecomment-ID` for a discussion comment (positive numeric N and ID).
+The claim keeps the exact comment URL as evidence. Two distinct comments on one
+parent can cite two occurrences; spellings of one issue, PR or comment (`issues`
+or `pull`, owner/repo case) count once, recorded as first written. Admission records why the work was
+taken; it grants no authority and does not verify the linked decision.
 
 The command checks Current Status and the complete discussion, unresolved
 native blockers, registered worktrees, local branches, live remote heads, open
