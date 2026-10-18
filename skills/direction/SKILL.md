@@ -126,7 +126,10 @@ one.
   GitHub and session history itself and writes its output to GitHub, never back
   into another agent's prompt. It runs on a model other than the one that
   produced the run it is scoring, so the agent that judges a run is never the
-  agent that produced it.
+  agent that produced it. An executing agent that needs an outside alignment
+  read on a pending decision asks for a
+  [review by another model](../references/model-review.md#before-a-decision)
+  instead.
 - **Executing agents** work inside the current milestone, weigh reviewer
   findings, and escalate what is not theirs to decide.
 

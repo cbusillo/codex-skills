@@ -41,12 +41,26 @@ fails loudly when a reviewer could not read or returned nothing.
   checks. The warning scanner and its CI wiring are documented in
   [test quality](test-quality.md). This question does not expand when a review
   is required; the criteria above still own that decision.
+- Also ask: "Read the Director's overall DIRECTION.md and the repository's
+  own, if it has one. Does this work fit them, and would they prefer a simpler
+  way?" A finding that the work should stop or change course is weighed under
+  the escalation rule below.
 - When commits carry
   [Client-impact trailers](../github/references/repo-workflow.md#client-impact-trailers),
   ask the reviewer to check each `none` claim against that commit's diff. A
   commit that could change what the Client saw or accepted is a blocking
   finding; fix it with a `Client-impact: visible` commit so the Client decides
   again.
+
+## Before A Decision
+
+A review can cover a pending decision instead of a change. When the Director
+asks whether a choice is aligned, ask for this review even when the criteria
+above would not. Put the question on its issue first, and give the reviewer
+that issue, not your recommendation. Run it from a clean checkout with no
+committed change; the helper then names no diff. Post the weighed result on the issue; the
+Director decides. The reviewer is not the direction agent, so this needs no
+direction session.
 
 ## Weighing Findings
 
