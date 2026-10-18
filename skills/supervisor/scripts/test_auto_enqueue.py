@@ -6,6 +6,7 @@
 """Hermetic evidence for Supervisor enqueue guards and mutation ordering."""
 
 import argparse
+import base64
 import copy
 import io as stdlib_io
 import json
@@ -128,6 +129,7 @@ class Fake:
         self.pulls = {number: pr(number) for number in range(1, count + 1)}
         self.writes = []
         self.qualify = True
+        self.review_gaps = {}
         self.active = False
         self.calls = 0
         self.before = lambda _self: None
@@ -188,6 +190,9 @@ class Fake:
 
     def qualified(self, *_args):
         return self.qualify
+
+    def review_gap(self, _target, pull, _trusted, *, file_inventory=None):
+        return self.review_gaps.get(pull["number"], "")
 
     def queue(self, _target):
         dry = response(self.pulls.values(), self.writes)["result"]["dry_run_result"]
@@ -636,6 +641,31 @@ class EnqueueTests(unittest.TestCase):
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
         self.assertTrue(any(event == "skipped" and data.get("reason") == "conflicting" for event, data in self.events))
+
+    def test_unrecorded_review_of_record_is_skipped_with_its_reason(self):
+        fake = Fake(count=1)
+        fake.review_gaps[1] = "A review of record was requested with no later recorded outcome"
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        skipped = [data for event, data in self.events if event == "skipped"]
+        self.assertEqual([data["reason"] for data in skipped], ["review_of_record_not_recorded"])
+        self.assertEqual(skipped[0]["detail"], fake.review_gaps[1])
+
+    def test_incomplete_inventory_reports_coverage_instead_of_review(self):
+        fake = Fake(count=1)
+        fake.pulls[1]["changed_files"] = 2
+        fake.review_gaps[1] = "review-of-record evidence unavailable: incomplete inventory"
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        skipped = [data for event, data in self.events if event == "skipped"]
+        self.assertEqual([data["reason"] for data in skipped], ["file_inventory_changed_or_incomplete"])
+
+    def test_review_request_appearing_before_label_stops_batch(self):
+        fake = Fake(count=1)
+        fake.before = lambda io: io.review_gaps.update({1: "requested"}) if io.calls > 1 else None
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
 
     def test_conflict_appearing_before_label_stops_batch(self):
         fake = Fake(count=1)
@@ -1517,6 +1547,56 @@ class QualificationTests(unittest.TestCase):
         self.pull["labels"] = [{"name": "owner-review"}]
         self.assertFalse(self.qualified())
         self.io.acceptance.assert_called_once()
+
+    def test_review_gap_reads_records_and_base_branch_review_paths(self):
+        config = None
+        files = [{"filename": "src/tool.py"}]
+
+        def get(path):
+            if f"/contents/{ready_handoff.REVIEW_CONFIG_PATH}?ref=trunk" in path:
+                if config is None:
+                    raise watch.GitHubReadError(
+                        "Not Found",
+                        result=watch.github_api.ApiResult(ok=False, status=404, body=None),
+                        diagnostics={},
+                    )
+                return {"content": base64.b64encode(json.dumps(config).encode()).decode()}
+            raise AssertionError(path)
+
+        self.io.get = get
+        self.io.pages = lambda path: files if path.endswith("/files") else self.comments
+        gap = lambda: self.io.review_gap(TARGET, self.pull, set())
+        self.assertEqual(gap(), "")
+        self.comments.append(comment("Supervisor runs the review.", 2))
+        self.assertTrue(gap())
+        self.comments.append(comment(ready_handoff.review_result_body("Review weighed: none.", SHA), 3))
+        self.assertEqual(gap(), "")
+        config = {"qualityGate": {"modelReview": {"requiredPaths": ["skills/*"]}}}
+        self.assertEqual(gap(), "")
+        files = [{"filename": "skills/github/SKILL.md"}]
+        self.assertEqual(gap(), "")
+        files = [{"filename": "src/tool.py"}]
+        self.pull["changed_files"] = 3001
+        self.assertTrue(gap())
+        self.pull["changed_files"] = 1
+        self.assertEqual(gap(), "")
+        original_pages = self.io.pages
+        def comments_only(path):
+            if path.endswith("/comments"):
+                return self.comments
+            raise AssertionError("Supplied file inventory should not be read again")
+        self.io.pages = comments_only
+        self.assertEqual(self.io.review_gap(TARGET, self.pull, set(), file_inventory=files), "")
+        self.io.pages = original_pages
+        files = [{"filename": "skills/github/SKILL.md"}]
+        self.comments.pop()
+        self.comments.pop()
+        self.assertTrue(gap())
+        config = {"qualityGate": {"modelReview": {"requiredPaths": [""]}}}
+        self.assertTrue(gap())
+        for malformed in ([], "bad", {"qualityGate": [1]}, {"qualityGate": {"modelReview": [1]}}):
+            config = malformed
+            self.assertTrue(gap())
 
     def test_cli_defaults_accept_automation_review_of_dependency_head(self):
         self.pull["user"]["login"] = "dependabot[bot]"

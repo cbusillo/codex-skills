@@ -493,7 +493,40 @@ refuses a draft, closed PR or `merge-blocked`. It also refuses a PR that GitHub
 computed as conflicting with its base (`mergeable` false or merge state
 `DIRTY`); refresh it under babysit-pr's
 [Conflicts](../../babysit-pr/SKILL.md#conflicts) and post `ready` for the new
-head. Unknown mergeability is not a conflict. It rechecks the head and labels
+head. Unknown mergeability is not a conflict. It also refuses while a
+[review by another model](../../references/model-review.md) is pending or
+missing: a review request comment (a `Review prompt` or `Review request` lead,
+`Review of record needed`, or an affirmative "Supervisor runs the review"
+on its own line, optionally after "so") with no later
+weighed-outcome record for the current head, or a change to the base branch's
+`qualityGate.modelReview.requiredPaths` with no such record. Only the PR author
+and automation identity count; refusals name those identities. A raw Supervisor
+review report does not attest that its findings have been weighed.
+
+Post the disposition through the existing comment command:
+
+```sh
+uv run scripts/gh-pr.py --repo OWNER/REPO comment N --body-file disposition.md --reviewed-head FULL_REVIEWED_SHA
+```
+
+`--reviewed-head` explicitly attests that the completed review has been weighed
+for that full SHA. The helper prepends `Review result: weighed` and `Head: SHA`
+to the free-text disposition in one new comment. Use it only after weighing
+all findings; future plans, launches and partial reviews use ordinary comments.
+Every disposition format remains supported in the body, including Acted on,
+Declined, Deferred, Tracked and Unresolved. The gate reads the exact generated
+header, never infers completion from those words. Quoted examples and old
+unmarked prose do not count. Post a new comment rather than editing an earlier
+record, so ordering against requests is explicit.
+
+A push invalidates the earlier head's record even without requiredPaths.
+Record a weighed outcome for the new head; whether the model itself must run
+again follows the model-review policy and task instructions. If a completed
+legacy review already covers the head, weigh it and post through this command;
+no rerun is needed solely to add metadata. Required-path coverage also refuses
+an incomplete changed-file inventory, including GitHub's file-list cap.
+`supervisor/scripts/auto_enqueue.py` skips the same PRs with reason
+`review_of_record_not_recorded`. It rechecks the head and labels
 before posting through the shared comment writer. This is a handoff to the
 assigned routing agent; it applies no enqueue label and performs no merge.
 Other review and task authorization requirements still apply.

@@ -210,6 +210,16 @@ Common top-level keys:
 - `qualityGate`: local and CI commands that establish readiness for this repo.
   `qualityGate.docsRequiredWhen` lists changes that need a docs update; the
   `repo-readiness` skill checks it.
+- `qualityGate.modelReview.requiredPaths`: path patterns (`fnmatch`, where `*`
+  also matches `/`) for changes that need a
+  [review by another model](../../references/model-review.md). `gh-pr.py ready`
+  and the Supervisor's auto-enqueue read it from the base branch and refuse a PR
+  that touches a match until an explicit weighed-outcome record identifies its
+  current full head SHA (see [ready handoffs](cli-reference.md#ready-handoffs)).
+  Without the key, a posted request still needs a later weighed record for the
+  current head. Every push invalidates the earlier record; a new disposition
+  is needed even there. A new model run follows review policy/task requirements,
+  rather than being required merely to update the head-bound record.
 - `qualityGate.test.local`: focused local test command string. Select the tests
   covering the changed behavior; replace any documented placeholders before
   running. Run required lint, type checks and IDE inspection alongside it.
