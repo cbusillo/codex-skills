@@ -2395,7 +2395,10 @@ An edit to a served request sets `request_edited_after_review`; the completion
 link is preserved and inference never reruns. Weigh the original scope and
 record whether a separate request is needed for changed scope. The Supervisor
 uses `completion_comment` together with `completion_updated_at` to route each
-report version once. A corrected edit to the same comment can need a fresh
+report version once. For a fresh `posted` result, take the timestamp from
+`post.comment.updated_at`, or read back the returned comment, before recording
+its version; later completion reports expose `completion_updated_at` directly.
+A corrected edit to the same comment can need a fresh
 notification; a disposition must follow its latest edit.
 `notification_needed` means the result still lacks a later trusted weighed
 disposition, not a history of terminal input. That history remains the
