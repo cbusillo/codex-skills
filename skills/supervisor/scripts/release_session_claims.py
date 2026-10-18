@@ -31,6 +31,7 @@ sys.path.insert(0, str(GITHUB))
 import github_identity
 import github_plan_claim as claim
 import github_plan_release as release
+import github_plan_closure as closure
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_comment import OPERATION_MARKER_LINE_RE, CommentError, comment
 
@@ -107,6 +108,8 @@ def validate_closure(entry, supervisor_session):
             raise ValueError("source resumed or has newer activity in a configured native transcript")
         if session_record.session_status({**entry, "transcript": str(path)}) != other:
             raise ValueError("native transcript changed during closure verification")
+    if entry.get("closure_evidence") and closure.evidence(entry) != entry["closure_evidence"]:
+        raise ValueError("host, account or native transcripts changed since closure")
     return status
 
 
@@ -132,7 +135,7 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
     existing = [r for r in records if r["session_id"] == entry["session_id"]]
     if existing:
         if any(existing[0].get(k) != entry.get(k) for k in (
-            "pid", "tty", "harness", "handoff_url", "supervisor_owned"
+            "pid", "tty", "harness", "handoff_url", "supervisor_owned", "codex_home"
         )) or Path(existing[0]["transcript"]).resolve() != Path(entry["transcript"]).resolve():
             raise ValueError("closure log identity changed; preserve the original record")
         closed = {**existing[0], **{k: v for k, v in entry.items() if k.startswith("_")}}
@@ -141,6 +144,8 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
     verify_closed(entry, supervisor_session)
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
               "process_exit_verified": True}
+    if entry.get("harness") == "codex" and entry.get("codex_home"):
+        closed["closure_evidence"] = closure.evidence(closed)
     validate_closure(closed, supervisor_session)
     if not persist:
         return closed
@@ -900,7 +905,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("finish", "backfill"))
     parser.add_argument("--ledger", type=Path)
-    parser.add_argument("--closed-log", type=Path, required=True)
+    parser.add_argument("--closed-log", type=Path,
+                        help="shared host-local closure log; an explicit private log is not successor evidence")
     parser.add_argument("--session-id")
     parser.add_argument("--supervisor-session", required=True)
     parser.add_argument("--owner", required=True)
@@ -917,6 +923,10 @@ def main():
     reports = []
     lock_stream = None
     try:
+        if args.closed_log is None:
+            if args.mode != "finish":
+                raise ValueError("backfill requires an explicit --closed-log")
+            args.closed_log = closure.closed_log()
         if args.apply:
             args.closed_log.parent.mkdir(parents=True, exist_ok=True)
             lock_stream = os.fdopen(os.open(str(args.closed_log) + ".lock", os.O_CREAT | os.O_RDWR, 0o600), "w")

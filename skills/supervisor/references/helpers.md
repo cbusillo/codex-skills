@@ -1589,8 +1589,28 @@ It does not
 send exit commands or change issue status, waits, blockers, branches or worktrees.
 
 ```sh
-uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --closed-log <private-closed.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
+uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
 ```
+
+The default closed-session log is
+`$CODE_HOME/skill-data/supervisor-closed-sessions.json`, or the same path under
+`~/.code` when `CODE_HOME` is unset. It is shared across account homes on this
+host. `--closed-log` still selects an explicit private log for historical or
+resumed-session recovery; successor observation reads only the shared default.
+For Codex entries with a configured absolute `codex_home`, closure also records
+the host boot identity and fingerprints of every configured native transcript
+copy. PID/TTY absence, native identity, final verdict and the fingerprints are
+checked again when a claim reads it. The existing authored-release and retained
+artifact checks remain independent.
+
+This evidence can supply session-specific process absence for an **unloaded**
+thread even while an unrelated Codex client runs. A cached idle thread remains
+live: the stock daemon does not expose subscriber presence, and a receipt or
+two stable transcript reads cannot exclude another client with unsent input.
+Close/resume/admission coordination must establish that missing lifecycle
+evidence before idle admission can be enabled. Observation never creates a
+log or lock directory. A missing, malformed, unreadable or stale receipt falls
+back to the existing conservative native checks.
 
 Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
 For `finish`, discovery also checks original claim comments after their release.
