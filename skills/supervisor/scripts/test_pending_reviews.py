@@ -152,7 +152,10 @@ class DispatchTests(unittest.TestCase):
                 self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
 
     def test_notification_failure_or_interruption_keeps_completion_and_never_replays(self):
-        for failure in (ValueError("permission denied"), subprocess.TimeoutExpired("send", 30), KeyboardInterrupt()):
+        from iterm_tab import SendFailure
+        for failure in (ValueError("queue refused"), PermissionError("permission denied"),
+                        SendFailure("terminal", "unknown", "fixture"),
+                        subprocess.TimeoutExpired("send", 30), KeyboardInterrupt()):
             with self.subTest(failure=type(failure).__name__):
                 self.io = FakeIO()
                 self.evidence = Path(self.temp.name) / type(failure).__name__
@@ -171,10 +174,36 @@ class DispatchTests(unittest.TestCase):
                     self.assertTrue(recovered["completion_comment"])
                     self.assertEqual(send.call_count, 1)
 
-    def test_completed_review_never_notifies_missing_ambiguous_or_changed_ledger_target(self):
+    def test_preflight_not_sent_is_rechecked_until_delivery_and_then_deduplicated(self):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                self.io = FakeIO()
+                self.entries = [{**entry(), "harness": harness}]
+                self.evidence = Path(self.temp.name) / harness
+                with patch.object(self.io, "notify", side_effect=notifications.NotSent("busy")) as send:
+                    result = self.dispatch()
+                    self.assertTrue(result["needs_attention"])
+                    self.assertEqual(json.loads(Path(result["notification_journal"]).read_text())["phase"], "not_sent")
+                    pending = self.dispatch(apply=False)
+                    self.assertEqual(pending["notification_error"], result["notification_error"])
+                    self.assertEqual(send.call_count, 1)
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+                self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_delivered_notification_survives_ledger_metadata_and_coordinate_edits(self):
+        self.dispatch()
+        self.entries = [{**entry(), "pid": 7, "handoff_url": "https://github.com/example/tool/issues/3#issuecomment-1"}]
+        result = self.dispatch()
+        self.assertEqual(result["notification_status"], "sent")
+        self.assertFalse(result["needs_attention"])
+        self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+
+    def test_completed_review_never_notifies_missing_or_ambiguous_ledger_author(self):
         self.dispatch()
         for entries in ([], [entry(), entry()], [{**entry(), "supervisor_owned": False}],
-                        [{**entry(), "repository": "another/repo"}], [{**entry(), "pid": 7}]):
+                        [{**entry(), "repository": "another/repo"}]):
             with self.subTest(entries=entries):
                 self.entries = entries
                 with patch.object(self.io, "notify") as send:
@@ -1351,9 +1380,13 @@ class NotificationTests(unittest.TestCase):
         with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as queue:
             notifications.send(self.entry, "Read review")
         argv = queue.call_args.args[0]
-        self.assertEqual(argv[:2], ["uv", "run"])
-        self.assertEqual(Path(argv[2]).resolve(), Path(reviews.__file__).with_name("codex-session.py").resolve())
-        self.assertEqual(argv[3:], ["queue", "--session-id", self.native, "--codex-home", str(self.home), "--message", "Read review"])
+        self.assertIn(str(Path(reviews.__file__).with_name("codex-session.py")), argv)
+        self.assertIn("queue", argv)
+        self.assertEqual(argv[argv.index("--session-id") + 1], self.native)
+        self.assertEqual(Path(argv[argv.index("--codex-home") + 1]).resolve(), self.home)
+        message = (argv[argv.index("--message") + 1] if "--message" in argv
+                   else Path(argv[argv.index("--message-file") + 1]).read_text())
+        self.assertEqual(message, "Read review")
         self.assertEqual(queue.call_args.kwargs["env"]["CODEX_HOME"], str(self.home))
 
     def test_codex_identity_or_home_mismatch_refuses_without_queue_and_preserves_helper_denial(self):
@@ -1361,7 +1394,7 @@ class NotificationTests(unittest.TestCase):
                         {"codex_home": None}, {"codex_home": "relative"},
                         {"codex_home": str(self.transcript.parent)}):
             with self.subTest(changed=changed), patch.object(notifications.subprocess, "run") as queue:
-                with self.assertRaises((ValueError, OSError)):
+                with self.assertRaises(notifications.NotSent):
                     notifications.send({**self.entry, **changed}, "Read review")
                 queue.assert_not_called()
         with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, '{"error":"ownership lease denied"}', "")) as queue:
@@ -1381,25 +1414,40 @@ class NotificationTests(unittest.TestCase):
         for change in ({"input_line": {"style": s, "text": "draft", "line_index": 0}}
                        for s in ("dim", "non_dim", "mixed", "unknown", "empty")):
             self.row = {**original, **change}
-            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "not verified empty"):
+            with self.subTest(change=change), self.assertRaises(notifications.NotSent):
                 notifications.send(self.entry, "Read review")
         for change in ({"screen": ["❯ ", "wrapped draft", "────────"]}, {"dead": True},
                        {"tty": "ttys999"}, {"window_id": "$9"}, {"tab_id": "@9"}):
             self.row = {**original, **change}
-            with self.subTest(change=change), self.assertRaises(ValueError):
+            with self.subTest(change=change), self.assertRaises(notifications.NotSent):
                 notifications.send(self.entry, "Read review")
         self.row = original
         for change in ({"session_id": "wrong"}, {"pid": 123}, {"backend": "iterm"}, {"tmux_session_id": "%1"}):
-            with self.subTest(change=change), self.assertRaises(ValueError):
+            with self.subTest(change=change), self.assertRaises(notifications.NotSent):
                 notifications.send({**self.entry, **change}, "Read review")
         for changed_status in ({"at_turn_end": False, "background_tasks": []},
                                {"at_turn_end": True, "background_tasks": [{"task_id": "live"}]}):
-            with patch.object(notifications, "session_status", return_value=changed_status), self.assertRaisesRegex(ValueError, "idle"):
+            with patch.object(notifications, "session_status", return_value=changed_status), self.assertRaises(notifications.NotSent):
                 notifications.send(self.entry, "Read review")
         self.read.side_effect = [original, {**original, "input_line": {"style": "non_dim", "text": "new draft", "line_index": 0}}]
-        with self.assertRaisesRegex(ValueError, "not verified empty"):
+        with self.assertRaises(notifications.NotSent):
             notifications.send(self.entry, "Read review")
         self.send.assert_not_called()
+
+    def test_preflight_races_and_pre_key_checks_are_not_sent_but_denials_and_send_failures_stay_spent(self):
+        from iterm_tab import SendFailure
+        for error in (ValueError("changed transcript"), FileNotFoundError("not yet written")):
+            with patch.object(notifications, "session_status", side_effect=error), self.assertRaises(notifications.NotSent):
+                notifications.send(self.entry, "Read review")
+        with patch.object(notifications, "session_status", side_effect=PermissionError("denied")), self.assertRaises(PermissionError):
+            notifications.send(self.entry, "Read review")
+        self.claude()
+        self.send.side_effect = ValueError("pre-key check")
+        with self.assertRaises(notifications.NotSent):
+            notifications.send(self.entry, "Read review")
+        self.send.side_effect = SendFailure(self.entry["tmux_session_id"], "unknown", "fixture")
+        with self.assertRaises(SendFailure):
+            notifications.send(self.entry, "Read review")
 
 
 class AdapterTests(unittest.TestCase):

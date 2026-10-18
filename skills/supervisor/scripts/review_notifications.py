@@ -13,7 +13,11 @@ from pathlib import Path
 from session_record import session_status
 
 
-def send(entry, message):
+class NotSent(ValueError):
+    """Validation stopped before entering a delivery operation; recheck later."""
+
+
+def prepare(entry, message):
     # Native transcript identity must agree with the ledger on either harness.
     status = session_status(entry)
     if entry.get("supervisor_owned") is not True:
@@ -27,14 +31,15 @@ def send(entry, message):
             raise ValueError("notification transcript is outside the ledger's Codex home")
         # The supported helper verifies the native UUID, managed source endpoint
         # and ownership lease. It never falls back to terminal input or a daemon.
-        result = subprocess.run(
-            ["uv", "run", str(Path(__file__).with_name("codex-session.py")), "queue",
-             "--session-id", entry["session_id"], "--codex-home", str(home), "--message", message],
-            env={**os.environ, "CODEX_HOME": str(home)}, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=30, check=False)
-        if result.returncode:
-            raise ValueError(f"Codex review notification failed: {result.stdout.strip()} {result.stderr.strip()}".strip())
-        return
+        def queue():
+            result = subprocess.run(
+                ["uv", "run", str(Path(__file__).with_name("codex-session.py")), "queue",
+                 "--session-id", entry["session_id"], "--codex-home", str(home), "--message", message],
+                env={**os.environ, "CODEX_HOME": str(home)}, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=30, check=False)
+            if result.returncode:
+                raise ValueError(f"Codex review notification failed: {result.stdout.strip()} {result.stderr.strip()}".strip())
+        return queue
     if entry.get("harness") != "claude" or entry.get("backend") != "tmux":
         raise ValueError("Claude review notification requires the ledger's supported tmux route")
     from close_ttys import inventory
@@ -77,4 +82,26 @@ def send(entry, message):
     before = verify()
     if verify() != before:
         raise ValueError("Claude author changed before notification; no keys sent")
-    asyncio.run(terminal.send(identity, message))
+    return lambda: asyncio.run(terminal.send(identity, message))
+
+
+def send(entry, message):
+    from iterm_tab import SendFailure
+
+    try:
+        deliver = prepare(entry, message)
+    except PermissionError:
+        # A real permission refusal remains spent, even before delivery.
+        raise
+    except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        raise NotSent(str(error)) from error
+    try:
+        deliver()
+    except SendFailure:
+        raise  # Text or Return may have reached the terminal.
+    except ValueError as error:
+        if entry["harness"] == "claude":
+            # Terminal.send wraps every post-key failure in SendFailure. Its
+            # remaining ValueErrors are its own pre-key validation checks.
+            raise NotSent(str(error)) from error
+        raise  # A Codex queue call was entered; never replay its refusal.

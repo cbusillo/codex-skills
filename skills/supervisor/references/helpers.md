@@ -2492,11 +2492,14 @@ entry reports the unsupported route; there is no automatic terminal migration.
 Ledger-relative transcript paths resolve beside the ledger, as for other helpers.
 
 The dispatcher reserves each delivery durably before calling the send helper.
-A failed or interrupted attempt stays spent and exposes `notification_error`,
-sets `needs_attention` and makes the sweep nonzero, preserving the review link.
-Read the exact session and reconcile the retained attempt before any manual
+Checks that stop before delivery record `not_sent`; later apply passes recheck
+the ledger, native identity and empty prompt before trying again. Discovery
+never retries. A permission refusal, a queue call, a possibly sent terminal
+message or an interrupted attempt stays spent. Failures expose `notification_error`,
+set `needs_attention` and make the sweep nonzero, preserving the review link.
+Read the exact session and reconcile a spent attempt before any manual
 notification; never delete its journal to retry or use another route after a
-denial. Changed ledger coordinates also require reconciliation. Corrected report
+denial. Once sent, ledger maintenance does not require another notice. Corrected report
 edits get their own version; a later weighed disposition ends notification need.
 The helper weighs no findings and never calls `ready`.
 Posting removes the inherited per-command own-user

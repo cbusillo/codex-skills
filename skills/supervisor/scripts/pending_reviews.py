@@ -34,6 +34,7 @@ from github_read import (GitHubReader, GitHubReadError, GitHubReadShapeError,
                          automation_only_gh_prefix_args, resolve_repo_from_remote)
 from ready_handoff import review_prose_lines, review_receipt_head, supervisor_review_request
 from review_worktree import is_review_scratch
+from review_notifications import NotSent
 
 REPO = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
 COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)#issuecomment-(\d+)")
@@ -782,26 +783,32 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         key = hashlib.sha256(json.dumps(version, sort_keys=True).encode()).hexdigest()
         path = evidence / f"notification-{key}.json"
         report["notification_journal"] = str(path)
+        retry = False
         if path.exists():
             prior = json.loads(path.read_text())
             if not isinstance(prior, dict):
                 raise ReviewError("notification journal is not an object; retain it and reconcile delivery")
-            if prior.get("target") != entry:
-                raise ReviewError("notification ledger target changed; reconcile the retained attempt, never retarget")
-            if prior.get("phase") != "sent":
+            if prior.get("phase") == "sent":
+                return {**report, "notification_status": "sent"}
+            if prior.get("phase") != "not_sent":
                 raise ReviewError(prior.get("error") or "notification outcome unknown; reconcile the retained attempt, never replay")
-            return {**report, "notification_status": "sent"}
+            retry = True
         if not apply:
-            return {**report, "notification_status": "pending"}
+            return {**report, "notification_status": "pending",
+                    "notification_error": prior.get("error") if retry else None,
+                    "needs_attention": report.get("needs_attention", False) or retry}
         private_evidence_dir(evidence)
         message = (f"Supervisor review posted for {repo}#{number}. "
                    f"Head: {report.get('reviewed_head') or report['head']}. "
                    f"Read {report['completion_comment']}, weigh the findings, and continue your brief. "
                    "This notification is not a weighed review or a ready handoff.")
-        state = {"phase": "attempted", "version": version, "target": entry}
-        atomic_text(path, json.dumps(state), exclusive=True)
+        state = {"phase": "attempted", "version": version}
+        atomic_text(path, json.dumps(state), exclusive=not retry)
         try:
             io.notify(entry, message)
+        except NotSent as error:
+            atomic_text(path, json.dumps({**state, "phase": "not_sent", "error": str(error)}))
+            raise
         except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
             atomic_text(path, json.dumps({**state, "phase": "failed", "error": str(error)}))
             raise
