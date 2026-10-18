@@ -640,6 +640,12 @@ def check_codex_daemon(choice):
             f"Codex daemon unavailable after start for CODEX_HOME={home} ({type(error).__name__}); "
             f"run {command}, then retry the launch"
         ) from error
+    preflight_codex_daemon(choice)
+
+
+def preflight_codex_daemon(choice, *, exact_source=False):
+    """Inspect without startup, with one error boundary for both launch modes."""
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
     try:
         inspect_plugins = choice.get("require_browser", False)
         directory = choice.get("tool_directory") if inspect_plugins else None
@@ -658,10 +664,18 @@ def check_codex_daemon(choice):
                                  "-c and -p do not forward marketplace settings through --remote")
     except Exception as error:
         detail = str(error) if isinstance(error, ValueError) else type(error).__name__
+        if exact_source and isinstance(error, DaemonRefusal):
+            active = "unknown" if error.active_threads is None else str(error.active_threads)
+            detail = f"admission {error.state}; active threads: {active}"
+            if error.inventory_error:
+                detail += "; " + error.inventory_error
         if isinstance(error, TimeoutError):
             detail = "daemon Unix WebSocket transport timed out; admission unknown"
+        remedy = ("keep this source account and wait for its daemon to admit resumption; "
+                  "do not restart the daemon" if exact_source else
+                  "do not restart the daemon automatically")
         raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
-                         "no terminal was launched; do not restart the daemon automatically") from error
+                         f"no terminal was launched; {remedy}") from error
 
 
 def scoped_exec(command_text):
@@ -1013,7 +1027,7 @@ def prepare_resume(args):
     entry = entries[0]
     if not isinstance(entry.get("codex_home"), str):
         raise ValueError("resume ledger needs the source's absolute codex_home")
-    home = Path(entry["codex_home"])
+    home = Path(entry["codex_home"]).expanduser()
     if not home.is_absolute():
         raise ValueError("resume ledger needs the source's absolute codex_home")
     home = home.resolve(strict=True)
@@ -1030,7 +1044,7 @@ def prepare_resume(args):
     if Path(choice["env"]["CODEX_HOME"]).expanduser().resolve() != home:
         raise ValueError("selected resume account differs from the source")
     # Read the existing daemon only. Recovery never starts or restarts one.
-    inspect_codex_daemon(home)
+    preflight_codex_daemon(choice, exact_source=True)
     account_choice.prepare_launch(choice)
     choice["resume_session_id"] = session
     invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),

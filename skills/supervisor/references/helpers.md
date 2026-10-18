@@ -1919,22 +1919,13 @@ Preserve claims and artifacts while recovering; do not delete the marker or
 reuse the old verdict. A frozen predecessor still refuses resume: start a new
 thread and claim through gh-plan.py instead.
 
-For recovery from the Supervisor's terminal tooling, use `new
---resume-session-id` on either backend. Verify that the original client has
-exited first; do not open another client for a still-running source. Preserve
-the original ledger and historical exit times. The source must be one exact
-Supervisor-owned Codex entry with its native ID, absolute `codex_home` and
-matching native transcript under that home. The launcher chooses only that
-home's configured account through the usual snapshot and launch-receipt route.
-It inspects the existing daemon without starting or restarting it, then runs
-the same `codex-session.py resume` helper. Its source lease, action barrier
-and frozen-generation checks remain in force. No command or brief file is
-accepted in this mode; arbitrary helper or shell commands still refuse.
-Known frozen or duplicate source records refuse before account selection,
-receipt preparation or terminal creation. The guarded helper repeats that
-same check under its source lease immediately before acting, covering races
-after the read-only preflight. Account environment paths expand `~` exactly
-as they do for fresh launches.
+From the Supervisor's terminal tooling, use `new --resume-session-id` on
+either backend. First verify that the original client has exited. Preserve
+the original ledger and exit evidence; select its one Supervisor-owned Codex
+entry with the native ID, matching transcript and source `codex_home`
+(absolute after `~` expansion). The launcher keeps that configured account,
+uses its existing daemon and normal launch receipts, and runs the guarded
+helper above. Supply no command/brief files or browser flags.
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id <container-id> --resume-session-id <native-id> --ledger <original-private-ledger.json> --account-provider openai
@@ -1943,19 +1934,19 @@ uv run skills/supervisor/scripts/iterm_tab.py --backend tmux send --session-id <
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
-Inspect the idle prompt and preserve any existing input before sending the
-fresh turn. Verify its completed final safe verdict, then use the normal
-empty-prompt `/quit`, verified process exit and `finish` preview/apply above.
-Keep a recovery ledger containing the native `session_id`, transcript and
-verified handoff, with the new terminal coordinates and guarded generation
-from launch output or `status`. The launch output's `session_id` is the
-terminal ID; `native_session_id` is the source ID. Store the terminal ID as
-`tmux_session_id` or `iterm_session_id`, never over the native ID. If launch
-identity is unavailable, read `status` and verify PID/TTY before finishing;
-never substitute the old generation. Record this recovery's actual exit
-time, without rewriting the earlier historical evidence. A receipt or submit
-failure retains the exact pane for inspection under the usual launch rules;
-do not replay an uncertain launch.
+Inspect the idle prompt and preserve any input before sending the fresh turn.
+Verify its completed safe verdict, then use normal empty-prompt `/quit`,
+verified process exit and `finish` preview/apply. In a recovery ledger,
+preserve native `session_id`, transcript and handoff, and replace terminal
+coordinates and launch metadata with this recovery's verified values. Launch
+output's `session_id` is the terminal ID; `native_session_id` is the source.
+Store the terminal ID as `tmux_session_id` or `iterm_session_id`, never over
+the native ID. If launch identity is unavailable, use `status` and verify
+PID/TTY; never substitute the old generation. Record the recovery's actual
+exit time and preserve earlier evidence. A receipt/submit failure retains the
+exact pane for inspection; never replay an uncertain launch. Daemon refusal
+requires waiting or diagnosis on this same source account, without switching
+accounts or restarting the daemon.
 
 If recording generation metadata fails after a native resume, the RPC reports
 that partial outcome and retains the connection and durable invalidation. Retry

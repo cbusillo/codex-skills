@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["websockets==17.2"]
 # ///
 """Provider/harness consistency, without real accounts or terminals."""
 
@@ -78,7 +78,8 @@ class ResumeLaunchTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--codex-home") + 1], str(self.home))
         self.select.assert_called_once_with("openai", None, self.account["name"])
         self.prepare.assert_called_once_with(choices[0])
-        self.inspect.assert_called_once_with(self.home)
+        self.inspect.assert_called_once()
+        self.assertEqual(self.inspect.call_args.args[0], self.home)
         self.start.assert_not_called()
         self.assertEqual(choices[0]["resume_session_id"], self.session)
 
@@ -95,6 +96,27 @@ class ResumeLaunchTests(unittest.TestCase):
         self.select.assert_not_called()
         self.prepare.assert_not_called()
         self.inspect.assert_not_called()
+
+    def test_tilde_ledger_home_matches_the_same_source_account(self):
+        self.ledger.write_text(json.dumps([{**self.entry, "codex_home": "~/account"}]))
+        with patch.dict(os.environ, {"HOME": str(self.root)}):
+            commands, choices = iterm_tab.prepare_launches(self.args)
+        argv = shlex.split(commands[0])
+        self.assertEqual(argv[argv.index("--codex-home") + 1], str(self.home))
+        self.assertEqual(choices[0]["env"], self.account["env"])
+
+    def test_daemon_failures_stay_on_source_and_refuse_before_receipt_preparation(self):
+        from websockets.exceptions import InvalidHandshake, ConnectionClosedError
+        for failure in (InvalidHandshake("fixture handshake"), ConnectionClosedError(None, None),
+                        iterm_tab.DaemonRefusal("draining", 2), TimeoutError()):
+            with self.subTest(failure=type(failure).__name__):
+                self.inspect.side_effect = failure
+                with self.assertRaises(ValueError) as caught:
+                    iterm_tab.prepare_launches(self.args)
+                self.assertIn(str(self.home), str(caught.exception))
+                self.assertNotIn("--account", str(caught.exception))
+        self.prepare.assert_not_called()
+        self.start.assert_not_called()
 
     def test_bad_identity_and_launch_options_refuse_before_receipt_preparation(self):
         for changes in ({"supervisor_owned": False}, {"harness": "claude"}, {"codex_home": "relative"},
