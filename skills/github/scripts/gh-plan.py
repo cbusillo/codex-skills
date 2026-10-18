@@ -2477,13 +2477,13 @@ def claim_once(args: argparse.Namespace) -> None:
         parent = read_next_parent(issue_repo, number)
         if (parent is None or parent["repo"].casefold() != issue_repo.casefold()
                 or parent["number"] == number):
-            raise PlanError("Cross-record resume requires a native parent in the claimed issue's repository")
+            raise ClassifiedPlanError("claim_native_parent_required", "Cross-record resume requires a native parent in the claimed issue's repository")
         if resume_source_number is not None and parent["number"] != resume_source_number:
-            raise PlanError("Native resume parent changed during claim readback")
+            raise ClassifiedPlanError("claim_native_parent_changed", "Native resume parent changed during claim readback")
         source, source_status, source_comments, _ = claim_snapshot(
             str(parent["number"]), issue_repo, allow_closed=True)
         if "pull_request" in source:
-            raise PlanError("Native resume parent must be an issue")
+            raise ClassifiedPlanError("claim_native_parent_invalid", "Native resume parent must be an issue")
         resume_source_number = parent["number"]
         if not refresh_pr:
             claim["retained_handoff"] = (f"https://github.com/{issue_repo}/issues/{resume_source_number}"
@@ -2495,15 +2495,29 @@ def claim_once(args: argparse.Namespace) -> None:
         _, children = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{source_number}/sub_issues", query={},
             bucket="rest_core", step_prefix="claim_handoff_children")
+        _, history = collect_paged_rest_items(
+            f"/repos/{issue_repo}/issues/{source_number}/timeline", query={},
+            bucket="rest_core", step_prefix="claim_handoff_child_history")
+        for event in history:
+            if event.get("event") != "sub_issue_added":
+                continue
+            if not isinstance(event.get("sub_issue"), dict):
+                raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
+            children.append(event["sub_issue"])
         handoff_url = f"https://github.com/{issue_repo}/issues/{source_number}#issuecomment-{handoff_id}"
 
         def uses_source(record: dict[str, str]) -> bool:
             return (record.get("resume_from") == str(args.resume_from)
                     or handoff_id is not None and record.get("retained_handoff") == handoff_url)
 
+        seen_children = set()
         for child in children:
             related = compact_relationship_issue(child, "handoff child")
             peer_repo, peer_number = related["repo"], related["number"]
+            child_key = (peer_repo.casefold(), peer_number)
+            if child_key in seen_children:
+                continue
+            seen_children.add(child_key)
             if peer_repo.casefold() == issue_repo.casefold() and peer_number == number:
                 continue  # The claimed record has its independent ownership checks.
             _, peer_status, peer_comments, _ = claim_snapshot(str(peer_number), peer_repo, allow_closed=True)
@@ -2572,6 +2586,8 @@ def claim_once(args: argparse.Namespace) -> None:
         source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
         observed_waits = {}
         released_target_sessions = set()
+        session_owners = {record["session"]: (source_comments, issue_repo, source_number)
+                          for comment in source_comments for record in github_plan_claim.records(comment.get("body") or "")}
         target_session_comments = list(source_comments)
         if source_number != number:
             target_session_comments.extend(current_comments)
@@ -2579,7 +2595,7 @@ def claim_once(args: argparse.Namespace) -> None:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
                 refuse([{"source": "open_pr", "number": pull["number"], "branch": pull["head"]["ref"],
-                         "certainty": "not_in_source_handoff"}])
+                         "certainty": "not_in_source_handoff"}], owner_comments=source_comments, owner_number=source_number)
             if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
                 continue
             _, target = get_issue(str(pull["number"]), target_repo)
@@ -2595,9 +2611,10 @@ def claim_once(args: argparse.Namespace) -> None:
             # holder prose conservative rather than applying issue exclusions.
             competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
             if competing:
-                refuse(competing)
-            released_target_sessions.update(record["session"] for _, record, _ in
-                                             github_plan_claim.exact_released_sources(target_comments))
+                refuse(competing, owner_comments=target_comments, owner_repo=target_repo, owner_number=pull["number"])
+            for _, record, _ in github_plan_claim.exact_released_sources(target_comments):
+                released_target_sessions.add(record["session"])
+                session_owners.setdefault(record["session"], (target_comments, target_repo, pull["number"]))
             if not refresh_pr or pull["number"] == target_number:
                 target_status = sections.get("Current Status", "")
                 target_wait = current_wait(target, target_comments, target_repo)
@@ -2629,14 +2646,15 @@ def claim_once(args: argparse.Namespace) -> None:
             uncertain = [{"source": "native_session_inventory", "branch": branch, "session": source_session, "certainty": "incomplete"}
                          for branch in sorted(permitted & present)]
             if uncertain:
-                refuse(uncertain)
+                refuse(uncertain, owner_comments=source_comments, owner_number=source_number)
         live_sources = [{"source": "source_session", "session": peer["sessionId"],
                          "certainty": "visible_in_native_inventory"}
                         for peer in target_inventory["sessions"]
                         if peer.get("sessionId") in released_target_sessions | {source_session}
                         and peer.get("sessionId") != claim["session"]]
         if live_sources:
-            refuse(live_sources)
+            owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]
+            refuse(live_sources, owner_comments=owner_comments, owner_repo=owner_repo, owner_number=owner_number)
         check_handoff_successors(source_number, target_inventory)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)
         for checked_number, checked_repo in dict.fromkeys(
@@ -2655,7 +2673,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 recorded_branches=github_plan_claim.recorded_claim_branches(checked_status, checked_comments),
             )
             if competing:
-                refuse(competing)
+                refuse(competing, owner_comments=checked_comments, owner_repo=checked_repo, owner_number=checked_number)
         if issue_repo.casefold() != target_repo.casefold():
             handoff_checkout = getattr(args, "planning_checkout", None)
             config_path = repo_config_path(issue_repo) if not handoff_checkout else None
@@ -2801,7 +2819,7 @@ def claim_once(args: argparse.Namespace) -> None:
             query={}, bucket="rest_core", step_prefix="claim_blockers",
         )
         if any(blocker.get("state") != "closed" for blocker in blockers):
-            raise PlanError("Claim requires resolved native blockers; preserve blocked planning state")
+            raise ClassifiedPlanError("claim_native_blockers_unresolved", "Claim requires resolved native blockers; preserve blocked planning state")
 
     def check_pr_artifacts(status_to_check: str, current_comments: list[dict[str, Any]]) -> None:
         fresh_inventory = inventory
@@ -2990,11 +3008,12 @@ def claim_once(args: argparse.Namespace) -> None:
                               "claim_recovery": claim_recovery()})
         raise error from exc
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
-        raise PlanError(str(exc), payload={"completed_steps": completed, "claim": claim,
-                                          "previous_current_status": previous_status,
-                                          "claim_recovery": claim_recovery(),
-                                          "claim_comment": claim_comment,
-                                          "session_coverage": inventory.get("session_coverage", {})}) from exc
+        payload = {"completed_steps": completed, "claim": claim,
+                   "previous_current_status": previous_status, "claim_recovery": claim_recovery(),
+                   "claim_comment": claim_comment, "session_coverage": inventory.get("session_coverage", {})}
+        if isinstance(exc, github_plan_claim.ClaimProofError):
+            raise ClassifiedPlanError(exc.code, str(exc), payload=payload) from exc
+        raise PlanError(str(exc), payload=payload) from exc
     except PlanError as exc:
         exc.payload.update({"completed_steps": completed, "claim": claim, "claim_comment": claim_comment,
                             "previous_current_status": previous_status,

@@ -20,6 +20,14 @@ MARKER = "github-plan:claim "
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
 
+class ClaimProofError(ValueError):
+    """A source-proof refusal with a stable machine-readable reason."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 def word_pattern(*words: str) -> str:
     return r"\b(?:" + "|".join(words) + r")\b"
 
@@ -710,13 +718,13 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
     comments = effective_comments(comments)
     original = next((c for c in comments if c.get("id") == comment_id), None)
     if original is None:
-        raise ValueError("Resume source claim comment is missing")
+        raise ClaimProofError("claim_resume_source_missing", "Resume source claim comment is missing")
     parsed = records(original.get("body") or "")
     if len(parsed) != 1:
-        raise ValueError("Resume source must contain one structured claim record")
+        raise ClaimProofError("claim_resume_source_invalid", "Resume source must contain one structured claim record")
     author = (original.get("user") or {}).get("login")
     if not author:
-        raise ValueError("Resume source author is unavailable")
+        raise ClaimProofError("claim_resume_author_missing", "Resume source author is unavailable")
     source_index = comments.index(original)
     for comment in comments[source_index + 1:]:
         if (comment.get("user") or {}).get("login") != author:
@@ -724,7 +732,7 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
         if (released_claim_id(comment.get("body") or "") == comment_id
                 or legacy_release_worker(comment.get("body") or "") == parsed[0]["worker"]):
             return parsed[0]["branch"]
-    raise ValueError("Resume source claim has not been released by its author")
+    raise ClaimProofError("claim_resume_source_unreleased", "Resume source claim has not been released by its author")
 
 
 def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[int]:
@@ -751,7 +759,7 @@ def retained_handoff(
     author = source["user"]["login"]
     handoff = next((c for c in comments if c.get("id") == handoff_id), None)
     if handoff is None or (handoff.get("user") or {}).get("login") != author:
-        raise ValueError("Refresh handoff must be a comment by the source claim author")
+        raise ClaimProofError("claim_handoff_author_mismatch", "Refresh handoff must be a comment by the source claim author")
     source_index, handoff_index = comments.index(source), comments.index(handoff)
     if handoff_index <= source_index or not any(
         (c.get("user") or {}).get("login") == author

@@ -89,6 +89,7 @@ class ClaimTests(unittest.TestCase):
         self.closed_pulls = {}
         self.parent = None
         self.children = {}
+        self.timelines = {}
         self.api_failure = None
         self.configs = {}
         self.planning_inventory = None
@@ -138,6 +139,8 @@ class ClaimTests(unittest.TestCase):
         items = self.target_comments.get(path, self.comments) if path.endswith("comments") else self.blockers if path.endswith("blocked_by") else self.pulls
         if path.endswith("/sub_issues"):
             items = self.children.get(path, [])
+        if path.endswith("/timeline"):
+            items = self.timelines.get(path, [])
         if path.endswith("comments") and self.wait is not None:
             items = [{"id": -1, "user": {"login": TEST_BOT}, "body": wait_record.marker(self.wait)}, *items]
         if path == "/repos/other/plans/pulls": items = []
@@ -907,6 +910,8 @@ class ClaimTests(unittest.TestCase):
             return inventory
         self.observe_inventory = observe
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                         "https://github.com/owner/repo/issues/99#issuecomment-77")
         self.assert_no_writes()
         self.assertEqual(caught.exception.payload["competing_evidence"][0]["session"], target["session"])
 
@@ -1103,6 +1108,79 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
+    def test_detached_native_child_remains_visible_until_its_claim_ends(self):
+        for phase in ("preflight", "after_post", "after_status"):
+            for ended in (False, True):
+                with self.subTest(phase=phase, ended=ended):
+                    self.setUp()
+                    self.parent_handoff_fixture()
+                    successor = {**OTHER, "session": "detached-child-session", "branch": "work/detached-source",
+                                 "resume_from": str(self.args.resume_from),
+                                 "retained_handoff": f"{self.parent['html_url']}#issuecomment-{self.args.handoff_comment}"}
+                    sibling = {**copy.deepcopy(self.issue), "number": 43, "body": "## Current Status\n\n" + CLAIM.marker(successor)}
+                    comments = [{"id": 88, "body": CLAIM.marker(successor), "user": {"login": TEST_BOT},
+                                 "created_at": successor["claimed_at"]}]
+                    if ended:
+                        comments.append({"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT},
+                                         "created_at": "2026-10-02T00:00:00Z"})
+                    def detached():
+                        self.targets["43"] = sibling
+                        self.target_comments["/repos/owner/repo/issues/43/comments"] = comments
+                        self.timelines["/repos/owner/repo/issues/41/timeline"] = [
+                            {"event": "sub_issue_added", "sub_issue": {"number": 43, "state": "open",
+                             "repository": {"full_name": "owner/repo"}}}]
+                    if phase == "preflight": detached()
+                    else: setattr(self, phase, detached)
+                    if ended:
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    else:
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                            self.run_claim()
+                        self.assertEqual(caught.exception.code, "claim_conflict")
+                        self.assertEqual(caught.exception.payload["competing_evidence"][0]["record"], successor)
+                        self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                                         "https://github.com/owner/repo/issues/43#issuecomment-88")
+                        if phase == "preflight": self.assert_no_writes()
+                        else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_native_child_history_errors_refuse_before_writing(self):
+        for failure in ("malformed", "unreadable"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.parent_handoff_fixture()
+                if failure == "malformed":
+                    self.timelines["/repos/owner/repo/issues/41/timeline"] = [{"event": "sub_issue_added"}]
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_child_history_invalid")
+                else:
+                    read_pages = self.read_pages
+                    def unavailable(path, **kwargs):
+                        if path.endswith("/timeline"):
+                            raise PLAN.PlanError("History unreadable", api_result={"status": 403})
+                        return read_pages(path, **kwargs)
+                    with patch.object(self, "read_pages", side_effect=unavailable):
+                        with self.assertRaises(PLAN.PlanError) as caught:
+                            self.run_claim()
+                    self.assertEqual(caught.exception.api_result["status"], 403)
+                self.assert_no_writes()
+
+    def test_parent_artifact_refusals_coordinate_on_the_source_record(self):
+        for artifact in ("branch", "unmentioned_pr"):
+            with self.subTest(artifact=artifact):
+                self.setUp()
+                self.parent_handoff_fixture()
+                if artifact == "branch":
+                    self.inventory["local_branches"].append("work/issue-41-unknown")
+                else:
+                    self.pulls.append({**self.pulls[0], "number": 101})
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertEqual(caught.exception.payload["coordination"][0]["work_record"], self.parent["html_url"])
+                self.assert_no_writes()
+
     def test_parent_handoff_distinguishes_ended_unrelated_and_live_child_work(self):
         for state in ("released", "native_ended", "unrelated", "released_live", "released_live_tree", "incomplete"):
             with self.subTest(state=state):
@@ -1163,6 +1241,8 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assertEqual(caught.exception.payload["competing_evidence"][0]["session"], earlier["session"])
+                self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                                 "https://github.com/owner/repo/issues/41#issuecomment-70")
                 if phase == "preflight": self.assert_no_writes()
                 else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
@@ -1193,8 +1273,9 @@ class ClaimTests(unittest.TestCase):
     def test_native_parent_resume_does_not_expand_conflict_only_refresh(self):
         self.parent_handoff_fixture()
         self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
-        with self.assertRaisesRegex(PLAN.PlanError, "Resume source claim comment is missing"):
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_resume_source_missing")
         self.assert_no_writes()
 
     def test_parent_resume_preserves_release_handoff_and_ownership_refusals(self):
@@ -1203,10 +1284,10 @@ class ClaimTests(unittest.TestCase):
         conflicts = {"missing_pr_link": "open_pr", "live_source": "source_session", "live_tree": "claude_session",
                      "other_claim": "comment", "child_claim": "comment", "unmentioned_pr": "open_pr",
                      "parent_status": "current_status"}
-        reasons = {"no_link": "requires a native parent", "foreign_parent": "requires a native parent",
-                   "no_release": "not been released by its author", "foreign_release": "not been released by its author",
-                   "foreign_handoff": "comment by the source claim author", "child_blocker": "resolved native blockers",
-                   "no_handoff": "source claim comment is missing", "wrong_parent": "source claim comment is missing"}
+        reasons = {"no_link": "claim_native_parent_required", "foreign_parent": "claim_native_parent_required",
+                   "no_release": "claim_resume_source_unreleased", "foreign_release": "claim_resume_source_unreleased",
+                   "foreign_handoff": "claim_handoff_author_mismatch", "child_blocker": "claim_native_blockers_unresolved",
+                   "no_handoff": "claim_resume_source_missing", "wrong_parent": "claim_resume_source_missing"}
         for change in ("no_link", "unreadable_link", "foreign_parent", "no_release", "foreign_release",
                        "foreign_handoff", "missing_pr_link", "live_source", "live_tree", "other_claim",
                        "child_claim", "unmentioned_pr", "child_blocker", "child_wait", "no_handoff",
@@ -1248,7 +1329,7 @@ class ClaimTests(unittest.TestCase):
                 elif change == "unreadable_link":
                     self.assertEqual(caught.exception.api_result["status"], 403)
                 else:
-                    self.assertRegex(str(caught.exception), reasons[change])
+                    self.assertEqual(caught.exception.code, reasons[change])
                 self.assert_no_writes()
 
     def test_parent_resume_rechecks_native_link_and_proofs_on_both_readbacks(self):
@@ -1275,9 +1356,9 @@ class ClaimTests(unittest.TestCase):
                         expected = "source_session" if change == "source_peer" else "comment"
                         self.assertIn(expected, [entry["source"] for entry in caught.exception.payload["competing_evidence"]])
                     else:
-                        reason = {"link": "requires a native parent", "reparent": "parent changed during claim readback",
-                                  "release": "not been released by its author"}[change]
-                        self.assertRegex(str(caught.exception), reason)
+                        reason = {"link": "claim_native_parent_required", "reparent": "claim_native_parent_changed",
+                                  "release": "claim_resume_source_unreleased"}[change]
+                        self.assertEqual(caught.exception.code, reason)
 
     def cleanup_handoff_fixture(self):
         self.ordinary_handoff_fixture()
