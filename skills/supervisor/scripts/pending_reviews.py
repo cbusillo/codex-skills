@@ -30,12 +30,13 @@ from github_plan_claim import exact_released_sources, live_lines, records, witho
 from github_plan_release import effective_comments
 from github_read import (GitHubReader, GitHubReadError, GitHubReadShapeError,
                          automation_only_gh_prefix_args, resolve_repo_from_remote)
-from ready_handoff import review_receipt_head, review_record
+from ready_handoff import review_prose_lines, review_receipt_head, supervisor_review_request
 from review_worktree import is_review_scratch
 
 REPO = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
 COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)#issuecomment-(\d+)")
 HEAD = re.compile(r"\b(?:head(?: SHA)?|commit)\s*[:=]?\s*`?([0-9a-f]{7,40})\b", re.I)
+REPORT_HEADING = "Review of record, run by the Supervisor"
 RECEIPT = re.compile(r"<!-- supervisor-review (.*?) -->")
 
 
@@ -72,6 +73,32 @@ def run_lock(ledger):
         os.close(descriptor)
 
 
+def private_evidence_dir(path):
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.stat().st_mode & 0o077:
+        raise ReviewError(f"evidence directory must be private (mode 0700): {path}; restrict this directory's permissions, retain its journals and rerun")
+
+
+def atomic_text(path, content, *, exclusive=False):
+    descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if exclusive:
+            os.link(temporary, path)  # Atomic publication that never replaces a spent reservation.
+        else:
+            os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 @contextmanager
 def sweep_lock(ledger, evidence, *, apply):
     # Discovery reads remote state and journals; it needs neither lock nor writes.
@@ -79,8 +106,9 @@ def sweep_lock(ledger, evidence, *, apply):
         yield
         return
     with run_lock(ledger):
-        evidence.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with (evidence / "pending-reviews.lock").open("a") as lock:
+        private_evidence_dir(evidence)
+        descriptor = os.open(evidence / "pending-reviews.lock", os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             yield
 
@@ -134,7 +162,7 @@ def reported_review(body):
 
 
 def latest_request(comments, logins):
-    asks = [c for c in comments if trusted(c, logins) and review_record(c.get("body") or "") == "request"
+    asks = [c for c in comments if trusted(c, logins) and supervisor_review_request(c.get("body") or "")
             and raw_receipt(c.get("body") or "") is None and not reported_review(c.get("body") or "")]
     return max(asks, key=lambda c: (c["created_at"], c["id"]), default=None)
 
@@ -148,9 +176,15 @@ def comment_binding(comment):
 
 
 def completion_record(comments, request, head, logins):
+    try:
+        bind_head(request, head)
+    except ReviewError:
+        return None
     weighed, supervisor, reported = None, None, None
     def key(comment):
         return comment["created_at"], comment["id"]
+    def report_key(comment):
+        return comment.get("updated_at") or comment["created_at"], comment["id"]
     for comment in comments:
         if not trusted(comment, logins):
             continue
@@ -159,7 +193,7 @@ def completion_record(comments, request, head, logins):
         if receipt and all(receipt.get(k) == v for k, v in receipt_for(request, head).items()):
             edited = (receipt.get("request_updated_at") is not None
                       and receipt["request_updated_at"] != (request.get("updated_at") or request["created_at"]))
-            if supervisor is None or key(comment) > key(supervisor["comment"]):
+            if supervisor is None or report_key(comment) > report_key(supervisor["comment"]):
                 supervisor = {"kind": "supervisor", "comment": comment, "receipt": receipt,
                               "request_edited_after_review": edited}
         if reported_review(body) and key(comment) >= key(request):
@@ -168,20 +202,32 @@ def completion_record(comments, request, head, logins):
             except ReviewError:
                 pass
             else:
-                if reported is None or key(comment) > key(reported["comment"]):
+                if reported is None or report_key(comment) > report_key(reported["comment"]):
                     reported = {"kind": "reported", "comment": comment}
         if (review_receipt_head(body) == head and key(comment) >= key(request)
                 and (weighed is None or key(comment) > key(weighed["comment"]))):
             weighed = {"kind": "weighed", "comment": comment}
+    report = supervisor if supervisor and (reported is None or report_key(supervisor["comment"]) >= report_key(reported["comment"])) else reported
+    after_edit = lambda c: c["created_at"] >= (request.get("updated_at") or request["created_at"])
+    if report:
+        report["acknowledged"] = (weighed is not None and after_edit(weighed["comment"])
+                                  and key(weighed["comment"]) >= report_key(report["comment"]))
+        report["report_changed_after_disposition"] = weighed is not None and key(weighed["comment"]) < report_key(report["comment"])
+        if supervisor and report is not supervisor:
+            report["receipt"] = supervisor["receipt"]  # Preserve the original author identity.
+            report["request_edited_after_review"] = supervisor.get("request_edited_after_review", False)
+        return report
     if weighed:
-        weighed["acknowledged"] = weighed["comment"]["created_at"] >= (request.get("updated_at") or request["created_at"])
-    if supervisor:
-        supervisor["acknowledged"] = (weighed is not None and weighed["acknowledged"]
-                                      and key(weighed["comment"]) >= key(supervisor["comment"]))
-        return supervisor
-    if reported and (weighed is None or key(reported["comment"]) > key(weighed["comment"])):
-        return reported
-    return weighed or reported
+        # A disposition of some other review is not an acknowledgement of this
+        # delegation. Explicit acknowledgement only settles the queue item.
+        acknowledgements = [c for c in comments if trusted(c, logins)
+                            and review_receipt_head(c.get("body") or "") == head
+                            and key(c) >= key(request) and after_edit(c)
+                            and f"Supervisor request acknowledged: {request['id']}" in review_prose_lines(c.get("body") or "")]
+        if acknowledgements:
+            return {"kind": "acknowledged", "comment": max(acknowledgements, key=key), "acknowledged": True}
+        return {**weighed, "kind": "weighed_without_review", "acknowledged": False}
+    return None
 
 
 def completion_report(record, io, repo, pr, entries, logins, request, evidence):
@@ -199,15 +245,17 @@ def completion_report(record, io, repo, pr, entries, logins, request, evidence):
     edited = record.get("request_edited_after_review", False)
     acknowledged = record.get("acknowledged", False)
     comment = record["comment"]
-    status = {"supervisor": "already_completed", "weighed": "already_weighed", "reported": "reported_review"}
+    status = {"supervisor": "already_completed", "reported": "already_weighed" if acknowledged else "reported_review",
+              "weighed_without_review": "weighed_without_review", "acknowledged": "request_acknowledged"}
     return {"status": status[record["kind"]],
             "completion_kind": record["kind"], "requested_provider_confirmed": confirmed,
             "request_edited_after_review": edited,
-            "needs_attention": not acknowledged and (not confirmed or edited or error is not None),
+            "needs_attention": record["kind"] == "weighed_without_review" or (not acknowledged and (not confirmed or edited or error is not None or record.get("report_changed_after_disposition", False))),
             "head": pr["head"]["sha"], "request": request["id"],
             "author_session": session, "author_provider": author, "notification_error": error,
-            "notification_needed": record["kind"] != "weighed" and not record.get("acknowledged", False),
-            "completion_comment": comment.get("html_url") or comment.get("url") or comment["id"]}
+            "notification_needed": record["kind"] in {"supervisor", "reported"} and not acknowledged,
+            "completion_comment": comment.get("html_url") or comment.get("url") or comment["id"],
+            "completion_updated_at": comment.get("updated_at") or comment["created_at"]}
 
 
 def receipt_for(request, head):
@@ -381,6 +429,10 @@ def bind_session(io, repo, branches, entries, logins, request, pr):
                     else:
                         outside.add(claim["session"])
     explicit = re.findall(r"(?im)^Author session:\s*`?([^`\s]+)`?\s*$", request["body"])
+    if len(explicit) > 1:
+        raise ReviewError("name exactly one Author session: from its branch claim")
+    if explicit and explicit[0] in outside and explicit[0] not in candidates:
+        raise OtherRun("explicit author matches a trusted branch claim outside this run")
     if matches and outside and not explicit:
         raise ReviewError("branch claims include other runs; name Author session: to resolve ownership")
     if not matches and outside and (not explicit or explicit[0] not in candidates):
@@ -416,13 +468,18 @@ def check_worktree(path, repo, branch, head):
         raise ReviewError("dirty worktree (including untracked project files)")
 
 
-def find_worktree(checkout, repo, branch, head, preferred=None):
-    candidates = []
+def registered_worktrees(checkout):
     raw = git(checkout, "worktree", "list", "--porcelain", "-z")
+    trees = []
     for block in raw.split("\0\0"):
         fields = dict(line.partition(" ")[::2] for line in block.split("\0") if line)
-        if fields.get("HEAD") == head and fields.get("branch"):
-            candidates.append((Path(fields["worktree"]), fields["branch"].removeprefix("refs/heads/")))
+        if fields.get("branch") and fields.get("HEAD"):
+            trees.append((Path(fields["worktree"]), fields["branch"].removeprefix("refs/heads/"), fields["HEAD"]))
+    return trees
+
+
+def find_worktree(checkout, repo, branch, head, preferred=None):
+    candidates = [(path, ref) for path, ref, sha in registered_worktrees(checkout) if sha == head]
     if preferred:
         candidates = [(path, ref) for path, ref in candidates if path.resolve() == preferred.resolve()]
     else:
@@ -479,7 +536,7 @@ class IO:
         if (not isinstance(payload, dict) or result.returncode or payload.get("ok") is not True
                 or payload.get("outcome_certainty") not in {"confirmed", "reconciled_applied"}):
             certainty = payload.get("outcome_certainty") if isinstance(payload, dict) else None
-            phase = "post_failed" if certainty in {"confirmed", "confirmed_not_applied", "reconciled_not_applied"} else "post_unknown"
+            phase = "post_failed" if certainty in {"confirmed_not_applied", "reconciled_not_applied"} else "post_unknown"
             raise PostError(f"posting not confirmed; do not replay: {json.dumps(payload)}", phase=phase, payload=payload)
         return payload
 
@@ -519,6 +576,14 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
     try:
         bind_session(io, repo, {branch}, entries, logins, request, pr)
     except OtherRun as error:
+        if checkout is not None:
+            same_head = {ref for _, ref, sha in registered_worktrees(checkout) if sha == head}
+            try:
+                bind_session(io, repo, {branch, *same_head}, entries, logins, request, pr)
+            except OtherRun:
+                pass
+            else:
+                raise ReviewError("same-head successor belongs to this run; name Author session: before review")
         return {"status": "not_owned", "head": head, "request": request["id"], "reason": str(error)}
     except (ValueError, GitHubReadError, GitHubReadShapeError):
         # Completion can still be reported without a live claim lookup. Pending
@@ -565,18 +630,20 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
     existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
     if existing:
         return completion_report(existing, io, repo, pr, entries, logins, request, evidence)
-    evidence.mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_evidence_dir(evidence)
+    prompt_file = evidence / f"{key}.prompt.txt"
+    launch = {**report, "prompt_evidence": str(prompt_file), "prompt_sources": [
+        {"repository": source_repo, "binding": comment_binding(source)} for source_repo, source in sources]}
     # Exclusive creation survives process interruption and unknown remote writes.
     # A later sweep reads remote completion first, then refuses a spent launch.
     try:
-        with journal.open("x") as stream:
-            json.dump({**report, "phase": "launch_started"}, stream, indent=2)
+        atomic_text(journal, json.dumps({**launch, "phase": "launch_started"}, indent=2), exclusive=True)
     except FileExistsError as error:
         raise ReviewError(f"prior launch exists at {journal}; inspect its outcome, do not replay a refusal or unknown write") from error
     with tempfile.TemporaryDirectory(prefix=f"{repo.replace('/', '-')}-{number}-", dir=evidence) as scratch:
         folder = Path(scratch)
-        prompt_file, output = folder / "prompt.md", folder / "review.md"
-        prompt_file.write_text(prompt)
+        output = folder / "review.md"
+        atomic_text(prompt_file, prompt)
         try:
             metadata = io.review(author, worktree, prompt_file, output)
             # The adapter's declared-completion contract must include actual text.
@@ -584,38 +651,38 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
             if not review or metadata.get("ok") is not True:
                 raise ReviewError("review completion missing or empty")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
-            journal.write_text(json.dumps({**report, "phase": "review_failed", "error": str(error)}, indent=2))
+            atomic_text(journal, json.dumps({**launch, "phase": "review_failed", "error": str(error)}, indent=2))
             raise
         # Keep every completed review before any freshness check or remote write.
         # Changed inputs prevent posting, but cannot discard paid inference.
         result_file = evidence / f"{key}.md"
-        result_file.write_text(review + "\n")
-        retained = {**report, "review": metadata, "evidence": str(result_file)}
-        journal.write_text(json.dumps({**retained, "phase": "review_completed"}, indent=2))
+        atomic_text(result_file, review + "\n")
+        retained = {**launch, "review": metadata, "evidence": str(result_file)}
+        atomic_text(journal, json.dumps({**retained, "phase": "review_completed"}, indent=2))
         try:
             existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
         except (GitHubReadError, GitHubReadShapeError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
-            journal.write_text(json.dumps({**retained, "phase": "post_blocked", "error": str(error)}, indent=2))
+            atomic_text(journal, json.dumps({**retained, "phase": "post_blocked", "error": str(error)}, indent=2))
             raise
         if existing:
             return completion_report(existing, io, repo, pr, entries, logins, request, evidence)
-        journal.write_text(json.dumps({**retained, "phase": "post_pending"}, indent=2))
+        atomic_text(journal, json.dumps({**retained, "phase": "post_pending"}, indent=2))
         body = folder / "post.md"
-        body.write_text(f"Review of record, run by the Supervisor\n\nHead: {head}\n"
+        body.write_text(f"{REPORT_HEADING}\n\nHead: {head}\n"
                         f"Provider: {metadata['provider']}\nModel: {metadata.get('model', 'unknown')}\n"
                         f"Model source: {metadata.get('model_source', 'unknown')}\n"
                         f"Authoring session to notify: {session}\n\n"
                         "The author weighs these findings before ready.\n\n" + review + "\n\n"
                         "<!-- supervisor-review " + json.dumps({**receipt_for(request, head), "author_session": session, "author_provider": author,
                             "request_updated_at": request.get("updated_at") or request["created_at"]}, sort_keys=True) + " -->\n")
-        journal.write_text(json.dumps({**retained, "phase": "post_attempted"}, indent=2))
+        atomic_text(journal, json.dumps({**retained, "phase": "post_attempted"}, indent=2))
         try:
             receipt = io.post(repo, number, body)
         except (ValueError, OSError, subprocess.SubprocessError) as error:
-            journal.write_text(json.dumps({**retained, "phase": getattr(error, "phase", "post_unknown"),
+            atomic_text(journal, json.dumps({**retained, "phase": getattr(error, "phase", "post_unknown"),
                                            "error": str(error), "post": getattr(error, "payload", None)}, indent=2))
             raise
-        journal.write_text(json.dumps({**retained, "phase": "posted", "post": receipt}, indent=2))
+        atomic_text(journal, json.dumps({**retained, "phase": "posted", "post": receipt}, indent=2))
         return {**report, "status": "posted", "post": receipt, "evidence": str(result_file),
                 "notification_needed": True,
                 "completion_comment": receipt.get("url") or (receipt.get("comment") or {}).get("url")}

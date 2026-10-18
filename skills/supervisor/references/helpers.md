@@ -1852,7 +1852,9 @@ reconciliation, never automatic replay. Remote receipts let a later sweep skip
 confirmed posts without replaying them.
 
 A request comes from a configured automation identity and uses the shared
-readiness request classifier. Write `Supervisor runs the review` on its own
+Supervisor-specific delegation predicate. Generic worker-run review requests
+and readiness status notes do not delegate, trigger or supersede this work.
+Quoted, fenced and indented examples and HTML comments are not delegations. Write `Supervisor runs the review` on its own
 line, a head SHA (a matching abbreviated SHA is accepted), and an explicit
 prompt. Quoted Supervisor phrases and incidental prose do not create requests.
 Requests are ordered by creation time; editing an older request does not
@@ -1902,11 +1904,16 @@ Claim history uses the shared effective-release and exact-source release checks;
 only a valid same-author, later release ends the original claim. Handoffs do not
 leave released sessions competing as live authors. Untrusted, premature or invalid
 release evidence preserves ownership. A missing current issue/claim binding still
-refuses, rather than silently treating a released historical owner as another run.
+refuses, rather than silently treating a released historical session as another run.
 `Author session:` resolves multiple recorded authors on the same branch;
 otherwise exactly one must match. A trusted claim matching the PR branch but
 belonging only to sessions outside this ledger reports `not_owned` without
-requiring a local checkout or failing the sweep. Missing or ambiguous ownership
+requiring a local checkout or failing the sweep. When a checkout is supplied,
+registered branches at this exact head are also checked for this run's claims
+before skipping: an owned successor requires explicit `Author session:` and
+normal worktree binding, rather than silently becoming `not_owned`. A branch
+at another head supplies no ownership evidence. An explicit author matching an
+outside-run claim remains `not_owned` despite unrelated same-head branches. Missing or ambiguous ownership
 still refuses; it cannot prove another run owns the item. Overlapping claims
 from this and other runs require an explicit matching `Author session:`.
 Malformed claims on
@@ -1939,7 +1946,9 @@ inference. Missing local evidence leaves provider completion unconfirmed.
 An edit to a served request sets `request_edited_after_review`; the completion
 link is preserved and inference never reruns. Weigh the original scope and
 record whether a separate request is needed for changed scope. The Supervisor
-uses the stable `completion_comment` to route each result at most once.
+uses `completion_comment` together with `completion_updated_at` to route each
+report version once. A corrected edit to the same comment can need a fresh
+notification; a disposition must follow its latest edit.
 `notification_needed` means the result still lacks a later trusted weighed
 disposition, not a history of terminal input. That history remains the
 Supervisor's responsibility. Older receipts without identity metadata attempt
@@ -1953,32 +1962,56 @@ cannot carry into this write; the existing automation App or its refusal remains
 the supported route. Its raw receipt cannot serve as the author's
 head-bound weighed disposition required by readiness.
 
-A trusted weighed disposition at this head after the request ends the queue
-item as `already_weighed`. It is not provider-specific and cannot prove the
-requested provider ran. A manual report explicitly headed `Review of record,
-run by the Supervisor`, bound to this head after the request, is returned as
-`reported_review`. Its heading alone does not attest provider completion.
-Pending/awaiting/waiting/not-run headings remain status prose. Echoing the
-original request inside a report cannot launch another paid review.
+A manual report explicitly headed `Review of record, run by the Supervisor`,
+bound to this head after the request, is returned as `reported_review`. Its
+heading alone does not attest provider completion. Pending/awaiting/waiting/not-run
+headings remain status prose. Echoing the original request inside a report cannot
+launch another paid review. The latest raw or manual report is the result to
+route; an earlier disposition cannot acknowledge a newer corrected report.
 
-Provider-unconfirmed completions, served-request edits and notification binding
+Provider-unconfirmed reports, served-request edits and notification binding
 failures set `needs_attention`, appear in top-level `attention`, and make the
-sweep exit nonzero until a later trusted current-head weighed disposition
-acknowledges the result. That disposition must also follow the request's last
-edit. Verify the reported review and provenance, then post that disposition
-through `gh-pr.py comment --reviewed-head FULL_SHA`. The queue warning becomes
-informational and `notification_needed` becomes false; provider confirmation
-remains false without local inference evidence. This acknowledgement never
-creates provider proof or runs another review. The author remains responsible
-for the task's provider-specific review of record and readiness gates.
+sweep exit nonzero until a later trusted head-bound weighed disposition
+acknowledges that report. It must also follow the request's last edit. Verify
+the report and provenance, then post that disposition through
+`gh-pr.py comment --reviewed-head FULL_SHA`. Attention clears without creating
+provider proof. A weighed disposition after a manual report is reported as
+`already_weighed`; the author remains responsible for the provider-specific
+review of record and readiness gates.
+
+Without a Supervisor report, weighing an unrelated review is instead
+`weighed_without_review` and needs attention. It neither silently drops the
+request nor automatically purchases another review. If the Supervisor confirms
+this delegation was intentionally already handled, include the exact line
+`Supervisor request acknowledged: REQUEST_COMMENT_ID` in a trusted disposition
+at that request's head through the same `--reviewed-head` helper. It must follow
+the request's last edit. This clears only the queue warning as
+`request_acknowledged`, without provider proof, new readiness evidence or
+inference. Quoted/fenced examples, another request ID and a different head do
+not acknowledge the request. The same rules apply to historical heads;
+acknowledging a request at A never satisfies a new request at B.
 
 Shared paths keep their existing authority: the account reader's policy,
 capacity snapshot and launch-receipt store, the model review policy and the
 GitHub transport's private caches. A refusal there still stops the affected
 review; this helper cannot make workers' receipt-store problem disappear.
 Its own writable state lives only in the caller's private evidence directory.
-An unavailable evidence directory or held lock blocks an apply sweep; no alternate path,
-account, credential or terminal is chosen automatically.
+Apply requires that directory to have no group/other permissions (0700); a new
+directory is created privately. If an existing directory is too open, restrict
+that exact directory to 0700 while retaining its journals, then rerun. The
+helper never chooses a fresh location to evade a spent launch or denial.
+Persistent prompt, report and journal files are created with private permissions
+(0600). Journal updates and retained artifacts use synced temporary files and
+atomic publication; the first journal reservation remains exclusive. A crash
+during replacement preserves the previous complete record.
+
+The exact resolved prompt remains in `<key>.prompt.txt`, and each journal keeps
+its source comment bindings (repository, id, authored body, edit time and login).
+Use these originals to resolve scope when a linked prompt is edited after
+inference. Confirmed/applied transport metadata combined with a failed process
+exit is `post_unknown`, never described as confirmed non-applied. An unavailable
+evidence directory or held lock blocks apply; no alternate path, account,
+credential or terminal is chosen automatically.
 
 Malformed owned ledger entries are excluded from authorization and reported
 in `ledger_errors`; every copy of a duplicate session identity is excluded.

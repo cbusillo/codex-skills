@@ -346,6 +346,28 @@ def review_receipt_head(body):
     return match.group("sha") if match else None
 
 
+def review_prose_lines(body):
+    """Review directives in examples, quotes and indented code are not actions."""
+    fence = None
+    for line in re.sub(r"<!--.*?-->", "", body or "", flags=re.S).splitlines():
+        if line.lstrip().startswith(">"):
+            continue
+        if fence:
+            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
+                fence = None
+            continue
+        opening = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if opening:
+            fence = opening[1]
+            continue
+        if not line.startswith(("    ", "\t")):
+            yield line.strip().replace("**", "")
+
+
+def supervisor_review_request(body):
+    return any(SUPERVISOR_RUNS_REVIEW.fullmatch(line) for line in review_prose_lines(body))
+
+
 def review_record(body):
     """Read explicit completion evidence; prose leads only detect requests."""
     if review_receipt_head(body):
@@ -353,10 +375,7 @@ def review_record(body):
     lines = (body or "").strip().splitlines()
     first = REVIEW_LEAD.sub("", lines[0]) if lines else ""
     explicit_request = REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)
-    supervisor_request = any(
-        SUPERVISOR_RUNS_REVIEW.fullmatch(line.strip().replace("**", ""))
-        for line in lines if not line.lstrip().startswith((">", "`"))
-    )
+    supervisor_request = supervisor_review_request(body)
     if explicit_request or supervisor_request:
         return "request"
     return None
