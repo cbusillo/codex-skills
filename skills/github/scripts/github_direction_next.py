@@ -1164,9 +1164,13 @@ def issue_references(text: str, *, repo: str | None, known_repositories: set[str
                 continue
         number = int(ref.group(3) or ref.group(5) or ref.group(7) or ref.group(8))
         previous_end = ref.end()
-        references[(target.casefold(), number)] = {
+        key = (target.casefold(), number)
+        # A bare #N only assumes this repository; any named form of it makes it explicit.
+        bare = bool(ref.group(8)) and references.get(key, {"bare": True}).get("bare", False)
+        references[key] = {
             "repo": target, "number": number,
             "url": f"https://github.com/{target}/{ref.group(2) or 'issues'}/{number}",
+            **({"bare": True} if bare else {}),
         }
     return list(references.values())
 

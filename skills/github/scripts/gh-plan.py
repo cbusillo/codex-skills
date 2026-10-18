@@ -4172,6 +4172,8 @@ def next_wait_context(
     read_paths: set[str] = set()
     fetch_lock = threading.Lock()
     unavailable: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    failures: dict[str, direction_audit.AuditError] = {}
     budget = max(1, scan_limit) * 5
 
     def fetch(argv: list[str]) -> Any:
@@ -4187,7 +4189,8 @@ def next_wait_context(
                 # Unavailable records, including App-installation refusals,
                 # degrade coverage through the same policy as other next reads.
                 detail = next_source_error(exc)
-                cache[path] = direction_audit.AuditError(detail)
+                missing = exc.failure is not None and exc.failure.cause == "not_found"
+                cache[path] = (direction_audit.ReferenceNotFound if missing else direction_audit.AuditError)(detail)
         if isinstance(cache[path], direction_audit.AuditError):
             raise cache[path]
         return cache[path]
@@ -4229,9 +4232,10 @@ def next_wait_context(
             combined["checked"] += report["checked"]
             for field in ("items", "checked_issues", "frozen_issues"):
                 combined[field].extend(report[field])
-            for error in report["unavailable"]:
-                if error not in combined["unavailable"]:
-                    combined["unavailable"].append(error)
+            for field in ("unavailable", "unresolved_references"):
+                for error in report[field]:
+                    if error not in combined[field]:
+                        combined[field].append(error)
     else:
         group_reports = dict(read_report(group) for group in groups.items())
     reference_paths = list(dict.fromkeys(
@@ -4260,6 +4264,7 @@ def next_wait_context(
                 unavailable.extend({**row, "repo": repo, "number": item["number"]} for item in items)
             else:
                 unavailable.append({**row, "repo": repo})
+        unresolved.extend({**row, "repo": repo} for row in report["unresolved_references"])
         checked += report["checked"]
         checked_issue_refs.extend({"repo": repo, "number": number} for number in report["checked_issues"])
         scope_labels[repo.casefold()] = [config["labels"][key] for key in ("active", "waiting", "blocked")]
@@ -4279,22 +4284,35 @@ def next_wait_context(
             for row in github_direction_next.waiting_records(own, status, reference_repositories=known_repos):
                 for reference in row["references"]:
                     url = reference["url"]
-                    if url in references:
+                    stored = {key: value for key, value in reference.items() if key != "bare"}
+                    if url not in references:
+                        try:
+                            target = fetch(["api", f"repos/{reference['repo']}/issues/{reference['number']}"])
+                            state = target.get("state") if isinstance(target, dict) else None
+                            if state not in {"open", "closed"}:
+                                raise direction_audit.AuditError("unknown wait reference state")
+                            references[url] = {**stored, "state": state, "closed_at": target.get("closed_at"),
+                                               "state_reason": target.get("state_reason")}
+                        except direction_audit.AuditError as exc:
+                            references[url] = {**stored, "state": "unknown"}
+                            failures[url] = exc
+                    if url not in failures:
                         continue
-                    try:
-                        target = fetch(["api", f"repos/{reference['repo']}/issues/{reference['number']}"])
-                        state = target.get("state") if isinstance(target, dict) else None
-                        if state not in {"open", "closed"}:
-                            raise direction_audit.AuditError("unknown wait reference state")
-                        references[url] = {**reference, "state": state, "closed_at": target.get("closed_at"),
-                                           "state_reason": target.get("state_reason")}
-                    except direction_audit.AuditError:
-                        references[url] = {**reference, "state": "unknown"}
-                        unavailable.append({"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"})
-                        complete = False
+                    # The read is shared; whether it leaves this issue unread depends on how it was written.
+                    if direction_audit.bare_reference_missing(failures[url], not reference.get("bare")):
+                        # Absent here, so read; the wait stays pending on its unknown state.
+                        gap = {"repo": repo, "number": item["number"], "source": "wait_reference",
+                               "reason": "unresolved_reference", "reference": f"#{reference['number']}"}
+                        if gap not in unresolved:
+                            unresolved.append(gap)
+                        continue
+                    gap = {"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"}
+                    if gap not in unavailable:
+                        unavailable.append(gap)
+                    complete = False
     return {"read_only": True, "complete": complete, "checked": checked, "items": reports,
             "repositories": repositories, "frozen_issues": frozen_issues,
-            "unavailable": unavailable, "references": references,
+            "unavailable": unavailable, "unresolved_references": unresolved, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
             "read_limit": budget, "read_count": len(cache),
             "checked_issues": checked_issue_refs,
