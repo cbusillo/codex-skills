@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 from collections import Counter
 from contextlib import contextmanager
 
@@ -182,16 +183,18 @@ def comment_binding(comment):
             (comment.get("user") or {}).get("login", "").casefold())
 
 
-def completion_record(comments, request, head, logins):
+def completion_record(comments, request, head, logins) -> dict[str, Any] | None:
     try:
         bind_head(request, head)
     except ReviewError:
         return None
-    weighed, supervisor, reported = None, None, None
-    def key(comment):
-        return comment["created_at"], comment["id"]
-    def report_key(comment):
-        return comment.get("updated_at") or comment["created_at"], comment["id"]
+    weighed: dict[str, Any] | None = None
+    supervisor: dict[str, Any] | None = None
+    reported: dict[str, Any] | None = None
+    def key(item):
+        return item["created_at"], item["id"]
+    def report_key(item):
+        return item.get("updated_at") or item["created_at"], item["id"]
     for comment in comments:
         if not trusted(comment, logins):
             continue
@@ -293,10 +296,20 @@ def local_completion(evidence, repo, number, request, head, session, author):
 
 def inline_prompt(body):
     # The surrounding request is context, not a substitute for a missing prompt.
-    match = re.search(r"(?ims)(?:^|[ \t])(?:Review )?Prompt:\s*\n+```[^\n]*\n(.*?)^```", body)
-    if match and match[1].strip():
-        text = match[1].strip()
-        return text if COMMENT_LINK.sub("", text).strip() else None
+    heading = re.search(r"(?im)(?:^|[ \t])(?:Review )?Prompt:[ \t]*\n+", body)
+    if heading:
+        tail = body[heading.end():]
+        opening = re.match(r" {0,3}(`{3,}|~{3,})[^\n]*\n", tail)
+        if opening:
+            fence = opening[1]
+            lines = tail[opening.end():].splitlines(keepends=True)
+            for index, line in enumerate(lines):
+                if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line.rstrip("\r\n")):
+                    text = "".join(lines[:index]).strip()
+                    if not text:
+                        raise ReviewError("empty fenced prompt; supply the review scope")
+                    return text if COMMENT_LINK.sub("", text).strip() else None
+            raise ReviewError("unclosed fenced prompt; close it with the same character and at least the opening length")
     match = re.search(r"(?ims)(?:^|[ \t])(?:Review )?Prompt:\s*\n+(.*)", body)
     if match:
         text = re.sub(r"(?s)<!--.*?-->", "", match[1]).strip()
@@ -419,7 +432,7 @@ def bind_session(io, repo, branches, entries, logins, request, pr):
     owned_issues = {entry.get("issue") for entry in candidates.values()
               if isinstance(entry.get("issue"), int) and not isinstance(entry["issue"], bool) and entry["issue"] > 0}
     # A brief may name a parent before its worker creates the implementation issue.
-    # References discover claims only; the trusted claim must still bind branch and session.
+    # Linked issues locate claims; the trusted claim must still bind branch and session.
     issues = set(owned_issues)
     issues.update(ref["number"] for ref in issue_references(pr.get("body") or "", repo=repo)
                   if ref["repo"].casefold() == repo.casefold())
@@ -478,7 +491,8 @@ def registered_worktrees(checkout):
     raw = git(checkout, "worktree", "list", "--porcelain", "-z")
     trees = []
     for block in raw.split("\0\0"):
-        fields = dict(line.partition(" ")[::2] for line in block.split("\0") if line)
+        fields = {name: value for line in block.split("\0") if line
+                  for name, _, value in [line.partition(" ")]}
         if fields.get("branch") and fields.get("HEAD"):
             trees.append((Path(fields["worktree"]), fields["branch"].removeprefix("refs/heads/"), fields["HEAD"]))
     return trees
@@ -513,7 +527,8 @@ class IO:
             return self.claims[path]
         return self.reader.paged_json(path, **kwargs)
 
-    def review(self, author, worktree, prompt, output):
+    @staticmethod
+    def review(author, worktree, prompt, output):
         provider = "anthropic" if author == "openai" else "openai"
         result = run(["uv", "run", str(ROOT / "skills/model-review/scripts/review_with_model.py"),
                       "run", "--author-provider", author, "--provider", provider, "--repo", str(worktree),
@@ -531,7 +546,8 @@ class IO:
             raise ReviewFailure(metadata)
         return metadata
 
-    def post(self, repo, number, body):
+    @staticmethod
+    def post(repo, number, body):
         result = run(["uv", "run", str(ROOT / "skills/github/scripts/gh-pr.py"), "--repo", repo,
                       "comment", str(number), "--body-file", str(body)], timeout=180,
                      env={key: value for key, value in os.environ.items() if key != OWN_USER_OPT_IN})
@@ -641,7 +657,8 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         return completion_report(existing, io, repo, pr, entries, logins, request, evidence)
     private_evidence_dir(evidence)
     prompt_file = evidence / f"{key}.prompt.txt"
-    launch = {**report, "prompt_evidence": str(prompt_file), "prompt_sources": [
+    output = evidence / f"{key}.response.txt"
+    launch = {**report, "prompt_evidence": str(prompt_file), "response_evidence": str(output), "prompt_sources": [
         {"repository": source_repo, "binding": comment_binding(source)} for source_repo, source in sources]}
     # Exclusive creation survives process interruption and unknown remote writes.
     # A later sweep reads remote completion first, then refuses a spent launch.
@@ -651,8 +668,8 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         raise ReviewError(f"prior launch exists at {journal}; inspect its outcome, do not replay a refusal or unknown write") from error
     with tempfile.TemporaryDirectory(prefix=f"{repo.replace('/', '-')}-{number}-", dir=evidence) as scratch:
         folder = Path(scratch)
-        output = folder / "review.md"
         atomic_text(prompt_file, prompt)
+        atomic_text(output, "")  # The helper writes here directly; cleanup cannot discard paid output.
         try:
             metadata = io.review(author, worktree, prompt_file, output)
             # The adapter's declared-completion contract must include actual text.

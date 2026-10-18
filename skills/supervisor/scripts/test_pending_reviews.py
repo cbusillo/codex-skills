@@ -7,7 +7,7 @@
 
 import copy
 import contextlib
-import io
+from io import StringIO
 import json
 import os
 import subprocess
@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pending_reviews as reviews
@@ -33,7 +34,7 @@ SESSION = "native-session"
 STAMP = "2026-10-17T20:00:00Z"
 
 
-def post_payload(*, ok=True, write_outcome=None, reconciled=False):
+def post_payload(*, ok=True, write_outcome: str | None = None, reconciled=False):
     failure = None if ok else github_api.FailureDetail(
         cause="fixture", message="delivery failed", retryable=False, fallback_eligible=False,
         disposition="stop", write_outcome=write_outcome)
@@ -42,17 +43,17 @@ def post_payload(*, ok=True, write_outcome=None, reconciled=False):
         result, is_write=True, reconciliation={"result": "matched"} if reconciled else None)}
 
 
-def comment(ident, body, login=BOT):
+def comment(ident, body, login=BOT) -> dict[str, Any]:
     return {"id": ident, "body": body, "user": {"login": login}, "created_at": STAMP,
             "updated_at": STAMP, "issue_url": f"https://api.github.com/repos/{REPO}/issues/7"}
 
 
-def ask():
+def ask() -> dict[str, Any]:
     return comment(10, f"Supervisor runs the review.\nHead: {SHA}\n\nPrompt:\n\n```text\n"
                       "Review the changed helper. Give a realistic trigger and severity, or none.\n```\n")
 
 
-def pull():
+def pull() -> dict[str, Any]:
     return {"number": 7, "state": "open", "head": {"sha": SHA, "ref": BRANCH, "repo": {"full_name": REPO}}}
 
 
@@ -223,7 +224,7 @@ class DispatchTests(unittest.TestCase):
                     if str(destination).endswith(".json") and json.loads(Path(source).read_text()).get("phase") == phase:
                         self.assertEqual(json.loads(Path(destination).read_text())["phase"], previous)
                         raise OSError("fixture interruption before replacement")
-                    return replace(source, destination)
+                    replace(source, destination)
                 with patch.object(reviews.os, "replace", side_effect=interrupted), self.assertRaises(OSError):
                     self.dispatch()
                 self.assertEqual(json.loads(next(self.evidence.glob("*.json")).read_text())["phase"], previous)
@@ -308,9 +309,9 @@ class DispatchTests(unittest.TestCase):
     def test_disposition_repeating_delegation_during_inference_does_not_strand_paid_result(self):
         post = self.io.post
         def ordered_post(repo, number, body):
-            result = post(repo, number, body)
+            posted = post(repo, number, body)
             self.io.comments[-1]["id"] = 13  # The actual report is created after the unrelated disposition.
-            return result
+            return posted
         self.io.post = ordered_post
         self.io.after_review = lambda: self.io.comments.append(comment(12, review_result_body(
             "An unrelated review was weighed, so Supervisor runs the review.", SHA)))
@@ -353,6 +354,49 @@ class DispatchTests(unittest.TestCase):
                 self.dispatch()
         self.assertEqual(command.call_count, 1)
         self.assert_no_post()
+
+    def test_raw_response_survives_metadata_failure_or_interrupt_before_validation(self):
+        self.io.review = reviews.IO.__new__(reviews.IO).review
+        for index, failure in enumerate((reviews.ReviewError, KeyboardInterrupt)):
+            with self.subTest(failure=failure):
+                self.evidence = Path(self.temp.name) / f"raw-output-{index}"
+                outputs = []
+                def helper(args, **kwargs):
+                    output = Path(args[args.index("--out") + 1])
+                    output.write_text("Completed report before metadata validation.")
+                    outputs.append(output)
+                    if failure is KeyboardInterrupt:
+                        raise KeyboardInterrupt()
+                    return subprocess.CompletedProcess(args, 0, "extra non-JSON stdout", "")
+                with patch.object(reviews, "run", side_effect=helper) as command, self.assertRaises(failure):
+                    self.dispatch()
+                self.assertTrue(outputs[0].is_file())
+                self.assertEqual(outputs[0].stat().st_mode & 0o077, 0)
+                self.assertEqual(outputs[0].read_text(), "Completed report before metadata validation.")
+                with self.assertRaises(reviews.ReviewError):
+                    self.dispatch()
+                self.assertEqual(command.call_count, 1)
+                self.assert_no_post()
+
+    def test_linked_nested_fences_preserve_the_entire_prompt_scope(self):
+        for index, fence in enumerate(("````", "~~~~")):
+            with self.subTest(fence=fence):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / f"nested-fences-{index}"
+                self.io.request["body"] = f"Supervisor runs the review.\nHead: {SHA}\nhttps://github.com/{REPO}/pull/7#issuecomment-9"
+                scope = "Read the helper.\n```sh\nexample command\n```\nCheck concurrency after the example."
+                self.io.sources[9] = comment(9, f"Prompt:\n{fence}text\n{scope}\n{fence}")
+                self.dispatch()
+                prompt = next(c[2] for c in self.io.calls if c[0] == "review")
+                self.assertTrue(prompt.endswith("Review prompt:\n" + scope))
+
+    def test_unclosed_or_empty_fenced_prompt_refuses_before_inference(self):
+        for body in ("Prompt:\n````text\nInspect scope.\n```", "Prompt:\n```text\n\n```"):
+            with self.subTest(body=body):
+                self.io.request["body"] = f"Supervisor runs the review.\nHead: {SHA}\n{body}"
+                with self.assertRaises(reviews.ReviewError):
+                    self.dispatch()
+        self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
 
     def test_comment_reactions_and_endpoint_shape_differences_do_not_invalidate_prompt(self):
         get = self.io.get_json
@@ -533,7 +577,7 @@ class DispatchTests(unittest.TestCase):
         ledger = Path(self.temp.name) / "ledger.json"
         ledger.write_text(json.dumps(self.entries))
         args = ["pending_reviews", "--ledger", str(ledger), "--evidence-dir", str(self.evidence)]
-        output = io.StringIO()
+        output = StringIO()
         with patch.object(sys, "argv", args), patch.object(reviews, "IO", return_value=self.io), \
                 patch.object(reviews, "configured_bot_logins", return_value=[BOT]), \
                 patch.object(reviews, "automation_login", return_value=BOT), contextlib.redirect_stdout(output):
@@ -542,7 +586,7 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(report["attention"][0]["status"], "reported_review")
         self.assertFalse(report["attention"][0]["requested_provider_confirmed"])
         self.io.comments.append(comment(12, review_result_body("Verified manual review and weighed it.", SHA)))
-        output = io.StringIO()
+        output = StringIO()
         with patch.object(sys, "argv", args), patch.object(reviews, "IO", return_value=self.io), \
                 patch.object(reviews, "configured_bot_logins", return_value=[BOT]), \
                 patch.object(reviews, "automation_login", return_value=BOT), contextlib.redirect_stdout(output):
@@ -1036,7 +1080,7 @@ class RunLockTests(unittest.TestCase):
                 fake.comments = []
                 with patch.object(sys, "argv", args), patch.object(reviews, "IO", return_value=fake), \
                         patch.object(reviews, "configured_bot_logins", return_value=[BOT]), \
-                        patch.object(reviews, "automation_login", return_value=BOT), contextlib.redirect_stdout(io.StringIO()):
+                        patch.object(reviews, "automation_login", return_value=BOT), contextlib.redirect_stdout(StringIO()):
                     self.assertEqual(reviews.main(), 0)
                 self.assertFalse(any(c[0] in {"review", "post"} for c in fake.calls))
 
@@ -1092,9 +1136,9 @@ class AdapterTests(unittest.TestCase):
         fixture.install("claude", model_fixture.FAKE_CLAUDE)
         output = fixture.root / "result.md"
         def real_helper(args, **kwargs):
-            code, metadata = fixture.run_helper(*args[3:], FAKE_CLAUDE_JSON=json.dumps({
+            code, helper_metadata = fixture.run_helper(*args[3:], FAKE_CLAUDE_JSON=json.dumps({
                 "result": model_fixture.completed("Completed fixture review.")}))
-            return subprocess.CompletedProcess(args, code, json.dumps(metadata), "")
+            return subprocess.CompletedProcess(args, code, json.dumps(helper_metadata), "")
         with patch.object(reviews, "run", side_effect=real_helper):
             metadata = reviews.IO.__new__(reviews.IO).review("openai", fixture.repo, fixture.prompt, output)
         self.assertTrue(metadata["ok"])

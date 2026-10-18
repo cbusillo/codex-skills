@@ -1866,7 +1866,9 @@ prompt. Quoted Supervisor phrases and incidental prose do not create requests.
 Requests are ordered by creation time; editing an older request does not
 supersede a newer one. A served or failed request id/head never launches again
 because it was edited. Post a new request comment for a new review or scope;
-never use that to evade a denial. Use this format for new requests:
+never use that to evade a denial. Use this format for new requests. Copy the
+contents without the example's outer fence; a fully quoted or fenced request
+is an example and does not delegate work or hold readiness:
 
 ```text
 Supervisor runs the review.
@@ -1881,7 +1883,10 @@ you need, and do not modify anything.
 ```
 
 A fenced or inline `Prompt:`, `Review prompt:` heading or quoted prompt is
-also accepted. Existing direct read-only requests that explicitly say what
+also accepted. Prompt fences close only with the same character and at least
+the opening length, so a longer outer fence preserves nested code examples.
+An empty or unclosed fence refuses; supply a scope and matching close, or use
+a plain Prompt section. Existing direct read-only requests that explicitly say what
 to read and check are prompts themselves. A request without an
 inline prompt may link one same-repository GitHub issue comment; the helper
 follows the chain and refuses missing, untrusted, ambiguous or cyclic links.
@@ -2011,7 +2016,12 @@ Persistent prompt, report and journal files are created with private permissions
 atomic publication; the first journal reservation remains exclusive. A crash
 during replacement preserves the previous complete record.
 
-The exact resolved prompt remains in `<key>.prompt.txt`, and each journal keeps
+The exact resolved prompt remains in `<key>.prompt.txt`. Model-review writes
+directly to a private `<key>.response.txt`, retained even if metadata parsing
+fails or the caller is interrupted during helper exit. This raw candidate is
+not completion/provider proof and is never posted without successful metadata
+validation; the validated canonical report remains `<key>.md`. A response file
+alone cannot authorize replay or publication. Each journal keeps
 its source comment bindings (repository, id, authored body, edit time and login).
 Use these originals to resolve scope when a linked prompt is edited after
 inference. Confirmed/applied transport metadata combined with a failed process
