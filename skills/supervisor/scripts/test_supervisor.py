@@ -716,6 +716,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(request, finished_map.candidates(self.ledger)[0]["closeout_request"])
         self.assertEqual(request["session_id"], self.entry["session_id"])
         self.assertEqual(request["handoff_url"], self.entry["handoff_url"])
+        self.assertEqual(request.get("verdict_at"), finished_map.candidates(self.ledger)[0]["timestamp"])
         self.assertIsNone(notice["clean"])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1002), [])
         # The notice is historical evidence: fresh verification must reject new work.
@@ -723,6 +724,29 @@ class LedgerTests(unittest.TestCase):
                     event("task_complete"), event("task_started")])
         self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
+
+    def test_closeout_metadata_does_not_repeat_request_but_later_verdict_does(self):
+        seen = {}
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1001)), 1)
+        with self.transcript.open("a") as stream:
+            stream.write(json.dumps(event("token_count", info={"total_token_usage": {"total_tokens": 99}})) + "\n")
+        os.utime(self.transcript, (1002, 1002))
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1003), [])
+        # A whole new turn can finish between polls with the same final text.
+        with self.transcript.open("a") as stream:
+            for record in [event("task_started"), event("agent_message", message="Safe to exit: yes"),
+                           {**event("task_complete"), "timestamp": "2026-10-03T00:01:00Z"}]:
+                stream.write(json.dumps(record) + "\n")
+        os.utime(self.transcript, (1004, 1004))
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1005)), 1)
+
+    def test_observed_new_work_rearms_closeout_with_same_response(self):
+        seen = {}
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1001)), 1)
+        self.write([event("task_started")])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1002), [])
+        self.write([event("agent_message", message="Safe to exit: yes"), event("task_complete")])
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1003)), 1)
 
     def test_early_closeout_requires_owned_completed_unqualified_response(self):
         for text, tail, owned in (
@@ -783,6 +807,9 @@ class LedgerTests(unittest.TestCase):
         candidate = finished_map.candidates(self.ledger)[0]
         self.assertFalse(candidate["candidate"])
         self.assertIsNone(candidate["closeout_request"])
+        self.assertEqual(candidate.get("closeout_blockers"), candidate["background_tasks"])
+        self.assertTrue(candidate["closeout_blockers"])
+        self.assertEqual(candidate["next_action"], "ask_worker_to_resolve_background_tasks")
 
     def test_close_only_exited_exact_session_and_never_force(self):
         entry = session_record.load_ledger(self.ledger)[0]

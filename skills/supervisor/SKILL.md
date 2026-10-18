@@ -647,6 +647,21 @@ for normal stall or capacity handling. Every scheduled check still scans all
 sessions, recovering missed notices. Re-arm an expired or failed watch; do not
 let loss of the watch look like a fleet with no finished sessions.
 
+Match a notice's terminal id to the ledger's `iterm_session_id` or
+`tmux_session_id`, then verify the backend's `read` TTY and the native identity
+in that entry's transcript. An agent name or tab title alone is not identity;
+use its original launch receipt to find the exact terminal and native ids, or
+report the ambiguity and keep it open. A malformed ledger is a fleet-wide
+read blocker: report the invalid entry and reconcile it against its original
+launch receipt before retrying; never guess or skip identity checks.
+
+When `closeout_blockers` lists background tasks, report their ids and keep the
+session open. Nudge that exact worker to check each task's completion condition
+and stop a finished or obsolete task through its own TaskStop, then give a
+fresh close-out verdict. A still-needed task remains a wait. A missing terminal
+notice is uncertainty, not proof that a task ended; never send exit keys or
+stop another session's tasks to clear the list.
+
 Aim to finish verification and shutdown within two minutes of the worker's
 verdict. If a check fails, keep the session open and report the exact missing
 proof and next action immediately. Do not bypass a check to meet that target.

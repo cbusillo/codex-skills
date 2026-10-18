@@ -22,7 +22,8 @@ def closeout_request(entry: dict, status: dict) -> dict | None:
         "session_id": entry["session_id"],
         "harness": entry["harness"],
         "handoff_url": entry.get("handoff_url"),
-        "procedure": "skills/supervisor/SKILL.md#close-finished-sessions-on-every-notice-and-check",
+        "verdict_at": status["timestamp"],
+        "procedure": "skills/supervisor/SKILL.md",
     }
 
 
@@ -38,6 +39,12 @@ def candidates(ledger: Path, session_id: str | None = None) -> list[dict]:
             status = session_status(entry)
             status["closeout_request"] = closeout_request(entry, status)
             status["candidate"] = status["closeout_request"] is not None
+            status["closeout_blockers"] = (
+                status["background_tasks"] if entry.get("supervisor_owned") is True
+                and status["safe_verdict"] else []
+            )
+            if status["closeout_blockers"]:
+                status["next_action"] = "ask_worker_to_resolve_background_tasks"
             status["handoff_url"] = entry.get("handoff_url")
             status["needs_verification"] = [
                 "issue handoff",

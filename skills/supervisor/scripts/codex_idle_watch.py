@@ -50,8 +50,13 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
                 seen[entry["session_id"]] = key
             continue
         closeout = closeout_request(entry, status)
-        key = (status["mtime"], status["size"], json.dumps(retry, sort_keys=True),
+        response = ((status["timestamp"], status["last_text"])
+                    if closeout is not None and status["timestamp"] else
+                    (status["mtime"], status["size"]))
+        key = (response, json.dumps(retry, sort_keys=True),
                json.dumps(closeout, sort_keys=True))
+        if not status["at_turn_end"]:
+            seen.pop(entry["session_id"], None)
         if (
             status["at_turn_end"]
             and (closeout is not None or now - status["mtime"] >= idle_seconds)

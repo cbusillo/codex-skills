@@ -144,8 +144,13 @@ notices include `closeout_request` only when the latest completed response has
 an unqualified verdict, the ledger says Supervisor-owned and no background
 task remains. Those notices bypass `--idle-seconds` and arrive on the next
 watch poll (45 seconds by default); ordinary turn ends retain the idle delay.
-The request names the session, harness, known handoff URL and verification
-procedure. It does not establish input, handoff or process proof.
+The request names the session, harness, known handoff URL, completed-verdict
+timestamp (`verdict_at`, or null if absent) and verification skill. It does not
+establish input, handoff or process proof. Timestamped closeout notices dedup
+by completed response rather than transcript size: trailing usage metadata does
+not request verification again. A later verdict or changed ownership/handoff
+does. A watcher restart may repeat a notice; coalesce it with any verification
+already in progress and never replay an uncertain send.
 
 For Claude's native `notify_when_idle` notice, read back only the matched
 session through the same candidate router:
@@ -156,6 +161,12 @@ uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json> 
 
 A missing or mismatched native identity, malformed transcript, later work,
 unqualified-verdict failure or live background task cannot request shutdown.
+Candidates with a recognized verdict and live tasks expose `closeout_blockers`
+with their task ids and `next_action: ask_worker_to_resolve_background_tasks`.
+Report and nudge them using the finished-session procedure rather than silently
+waiting for the next scan. Exact-session reads retain strict whole-ledger
+validation; a malformed unrelated entry must be reconciled against its launch
+receipt before any notice query can proceed.
 Run the full existing verification before sending keys. A notice containing
 `closeout_request: null` is still useful for stall or capacity handling and
 never authorizes closing. No script here sends an exit command automatically.
@@ -1652,8 +1663,13 @@ time in a private JSON log, posts/readbacks the required `Closed session` /
 `Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
 the maintained `release-claim` preview and apply. The original observed exit
 time survives retries. The log has the ledger's array schema plus `ended_at`
-(timezone-qualified ISO timestamp) and `process_exit_verified: true`; retain
+(timezone-qualified ISO timestamp), the verified completed response's
+`verdict_at`, and `process_exit_verified: true`; retain
 the native transcript path, PID/TTY and exact issue-comment `handoff_url`.
+Use `ended_at - verdict_at` for the one-day shutdown-latency measurement.
+Retries preserve both original times. Legacy records without `verdict_at`
+remain valid and need their original native transcript to reconstruct it;
+never substitute notice arrival or log-write time for the verdict.
 Repeat finish previews use the existing log's original closure time. If a
 session truly resumes and closes again, verify its new PID/TTY, transcript and
 handoff, then use a fresh `--closed-log` file for that newly observed closure;
