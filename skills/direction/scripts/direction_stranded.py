@@ -79,10 +79,12 @@ def verified_at(body: str | None) -> dt.datetime | None:
     text = text[text.find("Current Status"):] if "Current Status" in text else text
     line = LAST_VERIFIED.search(text)
     date = re.search(DATE, line[1], re.I) if line else None
-    if date and "T" in date[0]:
+    if line is None or date is None:
+        return None
+    if "T" in date[0]:
         exact = stamp(date[0])
         return exact.astimezone(UTC) if exact else None
-    day = calendar(date[0]) if date else None
+    day = calendar(date[0])
     if day is None:
         return None
     local = dt.datetime(day.year, day.month, day.day, tzinfo=EASTERN)
@@ -215,6 +217,10 @@ def login(row: dict) -> str:
     return str((row.get("user") or {}).get("login") or row.get("author") or "").casefold()
 
 
+def queue_comment(row: dict) -> dict:
+    return {**row, "author": login(row), "url": row.get("html_url") or row.get("url")}
+
+
 def labels(row: dict) -> set[str]:
     return {name.casefold() for name in audit.github_direction_next.normalize_labels(row.get("labels"))}
 
@@ -314,7 +320,9 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
         qids = {own_id[0]} if own_id else set()
         url = question.get("html_url") or question.get("url")
         asked = stamp(question.get("created_at"))
-        return any(stamp(c.get("created_at")) and asked and stamp(c["created_at"]) > asked
+        if asked is None:
+            return False
+        return any((at := stamp(c.get("created_at"))) is not None and at > asked
                    and not question_body(c).startswith(PREFIXES)
                    and ((url and url in (c.get("body") or "")) or
                         bool(qids & set(QUESTION.findall(question_body(c).partition("\n")[0])[:1]))) for c in candidates)
@@ -618,6 +626,9 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     registered = []
     unread_registered = set()
     related_comments = []
+    normalized_queue: list[dict] = []
+    bots: set[str] = set()
+    queue_director = director
     if question_queue:
         question_queue = question_queue.casefold()
         queue_repo, queue_number = question_queue.split("#")
@@ -625,8 +636,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         try:
             from skills.supervisor.scripts import question_delivery
 
-            normalize = lambda c: {**c, "author": login(c), "url": c.get("html_url") or c.get("url")}
-            normalized_queue = [normalize(c) for c in queue]
+            normalized_queue = [queue_comment(c) for c in queue]
             bots = set(github_identity.configured_bot_logins())
             queue_director = director or queue_repo.split("/")[0]
             registered = sorted({r["question_url"] for r in question_delivery.records(
@@ -643,6 +653,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 source_repo, source_number = question_delivery.source_item(original).split("#")
                 related_comments.extend(listing(f"repos/{source_repo.casefold()}/issues/{source_number}/comments"))
         except ImportError:
+            question_delivery = None
             gaps.append({"source": question_queue, "reason": "question_delivery_view_unavailable"})
         except (ValueError, TypeError, KeyError, AttributeError) as error:
             question_delivery = None
@@ -825,7 +836,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     if question_delivery is not None:
         try:
             source_comments = [c for r in records if not r.get("trigger_only") for c in r["comments"]] + related_comments
-            sources = {c.get("html_url"): normalize(c) for c in source_comments}
+            sources = {c.get("html_url"): queue_comment(c) for c in source_comments}
             scope = set(registered) | {c["url"] for c in sources.values()
                                       if c["author"] in bots | {queue_director}
                                       and question_body(c).startswith(PREFIXES)}
