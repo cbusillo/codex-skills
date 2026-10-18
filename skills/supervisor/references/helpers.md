@@ -1847,7 +1847,11 @@ phase and error instead of promising another pending launch. It writes nothing.
 For a retained `review_completed` or `post_blocked` result, revalidate the exact
 head, clean worktree and original request/prompt scope before manually posting
 that result through the existing GitHub helper, with the manual report heading
-and head described below. Keep the original evidence directory. Its successful
+and head described below. If a newer request exists at the same head, do not
+post the superseded scope as an unbound manual report: retain it as historical
+evidence and resolve the current scope with the author. Preserve the original
+raw receipt when manually reconciling a generated report; its request id and
+head cannot settle a different request. Keep the original evidence directory. Its successful
 inference metadata and nonempty report can confirm the requested provider on
 that manual post without buying another review. Changed inputs require the
 author to resolve the scope; never post against guessed bindings. Uncertain
@@ -1886,8 +1890,9 @@ A fenced or inline `Prompt:`, `Review prompt:` heading or quoted prompt is
 also accepted. Prompt fences close only with the same character and at least
 the opening length, so a longer outer fence preserves nested code examples.
 An empty or unclosed fence refuses; supply a scope and matching close, or use
-a plain Prompt section. Existing direct read-only requests that explicitly say what
-to read and check are prompts themselves. A request without an
+a plain Prompt section. Plain heading text may start on the same line after
+the colon. Existing direct read-only requests that explicitly say what
+to read and check are prompts themselves, regardless of capitalization. A request without an
 inline prompt may link one same-repository GitHub issue comment; the helper
 follows the chain and refuses missing, untrusted, ambiguous or cyclic links.
 A Prompt section containing only comment links also follows the linked prompt;
@@ -1925,7 +1930,12 @@ before skipping: an owned successor requires explicit `Author session:` and
 normal worktree binding, rather than silently becoming `not_owned`. A branch
 at another head supplies no ownership evidence. An explicit author matching an
 outside-run claim remains `not_owned` despite unrelated same-head branches. Missing or ambiguous ownership
-still refuses; it cannot prove another run owns the item. Overlapping claims
+still refuses; it cannot prove another run owns the item. The supported
+correction is to link the issue containing the trusted branch claim in the
+PR body, and supply `Author session:` when needed to distinguish authors.
+A verified outside-run claim then reports `not_owned`, including without a
+checkout. For owned work, also pass the repository's `--checkout` mapping.
+Do not mark unresolved ownership as covered or guess it is foreign. Overlapping claims
 from this and other runs require an explicit matching `Author session:`.
 Malformed claims are ignored only when a parseable branch explicitly differs
 from the reviewed branches, whether their issue is in the ledger or referenced

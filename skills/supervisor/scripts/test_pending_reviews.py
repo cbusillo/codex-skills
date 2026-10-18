@@ -144,6 +144,64 @@ class DispatchTests(unittest.TestCase):
         self.assertIsNone(reviews.review_receipt_head(body))
         self.assertEqual(self.evidence.joinpath(next(p.name for p in self.evidence.glob("*.md"))).read_text().strip(), self.io.review_text)
 
+    def test_late_receipt_for_another_binding_cannot_complete_a_new_scope(self):
+        original = ask()
+        for phase in ("before", "during"):
+            for mismatch in ("request", "head"):
+                with self.subTest(phase=phase, mismatch=mismatch):
+                    self.io = FakeIO()
+                    self.evidence = Path(self.temp.name) / f"late-{phase}-{mismatch}"
+                    self.io.request = comment(20, original["body"].replace("Review the changed helper.", "Review the new scope."))
+                    self.io.comments = [original, self.io.request]
+                    self.io.sources[20] = self.io.request
+                    receipt = reviews.receipt_for(self.io.request, SHA)
+                    receipt[mismatch] = {"request": original["id"], "head": "b" * 40}[mismatch]
+                    late = comment(21, f"{reviews.REPORT_HEADING}\nHead: {SHA}\nOld scope result.\n"
+                                   "<!-- supervisor-review " + json.dumps(receipt) + " -->")
+                    if phase == "before":
+                        self.io.comments.append(late)
+                    else:
+                        self.io.after_review = lambda: self.io.comments.append(late)
+                    self.assertEqual(self.dispatch()["status"], "posted")
+                    launched = [call for call in self.io.calls if call[0] == "review"]
+                    self.assertEqual(len(launched), 1)
+                    self.assertIn("Review the new scope.", launched[0][2])
+                    recovered = self.dispatch()
+                    self.assertEqual(recovered["request"], self.io.request["id"])
+                    self.assertEqual(recovered["status"], "already_completed")
+                    self.assertTrue(recovered["requested_provider_confirmed"])
+                    self.assertEqual(sum(call[0] == "review" for call in self.io.calls), 1)
+
+    def test_foreign_request_missing_claim_link_has_a_supported_binding_route(self):
+        foreign = comment(5, marker({"branch": BRANCH, "session": "other-run",
+                                    "worker": "other", "claimed_at": STAMP}))
+        pages = self.io.paged_json
+        def linked_claims(path, **kwargs):
+            if kwargs.get("step_prefix") == "author_claims":
+                return [foreign] if path.endswith("/issues/99/comments") else []
+            return pages(path, **kwargs)
+        self.io.paged_json = linked_claims
+        checkouts = {}
+        report = reviews.sweep(self.io, self.entries, checkouts, TRUSTED, self.evidence)
+        self.assertEqual(report[0]["status"], "refused")
+        self.io.pr["body"] = "Refs #99"
+        report = reviews.sweep(self.io, self.entries, checkouts, TRUSTED, self.evidence)
+        self.assertEqual(report[0]["status"], "not_owned")
+        self.assertFalse(any(call[0] in {"review", "post"} for call in self.io.calls))
+
+    def test_same_line_and_lowercase_direct_prompts_reach_the_reviewer(self):
+        scopes = ("Prompt: Inspect the new scope.", "Review prompt: Inspect the new scope.",
+                  "Review read-only. please read the helper and check concrete failures.")
+        for index, scope in enumerate(scopes):
+            with self.subTest(scope=scope):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / f"prompt-format-{index}"
+                self.io.request["body"] = f"Supervisor runs the review.\nHead: {SHA}\n{scope}"
+                self.assertEqual(self.dispatch()["status"], "posted")
+                prompt = next(call[2] for call in self.io.calls if call[0] == "review")
+                self.assertTrue(prompt.endswith("Review prompt:\n" + (
+                    "Inspect the new scope." if index < 2 else self.io.request["body"])))
+
     def test_generic_worker_review_requests_never_launch_or_supersede_delegation(self):
         for lead in ("Review request for another model", "Review prompt for model-review",
                      "Review of record needed: Anthropic"):
@@ -193,7 +251,7 @@ class DispatchTests(unittest.TestCase):
     def test_raw_then_weighed_then_new_manual_report_needs_fresh_notification(self):
         self.dispatch()
         self.io.comments.append(comment(12, review_result_body("Initial report weighed.", SHA)))
-        self.io.comments.append(comment(13, f"Review of record, run by the Supervisor\nHead: {SHA}\nCorrected report."))
+        self.io.comments.append(comment(13, f"{reviews.REPORT_HEADING}\nHead: {SHA}\nCorrected report."))
         result = self.dispatch()
         self.assertEqual(result["completion_comment"], 13)
         self.assertTrue(result["notification_needed"])
@@ -573,7 +631,7 @@ class DispatchTests(unittest.TestCase):
         self.assertFalse(any(c[0] == "review" for c in self.io.calls))
 
     def test_weighed_manual_review_clears_attention_without_inventing_provider_confirmation(self):
-        self.io.comments.append(comment(11, f"Review of record, run by the Supervisor at head {SHA}\nReport."))
+        self.io.comments.append(comment(11, f"{reviews.REPORT_HEADING} at head {SHA}\nReport."))
         ledger = Path(self.temp.name) / "ledger.json"
         ledger.write_text(json.dumps(self.entries))
         args = ["pending_reviews", "--ledger", str(ledger), "--evidence-dir", str(self.evidence)]
@@ -599,7 +657,7 @@ class DispatchTests(unittest.TestCase):
 
     def test_disposition_before_new_manual_report_cannot_acknowledge_that_report(self):
         self.io.comments.append(comment(11, review_result_body("Earlier review weighed.", SHA)))
-        self.io.comments.append(comment(12, f"Review of record, run by the Supervisor at head {SHA}\nNew report."))
+        self.io.comments.append(comment(12, f"{reviews.REPORT_HEADING} at head {SHA}\nNew report."))
         result = self.dispatch()
         self.assertEqual(result["status"], "reported_review")
         self.assertTrue(result["needs_attention"])
@@ -638,7 +696,7 @@ class DispatchTests(unittest.TestCase):
                 self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
                 self.assert_no_post()
                 # Reconciled manually after input readback, through the normal GitHub helper.
-                self.io.comments.append(comment(11, f"Review of record, run by the Supervisor\nHead: {SHA}\n" + self.io.review_text))
+                self.io.comments.append(comment(11, f"{reviews.REPORT_HEADING}\nHead: {SHA}\n" + self.io.review_text))
                 result = self.dispatch()
                 self.assertEqual(result["status"], "reported_review")
                 self.assertTrue(result["requested_provider_confirmed"])
@@ -675,7 +733,7 @@ class DispatchTests(unittest.TestCase):
         self.assert_no_post()
 
     def test_pending_report_heading_cannot_hide_real_request(self):
-        self.io.comments.append(comment(12, f"Review of record, run by the Supervisor: pending at head {SHA}"))
+        self.io.comments.append(comment(12, f"{reviews.REPORT_HEADING}: pending at head {SHA}"))
         self.assertEqual(self.dispatch(apply=False)["status"], "pending")
 
     def test_plain_prompt_takes_precedence_over_quoted_context(self):
@@ -747,7 +805,7 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
 
     def test_manual_and_weighed_old_head_completion_are_preserved_without_provider_guess(self):
-        self.io.comments.append(comment(11, f"Review of record, run by the Supervisor\nHead: {SHA}\nCompleted report."))
+        self.io.comments.append(comment(11, f"{reviews.REPORT_HEADING}\nHead: {SHA}\nCompleted report."))
         self.io.pr["head"]["sha"] = "b" * 40
         self.io.request["body"] = self.io.request["body"].replace(SHA, SHA[:9])
         # The full historical report resolves an abbreviated request without guessing.

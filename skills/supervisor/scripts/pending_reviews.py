@@ -206,7 +206,9 @@ def completion_record(comments, request, head, logins) -> dict[str, Any] | None:
             if supervisor is None or report_key(comment) > report_key(supervisor["comment"]):
                 supervisor = {"kind": "supervisor", "comment": comment, "receipt": receipt,
                               "request_edited_after_review": edited}
-        if reported_review(body) and key(comment) >= key(request):
+        # A parsed machine receipt must match above; a different request/head
+        # cannot become an unbound manual report for this request.
+        if receipt is None and reported_review(body) and key(comment) >= key(request):
             try:
                 bind_head(comment, head)
             except ReviewError:
@@ -310,7 +312,7 @@ def inline_prompt(body):
                         raise ReviewError("empty fenced prompt; supply the review scope")
                     return text if COMMENT_LINK.sub("", text).strip() else None
             raise ReviewError("unclosed fenced prompt; close it with the same character and at least the opening length")
-    match = re.search(r"(?ims)(?:^|[ \t])(?:Review )?Prompt:\s*\n+(.*)", body)
+    match = re.search(r"(?ims)(?:^|[ \t])(?:Review )?Prompt:[ \t]*(?:\n+)?(.*)", body)
     if match:
         text = re.sub(r"(?s)<!--.*?-->", "", match[1]).strip()
         if text:
@@ -322,8 +324,8 @@ def inline_prompt(body):
     quoted = "\n".join(line[1:].lstrip() for line in body.splitlines() if line.startswith(">"))
     if quoted.strip():
         return quoted.strip()
-    if (re.search(r"\bread.only\b", body, re.I) and re.search(r"\bRead\s+", body)
-            and re.search(r"\bCheck\s+", body)):
+    if (re.search(r"\bread.only\b", body, re.I) and re.search(r"\bread\s+", body, re.I)
+            and re.search(r"\bcheck\s+", body, re.I)):
         return re.sub(r"(?s)<!--.*?-->", "", body).strip()
     return None
 
