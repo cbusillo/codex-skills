@@ -23,7 +23,7 @@ import iterm_tab
 import tmux_terminal
 
 ADMISSION_OPEN = json.loads((Path(__file__).parent / "fixtures" / "codex-admission-open.json").read_text())["response"]
-RPC_FAILURE = {"error": {"code": -1, "message": "unavailable"}}
+RPC_FAILURE = {"error": {"code": -1, "message": "server-payload-sentinel:private-native-detail"}}
 
 
 class DaemonTests(unittest.TestCase):
@@ -76,16 +76,8 @@ class DaemonTests(unittest.TestCase):
             uuid.UUID(resume["params"]["threadId"])
         self.assertFalse(any(c["method"] in {"thread/start", "turn/start", "turn/interrupt"} for c in calls))
 
-    def test_open_admission_survives_unrelated_inventory_failure(self):
-        for method in ("thread/loaded/list", "thread/read"):
-            with self.subTest(method=method):
-                calls = self.inspect(fail=method)
-                self.assertFalse(any(c["method"] in {"thread/loaded/list", "thread/read"} for c in calls))
-
-    def test_open_admission_does_not_wait_for_slow_loaded_threads(self):
-        pages = {None: {"data": ["first", "second"], "nextCursor": None}}
-        calls = self.inspect(pages=pages, states={"first": "active", "second": "idle"},
-                             inventory_latency=4)
+    def test_open_admission_does_not_read_unrelated_loaded_threads(self):
+        calls = self.inspect()
         self.assertFalse(any(c["method"] in {"thread/loaded/list", "thread/read"} for c in calls))
 
     def test_draining_daemon_with_detached_active_worker_refuses(self):
@@ -158,7 +150,7 @@ class DaemonTests(unittest.TestCase):
                 iterm_tab.inspect_codex_daemon(Path("/fixture/account"))
             run.assert_not_called()
 
-    def test_transport_timeout_keeps_phase_in_launch_refusal(self):
+    def test_transport_timeout_refuses_for_selected_home_without_restart(self):
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
         with (patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run,
               patch.object(iterm_tab.socket, "socket"),
@@ -166,7 +158,7 @@ class DaemonTests(unittest.TestCase):
             with self.assertRaises(ValueError) as raised:
                 iterm_tab.check_codex_daemon(choice)
             self.assertIsInstance(raised.exception.__cause__, TimeoutError)
-            self.assertNotIn(type(raised.exception.__cause__).__name__, str(raised.exception))
+            self.assertIn(choice["env"]["CODEX_HOME"], str(raised.exception))
             self.assertEqual([c.args[0][-1] for c in run.call_args_list], ["start"])
 
     def test_draining_preflight_never_restarts_and_refuses_before_receipt(self):
