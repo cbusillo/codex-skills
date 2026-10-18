@@ -7,6 +7,7 @@
 
 import copy
 import contextlib
+import errno
 from io import StringIO
 import json
 import os
@@ -83,7 +84,7 @@ class FakeIO:
 
     def paged_json(self, path, **kwargs):
         self.calls.append(("read", path, kwargs))
-        if kwargs["step_prefix"] == "author_claims":
+        if kwargs["step_prefix"] in {"author_claims", "verify_author_claims"}:
             return copy.deepcopy(self.claims)
         if path.endswith("/pulls"):
             return [self.pr, *self.extra_pulls]
@@ -188,6 +189,102 @@ class DispatchTests(unittest.TestCase):
         report = reviews.sweep(self.io, self.entries, checkouts, TRUSTED, self.evidence)
         self.assertEqual(report[0]["status"], "not_owned")
         self.assertFalse(any(call[0] in {"review", "post"} for call in self.io.calls))
+
+    def test_weighed_notes_cannot_hide_retained_or_uncertain_launch_details(self):
+        for phase in ("review_completed", "post_blocked", "post_unknown"):
+            with self.subTest(phase=phase):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / phase
+                self.io.post = Mock(side_effect=reviews.PostError("uncertain fixture write"))
+                with self.assertRaises(reviews.PostError):
+                    self.dispatch()
+                journal = next(self.evidence.glob("*.json"))
+                state = json.loads(journal.read_text())
+                state["phase"] = phase
+                journal.write_text(json.dumps(state))
+                self.io.comments.append(comment(12, review_result_body("Other findings weighed.", SHA)))
+                for acknowledged in (False, True):
+                    if acknowledged:
+                        self.io.comments.append(comment(13, review_result_body(
+                            f"Supervisor request acknowledged: {self.io.request['id']}", SHA)))
+                    result = self.dispatch(apply=False)
+                    self.assertEqual(result["journal"], str(journal))
+                    self.assertEqual(result["journal_phase"], phase)
+                    self.assertEqual(Path(result["evidence"]).read_text().strip(), self.io.review_text)
+                    self.assertEqual(Path(result["response_evidence"]).read_text().strip(), self.io.review_text)
+                    self.assertEqual(sum(call[0] == "review" for call in self.io.calls), 1)
+                    self.assertEqual(self.io.post.call_count, 1)
+
+    def test_claim_release_or_handoff_during_inference_blocks_post_and_retains_result(self):
+        for change in ("release", "handoff"):
+            with self.subTest(change=change):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / change
+                def change_claim():
+                    self.io.claims = []
+                    if change == "handoff":
+                        self.entries.append({**entry(), "session_id": "successor", "harness": "claude"})
+                        self.io.claims = [comment(6, marker({"branch": BRANCH, "session": "successor",
+                                                           "worker": "successor", "claimed_at": STAMP}))]
+                self.io.after_review = change_claim
+                with self.assertRaises(reviews.ReviewError):
+                    self.dispatch()
+                journal = json.loads(next(self.evidence.glob("*.json")).read_text())
+                self.assertEqual(journal["phase"], "post_blocked")
+                self.assertEqual(Path(journal["evidence"]).read_text().strip(), self.io.review_text)
+                self.assert_no_post()
+
+    def test_unsupported_filesystem_reservation_refuses_before_inference(self):
+        for index, error_number in enumerate({errno.ENOTSUP, errno.EOPNOTSUPP}):
+            with self.subTest(error_number=error_number):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / f"unsupported-{index}"
+                unsupported = OSError(error_number, "fixture hard links unavailable")
+                with patch.object(reviews.os, "link", side_effect=unsupported):
+                    with self.assertRaises(reviews.ReviewError) as failure:
+                        self.dispatch()
+                self.assertIs(failure.exception.__cause__, unsupported)
+                self.assertFalse(any(call[0] == "review" for call in self.io.calls))
+                self.assertEqual(self.dispatch()["status"], "posted")
+
+    def test_unsupported_locks_report_the_original_cause_and_permissions_stay_denials(self):
+        ledger = Path(self.temp.name) / "ledger.json"
+        ledger.write_text("[]")
+        unsupported = OSError(errno.EOPNOTSUPP, "fixture locks unavailable")
+        with patch.object(reviews.fcntl, "flock", side_effect=unsupported):
+            with self.assertRaises(reviews.ReviewError) as failure:
+                with reviews.run_lock(ledger):
+                    self.fail("unsupported run lock admitted work")
+            self.assertIs(failure.exception.__cause__, unsupported)
+            with self.assertRaises(reviews.ReviewError):
+                with reviews.sweep_lock(ledger, self.evidence, apply=True):
+                    self.fail("unsupported sweep lock admitted work")
+        with patch.object(reviews.fcntl, "flock", side_effect=[None, unsupported]):
+            with self.assertRaises(reviews.ReviewError) as failure:
+                with reviews.sweep_lock(ledger, self.evidence, apply=True):
+                    self.fail("unsupported evidence lock admitted work")
+            self.assertIs(failure.exception.__cause__, unsupported)
+        denied = PermissionError(errno.EPERM, "fixture permission denial")
+        with patch.object(reviews.os, "link", side_effect=denied):
+            with self.assertRaises(PermissionError) as failure:
+                self.dispatch()
+            self.assertIs(failure.exception, denied)
+        self.assertFalse(any(call[0] == "review" for call in self.io.calls))
+
+    def test_claim_refresh_bypasses_and_updates_the_per_sweep_cache(self):
+        adapter = reviews.IO.__new__(reviews.IO)
+        adapter.claims = {}
+        adapter.reader = Mock()
+        original = self.io.claims
+        successor = [comment(6, marker({"branch": BRANCH, "session": "successor",
+                                       "worker": "successor", "claimed_at": STAMP}))]
+        adapter.reader.paged_json.side_effect = [original, successor]
+        path = f"/repos/{REPO}/issues/3/comments"
+        self.assertEqual(adapter.paged_json(path, step_prefix="author_claims"), original)
+        self.assertEqual(adapter.paged_json(path, step_prefix="author_claims"), original)
+        self.assertEqual(adapter.paged_json(path, step_prefix="verify_author_claims"), successor)
+        self.assertEqual(adapter.paged_json(path, step_prefix="author_claims"), successor)
+        self.assertEqual(adapter.reader.paged_json.call_count, 2)
 
     def test_same_line_and_lowercase_direct_prompts_reach_the_reviewer(self):
         scopes = ("Prompt: Inspect the new scope.", "Review prompt: Inspect the new scope.",

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import hashlib
 import json
@@ -17,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from collections import Counter
 from contextlib import contextmanager
 
@@ -65,6 +66,14 @@ def run(args, **kwargs):
     return subprocess.run(args, capture_output=True, text=True, stdin=subprocess.DEVNULL, **kwargs)
 
 
+def filesystem_failure(error: OSError, path: Path) -> NoReturn:
+    if error.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EINVAL}:
+        raise error
+    raise ReviewError(f"unsupported filesystem operation at {path}: {error}; run and evidence directories need "
+                      "a local POSIX filesystem with hard links, flock and directory fsync. Preserve existing "
+                      "journals/results when relocating; reconcile any spent launch before apply. No alternate path was tried") from error
+
+
 @contextmanager
 def run_lock(ledger):
     """A read-only directory lock binds the run across registry/evidence replacements."""
@@ -75,6 +84,8 @@ def run_lock(ledger):
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise BlockingIOError(error.errno, f"pending review sweep already holds run directory {directory}") from error
+        except OSError as error:
+            filesystem_failure(error, directory)
         yield
     finally:
         os.close(descriptor)
@@ -102,6 +113,8 @@ def atomic_text(path, content, *, exclusive=False):
             os.fsync(directory)
         finally:
             os.close(directory)
+    except OSError as error:
+        filesystem_failure(error, path.parent)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
@@ -116,7 +129,10 @@ def sweep_lock(ledger, evidence, *, apply):
         private_evidence_dir(evidence)
         descriptor = os.open(evidence / "pending-reviews.lock", os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
         with os.fdopen(descriptor, "a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                filesystem_failure(error, evidence)
             yield
 
 
@@ -259,7 +275,8 @@ def completion_report(record, io, repo, pr, entries, logins, request, evidence):
     comment = record["comment"]
     status = {"supervisor": "already_completed", "reported": "already_weighed" if acknowledged else "reported_review",
               "weighed_without_review": "weighed_without_review", "acknowledged": "request_acknowledged"}
-    return {"status": status[record["kind"]],
+    journal = evidence / f"{journal_key(repo, pr['number'], request, pr['head']['sha'])}.json"
+    return {**journal_report(journal), "status": status[record["kind"]],
             "completion_kind": record["kind"], "requested_provider_confirmed": confirmed,
             "request_edited_after_review": edited,
             "needs_attention": record["kind"] == "weighed_without_review" or (not acknowledged and (not confirmed or edited or error is not None or record.get("report_changed_after_disposition", False))),
@@ -277,6 +294,23 @@ def receipt_for(request, head):
 def journal_key(repo, number, request, head):
     binding = json.dumps(receipt_for(request, head), sort_keys=True)
     return f"{repo.replace('/', '-')}-{number}-" + hashlib.sha256(binding.encode()).hexdigest()
+
+
+def journal_report(journal: Path) -> dict[str, Any]:
+    if not journal.exists():
+        return {}
+    try:
+        prior = json.loads(journal.read_text())
+        if not isinstance(prior, dict):
+            raise ReviewError("journal is not an object")
+    except (ValueError, OSError) as error:
+        prior = {"phase": "unreadable", "error": str(error)}
+    failure = prior.get("review_failure")
+    failure = failure if isinstance(failure, dict) else {}
+    return {"journal": str(journal), "journal_phase": prior.get("phase"),
+            "review_phase": failure.get("phase"), "review_outcome": failure.get("outcome"),
+            "error": prior.get("error"), "evidence": prior.get("evidence"),
+            "response_evidence": prior.get("response_evidence"), "prompt_evidence": prior.get("prompt_evidence")}
 
 
 def local_completion(evidence, repo, number, request, head, session, author):
@@ -427,7 +461,7 @@ def live_claim_comments(comments, branches):
     return [comment for comment in cleaned if comment["id"] not in ended]
 
 
-def bind_session(io, repo, branches, entries, logins, request, pr):
+def bind_session(io, repo, branches, entries, logins, request, pr, *, refresh=False):
     candidates = {entry["session_id"]: entry for entry in entries
                   if entry.get("repository", "").casefold() == repo.casefold()
                   and entry.get("supervisor_owned") is True}
@@ -440,7 +474,8 @@ def bind_session(io, repo, branches, entries, logins, request, pr):
                   if ref["repo"].casefold() == repo.casefold())
     matches, outside = {}, set()
     for issue in sorted(issues):
-        comments = io.paged_json(f"/repos/{repo}/issues/{issue}/comments", step_prefix="author_claims")
+        comments = io.paged_json(f"/repos/{repo}/issues/{issue}/comments",
+                                 step_prefix="verify_author_claims" if refresh else "author_claims")
         comments = live_claim_comments([c for c in comments if trusted(c, logins)], branches)
         for comment in comments:
             for claim in records(comment["body"]):
@@ -523,8 +558,8 @@ class IO:
         return self.reader.get_json(path, **kwargs)
 
     def paged_json(self, path, **kwargs):
-        if kwargs.get("step_prefix") == "author_claims":
-            if path not in self.claims:
+        if kwargs.get("step_prefix") in {"author_claims", "verify_author_claims"}:
+            if path not in self.claims or kwargs["step_prefix"] == "verify_author_claims":
                 self.claims[path] = self.reader.paged_json(path, **kwargs)
             return self.claims[path]
         return self.reader.paged_json(path, **kwargs)
@@ -640,18 +675,9 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
     key = journal_key(repo, number, request, head)
     journal = evidence / f"{key}.json"
     if not apply:
-        if journal.exists():
-            try:
-                prior = json.loads(journal.read_text())
-                if not isinstance(prior, dict):
-                    raise ReviewError("journal is not an object")
-            except (ValueError, OSError) as error:
-                prior = {"phase": "unreadable", "error": str(error)}
-            failure = prior.get("review_failure")
-            failure = failure if isinstance(failure, dict) else {}
-            return {**report, "status": "blocked", "journal": str(journal), "journal_phase": prior.get("phase"),
-                    "review_phase": failure.get("phase"), "review_outcome": failure.get("outcome"),
-                    "error": prior.get("error"), "needs_attention": True,
+        retained = journal_report(journal)
+        if retained:
+            return {**report, **retained, "status": "blocked", "needs_attention": True,
                     "reason": "prior launch exists; reconcile retained evidence, never replay inference or an unknown write"}
         return report
     existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
@@ -690,6 +716,9 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         atomic_text(journal, json.dumps({**retained, "phase": "review_completed"}, indent=2))
         try:
             existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
+            current_author = bind_session(io, repo, {branch, worktree_branch}, entries, logins, request, pr, refresh=True)
+            if current_author != (session, author):
+                raise ReviewError("author branch claim changed; retain the completed result and resolve the current author before posting")
         except (GitHubReadError, GitHubReadShapeError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
             atomic_text(journal, json.dumps({**retained, "phase": "post_blocked", "error": str(error)}, indent=2))
             raise
@@ -743,7 +772,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--checkout", action="append", default=[], metavar="OWNER/REPO=PATH")
-    parser.add_argument("--evidence-dir", type=Path, required=True)
+    parser.add_argument("--evidence-dir", type=Path, required=True,
+                        help="Durable private state directory; retain journals/results, never use auto-pruned task evidence")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:

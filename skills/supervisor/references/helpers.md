@@ -1817,7 +1817,27 @@ uv run skills/supervisor/scripts/pending_reviews.py \
 Add `--apply` to run the pending reviews serially and post completed nonempty
 results. Use the same evidence directory for every invocation for this run:
 its launch journal prevents replay after interruption, failure or an uncertain
-comment write. A read-only advisory lock on the ledger's containing directory
+comment write. This directory is durable operational state, not disposable
+task evidence. Keep it in a private run-state directory without automatic
+expiry, or an appropriate private directory on Retained-Artifacts. Never put
+it under the auto-pruned Developer-Artifacts/task-evidence root, a temporary
+directory or any cleanup policy that can remove journals while requests remain
+open. Keep journals and results through handoffs and until every request is
+resolved; a denied/spent request needs its journal for as long as that request
+could be discovered again. If state is lost, reconstruct it from retained
+evidence and reconcile remote delivery before apply; absence of a journal is
+not permission to replay a known failure or denial. The helper never changes
+storage roots or silently restores state.
+
+The ledger and evidence directories must be on a local POSIX filesystem that
+supports hard links, flock and directory fsync. exFAT and some network mounts
+cannot supply these semantics. Unsupported-operation errors refuse before
+continuing and name this requirement. Select a supported location before use;
+when relocating existing state, preserve its journals/results and reconcile
+spent launches first. A permission or authorization denial remains a denial,
+not a filesystem fallback. No alternate directory is tried automatically.
+
+A read-only advisory lock on the ledger's containing directory
 also serializes passes using that private run directory, even after an atomic
 ledger replacement or with different evidence directories. It changes no ledger
 or directory contents. Only `--apply` takes these locks; read-only discovery
@@ -1843,6 +1863,12 @@ renew a request to evade a denial. A completed review whose final input check
 fails keeps its result and records `post_blocked` with the diagnostic. No write
 was attempted. Discovery reads existing journals and reports `blocked`, their
 phase and error instead of promising another pending launch. It writes nothing.
+Completion and acknowledgement reports also expose an existing `journal`,
+`journal_phase`, canonical `evidence`, `response_evidence` and `prompt_evidence`
+paths. A weighed note or explicit queue acknowledgement cannot hide an
+uncertain write or a paid result retained locally; reconcile it before
+deciding how to settle the queue item. These diagnostics do not themselves
+prove publication, provider completion or readiness.
 
 For a retained `review_completed` or `post_blocked` result, revalidate the exact
 head, clean worktree and original request/prompt scope before manually posting
@@ -1898,7 +1924,10 @@ follows the chain and refuses missing, untrusted, ambiguous or cyclic links.
 A Prompt section containing only comment links also follows the linked prompt;
 it never sends a bare URL as the review scope.
 It rechecks every prompt comment, the latest request, PR state/head and worktree
-before posting. Prompt identity compares the comment id, authored body, edit time
+before posting. After inference it also rereads the trusted author claims,
+bypassing and refreshing the per-sweep claim cache. A released or changed
+session/provider binding blocks posting, keeps the completed report and
+requires resolving the current author before manual reconciliation. Prompt identity compares the comment id, authored body, edit time
 and author login; reactions and endpoint-specific fields do not invalidate it.
 Every completed report and its metadata are retained before that final check,
 even when a moved head or edited prompt prevents posting. The existing model
