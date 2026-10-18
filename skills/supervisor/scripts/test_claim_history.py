@@ -138,7 +138,7 @@ class NativeHistoryTests(unittest.TestCase):
         self.write(child, records("claude", "root", value))
         self.assertFalse(self.status(root, "claude")["safe_verdict"])
 
-    def test_receipt_coverage_error_does_not_discard_turn_status(self):
+    def test_unrelated_deep_data_does_not_change_turn_or_claim_status(self):
         rows = records("codex", "root")
         value = {"operation": "opaque"}
         for _ in range(20):
@@ -148,7 +148,7 @@ class NativeHistoryTests(unittest.TestCase):
         result = self.status()
         self.assertTrue(result["at_turn_end"])
         self.assertTrue(result["declared_safe_verdict"])
-        self.assertFalse(result["claim_disposition"]["clear"])
+        self.assertTrue(result["claim_disposition"]["clear"])
 
 
 if __name__ == "__main__":

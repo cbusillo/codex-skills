@@ -39,7 +39,7 @@ def output(value, harness, call_id="tool"):
 
 
 def history(harness, *values):
-    start = {"type": "session_meta", "payload": {"id": SESSION}} if harness == "codex" else {"type": "user", "sessionId": SESSION}
+    start = {"type": "session_meta", "payload": {"id": SESSION, "cwd": "/repo"}} if harness == "codex" else {"type": "user", "sessionId": SESSION, "cwd": "/repo"}
     end = ([{"type": "event_msg", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
             {"type": "event_msg", "payload": {"type": "task_complete"}}] if harness == "codex" else
            [{"type": "assistant", "sessionId": SESSION, "message": {"stop_reason": "end_turn", "content": [{"type": "text", "text": "Safe to exit: yes"}]}}])
@@ -76,7 +76,164 @@ def file_execution_histories(harness):
     return [{"harness": harness, "session_id": SESSION, "records": rows} for rows in (parent, child)]
 
 
+def ordinary_read_history(harness):
+    """Native edits and subsequent reads from an ordinary regression-test task."""
+    rows = history(harness)
+    end = 2 if harness == "codex" else 1
+    content = 'writer = "uv run gh-plan.py claim 1"\nassert "claim" in writer\n'
+    edit = history(harness, {})[1:3]
+    if harness == "codex":
+        edit[0]["payload"].update(call_id="edit", name="apply_patch", arguments=
+            '*** Begin Patch\n*** Add File: /repo/test_sample.py\n' +
+            '\n'.join('+' + line for line in content.splitlines()) + '\n*** End Patch')
+    else:
+        edit[0]["message"]["content"][0].update(id="edit", name="Write", input={
+            "file_path": "/repo/test_sample.py", "content": content})
+    edit[1] = output({}, harness, "edit")
+    rows[-end:-end] = edit
+    commands = ('uv run /repo/test_sample.py', 'uv run ruff check /repo/test_sample.py',
+                'python3 -m py_compile /repo/test_sample.py', 'timeout 60 cat /repo/test_sample.py',
+                "python3 - <<'PY'\nline='gh-plan.py claim'\nif 'claim' in line: print(line)\nPY",
+                'timeout 60 rg -n "gh-plan.py.*claim" skills',
+                'bash -lc "sed -n 1,80p /repo/gh-plan.py | grep claim"')
+    for index, command in enumerate(commands):
+        identifier = f"read-{index}"
+        native = history(harness, {})[1:3]
+        if harness == "codex":
+            native[0]["payload"].update(call_id=identifier, arguments=json.dumps({"cmd": command}))
+        else:
+            native[0]["message"]["content"][0].update(id=identifier, input={"command": command})
+        native[1] = output({"exit_code": 0, "output": ""}, harness, identifier)
+        rows[-end:-end] = native
+    return rows
+
+
 class ReceiptTests(unittest.TestCase):
+    def test_claude_shared_result_record_does_not_decode_an_unrelated_deep_read(self):
+        rows = history("claude", claim(), {**proof(("example/a", 1, 10)), "harness": "claude"})
+        rows[3]["message"]["content"].append({"type": "tool_use", "id": "read", "name": "Bash", "input": {"command": "cat saved.json"}})
+        saved = claim()
+        for _ in range(20):
+            saved = {"output": saved}
+        rows[4]["message"]["content"].extend(output(saved, "claude", "read")["message"]["content"])
+        self.assertTrue(receipts.acceptance(rows, "claude", SESSION)["clear"])
+
+    def test_json_quoted_literal_arguments_preserve_native_process_completion(self):
+        rows = history("codex", claim())
+        rows[1]["payload"].update(name="functions.exec", arguments=
+            'text(await tools.exec_command({cmd:"cat docs.md","workdir":"/repo","max_output_tokens":1000}));'
+            'text(await tools.exec_command({"cmd":"uv run gh-plan.py --repo example/a claim 1","yield_time_ms":1000}));')
+        rows[2] = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "tool-0", "output": [
+            {"type": "input_text", "text": json.dumps({"exit_code": 0, "output": "ordinary read"})},
+            {"type": "input_text", "text": json.dumps({"session_id": 123, "output": ""})}]}}
+        self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+        poll = {"payload": {"type": "function_call", "name": "functions.exec", "call_id": "poll", "arguments":
+            'text(await tools.write_stdin({"session_id":123,"chars":"","yield_time_ms":1000}));'}}
+        rows[-2:-2] = [poll, output({"exit_code": 0, "output": json.dumps(claim())}, "codex", "poll")]
+        self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
+
+    def test_generated_python_writer_requires_execution_of_the_same_native_path(self):
+        for harness in ("codex", "claude"):
+            for script_path in ("/other/run-claim.py", "/repo/run-claim.py"):
+                with self.subTest(harness=harness, path=script_path):
+                    rows = history(harness, {})
+                    content = 'import subprocess\nsubprocess.run(["uv", "run", "gh-plan.py", "claim", "1"])'
+                    if harness == "codex":
+                        rows[1]["payload"].update(name="apply_patch", arguments=
+                            '*** Begin Patch\n*** Add File: /repo/run-claim.py\n' +
+                            '\n'.join('+' + line for line in content.splitlines()) + '\n*** End Patch')
+                    else:
+                        rows[1]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run-claim.py", "content": content})
+                    native = history(harness, {})[1:3]
+                    if harness == "codex":
+                        native[0]["payload"].update(call_id="execute", arguments=json.dumps({"cmd": "python3 " + script_path}))
+                    else:
+                        native[0]["message"]["content"][0].update(id="execute", input={"command": "python3 " + script_path})
+                    native[1] = output({"exit_code": 0, "output": ""}, harness, "execute")
+                    rows[3:3] = native
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], script_path == "/repo/run-claim.py")
+
+    def test_read_commands_and_tests_do_not_acquire_file_ownership(self):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                self.assertFalse(receipts.ownership_state(ordinary_read_history(harness), harness)["indices"])
+            for text in ('writer = "uv run gh-plan.py claim 1"\nassert "claim" in writer\n',
+                         'writer = """\nuv run gh-plan.py claim 1\n"""\nprint(writer)\n'):
+                rows = history(harness, {})
+                if harness == "codex":
+                    rows[1]["payload"].update(name="apply_patch", arguments=
+                        '*** Begin Patch\n*** Add File: /repo/test_sample.py\n+' + text.replace('\n', '\n+') + '\n*** End Patch')
+                else:
+                    rows[1]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/test_sample.py", "content": text})
+                call = history(harness, {})[1:3]
+                command = "uv run /repo/test_sample.py"
+                if harness == "codex":
+                    call[0]["payload"].update(call_id="read", arguments=json.dumps({"cmd": command}))
+                else:
+                    call[0]["message"]["content"][0].update(id="read", input={"command": command})
+                call[1] = output({"exit_code": 0, "output": ""}, harness, "read")
+                rows[3:3] = call
+                with self.subTest(harness=harness, content=text):
+                    self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+
+    def test_wrapped_and_computed_reads_of_claim_text_are_not_writers(self):
+        commands = ("python3 - <<'PY'\nline='gh-plan.py claim'\nif 'gh-plan.py' in line and 'claim' in line: print(line)\nPY",
+                    'timeout 60 rg -n "gh-plan.py.*claim" skills',
+                    'bash -lc "sed -n 1,80p /repo/gh-plan.py | grep claim"')
+        for harness in ("codex", "claude"):
+            for command in commands:
+                rows = history(harness, {})
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                with self.subTest(harness=harness, command=command):
+                    self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+        rows = history("codex", {})
+        rows[1]["payload"].update(name="functions.exec", arguments=
+            'const files=["/repo/gh-plan.py"];for(const f of files) text(await tools.exec_command({cmd:`rg -n claim ${f}`}));')
+        self.assertFalse(receipts.ownership_state(rows, "codex")["indices"])
+
+    def test_quoted_pr_body_heredoc_is_data_for_ownership_and_detachment(self):
+        for body in ('the "don\'t" rule', 'the "R&D policy'):
+            rows = history("claude", {"operation": "github.pr.create", "ok": True}, {**proof(), "harness": "claude"})
+            command = 'gh pr create --title T --body "$(cat <<\'EOF\'\n' + body + '\nEOF\n)"'
+            rows[1]["message"]["content"][0]["input"] = {"command":command}
+            rows[2] = output({"exit_code": 0, "output": ""}, "claude", "tool-0")
+            with self.subTest(body=body):
+                self.assertTrue(receipts.ownership_state(rows, "claude")["indices"])
+                self.assertFalse(receipts.ownership_state(rows, "claude")["pending"])
+        rows = history("claude", {})
+        rows[1]["message"]["content"][0]["input"] = {"command":
+            'echo "$(cat <<\'EOF\'; uv run gh-plan.py claim 1 &\nbody\nEOF\n)"'}
+        self.assertTrue(receipts.ownership_state(rows, "claude")["pending"])
+        rows[1]["message"]["content"][0]["input"] = {"command": "echo '$(uv run gh-plan.py claim 1)'"}
+        self.assertFalse(receipts.ownership_state(rows, "claude")["indices"])
+
+    def test_reads_of_deep_data_and_saved_receipts_do_not_change_acceptance(self):
+        for harness in ("codex", "claude"):
+            for value in (claim(), {"operation": "github.pr.create", "ok": True}):
+                rows = history(harness, claim(), {**proof(("example/a", 1, 10)), "harness": harness})
+                read = history(harness, {})[1:3]
+                if harness == "codex":
+                    read[0]["payload"].update(call_id="read", arguments=json.dumps({"cmd": "cat saved.json"}))
+                else:
+                    read[0]["message"]["content"][0].update(id="read", input={"command": "cat saved.json"})
+                for depth in (0, 20):
+                    cached = value
+                    for _ in range(depth):
+                        cached = {"output": cached}
+                    read[1] = output(cached, harness, "read")
+                    checked = [*rows[:-2], *read, *rows[-2:]] if harness == "codex" else [*rows[:-1], *read, rows[-1]]
+                    with self.subTest(harness=harness, operation=value["operation"], depth=depth):
+                        self.assertTrue(receipts.acceptance(checked, harness, SESSION)["clear"])
+                # Malformed output of a real owner still refuses coverage.
+                if harness == "codex":
+                    read[0]["payload"]["arguments"] = json.dumps({"cmd": "uv run gh-plan.py claim 2"})
+                else:
+                    read[0]["message"]["content"][0]["input"] = {"command": "uv run gh-plan.py claim 2"}
+                self.assertFalse(receipts.acceptance(checked, harness, SESSION)["clear"])
+
     def test_dynamic_read_does_not_borrow_ownership_words_from_another_command(self):
         for options in ('', 'workdir:root,'):
             rows = history("codex", {})

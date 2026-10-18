@@ -337,12 +337,13 @@ recoverable terminal result leaves closeout conditional/no; record that blocker
 and preserve the session rather than rerunning the write to manufacture evidence.
 Quoted heredoc bodies are data only when they are not passed to an executor,
 including a generated script executed later in the same invocation.
-Native file writes and patches are also linked to later script execution in
-this history. Executing a file containing potential ownership stays conditional/no
-when its writer provenance cannot be established, including source, direct and
-interpreter execution. A file merely written or read as data is not execution.
-Potential ownership passed to a shell/interpreter body, command operand or
-execution wrapper stays pending when its execution cannot be established.
+Native file writes and patches are linked to execution of that same native path,
+using the recorded working directory. Source, direct and interpreter execution
+of generated ownership code stays conditional/no when execution cannot be
+established. Fixture strings, assertions, documentation, lint and compilation
+operands do not establish ownership. Shell/interpreter bodies are checked for
+executable ownership commands or process launches, rather than claim words in
+read arguments. Ordinary reads and tests remain supported.
 Ownership commands before or after inert bodies still count. Substitutions in
 unquoted heredocs may execute and remain unparsed.
 Potential ownership in unparsed shell or computed code-mode commands stays
@@ -352,6 +353,9 @@ Claude background ownership waits for its native terminal task notice; a
 progress notice or a `TaskStop` invocation alone does not prove completion.
 Any later ownership activity requires a new check after its terminal result;
 receiving an older result afterward cannot cover that activity.
+Saved receipts in unrelated reads do not create ownership or invalidate a check.
+Only command-bound output is decoded as receipt evidence; malformed ownership
+or checker output still refuses complete coverage.
 Claude splits one API message across multiple native records. Its shared
 `message.id` is one launch boundary even when tool results interleave: a check
 in the same API message as ownership cannot prove it ran afterward. Finish

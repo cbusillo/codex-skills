@@ -171,6 +171,71 @@ class ReceiptFixture:
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
+    def recovery_history(self, fixture, *, delegated):
+        reader = SESSIONS.native_helpers()[1]
+        records = reader.read_jsonl(fixture.transcript)
+        receipts = reader.claim_receipts
+        command = "uv run /catalog/gh-plan.py --repo example/task claim 1"
+        invocation = {"type": "function_call", "name": "exec_command", "call_id": "claim",
+                      "arguments": json.dumps({"cmd": command})}
+        result = {"operation": receipts.CLAIM_OPERATION, "ok": True,
+                  "claim": {"session": fixture.session},
+                  "claim_comment": {"url": "https://github.com/example/task/issues/1#issuecomment-10"}}
+        if delegated:
+            invocation.update(name="collaboration.spawn_agent", arguments=json.dumps({"task_name": "read-only"}))
+            result = {"task_name": "/root/read-only"}
+        proof = {"operation": receipts.CHECK_OPERATION, "ok": True, "claims_clear": True,
+                 "session_id": fixture.session, "harness": "codex", "coverage": {"complete": True},
+                 "released_claims": [{"repository": "example/task", "record": 1, "claim_comment": 10}]}
+        activity = [invocation, {"type": "function_call_output", "call_id": "claim", "output": json.dumps(result)},
+                    {"type": "function_call", "name": "exec_command", "call_id": "check",
+                     "arguments": json.dumps({"cmd": "uv run /catalog/check_claims.py"})},
+                    {"type": "function_call_output", "call_id": "check", "output": json.dumps(proof)}]
+        records[1:1] = [{"type": "response_item", "timestamp": "2026-10-01T01:59:59Z", "payload": item}
+                        for item in activity]
+        fixture.transcript.write_text("".join(json.dumps(row) + "\n" for row in records))
+        return records
+
+    def test_post_action_recovery_accepts_fresh_declaration_without_pre_exit_identity_or_children(self):
+        for delegated in (False, True):
+            with self.subTest(delegated=delegated), ReceiptFixture() as f:
+                records = self.recovery_history(f, delegated=delegated)
+                after = datetime(2026, 10, 1, 1, 59, 58, tzinfo=timezone.utc)
+                with patch.object(CLOSURE, "action_time", return_value=after):
+                    # The fresh tail omits session_meta and cannot independently
+                    # establish live closeout acceptance or delegated histories.
+                    tail = records[1:]
+                    status = SESSIONS.native_helpers()[1].summarize(tail, "codex")
+                    self.assertFalse(status["safe_verdict"])
+                    self.assertTrue(status["declared_safe_verdict"])
+                    closed = f.release.record_closure(f.log, f.entry, "supervisor")
+                    self.assertTrue(closed["process_exit_verified"])
+                    f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex worker")]
+                    with self.assertRaises(ValueError):
+                        f.release.record_closure(f.log, f.entry, "supervisor")
+                with patch.object(CLOSURE, "action_time", return_value=datetime(2026, 10, 1, 2, 0, 2, tzinfo=timezone.utc)):
+                    with self.assertRaises(ValueError):
+                        CLOSURE.require_fresh_action_verdict(f.entry)
+
+    def test_idle_successor_proof_accepts_original_declaration_without_pre_exit_claim_check(self):
+        for delegated in (False, True):
+            with self.subTest(delegated=delegated), ReceiptFixture() as f:
+                records = self.recovery_history(f, delegated=delegated)
+                if not delegated:
+                    records = [r for r in records if (r.get("payload") or {}).get("call_id") != "check"]
+                    f.transcript.write_text("".join(json.dumps(row) + "\n" for row in records))
+                status = SESSIONS.native_helpers()[1].summarize(records, "codex")
+                self.assertFalse(status["safe_verdict"])
+                self.assertTrue(status["declared_safe_verdict"])
+                f.log.unlink()
+                closed = f.release.record_closure(f.log, f.entry, "supervisor")
+                self.assertIn("closure_evidence", closed)
+                self.assert_ended(f)
+                with f.transcript.open("a") as stream:
+                    stream.write(json.dumps({"type": "event_msg", "timestamp": "2026-10-01T02:00:02Z",
+                                             "payload": {"type": "task_started"}}) + "\n")
+                self.assert_live(f)
+
     def test_short_mutation_contention_waits_without_failing_the_second_launch(self):
         import fcntl
         with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:

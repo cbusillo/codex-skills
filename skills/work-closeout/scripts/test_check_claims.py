@@ -33,6 +33,27 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_finished_claim_with_ordinary_tests_and_reads_reaches_terminal_inventory(self):
+        from test_claim_receipts import ordinary_read_history, history, claim as native_claim, SESSION as native_session
+        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                         comment(11, "Released claim 10\n\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                rows = history(harness, native_claim(REPO))
+                reads = ordinary_read_history(harness)
+                end = 2 if harness == "codex" else 1
+                rows[-end:-end] = reads[1:-end]
+                for row in rows:
+                    row["timestamp"] = SOURCE["claimed_at"]
+                entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+                with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                    # The reviewed head raised "ownership command has no terminal
+                    # native result" before it could even read the exact release.
+                    report = helper.check(self.reader, [], entry, ACTOR)
+                self.assertTrue(report["claims_clear"], report)
+                self.assertTrue(report["coverage"]["complete"], report)
+                self.assertEqual({r["claim_comment"] for r in report["released_claims"]}, {10})
+
     def test_child_written_script_execution_refuses_before_inventory(self):
         from test_claim_receipts import file_execution_histories, SESSION as native_session
         for harness in ("codex", "claude"):

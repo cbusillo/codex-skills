@@ -100,7 +100,10 @@ def require_fresh_action_verdict(entry: dict) -> None:
     from github_plan_sessions import native_helpers
     records = native_helpers()[1].read_jsonl(Path(entry["transcript"]))
     tail = [r for r in records if r.get("timestamp") and stamp(r["timestamp"]) > after]
-    if not native_helpers()[1].summarize(tail, entry["harness"])["safe_verdict"]:
+    status = native_helpers()[1].summarize(tail, entry["harness"])
+    # Post-exit recovery needs a fresh declaration, not the live claim gate.
+    # The tail deliberately excludes older identity and delegated histories.
+    if not status.get("declared_safe_verdict", status["safe_verdict"]):
         raise ValueError("native action needs a fresh final safe verdict before verified closure")
 
 
@@ -445,7 +448,8 @@ def transcripts(session: str, primary: str) -> dict:
             raise ValueError("native transcript identity mismatch")
         status = native_helpers()[1].summarize(records, "codex")
         after = path.stat()
-        if transcript_identity(before) != transcript_identity(after) or not status["safe_verdict"]:
+        if (transcript_identity(before) != transcript_identity(after)
+                or not status.get("declared_safe_verdict", status["safe_verdict"])):
             raise ValueError("native transcript is changing or lacks a final safe verdict")
         timestamps = [r["timestamp"] for r in records if r.get("timestamp")]
         if not timestamps:
@@ -500,7 +504,7 @@ def verified_record(session: str, home: Path | None = None) -> dict | None:
             return None
         if isinstance(entry.get("tty"), str):
             entry["tty"] = entry["tty"].removeprefix("/dev/")
-        from github_plan_sessions import codex_homes, native_helpers
+        from github_plan_sessions import native_helpers
         native_helpers()
         import release_session_claims
         from github_plan_release import stamp

@@ -9,12 +9,13 @@ import json
 import re
 import shlex
 import ast
+import posixpath
 from pathlib import Path
 
 CHECK_OPERATION = "work-closeout.claims"
 CLAIM_OPERATION = "github.plan.claim"
 COMMENT = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
-SHELL_FIELD = re.compile(r'''\btools\.exec_command\s*\(\s*\{(?:(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|[^{}"'`])*?\b(?:cmd|command)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?=\s*[,}])''')
+SHELL_FIELD = re.compile(r'''\btools\.exec_command\s*\(\s*\{(?:(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|[^{}"'`])*?(?:\b(?:cmd|command)|"(?:cmd|command)"|'(?:cmd|command)')\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?=\s*[,}])''')
 OWNERSHIP_TEXT = re.compile(r"gh-plan\.py[\s\S]*\bclaim\b|gh-pr\.py[\s\S]*\bcreate\b|\bgh\s+pr\s+create\b")
 
 
@@ -53,19 +54,40 @@ def envelopes(value, depth=0):
             yield from envelopes(item, depth + 1)
 
 
-def outputs(records, harness):
+def raw_outputs(records, harness, *, call_id=None):
     for index, record in enumerate(records):
         if harness == "codex":
             payload = record.get("payload") or {}
-            if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
+            if (payload.get("type") in {"function_call_output", "custom_tool_call_output"}
+                    and (call_id is None or payload.get("call_id") == call_id)):
                 for value in envelopes(payload.get("output")):
                     yield index, {**value, "_tool_call_id": payload.get("call_id")}
         else:
             message = record.get("message")
             for block in (message.get("content") or []) if isinstance(message, dict) else []:
-                if isinstance(block, dict) and block.get("type") == "tool_result":
+                if (isinstance(block, dict) and block.get("type") == "tool_result"
+                        and (call_id is None or block.get("tool_use_id") == call_id)):
                     for value in envelopes(block.get("content")):
                         yield index, {**value, "_tool_call_id": block.get("tool_use_id"), "_tool_error": block.get("is_error") is True}
+
+
+def outputs(records, harness):
+    """Decode receipts only after binding each native result to its command.
+
+    Reads may contain arbitrary saved reports and deeply nested data. They are
+    neither new ownership nor checker evidence, including inside serial cells.
+    """
+    positions = list(range(len(records)))
+    if harness == "codex":
+        records, positions = serial_ownership_records(records)
+    def relevant(name, value):
+        return (opaque_ownership(name, value)
+                or any(ownership_command(argv) or script(argv) == "check_claims.py"
+                       for argv in shell_commands(name, value)))
+    for index, _, value in bound_outputs(records, harness, relevant, isolated_polls=True,
+                                         opaque_calls=file_ownership_executions(records, harness)):
+        if "_attempt" not in value and "_result" not in value:
+            yield positions[index], value
 
 
 def calls_and_results(record, harness):
@@ -130,12 +152,16 @@ def shell_commands(name, value):
 
 def shell_code(text, *, bodies=None):
     """Exclude heredoc bodies, retaining commands on both sides of them."""
+    # Quoted cat substitutions are a common CLI body argument. Their literal
+    # contents must never participate in either shell lexing or '&' detection.
+    substitution = re.compile(r"\$\(cat[ \t]+<<(-?)(['\"])([\w-]+)\2[ \t]*\n([\s\S]*?)\n[\t]*\3\r?\n\s*\)")
+    text = substitution.sub("inert-heredoc-body", text)
     code, pending, header = [], [], ""
     for line in text.splitlines(keepends=True):
         if pending:
             delimiter, tabs, expands, executes, body = pending[0]
             if (line.lstrip("\t") if tabs else line).rstrip("\r\n") == delimiter:
-                if executes and OWNERSHIP_TEXT.search("".join(body)):
+                if executes and executable_content("".join(body)):
                     raise ValueError("unparsed executable heredoc")
                 if bodies is not None:
                     bodies.append("".join(body))
@@ -203,6 +229,14 @@ def unparsed_command_text(value):
         if (start, end) in seen:
             continue
         seen.add((start, end))
+        expression = value[start:end].strip()
+        if expression.startswith('`'):
+            command = re.sub(r"\$\{[^}]*\}", "computed-operand", expression.strip('`'))
+            if not OWNERSHIP_TEXT.search(command) and not any(c in command for c in "`$;&|\n"):
+                # A computed operand does not change the executable of a read.
+                argv = shlex.split(command)
+                if argv and Path(argv[0]).name in {"rg", "grep", "cat", "sed", "head", "tail", "ls"}:
+                    continue
         fragment = code[start:end] + " " + " ".join(m[0] for m in literals if start <= m.start() < end)
         pieces.append(fragment)
         pending.extend(declarations[word] for word in re.findall(r"\b\w+\b", fragment) if word in declarations)
@@ -215,19 +249,138 @@ def opaque_ownership(name, value):
     for text in shell_texts(name, value):
         bodies = []
         try:
-            shell_code(text, bodies=bodies)
+            code = shell_code(text, bodies=bodies)
         except ValueError:
             if OWNERSHIP_TEXT.search(text):
                 return True
+            code = ""
+        for expansion in shell_expansions(code):
+            if executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion}):
+                return True
         for argv in shell_commands("exec_command", {"cmd": text}):
-            if executable_wrapper(argv) and (OWNERSHIP_TEXT.search(" ".join(argv))
-                                            or any(OWNERSHIP_TEXT.search(body) for body in bodies)):
+            child = unwrapped_command(argv)
+            if child != argv and ownership_command(child) and not ownership_command(argv):
+                return True
+            if child and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}:
+                if any(executable_content(word) for i, word in enumerate(child[1:], 1)
+                       if child[i - 1].startswith("-") and "c" in child[i - 1]):
+                    return True
+            if child and re.fullmatch(r"python[0-9.]*", Path(child[0]).name):
+                code = child[child.index("-c") + 1:] if "-c" in child else bodies if "-" in child else []
+                if any(python_ownership(body) for body in code):
+                    return True
+            if child and Path(child[0]).name in {"eval", "xargs", "node"} and OWNERSHIP_TEXT.search(" ".join(child[1:])):
                 return True
     if name in {"exec", "functions.exec"} and isinstance(value, str):
         unparsed = unparsed_command_text(SHELL_FIELD.sub("", value))
         return bool(re.search(r"gh-plan\.py", unparsed) and re.search(r"\bclaim\b", unparsed)
                     or re.search(r"gh-pr\.py|\bgh\s+pr\b", unparsed) and re.search(r"\bcreate\b", unparsed))
     return False
+
+
+def shell_expansions(text):
+    """Read executing substitutions, preserving single-quoted literal examples."""
+    quote, escaped, cursor = None, False, 0
+    while cursor < len(text):
+        char = text[cursor]
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif text[cursor:cursor + 2] == "$(" and quote != "'":
+            start, end, depth = cursor + 2, cursor + 2, 1
+            inner_quote, inner_escape = None, False
+            while end < len(text) and depth:
+                inner = text[end]
+                if inner_escape:
+                    inner_escape = False
+                elif inner == "\\" and inner_quote != "'":
+                    inner_escape = True
+                elif inner_quote:
+                    if inner == inner_quote:
+                        inner_quote = None
+                elif inner in "'\"":
+                    inner_quote = inner
+                elif inner in "()":
+                    depth += 1 if inner == "(" else -1
+                end += 1
+            yield text[start:end - 1] if depth == 0 else text[start:]
+            cursor = end
+            continue
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        cursor += 1
+
+
+def unwrapped_command(argv):
+    """Transparent process wrappers change execution, never operand meaning."""
+    argv = list(argv)
+    while argv:
+        name = Path(argv[0]).name
+        if re.match(r"[A-Za-z_]\w*=", argv[0]):
+            argv = argv[1:]
+        elif name in {"command", "exec", "nohup", "time", "env", "timeout", "nice"}:
+            argv = argv[1:]
+            while argv and (argv[0].startswith("-") or re.match(r"[A-Za-z_]\w*=", argv[0])):
+                flag = argv.pop(0)
+                if flag in {"-u", "--unset", "-C", "--chdir", "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment"} and argv:
+                    argv.pop(0)
+            if name == "timeout" and argv:
+                argv = argv[1:]
+        elif name == "uv" and argv[1:2] == ["run"]:
+            argv = argv[2:]
+            while argv and argv[0].startswith("-"):
+                flag = argv.pop(0)
+                if flag in {"--directory", "--project", "--python", "--with", "--group"} and argv:
+                    argv.pop(0)
+        else:
+            break
+    return argv
+
+
+def python_ownership(content):
+    """Python fixture strings are data; process-launch arguments are executable."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return False
+    definitions = {node.targets[0].id: node.value for node in ast.walk(tree)
+                   if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)}
+    def literal(node, seen=frozenset()):
+        if isinstance(node, ast.Name) and node.id in definitions and node.id not in seen:
+            return literal(definitions[node.id], seen | {node.id})
+        try:
+            return ast.literal_eval(node)
+        except (ValueError, TypeError):
+            return None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function = ast.unparse(node.func)
+        if function not in {"os.system", "os.popen", "subprocess.run", "subprocess.Popen", "subprocess.call", "subprocess.check_call", "subprocess.check_output", "exec", "eval"}:
+            continue
+        command = literal(node.args[0])
+        if isinstance(command, (list, tuple)):
+            if ownership_command(unwrapped_command(command)):
+                return True
+        elif isinstance(command, str) and executable_content(command):
+            return True
+    return False
+
+
+def executable_content(content):
+    """Recognize executable ownership syntax, excluding quoted examples."""
+    try:
+        ast.parse(content)
+    except SyntaxError:
+        pass
+    else:
+        return python_ownership(content)
+    return any(ownership_command(unwrapped_command(argv))
+               for argv in shell_commands("exec_command", {"cmd": content}))
 
 
 def executable_wrapper(argv):
@@ -255,52 +408,83 @@ def file_writes(name, value):
                 pass
     for patch in patches:
         for match in re.finditer(r"(?m)^\*\*\* (?:Add|Update) File: (.+)\n([\s\S]*?)(?=^\*\*\* |\Z)", patch):
-            yield match[1], match[2]
+            yield match[1], "\n".join(line[1:] for line in match[2].splitlines() if line.startswith(("+", " ")))
     for text in shell_texts(name, value):
         if not OWNERSHIP_TEXT.search(text):
             continue
+        bodies = []
         try:
-            lexer = shell_lexer(shell_code(text))
+            lexer = shell_lexer(shell_code(text, bodies=bodies))
             lexer.whitespace_split = True
             tokens = list(lexer)
         except ValueError:
             continue  # Existing opaque ownership handles unparsed shell text.
         for index, token in enumerate(tokens[:-1]):
             if token in {">", ">>"}:
-                yield tokens[index + 1], text
+                yield tokens[index + 1], "\n".join(bodies) if bodies else text
+
+
+def native_calls(records, harness):
+    cwd = None
+    for record in records:
+        payload = record.get("payload") or {}
+        if record.get("type") == "session_meta":
+            cwd = payload.get("cwd", cwd)
+        cwd = record.get("cwd", cwd)
+        for identifier, name, value in calls_and_results(record, harness)[0]:
+            serial = composed_calls(value) if name in {"exec", "functions.exec"} else []
+            if serial:
+                for method, args, _ in serial:
+                    yield identifier, method, args, args.get("workdir") or args.get("cwd") or cwd
+                continue
+            args = arguments(value)
+            yield identifier, name, value, (args.get("workdir") or args.get("cwd") or cwd) if isinstance(args, dict) else cwd
+
+
+def native_path(path, cwd):
+    if posixpath.isabs(path):
+        return posixpath.normpath(path)
+    return posixpath.normpath(posixpath.join(cwd, path)) if cwd else None
 
 
 def ownership_file_candidates(histories):
-    return {Path(path).name for node in histories for record in node["records"]
-            for _, name, value in calls_and_results(record, node["harness"])[0]
-            for path, content in file_writes(name, value) if path and OWNERSHIP_TEXT.search(content)}
+    return {native_path(path, cwd) for node in histories
+            for _, name, value, cwd in native_calls(node["records"], node["harness"])
+            for path, content in file_writes(name, value)
+            if path and native_path(path, cwd) and executable_content(content)}
+
+
+def execution_targets(argv):
+    child = unwrapped_command(argv)
+    if not child:
+        return []
+    name = Path(child[0]).name
+    interprets = child[0] == "." or name in {"bash", "sh", "zsh", "dash", "ksh", "source"} or re.fullmatch(r"python[0-9.]*", name)
+    if interprets:
+        if any(option == "-m" or option.startswith("-") and "c" in option for option in child[1:]):
+            return []
+        if "<" in child:
+            return child[child.index("<") + 1:child.index("<") + 2]
+        return next(([word] for word in child[1:] if not word.startswith("-")), [])
+    return [child[0]]
 
 
 def file_ownership_executions(records, harness, *, file_candidates=()):
     """Link script candidates to later executions across native tool calls."""
     candidates, invocations = set(file_candidates), set()
-    for record in records:
-        for identifier, name, value in calls_and_results(record, harness)[0]:
-            for path, content in file_writes(name, value):
-                if path and OWNERSHIP_TEXT.search(content):
-                    candidates.add(Path(path).name)
-            if not candidates:
-                continue
-            commands = list(shell_commands(name, value))
-            operands = []
-            for argv in commands:
-                redirected = False
-                for word in argv:
-                    if redirected:
-                        redirected = False
-                    elif word in {">", ">>", "<<", "<<<"}:
-                        redirected = True
-                    else:
-                        operands.append(word)
-            referenced = {Path(word).name for word in operands} & candidates
-            if referenced and (any(executable_wrapper(argv) or argv[0] in {"source", "."} for argv in commands)
-                               or any(Path(argv[0]).name in candidates for argv in commands)):
-                invocations.add(identifier)
+    for identifier, name, value, cwd in native_calls(records, harness):
+        for path, content in file_writes(name, value):
+            if path and native_path(path, cwd) and executable_content(content):
+                candidates.add(native_path(path, cwd))
+        if not candidates:
+            continue
+        commands = list(shell_commands(name, value))
+        targets = [target for argv in commands for target in execution_targets(argv)]
+        if (any(argv and Path(argv[0]).name in {"bash", "sh", "zsh"} for argv in commands)
+                and any(Path(argv[0]).name == "cat" for argv in commands)):
+            targets += [argv[i + 1] for argv in commands for i, word in enumerate(argv[:-1]) if word == "<"]
+        if {native_path(word, cwd) for word in targets} & candidates:
+            invocations.add(identifier)
     return invocations
 
 
@@ -344,7 +528,7 @@ def script(argv):
         return Path(argv[2]).name
     if re.fullmatch(r"python[0-9.]*", name) and len(argv) > 1:
         return Path(argv[1]).name
-    return ""
+    return name
 
 
 def composed_calls(value):
@@ -354,7 +538,8 @@ def composed_calls(value):
         return []
     native = re.sub(r"\A// @exec:[^\n]*\n", "", native)
     literal = r'''(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+|true|false|null)'''
-    field = rf"\w+\s*:\s*{literal}"
+    key = r'''(?:\w+|"\w+"|'\w+')'''
+    field = rf"{key}\s*:\s*{literal}"
     obj = rf"\{{\s*(?:{field}(?:\s*,\s*{field})*\s*,?)?\s*\}}"
     call = rf"text\(\s*(?P<paren>\()?\s*await\s+tools\.(?P<method>exec_command|write_stdin|wait)\(\s*(?P<args>{obj})\s*\)\s*(?(paren)\)\s*\.output)\s*\)\s*;?\s*"
     found, cursor = [], 0
@@ -363,10 +548,10 @@ def composed_calls(value):
         if match is None:
             return []
         fields = {}
-        for item in re.finditer(rf"(\w+)\s*:\s*({literal})", match["args"]):
+        for item in re.finditer(rf"({key})\s*:\s*({literal})", match["args"]):
             raw = item[2]
             try:
-                fields[item[1]] = {"true": True, "false": False, "null": None}.get(raw) if raw in {"true", "false", "null"} else ast.literal_eval(raw)
+                fields[item[1].strip("\"'")] = {"true": True, "false": False, "null": None}.get(raw) if raw in {"true", "false", "null"} else ast.literal_eval(raw)
             except (SyntaxError, ValueError):
                 return []
         found.append((match["method"], fields, bool(match["paren"])))
@@ -657,7 +842,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
     opaque, required, deferred, visible = set(), {}, {}, {}
     serial_calls = {}
     parsed = {}
-    for index, value in outputs(records, harness) if receipts is None else receipts:
+    for index, value in receipts or []:
         parsed.setdefault(index, []).append(value)
     for index, record in enumerate(records):
         invocations, results = calls_and_results(record, harness)
@@ -669,7 +854,9 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                 polls.update(str(value[k]) for k in ("session_id", "cell_id") if k in value)
             elif name in {"exec", "functions.exec"} and isinstance(value, str):
                 if not isolated_polls or any(single_composed_call(value, method) for method in ("write_stdin", "wait")):
-                    polls.update(re.findall(r'''\b(?:session_id|cell_id)\s*:\s*["']?([\w-]+)''', value))
+                    for method, args, _ in composed_calls(value):
+                        if method in {"write_stdin", "wait"}:
+                            polls.update(str(args[key]) for key in ("session_id", "cell_id") if key in args)
             if isolated_polls and len(polls) > 1:
                 polls.clear()
             source = call_id if invoked else next((processes[p] for p in polls if p in processes), None)
@@ -703,7 +890,9 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             source = calls.get(result)
             if source is None:
                 continue
-            values = [v for v in parsed.get(index, []) if v.get("_tool_call_id") == result]
+            values = [v for v in (parsed.get(index, []) if receipts is not None else
+                                   (v for _, v in raw_outputs([record], harness, call_id=result)))
+                      if v.get("_tool_call_id") == result]
             # Stock shell/orchestration tools may expose their handle as text.
             raw = json.dumps((record.get("payload") or {}).get("output")) if harness == "codex" else json.dumps([
                 b.get("content") for b in (record.get("message") or {}).get("content", [])
