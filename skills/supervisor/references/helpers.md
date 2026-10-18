@@ -1848,8 +1848,13 @@ to read and check are prompts themselves. A request without an
 inline prompt may link one same-repository GitHub issue comment; the helper
 follows the chain and refuses missing, untrusted, ambiguous or cyclic links.
 It rechecks every prompt comment, the latest request, PR state/head and worktree
-before posting. Renew an obsolete request with the current head and prompt;
-never run a review against a guessed commit or missing prompt.
+before posting. Prompt identity compares the comment id, authored body, edit time
+and author login; reactions and endpoint-specific fields do not invalidate it.
+Every completed report and its metadata are retained before that final check,
+even when a moved head or edited prompt prevents posting. The existing model
+review helper owns the review timeout from standing policy; dispatch adds no
+outer time limit that could interrupt its cleanup. Renew an obsolete request
+with the current head and prompt; never run a review against a guessed commit or missing prompt.
 
 The authoring session must match a trusted structured branch claim on an
 issue recorded for that repository in the ledger or referenced by the PR.
@@ -1866,11 +1871,25 @@ path among the registered candidates. A successor branch at the same commit
 is valid; its branch claim can identify the authoring session too.
 It never fetches, creates, cleans or changes a worktree.
 
-The JSON report names `author_session` for notification after `status: posted`.
+Confirmed writes, including the GitHub helper's `reconciled_applied` outcome,
+report `status: posted`. A later sweep also reports the recorded `author_session`
+and `author_provider` on `already_completed`, even when the posting process
+ended before updating its journal. The Supervisor uses `notification_needed`
+and the completion comment to route those recovered results without launching
+inference or posting again. Older receipts without identity metadata attempt
+the same trusted branch-claim binding; an unavailable binding is reported as
+`notification_error` rather than guessed.
 The Supervisor sends that session the posted result through its normal exact
 session route. This helper sends no terminal input, weighs no findings and
 never calls `ready`. Its raw receipt deliberately differs from the author's
 head-bound weighed disposition, which remains required by the readiness helper.
+For compatibility with that shared completion contract, an already posted
+trusted weighed disposition for the current head after the request also ends
+this helper's queue item. That disposition is not provider-specific: it can
+weigh another review, so it is not proof the requested Supervisor provider ran.
+Such reports set `notification_needed: false` because the author has already
+recorded a disposition. The author remains responsible for the review of record
+required by the task; this helper never creates that attestation.
 
 Shared paths keep their existing authority: the account reader's policy,
 capacity snapshot and launch-receipt store, the model review policy and the

@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 
 import pending_reviews as reviews
 from github_plan_claim import marker
+from ready_handoff import review_result_body
 
 REPO = "example/tool"
 BOT = "review-bot[bot]"
@@ -116,11 +117,89 @@ class DispatchTests(unittest.TestCase):
         report = self.dispatch()
         self.assertEqual(report["author_session"], SESSION)
         self.assertEqual(report["status"], "posted")
+        self.assertTrue(report["notification_needed"])
         self.assertEqual(self.dispatch()["status"], "already_completed")
         self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
         body = next(c[3] for c in self.io.calls if c[0] == "post")
         self.assertIsNone(reviews.review_receipt_head(body))
         self.assertEqual(self.evidence.joinpath(next(p.name for p in self.evidence.glob("*.md"))).read_text().strip(), self.io.review_text)
+
+    def test_comment_reactions_and_endpoint_shape_differences_do_not_invalidate_prompt(self):
+        get = self.io.get_json
+        def single(path, **kwargs):
+            value = get(path, **kwargs)
+            if "/issues/comments/" in path:
+                value["reactions"] = {"total_count": 1}
+                value["endpoint_only"] = "does not affect review content"
+            return value
+        self.io.get_json = single
+        self.io.after_review = lambda: self.io.comments[0].update(reactions={"total_count": 2})
+        self.assertEqual(self.dispatch()["status"], "posted")
+
+    def test_finished_result_is_retained_if_head_or_prompt_changes_before_post(self):
+        self.io.after_review = lambda: self.io.pr["head"].update(sha="b" * 40)
+        with self.assertRaises(reviews.ReviewError):
+            self.dispatch()
+        self.assert_no_post()
+        self.assertEqual(next(self.evidence.glob("*.md")).read_text().strip(), self.io.review_text)
+        journal = json.loads(next(self.evidence.glob("*.json")).read_text())
+        self.assertTrue(journal["review"]["ok"])
+
+    def test_completed_post_recovers_notification_identity_without_worktree_or_repeat(self):
+        self.dispatch()
+        with patch.object(reviews, "find_worktree", side_effect=reviews.ReviewError("gone")):
+            result = self.dispatch()
+        self.assertEqual(result["author_session"], SESSION)
+        self.assertEqual(result["author_provider"], "openai")
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_quoted_or_malformed_marker_cannot_hide_the_real_receipt(self):
+        self.io.review_text = 'Quoted source: `<!-- supervisor-review receipt_for(request, head) -->`'
+        self.dispatch()
+        # The GitHub comment helper appends its transport marker to the raw report.
+        self.io.comments[-1]["body"] += "\n<!-- github-skill-operation:" + "a" * 32 + " -->\n"
+        self.io.comments.insert(1, comment(9, '<!-- supervisor-review not-json -->'))
+        result = self.dispatch()
+        self.assertEqual(result["status"], "already_completed")
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_crash_after_successful_post_recovers_author_without_replay(self):
+        post = self.io.post
+        def uncertain(repo, number, body):
+            post(repo, number, body)
+            raise OSError("process interrupted after delivery")
+        self.io.post = uncertain
+        with self.assertRaises(OSError):
+            self.dispatch()
+        result = self.dispatch()
+        self.assertEqual(result["author_session"], SESSION)
+        self.assertTrue(result["notification_needed"])
+        self.assertEqual(sum(c[0] == "post" for c in self.io.calls), 1)
+
+    def test_quoted_marker_does_not_hide_a_review_request(self):
+        self.io.request["body"] += "\nQuoted source: `<!-- supervisor-review not-json -->`"
+        self.assertEqual(self.dispatch(apply=False)["status"], "pending")
+
+    def test_weighed_current_head_disposition_satisfies_shared_completion_contract(self):
+        self.io.comments.append(comment(11, review_result_body("Existing review weighed.", SHA)))
+        result = self.dispatch()
+        self.assertEqual(result["status"], "already_completed")
+        self.assertFalse(result["notification_needed"])
+        self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+
+    def test_missing_checkout_is_irrelevant_to_prs_without_requests(self):
+        self.io.comments = []
+        result = reviews.sweep(self.io, self.entries, {}, TRUSTED, self.evidence)
+        self.assertEqual(result, [])
+        self.io.pr["head"]["repo"]["full_name"] = "external/fork"
+        self.assertEqual(reviews.sweep(self.io, self.entries, {}, TRUSTED, self.evidence), [])
+
+    def test_explicit_head_or_legacy_commit_is_not_confused_with_dates_or_numbers(self):
+        for heading in (f"Head: {SHA}", f"Review read-only on {SHA}."):
+            with self.subTest(heading=heading):
+                self.io.request["body"] = (f"Supervisor runs the review.\n{heading}\n"
+                                            "Rebased on 20261017, at 1234567.\nPrompt:\nInspect helper.")
+                self.assertEqual(self.dispatch(apply=False)["status"], "pending")
 
     def test_other_provider_from_author_harness(self):
         self.entries[0]["harness"] = "claude"
@@ -361,6 +440,27 @@ class AdapterTests(unittest.TestCase):
                     command = run.call_args.args[0]
                     self.assertEqual(command[command.index("--author-provider") + 1], author)
                     self.assertEqual(command[command.index("--provider") + 1], reviewer)
+
+    def test_review_budget_is_owned_by_model_review_helper(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root / "result.md"
+            output.write_text("none")
+            metadata = {"ok": True, "provider": "anthropic", "response_file": str(output)}
+            def helper(args, **kwargs):
+                if kwargs.get("timeout") is not None:
+                    raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+                return subprocess.CompletedProcess(args, 0, json.dumps(metadata), "")
+            with patch.object(reviews, "run", side_effect=helper):
+                self.assertTrue(reviews.IO.__new__(reviews.IO).review("openai", root, root / "prompt.md", output)["ok"])
+
+    def test_reconciled_comment_write_is_successful_without_replay(self):
+        io = reviews.IO.__new__(reviews.IO)
+        result = subprocess.CompletedProcess([], 0, json.dumps({"ok": True, "outcome_certainty": "reconciled_applied",
+                                                               "comment": {"url": "https://example.test/recovered"}}), "")
+        with patch.object(reviews, "run", return_value=result) as run:
+            self.assertEqual(io.post(REPO, 7, Path("/fixture/comment.md"))["comment"], json.loads(result.stdout)["comment"])
+        self.assertEqual(run.call_count, 1)
 
     def test_post_unknown_does_not_replay(self):
         io = reviews.IO.__new__(reviews.IO)

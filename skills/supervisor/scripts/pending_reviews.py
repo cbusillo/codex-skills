@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "skills/github/scripts"))
 from github_api import redact_string
 from github_direction_next import issue_references
 from github_identity import automation_login, configured_bot_logins
-from github_plan_claim import records
+from github_plan_claim import records, without_operation_marker
 from github_read import (GitHubReader, GitHubReadError, GitHubReadShapeError,
                          automation_only_gh_prefix_args, resolve_repo_from_remote)
 from ready_handoff import review_receipt_head
@@ -30,7 +30,7 @@ from ready_handoff import review_receipt_head
 REPO = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
 REQUEST = re.compile(r"supervisor runs the review", re.I)
 COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)#issuecomment-(\d+)")
-HEAD = re.compile(r"\b(?:head(?: SHA)?|commit|on|at)\s*[:=]?\s*`?([0-9a-f]{7,40})\b", re.I)
+HEAD = re.compile(r"\b(?:head(?: SHA)?|commit)\s*[:=]?\s*`?([0-9a-f]{7,40})\b", re.I)
 RECEIPT = re.compile(r"<!-- supervisor-review (.*?) -->")
 
 
@@ -63,26 +63,69 @@ def trusted(comment, logins):
     return (comment.get("user") or {}).get("login", "").casefold() in logins
 
 
+def raw_receipt(body):
+    # gh-pr appends a transport marker. Only the raw report's final marker
+    # is a receipt; source snippets inside the review remain ordinary data.
+    lines = without_operation_marker(body).strip().splitlines()
+    match = RECEIPT.fullmatch(lines[-1]) if lines else None
+    if match:
+        try:
+            value = json.loads(match[1])
+        except json.JSONDecodeError:
+            return None
+        if (isinstance(value, dict) and type(value.get("request")) is int
+                and isinstance(value.get("request_updated_at"), str)
+                and isinstance(value.get("head"), str) and re.fullmatch(r"[0-9a-f]{40}", value["head"])):
+            return value
+    return None
+
+
 def latest_request(comments, logins):
     asks = [c for c in comments if trusted(c, logins) and REQUEST.search(c.get("body") or "")
-            and not RECEIPT.search(c.get("body") or "")]
+            and raw_receipt(c.get("body") or "") is None]
     return max(asks, key=lambda c: (c.get("updated_at") or c["created_at"], c["id"]), default=None)
 
 
-def completed(comments, request, head, logins):
+def comment_binding(comment):
+    """Only authored content and identity invalidate a review, not reactions/API shape."""
+    if comment is None:
+        return None
+    return (comment["id"], comment.get("body"), comment.get("updated_at") or comment["created_at"],
+            (comment.get("user") or {}).get("login", "").casefold())
+
+
+def completion_record(comments, request, head, logins):
+    weighed = None
     for comment in comments:
         if not trusted(comment, logins):
             continue
         body = comment.get("body") or ""
+        receipt = raw_receipt(body)
+        if receipt and all(receipt.get(k) == v for k, v in receipt_for(request, head).items()):
+            return {"kind": "supervisor", "comment": comment, "receipt": receipt}
         if (review_receipt_head(body) == head
                 and (comment.get("updated_at") or comment["created_at"]) >=
                 (request.get("updated_at") or request["created_at"])):
-            return True
-        for match in RECEIPT.finditer(body):
-            receipt = json.loads(match[1])
-            if receipt == receipt_for(request, head):
-                return True
-    return False
+            weighed = {"kind": "weighed", "comment": comment}
+    return weighed
+
+
+def completion_report(record, io, repo, pr, entries, logins, request):
+    receipt = record.get("receipt", {})
+    session, author = receipt.get("author_session"), receipt.get("author_provider")
+    error = None
+    known_session = any(e["session_id"] == session and e.get("repository", "").casefold() == repo.casefold()
+                        and e.get("supervisor_owned") is True for e in entries)
+    if author not in {"openai", "anthropic"} or not known_session:
+        try:
+            session, author = bind_session(io, repo, {pr["head"]["ref"]}, entries, logins, request, pr)
+        except ReviewError as reason:
+            session, author, error = None, None, str(reason)
+    comment = record["comment"]
+    return {"status": "already_completed", "head": pr["head"]["sha"], "request": request["id"],
+            "author_session": session, "author_provider": author, "notification_error": error,
+            "notification_needed": record["kind"] == "supervisor",
+            "completion_comment": comment.get("html_url") or comment.get("url") or comment["id"]}
 
 
 def receipt_for(request, head):
@@ -136,7 +179,13 @@ def resolve_prompt(io, repo, request, logins):
 
 def bind_head(request, head):
     context = re.split(r"(?im)(?:^|[ \t])(?:Review )?Prompt:|^>|^```", request["body"], maxsplit=1)[0]
-    heads = HEAD.findall(context)
+    explicit = re.findall(r"(?im)^Head(?: SHA)?:\s*`?([0-9a-f]{7,40})\b", context)
+    heads = explicit or HEAD.findall(context)
+    if not heads:
+        # Legacy prose may say "on SHA"; short numeric dates and counts are not
+        # head declarations. Abbreviated legacy hashes require code formatting.
+        legacy = re.findall(r"\b(?:on|at)\s+(?:`([0-9a-f]{7,40})`|([0-9a-f]{40})\b)", context, re.I)
+        heads = [short or full for short, full in legacy]
     if not heads or any(not head.startswith(value.lower()) for value in heads):
         raise ReviewError("request head missing or moved; renew the request with Head: FULL_SHA")
 
@@ -226,7 +275,7 @@ class IO:
         provider = "anthropic" if author == "openai" else "openai"
         result = run(["uv", "run", str(ROOT / "skills/model-review/scripts/review_with_model.py"),
                       "run", "--author-provider", author, "--provider", provider, "--repo", str(worktree),
-                      "--prompt-file", str(prompt), "--out", str(output)], timeout=1900)
+                      "--prompt-file", str(prompt), "--out", str(output)])
         try:
             metadata = json.loads(result.stdout)
         except json.JSONDecodeError as error:
@@ -245,7 +294,7 @@ class IO:
                       "comment", str(number), "--body-file", str(body)], timeout=180)
         payload = json.loads(result.stdout)
         if (not isinstance(payload, dict) or result.returncode or payload.get("ok") is not True
-                or payload.get("outcome_certainty") != "confirmed"):
+                or payload.get("outcome_certainty") not in {"confirmed", "reconciled_applied"}):
             raise ReviewError(f"posting not confirmed; do not replay: {json.dumps(payload)}")
         return payload
 
@@ -259,12 +308,12 @@ def verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sour
         raise ReviewError("PR head moved; renew the request")
     for source_repo, source in sources:
         current = io.get_json(f"/repos/{source_repo}/issues/comments/{source['id']}", step="verify_review_prompt")
-        if current != source:
+        if comment_binding(current) != comment_binding(source):
             raise ReviewError("review request or linked prompt changed")
     comments = io.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="verify_review_comments")
-    if latest_request(comments, logins) != request:
+    if comment_binding(latest_request(comments, logins)) != comment_binding(request):
         raise ReviewError("review request superseded")
-    return completed(comments, request, head, logins)
+    return completion_record(comments, request, head, logins)
 
 
 def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False):
@@ -272,18 +321,21 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
     pr = io.get_json(path, step="review_pr")
     if pr["state"] != "open":
         return {"status": "closed"}
-    if (pr["head"].get("repo") or {}).get("full_name", "").casefold() != repo.casefold():
-        raise ReviewError("fork head has no verified local binding")
     comments_path = f"/repos/{repo}/issues/{number}/comments"
     comments = io.paged_json(comments_path, step_prefix="review_comments")
     request = latest_request(comments, logins)
     if request is None:
         return {"status": "no_request"}
+    if (pr["head"].get("repo") or {}).get("full_name", "").casefold() != repo.casefold():
+        raise ReviewError("fork head has no verified local binding")
     head, branch = pr["head"]["sha"], pr["head"]["ref"]
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise ReviewError("invalid PR head")
-    if completed(comments, request, head, logins):
-        return {"status": "already_completed"}
+    existing = completion_record(comments, request, head, logins)
+    if existing:
+        return completion_report(existing, io, repo, pr, entries, logins, request)
+    if checkout is None:
+        raise ReviewError("repository checkout missing; pass --checkout OWNER/REPO=/absolute/path")
     bind_head(request, head)
     prompt, sources = resolve_prompt(io, repo, request, logins)
     paths = re.findall(r"(?im)^Worktree:\s*`?([^`\n]+?)`?\s*$", request["body"])
@@ -296,8 +348,9 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
               "author_provider": author, "worktree": str(worktree)}
     if not apply:
         return report
-    if verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins):
-        return {**report, "status": "already_completed"}
+    existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
+    if existing:
+        return completion_report(existing, io, repo, pr, entries, logins, request)
     evidence.mkdir(parents=True, exist_ok=True, mode=0o700)
     binding = json.dumps(receipt_for(request, head), sort_keys=True)
     key = f"{repo.replace('/', '-')}-{number}-" + hashlib.sha256(binding.encode()).hexdigest()
@@ -323,22 +376,28 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         review = output.read_text().strip()
         if not review or metadata.get("ok") is not True:
             raise ReviewError("review completion missing or empty")
-        if verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins):
-            return {**report, "status": "already_completed"}
-        # Keep durable evidence before a possibly uncertain comment write. Never retry here.
-        journal.write_text(json.dumps({**report, "phase": "post_pending", "review": metadata}, indent=2))
+        # Keep every completed review before any freshness check or remote write.
+        # Changed inputs prevent posting, but cannot discard paid inference.
         result_file = evidence / f"{key}.md"
         result_file.write_text(review + "\n")
+        retained = {**report, "review": metadata, "evidence": str(result_file)}
+        journal.write_text(json.dumps({**retained, "phase": "review_completed"}, indent=2))
+        existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
+        if existing:
+            return completion_report(existing, io, repo, pr, entries, logins, request)
+        journal.write_text(json.dumps({**retained, "phase": "post_pending"}, indent=2))
         body = folder / "post.md"
         body.write_text(f"Review of record, run by the Supervisor\n\nHead: {head}\n"
                         f"Provider: {metadata['provider']}\nModel: {metadata.get('model', 'unknown')}\n"
                         f"Model source: {metadata.get('model_source', 'unknown')}\n"
                         f"Authoring session to notify: {session}\n\n"
                         "The author weighs these findings before ready.\n\n" + review + "\n\n"
-                        "<!-- supervisor-review " + json.dumps(receipt_for(request, head), sort_keys=True) + " -->\n")
+                        "<!-- supervisor-review " + json.dumps({**receipt_for(request, head), "author_session": session, "author_provider": author}, sort_keys=True) + " -->\n")
         receipt = io.post(repo, number, body)
-        journal.write_text(json.dumps({**report, "phase": "posted", "post": receipt}, indent=2))
-        return {**report, "status": "posted", "post": receipt, "evidence": str(result_file)}
+        journal.write_text(json.dumps({**retained, "phase": "posted", "post": receipt}, indent=2))
+        return {**report, "status": "posted", "post": receipt, "evidence": str(result_file),
+                "notification_needed": True,
+                "completion_comment": receipt.get("url") or (receipt.get("comment") or {}).get("url")}
 
 
 def sweep(io, entries, checkouts, logins, evidence, apply=False):
@@ -354,9 +413,7 @@ def sweep(io, entries, checkouts, logins, evidence, apply=False):
         for pr in pulls:
             number = pr["number"]
             try:
-                if repo not in checkouts:
-                    raise ReviewError("repository checkout missing; pass --checkout OWNER/REPO=/absolute/path")
-                result = dispatch(io, repo, number, entries, checkouts[repo], logins, evidence, apply)
+                result = dispatch(io, repo, number, entries, checkouts.get(repo), logins, evidence, apply)
             except (GitHubReadError, GitHubReadShapeError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
                 result = {"status": "refused", "error": str(error)}
             if result["status"] != "no_request":
