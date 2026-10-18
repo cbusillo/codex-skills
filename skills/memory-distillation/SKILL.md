@@ -97,13 +97,23 @@ Neither client nor a directory name makes a memory store authoritative.
    first. Propose deletion/archive only when requested and supported; preserve
    historical originals by default. For scratch or stale-project stores, propose
    archiving or report them; never remove one without approval for that store.
-4. Verify each recommendation against maintained sources. Do not turn an old
-   open PR, active job, or CI snapshot into a permanent fact. Before retiring a
-   unique useful rule, verify its replacement exists and is reachable by the
-   target client from the intended checkout; a future plan or an uninstalled
-   worktree is insufficient.
-5. Present affected entries, destination or retirement action, reason, evidence,
-   and any authority still needed. Preserve stable useful facts. When private
+   Age, title, and grouping are triage only: a recent entry gets the same check
+   for where it belongs as an old one.
+4. Verify each recommendation against maintained sources, entry by entry: open
+   the file, issue, or skill named as its destination and confirm it carries
+   the fact and the fact is current there. Do not turn an old open PR, active
+   job, or CI snapshot into a permanent fact. Before retiring a unique useful
+   rule, verify its replacement exists and is reachable by the target client
+   from the intended checkout; a future plan or an uninstalled worktree is
+   insufficient. When a store is too large to check in one pass, split it and
+   fan out; give each delegated brief the Source roles section and these
+   classification and verification steps, or this skill's path, so the
+   destinations it proposes follow the same rules.
+5. Present each affected entry with its destination or retirement action,
+   reason, evidence (the source checked and what in it confirms the fact is
+   current), and any authority still needed. Show an entry without that
+   evidence as `unverified`, not as a proposed action; a table of grouped
+   entries is not a proposal. Preserve stable useful facts. When private
    audit artifacts contain person mentions, use the optional `people` artifact
    review to route durable facts to approved private config.
 6. Carry approved actions through each store's supported mechanism, once per
