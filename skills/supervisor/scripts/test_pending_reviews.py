@@ -17,9 +17,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pending_reviews as reviews
+import review_notifications as notifications
 import github_api
 from github_identity import OWN_USER_OPT_IN
 import test_review_with_model as model_fixture
@@ -104,6 +105,9 @@ class FakeIO:
         self.comments.append(comment(11, body.read_text()))
         return post_payload()
 
+    def notify(self, entry, message):
+        self.calls.append(("notify", copy.deepcopy(entry), message))
+
 
 class DispatchTests(unittest.TestCase):
     def setUp(self):
@@ -127,6 +131,70 @@ class DispatchTests(unittest.TestCase):
 
     def assert_no_post(self):
         self.assertFalse(any(c[0] == "post" for c in self.io.calls))
+
+    def test_posted_review_notifies_exact_ledger_author_once_per_report_version(self):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                self.io = FakeIO()
+                self.entries = [{**entry(), "harness": harness}]
+                self.evidence = Path(self.temp.name) / harness
+                self.dispatch(apply=False)
+                self.assertFalse(any(c[0] == "notify" for c in self.io.calls))
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                sends = [c for c in self.io.calls if c[0] == "notify"]
+                self.assertEqual(len(sends), 1)
+                self.assertEqual(sends[0][1], self.entries[0])
+                self.assertIn(SHA, sends[0][2])
+                self.io.comments[-1]["updated_at"] = "2026-10-17T21:00:00Z"
+                self.dispatch()
+                self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 2)
+                self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_notification_failure_or_interruption_keeps_completion_and_never_replays(self):
+        for failure in (ValueError("permission denied"), subprocess.TimeoutExpired("send", 30), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / type(failure).__name__
+                with patch.object(self.io, "notify", side_effect=failure) as send:
+                    if isinstance(failure, KeyboardInterrupt):
+                        with self.assertRaises(KeyboardInterrupt):
+                            self.dispatch()
+                    else:
+                        report = self.dispatch()
+                        self.assertEqual(report["status"], "posted")
+                        self.assertIn(str(failure), report["notification_error"])
+                        self.assertTrue(report["needs_attention"])
+                    recovered = self.dispatch()
+                    self.assertEqual(recovered["status"], "already_completed")
+                    self.assertEqual(recovered["notification_status"], "blocked")
+                    self.assertTrue(recovered["completion_comment"])
+                    self.assertEqual(send.call_count, 1)
+
+    def test_completed_review_never_notifies_missing_ambiguous_or_changed_ledger_target(self):
+        self.dispatch()
+        for entries in ([], [entry(), entry()], [{**entry(), "supervisor_owned": False}],
+                        [{**entry(), "repository": "another/repo"}], [{**entry(), "pid": 7}]):
+            with self.subTest(entries=entries):
+                self.entries = entries
+                with patch.object(self.io, "notify") as send:
+                    self.assertEqual(self.dispatch()["notification_status"], "blocked")
+                    send.assert_not_called()
+
+    def test_post_readback_failure_preserves_confirmed_post_and_reports_notification_error(self):
+        pages = self.io.paged_json
+        def readback(path, **kwargs):
+            if kwargs.get("step_prefix") == "posted_review_comments":
+                raise ValueError("posted comment readback unavailable")
+            return pages(path, **kwargs)
+        with patch.object(self.io, "paged_json", side_effect=readback), patch.object(self.io, "notify") as send:
+            result = self.dispatch()
+        self.assertEqual(result["status"], "posted")
+        self.assertEqual(result["notification_error"], "posted comment readback unavailable")
+        self.assertTrue(result["post"]["ok"])
+        send.assert_not_called()
+        self.assertEqual(self.dispatch()["notification_status"], "sent")
+        self.assertEqual(sum(c[0] == "post" for c in self.io.calls), 1)
 
     def test_discovery_is_read_only_and_apply_reports_author_then_deduplicates(self):
         report = self.dispatch(apply=False)
@@ -1183,6 +1251,8 @@ class LedgerTests(unittest.TestCase):
                     path.write_text(json.dumps(value))
                     with self.assertRaises(reviews.ReviewError):
                         reviews.review_entries(path)
+            path.write_text(json.dumps([{**entry(), "transcript": "sessions/author.jsonl"}]))
+            self.assertEqual(reviews.review_entries(path)[0]["transcript"], str((path.parent / "sessions/author.jsonl").resolve()))
 
 
     def test_malformed_entries_are_reported_without_authorizing_them_or_hiding_other_repositories(self):
@@ -1249,6 +1319,87 @@ class RunLockTests(unittest.TestCase):
                 with self.assertRaises(BlockingIOError):
                     with reviews.sweep_lock(second / "ledger.json", evidence, apply=True):
                         self.fail("handoff dispatched twice")
+
+
+class NotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = self.enterContext(tempfile.TemporaryDirectory())
+        self.home = Path(self.temp).resolve()
+        self.native = "11111111-2222-4333-8444-555555555555"
+        self.transcript = self.home / "sessions" / "native.jsonl"
+        self.transcript.parent.mkdir()
+        self.entry = {**entry(), "session_id": self.native, "codex_home": str(self.home),
+                      "transcript": str(self.transcript)}
+        self.transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": self.native}}) + "\n")
+
+    def claude(self):
+        self.entry.update(harness="claude", backend="tmux", tmux_socket="fixture",
+                          tmux_session_id="tmux:fixture:" + "a" * 32,
+                          pid=789, tty="ttys123", window_id="$1", tab_id="@2")
+        self.transcript.write_text(json.dumps({"type": "assistant", "sessionId": self.native,
+            "message": {"content": [{"type": "text", "text": "Waiting for review."}], "stop_reason": "end_turn"}}) + "\n")
+        self.row = {"session_id": self.entry["tmux_session_id"], "dead": False, "pid": 456,
+                    **{key: self.entry[key] for key in ("tty", "window_id", "tab_id", "tmux_socket")},
+                    "screen": ["❯ ", "────────"],
+                    "input_line": {"style": "empty", "text": "", "line_index": 0}}
+        self.read = self.enterContext(patch("tmux_terminal.Terminal.read", side_effect=lambda _: copy.deepcopy(self.row)))
+        self.send = self.enterContext(patch("tmux_terminal.Terminal.send", new_callable=AsyncMock))
+        self.enterContext(patch("close_ttys.inventory", return_value=[(789, "ttys123", "claude")]))
+        self.enterContext(patch("tmux_terminal.process_parents", return_value={789: 456, 456: 1}))
+
+    def test_codex_notification_uses_supported_queue_with_exact_home_and_native_identity(self):
+        with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as queue:
+            notifications.send(self.entry, "Read review")
+        argv = queue.call_args.args[0]
+        self.assertEqual(argv[:2], ["uv", "run"])
+        self.assertEqual(Path(argv[2]).resolve(), Path(reviews.__file__).with_name("codex-session.py").resolve())
+        self.assertEqual(argv[3:], ["queue", "--session-id", self.native, "--codex-home", str(self.home), "--message", "Read review"])
+        self.assertEqual(queue.call_args.kwargs["env"]["CODEX_HOME"], str(self.home))
+
+    def test_codex_identity_or_home_mismatch_refuses_without_queue_and_preserves_helper_denial(self):
+        for changed in ({"session_id": "another-thread"}, {"supervisor_owned": False},
+                        {"codex_home": None}, {"codex_home": "relative"},
+                        {"codex_home": str(self.transcript.parent)}):
+            with self.subTest(changed=changed), patch.object(notifications.subprocess, "run") as queue:
+                with self.assertRaises((ValueError, OSError)):
+                    notifications.send({**self.entry, **changed}, "Read review")
+                queue.assert_not_called()
+        with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, '{"error":"ownership lease denied"}', "")) as queue:
+            with self.assertRaisesRegex(ValueError, "ownership lease denied"):
+                notifications.send(self.entry, "Read review")
+            self.assertEqual(queue.call_count, 1)
+
+    def test_claude_notification_reuses_send_only_after_native_idle_and_empty_prompt_checks(self):
+        self.claude()
+        notifications.send(self.entry, "Read review")
+        self.assertEqual(self.read.call_count, 2)
+        self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+
+    def test_claude_nonempty_unknown_wrapped_active_changed_or_wrong_target_never_sends(self):
+        self.claude()
+        original = copy.deepcopy(self.row)
+        for change in ({"input_line": {"style": s, "text": "draft", "line_index": 0}}
+                       for s in ("dim", "non_dim", "mixed", "unknown", "empty")):
+            self.row = {**original, **change}
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "not verified empty"):
+                notifications.send(self.entry, "Read review")
+        for change in ({"screen": ["❯ ", "wrapped draft", "────────"]}, {"dead": True},
+                       {"tty": "ttys999"}, {"window_id": "$9"}, {"tab_id": "@9"}):
+            self.row = {**original, **change}
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                notifications.send(self.entry, "Read review")
+        self.row = original
+        for change in ({"session_id": "wrong"}, {"pid": 123}, {"backend": "iterm"}, {"tmux_session_id": "%1"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                notifications.send({**self.entry, **change}, "Read review")
+        for changed_status in ({"at_turn_end": False, "background_tasks": []},
+                               {"at_turn_end": True, "background_tasks": [{"task_id": "live"}]}):
+            with patch.object(notifications, "session_status", return_value=changed_status), self.assertRaisesRegex(ValueError, "idle"):
+                notifications.send(self.entry, "Read review")
+        self.read.side_effect = [original, {**original, "input_line": {"style": "non_dim", "text": "new draft", "line_index": 0}}]
+        with self.assertRaisesRegex(ValueError, "not verified empty"):
+            notifications.send(self.entry, "Read review")
+        self.send.assert_not_called()
 
 
 class AdapterTests(unittest.TestCase):

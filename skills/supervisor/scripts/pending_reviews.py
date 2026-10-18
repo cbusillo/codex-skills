@@ -154,6 +154,9 @@ def review_entries(path, *, errors=None):
                 raise ReviewError(reason)
             errors.append({"ledger_index": index, "error": reason})
             continue
+        if isinstance(entry.get("transcript"), str) and entry["transcript"].strip():
+            transcript = Path(entry["transcript"]).expanduser()
+            entry = {**entry, "transcript": str((path.parent / transcript).resolve())}
         selected.append(entry)
     return selected
 
@@ -565,6 +568,11 @@ class IO:
         return self.reader.paged_json(path, **kwargs)
 
     @staticmethod
+    def notify(entry, message):
+        from review_notifications import send
+        return send(entry, message)
+
+    @staticmethod
     def review(author, worktree, prompt, output):
         provider = "anthropic" if author == "openai" else "openai"
         result = run(["uv", "run", str(ROOT / "skills/model-review/scripts/review_with_model.py"),
@@ -617,7 +625,7 @@ def verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sour
     return completion_record(comments, request, head, logins)
 
 
-def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False):
+def dispatch_review(io, repo, number, entries, checkout, logins, evidence, apply=False):
     path = f"/repos/{repo}/pulls/{number}"
     pr = io.get_json(path, step="review_pr")
     if pr["state"] != "open":
@@ -741,9 +749,66 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
                                            "error": str(error), "post": getattr(error, "payload", None)}, indent=2))
             raise
         atomic_text(journal, json.dumps({**retained, "phase": "posted", "post": receipt}, indent=2))
-        return {**report, "status": "posted", "post": receipt, "evidence": str(result_file),
-                "notification_needed": True,
-                "completion_comment": receipt.get("url") or (receipt.get("comment") or {}).get("url")}
+        posted = {**report, "status": "posted", "post": receipt, "evidence": str(result_file),
+                  "notification_needed": True,
+                  "completion_comment": receipt.get("url") or (receipt.get("comment") or {}).get("url")}
+        try:
+            comments = io.paged_json(comments_path, step_prefix="posted_review_comments")
+            completed = completion_record(comments, request, head, logins)
+            if not completed:
+                raise ReviewError("posted review is not observable; retain the journal and reconcile delivery")
+        except (GitHubReadError, GitHubReadShapeError, ValueError, OSError, KeyError, TypeError) as error:
+            return {**posted, "notification_error": str(error), "needs_attention": True}
+        return {**posted, **completion_report(completed, io, repo, pr, entries, logins, request, evidence),
+                "status": "posted"}
+
+
+def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False):
+    report = dispatch_review(io, repo, number, entries, checkout, logins, evidence, apply)
+    if not report.get("notification_needed"):
+        return report
+    try:
+        if report.get("notification_error"):
+            raise ReviewError(report["notification_error"])
+        matches = [e for e in entries if e.get("session_id") == report.get("author_session")]
+        if (len(matches) != 1 or matches[0].get("supervisor_owned") is not True
+                or matches[0].get("repository", "").casefold() != repo.casefold()
+                or matches[0].get("harness") not in {"codex", "claude"}):
+            raise ReviewError("notification author is not unique and verified in this repository's ledger")
+        entry = matches[0]
+        version = [report.get("completion_comment"), report.get("completion_updated_at"), entry["session_id"]]
+        if not all(version[:2]):
+            raise ReviewError("notification needs the posted comment identity and update timestamp")
+        key = hashlib.sha256(json.dumps(version, sort_keys=True).encode()).hexdigest()
+        path = evidence / f"notification-{key}.json"
+        report["notification_journal"] = str(path)
+        if path.exists():
+            prior = json.loads(path.read_text())
+            if not isinstance(prior, dict):
+                raise ReviewError("notification journal is not an object; retain it and reconcile delivery")
+            if prior.get("target") != entry:
+                raise ReviewError("notification ledger target changed; reconcile the retained attempt, never retarget")
+            if prior.get("phase") != "sent":
+                raise ReviewError(prior.get("error") or "notification outcome unknown; reconcile the retained attempt, never replay")
+            return {**report, "notification_status": "sent"}
+        if not apply:
+            return {**report, "notification_status": "pending"}
+        private_evidence_dir(evidence)
+        message = (f"Supervisor review posted for {repo}#{number}. "
+                   f"Head: {report.get('reviewed_head') or report['head']}. "
+                   f"Read {report['completion_comment']}, weigh the findings, and continue your brief. "
+                   "This notification is not a weighed review or a ready handoff.")
+        state = {"phase": "attempted", "version": version, "target": entry}
+        atomic_text(path, json.dumps(state), exclusive=True)
+        try:
+            io.notify(entry, message)
+        except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
+            atomic_text(path, json.dumps({**state, "phase": "failed", "error": str(error)}))
+            raise
+        atomic_text(path, json.dumps({**state, "phase": "sent"}))
+        return {**report, "notification_status": "sent"}
+    except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        return {**report, "notification_status": "blocked", "notification_error": str(error), "needs_attention": True}
 
 
 def sweep(io, entries, checkouts, logins, evidence, apply=False):

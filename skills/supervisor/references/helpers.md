@@ -2259,8 +2259,8 @@ skip that tick and let the active pass finish. Reconcile `results[].status`
 values `refused` and `blocked`, plus top-level `ledger_errors`, `attention`
 and `error`, against the diagnostics below; a timer tick never authorizes
 replay of a failed, denied or uncertain action. For `notification_needed`,
-follow [completion notifications](#completion-notifications), including its
-once-per-report-version routing and retained notification history.
+check [completion notifications](#completion-notifications) and the dispatcher's
+retained notification outcome for that report version.
 
 Record the timer's identity, command, state paths and routed-notification
 history in the Supervisor handoff
@@ -2465,21 +2465,41 @@ inference. Missing local evidence leaves provider completion unconfirmed.
 
 An edit to a served request sets `request_edited_after_review`; the completion
 link is preserved and inference never reruns. Weigh the original scope and
-record whether a separate request is needed for changed scope. The Supervisor
-uses `completion_comment` together with `completion_updated_at` to route each
-report version once. For a fresh `posted` result, take the timestamp from
-`post.comment.updated_at`, or read back the returned comment, before recording
-its version; later completion reports expose `completion_updated_at` directly.
+record whether a separate request is needed for changed scope. The dispatcher
+uses `completion_comment` together with `completion_updated_at` to notify each
+report version once on `--apply`, including recovered posts. It reads the posted
+comment back to bind its version before notifying.
 A corrected edit to the same comment can need a fresh
 notification; a disposition must follow its latest edit.
 `notification_needed` means the result still lacks a later trusted weighed
-disposition, not a history of terminal input. That history remains the
-Supervisor's responsibility. Older receipts without identity metadata attempt
+disposition, not a history of terminal input. The dispatcher records delivery
+separately as `notification_status: sent`, `pending` or `blocked`, with
+`notification_journal` in the same durable evidence directory. Discovery reads
+that history without sending or writing. Older receipts without identity metadata attempt
 the same trusted branch-claim binding. Malformed claims or failed GitHub reads
 become `notification_error`, preserving the already-posted completion link.
-The Supervisor sends that authoring session the result through its normal
-exact session route. This helper sends no terminal input, weighs no findings
-and never calls `ready`. Posting removes the inherited per-command own-user
+Only a unique, Supervisor-owned author entry in this repository's ledger may
+receive a notification. Native transcript identity must agree with that entry.
+Codex delivery uses `codex-session.py queue` with the ledger's absolute
+`codex_home` and native session UUID; its existing managed-source and ownership
+checks remain in force. The transcript must be inside that home's live sessions.
+Claude delivery uses the existing tmux `Terminal.send` route with the ledger's
+launch nonce, coordinates and matched process PID/ancestry. It requires an ended
+turn without background tasks and two stable reads of an empty prompt, including
+the closing separator immediately below the first input line. Typed, suggested,
+wrapped or unknown input refuses without keys or clearing. A legacy iTerm Claude
+entry reports the unsupported route; there is no automatic terminal migration.
+Ledger-relative transcript paths resolve beside the ledger, as for other helpers.
+
+The dispatcher reserves each delivery durably before calling the send helper.
+A failed or interrupted attempt stays spent and exposes `notification_error`,
+sets `needs_attention` and makes the sweep nonzero, preserving the review link.
+Read the exact session and reconcile the retained attempt before any manual
+notification; never delete its journal to retry or use another route after a
+denial. Changed ledger coordinates also require reconciliation. Corrected report
+edits get their own version; a later weighed disposition ends notification need.
+The helper weighs no findings and never calls `ready`.
+Posting removes the inherited per-command own-user
 opt-in before invoking the GitHub helper. An earlier personal-identity approval
 cannot carry into this write; the existing automation App or its refusal remains
 the supported route. Its raw receipt cannot serve as the author's
