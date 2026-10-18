@@ -461,6 +461,47 @@ def test_app_installation_follows_the_target_repository() -> None:
         assert "not installed on other-owner/uncovered" in refused.stderr
 
 
+def test_api_write_checks_read_arguments_as_gh_does() -> None:
+    sys.path.insert(0, str(SCRIPT.parent))
+    import github_api
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, _identity, unused = app_fixture(root)
+        identity = root / "identity.py"
+        write(identity, "import sys\nprint('catalog-app[bot]')\nprint('token:' + ' '.join(sys.argv[2:]))\n")
+        fake_gh = root / "gh"
+        write(fake_gh, "#!/bin/sh\nprintf '%s\\n' \"$GH_TOKEN\"\n")
+        repo = "repos/second-owner/site/issues/1"
+        query = "-fquery=query { viewer { login } }"
+        # gh uses the last method; fields without a method send POST; every
+        # option takes its value.
+        cases = {
+            (repo, "-iXGET", "-iXDELETE"): True,
+            ("-XGET", repo, "-XDELETE"): True,
+            ("-X", "GET", repo, "--method", "DELETE"): True,
+            ("--method=GET", "-XPOST", repo): True,
+            (repo, "-fname=x"): True,
+            ("-iFname=x", repo): True,
+            (repo, "-f", "name=x"): True,
+            ("--jq", "graphql", repo, "-fname=x", query): True,
+            ("-q", "graphql", repo, "-fname=x"): True,
+            (repo, "-XDELETE", "-XGET"): False,
+            ("-iX", "GET", repo): False,
+            (repo, "-X", "GET", "-f", "per_page=100"): False,
+            ("-f", "per_page=100", repo, "-X", "GET"): False,
+            ("--jq", "repos/x/y", repo): False,
+            ("-iq", ".x", repo): False,
+            (repo, "-H", "Accept: application/json"): False,
+        }
+        for args, is_write in cases.items():
+            result = run_wrapper(env_file, unused, identity, "api", *args, gh_command=fake_gh)
+            assert result.returncode == 0, (args, result.stderr)
+            installation = " --require-installation" if is_write else ""
+            assert result.stdout == f"token:--repo second-owner/site{installation}\n", (args, result.stdout)
+            assert github_api.infer_gh_command_context(["api", *args]).is_write is is_write, args
+
+
 def test_write_to_another_owners_repository_without_installation_runs_as_the_person_on_opt_in() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -607,6 +648,8 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
             ("api", "user/repos", "-Fname=example"),
             ("api", "-iXPOST", "user/repos"),
             ("api", "user/repos", "-iFname=example"),
+            ("api", "user/repos", "-iXGET", "-iXDELETE"),
+            ("api", "--jq", "graphql", "user/repos", "-fname=example", "-fquery=query { viewer { login } }"),
         ):
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)
@@ -1270,6 +1313,7 @@ def main() -> None:
         test_empty_app_auth_response_fails_closed,
         test_app_auth_takes_precedence_and_runs_write_as_verified_app,
         test_app_installation_follows_the_target_repository,
+        test_api_write_checks_read_arguments_as_gh_does,
         test_write_to_another_owners_repository_without_installation_runs_as_the_person_on_opt_in,
         test_user_scoped_read_runs_as_the_person_on_opt_in,
         test_personal_fork_runs_as_the_person_on_opt_in,

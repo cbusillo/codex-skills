@@ -901,47 +901,88 @@ _GH_API_VALUE_SHORTHANDS = {
     "X": "--method", "f": "--raw-field", "F": "--field", "H": "--header",
     "p": "--preview", "q": "--jq", "t": "--template",
 }
+_GH_API_BOOLEAN_SHORTHANDS = {"i": "--include"}
 _GH_API_VALUE_FLAGS = frozenset(_GH_API_VALUE_SHORTHANDS.values()) | {"--input", "--hostname", "--cache"}
+_GH_API_BOOLEAN_FLAGS = frozenset({"--include", "--paginate", "--slurp", "--silent", "--verbose"})
 
 
-def normalize_gh_api_args(args: list[str]) -> Optional[list[str]]:
-    """Spell out `gh api` short flags as gh's flag parser reads them.
+@dataclass(frozen=True)
+class GhApiCommand:
+    endpoint: str
+    method: Optional[str]
+    fields: tuple[str, ...]
+    has_input: bool
 
-    A short flag group such as -iXPOST is -i -X POST, and -fname=x is
-    -f name=x. Returns None for a letter gh does not define, which gh rejects.
+    @property
+    def sent_method(self) -> str:
+        """The HTTP method gh sends: the last --method, else POST with a body."""
+        if self.method is not None:
+            return self.method.upper()
+        return "POST" if self.fields or self.has_input else "GET"
+
+    @property
+    def graphql_query(self) -> Optional[str]:
+        queries = [value.split("=", 1)[1] for value in self.fields if value.startswith("query=")]
+        return queries[-1] if queries else None
+
+
+def parse_gh_api_args(args: list[str]) -> Optional[GhApiCommand]:
+    """Read the arguments after `gh api` as gh's flag parser does.
+
+    Every option consumes its value, short flags group (-iXPOST is -i -X POST,
+    -fname=x is -f name=x), the last --method wins, and gh takes exactly one
+    endpoint. Returns None for arguments gh rejects.
     """
-    normalized: list[str] = []
+    options: list[tuple[str, str]] = []
+    positionals: list[str] = []
     index = 0
     while index < len(args):
         token = args[index]
         index += 1
-        if token in _GH_API_VALUE_FLAGS:
-            normalized.append(token)
-            if index < len(args):
-                normalized.append(args[index])
-                index += 1
+        if token == "--":
+            positionals += args[index:]
+            break
+        if token.startswith("--"):
+            name, separator, value = token.partition("=")
+            if name in _GH_API_VALUE_FLAGS:
+                if not separator:
+                    if index >= len(args):
+                        return None
+                    value = args[index]
+                    index += 1
+                options.append((name, value))
+            elif name not in _GH_API_BOOLEAN_FLAGS:
+                return None
             continue
-        if not token.startswith("-") or token.startswith("--") or token == "-":
-            normalized.append(token)
+        if not token.startswith("-") or token == "-":
+            positionals.append(token)
             continue
         group = token[1:]
         while group:
             letter, group = group[0], group[1:]
-            if letter == "i":
-                normalized.append("--include")
+            if letter in _GH_API_BOOLEAN_SHORTHANDS:
                 continue
             flag = _GH_API_VALUE_SHORTHANDS.get(letter)
             if flag is None:
                 return None
             if group:
-                normalized += [flag, group.removeprefix("=")]
+                value = group.removeprefix("=")
             elif index < len(args):
-                normalized += [flag, args[index]]
+                value = args[index]
                 index += 1
             else:
-                normalized.append(flag)
+                return None
+            options.append((flag, value))
             break
-    return normalized
+    if len(positionals) != 1:
+        return None
+    methods = [value for name, value in options if name == "--method"]
+    return GhApiCommand(
+        endpoint=positionals[0],
+        method=methods[-1] if methods else None,
+        fields=tuple(value for name, value in options if name in ("--field", "--raw-field")),
+        has_input=any(name == "--input" for name, _ in options),
+    )
 
 
 def infer_gh_command_context(args: list[str], *, input_text: Optional[str] = None) -> CommandContext:
@@ -964,74 +1005,21 @@ def infer_gh_command_context(args: list[str], *, input_text: Optional[str] = Non
     command = tokens[0]
     subcommand = tokens[1] if len(tokens) > 1 else ""
     if command == "api":
-        api_args = normalize_gh_api_args(tokens[1:])
-        if api_args is None:
+        parsed = parse_gh_api_args(tokens[1:])
+        if parsed is None:
             return CommandContext(True, "rest_api", "rest_core")
-        tokens = [command, *api_args]
-        method = "GET"
-        endpoint = ""
-        graphql_document: Any = None
-        index = 1
-        while index < len(tokens):
-            token = tokens[index]
-            if token in ("--method", "-X") and index + 1 < len(tokens):
-                method = tokens[index + 1]
-                index += 2
-                continue
-            if token.startswith("--method="):
-                method = token.split("=", 1)[1]
-                index += 1
-                continue
-            if token.startswith("-X") and token != "-X":
-                method = token[2:]
-                index += 1
-                continue
-            if token in ("-H", "--header") and index + 1 < len(tokens):
-                index += 2
-                continue
-            if token in ("-f", "-F", "--field", "--raw-field") and index + 1 < len(tokens):
-                value = tokens[index + 1]
-                if value.startswith("query="):
-                    graphql_document = value.split("=", 1)[1]
-                index += 2
-                continue
-            if any(token.startswith(prefix) for prefix in ("--field=", "--raw-field=")):
-                value = token.split("=", 1)[1]
-                if value.startswith("query="):
-                    graphql_document = value.split("=", 1)[1]
-                index += 1
-                continue
-            if token in ("--input",) and index + 1 < len(tokens):
-                if input_text:
-                    graphql_document = _try_parse_json(input_text)
-                index += 2
-                continue
-            if token.startswith("--input="):
-                if input_text:
-                    graphql_document = _try_parse_json(input_text)
-                index += 1
-                continue
-            if not token.startswith("-") and not endpoint:
-                endpoint = token
-            index += 1
-        if is_graphql_path(endpoint):
+        if is_graphql_path(parsed.endpoint):
+            graphql_document: Any = parsed.graphql_query
+            if parsed.has_input and input_text:
+                graphql_document = _try_parse_json(input_text)
             operation = infer_graphql_operation_type(graphql_document)
             return CommandContext(
-                infer_is_write(method, endpoint, graphql_document, graphql_operation=operation),
+                infer_is_write(parsed.method or "GET", parsed.endpoint, graphql_document, graphql_operation=operation),
                 "graphql_api",
                 "graphql",
                 operation,
             )
-        field_write = any(
-            token in ("-f", "-F", "--field", "--raw-field", "--input")
-            or token.startswith(("--field=", "--raw-field=", "--input="))
-            for token in tokens[1:]
-        )
-        return CommandContext(
-            method.upper() not in ("GET", "HEAD") or field_write,
-            "rest_api",
-            "rest_core",
-        )
+        return CommandContext(parsed.sent_method not in ("GET", "HEAD"), "rest_api", "rest_core")
 
     if command == "project":
         read_commands = {"list", "view", "field-list", "item-list"}

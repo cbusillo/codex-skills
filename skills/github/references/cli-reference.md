@@ -2070,9 +2070,14 @@ given as an `https://api.github.com/` URL), and
 `gh repo fork` without `--org`, whose fork lands in the person's account.
 Stderr names the endpoint or the fork source. Bare `user` stays the App actor
 probe, a fork into an organization keeps the repository's route, and required
-automation authentication keeps the App. The wrapper reads `gh api` short
-flags as `gh` does, so a grouped form such as `-fname=x` or `-iXPOST` counts
-as a write everywhere and never takes the read route. A `gh` usage error, which `gh`
+automation authentication keeps the App. The wrapper and `github_api.py` share
+one reading of `gh api` arguments, `parse_gh_api_args`, which follows `gh`'s
+flag parser. Short flags group (`-fname=x` is `-f name=x`, `-iXPOST` is
+`-i -X POST`), every option consumes its value, and the last `--method` wins.
+Fields or `--input` without a method send POST. A command counts as a write
+unless the method `gh` sends is GET or HEAD, so `-X GET -f per_page=100` stays
+a read. Arguments `gh` rejects, such as an unknown flag or a second endpoint,
+count as a write. A `gh` usage error, which `gh`
 reports before sending any request, is a `validation_error` with
 `write_outcome: not_started`.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and

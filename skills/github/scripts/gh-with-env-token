@@ -144,6 +144,30 @@ readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 
+# github_api.parse_gh_api_args is the one reading of `gh api` arguments, as
+# gh's own flag parser reads them; every check below uses its answer. A `gh
+# api` command it cannot read leaves the method empty, which counts as a write.
+gh_api_shape=$(run_python - "$script_dir" "$@" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import github_api
+args = sys.argv[2:]
+# Leading global flags, read as is_write_command reads them.
+while args and args[0].startswith("-"):
+    if args[0] == "--":
+        args = args[1:]
+        break
+    args = args[2:] if args[0] in ("-R", "--repo", "--hostname") else args[1:]
+if args[:1] == ["api"]:
+    parsed = github_api.parse_gh_api_args(args[1:])
+    if parsed is not None:
+        print(parsed.sent_method)
+        print(parsed.endpoint)
+PY
+) || gh_api_shape=
+api_sent_method=$(printf '%s\n' "$gh_api_shape" | sed -n '1p')
+api_endpoint_operand=$(printf '%s\n' "$gh_api_shape" | sed -n '2p')
+
 run_with_input() {
 	# Only this route launches the requested CLI command. Actor/authentication
 	# probes use their own read-only route and cannot make a write sent.
@@ -193,66 +217,10 @@ is_write_command() {
 
 	case "${1:-}" in
 	api)
-		shift
-		while [ "$#" -gt 0 ]; do
-			case "$1" in
-			--method)
-				case "${2:-}" in
-				GET | get | HEAD | head)
-					return 1
-					;;
-				*)
-					return 0
-					;;
-				esac
-				;;
-			--method=*)
-				case "${1#*=}" in
-				GET | get | HEAD | head)
-					return 1
-					;;
-				*)
-					return 0
-					;;
-				esac
-				;;
-			--field | --raw-field | --input | --field=* | --raw-field=* | --input=*)
-				return 0
-				;;
-			-[!-]*)
-				# gh reads short flags as one group, as its flag parser does:
-				# -iXPOST is -i -X POST and -fname=x is -f name=x. -i is the
-				# only boolean; a field (-f, -F) or an unknown letter, which
-				# gh rejects, counts as a write.
-				short_flags=${1#-}
-				while [ -n "$short_flags" ]; do
-					short_flag=${short_flags%"${short_flags#?}"}
-					short_flags=${short_flags#?}
-					case $short_flag in
-					i) ;;
-					X)
-						method=${short_flags#=}
-						if [ -z "$short_flags" ]; then
-							method=${2:-}
-						fi
-						case "$method" in
-						GET | get | HEAD | head)
-							return 1
-							;;
-						*)
-							return 0
-							;;
-						esac
-						;;
-					H | p | q | t) break ;;
-					*) return 0 ;;
-					esac
-				done
-				;;
-			esac
-			shift
-		done
-		return 1
+		case $api_sent_method in
+		GET | HEAD) return 1 ;;
+		esac
+		return 0
 		;;
 	issue)
 		case "${2:-}" in
@@ -784,57 +752,24 @@ target_repository() {
 		return 0
 	fi
 	if [ "${1:-}" = api ]; then
-		shift
-		api_endpoint "$@" && return 0
+		api_endpoint && return 0
 	fi
 	if [ -n "${GH_REPO:-}" ]; then
 		repository_from_reference "$GH_REPO"
 	fi
 }
 
-# The endpoint of `gh api`: its first argument that is not an option or an
-# option's value, without a leading slash.
+# The endpoint of this `gh api` command, without a leading slash.
 api_path() {
-	skip_value=0
-	for argument in "$@"; do
-		if [ "$skip_value" -eq 1 ]; then
-			skip_value=0
-			continue
-		fi
-		case $argument in
-		--method | --raw-field | --field | --header | --input | --jq | --template | --preview | --hostname | --cache)
-			skip_value=1
-			;;
-		- | --*) ;;
-		-[!-]*)
-			# A short flag group takes the next argument when it ends with a
-			# flag that needs a value, as -iX in -iX GET does.
-			short_flags=${argument#-}
-			while [ -n "$short_flags" ]; do
-				short_flag=${short_flags%"${short_flags#?}"}
-				short_flags=${short_flags#?}
-				case $short_flag in
-				X | f | F | H | p | q | t)
-					[ -n "$short_flags" ] || skip_value=1
-					break
-					;;
-				esac
-			done
-			;;
-		*)
-			# gh also accepts the full URL of a github.com API path.
-			argument=${argument#https://api.github.com/}
-			printf '%s\n' "${argument#/}"
-			return 0
-			;;
-		esac
-	done
-	return 1
+	[ -n "$api_endpoint_operand" ] || return 1
+	# gh also accepts the full URL of a github.com API path.
+	path=${api_endpoint_operand#https://api.github.com/}
+	printf '%s\n' "${path#/}"
 }
 
 # The repository in the endpoint of `gh api`.
 api_endpoint() {
-	path=$(api_path "$@") || return 1
+	path=$(api_path) || return 1
 	case $path in
 	repos/*/*) ;;
 	*) return 1 ;;
@@ -854,8 +789,7 @@ api_endpoint() {
 is_user_scoped_read() {
 	[ "${1:-}" = api ] || return 1
 	! is_write_command "$@" || return 1
-	shift
-	user_scoped_path=$(api_path "$@") || return 1
+	user_scoped_path=$(api_path) || return 1
 	user_scoped_path=${user_scoped_path%%[?#]*}
 	case $user_scoped_path in
 	user/* | notifications | notifications/*) return 0 ;;
@@ -995,17 +929,10 @@ if args and args[0] == "api" and context.bucket == "graphql":
     # Inspect all definitions because operationName can select a later mutation.
     payload = github_api._try_parse_json(body) if body else None
     if payload is None:
-        # An unknown short flag already made the context a write.
-        api_args = github_api.normalize_gh_api_args(args[1:]) or []
-        for index, arg in enumerate(api_args):
-            if arg in {"--field", "--raw-field"} and index + 1 < len(api_args):
-                value = api_args[index + 1]
-                if value.startswith("query="):
-                    payload = {"query": value.split("=", 1)[1]}
-            elif arg.startswith(("--field=", "--raw-field=")):
-                value = arg.split("=", 1)[1]
-                if value.startswith("query="):
-                    payload = {"query": value.split("=", 1)[1]}
+        # Arguments gh rejects already made the context a write.
+        parsed = github_api.parse_gh_api_args(args[1:])
+        if parsed is not None and parsed.graphql_query is not None:
+            payload = {"query": parsed.graphql_query}
     if github_api.reader_request_is_write("POST", "/graphql", payload):
         context = github_api.CommandContext(True, context.transport, context.bucket)
 # Only API reads and the known read-only CLI families used by bulk helpers.

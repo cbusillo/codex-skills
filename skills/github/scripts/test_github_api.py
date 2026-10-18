@@ -1341,7 +1341,9 @@ def test_legacy_deadline_and_cancellation_are_distinct() -> None:
 
 
 def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
-    # gh's flag parser reads -fname=x as -f name=x and -iXPOST as -i -X POST.
+    # As gh's flag parser: -fname=x is -f name=x, -iXPOST is -i -X POST, the
+    # last method wins, fields without a method send POST, and options take
+    # their values. gh rejects an unknown flag or a second endpoint.
     for args in (
         ["api", "user/repos", "-fname=example"],
         ["api", "user/repos", "-Fname=example"],
@@ -1349,12 +1351,21 @@ def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
         ["api", "user/repos", "-iFname=example"],
         ["api", "-iX", "POST", "user/repos"],
         ["api", "user/repos", "-Z"],
+        ["api", "user/repos", "-iXGET", "-iXDELETE"],
+        ["api", "--method", "GET", "user/repos", "-X", "PATCH"],
+        ["api", "--jq", "graphql", "user/repos", "-fname=example", "-fquery=query { viewer { login } }"],
+        ["api", "user/repos", "other/endpoint"],
+        ["api", "user/repos", "--unknown"],
     ):
         assert _api.infer_gh_command_context(args).is_write is True, args
     for args in (
         ["api", "-iX", "GET", "user/repos"],
         ["api", "-iq", ".[].name", "user/repos"],
         ["api", "user/repos", "-H", "Accept: application/json"],
+        ["api", "user/repos", "-XDELETE", "-XGET"],
+        ["api", "-f", "per_page=100", "user/repos", "-X", "GET"],
+        ["api", "--jq", "graphql", "user/repos"],
+        ["api", "--paginate", "--slurp", "-X", "GET", "repos/o/r/pulls"],
     ):
         assert _api.infer_gh_command_context(args).is_write is False, args
     mutation = _api.infer_gh_command_context(["api", "graphql", "-fquery=mutation { x }"])
