@@ -83,6 +83,13 @@ archive members are refused before reading or transferring them. Keep credential
 outside project inputs or ignored by Git, and supply public plugin code separately.
 The location guard recognizes common credential names and directories; it cannot
 identify secrets stored under arbitrary source filenames. No contents are scanned.
+`diagnostic.qodana.refused_input` identifies the refused relative path, or only
+the basename for an external input. This refusal asks the agent to remove the
+input from staging, not to obtain activation. The guard also refuses ambiguous
+public names, such as REUSE sidecars ending in `.license`, Keynote `.key` files,
+and public `.pem` fixtures. Use the existing `--backend api` route for those
+projects without copying these files; do not weaken the guard or move credentials
+into another profile to continue.
 
 ## Execution and recovery
 

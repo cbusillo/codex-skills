@@ -81,6 +81,10 @@ OTHER_LANGUAGE_RULE_RE = re.compile(r"(?:Css|Sass|Scss|Less|Eslint|Stylelint|Tsl
 class Blocked(Exception):
     """A reason code only; never propagate raw process/credential diagnostics."""
 
+    def __init__(self, reason, *, input_path=None):
+        super().__init__(reason)
+        self.input_path = input_path
+
 
 def command(argv, *, cwd=None, env=None, timeout=30):
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout, check=False)
@@ -300,7 +304,10 @@ def require_public_input(path):
             or name in {"credentials", "credentials.json", "auth.json", "accounts.json", "account.json",
                         "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
             or any(part.lower() in {".ssh", ".aws", ".gnupg"} for part in path.parts)):
-        raise Blocked("qodana_credential_input_refused")
+        # Project/archive paths stay relative; external inputs expose only their
+        # basename, never the caller's home or credential-store location.
+        refused = path.name if path.is_absolute() else path.as_posix()
+        raise Blocked("qodana_credential_input_refused", input_path=safe_text(refused))
 
 
 def unpack_plugins(paths, cache):
@@ -831,6 +838,8 @@ def execute(argv, name, private, env, timeout, receipt, *, lock_fd=None):
             execute_worker(argv, name, private, env, timeout, receipt, parent_fd=life_read)
         except Blocked as error:
             reason = str(error)
+            if error.input_path is not None:
+                receipt["refused_input"] = error.input_path
         except BaseException:
             reason = "qodana_worker_failed"
         finally:
@@ -891,10 +900,15 @@ def envelope(host, receipt, findings, reason, gaps, artifact, uncovered=()):
         verdict, "Resolve the reported prerequisite or coverage gap and run a fresh assessment.")
     if receipt.get("boundary_event") or reason == "qodana_trial_or_purchase_stop":
         action = "Stop Qodana work and report the trial/purchase boundary to the Director; do not activate or purchase."
-    if reason in {"qodana_credential_input_refused", "qodana_license_unavailable", "qodana_license_import_removed"}:
-        action = ("Owner question: use an independently Director-activated headless profile (JBTEST-D1 on Chris-Studio); "
+    if reason in {"qodana_license_unavailable", "qodana_license_import_removed"}:
+        action = ("Owner question: use an independently Director-activated headless profile; "
                   "never copy credentials. See jetbrains-inspection/references/qodana-backend.md#director-activation. "
-                  "Keep credential files outside the snapshot and public plugin packages.")
+                  "The Director activates it through the product UI using existing entitlements.")
+    elif reason == "qodana_credential_input_refused":
+        action = ("Remove the refused input from the snapshot or public plugin package; "
+                  "keep credentials outside project inputs or ignored by Git. "
+                  "For public files with ambiguous credential names, use --backend api without copying them. "
+                  "See diagnostic.qodana.refused_input. No activation is needed for this refusal.")
     cleanup_clean = receipt["profile_deleted"] and receipt["container_removed"] and not receipt.get("unresolved_record_count") and not receipt.get("cleanup_pending") and not receipt.get("journal_cleanup_failed")
     coverage = "coverage gaps recorded" if gaps else "execution proved" if completed else "execution unproved"
     if uncovered:
@@ -1145,6 +1159,8 @@ def run(args, host):
         reason = "qodana_completed" if findings or not gaps else "qodana_coverage_unproven"
     except Blocked as error:
         reason = str(error)
+        if error.input_path is not None:
+            receipt["refused_input"] = error.input_path
     except host.InspectError as error:
         reason = error.payload.get("error_reason", "qodana_scope_invalid")
     except KeyboardInterrupt:

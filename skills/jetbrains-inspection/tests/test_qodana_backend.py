@@ -313,7 +313,7 @@ class QodanaTests(unittest.TestCase):
         copy.assert_not_called()
         execute.assert_not_called()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
-        self.assertIn("Owner question:", result["agent_result"]["next_action"])
+        self.assertEqual(result["diagnostic"]["error_reason"], "qodana_license_import_removed")
         self.assertFalse((self.root / "state").exists())
 
     def test_snapshot_refuses_credential_locations_before_any_read_or_copy(self):
@@ -323,8 +323,9 @@ class QodanaTests(unittest.TestCase):
                     patch.object(backend, "checked", return_value=("src/a.py\0" + name + "\0").encode()), \
                     patch.object(backend.shutil, "copyfile") as copy, \
                     patch.object(backend, "digest") as read:
-                with self.assertRaises(backend.Blocked):
+                with self.assertRaises(backend.Blocked) as refusal:
                     backend.snapshot(self.repo, self.root / "snapshot")
+                self.assertEqual(refusal.exception.input_path, name)
                 copy.assert_not_called()
                 read.assert_not_called()
 
@@ -339,6 +340,8 @@ class QodanaTests(unittest.TestCase):
                         result = backend.run(self.args, host)
                     checked.assert_not_called()
                     self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+                    self.assertEqual(result["diagnostic"]["error_reason"], "qodana_credential_input_refused")
+                    self.assertEqual(result["diagnostic"]["qodana"]["refused_input"], "pycharm.key")
                     setattr(self.args, option, [] if option.endswith("zip") else None)
 
     def test_plugin_members_are_checked_before_extraction(self):
