@@ -925,9 +925,25 @@ Read this after every landing in the skills catalog, including a service-led
 landing with no local train driver. The Supervisor owns this one landing step;
 an executing worker's green CI or `ready` handoff does not perform it.
 
+At takeover and each regular check, use `github` to inventory merged catalog
+PRs since the last verification linked in the Supervisor handoff. Compare their
+landing SHAs with the verification comments on their owning issues; deduplicate
+PRs from the same batch landing. Run this step for the latest unverified landing
+even when SessionStart catch-up has already updated the runtime. With no prior
+verification record, start at the latest catalog landing and record the earlier
+interval as unverified. If several landings accumulated, report each missed
+earlier SHA as failed verification under step 4, then check the latest landing;
+a later runtime passing does not prove an earlier revision passed. Keep a link
+to the latest verification in the next handoff so takeover can repeat this check.
+
 1. Take the full landing SHA from the merged PR or terminal train result, as
-   defined in [After A Merge](../../github/SKILL.md#after-a-merge). Reconcile the
-   runtime checkout with the landed helper:
+   defined in [After A Merge](../../github/SKILL.md#after-a-merge). Resolve the
+   helper and its source worktree through
+   [runtime checkout reconciliation](../../github/references/cli-reference.md#runtime-checkout-reconciliation):
+   keep the landed source until verification finishes; if it is already retired,
+   use the runtime's own copy, or the copy from a worktree at the fetched tip
+   when the reconciler reports a source mismatch. Run the helper from that
+   same source worktree:
 
    ```sh
    uv run <landed-worktree>/skills/github/scripts/reconcile-runtime-checkout.py --repo OWNER/REPO --merged-worktree <landed-worktree> --landing-sha <landing-sha>
@@ -947,17 +963,21 @@ an executing worker's green CI or `ready` handoff does not perform it.
    exercises fresh native thread creation through the same ingress as workers.
    Resume, `--version`, and noninteractive reviewer runs do not exercise that
    path. Never restart a daemon or server to make the check pass.
-3. Give each session a brief naming the landing SHA and asking for a short
-   acknowledgement followed by its normal safe closeout, with no file changes,
-   claims or product work. Record both exact terminal identities and native
-   session/transcript identities in the private registry. Read each first screen
+3. Anchor each brief on the owning catalog issue without claiming it. Name the
+   landing SHA, ask for a short acknowledgement and normal safe closeout, and
+   authorize just one final issue handoff comment naming that SHA and the
+   smoke's native session ID. Request no file changes, claims or product work.
+   Record both exact terminal identities and native session/transcript
+   identities in the private registry, and set each entry's `handoff_url` to
+   that smoke session's own issue comment before shutdown. Read each first screen
    for startup failures or blocking prompts, then require a completed assistant
    turn acknowledging this landing in each native transcript. An echoed brief,
    live pane or successful launcher return alone is not a pass. Use a bounded
    observation of at most two minutes per harness; an unfinished turn at that
    point is a failed smoke, with its session preserved for inspection.
-4. Record the landing SHA, reconciliation receipt and each harness's pass/fail
-   on the owning PR or issue. If reconciliation or either launch fails, post
+4. Record the landing SHA, actual runtime SHA, reconciliation receipt and each
+   harness's pass/fail on the owning issue, linking the smoke handoffs.
+   If reconciliation or either launch fails, post
    **Catalog landing verification FAILED: `<landing-sha>`**, name the failed
    step/harness and the observed cause, and surface it in the Supervisor's
    current report. The merge remains landed; landing verification remains
