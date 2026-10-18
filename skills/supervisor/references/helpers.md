@@ -2170,21 +2170,25 @@ results.
 
 While [#2069](https://github.com/cbusillo/codex-skills/issues/2069) keeps workers
 from running their own reviews, use the Supervisor harness's built-in recurring
-timer every three minutes. Each tick runs the command above with `--apply`,
-from the Supervisor's own terminal session that can write Context Panel launch
-receipts, then reads the JSON result. Keep the same ledger, checkout mappings
+timer every three minutes. Each tick launches the command above with `--apply`
+as a background job of the Supervisor's own terminal session that can write
+Context Panel launch receipts, then reads its JSON when the job finishes.
+This leaves the Supervisor free to handle notices and checks while reviews run.
+Keep the same ledger, checkout mappings
 and durable evidence directory on every tick. This is the maintained route;
 no private fallback dispatcher is needed. Do not put the timer under the
 launchd-started worker tmux server, which has the same receipt-store refusal.
 
-Reviews run serially and may outlast a tick. A held sweep lock means wait for
-the active pass. Reconcile `refused`, `blocked`, `ledger_errors` and `attention`
-against the diagnostics below; a timer tick never authorizes replay of a
-failed, denied or uncertain action. When `notification_needed` is true, send
-the completion link to the named author through the Supervisor's exact-session
-route, so the author can weigh it and call `ready`.
+Reviews run serially and may outlast a tick. A held sweep lock is expected:
+skip that tick and let the active pass finish. Reconcile `results[].status`
+values `refused` and `blocked`, plus top-level `ledger_errors`, `attention`
+and `error`, against the diagnostics below; a timer tick never authorizes
+replay of a failed, denied or uncertain action. For `notification_needed`,
+follow [completion notifications](#completion-notifications), including its
+once-per-report-version routing and retained notification history.
 
-Record the timer's identity, command and state paths in the Supervisor handoff
+Record the timer's identity, command, state paths and routed-notification
+history in the Supervisor handoff
 and recreate it on takeover. Stop it when this run ends, or once the installed
 receipt writer from [context-panel#874](https://github.com/cbusillo/context-panel/pull/874)
 and the #2069 integration let these workers run their own reviews. A version
@@ -2384,6 +2388,8 @@ recorded author identity even if posting ended before updating its journal.
 other-provider metadata and retained nonempty report at completion or a post
 phase. A copied receipt from the shared automation login alone cannot attest
 inference. Missing local evidence leaves provider completion unconfirmed.
+
+### Completion notifications
 
 An edit to a served request sets `request_edited_after_review`; the completion
 link is preserved and inference never reruns. Weigh the original scope and
