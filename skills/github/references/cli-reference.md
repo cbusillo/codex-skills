@@ -2177,6 +2177,26 @@ to that repository, as for the Client App's public-read fallback; public
 repositories, unknown visibility, and the registering account's repositories
 keep the App reader, and `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` or
 `--check` keeps it too.
+Under the same per-command opt-in, two commands run as the declared personal
+login whatever credential the repository would select, because an App
+installation token can never act for an account: a `gh api` read of an
+endpoint that answers only for the authenticated account (`user/...`,
+`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`, also
+given as an `https://api.github.com/` URL), and
+`gh repo fork` without `--org`, whose fork lands in the person's account.
+Stderr names the endpoint or the fork source. Bare `user` stays the App actor
+probe, a fork into an organization keeps the repository's route, and required
+automation authentication keeps the App. The wrapper and `github_api.py` share
+one reading of `gh api` arguments, `parse_gh_api_args`, which follows `gh`'s
+flag parser. Short flags group (`-fname=x` is `-f name=x`, `-iXPOST` is
+`-i -X POST`, `-i=false` sets only `-i`), every option consumes its value, and
+the last `--method` and `--input` win. Fields, or a nonempty `--input`, without
+a method send POST; an explicitly empty method sends GET. A command counts as a write
+unless the method `gh` sends is GET or HEAD, so `-X GET -f per_page=100` stays
+a read. Arguments `gh` rejects, such as an unknown flag or a second endpoint,
+count as a write. A `gh` usage error, which `gh`
+reports before sending any request, is a `validation_error` with
+`write_outcome: not_started`.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
 `GITHUB_TOKEN` in that order. `--check` reports the selected credential source
 and verifies the current App installation and actor without performing a write.
