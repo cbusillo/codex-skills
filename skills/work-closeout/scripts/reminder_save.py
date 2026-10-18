@@ -97,7 +97,12 @@ def plan(harness: str, directory: Path, session: str | None, prompt: str | None,
     identity = str(UUID(session)) if session else "fresh session"
     if title is None:
         reference = ", ".join("#" + url.rsplit("/", 1)[1] for url in links)
-        title = f"{link['repository']}: {reference or identity} ({provider})"
+        # The visible-URL step finds the row by title, counting completed ones,
+        # so the due time keeps a session's next check-in distinct from its last.
+        when = f"{local:%Y-%m-%d %H:%M}"
+        if repeat_days is not None:
+            when = f"every {repeat_days} days from {when}"
+        title = f"{link['repository']}: {reference or identity} ({provider}) {when}"
     if not title.strip() or any(c in title for c in "\n\r\x00"):
         raise ValueError("Title must be one non-empty line")
     if not list_name.strip():
