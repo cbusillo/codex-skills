@@ -12,16 +12,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import stat
 import sys
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
-from github_plan_sessions import codex_homes
-from iterm_tab import codex_daemon_endpoint
-import session_record
-from codex_session_proxy import run_client, managed_argv
+from codex_session_proxy import run_client, managed_argv, source_endpoint
 
 
 def run(args) -> int:
@@ -55,16 +51,7 @@ def run(args) -> int:
         print(json.dumps({"session_id": args.session_id, **rows[0].get("resumed_generation", {})}))
         return 0
     home = args.codex_home.expanduser().resolve(strict=True)
-    if home not in codex_homes(strict=True, configured_only=True):
-        raise ValueError("resume requires the source's configured account home")
-    paths = [p for root in ("sessions", "archived_sessions") for p in (home / root).rglob(f"*{args.session_id}*.jsonl")]
-    if not paths:
-        raise ValueError("source native transcript is unavailable")
-    session_record.session_status({"session_id": args.session_id, "harness": "codex", "transcript": str(paths[0])})
-    endpoint = codex_daemon_endpoint(home)
-    info = endpoint.stat()
-    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
-        raise ValueError("source daemon socket identity is unavailable")
+    endpoint = source_endpoint(args.session_id, home)
     command = ["codex", "--remote", "unix://" + str(endpoint)]
     if args.command == "queue":
         message = args.message_file.read_text() if args.message_file else args.message

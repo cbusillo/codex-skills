@@ -669,6 +669,54 @@ for line in sys.stdin:
 
 
 class TmuxTests(TmuxFixture):
+    def test_exact_source_resume_keeps_receipt_read_send_and_close_routes(self):
+        # Exercise the real terminal route with a disposable helper. Native
+        # ingress, leases and generation publication have separate socket tests.
+        native = str(uuid.uuid4())
+        home = self.root / "codex-account"
+        transcript = home / "sessions" / (native + ".jsonl")
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": native}}) + "\n")
+        self.ledger.write_text(json.dumps([{"session_id": native, "harness": "codex", "supervisor_owned": True,
+                                          "codex_home": str(home), "transcript": str(transcript)}]))
+        helper = self.root / "codex-session.py"
+        helper.write_text('''import json, os, sys
+print("RESUMED:" + json.dumps({"argv": sys.argv[1:], "home": os.environ["CODEX_HOME"]}), flush=True)
+for line in sys.stdin:
+    if line.strip() == "/quit":
+        break
+    print("TURN:" + line.strip(), flush=True)
+''')
+        uv = self.root / "bin/uv"
+        uv.write_text(f"#!{sys.executable}\nimport os, sys\nos.execv(sys.executable, [sys.executable, *sys.argv[2:]])\n")
+        uv.chmod(0o700)
+        choice = {"provider": "openai", "name": "original", "account_id": "openai-ab12",
+                  "env": {"CODEX_HOME": str(home)}, "storage_root": self.root}
+        with (patch.object(iterm_tab, "__file__", str(self.root / "iterm_tab.py")),
+              patch.object(account_choice, "load_config", return_value={"accounts": [choice]}),
+              patch.object(account_choice, "select", return_value=choice),
+              patch("codex_session_proxy.source_endpoint"),
+              patch.object(iterm_tab, "inspect_codex_daemon"),
+              patch.object(iterm_tab, "source_launch_metadata", side_effect=lambda row, _: row),
+              patch.object(iterm_tab, "startup_prompt_window", return_value=0)):
+            row = self.operate("new", window_id=self.window, resume_session_id=native, ledger=self.ledger,
+                               command_file=None, brief_file=None, account_provider="openai", account_config=None, account=None)
+        fd = os.open(row["tty"], os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fd)
+        self.wait_screen(row["session_id"], "RESUMED:")
+        history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
+        received = json.loads(next(line.split("RESUMED:", 1)[1] for line in history.splitlines() if "RESUMED:" in line))
+        self.assertEqual(received, {"argv": ["resume", "--session-id", native, "--codex-home", str(home.resolve())],
+                                    "home": str(home)})
+        self.assertEqual(len(list((self.root / "Launch Receipts").glob("*.json"))), 1)
+        self.operate("send", session_id=row["session_id"], text="fresh safe turn", text_file=None,
+                     verified_target=True, no_submit=False)
+        self.wait_screen(row["session_id"], "TURN:fresh safe turn")
+        self.ended(row)
+        self.ledger.write_text(json.dumps([self.entry(row)]))
+        self.terminal.close(row["session_id"], self.ledger)
+        self.assertFalse(any(r["session_id"] == row["session_id"] for r in self.terminal.list()))
+
     def test_launch_message_read_exit_and_close_with_account_and_literal_brief(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")

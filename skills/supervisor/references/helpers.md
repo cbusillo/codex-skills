@@ -1042,7 +1042,7 @@ iTerm hierarchy before launching. A session-wait timeout names the tab for
 inspection. If creation returns no tab identity, run `list` and inspect first;
 the tab may still exist. Do not create another tab or replay the launch without
 checking it. `window` still restores the previous tab after creation.
-Launch files contain one direct agent invocation and its already authorized
+For a fresh launch, command files contain one direct agent invocation and its already authorized
 model settings, without a prompt or the Discord channels flag. Put the exact
 brief in a separate UTF-8 file and pass `--brief-file`; the launcher reads it
 and appends it as one quoted prompt argument. For example, a launch file can
@@ -1053,6 +1053,8 @@ environment prefixes. `agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
+For an exact-source recovery without command/brief files, use the documented
+[`new --resume-session-id` route](#release-a-verified-finished-session).
 Empty, whitespace-only, missing or unreadable briefs
 refuse before account selection, daemon startup, tabs or launch receipts.
 Tabs in briefs are allowed and sent through bracketed paste. Other terminal
@@ -1916,6 +1918,40 @@ verdict. A nonzero child exit alone cannot prove no native work was accepted.
 Preserve claims and artifacts while recovering; do not delete the marker or
 reuse the old verdict. A frozen predecessor still refuses resume: start a new
 thread and claim through gh-plan.py instead.
+
+For recovery from the Supervisor's terminal tooling, use `new
+--resume-session-id` on either backend. Verify that the original client has
+exited first; do not open another client for a still-running source. Preserve
+the original ledger and historical exit times. The source must be one exact
+Supervisor-owned Codex entry with its native ID, absolute `codex_home` and
+matching native transcript under that home. The launcher chooses only that
+home's configured account through the usual snapshot and launch-receipt route.
+It inspects the existing daemon without starting or restarting it, then runs
+the same `codex-session.py resume` helper. Its source lease, action barrier
+and frozen-generation checks remain in force. No command or brief file is
+accepted in this mode; arbitrary helper or shell commands still refuse.
+
+```sh
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id <container-id> --resume-session-id <native-id> --ledger <original-private-ledger.json> --account-provider openai
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux read --session-id <returned-terminal-id>
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux send --session-id <returned-terminal-id> --text-file <fresh-safe-turn.txt> --verified-target
+uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
+```
+
+Inspect the idle prompt and preserve any existing input before sending the
+fresh turn. Verify its completed final safe verdict, then use the normal
+empty-prompt `/quit`, verified process exit and `finish` preview/apply above.
+Keep a recovery ledger containing the native `session_id`, transcript and
+verified handoff, with the new terminal coordinates and guarded generation
+from launch output or `status`. The launch output's `session_id` is the
+terminal ID; `native_session_id` is the source ID. Store the terminal ID as
+`tmux_session_id` or `iterm_session_id`, never over the native ID. If launch
+identity is unavailable, read `status` and verify PID/TTY before finishing;
+never substitute the old generation. Record this recovery's actual exit
+time, without rewriting the earlier historical evidence. A receipt or submit
+failure retains the exact pane for inspection under the usual launch rules;
+do not replay an uncertain launch.
+
 If recording generation metadata fails after a native resume, the RPC reports
 that partial outcome and retains the connection and durable invalidation. Retry
 the exact resume for metadata, preserving the source in the meantime.

@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from pathlib import Path
 
 import account_choice
@@ -997,8 +998,59 @@ def claude_trust_writes(command_text, choice, config_path):
     return claude_trust.plan(directory, choice, homes, codex_git_trust_root)
 
 
+def prepare_resume(args):
+    """Build only the maintained exact-source helper, never caller shell text."""
+    import session_record
+    from codex_session_proxy import source_endpoint
+
+    session = args.resume_session_id
+    if str(uuid.UUID(session)) != session:
+        raise ValueError("use the canonical native thread UUID")
+    if (args.account_provider != "openai" or not getattr(args, "ledger", None)
+            or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
+            or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
+        raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser flags")
+    entries = [entry for entry in session_record.load_ledger(args.ledger) if entry["session_id"] == session]
+    if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != "codex":
+        raise ValueError("resume source is not uniquely Supervisor-owned in the ledger")
+    entry = entries[0]
+    if not isinstance(entry.get("codex_home"), str):
+        raise ValueError("resume ledger needs the source's absolute codex_home")
+    home = Path(entry["codex_home"])
+    if not home.is_absolute():
+        raise ValueError("resume ledger needs the source's absolute codex_home")
+    home = home.resolve(strict=True)
+    transcript = Path(entry["transcript"])
+    if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
+        raise ValueError("resume transcript is outside the source account")
+    session_record.session_status(entry)
+    source_endpoint(session, home)
+    config = account_choice.load_config(args.account_config)
+    accounts = [account for account in config["accounts"] if account["provider"] == "openai"
+                and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
+    if len(accounts) != 1 or (args.account is not None and args.account != accounts[0]["name"]):
+        raise ValueError("resume requires the source's unique configured account; account switching is unsupported")
+    choice = account_choice.select("openai", args.account_config, accounts[0]["name"])
+    if Path(choice["env"]["CODEX_HOME"]).expanduser().resolve() != home:
+        raise ValueError("selected resume account differs from the source")
+    # Read the existing daemon only. Recovery never starts or restarts one.
+    inspect_codex_daemon(home)
+    account_choice.prepare_launch(choice)
+    choice["resume_session_id"] = session
+    invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),
+                  "resume", "--session-id", session, "--codex-home", str(home)]
+    settings = [f"{key}={value}" for key, value in choice["env"].items()]
+    return [shlex.join(["exec", "env", *settings, *invocation])], [choice]
+
+
 def prepare_launches(args):
     """Validate the full batch and prepare accounts before creating terminals."""
+    if getattr(args, "resume_session_id", None):
+        return prepare_resume(args)
+    if getattr(args, "ledger", None):
+        raise ValueError("new --ledger requires --resume-session-id")
+    if not getattr(args, "command_file", None):
+        raise ValueError("new launches require --command-file or --resume-session-id")
     if getattr(args, "require_browser", False) and getattr(args, "without_browser", False):
         raise ValueError("--require-browser and --without-browser cannot be used together")
     if (getattr(args, "require_browser", False)
@@ -1128,6 +1180,8 @@ def source_launch_metadata(result, choice):
         return result
     home = choice["env"]["CODEX_HOME"]
     result["codex_home"] = str(Path(home).expanduser().resolve())
+    if choice.get("resume_session_id"):
+        result["native_session_id"] = choice["resume_session_id"]
     try:
         from close_ttys import inventory
         github = str(Path(__file__).resolve().parents[2] / "github/scripts")
@@ -1138,6 +1192,23 @@ def source_launch_metadata(result, choice):
         tty = result.get("tty")
         if not isinstance(tty, str) or not tty:
             raise ValueError("launch TTY is unavailable")
+        if choice.get("resume_session_id"):
+            session = choice["resume_session_id"]
+            rows = [row for row in github_plan_closure.log_rows() if row.get("session_id") == session]
+            if len(rows) != 1:
+                raise ValueError("resumed native generation is not unique; read codex-session.py status")
+            generation = rows[0].get("resumed_generation")
+            if (not isinstance(generation, dict) or not isinstance(generation.get("tty"), str)
+                    or type(generation.get("pid")) is not int or generation["pid"] <= 0
+                    or not isinstance(generation.get("launch_generation"), str) or not generation["launch_generation"]
+                    or generation.get("codex_home") != result["codex_home"]
+                    or generation["tty"].removeprefix("/dev/") != tty.removeprefix("/dev/")
+                    or generation.get("pid") != generation.get("launch_pid")
+                    or github_plan_closure.process_started_at(generation.get("pid")).isoformat()
+                    != generation.get("launch_started_at")):
+                raise ValueError("resumed generation does not match this terminal")
+            result.update(generation)
+            return result
         candidates = [(pid, codex_argv_start(command.split())) for pid, terminal, command in inventory()
                       if terminal == tty.removeprefix("/dev/") and codex_argv_start(command.split()) is not None]
         # The guarded parent is a Python helper on the same TTY. Prefer the
@@ -1450,10 +1521,12 @@ def main():
                        help="private Supervisor launch ledger; Director-owned entries refuse")
     new = commands.add_parser("new")
     new.add_argument("--window-id", required=True)
-    new.add_argument("--command-file", type=Path, action="append", required=True,
+    new.add_argument("--command-file", type=Path, action="append",
                      help="one agent invocation and settings, without its prompt; repeat for a batch")
-    new.add_argument("--brief-file", type=Path, action="append", required=True,
+    new.add_argument("--brief-file", type=Path, action="append",
                      help="nonempty prompt to append as one argument; one per command file, in launch order")
+    new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
+    new.add_argument("--ledger", type=Path, help="private source ledger for --resume-session-id")
     new.add_argument(
         "--account-provider",
         required=True,

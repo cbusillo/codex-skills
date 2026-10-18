@@ -12,6 +12,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import stat
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
@@ -31,6 +33,26 @@ HOUSEKEEPING = {"thread/unarchive", "thread/name/set", "thread/metadata/update",
 # JSON Schema payloads (dynamic tools, turn output, elicitation) describe
 # fields such as threadId; they never name a thread.
 SCHEMAS = {"inputSchema", "outputSchema", "requestedSchema"}
+
+
+def source_endpoint(session, home):
+    """Validate native recovery identity without taking a lease or changing state."""
+    from github_plan_sessions import codex_homes
+    import session_record
+    if str(uuid.UUID(session)) != session:
+        raise ValueError("use the canonical native thread UUID")
+    if home not in codex_homes(strict=True, configured_only=True):
+        raise ValueError("resume requires the source's configured account home")
+    paths = [p for root in ("sessions", "archived_sessions") for p in (home / root).rglob(f"*{session}*.jsonl")]
+    if not paths:
+        raise ValueError("source native transcript is unavailable")
+    for path in paths:
+        session_record.session_status({"session_id": session, "harness": "codex", "transcript": str(path)})
+    endpoint = closure.daemon_endpoint(home)
+    info = endpoint.stat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ValueError("source daemon socket identity is unavailable")
+    return endpoint
 
 
 def thread_targets(value):

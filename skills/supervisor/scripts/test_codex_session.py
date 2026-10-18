@@ -15,16 +15,18 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
+from iterm_tab import codex_daemon_endpoint
 
 SPEC = importlib.util.spec_from_file_location("codex_session", Path(__file__).with_name("codex-session.py"))
 SESSION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SESSION)
+import github_plan_sessions
 
 
 class ResumeTests(unittest.TestCase):
     def test_bare_unix_launch_uses_the_selected_account_endpoint(self):
         self.args.command = "launch"
-        endpoint = "unix://" + str(SESSION.codex_daemon_endpoint(self.home))
+        endpoint = "unix://" + str(codex_daemon_endpoint(self.home))
         for remote in (["--remote", "unix://"], ["--remote=unix://"]):
             with self.subTest(remote=remote):
                 self.args.native_args = ["codex", *remote, "-C", str(self.root), "--", "literal task"]
@@ -36,7 +38,7 @@ class ResumeTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_fresh_launch_uses_guarded_ingress_and_preserves_argv(self):
-        native = ["codex", "--remote", "unix://" + str(SESSION.codex_daemon_endpoint(self.home)), "--", "literal $(touch NEVER)"]
+        native = ["codex", "--remote", "unix://" + str(codex_daemon_endpoint(self.home)), "--", "literal $(touch NEVER)"]
         self.args.command, self.args.native_args = "launch", ["--", *native]
         with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0) as execute:
             self.assertEqual(SESSION.run(self.args), 0)
@@ -44,7 +46,7 @@ class ResumeTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_fresh_launch_cannot_hide_resume_or_use_unobserved_home(self):
-        endpoint = "unix://" + str(SESSION.codex_daemon_endpoint(self.home))
+        endpoint = "unix://" + str(codex_daemon_endpoint(self.home))
         self.args.command = "launch"
         with patch.object(SESSION.os, "execvpe") as execute:
             for native in (["codex", "--remote", endpoint, "resume", self.native],
@@ -64,7 +66,7 @@ class ResumeTests(unittest.TestCase):
         path = self.home / "sessions" / (self.native + ".jsonl")
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps({"type": "session_meta", "payload": {"id": self.native}}) + "\n")
-        endpoint = SESSION.codex_daemon_endpoint(self.home)
+        endpoint = codex_daemon_endpoint(self.home)
         endpoint.parent.mkdir()
         self.socket = socket.socket(socket.AF_UNIX)
         self.addCleanup(self.socket.close)
@@ -72,7 +74,7 @@ class ResumeTests(unittest.TestCase):
         endpoint.chmod(0o600)
         self.log = self.root / "shared/closed.json"
         self.enterContext(patch.object(SESSION.closure, "closed_log", return_value=self.log))
-        self.enterContext(patch.object(SESSION, "codex_homes", return_value=[self.home]))
+        self.homes = self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.home]))
         self.args = SimpleNamespace(command="resume", session_id=self.native, codex_home=self.home,
                                     message=None, message_file=None)
         self.child = MagicMock(pid=456)
@@ -99,6 +101,24 @@ class ResumeTests(unittest.TestCase):
         output = io.StringIO()
         with contextlib.redirect_stdout(output): SESSION.run(self.args)
         self.assertEqual(json.loads(output.getvalue())["pid"], self.child.pid)
+
+    def test_source_validation_refuses_unconfigured_home_wrong_transcript_and_socket(self):
+        with patch.object(SESSION, "run_client", new_callable=AsyncMock) as guarded:
+            self.homes.return_value = []
+            with self.assertRaises(ValueError):
+                SESSION.run(self.args)
+            self.homes.return_value = [self.home]
+            transcript = next((self.home / "sessions").glob("*.jsonl"))
+            original = transcript.read_text()
+            transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": str(uuid.uuid4())}}) + "\n")
+            with self.assertRaises(ValueError):
+                SESSION.run(self.args)
+            transcript.write_text(original)
+            codex_daemon_endpoint(self.home).chmod(0o622)
+            with self.assertRaises(ValueError):
+                SESSION.run(self.args)
+            guarded.assert_not_called()
+        self.assertFalse(self.log.exists())
 
     def test_resume_preserves_unrelated_managed_launch_registration(self):
         SESSION.closure.register_launch(["codex", "--", "unrelated"], str(self.home))
