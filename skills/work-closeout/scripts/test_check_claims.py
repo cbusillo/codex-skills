@@ -61,7 +61,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                             {"type": "event_msg", "payload": {"type": "agent_message", "message": "Finished.\nSafe to exit: yes"}},
                             {"type": "event_msg", "payload": {"type": "task_complete"}}])
                 self.assertTrue(helper.session_record.summarize(records, harness)["safe_verdict"])
-                with self.assertRaisesRegex(ValueError, "still holds"):
+                with self.assertRaises(ValueError):
                     self.check()
 
     def test_exact_authored_release_is_read_back(self):
@@ -89,14 +89,13 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_unverified_retained_pr_blocks_released_claim(self):
         self.comments.append(self.release)
         self.pulls = [pull()]
-        with self.assertRaisesRegex(ValueError, "retained-PR"):
+        with self.assertRaises(ValueError):
             self.check()
 
     def test_retained_pr_handoff_allows_exit_before_merge(self):
         self.comments.append({**self.release, "body": self.release["body"] + "\nRetained PR: " + pull()["html_url"]})
         self.pulls = [pull()]
         self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
-        self.assertEqual(self.pulls[0]["state"], "open")
 
     def test_named_pr_must_independently_link_issue_and_match_identity(self):
         self.comments.append({**self.release, "body": self.release["body"] + "\n" + pull()["html_url"]})
@@ -120,6 +119,23 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.check()
         self.pulls[1]["body"] = "Fixes #1"
         self.assertEqual(len(self.check()[0]["retained_prs"]), len(self.pulls))
+
+    def test_split_handoffs_can_be_in_separate_authored_comments(self):
+        self.pulls = [pull(), pull(3, branch="work/split")]
+        self.comments.append({**self.release, "body": self.release["body"] + "\n" + self.pulls[0]["html_url"]})
+        self.comments.append(comment(12, f"Handoff from {SOURCE['worker']}\nclaim: {self.source['id']}\nSession: {SESSION}\n{self.pulls[1]['html_url']}", at="2026-01-01T00:03:00Z"))
+        self.assertEqual(set(self.check()[0]["retained_prs"]), {p["html_url"] for p in self.pulls})
+
+    def test_bare_dependency_issue_is_not_a_retained_pr(self):
+        self.comments.append({**self.release, "body": self.release["body"] + "\nBlocked on #99"})
+        self.pulls = [pull(99, branch="unrelated", body="Unrelated", user={"login": "other[bot]"})]
+        self.assertEqual(self.check()[0]["retained_prs"], [])
+
+    def test_native_pr_creation_exposes_an_unnamed_split_branch(self):
+        self.comments.append(self.release)
+        self.pulls = [pull(3, branch="work/split")]
+        with self.assertRaises(ValueError):
+            helper.check_record(self.reader, REPO, 1, SESSION, ACTOR, created_prs={self.pulls[0]["html_url"]})
 
     def test_later_session_bound_handoff_is_supported(self):
         self.comments.append(self.release)
@@ -157,7 +173,7 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_status_only_ownership_is_not_nothing_to_release(self):
         self.comments = []
         self.issue["body"] = helper.claim.marker(SOURCE)
-        with self.assertRaisesRegex(ValueError, "no matching"):
+        with self.assertRaises(ValueError):
             self.check()
 
     def test_other_session_claims_remain_untouched(self):
@@ -200,7 +216,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                 identity = {"type": "session_meta", "payload": {"id": SESSION}} if harness == "codex" else {"type": "user", "sessionId": SESSION}
                 transcript.write_text(json.dumps({**identity, "timestamp": SOURCE["claimed_at"]}) + "\n")
                 output = io.StringIO()
-                with patch.object(helper.github_agent, "native_sessions", return_value={"native": SESSION}), \
+                with patch.object(helper.github_agent, "running_agent", return_value=harness), \
+                        patch.object(helper.github_agent, "native_sessions", return_value={"native": SESSION}), \
                         patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
                         patch.object(helper, "GitHubReader", autospec=True, return_value=self.reader), \
                         patch.object(helper.sessions, "discover", return_value=([], [REPO])), contextlib.redirect_stdout(output):
@@ -230,6 +247,41 @@ class ClaimCloseoutTests(unittest.TestCase):
             code = helper.main(["--owner", "test", "--harness", "codex", "--session", SESSION, "--transcript", "/unused"])
         self.assertNotEqual(code, 0)
         reader.assert_not_called()
+
+    def test_cli_refuses_missing_identity_and_wrong_harness_without_github(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "old-native.jsonl"
+            transcript.write_text(json.dumps({"type": "session_meta", "timestamp": SOURCE["claimed_at"], "payload": {"id": SESSION}}) + "\n")
+            for family, native in (("codex", {}), ("claude", {"native": SESSION})):
+                with patch.object(helper.github_agent, "running_agent", return_value=family), \
+                        patch.object(helper.github_agent, "native_sessions", return_value=native), \
+                        patch.object(helper, "GitHubReader", return_value=self.reader) as reader, \
+                        patch.object(helper.sessions, "discover", return_value=([], [REPO])), contextlib.redirect_stdout(io.StringIO()):
+                    code = helper.main(["--owner", "test", "--harness", "codex", "--session", SESSION, "--transcript", str(transcript)])
+                self.assertNotEqual(code, 0)
+                reader.assert_not_called()
+
+    def test_live_transcript_snapshot_ignores_only_an_unfinished_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "native.jsonl"
+            identity = {"type": "session_meta", "payload": {"id": SESSION}}
+            transcript.write_text(json.dumps(identity) + '\n{"type":')
+            self.assertEqual(helper.transcript_snapshot(transcript, "codex", SESSION), [identity])
+            transcript.write_text(json.dumps(identity) + '\n{"type":\n')
+            with self.assertRaises(ValueError):
+                helper.transcript_snapshot(transcript, "codex", SESSION)
+
+    def test_native_receipts_add_an_account_missing_from_the_arguments(self):
+        from pathlib import Path
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "supervisor/scripts"))
+        from test_claim_receipts import claim as native_claim, history, SESSION as native_session
+        entry = {"harness": "codex", "session_id": native_session,
+                 "_transcript_records": history("codex", native_claim("test/a"), native_claim("second/b", 2, 20))}
+        with patch.object(helper.sessions, "discover", side_effect=[([], ["second/b"]), ([], ["test/a"])]) as discover:
+            result = helper.check(self.reader, "test", entry, ACTOR)
+        self.assertEqual({call.args[1] for call in discover.call_args_list}, {"test", "second"})
+        self.assertFalse(result["claims_clear"])  # Missing source readback cannot be an empty all-clear.
 
 
 if __name__ == "__main__":

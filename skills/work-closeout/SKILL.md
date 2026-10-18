@@ -30,7 +30,7 @@ commands:
     source: skill
     resource_path: scripts/check_claims.py
     example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--harness", "codex", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
-    purpose: Inventories the session's claims across the owner's installed repositories and refuses an all-clear until releases and retained PR handoffs are verified; never writes.
+    purpose: Inventories the session's claims across installed repositories of every account derived from native receipts and refuses an all-clear until releases and retained PR handoffs are verified; never writes.
   - name: session-reminder-link
     source: skill
     resource_path: scripts/reminder_link.py
@@ -233,18 +233,21 @@ preserved, or intentionally left in place.
 ## Claim Disposition
 
 Before reporting `Safe to exit: yes`, account for every claim this session took,
-including earlier turns, other repositories and PR-only work. For each GitHub
-owner in that record, run:
+including earlier turns, other repositories and PR-only work. Run:
 
 ```bash
-uv run <skill-dir>/scripts/check_claims.py --owner OWNER --harness codex \
+uv run <skill-dir>/scripts/check_claims.py --harness codex \
   --session NATIVE_ID --transcript /absolute/native-transcript.jsonl
 ```
 
 Use `--harness claude` on Claude Code. Both use the same procedure. The native
 transcript must belong to that exact session and retain its timestamped history.
-The check inventories paged comments and status on all installed repositories
-of that owner, including closed issues and PR-only claims. Preserve its coverage
+The check derives GitHub accounts from maintained claim-write receipts in the
+native transcript, then inventories paged comments and status on their installed
+repositories, including closed issues and PR-only claims. Optional repeated
+`--owner ACCOUNT` flags add scope; they never narrow the accounts found in history.
+Missing native identity or a different running harness refuses an all-clear.
+Preserve its coverage
 and released-claim links as closeout evidence; it proves claim disposition only,
 not readiness or permission to discard artifacts. With no GitHub work or claims,
 record this step as not applicable instead of requiring GitHub access.
@@ -257,8 +260,13 @@ This is the existing source-authored release, not `release-claim`'s Supervisor
 attestation of an ended session. It releases this ownership only. Read the
 [claim contract](../github/references/cli-reference.md#planning-claim) before
 releasing or repairing a retained-PR handoff. Never release another session's
-claim. Run the check again after the write; only exit 0 with `claims_clear: true`
-and complete coverage for every relevant owner permits an all-clear.
+claim. Run the check after the write; only exit 0 with `claims_clear: true`
+and complete coverage permits an all-clear. Leave its JSON visible in the native
+tool output; use `tee` if a saved copy is needed. The Supervisor's safe-verdict
+reader requires that fresh invocation result to cover every native source claim.
+A saved report read with `cat`, an earlier proof before another claim or PR was
+created, and final-answer prose do not satisfy shutdown acceptance. Sessions
+whose native history contains no claims keep their existing exit path.
 
 An open PR need not merge before a session exits. Its exact authored release
 must name the retained PR, and the check verifies the same repository, source
@@ -270,7 +278,16 @@ inventory or unverified retained PR keeps the verdict conditional/no. Record the
 reason and continue independent work; do not turn a failed read into no claims.
 If scope outside the reported installation coverage remains uncertain, do not
 claim a complete inventory. The Supervisor's post-process release is recovery,
-not a substitute for this executing-session check.
+not a substitute for this executing-session check. Recovery after verified process
+exit still reads the original unqualified declaration and checks live activity,
+so historical ended sessions without a pre-exit receipt can release through the
+existing Supervisor attestation route.
+Normal Supervisor close-out candidates, native ended-session proof and guarded
+terminal cleanup consume the accepted verdict. A historical claimed session
+without the new proof remains ineligible there; its claims can still be recovered
+through the verified post-process route. Resume the source session and complete
+its check before requesting normal safe-exit acceptance. Preserve its terminal
+when that proof cannot be obtained.
 
 ## Consuming Readiness Evidence
 

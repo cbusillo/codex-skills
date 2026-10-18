@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+import claim_receipts
+
 MEMORY_CITATION_TAIL = re.compile(
     r"^<oai-mem-citation>(?:(?!</?oai-mem-citation>).)*"
     r"^</oai-mem-citation>\s*\Z",
@@ -341,6 +343,13 @@ def summarize(records: list[dict], harness: str) -> dict:
         "recognized" if result["safe_verdict"] else
         "unrecognized" if "Safe to exit:" in verdict_text else "absent"
     )
+    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness == "claude" else
+                  {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"})
+    session = next(iter(identities)) if len(identities) == 1 else None
+    disposition = claim_receipts.acceptance(records, harness, session)
+    result["claim_disposition"] = disposition
+    result["declared_safe_verdict"] = result["safe_verdict"]
+    result["safe_verdict"] = result["safe_verdict"] and disposition["clear"]
     # A turn end with a live task is a wait on that task; with none, nothing will resume the turn.
     result["background_tasks"] = [
         {"task_id": task_id, "started": started} for task_id, started in running_tasks.items()
