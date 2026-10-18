@@ -448,6 +448,24 @@ def discover_handoff(reader, entry, actor):
                           else "helper-recorded session marker" if writer
                           else "native comment-write receipt" if url in receipt_urls else "exact-ID handoff")
             return {**entry, "handoff_url": url, "_handoff_provenance": provenance}, evidence
+    # A listing only nominates a comment. Every check runs again on the comment
+    # read back on its own, because it may have been edited since the listing.
+    def ended_before(evidence):
+        return release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
+    def summary_of_session(evidence):
+        text = evidence.get("body") or ""
+        return ((evidence.get("user") or {}).get("login") == actor and github_api.recorded_writer(text, entry["session_id"]) is not False
+                and re.search(rf"(?im)^(?:Native[ _-]*)?Session(?:[ _-]*ID)?[ \t]*[:=][ \t]*{re.escape(entry["session_id"])}[ \t]*$", text)
+                and release.related_sessions_match(text, entry["session_id"])
+                and not text.startswith("Claimed by ") and not claim.records(text)
+                and re.search(r"(?im)^(?:\*\*)?(?:Safe to exit: yes|Ready for the merge train|Engineering ready|(?:Engineering )?handoff\b|handed off\b|engineering complete\b|completed\b)", text)
+                and ended_before(evidence))
+    def ownership_of_session(evidence):
+        parsed = claim.records(evidence.get("body") or "")
+        return ((evidence.get("user") or {}).get("login") == actor
+                and len(parsed) == 1 and parsed[0]["session"] == entry["session_id"]
+                and github_api.recorded_writer(evidence.get("body") or "", entry["session_id"]) is not False
+                and ended_before(evidence))
     # A summary without a transcript URL must name the exact native ID.
     threads = {(r["repo"], r["issue"]) for r in entry.get("_inventory_claims", [])}
     if entry.get("_handoff_thread"):
@@ -463,16 +481,11 @@ def discover_handoff(reader, entry, actor):
                 raise
         comments = cache[(repo, number)]
         for evidence in reversed(comments):
-            text = evidence.get("body") or ""
-            if ((evidence.get("user") or {}).get("login") == actor and github_api.recorded_writer(text, entry["session_id"]) is not False
-                    and re.search(rf"(?im)^(?:Native[ _-]*)?Session(?:[ _-]*ID)?[ \t]*[:=][ \t]*{re.escape(entry["session_id"])}[ \t]*$", text)
-                    and release.related_sessions_match(text, entry["session_id"])
-                    and not text.startswith("Claimed by ") and not claim.records(text)
-                    and re.search(r"(?im)^(?:\*\*)?(?:Safe to exit: yes|Ready for the merge train|Engineering ready|(?:Engineering )?handoff\b|handed off\b|engineering complete\b|completed\b)", text)
-                    and release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])):
+            if summary_of_session(evidence):
                 url = evidence["html_url"]
                 checked = handoff(reader, {**entry, "handoff_url": url}, actor)
-                return {**entry, "handoff_url": url, "_handoff_provenance": "exact-ID summary"}, checked
+                if summary_of_session(checked):
+                    return {**entry, "handoff_url": url, "_handoff_provenance": "exact-ID summary"}, checked
     # Interrupted sessions may have no public closeout. The inventory's original
     # native ownership record is a recovery context, not a fabricated summary.
     for row in entry.get("_inventory_claims", []):
@@ -480,15 +493,11 @@ def discover_handoff(reader, entry, actor):
         if comments is None:
             comments = reader.paged_json(f"/repos/{row['repo']}/issues/{row['issue']}/comments", step_prefix="backfill_source_context")
         source = next((c for c in comments if c.get("id") == row["claim_comment_id"]), None)
-        if source is None or (source.get("user") or {}).get("login") != actor:
-            continue
-        parsed = claim.records(source.get("body") or "")
-        if (len(parsed) == 1 and parsed[0]["session"] == entry["session_id"]
-                and github_api.recorded_writer(source.get("body") or "", entry["session_id"]) is not False
-                and release.stamp(source.get("updated_at") or source.get("created_at")) <= release.stamp(entry["ended_at"])):
+        if source is not None and ownership_of_session(source):
             url = source.get("html_url") or f"https://github.com/{row['repo']}/issues/{row['issue']}#issuecomment-{source['id']}"
             checked = handoff(reader, {**entry, "handoff_url": url}, actor)
-            return {**entry, "handoff_url": url, "_handoff_provenance": "original native ownership record; closeout verified separately"}, checked
+            if ownership_of_session(checked):
+                return {**entry, "handoff_url": url, "_handoff_provenance": "original native ownership record; closeout verified separately"}, checked
     raise ValueError("no authored handoff bound to the exact native transcript/session; reconcile this session")
 
 

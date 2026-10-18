@@ -448,17 +448,39 @@ class ReleaseTests(unittest.TestCase):
             helper.discover_handoff(self.reader, self.written_entry(records, body), ACTOR)
         self.assertIs(helper.github_api.recorded_writer(body, "child-thread"), True)
 
-    def test_exact_session_summary_written_by_another_session_does_not_bind(self):
+    def test_fallbacks_check_the_comment_they_return_not_only_the_listing(self):
+        # A listing only nominates; another session may edit the comment before it is read back.
+        def written(text, writer):
+            return helper.github_api.body_with_operation_marker(text, "ab" * 16, writer)
+        def listed_then_read(listed, read):
+            url = "https://github.com/test/a/issues/1#issuecomment-10"
+            self.reader.paged_json.return_value = [{**comment(10, listed), "html_url": url}]
+            self.reader.get_json.return_value = {**comment(10, read), "html_url": url,
+                                                 "issue_url": "https://api.github.com/repos/test/a/issues/1"}
         summary = f"Engineering handoff\nSession: {SOURCE['session']}"
-        entry = {**self.entry, "handoff_url": None, "_handoff_thread": ("test/a", 1)}
-        other = helper.github_api.body_with_operation_marker(summary, "ab" * 16, "another-session")
-        self.reader.paged_json.return_value = [{**comment(10, other), "html_url": self.entry["handoff_url"]}]
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
-        own = helper.github_api.body_with_operation_marker(summary, "ab" * 16, SOURCE["session"])
-        self.reader.paged_json.return_value = [{**comment(10, own), "html_url": self.entry["handoff_url"]}]
-        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-        self.assertEqual(found["_handoff_provenance"], "exact-ID summary")
+        ownership = "Claimed by trial\n\n" + helper.claim.marker(SOURCE)
+        routes = {
+            "exact-ID summary": ({**self.entry, "handoff_url": None, "_handoff_thread": ("test/a", 1)}, summary),
+            "original native ownership record; closeout verified separately":
+                ({**self.entry, "handoff_url": None, "_inventory_claims": [self.inventory_row(claim_comment_id=10)]}, ownership),
+        }
+        for provenance, (entry, text) in routes.items():
+            own, other = written(text, SOURCE["session"]), written(text, "another-session")
+            with self.subTest(provenance, case="own record when listed and read"):
+                listed_then_read(own, own)
+                found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+                self.assertEqual(found["_handoff_provenance"], provenance)
+            for case, listed, read in (("another session's record", other, other),
+                                       ("edited by another session after the listing", own, other)):
+                with self.subTest(provenance, case=case):
+                    listed_then_read(listed, read)
+                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                        helper.discover_handoff(self.reader, entry, ACTOR)
+            with self.subTest(provenance, case="edited after the session ended"):
+                listed_then_read(own, own)
+                self.reader.get_json.return_value["updated_at"] = "2026-01-01T00:03:00Z"
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
 
     def test_full_write_receipt_survives_shell_outside_the_heredoc_parser(self):
         # Each write follows syntax the heredoc parser once refused, so the call's receipt was ignored.
