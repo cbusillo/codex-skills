@@ -1152,6 +1152,15 @@ verification.
   product's own stable-lane secret into another of its lanes without
   collecting the value; see the
   [write-action contract](references/write-action-helper-contract.md#copying-a-managed-runtime-secret).
+- `GET /v1/contexts/{context}/runtime-settings` and `/secrets`, with their
+  `/instances/{instance}/...` variants: names-only local-extension reads
+  (`context-runtime-settings-read`, `instance-runtime-settings-read`,
+  `context-secrets-read`, `instance-secrets-read`). Supply `--context` and,
+  for instance commands, `--instance`. Settings show `keys` and `withheld_keys`
+  by record scope; secrets show name, integration, scope and status. These
+  inventories can include inherited global records and reflect caller access.
+  Read the [names-only contract](references/write-action-helper-contract.md#names-only-settings-and-secret-reads)
+  for output bounds and the service's plain-value transport limitation.
 - `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`: Bounded
   local-extension read (`target-replacement-operation-read --operation-id`)
   for why a testing or stable Odoo deploy failed: take the id from
