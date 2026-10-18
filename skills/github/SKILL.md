@@ -1031,8 +1031,7 @@ the landing route:
   merged, releasable, or clean, and before a release. Read the PR and its
   checks for the current head SHA. Match background review evidence to that
   SHA. Unresolved blocking findings against it block the merge or release even
-  when CI is green, until they are addressed, deferred,
-  or declined with a recorded reason under
+  when CI is green, until they are accounted for under
   [reviews by another model](../references/model-review.md). Findings from a
   detached `auto-review-<hex>` worktree are current when their snapshot SHA
   matches the head and history otherwise; those worktrees are not dirty local

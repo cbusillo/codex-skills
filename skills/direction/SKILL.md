@@ -608,8 +608,7 @@ Read [reviews by another model](../references/model-review.md) first; it says
 how to weigh a finding. Then apply the split that reference points here for:
 
 - A finding that **adds** (a test, a branch, a safeguard, a criterion, a
-  step) is the executing agent's to judge: act on it, decline it with a
-  recorded reason, or defer it.
+  step) is the executing agent's to weigh under that reference.
 - A finding that **removes or redirects at the level the file names** is not:
   retire a subsystem or design, stop a workstream, change the purpose, journey,
   or stop boundaries, add a milestone, abandon one before it ships, or close

@@ -62,7 +62,10 @@ budget, and put both results in the PR's review note.
    ask the reviewer to read it directly. Do not paste file contents, your
    argument that the change is right, or the answer you expect. Ask for a
    realistic trigger and a severity for each finding, and allow the answer
-   "none".
+   "none". For each defect, ask for every sibling path with the same cause, not
+   just one counterexample, so the whole kind is fixed at once. On a rereview,
+   name what changed since the last review and ask the reviewer to cover that
+   plus what it touches.
 2. Run each reviewer from this skill's base directory:
 
    ```bash
