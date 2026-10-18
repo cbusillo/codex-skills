@@ -24,6 +24,55 @@ import codex_session_proxy as proxy
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_clock_request_then_client_shutdown_preserves_only_a_fresh_verdict(self):
+        from websockets.asyncio.client import unix_connect
+        for action in (None, "thread/queue/add", "thread/resume", "turn/start", "item/commandExecution/requestApproval"):
+            with self.subTest(action=action), ReceiptFixture(str(uuid.uuid4())) as f:
+                closure.replace_rows([])  # Exercise first finish, without an older receipt.
+                task, request, response, _ = await self.start_client(f)
+                endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
+
+                async def server_request(method, result):
+                    f.server_request = {"id": "server-request", "method": method, "params": {"threadId": f.session}}
+                    before = len(f.approval_results)
+                    async with unix_connect(endpoint) as ws:
+                        await ws.send(json.dumps({"id": 0, "method": "initialize", "params": {}}))
+                        self.assertIn("result", json.loads(await ws.recv()))
+                        message = json.loads(await asyncio.wait_for(ws.recv(), 2))
+                        self.assertEqual(message["method"], method)
+                        await ws.send(json.dumps({"id": message["id"], "result": result}))
+                        async with asyncio.timeout(3):
+                            while len(f.approval_results) == before:
+                                await asyncio.sleep(.01)
+                    f.server_request = None
+
+                try:
+                    self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
+                    with f.transcript.open("a") as stream:
+                        for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                            stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
+                    if action == "item/commandExecution/requestApproval":
+                        await server_request(action, {"decision": "approved"})
+                    elif action:
+                        self.assertIn("result", await self.send(task, request, response, action, f.session, message="later"))
+                    before = closure.action_time(f.session)
+                    await server_request("currentTime/read", {})
+                    after = closure.action_time(f.session)
+                    f.rpc_results["thread/unsubscribe"] = {"status": "unsubscribed"}
+                    self.assertIn("result", await self.send(task, request, response, "thread/unsubscribe", f.session))
+                finally:
+                    (f.root / "stop").touch()
+                    self.assertEqual(await asyncio.wait_for(task, 8), 0)
+                if action:
+                    with self.assertRaises(ValueError):
+                        await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                    self.assertTrue(closure.action_pending(f.session))
+                else:
+                    closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                    self.assertTrue(closed["process_exit_verified"])
+                    self.assertFalse(closure.action_pending(f.session))
+                self.assertEqual(after, before)
+
     async def test_failed_queue_requires_exact_resume_and_fresh_safe_turn_before_finish(self):
         from test_codex_session import SESSION
         with ReceiptFixture(str(uuid.uuid4())) as f:
