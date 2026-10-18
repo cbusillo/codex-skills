@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from skills.supervisor.scripts import account_choice
 import review_policy
+from review_worktree import is_review_scratch
 
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
@@ -504,9 +505,7 @@ def branch_diff(repo: Path) -> bytes:
         ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
         capture_output=True,
     )
-    project_files = [name for name in untracked.stdout.split(b"\0") if name and not re.fullmatch(
-        rb"\.model-review-[A-Za-z0-9_]+/.*", name,
-    )]
+    project_files = [name for name in untracked.stdout.split(b"\0") if name and not is_review_scratch(name)]
     if tracked.returncode != 0 or untracked.returncode != 0 or project_files:
         raise RuntimeError("review checkout has uncommitted or untracked files; commit the change first")
     base = subprocess.run(

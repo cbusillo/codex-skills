@@ -1816,8 +1816,13 @@ uv run skills/supervisor/scripts/pending_reviews.py \
 
 Add `--apply` to run the pending reviews serially and post completed nonempty
 results. Use the same evidence directory for every invocation for this run:
-its lock prevents concurrent passes, and its launch journal prevents replay
-after interruption, failure or an uncertain comment write. The shared GitHub
+its launch journal prevents replay after interruption, failure or an uncertain
+comment write. A read-only advisory lock on the ledger's containing directory
+also serializes passes using that private run directory, even after an atomic
+ledger replacement or with different evidence directories. It changes no ledger
+or directory contents. A held run lock means wait for that sweep, never select
+another ledger directory to evade it. Distinct runs use their own private run
+directories. The evidence lock also protects shared output from different runs. The shared GitHub
 reader owns pagination and transport retries; the comment helper owns write
 reconciliation. This helper never retries inference or an uncertain write.
 Read a refused outcome and its journal; a real permission or authorization
@@ -1826,9 +1831,14 @@ result retained before an uncertain post remains available for readback and
 manual reconciliation through the existing GitHub helper. Remote receipts let
 a later sweep skip confirmed posts without replaying them.
 
-A request comes from a configured automation identity and contains
-`Supervisor runs the review`, a head SHA (a matching abbreviated SHA is
-accepted), and an explicit prompt. Use this format for new requests:
+A request comes from a configured automation identity and uses the shared
+readiness request classifier. Write `Supervisor runs the review` on its own
+line, a head SHA (a matching abbreviated SHA is accepted), and an explicit
+prompt. Quoted Supervisor phrases and incidental prose do not create requests.
+Requests are ordered by creation time; editing an older request does not
+supersede a newer one. A served or failed request id/head never launches again
+because it was edited. Post a new request comment for a new review or scope;
+never use that to evade a denial. Use this format for new requests:
 
 ```text
 Supervisor runs the review.
@@ -1858,14 +1868,19 @@ with the current head and prompt; never run a review against a guessed commit or
 
 The authoring session must match a trusted structured branch claim on an
 issue recorded for that repository in the ledger or referenced by the PR.
-This supports briefs that name a parent before the worker creates its own issue. `Author session:` resolves
-multiple recorded authors on the same branch; otherwise exactly one must
-match. The ledger's `author_provider`, when present, records the actual
+This supports briefs that name a parent before the worker creates its own issue.
+`Author session:` resolves multiple recorded authors on the same branch;
+otherwise exactly one must match. When the selected worktree is on a successor
+branch rather than the PR branch, `Author session:` is required. A branch that
+happens to share the commit must not become the inferred author or provider. The ledger's `author_provider`, when present, records the actual
 provider; otherwise the native `codex`/`claude` harness family records
 OpenAI/Anthropic, as enforced by the launcher. The existing review helper
 checks the standing policy and selects the other provider; there is no Google
 fallback. Worktree matching requires the exact same-repository head, a matching origin
-and a completely clean checkout, including untracked files. It prefers the
+and a clean checkout. Tracked changes and untracked project files refuse;
+the same shared predicate as `review_with_model` permits only its untracked
+`.model-review-*` scratch files. Existing helper scratch does not trigger a
+false dirty refusal, and no worktree contents are deleted or cleaned. It prefers the
 PR branch, otherwise requires one candidate or an explicit absolute `Worktree:`
 path among the registered candidates. A successor branch at the same commit
 is valid; its branch claim can identify the authoring session too.
@@ -1874,9 +1889,11 @@ It never fetches, creates, cleans or changes a worktree.
 Confirmed writes, including the GitHub helper's `reconciled_applied` outcome,
 report `status: posted`. A later sweep also reports the recorded `author_session`
 and `author_provider` on `already_completed`, even when the posting process
-ended before updating its journal. The Supervisor uses `notification_needed`
-and the completion comment to route those recovered results without launching
-inference or posting again. Older receipts without identity metadata attempt
+ended before updating its journal. The Supervisor uses the stable `completion_comment` to route each result at
+most once, without launching inference or posting again. `notification_needed`
+reports whether a result still lacks a later trusted weighed disposition;
+it becomes false after that disposition. It is not a history of terminal input,
+which remains the Supervisor's responsibility. Older receipts without identity metadata attempt
 the same trusted branch-claim binding; an unavailable binding is reported as
 `notification_error` rather than guessed.
 The Supervisor sends that session the posted result through its normal exact
@@ -1885,10 +1902,16 @@ never calls `ready`. Its raw receipt deliberately differs from the author's
 head-bound weighed disposition, which remains required by the readiness helper.
 For compatibility with that shared completion contract, an already posted
 trusted weighed disposition for the current head after the request also ends
-this helper's queue item. That disposition is not provider-specific: it can
+this helper's queue item, reporting `status: already_weighed` and
+`requested_provider_confirmed: false` when no Supervisor receipt exists.
+That disposition is not provider-specific: it can
 weigh another review, so it is not proof the requested Supervisor provider ran.
 Such reports set `notification_needed: false` because the author has already
-recorded a disposition. The author remains responsible for the review of record
+recorded a disposition. A manually posted report explicitly headed as a review
+run by the Supervisor, bound to this head after the request, is instead reported
+as `reported_review`. It needs the author's verification and disposition and
+does not attest provider completion. Echoing the original prompt inside that
+report cannot launch another paid review. The author remains responsible for the review of record
 required by the task; this helper never creates that attestation.
 
 Shared paths keep their existing authority: the account reader's policy,
@@ -1898,3 +1921,13 @@ review; this helper cannot make workers' receipt-store problem disappear.
 Its own writable state lives only in the caller's private evidence directory.
 An unavailable directory or held lock blocks this sweep; no alternate path,
 account, credential or terminal is chosen automatically.
+
+Malformed owned ledger entries are excluded from authorization and reported
+in `ledger_errors`; every copy of a duplicate session identity is excluded.
+Discovery continues for the remaining valid entries, with a nonzero exit to
+signal partial coverage. The Supervisor corrects those registry records before
+claiming complete coverage. Unparseable JSON or a malformed root collection
+cannot establish run scope and stops the sweep; supply a corrected ledger or
+a labeled valid derivative in the same private run directory. The helper never
+rewrites its input. Repository names and checkout mapping keys compare without
+case, and duplicate mappings differing only in case refuse.

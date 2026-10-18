@@ -11,24 +11,28 @@ import argparse
 import fcntl
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from collections import Counter
+from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "skills/github/scripts"))
+sys.path.insert(0, str(ROOT / "skills/model-review/scripts"))
 from github_api import redact_string
 from github_direction_next import issue_references
 from github_identity import automation_login, configured_bot_logins
 from github_plan_claim import records, without_operation_marker
 from github_read import (GitHubReader, GitHubReadError, GitHubReadShapeError,
                          automation_only_gh_prefix_args, resolve_repo_from_remote)
-from ready_handoff import review_receipt_head
+from ready_handoff import review_receipt_head, review_record
+from review_worktree import is_review_scratch
 
 REPO = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
-REQUEST = re.compile(r"supervisor runs the review", re.I)
 COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)#issuecomment-(\d+)")
 HEAD = re.compile(r"\b(?:head(?: SHA)?|commit)\s*[:=]?\s*`?([0-9a-f]{7,40})\b", re.I)
 RECEIPT = re.compile(r"<!-- supervisor-review (.*?) -->")
@@ -42,19 +46,39 @@ def run(args, **kwargs):
     return subprocess.run(args, capture_output=True, text=True, stdin=subprocess.DEVNULL, **kwargs)
 
 
-def review_entries(path):
+@contextmanager
+def run_lock(ledger):
+    """A read-only directory lock binds the run across registry/evidence replacements."""
+    directory = ledger.resolve().parent
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise BlockingIOError(error.errno, f"pending review sweep already holds run directory {directory}") from error
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def review_entries(path, *, errors=None):
     entries = json.loads(path.read_text())
     if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
-        raise ReviewError("ledger must be an array of session objects")
-    selected, seen = [], set()
-    for entry in entries:
+        raise ReviewError("ledger must be an array of session objects; supply a corrected ledger or labeled valid derivative")
+    counts = Counter(e["session_id"] for e in entries if e.get("supervisor_owned") is True
+                     and isinstance(e.get("session_id"), str))
+    selected = []
+    for index, entry in enumerate(entries):
         if entry.get("supervisor_owned") is not True:
             continue
         if (not isinstance(entry.get("session_id"), str) or not entry["session_id"].strip()
-                or entry["session_id"] in seen or entry.get("harness") not in ("codex", "claude")
+                or counts[entry["session_id"]] != 1 or entry.get("harness") not in ("codex", "claude")
                 or not isinstance(entry.get("repository"), str) or not REPO.fullmatch(entry["repository"])):
-            raise ReviewError("Supervisor entry needs a unique session_id, native harness and OWNER/REPO")
-        seen.add(entry["session_id"])
+            reason = "Supervisor entry needs a unique session_id, native harness and OWNER/REPO"
+            if errors is None:
+                raise ReviewError(reason)
+            errors.append({"ledger_index": index, "error": reason})
+            continue
         selected.append(entry)
     return selected
 
@@ -74,16 +98,20 @@ def raw_receipt(body):
         except json.JSONDecodeError:
             return None
         if (isinstance(value, dict) and type(value.get("request")) is int
-                and isinstance(value.get("request_updated_at"), str)
                 and isinstance(value.get("head"), str) and re.fullmatch(r"[0-9a-f]{40}", value["head"])):
             return value
     return None
 
 
+def reported_review(body):
+    first = body.strip().splitlines()[0].replace("**", "") if body.strip() else ""
+    return re.match(r"(?i)^Review of record[:,].*\brun by the Supervisor\b", first) is not None
+
+
 def latest_request(comments, logins):
-    asks = [c for c in comments if trusted(c, logins) and REQUEST.search(c.get("body") or "")
-            and raw_receipt(c.get("body") or "") is None]
-    return max(asks, key=lambda c: (c.get("updated_at") or c["created_at"], c["id"]), default=None)
+    asks = [c for c in comments if trusted(c, logins) and review_record(c.get("body") or "") == "request"
+            and raw_receipt(c.get("body") or "") is None and not reported_review(c.get("body") or "")]
+    return max(asks, key=lambda c: (c["created_at"], c["id"]), default=None)
 
 
 def comment_binding(comment):
@@ -95,19 +123,35 @@ def comment_binding(comment):
 
 
 def completion_record(comments, request, head, logins):
-    weighed = None
+    weighed, supervisor, reported = None, None, None
+    def key(comment):
+        return comment["created_at"], comment["id"]
     for comment in comments:
         if not trusted(comment, logins):
             continue
         body = comment.get("body") or ""
         receipt = raw_receipt(body)
         if receipt and all(receipt.get(k) == v for k, v in receipt_for(request, head).items()):
-            return {"kind": "supervisor", "comment": comment, "receipt": receipt}
-        if (review_receipt_head(body) == head
-                and (comment.get("updated_at") or comment["created_at"]) >=
-                (request.get("updated_at") or request["created_at"])):
+            if (receipt.get("request_updated_at") is not None
+                    and receipt["request_updated_at"] != (request.get("updated_at") or request["created_at"])):
+                raise ReviewError("served review request was edited; post a new request comment for changed scope")
+            if supervisor is None or key(comment) > key(supervisor["comment"]):
+                supervisor = {"kind": "supervisor", "comment": comment, "receipt": receipt}
+        if reported_review(body) and key(comment) >= key(request):
+            try:
+                bind_head(comment, head)
+            except ReviewError:
+                pass
+            else:
+                if reported is None or key(comment) > key(reported["comment"]):
+                    reported = {"kind": "reported", "comment": comment}
+        if (review_receipt_head(body) == head and key(comment) >= key(request)
+                and (weighed is None or key(comment) > key(weighed["comment"]))):
             weighed = {"kind": "weighed", "comment": comment}
-    return weighed
+    if supervisor:
+        supervisor["acknowledged"] = weighed is not None and key(weighed["comment"]) >= key(supervisor["comment"])
+        return supervisor
+    return weighed or reported
 
 
 def completion_report(record, io, repo, pr, entries, logins, request):
@@ -122,15 +166,17 @@ def completion_report(record, io, repo, pr, entries, logins, request):
         except ReviewError as reason:
             session, author, error = None, None, str(reason)
     comment = record["comment"]
-    return {"status": "already_completed", "head": pr["head"]["sha"], "request": request["id"],
+    status = {"supervisor": "already_completed", "weighed": "already_weighed", "reported": "reported_review"}
+    return {"status": status[record["kind"]],
+            "completion_kind": record["kind"], "requested_provider_confirmed": record["kind"] == "supervisor",
+            "head": pr["head"]["sha"], "request": request["id"],
             "author_session": session, "author_provider": author, "notification_error": error,
-            "notification_needed": record["kind"] == "supervisor",
+            "notification_needed": record["kind"] != "weighed" and not record.get("acknowledged", False),
             "completion_comment": comment.get("html_url") or comment.get("url") or comment["id"]}
 
 
 def receipt_for(request, head):
-    return {"request": request["id"], "request_updated_at": request.get("updated_at") or request["created_at"],
-            "head": head}
+    return {"request": request["id"], "head": head}
 
 
 def inline_prompt(body):
@@ -233,8 +279,10 @@ def check_worktree(path, repo, branch, head):
         raise ReviewError("worktree repository mismatch")
     if git(path, "rev-parse", "HEAD") != head or git(path, "symbolic-ref", "--short", "HEAD") != branch:
         raise ReviewError("worktree head or branch moved")
-    if git(path, "status", "--porcelain", "--untracked-files=all"):
-        raise ReviewError("dirty worktree (including untracked files)")
+    git(path, "diff", "--quiet", "HEAD", "--")
+    names = git(path, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
+    if any(name and not is_review_scratch(name) for name in names):
+        raise ReviewError("dirty worktree (including untracked project files)")
 
 
 def find_worktree(checkout, repo, branch, head, preferred=None):
@@ -343,6 +391,8 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         raise ReviewError("Worktree: must name one absolute registered path")
     worktree = find_worktree(checkout, repo, branch, head, Path(paths[0]) if paths else None)
     worktree_branch = git(worktree, "symbolic-ref", "--short", "HEAD")
+    if worktree_branch != branch and not re.search(r"(?im)^Author session:", request["body"]):
+        raise ReviewError("successor worktree requires explicit Author session: from its trusted branch claim")
     session, author = bind_session(io, repo, {branch, worktree_branch}, entries, logins, request, pr)
     report = {"status": "pending", "head": head, "request": request["id"], "author_session": session,
               "author_provider": author, "worktree": str(worktree)}
@@ -392,7 +442,8 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
                         f"Model source: {metadata.get('model_source', 'unknown')}\n"
                         f"Authoring session to notify: {session}\n\n"
                         "The author weighs these findings before ready.\n\n" + review + "\n\n"
-                        "<!-- supervisor-review " + json.dumps({**receipt_for(request, head), "author_session": session, "author_provider": author}, sort_keys=True) + " -->\n")
+                        "<!-- supervisor-review " + json.dumps({**receipt_for(request, head), "author_session": session, "author_provider": author,
+                            "request_updated_at": request.get("updated_at") or request["created_at"]}, sort_keys=True) + " -->\n")
         receipt = io.post(repo, number, body)
         journal.write_text(json.dumps({**retained, "phase": "posted", "post": receipt}, indent=2))
         return {**report, "status": "posted", "post": receipt, "evidence": str(result_file),
@@ -402,7 +453,8 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
 
 def sweep(io, entries, checkouts, logins, evidence, apply=False):
     reports = []
-    repos = sorted({e["repository"] for e in entries if e.get("supervisor_owned") is True})
+    repos = sorted({e["repository"].casefold() for e in entries if e.get("supervisor_owned") is True})
+    checkouts = {repo.casefold(): path for repo, path in checkouts.items()}
     for repo in repos:
         print(f"Discovering Supervisor reviews in {repo}", file=sys.stderr, flush=True)
         try:
@@ -429,23 +481,26 @@ def main():
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
-        entries = review_entries(args.ledger)
+        ledger_errors = []
+        entries = review_entries(args.ledger, errors=ledger_errors)
         checkouts = {}
         for mapping in args.checkout:
             repo, sep, path = mapping.partition("=")
-            if not sep or not REPO.fullmatch(repo) or not Path(path).is_absolute() or repo in checkouts:
+            if not sep or not REPO.fullmatch(repo) or not Path(path).is_absolute() or repo.casefold() in checkouts:
                 raise ReviewError("each --checkout needs a unique OWNER/REPO=/absolute/path")
-            checkouts[repo] = Path(path)
+            checkouts[repo.casefold()] = Path(path)
         logins = {v.casefold() for v in (*configured_bot_logins(), automation_login()) if v}
         if not logins:
             raise ReviewError("automation identities are not configured")
-        # Shared evidence location serializes invocations; a concurrent pass never duplicates inference/posts.
-        args.evidence_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with (args.evidence_dir / "pending-reviews.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            reports = sweep(IO(), entries, checkouts, logins, args.evidence_dir, args.apply)
-        print(json.dumps({"results": reports}, indent=2))
-        return int(any(r["status"] == "refused" for r in reports))
+        # The private run directory stays stable when the ledger is replaced
+        # atomically or callers choose different evidence directories.
+        with run_lock(args.ledger):
+            args.evidence_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with (args.evidence_dir / "pending-reviews.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                reports = sweep(IO(), entries, checkouts, logins, args.evidence_dir, args.apply)
+        print(json.dumps({"results": reports, "ledger_errors": ledger_errors}, indent=2))
+        return int(bool(ledger_errors) or any(r["status"] == "refused" for r in reports))
     except (ValueError, OSError) as error:
         print(json.dumps({"error": str(error)}))
         return 1

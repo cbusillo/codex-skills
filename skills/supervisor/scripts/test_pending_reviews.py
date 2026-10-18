@@ -8,6 +8,7 @@
 import copy
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -183,7 +184,7 @@ class DispatchTests(unittest.TestCase):
     def test_weighed_current_head_disposition_satisfies_shared_completion_contract(self):
         self.io.comments.append(comment(11, review_result_body("Existing review weighed.", SHA)))
         result = self.dispatch()
-        self.assertEqual(result["status"], "already_completed")
+        self.assertEqual(result["status"], "already_weighed")
         self.assertFalse(result["notification_needed"])
         self.assertFalse(any(c[0] == "review" for c in self.io.calls))
 
@@ -200,6 +201,49 @@ class DispatchTests(unittest.TestCase):
                 self.io.request["body"] = (f"Supervisor runs the review.\n{heading}\n"
                                             "Rebased on 20261017, at 1234567.\nPrompt:\nInspect helper.")
                 self.assertEqual(self.dispatch(apply=False)["status"], "pending")
+
+    def test_incidental_and_quoted_supervisor_prose_does_not_mask_the_request(self):
+        for body in ("pushed; Supervisor runs the review once CI is green", "> Supervisor runs the review.",
+                     f"Review report quotes `Supervisor runs the review`.\nHead: {SHA}\nPrompt:\nRead the report."):
+            with self.subTest(body=body):
+                self.io.comments = [self.io.request, comment(12, body)]
+                self.assertEqual(self.dispatch(apply=False)["request"], self.io.request["id"])
+
+    def test_manual_supervisor_report_echoing_the_prompt_waits_for_disposition_without_relaunch(self):
+        body = (f"**Review of record: Anthropic, run by the Supervisor** at head `{SHA}`.\n\n"
+                "Report includes the original request for context:\n" + self.io.request["body"])
+        self.io.comments.append(comment(12, body))
+        result = self.dispatch()
+        self.assertEqual(result["status"], "reported_review")
+        self.assertFalse(result["requested_provider_confirmed"])
+        self.assertTrue(result["notification_needed"])
+        self.assertEqual(result["author_session"], SESSION)
+        self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+
+    def test_author_disposition_stops_repeated_notification_reports(self):
+        self.dispatch()
+        self.io.comments.append(comment(12, review_result_body("Findings weighed.", SHA)))
+        result = self.dispatch()
+        self.assertFalse(result["notification_needed"])
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_editing_an_older_request_does_not_supersede_a_newer_request(self):
+        newer = comment(12, self.io.request["body"])
+        newer["created_at"] = newer["updated_at"] = "2026-10-17T21:00:00Z"
+        self.io.comments.append(newer)
+        self.io.request["updated_at"] = "2026-10-17T22:00:00Z"
+        self.assertEqual(self.dispatch(apply=False)["request"], newer["id"])
+
+    def test_editing_a_served_request_never_repeats_inference(self):
+        self.dispatch()
+        self.io.request["updated_at"] = "2026-10-17T21:00:00Z"
+        with self.assertRaises(reviews.ReviewError):
+            self.dispatch()
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_checkout_keys_are_case_insensitive(self):
+        reports = reviews.sweep(self.io, self.entries, {REPO.upper(): Path(self.temp.name)}, TRUSTED, self.evidence)
+        self.assertEqual([r["status"] for r in reports], ["pending"])
 
     def test_other_provider_from_author_harness(self):
         self.entries[0]["harness"] = "claude"
@@ -243,10 +287,12 @@ class DispatchTests(unittest.TestCase):
         for error, text in [(reviews.ReviewError("permission denied"), ""), (None, " \n")]:
             with self.subTest(error=error):
                 self.io.review_error, self.io.review_text = error, text
-                self.io.request["updated_at"] = str(error) + text
+                self.evidence = Path(self.temp.name) / ("failure-case" if error else "empty-case")
+                self.io.calls.clear()
                 with self.assertRaises(reviews.ReviewError):
                     self.dispatch()
                 self.assert_no_post()
+                self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
 
     def test_failed_or_interrupted_launch_is_not_replayed_on_next_sweep(self):
         self.io.review_error = reviews.ReviewError("permission denied")
@@ -270,8 +316,8 @@ class DispatchTests(unittest.TestCase):
     def test_existing_review_prompt_heading_inline_heading_and_direct_request(self):
         bodies = [
             f"Supervisor runs the review.\nHead: {SHA}\n\nReview prompt:\nInspect the helper.",
-            f"Review at new head `{SHA[:9]}`. Supervisor runs the review. Prompt:\n\n```text\nInspect the helper.\n```",
-            f"Supervisor runs the review, read-only, on {SHA}. Read the helper and tests. Check concrete failures.",
+            f"Supervisor runs the review.\nReview at new head `{SHA[:9]}`. Prompt:\n\n```text\nInspect the helper.\n```",
+            f"Supervisor runs the review.\nReview read-only on {SHA}. Read the helper and tests. Check concrete failures.",
         ]
         for body in bodies:
             with self.subTest(body=body):
@@ -339,6 +385,9 @@ class DispatchTests(unittest.TestCase):
         self.io.claims = [comment(5, marker({"branch": successor, "session": SESSION,
                                             "worker": "worker", "claimed_at": STAMP}))]
         with patch.object(reviews, "git", return_value=successor):
+            with self.assertRaises(reviews.ReviewError):
+                self.dispatch(apply=False)
+            self.io.request["body"] += f"\nAuthor session: {SESSION}\n"
             self.assertEqual(self.dispatch()["author_session"], SESSION)
 
     def test_new_request_during_review_never_posts(self):
@@ -379,7 +428,14 @@ class WorktreeTests(unittest.TestCase):
             git("-C", str(checkout), "worktree", "add", "-b", BRANCH, str(path))
             head = git("-C", str(path), "rev-parse", "HEAD")
             git("-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "advance main")
+            scratch = path / ".model-review-fixture_1"
+            scratch.mkdir()
+            (scratch / "diff.txt").write_text("review helper scratch")
             self.assertEqual(reviews.find_worktree(checkout, REPO, BRANCH, head), path.resolve())
+            git("-C", str(path), "add", str(scratch / "diff.txt"))
+            with self.assertRaises(reviews.ReviewError):
+                reviews.check_worktree(path, REPO, BRANCH, head)
+            git("-C", str(path), "restore", "--staged", "--", str(scratch / "diff.txt"))
             for repo, branch, sha in [("wrong/repo", BRANCH, head), (REPO, BRANCH, SHA)]:
                 with self.subTest(repo=repo, branch=branch, sha=sha), self.assertRaises(reviews.ReviewError):
                     reviews.find_worktree(checkout, repo, branch, sha)
@@ -406,6 +462,43 @@ class LedgerTests(unittest.TestCase):
                     path.write_text(json.dumps(value))
                     with self.assertRaises(reviews.ReviewError):
                         reviews.review_entries(path)
+
+
+    def test_malformed_entries_are_reported_without_authorizing_them_or_hiding_other_repositories(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "ledger.json"
+            good = entry()
+            bad = {**entry(), "session_id": "duplicate"}
+            path.write_text(json.dumps([good, bad, bad, {**entry(), "session_id": "bad", "harness": "unknown"}]))
+            errors = []
+            self.assertEqual(reviews.review_entries(path, errors=errors), [good])
+            self.assertEqual(len(errors), 3)
+
+
+class RunLockTests(unittest.TestCase):
+    def test_same_run_cannot_overlap_after_registry_replacement_or_with_another_evidence_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first, second = root / "first", root / "second"
+            first.mkdir()
+            second.mkdir()
+            ledger = first / "ledger.json"
+            ledger.write_text("[]")
+            code = ("import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
+                    "import pending_reviews as r; "
+                    "guard=r.run_lock(Path(sys.argv[2])); "
+                    "\ntry: guard.__enter__()\nexcept BlockingIOError: raise SystemExit(3)\n"
+                    "else: guard.__exit__(None,None,None)\n")
+            def attempt(path):
+                return subprocess.run([sys.executable, "-c", code, str(Path(reviews.__file__).parent), str(path)],
+                                      capture_output=True, text=True, timeout=30).returncode
+            with reviews.run_lock(ledger):
+                replacement = first / "replacement.json"
+                replacement.write_text("[]")
+                replacement.replace(ledger)
+                self.assertEqual(attempt(ledger), 3)
+                self.assertEqual(attempt(second / "ledger.json"), 0)
+            self.assertEqual(attempt(ledger), 0)
 
 
 class AdapterTests(unittest.TestCase):
