@@ -507,7 +507,11 @@ including non-dim text, establishes neither its author nor approval.
    After landing, load `github` and complete
    [After A Merge](../github/SKILL.md#after-a-merge), including
    [issue closure and planning metadata](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
-   for the work handed to you. Reconcile closure in the landing flow; do not
+   for the work handed to you. For every catalog landing, also complete
+   [catalog landing verification](references/helpers.md#catalog-landing-verification)
+   before reporting the landing finished: reconcile the runtime checkout and
+   smoke-launch both harnesses under the Supervisor's tmux server.
+   Reconcile closure in the landing flow; do not
    create a later agent qualification step or per-issue deploy check. The PR's
    tests and the deploy's existing health checks are the proof.
    For Q154's interim automatic routing, read the
