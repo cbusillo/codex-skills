@@ -95,6 +95,8 @@ def validate_closure(entry, supervisor_session):
     status = verify_closed(entry, supervisor_session)
     if not status["timestamp"] or release.stamp(status["timestamp"]) > ended:
         raise ValueError("transcript resumed after the recorded closure")
+    if "verdict_at" in entry and entry["verdict_at"] != status["timestamp"]:
+        raise ValueError("recorded verdict time differs from the verified transcript")
     paths = {Path(entry["transcript"]).resolve()}
     for root in entry.get("_transcript_roots", []):
         paths.update(p.resolve() for p in Path(root).rglob(f"*{entry['session_id']}*.jsonl"))
@@ -138,9 +140,9 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
         closed = {**existing[0], **{k: v for k, v in entry.items() if k.startswith("_")}}
         validate_closure(closed, supervisor_session)
         return closed
-    verify_closed(entry, supervisor_session)
+    status = verify_closed(entry, supervisor_session)
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
-              "process_exit_verified": True}
+              "verdict_at": status["timestamp"], "process_exit_verified": True}
     validate_closure(closed, supervisor_session)
     if not persist:
         return closed
