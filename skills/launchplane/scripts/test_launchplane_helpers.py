@@ -166,7 +166,9 @@ def test_agent_operator_contract_routes_every_local_consumer() -> None:
         operation["operation_id"]: operation["path"]
         for operation in artifact["contract"]["operations"]
     }
-    for command, (operation_id, modes) in contract.PROJECTED_HELPER_COMMANDS.items():
+    for command, (operation_id, modes) in {
+        **contract.PROJECTED_HELPER_COMMANDS, **contract.SERVICE_API_HELPER_COMMANDS,
+    }.items():
         assert contract.helper_command_path(command) == operation_paths[operation_id]
         assert modes
     for command, extension in contract.LOCAL_EXTENSION_ROUTES.items():

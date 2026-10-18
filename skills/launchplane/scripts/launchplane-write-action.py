@@ -9522,6 +9522,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
     add_testing_rebuild_parser(subparsers)
+    from launchplane_testing_private_ingress import add_parser as add_private_ingress_parser
+    add_private_ingress_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -10326,6 +10328,9 @@ def main(argv: list[str]) -> int:
         from launchplane_testing_rebuild import COMMANDS as testing_rebuild_commands, execute as execute_testing_rebuild
         if args.command in testing_rebuild_commands:
             return execute_testing_rebuild(sys.modules[__name__], args)
+        from launchplane_testing_private_ingress import COMMANDS as private_ingress_commands, execute as execute_private_ingress
+        if args.command in private_ingress_commands:
+            return execute_private_ingress(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
             instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""

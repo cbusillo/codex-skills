@@ -1019,6 +1019,16 @@ verification.
 
 ## Tools
 
+- `testing-private-ingress-dry-run` / `-apply` / `-readback` wrap the producer's
+  `prepare_testing_private_ingress` service API for one application testing
+  lane's registered private hostname. Read the
+  [private ingress caller contract](references/write-action-helper-contract.md#application-testing-private-ingress)
+  before use. Requests and saved review evidence stay in private files outside
+  the repository. Apply binds the exact request, service and plan, retains the
+  original key for recovery, and performs independent readback. This uses the
+  existing Director-agent identity, access list and wildcard certificate; no
+  DNS, access-list, certificate, credential or production write is added.
+
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,

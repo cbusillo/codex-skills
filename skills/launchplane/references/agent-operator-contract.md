@@ -8,6 +8,11 @@ schema and normalization versions, semantic digest, source provenance and
 operations. The conformance gate below prints them. Neither provenance nor a
 matching contract grants runtime authority. Contract freshness does not establish deployed runtime compatibility.
 
+The installed private testing ingress caller resolves its route from the
+producer's `prepare_testing_private_ingress` operation. Its explicit
+`SERVICE_API_HELPER_COMMANDS` bindings validate the `service_api` surface and
+modes without changing the artifact to advertise `agent_helper` authority.
+
 Run the offline conformance gate from the `launchplane` skill directory with:
 
 ```bash
