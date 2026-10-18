@@ -818,7 +818,9 @@ and say why.
   conflict or an explicit check requirement. The merge train owns freshness on
   train-routed PRs. Before a base update, apply the ownership and authorization
   checks in [Merge Readiness](references/repo-workflow.md#merge-readiness), then use
-  `gh-pr.py update-branch`. For local integration,
+  `gh-pr.py update-branch`. The helpers enforce this rule: when an update is
+  required for another reason, name it with `--required-by` or
+  `--refresh-required`. For local integration,
   use `git-commit-as-bot --git-command merge|pull|rebase|cherry-pick|revert|am`
   from the target directory, followed by that command's arguments, including
   `--continue` after resolving
