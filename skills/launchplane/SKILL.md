@@ -1168,6 +1168,9 @@ verification.
   intent, reviewed evidence, audit reason and recovery protocol are in the
   [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
   These are bounded local extensions and require deployed native service support.
+  A held operation can be continued with `testing-rebuild-resume` using its
+  original key and a freshly read revision, under the same configured caller;
+  see that contract for denial and ambiguous-reply handling.
 - `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`: Bounded
   local-extension read (`target-replacement-operation-read --operation-id`)
   for why a testing or stable Odoo deploy failed: take the id from

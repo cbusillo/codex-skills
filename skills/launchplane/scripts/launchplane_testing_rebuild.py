@@ -14,7 +14,8 @@ from typing import Any
 
 COMMAND = "testing-rebuild-submit"
 PLAN_COMMAND = "testing-rebuild-dry-run"
-COMMANDS = frozenset({COMMAND, PLAN_COMMAND})
+RESUME_COMMAND = "testing-rebuild-resume"
+COMMANDS = frozenset({COMMAND, PLAN_COMMAND, RESUME_COMMAND})
 COPY_SOURCES = {
     "empty": "empty",
     "production": "production_restore",
@@ -23,6 +24,12 @@ COPY_SOURCES = {
 
 
 def add_parser(subparsers: Any) -> None:
+    resume = subparsers.add_parser(RESUME_COMMAND, help="Resume the original held testing rebuild with its observed revision.")
+    resume.add_argument("--product", required=True)
+    resume.add_argument("--operation-id", required=True)
+    resume.add_argument("--idempotency-key", required=True)
+    resume.add_argument("--expected-updated-at", required=True)
+    resume.add_argument("--expected-attempt", required=True, type=int)
     for command in (PLAN_COMMAND, COMMAND):
         parser = subparsers.add_parser(command, help="Inspect or queue the native testing rebuild at its existing address.")
         parser.add_argument("--product", required=True)
@@ -187,6 +194,9 @@ def rejection(h: Any, request: dict[str, object], error: urllib.error.HTTPError)
 
 
 def execute(h: Any, args: argparse.Namespace) -> int:
+    if args.command == RESUME_COMMAND:
+        from launchplane_testing_rebuild_resume import execute as resume
+        return resume(h, args)
     request, body = intent(h, args)
     if args.command == PLAN_COMMAND:
         return execute_plan(h, args, request, body)

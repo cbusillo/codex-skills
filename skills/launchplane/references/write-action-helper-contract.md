@@ -393,6 +393,21 @@ local extensions until the vendored artifact is refreshed.
   candidate verification. It does not attest a healthy successor or completed
   restore. Save the JSON output outside the repository and inspect it.
 
+  `testing-rebuild-resume --product --operation-id --idempotency-key
+  --expected-updated-at --expected-attempt` explicitly continues the same held
+  operation. Read its current revision with `target-replacement-operation-read`
+  first; pass that operation's `updated_at`, `attempt` and original key. Resume
+  uses `POST /v1/products/{product}/testing-rebuild/operations/{operation_id}/resume`
+  through the configured service identity. The service requires fresh existing
+  authority from the original caller and preserves its immutable intent and
+  provider fences. No replacement payload or identity override is accepted.
+  The bounded response identifies the same testing operation and current
+  status/revision; acceptance does not prove completion. An ambiguous reply
+  keeps the original operation reference and requires a read before another
+  explicit resume. A denial stops the action and preserves its code/trace;
+  never switch identity or route. A missing endpoint is an activation prerequisite,
+  not permission to use a provider or local live-target command.
+
   `testing-rebuild-submit` with those same intent arguments plus
   `--idempotency-key --reviewed-dry-run --expected-plan-digest
   --dry-run-evidence-file` queues one testing rebuild through
