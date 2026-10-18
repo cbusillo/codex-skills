@@ -56,6 +56,9 @@ CANARY_SOURCE = ("def _jb_qodana_canary(value: int | None = None) -> dict[str, i
                  "    unused_probe = 1\n"
                  "    return {\"value\": value or 0, \"probe\": _jb_qodana_unresolved_probe}\n")
 CANARY_UNRESOLVED_LINE = 3
+# The engine gives no code insight to larger files, so no inspection runs on
+# them. Set explicitly so the engine and the GREEN check share one limit.
+MAX_ANALYZED_FILE_KB = 2500
 CANARY_REQUIRED_RULE = "PyUnresolvedReferencesInspection"
 CANARY_LANGUAGE_LEVEL_RULE = "PyTypeHintsInspection"
 # Enabled in common profiles but not run by the Python Community image
@@ -819,9 +822,12 @@ def plant_canaries(project, selected, language, receipt):
     return canaries
 
 
-def python_proof_gaps(private, hashes, canaries, requested, receipt):
+def python_proof_gaps(private, hashes, selected, canaries, requested, receipt):
     """Blocking gaps for a Python GREEN; raises when findings cannot be decisive."""
     gaps = []
+    # A sibling canary cannot vouch for a file the engine skips for its size.
+    if any((private / "project" / f).stat().st_size > MAX_ANALYZED_FILE_KB * 1024 for f in selected):
+        gaps.append("qodana_selected_file_over_analysis_limit")
     version = interpreter_version(private / "project")
     receipt["python_interpreter_version"] = version
     if requested is None:
@@ -977,7 +983,8 @@ def run(args, host):
             shutil.copyfile(Path(uv_binary).expanduser(), private / "bin/uv")
             (private / "bin/uv").chmod(0o700)
         (private / "qodana.yaml").write_text(json.dumps(yaml))
-        (private / "probe.vmoptions").write_text("-Xmx1536m\n-XX:ActiveProcessorCount=2\n-XX:-HeapDumpOnOutOfMemoryError\n-Djava.awt.headless=true\n-Duser.home=/private/home\n-Didea.headless.enable.statistics=false\n-Didea.log.path=/private/logs\n")
+        (private / "probe.vmoptions").write_text("-Xmx1536m\n-XX:ActiveProcessorCount=2\n-XX:-HeapDumpOnOutOfMemoryError\n-Djava.awt.headless=true\n-Duser.home=/private/home\n-Didea.headless.enable.statistics=false\n-Didea.log.path=/private/logs\n"
+                                                  f"-Didea.max.intellisense.filesize={MAX_ANALYZED_FILE_KB}\n")
         unpack_plugins(args.qodana_plugin_zip, private / "plugins")
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("qodana_host_load_paused")
@@ -994,7 +1001,7 @@ def run(args, host):
         gaps, uncovered = coverage_gaps(language, selected, expected, private / "results", any(Path(f).name == "__manifest__.py" for f in hashes))
         gaps += lane_gaps(host, config, selected)
         if language == "python":
-            gaps += python_proof_gaps(private, hashes, canaries, requested_python, receipt)
+            gaps += python_proof_gaps(private, hashes, selected, canaries, requested_python, receipt)
         findings = collect_findings(private / "results", selected, args)
         if any(digest(private / "project" / f) != hashes[f] for f in selected):
             raise Blocked("qodana_snapshot_inputs_changed")

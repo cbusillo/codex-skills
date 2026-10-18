@@ -143,7 +143,7 @@ version is proved by the prepared `.venv`, which `QODANA_PYTHON_PATH` names:
 its version must equal `prepare.python.version`. A repository without
 structured Python preparation never gets GREEN and is not auto-selected. A
 tracked module file with an `excludePattern` blocks GREEN, since no directory
-canary detects a per-file exclusion. `canary_rules` in the receipt lists the
+canary detects a per-file exclusion. A selected file larger than the engine's code-insight limit, set explicitly through `idea.max.intellisense.filesize`, also blocks GREEN: the engine skips it while its canary still reports. `canary_rules` in the receipt lists the
 rule IDs seen on canaries. Zero findings are GREEN only when the run completed,
 every canary proved execution, every selected file is Python, and every enabled
 profile inspection is in the effective profile. Inspections for other file

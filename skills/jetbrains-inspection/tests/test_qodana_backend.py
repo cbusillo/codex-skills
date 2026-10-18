@@ -212,6 +212,13 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertIn("python_interpreter_unprepared", result["proof_failures"])
 
+    def test_selected_file_over_the_engine_size_limit_blocks_green(self):
+        (self.repo / "src/a.py").write_text("value = 1\n" * 400)
+        with patch.object(backend, "MAX_ANALYZED_FILE_KB", 1):
+            result = self.run_backend(self.clean_with_canary())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("qodana_selected_file_over_analysis_limit", result["proof_failures"])
+
     def test_tracked_module_exclude_pattern_blocks_green(self):
         (self.repo / ".idea/fixture.iml").write_text('<module><component><content><excludePattern pattern="*_gen.py"/></content></component></module>')
         result = self.run_backend(self.clean_with_canary())
