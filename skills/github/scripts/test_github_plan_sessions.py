@@ -35,6 +35,7 @@ class ReceiptFixture:
         self.incomplete = False
         self.failure = None
         self.mutations = []
+        self.rpc_reads = {}
         self.approval_target = None
         self.approval_results = []
         self.approval_on_resume = False
@@ -83,6 +84,7 @@ class ReceiptFixture:
                     method = request["method"]
                     if method == "initialized": continue
                     if method == "initialize": result = {}
+                    elif method in self.rpc_reads: result = self.rpc_reads[method]
                     elif method == "thread/loaded/list": result = {"data": [self.session], "nextCursor": "more" if self.incomplete else None}
                     elif method == "thread/items/list": result = {"data": [{"item": item, "turnId": "source-turn"} for item in self.execution_items], "nextCursor": None}
                     elif method == "thread/read": result = {"thread": {
@@ -225,7 +227,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
         with ReceiptFixture() as f:
             f.commands = "codex exec fresh-unrelated-work"
             self.assert_ended(f)
-            for command in ("codex --remote unix:///unobserved", "codex resume --last", "codex resume", "codex app-server"):
+            for command in ("codex --remote unix:///unobserved", "codex -C /fixture/gui -- GUI task", "codex resume --last", "codex resume", "codex app-server"):
                 f.commands = command
                 self.assert_live(f)
 
@@ -475,12 +477,15 @@ class ObservationMergeTests(unittest.TestCase):
     def test_receipt_account_inventory_ignores_runtime_and_account_configs(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):
             root = Path(folder)
-            for name in (".code", "other-runtime", "other-account"):
-                path = root / name / "skill-data/supervisor.toml"
+            canonical_home = root / "canonical-account"
+            configs = [(CLOSURE.closed_log().with_name("supervisor.toml"), canonical_home),
+                       (root / "other-runtime/skill-data/supervisor.toml", root / "runtime-account"),
+                       (root / "other-account/skill-data/supervisor.toml", root / "account-local")]
+            for path, home in configs:
                 path.parent.mkdir(parents=True)
                 path.write_text('[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
-                                + 'env={CODEX_HOME=' + json.dumps(str(root / (name + "-sessions"))) + '}\n')
-            expected = [(root / ".code-sessions").resolve()]
+                                + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
+            expected = [canonical_home.resolve()]
             with patch.dict(os.environ, {"CODE_HOME": str(root / "other-runtime"), "CODEX_HOME": str(root / "other-account")}):
                 self.assertEqual(SESSIONS.codex_homes(strict=True, configured_only=True), expected)
 

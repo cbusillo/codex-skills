@@ -880,8 +880,8 @@ def prepare_launches(args):
             source_path = home / gui_launch.BUNDLED_MARKETPLACE
             override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
             command_texts[0] += " -c " + shlex.quote(override)
-        command_texts = [with_account(text, choice, brief, coordinate=True)
-                         for text, choice, brief in zip(command_texts, choices, briefs)]
+        command_texts = [with_account(text, choice, brief, coordinate=not app)
+                         for text, choice, brief, app in zip(command_texts, choices, briefs, apps)]
     elif getattr(args, "account", None):
         raise ValueError("--account needs --account-provider")
     elif any(account_settings(text, account_choice.ACCOUNT_VARIABLES.values())

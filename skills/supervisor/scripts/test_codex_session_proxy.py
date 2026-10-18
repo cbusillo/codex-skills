@@ -141,7 +141,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             (f.root / "stop").touch()
             self.assertEqual(await asyncio.wait_for(task, 8), 0)
 
-    async def start_client(self, f, *, resume=None, wrapper=False, external=False):
+    async def start_client(self, f, *, resume=None, wrapper=False, external=False, default_unix=False):
         ready, request, response, stop = [f.root / name for name in ("ready", "request", "response", "stop")]
         child = f.root / "codex"
         child.write_text(f"#!{sys.executable}\n" +
@@ -168,7 +168,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             child.write_text(f"#!{sys.executable}\nimport subprocess,sys\n"
                              f"raise SystemExit(subprocess.call([{str(native_child)!r},*sys.argv[1:]]))\n")
             child.chmod(0o700)
-        native = [str(child), "--remote", "unix://" + str(proxy.Ingress(f.home).upstream)]
+        native = [str(child), "--remote", "unix://" if default_unix else "unix://" + str(proxy.Ingress(f.home).upstream)]
         if resume:
             native += ["resume", resume]
         else:
@@ -210,10 +210,56 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
     async def send(self, task, request, response, method, session, **extra):
         response.unlink(missing_ok=True)
         temporary = request.with_suffix(".pending")
-        temporary.write_text(json.dumps({"id": 2, "method": method, "params": {"threadId": session, **extra}}))
+        params = {"threadId": session, **extra} if session is not None else extra
+        temporary.write_text(json.dumps({"id": 2, "method": method, "params": params}))
         temporary.replace(request)
         await self.wait_file(response, task)
         return json.loads(response.read_text())
+
+    async def test_documented_default_unix_launch_reaches_guarded_native_client(self):
+        with ReceiptFixture() as f:
+            task, request, response, _ = await self.start_client(f, external=True, default_unix=True)
+            try:
+                result = await self.send(task, request, response, "thread/read", f.session)
+                self.assertIn("result", result)
+                _, states, coverage = await asyncio.to_thread(f.observe)
+                self.assertEqual(coverage["process_coverage"], "complete")
+                self.assertEqual(states[f.session]["state"], "ended")
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_history_reads_preserve_closure_and_ordinary_finish_retry(self):
+        for frozen in (False, True):
+            with self.subTest(frozen=frozen), ReceiptFixture() as f:
+                methods = [
+                    ("thread/turns/list", f.session, {}),
+                    ("thread/items/read", f.session, {"turnId": "source-turn", "itemIds": ["source-item"]}),
+                    ("thread/timeline/list", f.session, {}),
+                    ("thread/searchOccurrences", f.session, {"searchTerm": "receipt"}),
+                    ("thread/backgroundTerminals/list", f.session, {}),
+                    ("thread/search", None, {"searchTerm": "receipt"}),
+                    ("thread/realtime/listVoices", None, {}),
+                ]
+                f.rpc_reads = {method: {"data": []} for method, _, _ in methods}
+                f.rpc_reads["thread/realtime/listVoices"] = {"voices": []}
+                if frozen:
+                    with closure.ownership(f.session):
+                        closure.admit_sources({f.session})
+                before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
+                task, request, response, _ = await self.start_client(f)
+                try:
+                    for method, target, params in methods:
+                        with self.subTest(method=method):
+                            result = await self.send(task, request, response, method, target, **params)
+                            self.assertIn("result", result)
+                            self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
+                            closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                            self.assertEqual(closed["ended_at"], before["ended_at"])
+                    self.assertFalse(f.mutations)
+                finally:
+                    (f.root / "stop").touch()
+                    await asyncio.wait_for(task, 8)
 
     async def test_multiline_native_launch_is_known_but_tui_resume_owns_the_source(self):
         with ReceiptFixture() as f:
@@ -245,7 +291,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(admit)
             task, request, response, _ = await self.start_client(f)
             try:
-                for method in ("thread/resume", "turn/start"):
+                for method in ("thread/resume", "turn/start", "thread/fork"):
                     result = await self.send(task, request, response, method, f.session)
                     self.assertIn("error", result)
                 self.assertFalse(f.mutations)

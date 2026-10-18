@@ -64,6 +64,13 @@ def run(args) -> int:
         endpoint = "unix://" + str(codex_daemon_endpoint(home))
         remotes = [flags[i + 1] for i, a in enumerate(flags[:-1]) if a == "--remote"]
         remotes += [a.split("=", 1)[1] for a in flags if a.startswith("--remote=")]
+        if remotes == ["unix://"]:
+            for index, flag in enumerate(native[:native.index("--")] if "--" in native else native):
+                if flag == "--remote":
+                    native[index + 1] = endpoint
+                elif flag == "--remote=unix://":
+                    native[index] = "--remote=" + endpoint
+            remotes = [endpoint]
         if not remotes:
             native[1:1] = ["--remote", endpoint]
             remotes = [endpoint]

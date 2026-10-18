@@ -45,7 +45,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.source.mkdir(parents=True)
         self.state = self.root / "private/gui.json"
         self.addCleanup(patch.stopall)
-        patch.dict(os.environ, {"ZDOTDIR": str(self.root)}).start()
+        patch.dict(os.environ, {"ZDOTDIR": str(self.root), "HOME": str(self.home)}).start()
         patch.object(Path, "home", return_value=self.home).start()
         patch.object(gui_launch, "state_path", return_value=self.state).start()
         self.unlocked = patch.object(gui_launch, "require_unlocked").start()
@@ -94,6 +94,7 @@ class GuiLaunchTests(unittest.TestCase):
                 gui_launch.main()
         self.assertEqual(exited.exception.code, 0)
         argv, home = json.loads(output.read_text())
+        self.assertFalse(any(arg == "--remote" or arg.startswith("--remote=") for arg in argv))
         self.assertEqual(home, str(self.account))
         source = Path(home) / self.source.relative_to(self.home / ".codex")
         overrides = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-c"]

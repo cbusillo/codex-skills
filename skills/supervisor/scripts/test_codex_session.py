@@ -21,6 +21,19 @@ SPEC.loader.exec_module(SESSION)
 
 
 class ResumeTests(unittest.TestCase):
+    def test_bare_unix_launch_uses_the_selected_account_endpoint(self):
+        self.args.command = "launch"
+        endpoint = "unix://" + str(SESSION.codex_daemon_endpoint(self.home))
+        for remote in (["--remote", "unix://"], ["--remote=unix://"]):
+            with self.subTest(remote=remote):
+                self.args.native_args = ["codex", *remote, "-C", str(self.root), "--", "literal task"]
+                with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0) as execute:
+                    self.assertEqual(SESSION.run(self.args), 0)
+                native = execute.call_args.args[1]
+                self.assertEqual(SESSION.closure.remote_endpoints(native), [endpoint])
+                self.assertEqual(native[-4:], ["-C", str(self.root), "--", "literal task"])
+        self.spawn.assert_not_called()
+
     def test_fresh_launch_uses_guarded_ingress_and_preserves_argv(self):
         native = ["codex", "--remote", "unix://" + str(SESSION.codex_daemon_endpoint(self.home)), "--", "literal $(touch NEVER)"]
         self.args.command, self.args.native_args = "launch", ["--", *native]
@@ -36,6 +49,7 @@ class ResumeTests(unittest.TestCase):
             for native in (["codex", "--remote", endpoint, "resume", self.native],
                            ["codex", "--remote", endpoint, "--no-daemon"],
                            ["codex", "--remote", endpoint, "exec-server"],
+                           ["codex", "--remote", "unix://", "--remote", endpoint, "--", "task"],
                            ["codex", "--remote", "unix:///unobserved", "--", "task"]):
                 self.args.native_args = native
                 with self.assertRaises(ValueError): SESSION.run(self.args)

@@ -843,7 +843,10 @@ brief's first nonblank line, using the exact app bundle ID, for example
 do not opt that task into GUI work.
 Launch that brief alone with `--account-provider openai` and a local `codex -C`
 command, without `--remote`. The launcher rejects terminal app targets and adds
-the GUI safety instructions to the worker's prompt. Other briefs keep the
+the GUI safety instructions to the worker's prompt. GUI commands retain that
+local invocation and its client-side overrides; they do not use the managed RPC
+ingress or acquire a managed-client exemption. A live local GUI client therefore
+keeps idle-closure admission conservative. Other briefs keep the
 existing launch path and create no marketplace links or GUI state.
 
 Only one Supervisor GUI worker may run at a time, across account homes and both
@@ -1690,7 +1693,8 @@ the five-second native observation budget. Longer histories or slower copies
 therefore keep refusing idle admission; they do not weaken ordinary verified
 release or the unloaded recovery path.
 The supported fresh launcher adds the selected account's explicit remote
-endpoint when omitted, and refuses conflicting endpoints or raw resume/fork
+endpoint when omitted or given as the documented bare `unix://` shorthand,
+and refuses conflicting endpoints or raw resume/fork
 commands, standalone servers, unknown options and `--no-daemon` before native
 execution. Put an initial literal prompt after `--`, as the brief launcher does.
 The short shared-log mutation lock waits up to one second. A write failure or
@@ -1701,9 +1705,13 @@ confirmed dead process rows. Source/admission leases remain nonblocking because
 a claim can retain one during GitHub round-trips. A capacity nudge that has sent
 nothing when a lease is busy defers without spending an attempt.
 
-A queue nudge only invalidates closure. It never substitutes the queue process
-for the actual worker PID/TTY or creates a new worker generation. For an already
-closed thread, start a guarded resume to obtain its real new launch metadata;
+A queue nudge only invalidates closure. Fork is conservatively treated as a
+source attachment too: it owns that source's lease, invalidates its receipt,
+and refuses a frozen source. Neither operation records its client as a new
+worker generation of the source. Read-only history, search, terminal and voice
+list RPCs do not invalidate closure or acquire its lease, including after
+handoff. For an already closed source invalidated by queue or fork, start a
+guarded resume to obtain its real new launch metadata;
 `status` then supplies that metadata for the native ledger. Optional idle-proof
 fingerprints are checked only by admission, so an older boot/account fingerprint
 cannot prevent retrying ordinary verified release with the original closure time.
