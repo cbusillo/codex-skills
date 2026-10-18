@@ -1252,6 +1252,9 @@ class TabCloseTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(self.folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         self.ledger = Path(self.folder.name) / "ledger.json"
         self.entry = {"supervisor_owned": True, "iterm_session_id": "owned",
                       "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}

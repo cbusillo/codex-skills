@@ -395,7 +395,8 @@ including non-dim text, establishes neither its author nor approval.
    Chrome profile, use the pinned `mcp__catalog-chrome__*` route on Claude or
    local Codex on its account-relative bundle. Add `--require-browser` to that
    launch and read [tool preflight](references/helpers.md#browser-and-computer-use-preflight).
-   Claude Computer Use needs the Director's confirmation before each use.
+   Codex is the default for screen work. Claude Computer Use runs only in a
+   visible iTerm tab with the Director's approval for that session.
    Then read each launch's first screen. The launcher reports a visible Codex
    hook-review prompt as `launch_blocked`, retaining the terminal identity and
    screen. Inspect that terminal before acting; do not relaunch or grant trust

@@ -75,7 +75,7 @@ def agent_tools_warning(catalog: Path, directory: Path, env: Mapping[str, str]) 
             problems = checker["codex_problems"](Path(env["CODEX_HOME"]).expanduser(), env)
         else:
             return ""
-        return "Agent tools unavailable: " + "; ".join(" ".join(p.split()) for p in problems) if problems else ""
+        return "Agent tools setup: " + "; ".join(" ".join(p.split()) for p in problems) if problems else ""
     except (OSError, ValueError, ImportError):
         return "Agent tools check unavailable; verify catalog-chrome and Computer Use through /mcp."
 

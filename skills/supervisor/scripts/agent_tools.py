@@ -53,7 +53,7 @@ def codex_problems(home: Path, env: Mapping[str, str] | None = None) -> list[str
     source = (env or {}).get(CODEX_SOURCE_ENV, source)
     expected = home / BUNDLED_MARKETPLACE
     if source != str(expected) or not expected.is_dir():
-        return ["Codex's bundled marketplace is missing or names another account home; "
+        return ["Static setup cannot verify this session's bundled marketplace; a remote daemon may use its own config. "
                 "use the Supervisor local codex --no-daemon route with its account-relative source override; "
                 "--remote and -p do not forward marketplace settings"]
     return []
@@ -89,9 +89,9 @@ def read_claude_config(home: Path | None) -> dict:
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        raise ValueError(f"cannot read {path} ({type(error).__name__})") from None
+        raise ValueError(f"cannot read this Claude home's config ({type(error).__name__})") from None
     if not isinstance(config, dict):
-        raise ValueError(f"{path} is not a JSON object")
+        raise ValueError("this Claude home's config is not a JSON object")
     return config
 
 
@@ -127,14 +127,14 @@ def claude_problems(home: Path | None, directory: Path, env: Mapping[str, str]) 
         problems.append(f"no {CHROME_SERVER} server in this Claude home; install it with "
                         "scripts/install-catalog.py (README: Chrome across Claude account homes)")
     elif CHROME_SERVER in listed(project, "disabledMcpServers"):
-        problems.append(f"{CHROME_SERVER} is disabled for {directory}; enable the pinned server through /mcp")
+        problems.append(f"{CHROME_SERVER} is disabled for the launch directory; enable the pinned server through /mcp")
     if builtin_chrome_on(config, project, env):
         problems.append(f"the built-in Claude in Chrome server is on and uses this session's own login, "
                         f"which cannot reach the Agents browser; use mcp__{CHROME_SERVER}__* tools, "
                         f"and start sessions with {CHROME_ENV}=0 and without --chrome")
     if (COMPUTER_USE not in listed(project, "enabledMcpServers")
             or COMPUTER_USE in listed(project, "disabledMcpServers")):
-        problems.append(f"Computer Use is off for {directory} in this Claude home "
+        problems.append("Computer Use is off for the launch directory in this Claude home "
                         "(projects[...].enabledMcpServers in .claude.json)")
     return problems
 
@@ -144,7 +144,7 @@ def chrome_server(home: Path | None) -> dict:
     servers = config.get("mcpServers")
     server = servers.get(CHROME_SERVER) if isinstance(servers, dict) else None
     if not isinstance(server, dict) or not isinstance(server.get("command"), str):
-        raise ValueError(f"no {CHROME_SERVER} server in {claude_config_path(home)}; install it with "
+        raise ValueError(f"no {CHROME_SERVER} server in this Claude home; install it with "
                          "scripts/install-catalog.py (README: Chrome across Claude account homes)")
     return server
 
@@ -167,6 +167,15 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
     stdin, stdout = process.stdin, process.stdout
     assert stdin is not None and stdout is not None
     buffer = b""
+
+    def cleanup_refused() -> None:
+        # Waiting does not retry a refused signal. Reap an exited child, bounded
+        # even if the process cannot exit; the launcher must still report refusal.
+        try:
+            process.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            pass
+        raise ValueError(f"{CHROME_SERVER} probe cleanup refused: PermissionError; no signal retry") from None
 
     def send(message: dict) -> None:
         stdin.write((json.dumps(message) + "\n").encode())
@@ -192,7 +201,7 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
                 message = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(message, dict) and message.get("id") == message_id:
+            if isinstance(message, dict) and "method" not in message and message.get("id") == message_id:
                 if "error" in message or not isinstance(message.get("result"), dict):
                     raise ValueError(f"{CHROME_SERVER} {method} failed")
                 return message
@@ -218,9 +227,8 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
         except ProcessLookupError:
             pass
         except PermissionError:
-            process.poll()
             stdout.close()
-            raise ValueError(f"{CHROME_SERVER} probe cleanup refused: PermissionError; no signal retry") from None
+            cleanup_refused()
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
@@ -229,7 +237,7 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
             except ProcessLookupError:
                 pass
             except PermissionError:
-                raise ValueError(f"{CHROME_SERVER} probe cleanup refused: PermissionError; no signal retry") from None
+                cleanup_refused()
             process.wait()
         finally:
             stdout.close()

@@ -32,6 +32,61 @@ HARNESS_CHOICES = (
 
 
 class ProviderLaunchTests(unittest.TestCase):
+    def test_required_browser_needs_a_supported_provider_before_account_selection(self):
+        for provider in (None, "google"):
+            with tempfile.TemporaryDirectory() as folder:
+                command = Path(folder) / "launch"
+                brief = Path(folder) / "brief"
+                command.write_text("agy")
+                brief.write_text("Read the approved page")
+                args = SimpleNamespace(command_file=[command], brief_file=[brief],
+                                       account_provider=provider, require_browser=True)
+                with patch.object(account_choice, "select") as select:
+                    with self.assertRaises(ValueError):
+                        iterm_tab.prepare_launches(args)
+                    select.assert_not_called()
+
+    def test_conflicting_claude_flags_refuse_before_browser_probe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            opt = Path(folder) / "opt"
+            opt.touch()
+            with (patch.object(iterm_tab, "CHROME_OPT_IN", opt),
+                  patch.object(agent_tools, "connected_browsers") as probe):
+                with self.assertRaises(ValueError):
+                    iterm_tab.check_claude_tools("cd / && exec claude --chrome",
+                                                {"provider": "anthropic", "env": {}})
+                probe.assert_not_called()
+
+    def test_claude_project_lookup_resolves_symlinks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            repo, alias, home = (root / name for name in ("repo", "alias", "home"))
+            repo.mkdir()
+            home.mkdir()
+            alias.symlink_to(repo, target_is_directory=True)
+            opt = root / "opt"
+            opt.touch()
+            (home / ".claude.json").write_text(json.dumps({
+                "mcpServers": {agent_tools.CHROME_SERVER: {"command": "fixture"}},
+                "projects": {str(repo): {"disabledMcpServers": [agent_tools.CHROME_SERVER]}}}))
+            choice = {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(home)}}
+            with (patch.object(iterm_tab, "CHROME_OPT_IN", opt),
+                  patch.object(agent_tools, "connected_browsers", return_value=[{}])):
+                with self.assertRaisesRegex(ValueError, "disabled"):
+                    iterm_tab.check_claude_tools(f"cd {shlex.quote(str(alias))} && exec claude",
+                                                choice, require_browser=True)
+                for command in ("claude", "cd relative && claude"):
+                    with self.assertRaises(ValueError):
+                        iterm_tab.check_claude_tools(command, choice, require_browser=True)
+
+    def test_launch_output_omits_target_project_and_expands_home_for_redaction(self):
+        choice = {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": "~/fixture-account"},
+                  "tool_directory": "/private/fixture-project",
+                  "tools": {"warnings": [str(Path.home() / "fixture-account") + " unavailable"]}}
+        result = json.dumps(account_choice.public(choice))
+        self.assertNotIn("fixture-project", result)
+        self.assertNotIn(str(Path.home()), result)
+
     def setUp(self):
         # Generic launch cases must not discover the host's private opt-in.
         temp = tempfile.TemporaryDirectory()
@@ -136,7 +191,7 @@ class ProviderLaunchTests(unittest.TestCase):
             root = Path(folder)
             opt_in = root / "chrome.toml"
             opt_in.touch()
-            repo = root / "repository with spaces"
+            repo = (root / "repository with spaces").resolve()
             home = root / "selected"
             home.mkdir()
             server = {"command": "fixture"}
@@ -153,7 +208,8 @@ class ProviderLaunchTests(unittest.TestCase):
                     iterm_tab.check_claude_tools(command, choice, probes=cache, require_browser=True)
                 self.assertEqual(probe.call_count, 1)
                 probe.assert_called_with(server)
-                self.assertEqual(choice["tools"], {"warnings": [], "browsers": 1})
+                self.assertEqual(choice["tools"]["warnings"], [])
+                self.assertEqual(choice["tools"]["browsers"], 1)
                 probe.return_value = []
                 with self.assertRaises(ValueError):
                     iterm_tab.check_claude_tools(command, choice, require_browser=True)

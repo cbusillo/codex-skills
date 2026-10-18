@@ -986,6 +986,9 @@ selected home and project and calls only `list_connected_browsers`, once per
 server in a batch. Empty, failed, malformed and timed-out replies cannot pass
 a required-browser launch. An unavailable Computer Use project setting is a
 warning; enabling it and using Claude Computer Use remain Chris's actions.
+Codex is the default for screen work. Under Q475, run Claude Computer Use only
+in a visible iTerm tab with Chris's approval for that session, never under the
+launchd tmux server. Tool discovery alone does not authorize screen use.
 Do not change his logins, Chrome profiles, app settings or privacy grants.
 
 Local Codex launches with this opt-in, or an explicit browser/GUI brief, validate
@@ -993,8 +996,10 @@ the account-relative link and pass its source override plus `--no-daemon`.
 The [native flag](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 ensures the process loads that config even if a daemon already runs. Preflight
 lists enabled, installed bundled plugins from that home. Remote launches keep
-their endpoint; `--remote unix://` checks the selected daemon's `plugin/list`
-and warns about missing bundled plugins. Other explicit remote endpoints are
+their endpoint; with the opt-in or `--require-browser`, `--remote unix://` checks
+the selected daemon's `plugin/list` for the launch's `-C` directory. Inventory
+failure or missing plugins warns for source work and refuses required-browser
+work; daemon admission remains an independent check. Other explicit remote endpoints are
 unverified and cannot satisfy `--require-browser`. Use local `codex -C` for
 the supported browser route. Nothing restarts an existing daemon or edits
 shared config. Discovery does not prove a working extension, runtime or OS grant.
@@ -1002,9 +1007,11 @@ shared config. Discovery does not prove a working extension, runtime or OS grant
 Session start makes static setup checks only and prints one loud line when
 there is a problem. Direct Claude sessions must omit `--chrome` and start with
 `CLAUDE_CODE_ENABLE_CFC=0`; the hook reports a conflicting saved setting rather
-than changing it. Launcher Codex sessions carry their source override into the
-hook's diagnostic environment. Direct Codex sessions with a different on-disk
-source get the local-launch remedy. The hook never calls a GUI tool.
+than changing it. Local launcher Codex sessions carry their source override into the
+hook's diagnostic environment. A different on-disk source produces a static
+verification warning, with the local-launch remedy. Remote sessions may use
+the daemon's own config; this warning cannot establish missing runtime tools.
+The hook never calls a GUI tool.
 
 **Remote config research, Codex 0.163.0 (#2119):** `thread/start` accepts a
 `config` map, and its

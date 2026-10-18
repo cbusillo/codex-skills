@@ -26,7 +26,15 @@ ADMISSION_OPEN = json.loads((Path(__file__).parent / "fixtures" / "codex-admissi
 
 
 class DaemonTests(unittest.TestCase):
-    def inspect(self, *, draining=False, pages=None, states=None, probe=None, fail=None):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.opt = Path(folder.name) / "opt-in"
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", self.opt)
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
+
+    def inspect(self, *, draining=False, pages=None, states=None, probe=None, fail=None, directory=None):
         pages = pages or {None: {"data": ["detached-worker"], "nextCursor": None}}
         states = states or {"detached-worker": "active"}
         calls = []
@@ -57,7 +65,8 @@ class DaemonTests(unittest.TestCase):
         ws.recv.side_effect = lambda **_: pending.pop(0)
         with patch.object(client, "unix_connect") as connect:
             connect.return_value.__enter__.return_value = ws
-            iterm_tab.inspect_codex_daemon(Path("/fixture/account"))
+            inventory = iterm_tab.inspect_codex_daemon(Path("/fixture/account"), directory=directory)
+        self.inventory = inventory
         return calls
 
     def test_healthy_busy_daemon_is_reused_without_loading_or_creating_a_thread(self):
@@ -69,11 +78,22 @@ class DaemonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             uuid.UUID(resume["params"]["threadId"])
         self.assertFalse(any(c["method"] in {"thread/start", "turn/start", "turn/interrupt"} for c in calls))
-        self.assertTrue(any(c["method"] == "plugin/list" for c in calls))
+        self.assertFalse(any(c["method"] == "plugin/list" for c in calls))
+
+    def test_source_admission_does_not_depend_on_plugin_inventory(self):
+        self.inspect(fail="plugin/list")
+
+    def test_optional_inventory_uses_target_project_and_reports_its_own_failure(self):
+        calls = self.inspect(fail="plugin/list", directory="/fixture/project")
+        inventory = next(c for c in calls if c["method"] == "plugin/list")
+        self.assertEqual(inventory["params"]["cwds"], ["/fixture/project"])
+        self.assertTrue(self.inventory["inventory_error"])
 
     def test_missing_remote_plugins_warn_for_source_work_and_refuse_browser_work(self):
+        self.opt.touch()
         for required in (False, True):
-            choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}, "require_browser": required}
+            choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"},
+                      "require_browser": required, "tool_directory": "/fixture/project"}
             with (patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
                   patch.object(iterm_tab.socket, "socket"),
                   patch.object(iterm_tab, "inspect_codex_daemon", return_value={"marketplaces": []})):

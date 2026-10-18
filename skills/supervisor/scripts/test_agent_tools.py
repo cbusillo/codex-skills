@@ -43,16 +43,20 @@ class ClaudeToolTests(unittest.TestCase):
 
     def test_broken_home_and_project_settings_are_reported(self):
         self.write_config({})
-        self.assertEqual(len(agent_tools.claude_problems(self.home, self.repo, {})), 2)
+        problems = " ".join(agent_tools.claude_problems(self.home, self.repo, {}))
+        self.assertIn(agent_tools.CHROME_SERVER, problems)
+        self.assertIn("Computer Use", problems)
         self.config["claudeInChromeDefaultEnabled"] = True
         self.write_config()
-        self.assertEqual(len(agent_tools.claude_problems(self.home, self.repo, {})), 1)
+        self.assertTrue(agent_tools.claude_problems(self.home, self.repo, {}))
         self.assertEqual(agent_tools.claude_problems(self.home, self.repo, {agent_tools.CHROME_ENV: "0"}), [])
         entry = self.config["projects"][str(self.repo)]
         entry["disabledMcpServers"] = [agent_tools.BUILTIN_CHROME, agent_tools.COMPUTER_USE,
                                        agent_tools.CHROME_SERVER]
         self.write_config()
-        self.assertEqual(len(agent_tools.claude_problems(self.home, self.repo, {})), 2)
+        problems = " ".join(agent_tools.claude_problems(self.home, self.repo, {}))
+        self.assertIn(agent_tools.CHROME_SERVER, problems)
+        self.assertIn("Computer Use", problems)
         self.assertTrue(agent_tools.builtin_chrome_on(self.config, entry, {agent_tools.CHROME_ENV: "1"}))
 
     def test_missing_malformed_and_unreadable_config_remain_diagnostics(self):
@@ -85,6 +89,10 @@ for line in sys.stdin:
     def test_listing_handles_notifications_and_uses_server_environment(self):
         server = self.server("assert os.environ['FIXTURE']=='selected'\nresult={'content':[{'type':'text','text':'[{\"id\":\"fixture\"}]'}]}")
         self.assertEqual(agent_tools.connected_browsers(server, timeout=2), [{"id": "fixture"}])
+
+    def test_server_request_with_same_id_is_not_a_reply(self):
+        server = self.server("print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'method':'ping'}),flush=True)\nresult={'content':[{'type':'text','text':'[]'}]}")
+        self.assertEqual(agent_tools.connected_browsers(server, timeout=2), [])
 
     def test_empty_list_is_distinct_from_failed_or_malformed_tool(self):
         self.assertEqual(agent_tools.connected_browsers(
