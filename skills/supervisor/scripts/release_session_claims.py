@@ -52,14 +52,9 @@ class ConfirmedIssueRefusal(ValueError):
         self.payload = payload
 
 
-def verify_closed(entry, supervisor_session, *, ended_at=None):
+def verify_process_exit(entry, *, ended_at=None):
+    """Check recorded execution independently of optional receipt transcripts."""
     historical = entry.get("_inventory") is True
-    if entry["session_id"] == supervisor_session or (
-        not historical and entry.get("supervisor_owned") is not True
-    ):
-        raise ValueError("requires another explicitly Supervisor-owned session")
-    if historical and (entry.get("safe_exit_yes") is not True or entry.get("still_running") is not False):
-        raise ValueError("inventory closure requires the Supervisor's verified safe exit and inactivity")
     pid, tty = entry.get("pid"), entry.get("tty")
     if not historical and (type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty):
         raise ValueError("closure requires the matched process PID and TTY")
@@ -85,6 +80,17 @@ def verify_closed(entry, supervisor_session, *, ended_at=None):
             len(resumed_ids) == 1 and resumed_ids[0] and not resumed_ids[0].startswith("-")
         ):
             raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity before the documented manual release-claim route")
+
+
+def verify_closed(entry, supervisor_session, *, ended_at=None):
+    historical = entry.get("_inventory") is True
+    if entry["session_id"] == supervisor_session or (
+        not historical and entry.get("supervisor_owned") is not True
+    ):
+        raise ValueError("requires another explicitly Supervisor-owned session")
+    if historical and (entry.get("safe_exit_yes") is not True or entry.get("still_running") is not False):
+        raise ValueError("inventory closure requires the Supervisor's verified safe exit and inactivity")
+    verify_process_exit(entry, ended_at=ended_at)
     status = session_record.session_status(entry)
     if not status["safe_verdict"]:
         raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")

@@ -326,6 +326,17 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 self.assert_live(f)
             self.assert_live(f)
 
+    def test_recorded_live_worker_is_not_leased_through_claim_round_trips(self):
+        with ReceiptFixture() as f:
+            f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex worker")]
+            with CLOSURE.admission():
+                self.assert_live(f)
+                def own_action():
+                    with CLOSURE.resume_guard(f.session):
+                        pass
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pool.submit(own_action).result(timeout=3)
+
     def test_resume_and_admission_share_a_lease_and_handoff_disables_old_resume(self):
         with ReceiptFixture() as f:
             with CLOSURE.admission():

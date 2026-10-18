@@ -24,6 +24,89 @@ import codex_session_proxy as proxy
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_queue_requires_exact_resume_and_fresh_safe_turn_before_finish(self):
+        from test_codex_session import SESSION
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            queue_bin = f.root / "queue-bin"
+            queue_bin.mkdir()
+            executable = queue_bin / "codex"
+            executable.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n")
+            executable.chmod(0o700)
+            args = SimpleNamespace(command="queue", session_id=f.session, codex_home=f.home,
+                                   message="status?", message_file=None)
+            with patch.dict(os.environ, {"PATH": str(queue_bin) + os.pathsep + os.environ["PATH"]}), \
+                    patch.object(SESSION, "codex_homes", return_value=[f.home]):
+                self.assertEqual(await asyncio.to_thread(SESSION.run, args), 1)
+            self.assertFalse(f.queue_items)
+            self.assertFalse(f.mutations)
+            with self.assertRaises(ValueError):
+                await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+            self.assertTrue(closure.action_pending(f.session))
+            task, request, response, _ = await self.start_client(f, resume=f.session)
+            try:
+                self.assertIn("result", await self.send(task, request, response, "thread/resume", f.session))
+                self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
+                with f.transcript.open("a") as stream:
+                    for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                        stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+            row = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
+            replacement = {**f.entry, **row["resumed_generation"]}
+            closed = await asyncio.to_thread(f.release.record_closure, f.log, replacement, "supervisor")
+            self.assertTrue(closed["process_exit_verified"])
+            self.assertFalse(closure.action_pending(f.session))
+
+    async def test_live_worker_actions_and_approvals_continue_during_claim_observation(self):
+        from websockets.asyncio.client import unix_connect
+        with ReceiptFixture() as f:
+            task, request, response, _ = await self.start_client(f)
+            reading, read_gate, observed, claim_gate = (threading.Event() for _ in range(4))
+            async def delayed(_request):
+                reading.set()
+                await asyncio.to_thread(read_gate.wait, 5)
+                return {"thread": {"id": f.session, "cwd": "/retained/source",
+                                   "path": str(f.transcript), "status": {"type": "idle"}}}
+            def claim_observation():
+                with closure.admission():
+                    result = f.observe({f.session})
+                    observed.set()
+                    claim_gate.wait(5)  # Subsequent GitHub reads in claim_once.
+                    return result
+            observing = None
+            try:
+                self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
+                f.rpc_results["thread/read"] = delayed
+                observing = asyncio.create_task(asyncio.to_thread(claim_observation))
+                self.assertTrue(await asyncio.to_thread(reading.wait, 3))
+                self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
+                f.approval_target = f.session
+                endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
+                async with unix_connect(endpoint) as ws:
+                    await ws.send(json.dumps({"id": "approval", "method": "initialize", "params": {}}))
+                    self.assertIn("result", json.loads(await ws.recv()))
+                    approval = json.loads(await asyncio.wait_for(ws.recv(), 2))
+                    self.assertEqual(approval["method"], "execCommandApproval")
+                    await ws.send(json.dumps({"id": approval["id"], "result": {"decision": "denied"}}))
+                    async with asyncio.timeout(3):
+                        while not f.approval_results:
+                            await asyncio.sleep(.01)
+                    self.assertEqual(f.approval_results[-1]["result"], {"decision": "denied"})
+                read_gate.set()
+                self.assertTrue(await asyncio.to_thread(observed.wait, 3))
+                self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
+                claim_gate.set()
+                _, states, _ = await observing
+                self.assertEqual(states[f.session]["state"], "live")
+            finally:
+                read_gate.set()
+                claim_gate.set()
+                if observing is not None:
+                    await observing
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
     async def test_connected_worker_accepts_queue_and_capacity_continue_after_turn_reply(self):
         from test_codex_session import SESSION
         import capacity_retry

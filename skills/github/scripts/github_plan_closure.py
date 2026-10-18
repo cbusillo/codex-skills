@@ -137,12 +137,39 @@ def observation(sessions: set[str]):
         group = _ADMISSION.get()
         stack, held = group if group is not None else (local, set())
         acquired = set()
+        token = LOG_CACHE.set(None)
+        try:
+            candidates = candidate_records(sessions)
+        finally:
+            LOG_CACHE.reset(token)
         for session in sorted(sessions):
             try:
-                if session in held or stack.enter_context(ownership(session, create=group is not None)):
+                if session in held:
+                    acquired.add(session)
+                    continue
+                # A known-live source cannot contribute end proof. Do not
+                # retain its lease across native reads or claim round trips:
+                # its own actions and approvals still need that lease.
+                if action_pending(session):
+                    continue
+                if session in candidates:
+                    from github_plan_sessions import native_helpers
+                    native_helpers()
+                    from release_session_claims import verify_process_exit
+                    from github_plan_release import stamp
+                    entry = candidates[session]
+                    verify_process_exit(entry, ended_at=stamp(entry["ended_at"]))
+                with ExitStack() as attempt:
+                    if not attempt.enter_context(ownership(session, create=group is not None)):
+                        continue
+                    # An action may have completed between the unleased read
+                    # above and acquisition. Release immediately in that case.
+                    if action_pending(session):
+                        continue
+                    stack.enter_context(attempt.pop_all())
                     held.add(session)
                     acquired.add(session)
-            except (OSError, ValueError):
+            except (OSError, ValueError, KeyError, TypeError, ImportError, subprocess.SubprocessError):
                 continue
         yield acquired
 

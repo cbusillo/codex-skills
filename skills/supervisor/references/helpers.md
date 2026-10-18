@@ -1741,8 +1741,9 @@ resumed-session recovery; successor observation reads only the shared default.
 For Codex entries with a configured absolute `codex_home`, closure also records
 the host boot identity, launch generation and fingerprints of every configured
 native transcript copy. The account set is canonical and independent of the
-caller's account home. Optional proof failures do not stop ordinary closure or
-claim release, and legacy logs are never upgraded by assumption.
+caller's account home. Optional receipt enrichment failures do not stop ordinary
+closure or claim release. The mandatory source-action barrier described below
+still applies, and legacy logs are never upgraded by assumption.
 
 An idle-loaded thread can be ended only with that matching receipt, exact
 authored releases of its recorded claims, unchanged transcript copies around a
@@ -1767,8 +1768,14 @@ subscriber API is assumed.
 Completion releases the operation's lease, so another Supervisor can queue a
 nudge or capacity `continue` while that worker's TUI stays connected. A pending
 operation still refuses those sends; capacity retry defers without spending an
-attempt. Queue never joins or bypasses a busy owner's lease. Native action
+attempt. Queue never joins or bypasses a busy source lease. Native action
 requests need a request ID so ownership can span acknowledgement.
+
+Observation skips source leases when a durable action barrier already refuses
+end proof, or the recorded worker's exit cannot be verified. Live workers keep
+receiving their own actions and approvals during native inventory and later
+claim round trips. Sources that can contribute end proof still retain ownership
+through final claim publication, so resume cannot race a successful handoff.
 
 The parent ingress and its native client register PID/birth, selected home,
 private socket identity and a digest of the immutable option prefix before
@@ -1799,6 +1806,17 @@ Pending queued submissions, malformed queue
 pages or missing queue evidence still refuse native end proof, including when
 the daemon says notLoaded. Queued work must drain or be cancelled, then the
 Supervisor verifies closure normally; never clear the lease file by hand.
+If a guarded send fails without producing a turn, an empty queue does not clear
+the barrier. The ordinary shared-log finish/release route also refuses until a
+fresh final safe verdict exists. Use `codex-session.py resume --session-id ID
+--codex-home HOME` for that exact source, have it complete a fresh safe turn,
+then exit it and retry Supervisor finish with the new launch metadata from
+`codex-session.py status --session-id ID`. This also applies after a native
+error acknowledgement or an unrecognized per-thread action after the last
+verdict. A nonzero child exit alone cannot prove no native work was accepted.
+Preserve claims and artifacts while recovering; do not delete the marker or
+reuse the old verdict. A frozen predecessor still refuses resume: start a new
+thread and claim through gh-plan.py instead.
 If recording generation metadata fails after a native resume, the RPC reports
 that partial outcome and retains the connection and durable invalidation. Retry
 the exact resume for metadata, preserving the source in the meantime.
