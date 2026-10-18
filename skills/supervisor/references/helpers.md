@@ -1705,12 +1705,19 @@ confirmed dead process rows. Source/admission leases remain nonblocking because
 a claim can retain one during GitHub round-trips. A capacity nudge that has sent
 nothing when a lease is busy defers without spending an attempt.
 
-A queue nudge only invalidates closure. Fork is conservatively treated as a
-source attachment too: it owns that source's lease, invalidates its receipt,
-and refuses a frozen source. Neither operation records its client as a new
+A queue nudge only invalidates closure. Fork and archive are conservatively
+treated as source attachments too: they own that source's lease, invalidate
+its receipt, and refuse a frozen source. Archive can shut down descendants
+that have independently resumed, so it cannot bypass the source guard merely
+because it starts no execution. These operations do not record their client as a new
 worker generation of the source. Read-only history, search, terminal and voice
 list RPCs do not invalidate closure or acquire its lease, including after
-handoff. For an already closed source invalidated by queue or fork, start a
+handoff. Rename, metadata, read-state, section, unsubscribe and unarchive RPCs
+also preserve the source generation and take no execution lease. Unarchiving
+moves the transcript, so its old fingerprint still refuses idle admission;
+the existing unloaded/authored-release recovery remains available. Metadata
+updates store preferences; they do not select a turn's access or grant it.
+For an already closed source invalidated by queue, fork or archive, start a
 guarded resume to obtain its real new launch metadata;
 `status` then supplies that metadata for the native ledger. Optional idle-proof
 fingerprints are checked only by admission, so an older boot/account fingerprint

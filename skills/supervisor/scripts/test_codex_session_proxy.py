@@ -30,10 +30,14 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 if any(str(arg).endswith("codex-session.py") for arg in argv):
                     self.fail("a refused resume started its native client")
                 return popen(argv, **kwargs)
-            with patch.object(subprocess, "Popen", side_effect=no_client):
-                with self.assertRaisesRegex(ValueError, "handed off"):
+            with patch.object(subprocess, "Popen", side_effect=no_client), patch.object(
+                closure, "register_proxy", wraps=closure.register_proxy
+            ) as registered:
+                with self.assertRaises(ValueError):
                     await proxy.run_client(f.home, ["codex"], session=f.session)
+            registered.assert_called_once()
             self.assertFalse(any(r.get("record_kind") == "managed_proxy" for r in closure.log_rows()))
+            self.assertTrue(next(r for r in closure.log_rows() if r.get("session_id") == f.session)["successor_admitted"])
 
     async def test_slow_closure_verification_does_not_block_launch_or_first_turn(self):
         with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
@@ -241,8 +245,8 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     ("thread/search", None, {"searchTerm": "receipt"}),
                     ("thread/realtime/listVoices", None, {}),
                 ]
-                f.rpc_reads = {method: {"data": []} for method, _, _ in methods}
-                f.rpc_reads["thread/realtime/listVoices"] = {"voices": []}
+                f.rpc_results = {method: {"data": []} for method, _, _ in methods}
+                f.rpc_results["thread/realtime/listVoices"] = {"voices": []}
                 if frozen:
                     with closure.ownership(f.session):
                         closure.admit_sources({f.session})
@@ -257,6 +261,74 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                             closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
                             self.assertEqual(closed["ended_at"], before["ended_at"])
                     self.assertFalse(f.mutations)
+                finally:
+                    (f.root / "stop").touch()
+                    await asyncio.wait_for(task, 8)
+
+    async def test_metadata_and_detach_preserve_closure_and_finish_retry(self):
+        for frozen in (False, True):
+            with self.subTest(frozen=frozen), ReceiptFixture() as f:
+                methods = [
+                    ("thread/name/set", {"name": "Finished source"}),
+                    ("thread/metadata/update", {"projectId": "fixture-project", "daybreakEnabled": True}),
+                    ("thread/readState/update", {"expectedRevision": "fixture-revision", "operation": {"type": "read"}}),
+                    ("thread/section/move", {"sectionId": "fixture-section"}),
+                    ("thread/unsubscribe", {}),
+                ]
+                f.rpc_results = {method: {} for method, _ in methods}
+                if frozen:
+                    with closure.ownership(f.session):
+                        closure.admit_sources({f.session})
+                before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
+                task, request, response, _ = await self.start_client(f)
+                try:
+                    for method, params in methods:
+                        with self.subTest(method=method):
+                            result = await self.send(task, request, response, method, f.session, **params)
+                            self.assertIn("result", result)
+                            self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
+                            closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                            self.assertEqual(closed["ended_at"], before["ended_at"])
+                            f.native_state = "active"
+                            _, states, _ = await asyncio.to_thread(f.observe)
+                            self.assertEqual(states[f.session]["state"], "live")
+                            f.native_state = "idle"
+                    self.assertFalse(f.mutations)
+                finally:
+                    (f.root / "stop").touch()
+                    await asyncio.wait_for(task, 8)
+
+    async def test_unarchive_preserves_generation_but_moved_rollout_invalidates_receipt(self):
+        for frozen in (False, True):
+            with self.subTest(frozen=frozen), ReceiptFixture(archived=True) as f:
+                f.native_state = "notLoaded"
+                if frozen:
+                    with closure.ownership(f.session):
+                        closure.admit_sources({f.session})
+                before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
+                previous = f.transcript
+                def unarchive(_request):
+                    restored = f.home / "sessions" / f.transcript.name
+                    restored.parent.mkdir(parents=True)
+                    f.transcript.rename(restored)
+                    os.utime(restored, None)
+                    f.transcript = restored
+                    return {"thread": {"id": f.session, "path": str(restored), "status": {"type": f.native_state}}}
+                f.rpc_results["thread/unarchive"] = unarchive
+                task, request, response, _ = await self.start_client(f)
+                try:
+                    result = await self.send(task, request, response, "thread/unarchive", f.session)
+                    self.assertIn("result", result)
+                    self.assertFalse(previous.exists())
+                    self.assertTrue(f.transcript.exists())
+                    self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
+                    self.assertIsNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
+                    # The existing unloaded proof can read the restored rollout;
+                    # it does not reinterpret the stale idle-closure fingerprint.
+                    _, states, _ = await asyncio.to_thread(f.observe, {f.session})
+                    self.assertEqual(states[f.session]["native_state"], "notLoaded")
+                    self.assertEqual(states[f.session]["state"], "ended")
+                    self.assertFalse(states[f.session]["leased_closure"])
                 finally:
                     (f.root / "stop").touch()
                     await asyncio.wait_for(task, 8)
@@ -291,7 +363,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(admit)
             task, request, response, _ = await self.start_client(f)
             try:
-                for method in ("thread/resume", "turn/start", "thread/fork"):
+                for method in ("thread/resume", "turn/start", "thread/fork", "thread/archive"):
                     result = await self.send(task, request, response, method, f.session)
                     self.assertIn("error", result)
                 self.assertFalse(f.mutations)

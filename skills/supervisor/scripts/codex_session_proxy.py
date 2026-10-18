@@ -22,6 +22,11 @@ READS = {"thread/read", "thread/list", "thread/loaded/list", "thread/items/list"
          "thread/turns/list", "thread/items/read", "thread/timeline/list", "thread/searchOccurrences",
          "thread/backgroundTerminals/list", "thread/search", "thread/realtime/listVoices"}
 NON_THREAD_REQUESTS = {"account/chatgptAuthTokens/refresh", "attestation/generate", "currentTime/read"}
+# These change stored presentation state or detach this subscriber, without
+# attaching execution. Archive is deliberately excluded: it shuts down the
+# spawn subtree, including descendants that may have independently resumed.
+HOUSEKEEPING = {"thread/unarchive", "thread/name/set", "thread/metadata/update",
+                "thread/readState/update", "thread/unsubscribe", "thread/section/move"}
 
 
 def thread_targets(value):
@@ -88,7 +93,7 @@ class Ingress:
                                 raise ValueError("native RPC must be an object")
                             if source == "client":
                                 method = message.get("method")
-                                if method and method not in READS:
+                                if method and method not in READS and method not in HOUSEKEEPING:
                                     try:
                                         if method in {"thread/resume", "thread/fork"}:
                                             message = self.exact_resume(message)

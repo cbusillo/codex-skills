@@ -26,8 +26,9 @@ import github_plan_closure as CLOSURE
 
 class ReceiptFixture:
     """A real read-only Unix daemon plus an actual shared closure receipt."""
-    def __init__(self, session="holder"):
+    def __init__(self, session="holder", *, archived=False):
         self.session = session
+        self.archived = archived
         self.native_state = "idle"
         self.process_rows = []
         self.commands = ""
@@ -35,7 +36,7 @@ class ReceiptFixture:
         self.incomplete = False
         self.failure = None
         self.mutations = []
-        self.rpc_reads = {}
+        self.rpc_results = {}
         self.approval_target = None
         self.approval_results = []
         self.approval_on_resume = False
@@ -45,7 +46,7 @@ class ReceiptFixture:
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory(prefix="lease-", dir="/tmp"))).resolve()
         self.home = self.root / "account"
         self.homes = [self.home]
-        self.transcript = self.home / "sessions" / ("rollout-" + self.session + ".jsonl")
+        self.transcript = self.home / ("archived_sessions" if self.archived else "sessions") / ("rollout-" + self.session + ".jsonl")
         self.transcript.parent.mkdir(parents=True)
         self.transcript.write_text("\n".join(json.dumps(row) for row in [
             {"type": "session_meta", "payload": {"id": self.session}},
@@ -84,12 +85,14 @@ class ReceiptFixture:
                     method = request["method"]
                     if method == "initialized": continue
                     if method == "initialize": result = {}
-                    elif method in self.rpc_reads: result = self.rpc_reads[method]
+                    elif method in self.rpc_results:
+                        reply = self.rpc_results[method]
+                        result = reply(request) if callable(reply) else reply
                     elif method == "thread/loaded/list": result = {"data": [self.session], "nextCursor": "more" if self.incomplete else None}
                     elif method == "thread/items/list": result = {"data": [{"item": item, "turnId": "source-turn"} for item in self.execution_items], "nextCursor": None}
                     elif method == "thread/read": result = {"thread": {
                         "id": self.session, "cwd": "/retained/source", "path": str(self.transcript), "status": {"type": self.native_state}}}
-                    elif method in {"thread/resume", "thread/fork", "turn/start"}:
+                    elif method in {"thread/resume", "thread/fork", "turn/start", "thread/archive"}:
                         self.mutations.append(request)
                         target = request["params"]["threadId"]
                         if self.approval_on_resume:
@@ -132,8 +135,8 @@ class ReceiptFixture:
         if self.thread.is_alive() or self.failure:
             raise RuntimeError("fixture daemon did not stop") from self.failure
 
-    def observe(self):
-        return SESSIONS.observe({self.session}, set())
+    def observe(self, proof_sessions=None):
+        return SESSIONS.observe({self.session}, set() if proof_sessions is None else proof_sessions)
 
     def managed(self, native):
         """Registry-coordinate fixture; the ingress's wire behavior has its own tests."""
@@ -470,9 +473,10 @@ class ObservationMergeTests(unittest.TestCase):
             with CLOSURE.ownership("handed-off", create=True):
                 CLOSURE.admit_sources({"handed-off"})
             with patch.dict(os.environ, {"CODE_HOME": str(Path(folder) / "other-runtime"), "CODEX_HOME": str(Path(folder) / "other-account")}):
-                with self.assertRaisesRegex(ValueError, "handed off"):
+                with self.assertRaises(ValueError):
                     with CLOSURE.resume_guard("handed-off"):
                         self.fail("a divergent runtime bypassed predecessor freeze")
+            self.assertTrue(CLOSURE.log_rows()[0]["successor_admitted"])
 
     def test_receipt_account_inventory_ignores_runtime_and_account_configs(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):
