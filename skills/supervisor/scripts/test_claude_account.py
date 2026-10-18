@@ -26,7 +26,7 @@ class MoveTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         (self.root / "panel").mkdir()
         self.reader_patch = patch.object(account, "reader", return_value=account_choice)
-        self.storage_patch = patch.object(account_choice, "storage_root", return_value=self.root / "panel")
+        self.storage_patch = patch.object(account_choice, "receipt_route", return_value={"storage_root": self.root / "panel"})
         self.storage_patch.start()
         self.addCleanup(self.storage_patch.stop)
         self.reader_patch.start()
