@@ -85,7 +85,9 @@ budget, and put both results in the PR's review note.
    file outside the repository that the review needs, such as a saved issue
    or the overall DIRECTION.md, with a repeated `--input FILE`. The helper
    copies it next to the diff, names it in the preamble and removes it after
-   the run.
+   the run. Links in the prompt stay unopened: the helper tells the reviewer
+   so and lists them in the result's `unreachable_links`. Before weighing the
+   review, pass any linked content it needed with `--input` and run it again.
 
    All reviews select their provider's Context Panel use-next
    account at launch through the [Supervisor account reader](../supervisor/scripts/account_choice.py).
