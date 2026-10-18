@@ -77,7 +77,7 @@ assert actual.startswith(expected), (expected, actual)
 suffix = actual[len(expected):]
 separator = "" if expected.endswith("\n") else "\n"
 assert re.fullmatch(
-    rf"{re.escape(separator)}\n<!-- github-skill-operation:[0-9a-f]{{32}} -->\n",
+    rf"{re.escape(separator)}\n<!-- github-skill-operation:[0-9a-f]{{32}}(?: writer=[0-9a-f,]+)? -->\n",
     suffix,
 ), suffix
 PY
