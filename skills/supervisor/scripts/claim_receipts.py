@@ -14,6 +14,7 @@ from pathlib import Path
 CHECK_OPERATION = "work-closeout.claims"
 CLAIM_OPERATION = "github.plan.claim"
 COMMENT = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
+SHELL_FIELD = re.compile(r'''\b(?:cmd|command)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?=\s*[,}])''')
 
 
 class ReceiptCoverageError(ValueError):
@@ -94,7 +95,7 @@ def shell_texts(name, value):
         texts = [value.get("cmd") or value.get("command") or ""]
     elif name in {"exec", "functions.exec"} and isinstance(value, str):
         texts = []
-        for m in re.finditer(r'''\b(?:cmd|command)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''', value):
+        for m in SHELL_FIELD.finditer(value):
             try:
                 texts.append(ast.literal_eval(m[1]))
             except (ValueError, SyntaxError):
@@ -108,10 +109,8 @@ def shell_commands(name, value):
     """Only shell tools execute commands; tool prompts and echo operands do not."""
     texts = shell_texts(name, value)
     for text in texts:
-        if "<<" in text:
-            continue  # Heredoc bodies are data, not checker invocations.
         try:
-            lexer = shell_lexer(text, punctuation_chars=";&|\n")
+            lexer = shell_lexer(shell_code(text), punctuation_chars=";&|\n")
             lexer.whitespace = " \t\r"
             lexer.whitespace_split = True
             command = []
@@ -126,6 +125,61 @@ def shell_commands(name, value):
                 yield command[1:] if command[0] == "nohup" else command
         except ValueError:
             continue
+
+
+def shell_code(text):
+    """Exclude heredoc bodies, retaining commands on both sides of them."""
+    code, pending, header = [], [], ""
+    for line in text.splitlines(keepends=True):
+        if pending:
+            delimiter, tabs, expands = pending[0]
+            if (line.lstrip("\t") if tabs else line).rstrip("\r\n") == delimiter:
+                pending.pop(0)
+            elif expands and ("$(" in line or "`" in line):
+                raise ValueError("unparsed expanding heredoc")
+            continue
+        header += line
+        lexer = shell_lexer(header, posix=False)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue  # A quoted word may span several physical lines.
+        if len(line.rstrip("\r\n")) - len(line.rstrip("\r\n").rstrip("\\")) & 1:
+            continue  # Complete an escaped newline before reading delimiters.
+        for index, token in enumerate(tokens):
+            if token != "<<":
+                continue
+            if index + 1 == len(tokens):
+                raise ValueError("unparsed heredoc delimiter")
+            raw = tokens[index + 1]
+            tabs = raw.startswith("-")
+            delimiter = shlex.split(raw[1:] if tabs else raw, comments=False)
+            if len(delimiter) != 1:
+                raise ValueError("unparsed heredoc delimiter")
+            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\")))
+        code.append(header)
+        header = ""
+    if pending or header:
+        raise ValueError("unparsed heredoc body")
+    return "".join(code)
+
+
+def opaque_ownership(name, value):
+    """Unparsed potentially writing code is uncertainty, never proof of no write."""
+    value = arguments(value)
+    writing = r"gh-plan\.py[\s\S]*\bclaim\b|gh-pr\.py[\s\S]*\bcreate\b|\bgh\s+pr\s+create\b"
+    for text in shell_texts(name, value):
+        try:
+            shell_code(text)
+        except ValueError:
+            if re.search(writing, text):
+                return True
+    if name in {"exec", "functions.exec"} and isinstance(value, str) and "tools.exec_command" in value:
+        unparsed = SHELL_FIELD.sub("", value)
+        if re.search(r"\b(?:cmd|command)\s*:|\{\s*(?:cmd|command)\s*[,}]", unparsed):
+            return re.search(writing, value) is not None
+    return False
 
 
 def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>\n"):
@@ -226,7 +280,7 @@ def ownership_state(records, harness):
     """Track launches through their terminal native result, including process polls."""
     no_writes = no_write_claims(records, harness)
     def owning(name, value):
-        return any(script(argv) == "gh-plan.py" and "claim" in argv
+        return opaque_ownership(name, value) or any(script(argv) == "gh-plan.py" and "claim" in argv
                    or script(argv) == "gh-pr.py" and "create" in argv
                    or argv[:3] == ["gh", "pr", "create"] for argv in shell_commands(name, value))
     indices, pending, events = [], set(), {}
@@ -377,11 +431,13 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             if invoked and name == "Bash" and isinstance(value, dict) and value.get("run_in_background"):
                 background.add(source)
             if invoked:
+                if opaque_ownership(name, value):
+                    opaque.add(source)
                 # A shell's result cannot attest completion of detached writers.
                 for command in shell_texts(name, value):
-                    lexer = shell_lexer(command, posix=False)
-                    lexer.whitespace_split = True
                     try:
+                        lexer = shell_lexer(shell_code(command), posix=False)
+                        lexer.whitespace_split = True
                         if "&" in list(lexer):
                             opaque.add(source)
                     except ValueError:

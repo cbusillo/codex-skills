@@ -324,6 +324,11 @@ Keep ownership results visible: use one foreground shell command or one
 with shell `&` or drop an inner execution result. A detached writer with no
 recoverable terminal result leaves closeout conditional/no; record that blocker
 and preserve the session rather than rerunning the write to manufacture evidence.
+Quoted heredoc bodies are data; ownership commands before or after them still
+count. Substitutions in unquoted heredocs may execute and remain unparsed.
+Potential ownership in unparsed shell or computed code-mode commands stays
+pending. Use the visible foreground form above for future writes; preserve
+conditional/no when original execution evidence cannot be recovered.
 Claude background ownership waits for its native terminal task notice; a
 progress notice or a `TaskStop` invocation alone does not prove completion.
 Any later ownership activity requires a new check after its terminal result;

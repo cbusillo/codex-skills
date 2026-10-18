@@ -64,6 +64,40 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_heredoc_bearing_ownership_still_requires_disposition_on_both_harnesses(self):
+        for harness in ("codex", "claude"):
+            for writer in ('uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json',
+                           'uv run /catalog/gh-pr.py --repo client/repo create > pr.json',
+                           'gh pr create --repo client/repo > pr.json'):
+                for command in (writer + " && python3 - <<'PY'\nprint('ok')\nPY",
+                                "cat > note.md <<'EOF'\nexample data\nEOF\n" + writer,
+                                writer + ' <<< "input"', writer + ' && echo "a<<b"',
+                                "cat <<EOF\n$(" + writer + ")\nEOF",
+                                "cat <<EOF\n`" + writer + "`\nEOF"):
+                    rows = history(harness, claim())
+                    if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    rows[2] = output({}, harness, "tool-0")
+                    self.assertTrue(receipts.ownership_state(rows, harness)["indices"], command)
+                    self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"], command)
+            # Mentions in inert heredoc bodies create no ownership obligation.
+            rows = history(harness, claim())
+            command = "cat <<'EOF'\nuv run /catalog/gh-plan.py claim 12 &\ngh pr create\nEOF"
+            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+            rows[2] = output({}, harness, "tool-0")
+            self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_unparsed_composed_ownership_cannot_become_no_ownership(self):
+        for cell in ('text(await tools.exec_command({cmd:`uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json`}));',
+                     'const cmd = "gh pr create --repo client/repo > pr.json"; text(await tools.exec_command({cmd:cmd}));',
+                     'const cmd = "uv run /catalog/gh-pr.py create > pr.json"; text(await tools.exec_command({cmd}));'):
+            rows = history("codex", claim(), proof())
+            rows[1]["payload"].update(name="functions.exec", arguments=cell)
+            rows[2] = output({"exit_code": 0, "output": ""}, "codex", "tool-0")
+            self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+            self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+
     def test_shorthand_claim_detachment_cannot_hide_behind_the_hash(self):
         command = 'uv run /catalog/gh-plan.py claim client/repo#7 > claim.json 2>&1 &'
         for harness in ("codex", "claude"):

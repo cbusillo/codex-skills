@@ -44,9 +44,9 @@ class ClaimCloseoutTests(unittest.TestCase):
         client.get_json.return_value = {"body": "", "number": number}
         client.paged_json.side_effect = lambda path, **kw: [] if path.endswith("/pulls") else client_comments
         self.reader.paged_json.side_effect = lambda path, **kw: [{"full_name": REPO}] if path == "/installation/repositories" else [] if path.endswith("/pulls") else local
-        for harness in ("codex", "claude"):
+        for harness, suffix in ((h, s) for h in ("codex", "claude") for s in ("", " && python3 - <<'PY'\nprint('ok')\nPY")):
             rows = history(harness, native_claim(REPO), native_claim(foreign, number, 20))
-            command = f'uv run /catalog/gh-plan.py claim {foreign}#{number} > claim.json'
+            command = f'uv run /catalog/gh-plan.py claim {foreign}#{number} > claim.json' + suffix
             if harness == "codex":
                 rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
             else:
