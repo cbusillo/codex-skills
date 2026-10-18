@@ -27,7 +27,7 @@ spec.loader.exec_module(helper)
 
 SHA = "a" * 40
 REPO = "example/tool"
-PR = {"number": 1, "state": "open", "draft": False, "labels": [], "head": {"sha": SHA}, "base": {"ref": "main"}, "user": {"login": "engineer"}}
+PR = {"number": 1, "state": "open", "draft": False, "labels": [], "changed_files": 1, "head": {"sha": SHA}, "base": {"ref": "main"}, "user": {"login": "engineer"}}
 
 
 class Reader:
@@ -101,6 +101,9 @@ class ReviewRecordTests(unittest.TestCase):
             "Review weighed: OpenAI completed the review and found that the helper did not run required checks.",
         )
         outcomes += (
+            "Review weighed: OpenAI, after two retries, completed the review; no findings.",
+            "Review of record: OpenAI\n\nOnce rerun on the fix, no findings.",
+            "Review weighed: findings declined with reasons.",
             "Review of record: OpenAI found the cache was not returned on 304; fixed.",
             "Review weighed: two OpenAI findings acted on; the watcher never started its timer, now fixed.",
             "Review weighed: OpenAI reviewed it and found the helper did not run checks; fixed.",
@@ -138,6 +141,13 @@ class ReviewRecordTests(unittest.TestCase):
             "Blocked review of record: OpenAI (#2069).",
             "Review weighed: not yet; OpenAI is still running.",
             "I'll post ready after Anthropic has completed the review of record.",
+            "Review of record: OpenAI declined to review (policy).",
+            "Review of record: OpenAI refused to review (policy).",
+            "Review of record: OpenAI found the diff too large; rerunning at `aaaaaaaa`.",
+            "Review of record: OpenAI reviewed 3 of 10 files, still running.",
+            "Review of record: OpenAI reviewed 3 of 10 files. Still running.",
+            "Review weighed: OpenAI reviewed 3 of 10 files and is still running.",
+            "Review of record: OpenAI\n\nOpenAI declined to review; no findings.",
             "Review request: Claude Code hook settings page",
             "Review request: OpenAI API key rotation docs",
             "No model review is needed here; the Supervisor runs the review only for skill paths.",
@@ -337,6 +347,48 @@ class ReadyTests(unittest.TestCase):
         self.review_comment("Review weighed: no findings.", 6)
         self.refuse()
         self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7, login="repository-owner")
+        self.refuse()
+
+    def test_provider_refusal_and_progress_with_a_head_cannot_clear_ready(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "AGENTS.md"}]
+        for body in (
+            "Review of record: OpenAI declined to review (policy).",
+            "Review of record: OpenAI found the diff too large; rerunning at `aaaaaaaa`.",
+            "Review of record: OpenAI reviewed 3 of 10 files, still running.",
+            "Review of record: OpenAI reviewed 3 of 10 files. Still running.",
+            "Review weighed: OpenAI reviewed 3 of 10 files and is still running.",
+            "Review of record: OpenAI\n\nOpenAI declined to review; no findings.",
+        ):
+            with self.subTest(body=body):
+                self.reader.comments = []
+                self.review_comment(f"{body}\n\nHead: {SHA}", 7)
+                self.refuse()
+
+    def test_timing_summary_and_explicit_head_allow_ready(self):
+        self.review_comment("Review prompt for the review of record.", 6)
+        self.review_comment(f"Review weighed: OpenAI, after two retries, completed the review; no findings.\n\nHead: {SHA}", 7)
+        self.post()
+
+    def test_bare_date_or_hex_word_cannot_identify_a_reviewed_head(self):
+        self.review_comment("Review prompt for the review of record.", 6)
+        for marker in ("20261017", "deadbeef"):
+            with self.subTest(marker=marker):
+                self.reader.pr["head"]["sha"] = marker + "a" * (40 - len(marker))
+                self.reader.comments = self.reader.comments[:1]
+                self.review_comment(f"Review weighed at {marker}: no findings.", 7)
+                self.refuse()
+                self.review_comment(f"Review weighed at `{self.reader.pr['head']['sha']}`: no findings.", 8)
+                self.post()
+                self.writer.reset_mock()
+
+    def test_incomplete_or_missing_file_count_refuses_required_path_coverage(self):
+        self.reader.config = {"qualityGate": {"modelReview": {"requiredPaths": ["AGENTS.md"]}}}
+        self.reader.files = [{"filename": "src/tool.py"}]
+        # A matching path may be omitted by GitHub's 3000-file ceiling.
+        self.reader.pr["changed_files"] = 3001
+        self.refuse()
+        self.reader.pr.pop("changed_files")
         self.refuse()
 
     def test_renamed_review_required_path_still_needs_an_outcome(self):

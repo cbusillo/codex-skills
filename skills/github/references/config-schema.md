@@ -215,8 +215,8 @@ Common top-level keys:
   [review by another model](../../references/model-review.md). `gh-pr.py ready`
   and the Supervisor's auto-enqueue read it from the base branch and refuse a PR
   that touches a match until a review outcome identifies its current head SHA.
-  Without the key, only a posted review request with no later outcome holds the
-  PR; judge other review-required changes as before.
+  Without the key, only a posted review request with no later outcome
+  identifying the current head holds the PR; judge other review-required changes as before.
 - `qualityGate.test.local`: focused local test command string. Select the tests
   covering the changed behavior; replace any documented placeholders before
   running. Run required lint, type checks and IDE inspection alongside it.

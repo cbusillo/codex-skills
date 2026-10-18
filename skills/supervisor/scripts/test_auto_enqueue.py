@@ -1552,6 +1552,8 @@ class QualificationTests(unittest.TestCase):
                         diagnostics={},
                     )
                 return {"content": base64.b64encode(json.dumps(config).encode()).decode()}
+            if path.endswith("/pulls/1"):
+                return self.pull
             raise AssertionError(path)
 
         self.io.get = get
@@ -1566,6 +1568,12 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(gap(), "")
         files = [{"filename": "skills/github/SKILL.md"}]
         self.assertEqual(gap(), "")
+        files = [{"filename": "src/tool.py"}]
+        self.pull["changed_files"] = 3001
+        self.assertTrue(gap())
+        self.pull["changed_files"] = 1
+        self.assertEqual(gap(), "")
+        files = [{"filename": "skills/github/SKILL.md"}]
         self.comments.pop()
         self.comments.pop()
         self.assertTrue(gap())

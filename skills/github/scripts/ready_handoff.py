@@ -50,16 +50,23 @@ REVIEW_OUTCOME = re.compile(
 # An outcome needs an affirmative result. Examine only the text preceding
 # that result for unfinished review status; the findings describe the code.
 REVIEW_RESULT = re.compile(
-    r"(?i)\b(?:completed|finished|reviewed|found|identified|declined)\b"
+    r"(?i)\b(?:completed|finished|reviewed|found|identified)\b"
     r"|\brun by (?:the )?supervisor\b"
     r"|\b(?:no findings|none(?: to act on)?|nothing to act on|no changes needed)\b(?!\s+yet)"
-    r"|\bfindings?\s*:(?=\s|$)|\bfindings? (?:acted on|fixed|addressed)\b"
+    r"|\bfindings?\s*:(?=\s|$)|\bfindings? (?:acted on|fixed|addressed|declined)\b"
     r"|\bacted on\b|\bis correct\b"
 )
 REVIEW_UNFINISHED = re.compile(
     r"(?i)\b(?:not|never|neither|cannot|unable|pending|blocked|requested|needed|waiting"
-    r"|outstanding|incomplete|unavailable|queued|running|errored|failed|retrying|rerunning"
-    r"|will|would|after|once|until)\b(?![-\w])|\btimed out\b"
+    r"|outstanding|incomplete|unavailable|queued|running|errored|failed|retrying|rerunning|declined|refused"
+    r"|will|would|until)\b(?![-\w])|\btimed out\b"
+)
+# A provider refusal or a continuation explicitly saying this review is still
+# running overrides result words from partial file coverage or launch probes.
+REVIEW_PROGRESS = re.compile(
+    r"(?i)\b(?:declined|refused) to review\b"
+    r"|(?:[.;,]\s*|\band (?:is )?)(?:still running|waiting for (?:the )?result)\b"
+    r"|[.;,]\s*(?:rerunning|retrying)(?=\s+(?:at|review)\b|[.!]|$)"
 )
 REVIEW_REQUEST = re.compile(
     r"(?i)^review (?:prompt|request)\b|^review of record (?:still )?(?:needed|requested)\b"
@@ -72,7 +79,7 @@ SUPERVISOR_RUNS_REVIEW = re.compile(
     r"(?i)^(?:.*?\bso\s+)?supervisor runs the review[.:]?\s*$"
 )
 REVIEW_HEAD = re.compile(
-    r"(?i)\b(?:head(?: SHA)?|at)\s*:?\s*[`*]*(?P<sha>[0-9a-f]{7,40})\b"
+    r"(?i)(?:\bhead(?: SHA)?\s*:?\s*[`*]*|\bat\s+`)(?P<sha>[0-9a-f]{7,40})\b"
 )
 
 
@@ -352,15 +359,20 @@ def review_record(body):
     """Classify a review-of-record comment by the leads already in use."""
     lines = (body or "").strip().splitlines()
     first = REVIEW_LEAD.sub("", lines[0]) if lines else ""
-    result = REVIEW_RESULT.search(first)
+    result_text = first
+    result = REVIEW_RESULT.search(result_text)
     # Some existing records put the actual result in a following section.
     if not result and REVIEW_OUTCOME.search(first):
-        result_body = "\n".join(lines)
-        result = REVIEW_RESULT.search(result_body)
-        prefix = result_body[:result.start()] if result else ""
+        result_text = "\n".join(lines)
+        result = REVIEW_RESULT.search(result_text)
+        prefix = result_text[:result.start()] if result else ""
     else:
         prefix = first[:result.start()] if result else ""
-    if REVIEW_OUTCOME.search(first) and result and not REVIEW_UNFINISHED.search(prefix):
+    if (
+        REVIEW_OUTCOME.search(first) and result
+        and not REVIEW_UNFINISHED.search(prefix)
+        and not REVIEW_PROGRESS.search(result_text)
+    ):
         return "outcome"
     explicit_request = REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)
     supervisor_request = any(
@@ -451,5 +463,11 @@ def review_evidence_gap(repo, number, *, base, head, comments, trusted, read_jso
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"{REVIEW_CONFIG_PATH} on {base} is unreadable") from error
         patterns = review_required_patterns(config)
-    files = review_required_files(read_pages(f"/repos/{repo}/pulls/{number}/files"), patterns) if patterns else []
+    files = []
+    if patterns:
+        inventory = read_pages(f"/repos/{repo}/pulls/{number}/files")
+        expected = read_json(f"/repos/{repo}/pulls/{number}")["changed_files"]
+        if type(expected) is not int or expected < 0 or len(inventory) != expected:
+            raise ValueError("Review path coverage is incomplete: changed-file count does not match inventory")
+        files = review_required_files(inventory, patterns)
     return review_of_record_gap(comments, trusted, required_files=files, head=head)
