@@ -4,6 +4,9 @@ description: Use when the user requests a native reminder, including plain repea
 metadata:
   short-description: Close out workstreams cleanly
 resources:
+  - path: scripts/check_claims.py
+    kind: script
+    description: Reads native-session claim releases and retained PR handoffs before a safe-exit verdict.
   - path: scripts/repo_cleanup.py
     kind: script
     description: Read-only cleanup inventory, fork dispositions, private snapshot revalidation, and post-action verification.
@@ -23,6 +26,11 @@ resources:
     kind: reference
     description: Read when the Director requests a native reminder, whether plain or for a session or repository.
 commands:
+  - name: closeout-check-claims
+    source: skill
+    resource_path: scripts/check_claims.py
+    example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--harness", "codex", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
+    purpose: Inventories the default installation and native or explicitly added claim repositories and refuses an all-clear until releases and retained PR handoffs are verified; never writes.
   - name: session-reminder-link
     source: skill
     resource_path: scripts/reminder_link.py
@@ -215,7 +223,159 @@ preserved, or intentionally left in place.
    authorization evidence.
 7. Do not remove user artifacts, broad system caches, unrelated untracked files,
    or remote resources without explicit approval.
-8. Report final state concisely.
+8. Before a safe-exit all-clear, complete [claim disposition](#claim-disposition)
+   for this native session on either harness. Updating status or preserving a
+   PR does not release ownership. Keep the claim while a required review is
+   pending and this session is expected to resume; end that turn without a
+   safe-exit all-clear.
+9. Report final state concisely.
+
+## Claim Disposition
+
+Before reporting `Safe to exit: yes`, account for every claim this session took,
+including earlier turns, other repositories and PR-only work. Run:
+
+```bash
+uv run <skill-dir>/scripts/check_claims.py --harness codex \
+  --session NATIVE_ID --transcript /absolute/native-transcript.jsonl
+```
+
+Use `--harness claude` on Claude Code. Both use the same procedure. The native
+transcript must belong to that exact session and retain its timestamped history.
+The check always inventories the default installation, including closed issues
+and PR-only claims. Native claim receipts and helper command targets add exact
+repositories outside that installation. Those reads use the repository's existing
+configured App route and source automation identity. No identity/configuration is
+changed and no refused request is retried under another identity. Repeated
+`--repository ACCOUNT/REPOSITORY` adds context for missing/truncated receipts or
+another installation; `--owner ACCOUNT` requires that account to be covered, and
+refuses if no repository context is known. Neither option narrows native scope.
+Claude's native session subagent directory is included because its delegated
+tools may inherit the parent's session ID. Codex's native read-only parent/child
+index supplies child thread IDs and rollouts, including descendants and closed
+edges. Child-owned claims and claims using the inherited root session ID are
+both included. Missing native graph/schema/rollout evidence refuses coverage.
+Missing native identity or a different running harness refuses an all-clear.
+Preserve its coverage
+and released-claim links as closeout evidence; it proves claim disposition only,
+not readiness or permission to discard artifacts. With no GitHub work or claims,
+record this step as not applicable instead of requiring GitHub access.
+
+For a held own claim, first finish or durably hand off its work and update Current
+Status with the next actor, action and retained artifacts. Use GitHub's maintained
+comment helper to post `Released claim ID` as the first line, with the exact
+native session ID, handoff evidence and every retained PR's full URL in the body.
+This is the existing source-authored release, not `release-claim`'s Supervisor
+attestation of an ended session. It releases this ownership only. Read the
+[claim contract](../github/references/cli-reference.md#planning-claim) before
+releasing or repairing a retained-PR handoff. Never release another session's
+claim. Run the check after the write; only exit 0 with `claims_clear: true`
+and complete coverage permits an all-clear. Leave its JSON visible in the native
+tool output; use `tee` if a saved copy is needed. The Supervisor's safe-verdict
+reader requires that fresh invocation result to cover every native source claim.
+Claim invocations with redirected or missing outputs also require readback;
+absence of a receipt alone does not exempt them. A single bound terminal claim
+failure with `ok: false`, `write_outcome: not_started`, no completed steps and
+no claim-comment receipt proves that invocation wrote no ownership; it needs
+no release or remote check by itself. Ambiguous batch output, missing output
+and partial or uncertain writes retain the disposition requirement.
+One leading `cd DIR &&`, `2>&1` stderr merge, and an optional pipe to `tee`
+preserve this binding. Saved-file reads and output-hiding redirection do not.
+Delegation alone uses local
+child histories: with no ownership activity in parent or children, keep the
+existing N/A path without GitHub access. For claimed children, the parent checks
+all native IDs after each child finishes and disposes of its own ownership.
+Child snapshots are bound into the parent's check; later child activity requires
+a fresh check. Missing source
+receipts are reconciled through complete session inventory in the known repository
+scope. Add `--repository` to inventory another known repository. That flag does
+not prove the destination of an opaque numeric invocation, even if it contains
+an older released claim with identical session, worker and branch. If original
+command scope and its own receipt are both unavailable, retain conditional/no,
+record the blocker and next actor, and continue independent work. Do not repeat
+a write to manufacture evidence for the earlier invocation. For future claims,
+put `--repo OWNER/REPO` in each command and keep receipts visible with `tee`.
+A numeric claim with its own canonical receipt uses only that receipt's
+repository; batched commands need explicit repository operands because their
+shared native output cannot bind receipts to individual shell commands.
+Another invocation's receipt cannot fill a missing scope gap.
+A saved report read with `cat`, an earlier proof before another claim or PR was
+created, and final-answer prose do not satisfy shutdown acceptance. Run the
+checker as its own native shell invocation, optionally piped to `tee`, with
+one checker envelope visible in the output. Do not combine it or its process
+polls with commands that read saved reports; a mixed batch cannot attest
+freshness. In Codex composed execution, use one
+`text(await tools.exec_command({cmd: "CHECK COMMAND"}));` cell with literal
+arguments and one output. Poll with one
+`text(await tools.write_stdin({session_id: PROCESS_ID}));` cell, using the
+literal returned process ID. Keep cached output and other polls in separate
+native invocations. For long
+checks, use the shell tool's sufficient foreground timeout (at least 600 seconds
+on Claude Bash), or Codex's process handle and `write_stdin` polls. Keep all result
+JSON visible; do not background Claude Bash checks. Quiet no-GitHub child
+histories keep the existing exit path.
+Freshness is measured at the check's bound launch, including long-running
+checks collected by later polls. Every ownership command must have a terminal
+native result before the check launches; a process handle is still pending.
+Every observed process handle in an ownership batch must finish; one terminal
+poll cannot clear other processes from that batch.
+Keep ownership results visible: use one foreground shell command or one
+`text(await tools.exec_command(...));` cell. Do not launch ownership commands
+with shell `&` or drop an inner execution result. A detached writer with no
+recoverable terminal result leaves closeout conditional/no; record that blocker
+and preserve the session rather than rerunning the write to manufacture evidence.
+Quoted heredoc bodies are data only when they are not passed to an executor,
+including a generated script executed later in the same invocation.
+Native file writes and patches are also linked to later script execution in
+this history. Executing a file containing potential ownership stays conditional/no
+when its writer provenance cannot be established, including source, direct and
+interpreter execution. A file merely written or read as data is not execution.
+Potential ownership passed to a shell/interpreter body, command operand or
+execution wrapper stays pending when its execution cannot be established.
+Ownership commands before or after inert bodies still count. Substitutions in
+unquoted heredocs may execute and remain unparsed.
+Potential ownership in unparsed shell or computed code-mode commands stays
+pending. Use the visible foreground form above for future writes; preserve
+conditional/no when original execution evidence cannot be recovered.
+Claude background ownership waits for its native terminal task notice; a
+progress notice or a `TaskStop` invocation alone does not prove completion.
+Any later ownership activity requires a new check after its terminal result;
+receiving an older result afterward cannot cover that activity.
+Claude splits one API message across multiple native records. Its shared
+`message.id` is one launch boundary even when tool results interleave: a check
+in the same API message as ownership cannot prove it ran afterward. Finish
+ownership first and launch a separate check. Run one checker at a time rather
+than parallel checks in the same API message or native record.
+
+An open PR need not merge before a session exits. Its exact authored release
+must name the retained PR, and the check verifies the same repository, source
+identity and independent issue link under the successor's existing handoff
+contract. A PR-only claim uses the PR itself as its work record. Preserve the
+branch/worktree and the next actor's custody. A merely prose handoff, an
+unreleased claim, missing transcript, inaccessible repository, incomplete
+inventory or unverified retained PR keeps the verdict conditional/no. Record the
+reason and continue independent work; do not turn a failed read into no claims.
+If scope outside the reported installation coverage remains uncertain, do not
+claim a complete inventory. The Supervisor's post-process release is recovery,
+not a substitute for this executing-session check. Recovery after verified process
+exit still reads the original unqualified declaration and checks live activity,
+so historical ended sessions without a pre-exit receipt can release through the
+existing Supervisor attestation route.
+Native ended-session proof likewise uses independently verified inactivity and
+the original declaration, preserving its claim handoff route. Normal Supervisor
+close-out candidates and guarded terminal cleanup consume the accepted verdict.
+After recovery, resume the source session and run this check: it accepts validated
+Supervisor/Direction releases as well as exact source-authored releases, rereading
+their closure evidence and retained PR state. A bare exact release supplied by
+the claim helper remains valid; an explicit conflicting session field refuses.
+For missing native identity, ambiguous resume/fork histories or inaccessible
+scope, preserve the active process and terminal, record conditional/no and the
+blocker on the item, and continue independent work. Post-process recovery applies
+only to a session that already exited; it is not a way to force an unaccepted
+session to exit. Follow the Supervisor's
+[claim-gated verdict procedure](../supervisor/references/helpers.md#claim-gated-verdicts)
+when it is overseeing the worker. Do not edit native transcripts or substitute
+another session ID.
 
 ## Consuming Readiness Evidence
 
@@ -306,6 +466,10 @@ Safe to exit: yes
   post-turn trigger may still occur and the answer says so explicitly. Activity
   in detached `auto-review-<hex>` worktrees for older targets is not a gate.
 - PR, issue, and GitHub plan state is current.
+- This native session's claims are released, with complete readback evidence
+  under Claim Disposition and verified retained-PR handoffs where needed, or
+  GitHub claim disposition is explicitly not applicable. Held or unread claims
+  prevent an all-clear even when every readiness and artifact check passes.
 - The branches and worktrees this task created or adopted are accounted for:
   eligible completed ones are removed under the shared cleanup policy, and each
   one that stays is named with its reason and what will remove it. Work from the

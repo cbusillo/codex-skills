@@ -11,6 +11,11 @@ import json
 import re
 from pathlib import Path
 
+import claim_receipts
+import claim_history
+
+CLAIM_VERDICT_REFUSED = "claim_disposition_refused"
+
 MEMORY_CITATION_TAIL = re.compile(
     r"^<oai-mem-citation>(?:(?!</?oai-mem-citation>).)*"
     r"^</oai-mem-citation>\s*\Z",
@@ -21,7 +26,7 @@ NO_DIRECTOR_ACTION = re.compile(r"^No Director (?:action|decision) needed\.\s+")
 # A terminal Claude Code task notice carries <status>; Monitor event notices do not.
 TASK_NOTICE = re.compile(r"<task-notification>(.*?)</task-notification>", re.DOTALL)
 TASK_NOTICE_ID = re.compile(r"<task-id>([^<]+)</task-id>")
-TASK_NOTICE_STATUS = re.compile(r"<status>[^<]+</status>")
+TASK_NOTICE_STATUS = re.compile(r"<status>(?:completed|failed|killed|stopped)</status>")
 
 
 def validate_record(record: dict) -> None:
@@ -233,7 +238,7 @@ def track_claude_background_tasks(record: dict, running: dict) -> None:
                     running.pop(stopped, None)
 
 
-def summarize(records: list[dict], harness: str) -> dict:
+def summarize(records: list[dict], harness: str, *, claim_histories=None, history_error=None, inspect_claims=True) -> dict:
     result = {
         "last_text": "",
         "timestamp": None,
@@ -343,6 +348,16 @@ def summarize(records: list[dict], harness: str) -> dict:
         "recognized" if result["safe_verdict"] else
         "unrecognized" if "Safe to exit:" in verdict_text else "absent"
     )
+    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness == "claude" else
+                  {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"})
+    session = next(iter(identities)) if len(identities) == 1 else None
+    disposition = (claim_receipts.acceptance(records, harness, session, histories=claim_histories, history_error=history_error)
+                   if inspect_claims else {"clear": False, "reason": "not_evaluated"})
+    result["claim_disposition"] = disposition
+    result["declared_safe_verdict"] = result["safe_verdict"]
+    result["safe_verdict"] = result["safe_verdict"] and disposition["clear"]
+    if result["declared_safe_verdict"] and not result["safe_verdict"] and inspect_claims:
+        result["verdict_recognition"] = CLAIM_VERDICT_REFUSED
     # A turn end with a live task is a wait on that task; with none, nothing will resume the turn.
     result["background_tasks"] = [
         {"task_id": task_id, "started": started} for task_id, started in running_tasks.items()
@@ -369,7 +384,21 @@ def session_status(entry: dict) -> dict:
         }
     if identities != {entry["session_id"]}:
         raise ValueError("transcript identity does not match the ledger session")
-    result = summarize(records, entry["harness"])
+    def child_read(child, harness, session):
+        initial = child.stat()
+        data = read_jsonl(child)
+        ids = ({r.get("sessionId") for r in data if r.get("sessionId")} if harness == "claude" else
+               {r.get("payload", {}).get("id") for r in data if r.get("type") == "session_meta"})
+        final = child.stat()
+        if ids != {session} or (initial.st_mtime_ns, initial.st_size) != (final.st_mtime_ns, final.st_size):
+            raise ValueError("child transcript identity or activity changed")
+        return data
+    histories, error = None, None
+    try:
+        histories = claim_history.collect(path, entry["harness"], entry["session_id"], records, child_read)
+    except (OSError, ValueError, TypeError, KeyError) as missing:
+        error = str(missing)
+    result = summarize(records, entry["harness"], claim_histories=histories, history_error=error)
     after = path.stat()
     if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
         raise ValueError("transcript changed during read; check again")

@@ -378,7 +378,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
 
     async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False,
-                      receipt=None, proof_sessions=None, receipt_changed=False):
+                      receipt=None, proof_sessions=None, receipt_changed=False, snapshot_status=None):
         thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "status": {"type": state}}
         if mismatch: thread["id"] = "another-session"
         reads, calls, unexpected, observed_ids = 0, 0, [], set()
@@ -410,7 +410,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             nonlocal calls
             calls += 1
             if with_peer: self.assertIn("peer", observed_ids)
-            return {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z",
+            return {"/fixture/transcript": {**(snapshot_status or {}), "safe_verdict": safe if snapshot_status is None else snapshot_status["safe_verdict"], "timestamp": "2026-10-01T02:00:00Z",
                                              "size": calls + int(bool(receipt)) if changed else 1}}
         # AF_UNIX paths are short on macOS; /var/folders can exceed that limit.
         with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
@@ -446,6 +446,15 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unloaded_native_session_with_verified_final_handoff_is_candidate(self):
         peers, states = await self.observe("notLoaded")
+        self.assertEqual(peers, [])
+        self.assertEqual(states["holder"]["state"], "ended")
+
+    async def test_ended_claim_recovery_does_not_require_pre_exit_release(self):
+        session_record = SESSIONS.native_helpers()[1]
+        from test_claim_receipts import history, claim
+        declared = session_record.summarize(history("codex", claim()), "codex")
+        self.assertFalse(declared["safe_verdict"])
+        peers, states = await self.observe("notLoaded", snapshot_status=declared)
         self.assertEqual(peers, [])
         self.assertEqual(states["holder"]["state"], "ended")
 
