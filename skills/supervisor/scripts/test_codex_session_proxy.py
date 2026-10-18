@@ -11,6 +11,7 @@ import subprocess
 import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import threading
 from unittest.mock import patch
 
@@ -265,7 +266,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     (f.root / "stop").touch()
                     await asyncio.wait_for(task, 8)
 
-    async def test_metadata_and_detach_preserve_closure_and_finish_retry(self):
+    async def test_nonpersisting_housekeeping_preserves_closure_and_finish_retry(self):
         for frozen in (False, True):
             with self.subTest(frozen=frozen), ReceiptFixture() as f:
                 methods = [
@@ -298,6 +299,34 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     (f.root / "stop").touch()
                     await asyncio.wait_for(task, 8)
 
+    async def test_persisted_metadata_preserves_generation_but_refuses_stale_closure(self):
+        with ReceiptFixture() as f:
+            before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
+            def persist_metadata(_request):
+                # Legacy native gitInfo updates append a SessionMeta marker.
+                marker = json.loads(f.transcript.read_text().splitlines()[0])
+                marker["timestamp"] = datetime.now(timezone.utc).isoformat()
+                marker["payload"]["git"] = {"branch": "updated-branch"}
+                with f.transcript.open("a") as stream:
+                    stream.write(json.dumps(marker) + "\n")
+                return {"thread": {"id": f.session}}
+            f.rpc_results["thread/metadata/update"] = persist_metadata
+            task, request, response, _ = await self.start_client(f)
+            try:
+                result = await self.send(task, request, response, "thread/metadata/update", f.session,
+                                         gitInfo={"branch": "updated-branch"})
+                self.assertIn("result", result)
+                self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
+                self.assertIsNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
+                _, states, _ = await asyncio.to_thread(f.observe)
+                self.assertEqual(states[f.session]["state"], "live")
+                with self.assertRaises(ValueError):
+                    await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
     async def test_unarchive_preserves_generation_but_moved_rollout_invalidates_receipt(self):
         for frozen in (False, True):
             with self.subTest(frozen=frozen), ReceiptFixture(archived=True) as f:
@@ -323,6 +352,11 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(f.transcript.exists())
                     self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
                     self.assertIsNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
+                    with self.assertRaises(FileNotFoundError):
+                        await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                    with self.assertRaises(ValueError):
+                        await asyncio.to_thread(f.release.record_closure, f.log,
+                                               {**f.entry, "transcript": str(f.transcript)}, "supervisor")
                     # The existing unloaded proof can read the restored rollout;
                     # it does not reinterpret the stale idle-closure fingerprint.
                     _, states, _ = await asyncio.to_thread(f.observe, {f.session})

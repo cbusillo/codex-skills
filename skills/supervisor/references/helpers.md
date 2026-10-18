@@ -1707,15 +1707,23 @@ nothing when a lease is busy defers without spending an attempt.
 
 A queue nudge only invalidates closure. Fork and archive are conservatively
 treated as source attachments too: they own that source's lease, invalidate
-its receipt, and refuse a frozen source. Archive can shut down descendants
-that have independently resumed, so it cannot bypass the source guard merely
-because it starts no execution. These operations do not record their client as a new
+its receipt, and refuse a frozen source. Archive can stop execution, so it stays
+subject to the named source's freeze and ownership checks. This guard checks
+only that source; it does not acquire descendants' leases or prevent archive
+from stopping an independently resumed descendant of an unfrozen parent.
+These operations do not record their client as a new
 worker generation of the source. Read-only history, search, terminal and voice
 list RPCs do not invalidate closure or acquire its lease, including after
 handoff. Rename, metadata, read-state, section, unsubscribe and unarchive RPCs
 also preserve the source generation and take no execution lease. Unarchiving
 moves the transcript, so its old fingerprint still refuses idle admission;
-the existing unloaded/authored-release recovery remains available. Metadata
+finish also refuses both the missing original path and a changed path in the
+original closure record. The existing unloaded/authored-release recovery
+remains available. A generation preserved by housekeeping is not a refreshed
+closure proof: if native persistence changes a rollout (including legacy git
+metadata updates), idle admission refuses the old fingerprint and finish
+refuses any record newer than closure. The finish-retry benefit applies only
+when all required transcripts remain unchanged. Metadata
 updates store preferences; they do not select a turn's access or grant it.
 For an already closed source invalidated by queue, fork or archive, start a
 guarded resume to obtain its real new launch metadata;
