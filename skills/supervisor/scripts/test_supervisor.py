@@ -1390,6 +1390,13 @@ def write_codex_project_fixture(directory, home):
 
 
 class CodexProjectTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
+
     def test_codex_cannot_skip_preflight_through_another_provider(self):
         for provider in ("anthropic", "google"):
             with self.subTest(provider=provider), self.assertRaises(ValueError):
@@ -1759,6 +1766,11 @@ class ClaudeTrustTests(unittest.TestCase):
 
 class TerminalTests(unittest.TestCase):
     def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         # These cases exercise selection/input mechanics. Protocol and startup
         # observation have their own fake-adapter regressions.
         daemon = patch.object(iterm_tab, "inspect_codex_daemon")

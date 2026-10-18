@@ -69,6 +69,20 @@ class DaemonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             uuid.UUID(resume["params"]["threadId"])
         self.assertFalse(any(c["method"] in {"thread/start", "turn/start", "turn/interrupt"} for c in calls))
+        self.assertTrue(any(c["method"] == "plugin/list" for c in calls))
+
+    def test_missing_remote_plugins_warn_for_source_work_and_refuse_browser_work(self):
+        for required in (False, True):
+            choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}, "require_browser": required}
+            with (patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
+                  patch.object(iterm_tab.socket, "socket"),
+                  patch.object(iterm_tab, "inspect_codex_daemon", return_value={"marketplaces": []})):
+                if required:
+                    with self.assertRaises(ValueError):
+                        iterm_tab.check_codex_daemon(choice)
+                else:
+                    iterm_tab.check_codex_daemon(choice)
+                    self.assertTrue(choice["tools"]["warnings"])
 
     def test_draining_daemon_with_detached_active_worker_refuses(self):
         with self.assertRaises(iterm_tab.DaemonRefusal) as raised:

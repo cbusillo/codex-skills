@@ -1251,6 +1251,27 @@ extension, call only `mcp__catalog-chrome__list_connected_browsers` and verify
 the existing Chrome appears. Do not pair, select, navigate or modify the browser
 for this check. An installer success alone does not prove cross-account pairing.
 
+With the catalog Chrome opt-in, Supervisor Claude launches export
+`CLAUDE_CODE_ENABLE_CFC=0` and reject `--chrome`. Use
+`mcp__catalog-chrome__*` for the pinned Agents route. A bounded listing checks
+the selected home's server before launch without selecting or navigating a
+browser. Source briefs get warnings when unavailable; add `--require-browser`
+to browser launches to refuse before terminals and receipts. `--without-browser`
+skips the listing for work that needs none. Session start prints one static
+setup warning for directly started Claude and Codex sessions, without changing
+settings or starting browser or Computer Use servers.
+
+For enrolled homes, local Supervisor Codex launches add `--no-daemon`, validate
+the account-relative bundle link, pass its marketplace source override, and
+check installed/enabled `chrome`, `browser` and `computer-use` plugins.
+`--remote unix://` launches inspect their selected daemon's `plugin/list`;
+missing plugins warn for source work and refuse `--require-browser`. Explicit
+other endpoints stay unverified. Use local `codex -C /absolute/repository` for
+a browser brief. See [launcher tools and remote research](skills/supervisor/references/helpers.md#browser-and-computer-use-preflight).
+Discovery is separate from a working browser connection, OS permission and app
+approval. Chris handles profiles, sign-ins, settings and permission prompts;
+Claude Computer Use still needs his confirmation before each use.
+
 ## TLS verification lint
 
 Run `scripts/lint-tls.sh` for the complete catalog TLS gate. Its
