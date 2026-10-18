@@ -182,6 +182,24 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(iterm_tab.verify_startup(read, timeout=0, prompt_window=60), 5)
         read.assert_awaited_once()
 
+    async def test_echoed_brief_quoting_status_row_does_not_end_prompt_watch(self):
+        # iTerm echoes the submitted command, brief included, before Codex draws.
+        submitted = "codex -- 'Find why esc to interrupt shows\n• Working (0s • esc to interrupt)\nearly'"
+        echo = ["% codex -- 'Find why esc to interrupt shows", "• Working (0s • esc to interrupt)", "early'"]
+        prompt = [*echo, "› 1. Trust all and continue", "  2. Continue without trusting"]
+        read = AsyncMock(side_effect=[{"dead": False, "screen": echo}] * 3 + [{"dead": False, "screen": prompt}])
+        with self.assertRaises(iterm_tab.StartupFailure) as raised:
+            await iterm_tab.verify_startup(read, timeout=0, prompt_window=5, submitted=submitted)
+        self.assertEqual(raised.exception.snapshot["blocked_prompt"], "hook_trust")
+
+    async def test_death_during_prompt_watch_still_collects_exit_status(self):
+        read = AsyncMock(side_effect=[{"dead": False, "screen": []},
+                                      {"dead": True, "exit_status": "", "screen": ["last output"]},
+                                      {"dead": True, "exit_status": "1", "screen": ["last output"]}])
+        with self.assertRaises(iterm_tab.StartupFailure) as raised:
+            await iterm_tab.verify_startup(read, timeout=0.05, prompt_window=5)
+        self.assertEqual(raised.exception.snapshot["exit_status"], "1")
+
     async def test_brief_mentioning_hook_trust_without_review_choices_passes(self):
         snapshot = {"dead": False, "screen": [
             "Fix 2 hooks are new or changed launch detection",

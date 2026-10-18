@@ -169,12 +169,24 @@ def startup_prompt_window(choice):
     return CODEX_PROMPT_WINDOW if choice and choice["provider"] == "openai" else 0.0
 
 
-async def verify_startup(read, timeout=2.0, prompt_window=0.0):
+def running_turn(screen, submitted):
+    """A Codex status row such as "• Working (0s • esc to interrupt)".
+
+    The echoed launch command, brief included, is not evidence; an unknown
+    row format only means the full prompt window is used.
+    """
+    return any(re.match(r"\s*[^\w\s]?\s*\w[\w ]*\(\d+[hms].*\besc to interrupt\b", line)
+               and line.strip() not in submitted.casefold()
+               for line in screen.splitlines())
+
+
+async def verify_startup(read, timeout=2.0, prompt_window=0.0, submitted=""):
     """Observe immediate exit or native trust prompts; not full readiness."""
     deadline = time.monotonic() + timeout
     # A running turn is past every startup prompt; stop watching there.
     watch_until = max(deadline, time.monotonic() + prompt_window)
     last_dead = None
+    collect_until = deadline
     while True:
         try:
             snapshot = await read()
@@ -188,19 +200,23 @@ async def verify_startup(read, timeout=2.0, prompt_window=0.0):
             if (re.search(choice + r"trust all and\s+continue\b", screen)
                     and re.search(choice + r"continue without trusting\b", screen)):
                 raise StartupFailure({**snapshot, "blocked_prompt": "hook_trust"})
-            if "esc to interrupt" in screen:
+            if running_turn(screen, submitted):
                 watch_until = deadline
         if snapshot["dead"]:
+            if last_dead is None:
+                # A death seen late in the prompt watch gets the same window
+                # to collect its cause as one seen at launch.
+                collect_until = max(deadline, time.monotonic() + timeout)
             last_dead = snapshot
         # tmux can observe PTY EOF before SIGCHLD supplies the exit status.
         # Keep the failure, but use the remaining window to collect its cause.
         awaiting_status = (last_dead is not None and last_dead.get("exit_status") == ""
                            and not last_dead.get("exit_signal"))
-        if last_dead is not None and (not awaiting_status or time.monotonic() >= deadline):
+        if last_dead is not None and (not awaiting_status or time.monotonic() >= collect_until):
             raise StartupFailure(last_dead)
         if last_dead is None and time.monotonic() >= watch_until:
             return
-        await asyncio.sleep(min(0.2, max(0, (deadline if last_dead else watch_until) - time.monotonic())))
+        await asyncio.sleep(min(0.2, max(0, (collect_until if last_dead else watch_until) - time.monotonic())))
 
 
 async def submit_iterm_launch(app, session, command, prompt_window=0.0):
@@ -235,7 +251,7 @@ async def submit_iterm_launch(app, session, command, prompt_window=0.0):
                 return {"dead": dead, "screen": last_screen}
 
             try:
-                await verify_startup(read, prompt_window=prompt_window)
+                await verify_startup(read, prompt_window=prompt_window, submitted=command)
             except StartupFailure:
                 raise
             except Exception as error:

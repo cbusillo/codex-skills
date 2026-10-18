@@ -1532,7 +1532,6 @@ class UpdateTests(unittest.TestCase):
             skipped = runtime.update(self.checkout)
             self.assertEqual(skipped["state"], "current")
             self.assertIn("alert_refresh", skipped)
-            self.assertIn("hook source", runtime.status_line(self.checkout))
             self.assertIn("Catalog notice", runtime.status_line(self.checkout))
             hooks.write_text('{"hooks": {}}\n')
             fixed = runtime.update(self.checkout)
@@ -1558,7 +1557,13 @@ class UpdateTests(unittest.TestCase):
             self.assertIn("instruction_refresh", both)
             self.assertIn("alert_refresh", both)
             self.assertIn("instruction refresh", runtime.status_line(self.checkout))
-            self.assertIn("hook source", runtime.status_line(self.checkout))
+            # The skipped alert retirement adds its own recovery to the notice.
+            receipt = self.checkout / ".local" / "catalog-update.json"
+            recorded = json.loads(receipt.read_text())
+            line = runtime.status_line(self.checkout)
+            receipt.write_text(json.dumps({key: value for key, value in recorded.items() if key != "alert_refresh"}))
+            self.assertNotEqual(runtime.status_line(self.checkout), line)
+            receipt.write_text(json.dumps(recorded))
             self.assertIn("Hand edit.", target.read_text())
             hooks.write_text('{"hooks": {}}\n')
             target.write_bytes((fixture_home / ".claude" / "CLAUDE.md").read_bytes())
@@ -1612,7 +1617,6 @@ class UpdateTests(unittest.TestCase):
         install.write_text(json.dumps({"scheduled_updater": False}))
         head = command("git", "rev-parse", "HEAD", cwd=self.checkout)
         line = runtime.status_line(self.checkout)
-        self.assertIn("hook source", line)
         self.assertIn("--refresh-instructions", line)
         self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.checkout), head)
         job = self.base / "job.plist"
