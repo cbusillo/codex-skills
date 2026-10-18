@@ -172,8 +172,11 @@ def completion_record(comments, request, head, logins):
         if (review_receipt_head(body) == head and key(comment) >= key(request)
                 and (weighed is None or key(comment) > key(weighed["comment"]))):
             weighed = {"kind": "weighed", "comment": comment}
+    if weighed:
+        weighed["acknowledged"] = weighed["comment"]["created_at"] >= (request.get("updated_at") or request["created_at"])
     if supervisor:
-        supervisor["acknowledged"] = weighed is not None and key(weighed["comment"]) >= key(supervisor["comment"])
+        supervisor["acknowledged"] = (weighed is not None and weighed["acknowledged"]
+                                      and key(weighed["comment"]) >= key(supervisor["comment"]))
         return supervisor
     return weighed or reported
 
@@ -191,11 +194,13 @@ def completion_report(record, io, repo, pr, entries, logins, request, evidence):
             session, author, error = None, None, str(reason)
     confirmed = local_completion(evidence, repo, pr["number"], request, pr["head"]["sha"], session, author)
     edited = record.get("request_edited_after_review", False)
+    acknowledged = record.get("acknowledged", False)
     comment = record["comment"]
     status = {"supervisor": "already_completed", "weighed": "already_weighed", "reported": "reported_review"}
     return {"status": status[record["kind"]],
             "completion_kind": record["kind"], "requested_provider_confirmed": confirmed,
-            "request_edited_after_review": edited, "needs_attention": not confirmed or edited or error is not None,
+            "request_edited_after_review": edited,
+            "needs_attention": not acknowledged and (not confirmed or edited or error is not None),
             "head": pr["head"]["sha"], "request": request["id"],
             "author_session": session, "author_provider": author, "notification_error": error,
             "notification_needed": record["kind"] != "weighed" and not record.get("acknowledged", False),
@@ -218,7 +223,7 @@ def local_completion(evidence, repo, number, request, head, session, author):
         state = json.loads((evidence / f"{key}.json").read_text())
         review = state.get("review") or {}
         provider = {"openai": "anthropic", "anthropic": "openai"}.get(author)
-        return (state.get("phase") in {"post_pending", "post_attempted", "post_unknown", "posted"}
+        return (state.get("phase") in {"review_completed", "post_blocked", "post_pending", "post_attempted", "post_unknown", "posted"}
                 and state.get("head") == head and state.get("request") == request["id"]
                 and state.get("author_session") == session and session is not None
                 and state.get("author_provider") == author and provider is not None
@@ -238,6 +243,10 @@ def inline_prompt(body):
         text = re.sub(r"(?s)<!--.*?-->", "", match[1]).strip()
         if text:
             return text
+    # Explicit prompt sections win; otherwise resolve a linked prompt before
+    # treating quoted context (or legacy direct prose) as the review scope.
+    if COMMENT_LINK.search(body):
+        return None
     quoted = "\n".join(line[1:].lstrip() for line in body.splitlines() if line.startswith(">"))
     if quoted.strip():
         return quoted.strip()
@@ -478,14 +487,24 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
     session, author = bind_session(io, repo, {branch, worktree_branch}, entries, logins, request, pr)
     report = {"status": "pending", "head": head, "request": request["id"], "author_session": session,
               "author_provider": author, "worktree": str(worktree)}
+    key = journal_key(repo, number, request, head)
+    journal = evidence / f"{key}.json"
     if not apply:
+        if journal.exists():
+            try:
+                prior = json.loads(journal.read_text())
+                if not isinstance(prior, dict):
+                    raise ReviewError("journal is not an object")
+            except (ValueError, OSError) as error:
+                prior = {"phase": "unreadable", "error": str(error)}
+            return {**report, "status": "blocked", "journal": str(journal), "journal_phase": prior.get("phase"),
+                    "error": prior.get("error"), "needs_attention": True,
+                    "reason": "prior launch exists; reconcile retained evidence, never replay inference or an unknown write"}
         return report
     existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
     if existing:
         return completion_report(existing, io, repo, pr, entries, logins, request, evidence)
     evidence.mkdir(parents=True, exist_ok=True, mode=0o700)
-    key = journal_key(repo, number, request, head)
-    journal = evidence / f"{key}.json"
     # Exclusive creation survives process interruption and unknown remote writes.
     # A later sweep reads remote completion first, then refuses a spent launch.
     try:
@@ -512,7 +531,11 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         result_file.write_text(review + "\n")
         retained = {**report, "review": metadata, "evidence": str(result_file)}
         journal.write_text(json.dumps({**retained, "phase": "review_completed"}, indent=2))
-        existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
+        try:
+            existing = verify_inputs(io, repo, number, pr, worktree, worktree_branch, request, sources, logins)
+        except (GitHubReadError, GitHubReadShapeError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            journal.write_text(json.dumps({**retained, "phase": "post_blocked", "error": str(error)}, indent=2))
+            raise
         if existing:
             return completion_report(existing, io, repo, pr, entries, logins, request, evidence)
         journal.write_text(json.dumps({**retained, "phase": "post_pending"}, indent=2))

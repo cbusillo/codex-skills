@@ -1804,7 +1804,7 @@ terminal, including the receipt-store route in [#2069](https://github.com/cbusil
 Use `pending_reviews.py` there to discover and dispatch requests across the
 explicit Supervisor-owned repositories in the run's ledger. It does not alter
 the ledger, transcripts, launch files or account configuration. Run it once
-without `--apply` to see pending requests and refused bindings:
+without `--apply` to see pending requests, refused bindings and blocked prior launches:
 
 ```sh
 uv run skills/supervisor/scripts/pending_reviews.py \
@@ -1824,20 +1824,32 @@ or directory contents. Only `--apply` takes these locks; read-only discovery
 remains available during an active review and creates no evidence files. A held
 apply lock means wait for that sweep, never select another ledger directory to
 evade it. Distinct runs use their own private run directories. The evidence lock
-also protects shared output from different runs. During a Supervisor handoff, pass the same `--evidence-dir` to the successor even if its
-ledger moves to another run directory. Keep that directory and its journals;
+also protects shared output from different runs. During a Supervisor handoff,
+pass the same `--evidence-dir` to the successor even if its ledger moves to another run directory. Keep that directory and its journals;
 a new evidence path cannot deduplicate concurrent copies of one session in
-different run directories. The shared GitHub reader owns pagination and transport retries; the comment helper owns write
-reconciliation. This helper never retries inference or an uncertain write.
+different run directories. The shared GitHub reader owns pagination and
+transport retries; the comment helper owns write reconciliation. This helper never retries inference or an uncertain write.
 Journals retain `review_failed` for failed/empty inference, `post_failed` for
 confirmed non-applied writes, and `post_unknown` for uncertain delivery or
 invalid transport metadata, including their errors and structured post outcome
 when available. `post_attempted` records entry into the write call; an interrupted
 call is uncertain, never permission to retry. Read a refused outcome and its
-journal; a real permission or authorization refusal stops that action. Do not renew a request to evade a denial. A successful
-result retained before an uncertain post remains available for readback and
-manual reconciliation through the existing GitHub helper. Remote receipts let
-a later sweep skip confirmed posts without replaying them.
+journal; a real permission or authorization refusal stops that action. Do not
+renew a request to evade a denial. A completed review whose final input check
+fails keeps its result and records `post_blocked` with the diagnostic. No write
+was attempted. Discovery reads existing journals and reports `blocked`, their
+phase and error instead of promising another pending launch. It writes nothing.
+
+For a retained `review_completed` or `post_blocked` result, revalidate the exact
+head, clean worktree and original request/prompt scope before manually posting
+that result through the existing GitHub helper, with the manual report heading
+and head described below. Keep the original evidence directory. Its successful
+inference metadata and nonempty report can confirm the requested provider on
+that manual post without buying another review. Changed inputs require the
+author to resolve the scope; never post against guessed bindings. Uncertain
+writes still require remote readback and the GitHub helper's existing manual
+reconciliation, never automatic replay. Remote receipts let a later sweep skip
+confirmed posts without replaying them.
 
 A request comes from a configured automation identity and uses the shared
 readiness request classifier. Write `Supervisor runs the review` on its own
@@ -1903,46 +1915,45 @@ is valid; its branch claim can identify the authoring session too.
 It never fetches, creates, cleans or changes a worktree.
 
 Confirmed writes, including the GitHub helper's `reconciled_applied` outcome,
-report `status: posted`. A later sweep also reports the recorded `author_session`
-and `author_provider` on `already_completed`, even when the posting process
-ended before updating its journal. `requested_provider_confirmed` requires the
-matching local journal's successful other-provider inference metadata and retained
-nonempty result, at a post phase. A copied raw receipt from the shared automation
-login alone cannot attest inference. Without this local evidence the remote report
-is still returned for reconciliation, with provider completion unconfirmed.
-An edit to a served request sets `request_edited_after_review` and needs attention;
-it preserves the completion link and never reruns inference. Weigh the original
-scope and record whether a separate request is needed for changed scope. The Supervisor uses the stable `completion_comment` to route each result at
-most once, without launching inference or posting again. `notification_needed`
-reports whether a result still lacks a later trusted weighed disposition;
-it becomes false after that disposition. It is not a history of terminal input,
-which remains the Supervisor's responsibility. Older receipts without identity metadata attempt
-the same trusted branch-claim binding; an unavailable binding is reported as
-`notification_error` rather than guessed, including malformed claims and failed
-GitHub reads. These failures do not discard the already-posted completion link.
-The Supervisor sends that session the posted result through its normal exact
-session route. This helper sends no terminal input, weighs no findings and
-never calls `ready`. Its raw receipt deliberately differs from the author's
-head-bound weighed disposition, which remains required by the readiness helper.
-For compatibility with that shared completion contract, an already posted
-trusted weighed disposition for the current head after the request also ends
-this helper's queue item, reporting `status: already_weighed` and
-`requested_provider_confirmed: false` when no Supervisor receipt exists.
-That disposition is not provider-specific: it can
-weigh another review, so it is not proof the requested Supervisor provider ran.
-Such reports set `notification_needed: false` because the author has already
-recorded a disposition. Every provider-unconfirmed completion, served-request
-edit or notification binding failure sets `needs_attention`, appears in the
-separate top-level `attention` list, and makes the sweep exit nonzero. Verify the
-reported review and its provenance, then record the required disposition; do not
-use an unconfirmed queue result as the provider-specific review gate. This helper
-never clears that evidence gap or launches another paid review automatically. A manually posted report explicitly headed as a review
-run by the Supervisor, bound to this head after the request, is instead reported
-as `reported_review`. It needs the author's verification and disposition and
-does not attest provider completion. A heading marked pending, awaiting, waiting
-or not run is status prose, not a completed manual report. Echoing the original prompt inside that
-report cannot launch another paid review. The author remains responsible for the review of record
-required by the task; this helper never creates that attestation.
+report `status: posted`. Later sweeps return `already_completed`, including the
+recorded author identity even if posting ended before updating its journal.
+`requested_provider_confirmed` requires the matching local journal's successful
+other-provider metadata and retained nonempty report at completion or a post
+phase. A copied receipt from the shared automation login alone cannot attest
+inference. Missing local evidence leaves provider completion unconfirmed.
+
+An edit to a served request sets `request_edited_after_review`; the completion
+link is preserved and inference never reruns. Weigh the original scope and
+record whether a separate request is needed for changed scope. The Supervisor
+uses the stable `completion_comment` to route each result at most once.
+`notification_needed` means the result still lacks a later trusted weighed
+disposition, not a history of terminal input. That history remains the
+Supervisor's responsibility. Older receipts without identity metadata attempt
+the same trusted branch-claim binding. Malformed claims or failed GitHub reads
+become `notification_error`, preserving the already-posted completion link.
+The Supervisor sends that authoring session the result through its normal
+exact session route. This helper sends no terminal input, weighs no findings
+and never calls `ready`. Its raw receipt cannot serve as the author's
+head-bound weighed disposition required by readiness.
+
+A trusted weighed disposition at this head after the request ends the queue
+item as `already_weighed`. It is not provider-specific and cannot prove the
+requested provider ran. A manual report explicitly headed `Review of record,
+run by the Supervisor`, bound to this head after the request, is returned as
+`reported_review`. Its heading alone does not attest provider completion.
+Pending/awaiting/waiting/not-run headings remain status prose. Echoing the
+original request inside a report cannot launch another paid review.
+
+Provider-unconfirmed completions, served-request edits and notification binding
+failures set `needs_attention`, appear in top-level `attention`, and make the
+sweep exit nonzero until a later trusted current-head weighed disposition
+acknowledges the result. That disposition must also follow the request's last
+edit. Verify the reported review and provenance, then post that disposition
+through `gh-pr.py comment --reviewed-head FULL_SHA`. The queue warning becomes
+informational and `notification_needed` becomes false; provider confirmation
+remains false without local inference evidence. This acknowledgement never
+creates provider proof or runs another review. The author remains responsible
+for the task's provider-specific review of record and readiness gates.
 
 Shared paths keep their existing authority: the account reader's policy,
 capacity snapshot and launch-receipt store, the model review policy and the

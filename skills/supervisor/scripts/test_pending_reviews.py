@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pending_reviews as reviews
+import github_api
 from github_plan_claim import marker
 from ready_handoff import review_result_body
 
@@ -27,6 +28,15 @@ SHA = "a" * 40
 BRANCH = "work/change"
 SESSION = "native-session"
 STAMP = "2026-10-17T20:00:00Z"
+
+
+def post_payload(*, ok=True, write_outcome=None, reconciled=False):
+    failure = None if ok else github_api.FailureDetail(
+        cause="fixture", message="delivery failed", retryable=False, fallback_eligible=False,
+        disposition="stop", write_outcome=write_outcome)
+    result = github_api.ApiResult(ok=ok, status=200 if ok else 500, body={}, failure=failure)
+    return {"ok": ok, "outcome_certainty": github_api._outcome_certainty(
+        result, is_write=True, reconciliation={"result": "matched"} if reconciled else None)}
 
 
 def comment(ident, body, login=BOT):
@@ -87,7 +97,7 @@ class FakeIO:
     def post(self, repo, number, body):
         self.calls.append(("post", repo, number, body.read_text()))
         self.comments.append(comment(11, body.read_text()))
-        return {"ok": True, "outcome_certainty": "confirmed"}
+        return post_payload()
 
 
 class DispatchTests(unittest.TestCase):
@@ -192,6 +202,8 @@ class DispatchTests(unittest.TestCase):
         result = self.dispatch()
         self.assertEqual(result["status"], "already_weighed")
         self.assertFalse(result["notification_needed"])
+        self.assertFalse(result["needs_attention"])
+        self.assertFalse(result["requested_provider_confirmed"])
         self.assertFalse(any(c[0] == "review" for c in self.io.calls))
 
     def test_missing_checkout_is_irrelevant_to_prs_without_requests(self):
@@ -302,8 +314,8 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue(result["needs_attention"])
         self.assertFalse(any(c[0] == "review" for c in self.io.calls))
 
-    def test_weighed_other_review_needs_visible_attention(self):
-        self.io.comments.append(comment(11, review_result_body("Different review weighed.", SHA)))
+    def test_weighed_manual_review_clears_attention_without_inventing_provider_confirmation(self):
+        self.io.comments.append(comment(11, f"Review of record, run by the Supervisor at head {SHA}\nReport."))
         ledger = Path(self.temp.name) / "ledger.json"
         ledger.write_text(json.dumps(self.entries))
         args = ["pending_reviews", "--ledger", str(ledger), "--evidence-dir", str(self.evidence)]
@@ -313,8 +325,85 @@ class DispatchTests(unittest.TestCase):
                 patch.object(reviews, "automation_login", return_value=BOT), contextlib.redirect_stdout(output):
             self.assertEqual(reviews.main(), 1)
         report = json.loads(output.getvalue())
-        self.assertEqual(report["attention"][0]["status"], "already_weighed")
+        self.assertEqual(report["attention"][0]["status"], "reported_review")
         self.assertFalse(report["attention"][0]["requested_provider_confirmed"])
+        self.io.comments.append(comment(12, review_result_body("Verified manual review and weighed it.", SHA)))
+        output = io.StringIO()
+        with patch.object(sys, "argv", args), patch.object(reviews, "IO", return_value=self.io), \
+                patch.object(reviews, "configured_bot_logins", return_value=[BOT]), \
+                patch.object(reviews, "automation_login", return_value=BOT), contextlib.redirect_stdout(output):
+            self.assertEqual(reviews.main(), 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["attention"], [])
+        self.assertEqual(report["results"][0]["status"], "already_weighed")
+        self.assertFalse(report["results"][0]["requested_provider_confirmed"])
+        self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
+
+    def test_unconfirmed_receipt_becomes_informational_after_weighing(self):
+        self.io.comments.append(comment(11, '<!-- supervisor-review ' + json.dumps({
+            "request": 10, "head": SHA, "author_session": SESSION, "author_provider": "openai"}) + ' -->'))
+        self.assertTrue(self.dispatch()["needs_attention"])
+        self.io.comments.append(comment(12, review_result_body("Provenance checked; findings weighed.", SHA)))
+        result = self.dispatch()
+        self.assertFalse(result["needs_attention"])
+        self.assertFalse(result["requested_provider_confirmed"])
+        self.assertFalse(result["notification_needed"])
+
+    def test_final_check_failure_retains_diagnostics_and_manual_post_can_confirm_paid_review(self):
+        failures = [reviews.GitHubReadError("read unavailable", result=None, diagnostics={}),
+                    reviews.GitHubReadShapeError("bad shape"), KeyError("head")]
+        for index, error in enumerate(failures):
+            with self.subTest(error=error):
+                self.evidence = Path(self.temp.name) / f"final-check-{index}"
+                self.io.comments = [self.io.request]
+                self.io.calls.clear()
+                with patch.object(reviews, "verify_inputs", side_effect=[None, error]):
+                    with self.assertRaises(type(error)):
+                        self.dispatch()
+                journal = json.loads(next(self.evidence.glob("*.json")).read_text())
+                self.assertEqual(journal["phase"], "post_blocked")
+                self.assertEqual(journal["error"], str(error))
+                self.assertEqual(next(self.evidence.glob("*.md")).read_text().strip(), self.io.review_text)
+                with self.assertRaises(reviews.ReviewError):
+                    self.dispatch()
+                self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+                self.assert_no_post()
+                # Reconciled manually after input readback, through the normal GitHub helper.
+                self.io.comments.append(comment(11, f"Review of record, run by the Supervisor\nHead: {SHA}\n" + self.io.review_text))
+                result = self.dispatch()
+                self.assertEqual(result["status"], "reported_review")
+                self.assertTrue(result["requested_provider_confirmed"])
+                self.assertFalse(result["needs_attention"])
+                self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_discovery_reports_spent_journal_instead_of_pending_without_writes(self):
+        self.evidence.mkdir()
+        journal = self.evidence / (reviews.journal_key(REPO, 7, self.io.request, SHA) + ".json")
+        for phase in ("launch_started", "review_failed", "review_completed", "post_blocked", "post_failed", "post_unknown"):
+            with self.subTest(phase=phase):
+                journal.write_text(json.dumps({"phase": phase, "error": "prior outcome"}))
+                before = journal.read_bytes()
+                result = self.dispatch(apply=False)
+                self.assertEqual(result["status"], "blocked")
+                self.assertEqual(result["journal_phase"], phase)
+                self.assertEqual(result["error"], "prior outcome")
+                self.assertTrue(result["needs_attention"])
+                self.assertEqual(journal.read_bytes(), before)
+                with self.assertRaises(reviews.ReviewError):
+                    self.dispatch()
+        self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
+
+    def test_linked_prompt_precedes_quoted_context_and_is_revalidated(self):
+        self.io.request["body"] = (f"Supervisor runs the review.\nHead: {SHA}\n"
+                                    "> Director: use Anthropic.\n"
+                                    f"https://github.com/{REPO}/pull/7#issuecomment-9")
+        self.io.sources[9] = comment(9, "Prompt:\nInspect the actual linked scope.")
+        self.io.after_review = lambda: self.io.sources[9].update(body="Prompt:\nChanged scope.")
+        with self.assertRaises(reviews.ReviewError):
+            self.dispatch()
+        prompt = next(c[2] for c in self.io.calls if c[0] == "review")
+        self.assertTrue(prompt.endswith("Review prompt:\nInspect the actual linked scope."))
+        self.assert_no_post()
 
     def test_pending_report_heading_cannot_hide_real_request(self):
         self.io.comments.append(comment(12, f"Review of record, run by the Supervisor: pending at head {SHA}"))
@@ -330,8 +419,8 @@ class DispatchTests(unittest.TestCase):
     def test_failed_and_unknown_posts_preserve_diagnostics_without_replay(self):
         adapter = reviews.IO.__new__(reviews.IO)
         self.io.post = adapter.post
-        cases = [({"ok": False, "outcome_certainty": "confirmed_not_applied", "error": "denied"}, "post_failed"),
-                 ({"ok": False, "outcome_certainty": "unknown"}, "post_unknown"),
+        cases = [(post_payload(ok=False, write_outcome="rejected"), "post_failed"),
+                 (post_payload(ok=False, write_outcome="unknown"), "post_unknown"),
                  (None, "post_unknown")]
         for index, (payload, phase) in enumerate(cases):
             with self.subTest(payload=payload):
@@ -347,6 +436,20 @@ class DispatchTests(unittest.TestCase):
                 self.assertTrue(journal["error"])
                 if payload:
                     self.assertEqual(journal["post"], payload)
+
+    def test_served_edit_needs_a_disposition_after_the_edit(self):
+        self.dispatch()
+        self.io.comments.append(comment(12, review_result_body("Original findings weighed.", SHA)))
+        self.io.request["updated_at"] = "2026-10-17T21:00:00Z"
+        self.assertTrue(self.dispatch()["needs_attention"])
+        later = comment(13, review_result_body("Edit and original scope checked; findings weighed.", SHA))
+        later["created_at"] = later["updated_at"] = "2026-10-17T22:00:00Z"
+        self.io.comments.append(later)
+        result = self.dispatch()
+        self.assertTrue(result["request_edited_after_review"])
+        self.assertFalse(result["needs_attention"])
+        self.assertFalse(result["notification_needed"])
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
 
     def test_checkout_keys_are_case_insensitive(self):
         reports = reviews.sweep(self.io, self.entries, {REPO.upper(): Path(self.temp.name)}, TRUSTED, self.evidence)
@@ -690,7 +793,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_reconciled_comment_write_is_successful_without_replay(self):
         io = reviews.IO.__new__(reviews.IO)
-        result = subprocess.CompletedProcess([], 0, json.dumps({"ok": True, "outcome_certainty": "reconciled_applied",
+        result = subprocess.CompletedProcess([], 0, json.dumps({**post_payload(reconciled=True),
                                                                "comment": {"url": "https://example.test/recovered"}}), "")
         with patch.object(reviews, "run", return_value=result) as run:
             self.assertEqual(io.post(REPO, 7, Path("/fixture/comment.md"))["comment"], json.loads(result.stdout)["comment"])
@@ -698,7 +801,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_post_unknown_does_not_replay(self):
         io = reviews.IO.__new__(reviews.IO)
-        result = subprocess.CompletedProcess([], 1, '{"ok": false, "outcome_certainty": "unknown"}', "")
+        result = subprocess.CompletedProcess([], 1, json.dumps(post_payload(ok=False, write_outcome="unknown")), "")
         with patch.object(reviews, "run", return_value=result) as run, self.assertRaises(reviews.ReviewError):
             io.post(REPO, 7, Path("/fixture/comment.md"))
         self.assertEqual(run.call_count, 1)
