@@ -892,8 +892,8 @@ def envelope(host, receipt, findings, reason, gaps, artifact, uncovered=()):
     if receipt.get("boundary_event") or reason == "qodana_trial_or_purchase_stop":
         action = "Stop Qodana work and report the trial/purchase boundary to the Director; do not activate or purchase."
     if reason in {"qodana_credential_input_refused", "qodana_license_unavailable", "qodana_license_import_removed"}:
-        action = ("Owner question: use an independently owner-activated headless profile (JBTEST-D1 on Chris-Studio); "
-                  "never copy credentials. See jetbrains-inspection/references/qodana-backend.md#owner-activation. "
+        action = ("Owner question: use an independently Director-activated headless profile (JBTEST-D1 on Chris-Studio); "
+                  "never copy credentials. See jetbrains-inspection/references/qodana-backend.md#director-activation. "
                   "Keep credential files outside the snapshot and public plugin packages.")
     cleanup_clean = receipt["profile_deleted"] and receipt["container_removed"] and not receipt.get("unresolved_record_count") and not receipt.get("cleanup_pending") and not receipt.get("journal_cleanup_failed")
     coverage = "coverage gaps recorded" if gaps else "execution proved" if completed else "execution unproved"

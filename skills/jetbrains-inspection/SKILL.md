@@ -117,8 +117,8 @@ languages and non-PyCharm lanes keep the Inspection API.
 [local Qodana](references/qodana-backend.md) before diagnosing a Qodana result
 or changing the runner. It uses an isolated per-run profile and the same agent
 envelope. Never copy, export or move license or credential files. Licensed
-headless runs use only an independently owner-activated profile; see
-[owner activation](references/qodana-backend.md#owner-activation).
+headless runs use only an independently Director-activated profile; see
+[Director activation](references/qodana-backend.md#director-activation).
 Stop on trial start, activation or purchase. Run one capped, niced Qodana
 worker at a time and pause above load1 64. Coverage that cannot be proved
 remains UNKNOWN. Results name profile inspections the engine does not run in

@@ -59,9 +59,9 @@ built-in image plugin or copies a desktop plugin directory. Supply only
 public plugin code, without activation-bearing files. Desktop IDEs and their
 configuration/plugin installations stay untouched.
 
-## Owner activation
+## Director activation
 
-The former license-copy route is removed; use an independently owner-activated
+The former license-copy route is removed; use an independently Director-activated
 headless profile, never a copied license or credential file.
 
 On Chris-Studio, Chris activated the independent **JBTEST-D1** PyCharm and Odoo
