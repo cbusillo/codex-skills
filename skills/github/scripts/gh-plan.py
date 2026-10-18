@@ -50,6 +50,7 @@ import github_direction_next
 import github_next_queue
 import github_next_reads
 import github_plan_claim
+import github_plan_closure
 import github_plan_wait
 import github_plan_trigger
 import github_plan_release
@@ -2360,6 +2361,11 @@ def cmd_claim(args: argparse.Namespace) -> None:
 
 
 def claim_once(args: argparse.Namespace) -> None:
+    with github_plan_closure.admission():
+        _claim_once(args)
+
+
+def _claim_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
@@ -2425,6 +2431,7 @@ def claim_once(args: argparse.Namespace) -> None:
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
     resume_source_number: int | None = None
+    retained_ended_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
 
@@ -2526,6 +2533,17 @@ def claim_once(args: argparse.Namespace) -> None:
                              for branch in sorted(branches & present))
         if competing:
             refuse(competing, owner_comments=peer_comments, owner_repo=peer_repo, owner_number=peer_number)
+        retained_ended_sources.update(session for session, state in peer_inventory.get("session_states", {}).items()
+                                     if state.get("state") == "ended" and state.get("leased_closure"))
+
+    def admit_observed_sources() -> None:
+        try:
+            github_plan_closure.admit_sources(retained_ended_sources | {session for session, state in inventory.get("session_states", {}).items()
+                                              if state.get("state") == "ended" and state.get("leased_closure")})
+        except (OSError, ValueError) as error:
+            raise ClassifiedPlanError("claim_closure_unavailable",
+                "Source ownership could not be committed; preserve it and retry this claim after the owning operation ends",
+                payload={"closure_error": str(error)}) from error
 
     def check_handoff_successors(
         source_number: int, source_inventory: dict[str, Any], *,
@@ -2777,6 +2795,8 @@ def claim_once(args: argparse.Namespace) -> None:
         if live_sources:
             owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]
             refuse(live_sources, owner_comments=owner_comments, owner_repo=owner_repo, owner_number=owner_number)
+        retained_ended_sources.update(session for session, state in target_inventory.get("session_states", {}).items()
+                                     if state.get("state") == "ended" and state.get("leased_closure"))
         check_inherited_sources(current_comments, current_status, source_inventory=target_inventory)
         check_handoff_successors(source_number, target_inventory, source_comments=source_comments)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)
@@ -3043,6 +3063,9 @@ def claim_once(args: argparse.Namespace) -> None:
             + f"\n\n[Work record](https://github.com/{issue_repo}/"
               f"{'pull' if record_kind == 'pr' else 'issues'}/{number})"
         )
+        # Freeze the source before any external claim write. If publication
+        # fails, the closed source stays frozen for supported claim recovery.
+        admit_observed_sources()
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
@@ -3064,6 +3087,7 @@ def claim_once(args: argparse.Namespace) -> None:
         handoff_preflight(comments, status)
         if not any(github_plan_claim.same_owner(record, claim) for record in observed):
             raise PlanError("Claim was not visible on readback; do not create a worktree")
+        admit_observed_sources()
         completed.append("claim_readback")
         status_text = (
             f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
@@ -3121,6 +3145,7 @@ def claim_once(args: argparse.Namespace) -> None:
         if can_update and not any(github_plan_claim.same_owner(record, claim)
                                   for record in github_plan_claim.records(final_status)):
             raise PlanError("Current Status claim changed during readback")
+        admit_observed_sources()
         completed.append("metadata_readback")
     except github_comment_core.CommentError as exc:
         error = plan_error_from_comment(exc, completed_steps=completed)
@@ -4412,6 +4437,8 @@ def next_wait_context(
     read_paths: set[str] = set()
     fetch_lock = threading.Lock()
     unavailable: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    failures: dict[str, direction_audit.AuditError] = {}
     budget = max(1, scan_limit) * 5
 
     def fetch(argv: list[str]) -> Any:
@@ -4427,7 +4454,8 @@ def next_wait_context(
                 # Unavailable records, including App-installation refusals,
                 # degrade coverage through the same policy as other next reads.
                 detail = next_source_error(exc)
-                cache[path] = direction_audit.AuditError(detail)
+                missing = exc.failure is not None and exc.failure.cause == "not_found"
+                cache[path] = (direction_audit.ReferenceNotFound if missing else direction_audit.AuditError)(detail)
         if isinstance(cache[path], direction_audit.AuditError):
             raise cache[path]
         return cache[path]
@@ -4469,9 +4497,10 @@ def next_wait_context(
             combined["checked"] += report["checked"]
             for field in ("items", "checked_issues", "frozen_issues"):
                 combined[field].extend(report[field])
-            for error in report["unavailable"]:
-                if error not in combined["unavailable"]:
-                    combined["unavailable"].append(error)
+            for field in ("unavailable", "unresolved_references"):
+                for error in report[field]:
+                    if error not in combined[field]:
+                        combined[field].append(error)
     else:
         group_reports = dict(read_report(group) for group in groups.items())
     reference_paths = list(dict.fromkeys(
@@ -4500,6 +4529,7 @@ def next_wait_context(
                 unavailable.extend({**row, "repo": repo, "number": item["number"]} for item in items)
             else:
                 unavailable.append({**row, "repo": repo})
+        unresolved.extend({**row, "repo": repo} for row in report["unresolved_references"])
         checked += report["checked"]
         checked_issue_refs.extend({"repo": repo, "number": number} for number in report["checked_issues"])
         scope_labels[repo.casefold()] = [config["labels"][key] for key in ("active", "waiting", "blocked")]
@@ -4519,22 +4549,35 @@ def next_wait_context(
             for row in github_direction_next.waiting_records(own, status, reference_repositories=known_repos):
                 for reference in row["references"]:
                     url = reference["url"]
-                    if url in references:
+                    stored = {key: value for key, value in reference.items() if key != "bare"}
+                    if url not in references:
+                        try:
+                            target = fetch(["api", f"repos/{reference['repo']}/issues/{reference['number']}"])
+                            state = target.get("state") if isinstance(target, dict) else None
+                            if state not in {"open", "closed"}:
+                                raise direction_audit.AuditError("unknown wait reference state")
+                            references[url] = {**stored, "state": state, "closed_at": target.get("closed_at"),
+                                               "state_reason": target.get("state_reason")}
+                        except direction_audit.AuditError as exc:
+                            references[url] = {**stored, "state": "unknown"}
+                            failures[url] = exc
+                    if url not in failures:
                         continue
-                    try:
-                        target = fetch(["api", f"repos/{reference['repo']}/issues/{reference['number']}"])
-                        state = target.get("state") if isinstance(target, dict) else None
-                        if state not in {"open", "closed"}:
-                            raise direction_audit.AuditError("unknown wait reference state")
-                        references[url] = {**reference, "state": state, "closed_at": target.get("closed_at"),
-                                           "state_reason": target.get("state_reason")}
-                    except direction_audit.AuditError:
-                        references[url] = {**reference, "state": "unknown"}
-                        unavailable.append({"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"})
-                        complete = False
+                    # The read is shared; whether it leaves this issue unread depends on how it was written.
+                    if direction_audit.bare_reference_missing(failures[url], not reference.get("bare")):
+                        # Absent here, so read; the wait stays pending on its unknown state.
+                        gap = {"repo": repo, "number": item["number"], "source": "wait_reference",
+                               "reason": "unresolved_reference", "reference": f"#{reference['number']}"}
+                        if gap not in unresolved:
+                            unresolved.append(gap)
+                        continue
+                    gap = {"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"}
+                    if gap not in unavailable:
+                        unavailable.append(gap)
+                    complete = False
     return {"read_only": True, "complete": complete, "checked": checked, "items": reports,
             "repositories": repositories, "frozen_issues": frozen_issues,
-            "unavailable": unavailable, "references": references,
+            "unavailable": unavailable, "unresolved_references": unresolved, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
             "read_limit": budget, "read_count": len(cache),
             "checked_issues": checked_issue_refs,

@@ -1,0 +1,109 @@
+{
+  "provenance": {
+    "issue": "cbusillo/codex-skills#2199",
+    "reviewed_head": "c900929557a2f36cb0254272c9e55f728c868d32",
+    "native_session": "rollout-2026-10-18T03-13-08-01a14ddb-6ba6-7c03-8de9-e59f56a71283",
+    "prompt": "rvb28/p-codex-skills-2166.txt",
+    "projection": "Recorded native CommandExecution and task_complete events projected into codex exec JSONL fields. Commands, file contents, account paths, narration and reasoning omitted. turn.completed is the native task_complete projection, not captured stdout.",
+    "duration_seconds": 37.937
+  },
+  "events": [
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\nerror connecting to api.github.com\ncheck your internet connection or https://githubstatus.com"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "status": "completed",
+        "exit_code": 0,
+        "aggregated_output": ""
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "agent_message",
+        "text": "{\"status\":\"incomplete\",\"review\":\"\"}"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {}
+    }
+  ],
+  "answer": "{\"status\":\"incomplete\",\"review\":\"\"}",
+  "returncode": 0
+}

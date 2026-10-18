@@ -691,10 +691,13 @@ class LedgerTests(unittest.TestCase):
 
     def test_watch_dedup_resume_and_abort_notice(self):
         seen = {}
+        self.write([event("agent_message", message="Waiting for the next step."),
+                    event("task_complete")])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1050), [])
         notice = codex_idle_watch.poll(self.ledger, seen, 90, 1200)
         self.assertEqual(notice[0]["session_id"], self.entry["session_id"])
         self.assertIsNone(notice[0]["clean"])
+        self.assertIsNone(notice[0]["closeout_request"])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
         self.write([event("task_complete"), event("task_started")])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
@@ -703,6 +706,110 @@ class LedgerTests(unittest.TestCase):
             codex_idle_watch.poll(self.ledger, {}, 90, 1200)[0]["turn_end"],
             "turn_aborted",
         )
+
+    def test_finished_notice_routes_immediately_without_idle_delay(self):
+        seen = {}
+        notices = codex_idle_watch.poll(self.ledger, seen, 90, 1001)
+        self.assertEqual(len(notices), 1)
+        notice = notices[0]
+        request = notice["closeout_request"]
+        self.assertEqual(request, finished_map.candidates(self.ledger)[0]["closeout_request"])
+        self.assertEqual(request["session_id"], self.entry["session_id"])
+        self.assertEqual(request["handoff_url"], self.entry["handoff_url"])
+        self.assertEqual(request.get("verdict_at"), finished_map.candidates(self.ledger)[0]["timestamp"])
+        self.assertIsNone(notice["clean"])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1002), [])
+        # The notice is historical evidence: fresh verification must reject new work.
+        self.write([event("agent_message", message="Safe to exit: yes"),
+                    event("task_complete"), event("task_started")])
+        self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
+
+    def test_closeout_metadata_does_not_repeat_request_but_later_verdict_does(self):
+        seen = {}
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1001)), 1)
+        with self.transcript.open("a") as stream:
+            stream.write(json.dumps(event("token_count", info={"total_token_usage": {"total_tokens": 99}})) + "\n")
+        os.utime(self.transcript, (1002, 1002))
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1003), [])
+        # A whole new turn can finish between polls with the same final text.
+        with self.transcript.open("a") as stream:
+            for record in [event("task_started"), event("agent_message", message="Safe to exit: yes"),
+                           {**event("task_complete"), "timestamp": "2026-10-03T00:01:00Z"}]:
+                stream.write(json.dumps(record) + "\n")
+        os.utime(self.transcript, (1004, 1004))
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1005)), 1)
+
+    def test_observed_new_work_rearms_closeout_with_same_response(self):
+        seen = {}
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1001)), 1)
+        self.write([event("task_started")])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1002), [])
+        self.write([event("agent_message", message="Safe to exit: yes"), event("task_complete")])
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1003)), 1)
+
+    def test_early_closeout_requires_owned_completed_unqualified_response(self):
+        for text, tail, owned in (
+            ("Safe to exit: yes", "task_complete", False),
+            ("Still working.", "task_complete", True),
+            ('"Safe to exit: yes"', "task_complete", True),
+            ("Safe to exit: yes, when CI passes", "task_complete", True),
+            ("Safe to exit: yes", "turn_aborted", True),
+            ("Safe to exit: yes", "task_started", True),
+        ):
+            with self.subTest(text=text, tail=tail, owned=owned):
+                self.entry["supervisor_owned"] = owned
+                self.write([event("agent_message", message=text), event(tail)])
+                self.assertEqual(codex_idle_watch.poll(self.ledger, {}, 90, 1001), [])
+                self.assertIsNone(finished_map.candidates(self.ledger)[0].get("closeout_request"))
+
+    def test_notice_rechecks_changed_ledger_ownership(self):
+        seen = {}
+        self.entry["supervisor_owned"] = False
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.assertIsNone(codex_idle_watch.poll(self.ledger, seen, 90, 1200)[0].get("closeout_request"))
+        self.entry["supervisor_owned"] = True
+        self.ledger.write_text(json.dumps([self.entry]))
+        notices = codex_idle_watch.poll(self.ledger, seen, 90, 1201)
+        self.assertEqual(len(notices), 1)
+        self.assertIsNotNone(notices[0]["closeout_request"])
+
+    def test_claude_native_notice_uses_exact_session_and_shared_route(self):
+        self.entry["harness"] = "claude"
+        records = [{**claude("Safe to exit: yes"), "sessionId": self.entry["session_id"]}]
+        self.transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
+        self.ledger.write_text(json.dumps([self.entry]))
+        command = [sys.executable, str(Path(finished_map.__file__)),
+                   "--ledger", str(self.ledger), "--session-id", self.entry["session_id"]]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        candidate = json.loads(result.stdout)[0]
+        self.assertTrue(candidate["candidate"])
+        self.assertEqual(candidate["closeout_request"]["harness"], self.entry["harness"])
+        # A native idle notice arriving after a new user turn is no longer finish evidence.
+        with self.transcript.open("a") as stream:
+            stream.write(json.dumps({"type": "user", "sessionId": self.entry["session_id"],
+                                     "message": {"content": "Continue working."}}) + "\n")
+        self.assertIsNone(finished_map.candidates(self.ledger, self.entry["session_id"])[0]["closeout_request"])
+        result = subprocess.run(command[:-1] + ["other-session"], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("error", json.loads(result.stdout))
+
+    def test_claude_closeout_with_live_background_task_stays_open(self):
+        self.entry["harness"] = "claude"
+        records = [
+            {"type": "user", "toolUseResult": {"taskId": "running-ci"}},
+            claude("Safe to exit: yes"),
+        ]
+        self.transcript.write_text("".join(json.dumps({**r, "sessionId": self.entry["session_id"]}) + "\n"
+                                          for r in records))
+        self.ledger.write_text(json.dumps([self.entry]))
+        candidate = finished_map.candidates(self.ledger)[0]
+        self.assertFalse(candidate["candidate"])
+        self.assertIsNone(candidate["closeout_request"])
+        self.assertEqual(candidate.get("closeout_blockers"), candidate["background_tasks"])
+        self.assertTrue(candidate["closeout_blockers"])
+        self.assertTrue(candidate["next_action"])
 
     def test_close_only_exited_exact_session_and_never_force(self):
         entry = session_record.load_ledger(self.ledger)[0]
@@ -1252,6 +1359,9 @@ class TabCloseTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(self.folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         self.ledger = Path(self.folder.name) / "ledger.json"
         self.entry = {"supervisor_owned": True, "iterm_session_id": "owned",
                       "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}
@@ -1390,6 +1500,13 @@ def write_codex_project_fixture(directory, home):
 
 
 class CodexProjectTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
+
     def test_codex_cannot_skip_preflight_through_another_provider(self):
         for provider in ("anthropic", "google"):
             with self.subTest(provider=provider), self.assertRaises(ValueError):
@@ -1532,8 +1649,8 @@ class CodexProjectTests(unittest.TestCase):
             receipt.assert_not_called()
 
     def test_prepared_command_preserves_explicit_directory_and_brief(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+            root = Path(folder).resolve()
             repository = root / "brief's repository"
             repository.mkdir()
             fake_codex = root / "codex"
@@ -1547,8 +1664,18 @@ class CodexProjectTests(unittest.TestCase):
             fake_codex.chmod(0o700)
             home = root / "selected"
             write_codex_project_fixture(repository, home)
+            endpoint = iterm_tab.codex_daemon_endpoint(home)
+            endpoint.parent.mkdir()
+            native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+            native_socket.bind(str(endpoint))
+            endpoint.chmod(0o600)
             launch = root / "launch"
-            launch.write_text(f"{shlex.quote(str(fake_codex))} --remote unix:// -C {shlex.quote(str(repository))}")
+            launch.write_text(f"{shlex.quote(str(fake_codex))} -C {shlex.quote(str(repository))}")
+            code = root / ".code"
+            (code / "skill-data").mkdir(parents=True)
+            (code / "skill-data/supervisor.toml").write_text(
+                '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
             args = account_launch_args(launch)
             args.account_provider = "openai"
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
@@ -1557,6 +1684,7 @@ class CodexProjectTests(unittest.TestCase):
                   patch.object(account_choice, "prepare_launch")):
                 commands, _ = iterm_tab.prepare_launches(args)
             result = subprocess.run(["/bin/sh", "-c", commands[0]], cwd=root,
+                                    env={**os.environ, "HOME": str(root), "CODE_HOME": str(code)},
                                     capture_output=True, text=True, check=True)
             self.assertEqual(json.loads(result.stdout), [str(repository.resolve()), args.brief_file[0].read_text()])
 
@@ -1611,6 +1739,7 @@ class ClaudeTrustTests(unittest.TestCase):
                     {"name": "codex", "provider": "openai", "env": {"CODEX_HOME": str(self.root / "codex")}}]
         self.choice = {"provider": "anthropic", "env": accounts[0]["env"]}
         for target in (patch.object(Path, "home", return_value=self.user),
+                       patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent-opt-in"),
                        patch.object(iterm_tab.claude_trust, "worktree_root", return_value=self.worktrees),
                        patch.object(account_choice, "load_config", return_value={"accounts": accounts}),
                        patch.object(account_choice, "select", side_effect=lambda *_: self.choice),
@@ -1759,6 +1888,11 @@ class ClaudeTrustTests(unittest.TestCase):
 
 class TerminalTests(unittest.TestCase):
     def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         # These cases exercise selection/input mechanics. Protocol and startup
         # observation have their own fake-adapter regressions.
         daemon = patch.object(iterm_tab, "inspect_codex_daemon")

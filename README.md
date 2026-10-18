@@ -1251,6 +1251,33 @@ extension, call only `mcp__catalog-chrome__list_connected_browsers` and verify
 the existing Chrome appears. Do not pair, select, navigate or modify the browser
 for this check. An installer success alone does not prove cross-account pairing.
 
+With the catalog Chrome opt-in, Supervisor Claude launches export
+`CLAUDE_CODE_ENABLE_CFC=0` and reject `--chrome`. Use
+`mcp__catalog-chrome__*` for the pinned Agents route. A bounded listing checks
+the selected home's server before launch without selecting or navigating a
+browser. Source briefs get warnings when unavailable; add `--require-browser`
+to browser launches to refuse before terminals and receipts. `--without-browser`
+skips the listing for work that needs none. Session start reports static Claude
+Chrome-route conflicts and validates Codex's source override when the local
+launcher supplied its marker. Unrequested desktop tools and unverified remote
+setup stay with launch preflight. The hook changes no settings and starts no
+browser or Computer Use server.
+
+For enrolled homes, local Supervisor Codex launches add `--no-daemon`, validate
+the account-relative bundle link, pass its marketplace source override, and
+check installed/enabled plugins. Desktop GUI briefs require `computer-use`;
+`--require-browser` needs `chrome` and `browser`. Briefs asking for both need both sets.
+An explicit `--no-daemon` is retained once and stays local even without the opt-in.
+`--remote unix://` source launches check daemon admission without unrequested
+plugin warnings. With `--require-browser`, they inspect the selected daemon's
+`plugin/list` and refuse missing plugins. Explicit
+other endpoints stay unverified. Use local `codex -C /absolute/repository` for
+a browser brief. See [launcher tools and remote research](skills/supervisor/references/helpers.md#browser-and-computer-use-preflight).
+Discovery is separate from a working browser connection, OS permission and app
+approval. Chris handles profiles, sign-ins, settings and permission prompts;
+Codex is the default screen worker. Claude Computer Use runs only in a visible
+iTerm tab with Chris's approval for that session.
+
 ## TLS verification lint
 
 Run `scripts/lint-tls.sh` for the complete catalog TLS gate. Its

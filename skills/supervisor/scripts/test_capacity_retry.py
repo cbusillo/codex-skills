@@ -25,10 +25,21 @@ FIXTURE = Path(__file__).parent / "fixtures" / "codex-capacity-stop.jsonl"
 
 
 class CapacityTests(unittest.TestCase):
+    def test_ownership_busy_before_send_does_not_spend_or_uncertainly_record_an_attempt(self):
+        state = {}
+        now = self.now + 100000
+        with patch.object(capacity_retry.time, "time", return_value=now), patch.object(
+                capacity_retry, "queue_continue", side_effect=capacity_retry.github_plan_closure.LeaseBusy("owned")):
+            result = capacity_retry.resume(self.entry, session_record.session_status(self.entry), state, self.state_path, now)
+        self.assertEqual(result["attempts"], 0)
+        self.assertFalse(state)
+        self.assertEqual(capacity_retry.load_state(self.state_path), {})
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.enterContext(patch.object(capacity_retry.github_plan_closure, "closed_log", return_value=self.root / "closed.json"))
         self.home = self.root / "account"
         self.transcript = self.home / "sessions" / "fixture.jsonl"
         self.transcript.parent.mkdir(parents=True)
@@ -79,6 +90,23 @@ class CapacityTests(unittest.TestCase):
         self.assertFalse(result["safe_verdict"])
         self.assertEqual(result["last_text"], "")
         self.assertIsNotNone(result["capacity_stop"])
+
+    def test_capacity_queue_invalidates_closure_and_refuses_handed_off_generation(self):
+        log = capacity_retry.github_plan_closure.closed_log()
+        log.write_text(json.dumps([{"session_id": self.native_id, "closure_evidence": {"old": True}}]))
+        log.chmod(0o600)
+        home, endpoint = capacity_retry.verified_target(self.entry, session_record.session_status(self.entry))
+        def sent(*_args, **_kw):
+            self.assertIsNone(json.loads(log.read_text())[0]["closure_evidence"])
+        with patch.object(capacity_retry.subprocess, "run", side_effect=sent):
+            capacity_retry.queue_continue(self.entry, home, endpoint, session_record.session_status(self.entry))
+        rows = json.loads(log.read_text())
+        rows[0]["successor_admitted"] = True
+        log.write_text(json.dumps(rows))
+        with patch.object(capacity_retry.subprocess, "run") as send:
+            with self.assertRaises(ValueError):
+                capacity_retry.queue_continue(self.entry, home, endpoint, session_record.session_status(self.entry))
+        send.assert_not_called()
 
     def link_shared_sessions(self):
         sessions = self.home / "sessions"

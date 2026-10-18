@@ -271,6 +271,7 @@ class Terminal:
     async def send(self, identity, text, submit=True, allow_tabs=False):
         iterm_tab.validate_text(text, allow_tabs=allow_tabs)
         row = self.select(identity)
+        iterm_tab.validate_resume_input(text, tty=row.get("tty"))
         if row["dead"]:
             raise ValueError("agent process has exited; no input was sent")
         if "\n" in text or "\t" in text:
@@ -441,6 +442,7 @@ async def operate(args):
             result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}
             if choice:
                 result["account"] = account_choice.public(choice)
+            iterm_tab.source_launch_metadata(result, choice)
             results.append(result)
         except Exception as error:
             iterm_tab.cancel_unsubmitted_gui(choice, progress)

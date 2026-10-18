@@ -135,6 +135,15 @@ not that the reviewer read every relevant file; check the review's coverage too.
 Failures distinguish no command attempts from attempts without a successful command.
 Nonzero exits retain the JSON provider error and distinct stderr cause as bounded,
 credential-redacted diagnostics; OpenAI's malformed stdout is never excerpted.
+OpenAI's `execution` also reports elapsed seconds, the CLI exit code (null on
+timeout), last and terminal event types, JSONL validity, whether an answer file
+was produced, and failed command count. `completion_shape` distinguishes a
+reviewer-declared `incomplete` or `refused` from malformed completion evidence.
+`command_diagnostics` recognizes GitHub connection failures even when a later
+command made the shell exit 0. These are observed execution signals, not proof
+of the reviewer's reason; absent signals leave the cause unknown. No command,
+source output, narration or partial report is quoted. A completed Codex turn
+can still contain an incomplete review; it remains a failure without a retry.
 
 - Run `uv run scripts/review_with_model.py check --author-provider openai --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.

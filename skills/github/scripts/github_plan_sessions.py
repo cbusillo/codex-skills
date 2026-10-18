@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import github_plan_closure
+
 
 def native_helpers():
     directory = str(Path(__file__).resolve().parents[2] / "supervisor/scripts")
@@ -21,14 +23,20 @@ def native_helpers():
     return account_choice, session_record
 
 
-def codex_homes() -> list[Path]:
-    homes = [Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))]
+def codex_homes(*, strict: bool = False, configured_only: bool = False) -> list[Path]:
+    homes = [] if configured_only else [Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))]
     try:
-        config = native_helpers()[0].load_config()
+        config = native_helpers()[0].load_config(
+            path=github_plan_closure.closed_log().with_name("supervisor.toml")) if configured_only else native_helpers()[0].load_config()
         homes.extend(Path(a["env"]["CODEX_HOME"]) for a in config["accounts"] if a["provider"] == "openai")
     except (ValueError, OSError, ImportError):
+        if strict:
+            raise
         pass  # Missing optional account configuration never establishes absence.
-    return list(dict.fromkeys(p.expanduser().resolve() for p in homes))
+    resolved = set(p.expanduser().resolve() for p in homes)
+    if strict and not resolved:
+        raise ValueError("configured Codex homes are unavailable")
+    return sorted(resolved)
 
 
 def transcript_snapshot(session: str, primary: str) -> dict[str, dict]:
@@ -43,7 +51,7 @@ def transcript_snapshot(session: str, primary: str) -> dict[str, dict]:
 async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] | None = None):
     """Read the existing stock daemon over its native socket; only read RPCs."""
     import stat
-    binding = home / "app-server-control/app-server-control.sock"
+    binding = github_plan_closure.daemon_endpoint(home)
     coverage = {"status": "incomplete", "peer_complete": False, "socket": str(binding)}
     try:
         socket_path = binding.resolve(strict=True)
@@ -71,29 +79,113 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                     raise ValueError("native session read rejected")
                 return message["result"]
 
+    async def executions_ended(session):
+        queued = await request("thread/queue/list", {"threadId": session, "limit": 1})
+        if (not isinstance(queued, dict) or not isinstance(queued.get("data"), list)
+                or queued["data"] or queued.get("nextCursor") is not None):
+            return False
+        cursor = None
+        for _ in range(100):
+            page = await request("thread/items/list", {"threadId": session, "limit": 20,
+                                                       "sortDirection": "desc", "cursor": cursor})
+            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+                raise ValueError("native execution coverage is unavailable")
+            for entry in page["data"]:
+                item = entry["item"]
+                if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+                    raise ValueError("native execution identity is unavailable")
+                if item.get("status") == "inProgress":
+                    return False
+                if item.get("type") in {"commandExecution", "dynamicToolCall", "mcpToolCall", "collabAgentToolCall"}:
+                    if item.get("status") not in {"completed", "failed", "declined"}:
+                        return False
+                    if item["type"] == "commandExecution" and item.get("processId") is not None and type(item.get("exitCode")) is not int:
+                        return False
+            cursor = page["nextCursor"]
+            if cursor is None:
+                return True
+            if not isinstance(cursor, str) or not cursor:
+                raise ValueError("native execution continuation is unavailable")
+        return False  # Truncated execution evidence never proves closure.
+
+    active_seen = set()
+
+    def live(session, thread):
+        peers.append({"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "codex_session"})
+        states[session] = {"state": "live", "source": "codex_app_server"}
+
     async def inspect(session, *, prove=False):
         thread = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
         if thread.get("id") != session:
             raise ValueError("native session identity mismatch")
         state = thread.get("status", {}).get("type")
-        if state in {"active", "idle", "systemError"}:
-            peers.append({"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "codex_session"})
-            states[session] = {"state": "live", "source": "codex_app_server"}
-        elif prove and session in proof_sessions and state == "notLoaded" and thread.get("path"):
-            before = transcript_snapshot(session, thread["path"])
-            # A final turn is insufficient: the thread must be unloaded, every
-            # known native transcript stable, and process absence checked below.
-            after = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
-            verified = transcript_snapshot(session, thread["path"])
-            if (before == verified and all(s["safe_verdict"] for s in before.values()) and after.get("id") == session
-                    and after.get("status", {}).get("type") == "notLoaded"):
-                states[session] = {"state": "ended", "source": "codex_app_server",
-                                   "ended_at": max(s["timestamp"] for s in before.values())}
-            elif after.get("status", {}).get("type") in {"active", "idle", "systemError"}:
-                peers.append({"sessionId": session, "cwd": after["cwd"], "state": "active", "source": "codex_session"})
-                states[session] = {"state": "live", "source": "codex_app_server"}
-        elif state != "notLoaded":
-            raise ValueError("native session state is unknown")
+        if state in {"active", "systemError"}:
+            active_seen.add(session)
+        if prove and state == "notLoaded":
+            # Missing/slow queue evidence must also defeat authored-release
+            # fallback, which does not otherwise need an ended receipt.
+            previous = states.get(session)
+            pending_peer = {"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "native_queue"}
+            peers.append(pending_peer)
+            states[session] = {"state": "live", "source": "native_queue"}
+            try:
+                queued = await request("thread/queue/list", {"threadId": session, "limit": 1})
+                empty = (isinstance(queued, dict) and isinstance(queued.get("data"), list)
+                         and not queued["data"] and queued.get("nextCursor") is None)
+            except Exception:
+                empty = False
+            if not empty:
+                return
+            peers.remove(pending_peer)
+            if previous is None:
+                states.pop(session, None)
+            else:
+                states[session] = previous
+        receipt = github_plan_closure.RECEIPTS.get().get(session)
+        if receipt and (receipt["closure_evidence"].get("codex_home") != str(home.resolve())
+                        or not isinstance(receipt.get("transcript"), str)
+                        or Path(thread.get("path") or "/").resolve() != Path(receipt["transcript"]).resolve()):
+            receipt = None
+        idle_proof = (state == "idle" and session not in proof_sessions and receipt is not None
+                      and github_plan_closure.idle_eligible(receipt) and session not in active_seen)
+        if idle_proof and prove:
+            receipt = await asyncio.to_thread(github_plan_closure.verified_record, session, home)
+            idle_proof = receipt is not None and await executions_ended(session)
+            if not idle_proof:
+                receipt = None
+        else:
+            receipt = None
+            idle_proof = False
+        if not prove or not thread.get("path") or not (
+            idle_proof or state == "notLoaded" and session in proof_sessions
+        ):
+            if state in {"active", "idle", "systemError"}:
+                live(session, thread)
+            elif state != "notLoaded":
+                raise ValueError("native session state is unknown")
+            return
+        # File work runs off the shared event loop; one slow home must not starve
+        # the other daemons' native reads. The source lease spans this sandwich.
+        snapshot = github_plan_closure.transcripts if receipt else transcript_snapshot
+        before = receipt["closure_evidence"]["transcripts"] if receipt else await asyncio.to_thread(snapshot, session, thread["path"])
+        after = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
+        verified = await asyncio.to_thread(snapshot, session, thread["path"])
+        same = before == verified and after.get("id") == session and after.get("path") == thread.get("path")
+        final_state = after.get("status", {}).get("type")
+        if receipt:
+            current = await asyncio.to_thread(github_plan_closure.receipt_current, receipt)
+            valid = same and before == receipt["closure_evidence"]["transcripts"] and current
+            ended_at = receipt["ended_at"]
+        else:
+            valid = same and bool(before) and all(s["safe_verdict"] for s in before.values())
+            ended_at = max((s["timestamp"] for s in before.values()), default=None)
+        if valid and final_state == state and (state == "notLoaded" or idle_proof):
+            peers[:] = [peer for peer in peers if peer["sessionId"] != session]
+            states[session] = {"state": "ended", "source": "supervisor_closure" if receipt else "codex_app_server",
+                               "ended_at": ended_at, "native_state": state, "cwd": thread["cwd"],
+                               "leased_closure": bool(receipt)}
+        elif final_state in {"active", "idle", "systemError"}:
+            live(session, after)
 
     try:
         async with asyncio.timeout(5):
@@ -115,13 +207,15 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                     for session in sorted(loaded):
                         try:
                             await inspect(session)
-                        except (KeyError, TypeError, ValueError, OSError, ImportError):
+                        except (KeyError, TypeError, ValueError, AttributeError, OSError, ImportError):
                             loaded_ok = False
+                            peers.append({"sessionId": session, "cwd": "", "state": "unknown", "source": "codex_session"})
+                            states[session] = {"state": "live", "source": "codex_session"}
                     coverage.update(status="available" if loaded_ok else "incomplete", peer_complete=loaded_ok)
                     for session in sorted(sessions):
                         try:
                             await inspect(session, prove=coverage["peer_complete"])
-                        except (KeyError, TypeError, ValueError, OSError, ImportError):
+                        except (KeyError, TypeError, ValueError, AttributeError, OSError, ImportError):
                             continue  # No successful observation means unknown, never ended.
     except aiohttp.ClientConnectorError as error:
         if isinstance(error.os_error, (ConnectionRefusedError, FileNotFoundError)):
@@ -144,6 +238,8 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
     peers = []
     for line in text.splitlines():
         argv = line.split()
+        if argv and argv[0].isdigit():
+            argv = argv[1:]
         executable = codex_argv_start(argv)
         if executable is None:
             continue
@@ -168,8 +264,17 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
 def process_absence_known(text: str, observed_sockets: set[str] | None = None) -> bool:
     for line in text.splitlines():
         argv = line.split()
+        pid = int(argv.pop(0)) if argv and argv[0].isdigit() else None
         executable = codex_argv_start(argv)
         if executable is not None:
+            if pid is not None and github_plan_closure.managed_launch(pid, argv[executable:], observed_sockets or set()):
+                continue
+            # A fresh noninteractive exec cannot attach to a pre-existing
+            # thread. Interactive clients, pickers and exec-resume remain unknown.
+            if (executable + 1 < len(argv) and argv[executable + 1] == "exec"
+                    and not any(arg in {"resume", "--resume", "-r"} or arg.startswith("--resume=")
+                                for arg in argv[executable + 2:])):
+                continue
             # A stdio/extension server or unobserved daemon is unidentified too.
             listeners = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--listen"]
             listeners += [arg.split("=", 1)[1] for arg in argv if arg.startswith("--listen=")]
@@ -181,6 +286,28 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None) -
 
 
 def observe(sessions: set[str], proof_sessions: set[str] | None = None):
+    with github_plan_closure.observation(sessions) as leased:
+        cache_token = github_plan_closure.LOG_CACHE.set(None)
+        receipts = github_plan_closure.candidate_records(leased)
+        token = github_plan_closure.RECEIPTS.set(receipts)
+        try:
+            peers, states, coverage = _observe(sessions, proof_sessions)
+            for session in sessions:
+                try:
+                    blocked = (github_plan_closure.action_pending(session)
+                               or session not in leased and github_plan_closure.lease_path(session).exists())
+                except (OSError, ValueError):
+                    blocked = True
+                if blocked:
+                    peers.append({"sessionId": session, "cwd": "/", "state": "active", "source": "native_action"})
+                    states[session] = {"state": "live", "source": "native_action"}
+            return peers, states, coverage
+        finally:
+            github_plan_closure.RECEIPTS.reset(token)
+            github_plan_closure.LOG_CACHE.reset(cache_token)
+
+
+def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
     async def run():
         return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in codex_homes()), return_exceptions=True)
 
@@ -188,7 +315,7 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
     process_text = None
     sources = []
     try:
-        process_read = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=5)
+        process_read = subprocess.run(["ps", "-ww", "-axo", "pid=,args="], capture_output=True, text=True, timeout=5)
         if process_read.returncode == 0:
             peers.extend(process_sessions(process_read.stdout, sessions))
             process_text = process_read.stdout
@@ -206,12 +333,38 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
                 states[session] = outcome
     for peer in peers:
         states[peer["sessionId"]] = {"state": "live", "source": peer["source"]}
+    try:
+        final_process = subprocess.run(["ps", "-ww", "-axo", "pid=,args="], capture_output=True, text=True, timeout=5)
+        if final_process.returncode != 0:
+            process_text = None
+        elif process_text is not None:
+            process_text += "\n" + final_process.stdout
+            final_peers = process_sessions(final_process.stdout, sessions)
+            peers.extend(final_peers)
+            for peer in final_peers:
+                states[peer["sessionId"]] = {"state": "live", "source": peer["source"]}
+    except (OSError, subprocess.SubprocessError):
+        process_text = None
     observed_sources = [s for s in sources if s["status"] != "unavailable"]
     peer_complete = bool(observed_sources) and all(s["peer_complete"] for s in observed_sources)
     observed_sockets = {s["socket"] for s in sources if s["peer_complete"]}
     process_coverage = "unavailable" if process_text is None else "complete" if process_absence_known(process_text, observed_sockets) else "unidentified_interactive_processes"
-    if not peer_complete or process_coverage != "complete":
-        states = {session: state for session, state in states.items() if state["state"] != "ended"}
+    for session, outcome in list(states.items()):
+        if outcome.get("state") != "ended" or outcome.get("native_state") != "idle":
+            continue
+        entry = github_plan_closure.RECEIPTS.get().get(session)
+        valid = peer_complete and process_coverage == "complete" and entry is not None
+        if valid:
+            try:
+                github_plan_closure.native_process_check(entry)
+                valid = github_plan_closure.receipt_current(entry)
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                valid = False
+        if not valid:
+            peers.append({"sessionId": session, "cwd": outcome["cwd"], "state": "active", "source": "codex_session"})
+            states[session] = {"state": "live", "source": "codex_session"}
+    states = {session: state for session, state in states.items()
+              if state["state"] != "ended" or (peer_complete and process_coverage == "complete")}
     return peers, states, {"status": "available" if peer_complete else "incomplete" if observed_sources else "unavailable",
                            "peer_complete": peer_complete, "process_coverage": process_coverage,
                            "source_count": len(observed_sources), "unavailable_source_count": len(sources) - len(observed_sources),
