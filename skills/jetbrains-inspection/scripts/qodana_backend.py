@@ -336,46 +336,84 @@ def docker_argv(name, image, private, language, uv_binary=None):
     return argv
 
 
-def copy_in(name, private, env):
+COPY_SECONDS = 600
+# Qodana rewrites this when it applies the configured profile. That choice is
+# verified against the effective profile, so it is not an analysis input.
+ENGINE_WRITTEN = frozenset({".idea/inspectionProfiles/profiles_settings.xml"})
+
+
+def bounded(argv, env, parent_fd=None, stdout=None):
+    """One Docker client step, stopped at its deadline or when the parent exits.
+
+    The step is killed and reaped before returning, so container cleanup never
+    races a copy that is still streaming.
+    """
+    process = subprocess.Popen(argv, stdout=stdout or subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    deadline = time.monotonic() + COPY_SECONDS
+    try:
+        while process.poll() is None:
+            if parent_gone(parent_fd):
+                raise Blocked("qodana_parent_gone")
+            if time.monotonic() > deadline:
+                raise Blocked("qodana_timeout")
+            time.sleep(0.05)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    if process.returncode:
+        raise Blocked("qodana_prerequisite_failed")
+
+
+def copy_in(name, private, env, parent_fd=None):
     """Stream inputs into the created container through the Docker API."""
     for entry in COPIED_IN:
         if (private / entry).exists():
-            checked(["docker", "cp", "--archive", str(private / entry), f"{name}:{WORK}/{entry}"], env=env, timeout=600)
+            bounded(["docker", "cp", "--archive", str(private / entry), f"{name}:{WORK}/{entry}"], env, parent_fd)
     for index, plugin in enumerate(sorted((private / "plugins").glob("bundle-*/*"))):
         # A run-specific folder name never shadows the image's built-in plugins
         # or uses a build-number cache.
-        checked(["docker", "cp", "--archive", str(plugin), f"{name}:/opt/idea/plugins/{name}-{index}"], env=env, timeout=600)
+        bounded(["docker", "cp", "--archive", str(plugin), f"{name}:/opt/idea/plugins/{name}-{index}"], env, parent_fd)
 
 
 def start_argv(name):
     return ["nice", "-n", "10", "docker", "start", "--attach", name]
 
 
-def copy_out(name, private, env):
+def copy_out(name, private, env, parent_fd=None):
     """Results, the prepared interpreter's version and inspected-source hashes come back after exit."""
-    checked(["docker", "cp", f"{name}:{WORK}/results", str(private / "results")], env=env, timeout=600)
-    # Absent when no preparation ran; interpreter_version then reports None.
-    command(["docker", "cp", f"{name}:{WORK}/project/.venv/pyvenv.cfg", str(private / "pyvenv.cfg")], env=env, timeout=60)
+    bounded(["docker", "cp", f"{name}:{WORK}/results", str(private / "results")], env, parent_fd)
+    try:
+        bounded(["docker", "cp", f"{name}:{WORK}/project/.venv/pyvenv.cfg", str(private / "pyvenv.cfg")], env, parent_fd)
+    except Blocked as error:
+        # Absent when no preparation ran; interpreter_version then reports None.
+        if str(error) != "qodana_prerequisite_failed":
+            raise
     # Preparation runs inside the container and can rewrite sources; hash what
-    # the engine saw, streamed as a tar, so findings are checked against it.
-    (private / "inspected-sha256.json").write_text(json.dumps(container_project_hashes(name, env)))
+    # the engine saw so findings are checked against the requested snapshot.
+    archive = private / "inspected-project.tar"
+    with archive.open("wb") as output:
+        bounded(["docker", "cp", f"{name}:{WORK}/project", "-"], env, parent_fd, stdout=output)
+    (private / "inspected-sha256.json").write_text(json.dumps(archive_hashes(archive)))
+    archive.unlink()
 
 
-def container_project_hashes(name, env):
+def archive_hashes(archive):
+    """Hashes of regular files under the exported project, outside .venv and .git."""
     import tarfile
     hashes = {}
-    with subprocess.Popen(["docker", "cp", f"{name}:{WORK}/project", "-"], stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL, env=env) as process:
-        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
-            for member in archive:
-                relative = member.name.partition("/")[2]
-                if not member.isfile() or relative.split("/", 1)[0] in {".venv", ".git"}:
-                    continue
-                stream = archive.extractfile(member)
-                if stream is not None:
-                    hashes[relative] = hashlib.sha256(stream.read()).hexdigest()
-        if process.wait(timeout=600):
-            raise Blocked("qodana_inspected_sources_unavailable")
+    with tarfile.open(archive) as exported:
+        for member in exported:
+            relative = member.name.partition("/")[2]
+            if not member.isfile() or relative.split("/", 1)[0] in {".venv", ".git"}:
+                continue
+            stream = exported.extractfile(member)
+            if stream is None:
+                continue
+            content = hashlib.sha256()
+            while chunk := stream.read(1 << 20):
+                content.update(chunk)
+            hashes[relative] = content.hexdigest()
     return hashes
 
 
@@ -651,7 +689,7 @@ def execute_worker(argv, name, private, env, timeout, receipt, *, parent_fd=None
     paused = False
     try:
         checked(argv, env=env)
-        copy_in(name, private, env)
+        copy_in(name, private, env, parent_fd)
         process = subprocess.Popen(start_argv(name), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         os.set_blocking(process.stdout.fileno(), False)
         with selectors.DefaultSelector() as selector:
@@ -685,7 +723,7 @@ def execute_worker(argv, name, private, env, timeout, receipt, *, parent_fd=None
                     paused = False
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
         receipt["exit_code"] = process.returncode
-        copy_out(name, private, env)
+        copy_out(name, private, env, parent_fd)
         monitor.logs()
         if monitor.boundary:
             raise Blocked("qodana_trial_or_purchase_stop")
@@ -1052,7 +1090,12 @@ def run(args, host):
         findings = collect_findings(private / "results", selected, args)
         inspected = private / "inspected-sha256.json"
         seen = json.loads(inspected.read_text()) if inspected.is_file() else {}
-        if any(seen.get(f) != hashes[f] for f in selected):
+        # Every requested input, selected or imported by one, must be what the
+        # engine saw; files the run added, such as canaries, are allowed.
+        changed = sorted(f for f, h in hashes.items() if seen.get(f) != h and f not in ENGINE_WRITTEN)
+        if changed:
+            receipt["changed_inputs"] = changed[:25]
+            receipt["changed_input_count"] = len(changed)
             raise Blocked("qodana_snapshot_inputs_changed")
         after_paths = host.inspection_scope_paths(args, repo, scope)
         after_selected = {p.relative_to(repo).as_posix() for raw in after_paths

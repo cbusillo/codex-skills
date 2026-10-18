@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 import zipfile
@@ -319,6 +320,43 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(result["diagnostic"]["error_reason"], "qodana_snapshot_inputs_changed")
 
+    def test_rewritten_unselected_import_in_the_container_is_not_decisive(self):
+        # src/a.py is selected; src/b.py, which it could import, changed during preparation.
+        def rewritten(*args):
+            self.completed(*args)
+            inspected = args[2] / "inspected-sha256.json"
+            hashes = json.loads(inspected.read_text())
+            hashes["src/b.py"] = "0" * 64
+            inspected.write_text(json.dumps(hashes))
+        result = self.run_backend(rewritten)
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["diagnostic"]["error_reason"], "qodana_snapshot_inputs_changed")
+
+    def test_engine_rewrite_of_profile_selection_does_not_invalidate_the_run(self):
+        settings = self.repo / ".idea/inspectionProfiles/profiles_settings.xml"
+        settings.write_text('<component name="InspectionProjectProfileManager"/>')
+        def rewritten(*args):
+            self.clean_with_canary()(*args)
+            inspected = args[2] / "inspected-sha256.json"
+            hashes = json.loads(inspected.read_text())
+            hashes[".idea/inspectionProfiles/profiles_settings.xml"] = "0" * 64
+            inspected.write_text(json.dumps(hashes))
+        result = self.run_backend(rewritten)
+        self.assertEqual(result["agent_result"]["verdict"], "GREEN")
+
+    def test_copy_step_stops_and_reaps_when_parent_exits_or_deadline_passes(self):
+        sleeper = [sys.executable, "-c", "import time; time.sleep(30)"]
+        read_end, write_end = os.pipe()
+        os.set_blocking(read_end, False)
+        os.close(write_end)
+        started = time.monotonic()
+        with self.assertRaisesRegex(backend.Blocked, "qodana_parent_gone"):
+            backend.bounded(sleeper, backend.safe_env(), read_end)
+        os.close(read_end)
+        with patch.object(backend, "COPY_SECONDS", 0.2), self.assertRaisesRegex(backend.Blocked, "qodana_timeout"):
+            backend.bounded(sleeper, backend.safe_env())
+        self.assertLess(time.monotonic() - started, 10)
+
     def test_input_change_invalidates_decisive_findings(self):
         def mutate(*args):
             self.completed(*args)
@@ -585,6 +623,7 @@ def command(argv, **kwargs):
     return subprocess.CompletedProcess(argv, 0, b"", b"")
 b.command = command
 b.start_argv = lambda _name: [sys.executable, "-c", "import time; time.sleep(20)"]
+b.bounded = lambda *_args, **_kwargs: None
 receipt = {"run_id": sys.argv[4], "load_pause_count": 0, "container_removed": False}
 b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, receipt)
 '''
@@ -652,7 +691,7 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
         self.args.qodana_plugin_zip = [str(package)]
         def inspect_plugins(argv, name, private, *rest):
             copies = []
-            with patch.object(backend, "checked", side_effect=lambda command_argv, **_kwargs: copies.append(command_argv)):
+            with patch.object(backend, "bounded", side_effect=lambda command_argv, *_rest, **_kwargs: copies.append(command_argv)):
                 backend.copy_in(name, private, {})
             plugin_copies = [c for c in copies if c[-1].startswith(f"{name}:/opt/idea/plugins/{name}-")]
             self.assertEqual([Path(c[-2]).name for c in plugin_copies], ["test-plugin"])
@@ -770,7 +809,8 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
         calls = []
         code = "import time; print('Trial activated', flush=True); time.sleep(30)"
         with patch.object(backend, "command", side_effect=lambda argv, **kwargs: calls.append(argv) or subprocess.CompletedProcess(argv, 0, b"", b"")), \
-                patch.object(backend, "start_argv", return_value=[sys.executable, "-u", "-c", code]):
+                patch.object(backend, "start_argv", return_value=[sys.executable, "-u", "-c", code]), \
+                patch.object(backend, "bounded"):
             with self.assertRaisesRegex(backend.Blocked, "qodana_trial_or_purchase_stop"):
                 backend.execute_worker(["docker", "create"], "own-container", self.root, backend.safe_env(), 3, {})
         self.assertTrue(any(call[:3] == ["docker", "rm", "-f"] for call in calls))
