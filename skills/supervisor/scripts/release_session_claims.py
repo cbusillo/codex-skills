@@ -93,10 +93,7 @@ def verify_closed(entry, supervisor_session, *, ended_at=None):
         raise ValueError("inventory closure requires the Supervisor's verified safe exit and inactivity")
     verify_process_exit(entry, ended_at=ended_at)
     status = session_record.session_status(entry)
-    # Recovery runs after independently verified process exit. Older sessions
-    # may have declared safe exit before the pre-exit check existed; preserve
-    # their guarded attestation/release route without accepting them for shutdown.
-    if not status.get("declared_safe_verdict", status["safe_verdict"]):
+    if not status["safe_verdict"]:
         raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")
     return status
 
@@ -122,7 +119,7 @@ def validate_closure(entry, supervisor_session):
     for path in paths:
         other = session_record.session_status({**entry, "transcript": str(path)})
         records = session_record.read_jsonl(path)
-        if not other.get("declared_safe_verdict", other["safe_verdict"]) or any(
+        if not other["safe_verdict"] or any(
             release.stamp(r["timestamp"]) > ended for r in records if r.get("timestamp")
         ):
             raise ValueError("source resumed or has newer activity in a configured native transcript")
@@ -219,8 +216,7 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
 
 def scan_start(entries):
     timestamps = [release.stamp(r["timestamp"]) for e in entries
-                  for r in (e["_transcript_records"] if "_transcript_records" in e else
-                            session_record.read_jsonl(Path(e["transcript"]))) if r.get("timestamp")]
+                  for r in session_record.read_jsonl(Path(e["transcript"])) if r.get("timestamp")]
     if not timestamps:
         raise ValueError("transcripts have no timestamped history for discovery")
     return (min(timestamps) - timedelta(seconds=1)).isoformat()
@@ -273,7 +269,8 @@ def discover(reader, owner, entries, repos=None):
     return sorted(issues), repos
 
 
-def verified_comments(reader, comments):
+def active_claims(reader, repo, number, session, actor):
+    comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_claim_discussion")
     # Use the same evidence validity and ownership classifier as claim, rather
     # than deciding that any release-shaped text erases ownership.
     for c, receipt in release.receipts(comments):
@@ -289,14 +286,6 @@ def verified_comments(reader, comments):
             if isinstance(error, GitHubReadError) and getattr(error.result, "status", None) not in {403, 404}:
                 raise
             comments = [release.without_release(r) if r["id"] == c["id"] else r for r in comments]
-    return release.effective_comments(comments)
-
-
-def active_claims(reader, repo, number, session, actor, *, comments=None, verified=False):
-    if comments is None:
-        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_claim_discussion")
-    if not verified:
-        comments = verified_comments(reader, comments)
     conflicts, _ = claim.discussion_evidence("", comments, {
         "session": "", "worker": "", "branch": "", "claimed_at": ""
     })

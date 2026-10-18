@@ -177,7 +177,7 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
             valid = same and before == receipt["closure_evidence"]["transcripts"] and current
             ended_at = receipt["ended_at"]
         else:
-            valid = same and bool(before) and all(s.get("declared_safe_verdict", s["safe_verdict"]) for s in before.values())
+            valid = same and bool(before) and all(s["safe_verdict"] for s in before.values())
             ended_at = max((s["timestamp"] for s in before.values()), default=None)
         if valid and final_state == state and (state == "notLoaded" or idle_proof):
             peers[:] = [peer for peer in peers if peer["sessionId"] != session]
