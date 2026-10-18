@@ -703,6 +703,33 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "no authored handoff"):
                     helper.discover_handoff(self.reader, entry, ACTOR)
 
+    def test_every_argument_form_resolves_the_target_the_helper_writes_to(self):
+        # The comment is on test/a#1; each write binds only when the helper itself would post there.
+        writes = {
+            **{f"gh-comment {form}": f"gh-comment {form.format(r='{r}')} issue 1 --body-file c.md" for form in (
+                "-R {r}", "-R{r}", "--repo {r}", "--repo={r}", "--rep {r}", "--rep={r}",
+                # The last occurrence wins, whatever its form.
+                "--repo=test/x -R {r}", "-R test/x --repo={r}", "--repo test/x -R{r}",
+                "--repo=test/a -R {r}", "-R test/a --repo={r}", "--repo=test/a --rep {r}")},
+            "gh-comment repository after the positionals": "gh-comment issue 1 --body-file c.md -R {r}",
+            **{f"gh-comment {form}": f"gh-comment -R {{r}} issue 1 {form}" for form in (
+                "--body-file=c.md", "--body c.md", "--body-file other.md --body-file c.md")},
+            **{f"gh-pr.py {form}": f"gh-pr.py {form.format(r='{r}')} comment 1 --body-file c.md" for form in (
+                "--repo {r}", "--repo={r}", "--rep {r}", "--repo=test/x --repo {r}")},
+            # A pull request URL names its own repository, over --repo.
+            "gh-pr.py pull request URL": "gh-pr.py --repo test/x comment https://github.com/{r}/pull/1 --body-file c.md",
+            "gh-pr.py pulls URL": "gh-pr.py comment https://github.com/{r}/pulls/1 --body-file=c.md",
+        }
+        for (name, write), repo in itertools.product(writes.items(), ("test/a", "test/b")):
+            with self.subTest(name, repo=repo):
+                entry = self.summarized_write(f"{write.format(r=repo)} | jq -r .comment.url", self.entry["handoff_url"])
+                if repo == "test/a":
+                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+                else:
+                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                        helper.discover_handoff(self.reader, entry, ACTOR)
+
     def test_grouped_or_undecodable_working_directory_is_unknown(self):
         # The session cwd holds c.md, but each write ran elsewhere.
         for command in ("( cd /other && gh-comment -R test/a issue 1 --body-file c.md )",

@@ -11,6 +11,8 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import json
 import fcntl
+import functools
+import importlib.util
 import itertools
 import os
 from pathlib import Path
@@ -34,6 +36,17 @@ import github_plan_claim as claim
 import github_plan_release as release
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_comment import OPERATION_MARKER_LINE_RE, CommentError, comment
+from github_comment import build_parser as comment_parser
+import github_api
+
+
+@functools.cache
+def pr_cli():
+    """Load gh-pr.py, whose own parser decides which pull request a comment write targets."""
+    spec = importlib.util.spec_from_file_location("gh_pr_cli", GITHUB / "gh-pr.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 HANDOFF = release.COMMENT_URL
@@ -360,30 +373,37 @@ def discover_handoff(reader, entry, actor):
         except ValueError:
             return [], {}, False
     def comment_target(tokens):
-        """Return the (repository, number) a comment write targets; either may be unknown."""
+        """Parse a comment write with its helper's own parser: (repository, number, body file), or None.
+
+        Either of the first two may be unknown. A command its helper would reject posts nothing.
+        """
         for index, token in enumerate(tokens):
             name = Path(token).name
             if name in {"uv", "run", "python", "python3", "env"} or token.startswith("-") or re.match(r"\w+=", token):
                 continue
-            tail = tokens[index + 1:]
-            if name in {"gh-comment", "github_comment.py"}:
-                numbers = [tail[i + 1] for i, t in enumerate(tail) if t in {"issue", "pr"} and i + 1 < len(tail) and tail[i + 1].isdigit()]
-                if numbers:
-                    repos = [tail[i + 1] for i, t in enumerate(tail) if t in {"-R", "--repo"} and i + 1 < len(tail)]
-                    repos += [t.split("=", 1)[1] for t in tail if t.startswith("--repo=")]
-                    return (repos[-1] if repos else None), numbers[0]
-            if name == "gh-pr.py":
-                # The documented form puts the global --repo before the subcommand.
-                repo = None
-                while tail[:1] in (["--repo"], ["-R"]) or (tail and tail[0].startswith("--repo=")):
-                    repo = tail[0].split("=", 1)[1] if "=" in tail[0] else (tail[1:2] or [None])[0]
-                    tail = tail[1 if "=" in tail[0] else 2:]
-                if tail[:1] == ["comment"]:
-                    pr = tail[1] if len(tail) > 1 else ""
-                    if pr_url := re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?", pr):
-                        return pr_url[1], pr_url[2]
+            # Redirections belong to the shell, not to the helper's arguments.
+            argv, rest = [], iter(tokens[index + 1:])
+            for arg in rest:
+                if arg in {"<", ">", ">>", "__handoff_fd__"}:
+                    next(rest, None)
+                else:
+                    argv.append(arg)
+            try:
+                if name in {"gh-comment", "github_comment.py"}:
+                    args = comment_parser().parse_args(argv)
+                    return args.repo, str(args.number), args.body_file
+                if name == "gh-pr.py":
+                    cli = pr_cli()
+                    args = cli.build_parser().parse_args(argv)
+                    if args.command != "comment":
+                        return None
+                    # A pull request URL names its own repository, over --repo.
+                    if pr_url := cli.parse_pr_url(args.pr):
+                        return pr_url[0], str(pr_url[1]), args.body_file
                     # A branch name leaves the number, and so any printed URL, unmatched.
-                    return repo, pr if pr.isdigit() else None
+                    return args.repo, args.pr if args.pr.isdigit() else None, args.body_file
+            except (github_api.ArgumentParsingError, SystemExit):
+                return None
             return None
         return None
     def note_patch(patch, cwd):
@@ -488,17 +508,19 @@ def discover_handoff(reader, entry, actor):
             if target_of_write is None:
                 continue
             wrote = True
-            path = operand("--body-file")
-            if not complete or (path is None and any(t == "--body-file" or t.startswith("--body-file=") for t in tokens)):
+            repo, number, path = target_of_write
+            repo = literal(repo, variables) if repo else None
+            path = literal(path, variables)
+            if not complete or path is None:
                 continue
-            if path == "-" or path is None:
+            if path == "-":
                 body = heredocs.get(stdin)
                 if body is None:
                     body = files.get(file_identity(stdin, cwd))
             else:
                 body = files.get(file_identity(path, cwd))
             if body and flat(body):
-                bodies.add((flat(body), *target_of_write))
+                bodies.add((flat(body), repo, number))
         return bodies, wrote
     started, finished = {}, {}
     sent = {}
