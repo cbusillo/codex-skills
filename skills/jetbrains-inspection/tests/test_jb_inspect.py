@@ -9975,6 +9975,36 @@ class ClassificationTest(unittest.TestCase):
         self.assertEqual(jb_inspect.classify_status_exit(result), 1)
 
 
+class NestedFieldTest(unittest.TestCase):
+    MALFORMED_VALUES = (None, "text", 1, True, ("tuple",))
+
+    def test_dict_field_returns_the_nested_dict_so_updates_reach_the_payload(self):
+        payload = {"retry_policy": {"retry": True}}
+
+        jb_inspect.dict_field(payload, "retry_policy")["max_attempts"] = 2
+
+        self.assertEqual(payload["retry_policy"], {"retry": True, "max_attempts": 2})
+
+    def test_dict_field_gives_a_fresh_empty_dict_for_missing_or_malformed_values(self):
+        for value in (*self.MALFORMED_VALUES, ["retry"]):
+            with self.subTest(value=value):
+                payload = {"retry_policy": value}
+                jb_inspect.dict_field(payload, "retry_policy")["retry"] = True
+                self.assertEqual(jb_inspect.dict_field(payload, "retry_policy"), {})
+                self.assertEqual(payload, {"retry_policy": value})
+        self.assertEqual(jb_inspect.dict_field({}, "retry_policy"), {})
+
+    def test_list_field_returns_the_nested_list_or_a_fresh_empty_list(self):
+        problems = [{"file": "a.py"}]
+        self.assertIs(jb_inspect.list_field({"problems": problems}, "problems"), problems)
+        for value in (*self.MALFORMED_VALUES, {"file": "a.py"}):
+            with self.subTest(value=value):
+                payload = {"problems": value}
+                jb_inspect.list_field(payload, "problems").append({"file": "b.py"})
+                self.assertEqual(jb_inspect.list_field(payload, "problems"), [])
+        self.assertEqual(jb_inspect.list_field({}, "problems"), [])
+
+
 class EndpointUtilityTest(unittest.TestCase):
     def test_problems_params_passes_include_stale_when_requested(self):
         args = Namespace(
