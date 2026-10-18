@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import os
 import re
 import shutil
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Iterable, Mapping, NoReturn, Protocol, Sequence
 
 import github_api as github_api_core
 import github_identity
@@ -512,6 +514,9 @@ class RulesetClientProtocol(Protocol):
 
     def resolve_owner(self, owner: str) -> str: ...
 
+    def request(self, method: str, path: str, *, operation: str, body: Any = None,
+                allow_unprotected: bool = False) -> Any: ...
+
     def list_owned_repositories(self, owner: str) -> list[str]: ...
 
     def list_rulesets(self, repo: str) -> list[dict[str, Any]]: ...
@@ -639,11 +644,11 @@ CHECK_RULESET_NAME = "Required status checks on the default branch"
 RULESET_FIELDS = ("name", "target", "enforcement", "bypass_actors", "conditions", "rules")
 
 
-def _check_error(message: str, cause: str = "validation_error") -> None:
+def _check_error(message: str, cause: str = "validation_error") -> NoReturn:
     raise RulesetError(message, cause=cause)
 
 
-def _checks(value: Any, *, binding: str) -> list[dict[str, Any]]:
+def normalize_checks(value: Any, *, binding: str) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         _check_error("checks must be a list")
     result = []
@@ -665,13 +670,20 @@ def _classic_checks(value: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(value.get("strict"), bool):
         _check_error("classic checks lack strictness", "invalid_response")
     # Do not infer App bindings from the legacy contexts list.
-    checks = _checks(value.get("checks"), binding="app_id")
+    checks = normalize_checks(value.get("checks"), binding="app_id")
     if set(value.get("contexts", [])) != {item["context"] for item in checks}:
         _check_error("classic contexts and App-bound checks disagree", "invalid_response")
     return {**value, "checks": checks, "contexts": sorted(set(value["contexts"]))}
 
 
-def check_snapshot(client: RulesetClient, repo: str) -> dict[str, Any]:
+def check_snapshot(client: RulesetClientProtocol, repo: str) -> dict[str, Any]:
+    try:
+        return _check_snapshot(client, repo)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise RulesetError("invalid required-check snapshot response", cause="invalid_response") from exc
+
+
+def _check_snapshot(client: RulesetClientProtocol, repo: str) -> dict[str, Any]:
     path = f"/repos/{repo_path(repo)}"
     repository = client.request("GET", path, operation="github.rulesets.checks.read")
     owner = repository.get("owner", {}) if isinstance(repository, dict) else {}
@@ -699,7 +711,7 @@ def check_snapshot(client: RulesetClient, repo: str) -> dict[str, Any]:
         for rule in normalized["rules"]:
             if rule.get("type") == "required_status_checks":
                 parameters = rule["parameters"]
-                parameters["required_status_checks"] = _checks([
+                parameters["required_status_checks"] = normalize_checks([
                     {**check, "integration_id": check.get("integration_id")}
                     for check in parameters["required_status_checks"]], binding="integration_id")
         rulesets.append(normalized)
@@ -711,16 +723,13 @@ def check_snapshot(client: RulesetClient, repo: str) -> dict[str, Any]:
 
 
 def check_plan_digest(plan: Mapping[str, Any]) -> str:
-    import hashlib
-    import json
-
     return hashlib.sha256(json.dumps(dict(plan), sort_keys=True, separators=(",", ":"),
                                      allow_nan=False).encode()).hexdigest()
 
 
 def build_check_plan(repo: str, target: str, checks: Any, before: dict[str, Any]) -> dict[str, Any]:
     repo_path(repo)
-    additions = _checks(checks, binding="app_id")
+    additions = normalize_checks(checks, binding="app_id")
     if not additions:
         _check_error("at least one required check is needed")
     after = copy.deepcopy(before)
@@ -734,7 +743,7 @@ def build_check_plan(repo: str, target: str, checks: Any, before: dict[str, Any]
             if item not in current["checks"]:
                 current["checks"].append(copy.deepcopy(item))
                 added.append(item)
-        current["checks"] = _checks(current["checks"], binding="app_id")
+        current["checks"] = normalize_checks(current["checks"], binding="app_id")
         current["contexts"] = sorted({item["context"] for item in current["checks"]})
         protection["required_status_checks"] = current
         payload = {"strict": current["strict"], "checks": [
@@ -758,6 +767,11 @@ def build_check_plan(repo: str, target: str, checks: Any, before: dict[str, Any]
             if len(matches) != 1:
                 _check_error("target ruleset not found")
             current = matches[0]
+            managed_names = {LANDING_RULESET_NAME, DIRECTION_RULESET_NAME, CLIENT_BRANCH_LOCK_NAME,
+                             CLIENT_TAG_LOCK_NAME, *LANDING_RULESET_ALIASES}
+            if current["name"] in managed_names:
+                _check_error("standard and client-lock rulesets are replaced by standard apply; use --target new",
+                             "managed_ruleset_target")
             refs = current["conditions"].get("ref_name", {})
             if (current["target"] != "branch" or current["enforcement"] != "active"
                     or refs.get("exclude") != []
@@ -769,13 +783,13 @@ def build_check_plan(repo: str, target: str, checks: Any, before: dict[str, Any]
         parameters = rules[0]["parameters"]
         if not isinstance(parameters.get("strict_required_status_checks_policy"), bool):
             _check_error("ruleset lacks status-check strictness")
-        existing = _checks(parameters.get("required_status_checks"), binding="integration_id")
+        existing = normalize_checks(parameters.get("required_status_checks"), binding="integration_id")
         for item in additions:
             translated = {"context": item["context"], "integration_id": item["app_id"]}
             if translated not in existing:
                 existing.append(translated)
                 added.append(item)
-        parameters["required_status_checks"] = _checks(existing, binding="integration_id")
+        parameters["required_status_checks"] = normalize_checks(existing, binding="integration_id")
         payload = {key: copy.deepcopy(current[key]) for key in RULESET_FIELDS}
         # The ruleset write schema accepts an optional integer integration_id;
         # omission means any App. Keep null only in our normalized snapshot.
@@ -814,7 +828,7 @@ def _matches_check_after(plan: dict[str, Any], live: dict[str, Any]) -> bool:
     return observed == plan["after"]
 
 
-def run_check_plan(client: RulesetClient, plan: dict[str, Any], *, apply: bool) -> dict[str, Any]:
+def run_check_plan(client: RulesetClientProtocol, plan: dict[str, Any], *, apply: bool) -> dict[str, Any]:
     repo = plan["repo"]
     live = check_snapshot(client, repo)
     if _matches_check_after(plan, live):
@@ -843,8 +857,10 @@ def run_check_plan(client: RulesetClient, plan: dict[str, Any], *, apply: bool) 
                 client.update_ruleset(repo, positive_int(plan["target"], "ruleset id"), spec)
         if not _matches_check_after(plan, check_snapshot(client, repo)):
             _check_error("required-check readback differs from the reviewed result", "post_write_verification_failed")
-    except RulesetError as exc:
-        raise RulesetError(str(exc), cause=exc.cause, payload={**exc.payload, "repo": repo,
+    except Exception as exc:
+        cause = exc.cause if isinstance(exc, RulesetError) else "invalid_response"
+        details = exc.payload if isinstance(exc, RulesetError) else {}
+        raise RulesetError(str(exc), cause=cause, payload={**details, "repo": repo,
                            "failed_step": "check_write_or_readback" if attempted else "preflight",
                            "write_attempted": attempted}) from exc
     return {"repo": repo, "changed": True, "verified": True, "applied": plan["added"]}

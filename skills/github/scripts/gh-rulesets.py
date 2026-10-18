@@ -85,33 +85,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def run_checks(args: argparse.Namespace, client: github_rulesets.RulesetClient) -> dict[str, Any]:
+def read_check_json(path: Path) -> Any:
     try:
-        if args.command == "checks-plan":
-            checks = json.loads(args.checks_file.read_text())
-            # Validate additions before using the owner client.
-            github_rulesets._checks(checks, binding="app_id")
-            owner, _ = github_rulesets.resolve_repositories(client=client, repos=[args.repo], all_owned=False, owner=None)
-            plan = github_rulesets.build_check_plan(args.repo, args.target, checks,
-                                                   github_rulesets.check_snapshot(client, args.repo))
+        return json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise github_rulesets.RulesetError(f"cannot read required-check input: {exc}", cause="validation_error") from exc
+
+
+def run_checks(args: argparse.Namespace, client: github_rulesets.RulesetClientProtocol) -> dict[str, Any]:
+    if args.command == "checks-plan":
+        checks = read_check_json(args.checks_file)
+        # Validate additions before using the owner client.
+        github_rulesets.normalize_checks(checks, binding="app_id")
+        owner, _ = github_rulesets.resolve_repositories(client=client, repos=[args.repo], all_owned=False, owner=None)
+        plan = github_rulesets.build_check_plan(args.repo, args.target, checks,
+                                               github_rulesets.check_snapshot(client, args.repo))
+        try:
             with args.out.open("x") as stream:
                 json.dump(plan, stream, indent=2, sort_keys=True, allow_nan=False)
                 stream.write("\n")
-            return {"owner": owner, "actor": client.actor, "plan_file": str(args.out),
-                    "plan_digest": github_rulesets.check_plan_digest(plan), "plan": plan,
-                    "changed": plan["changed"], "write_authorized": False}
-        plan = github_rulesets.validate_check_plan(json.loads(args.plan_file.read_text()), args.plan_digest)
-        applying = args.command == "checks-apply"
-        if applying and not args.confirm_owner_admin_write:
-            raise github_rulesets.RulesetError("checks-apply requires --confirm-owner-admin-write",
-                                               cause="authorization_required")
-        owner, _ = github_rulesets.resolve_repositories(client=client, repos=[plan["repo"]], all_owned=False, owner=None)
-        result = github_rulesets.run_check_plan(client, plan, apply=applying)
-        return {"owner": owner, "actor": client.actor, "plan_digest": args.plan_digest,
-                "write_authorized": applying, **result,
-                "limits": ["GitHub has no conditional-write token for this endpoint; preflight and readback cannot lock concurrent settings writers."]}
-    except (OSError, ValueError, TypeError) as exc:
-        raise github_rulesets.RulesetError(f"cannot read or save required-check plan: {exc}", cause="validation_error") from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise github_rulesets.RulesetError(f"cannot save required-check plan: {exc}", cause="validation_error") from exc
+        return {"owner": owner, "actor": client.actor, "plan_file": str(args.out),
+                "plan_digest": github_rulesets.check_plan_digest(plan), "plan": plan,
+                "changed": plan["changed"], "write_authorized": False}
+    plan = github_rulesets.validate_check_plan(read_check_json(args.plan_file), args.plan_digest)
+    applying = args.command == "checks-apply"
+    if applying and not args.confirm_owner_admin_write:
+        raise github_rulesets.RulesetError("checks-apply requires --confirm-owner-admin-write",
+                                           cause="authorization_required")
+    owner, _ = github_rulesets.resolve_repositories(client=client, repos=[plan["repo"]], all_owned=False, owner=None)
+    result = github_rulesets.run_check_plan(client, plan, apply=applying)
+    return {"owner": owner, "actor": client.actor, "plan_digest": args.plan_digest,
+            "write_authorized": applying, **result,
+            "limits": ["GitHub has no conditional-write token for this endpoint; preflight and readback cannot lock concurrent settings writers."]}
 
 
 def operation_name(command: str) -> str:

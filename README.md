@@ -1119,6 +1119,9 @@ or `--target new` to create a separate required-check ruleset without bypasses.
 The new ruleset leaves other protection in place and uses non-strict checks;
 an existing target retains its strictness, App bindings, rules and bypass actors.
 Conflicting App bindings for the same context refuse instead of guessing.
+Standard, legacy-alias and client-lock rulesets cannot be check targets because
+standard apply replaces their payloads. Use `--target new` to keep the checks
+in a separate ruleset that standard apply leaves in place.
 
 ```sh
 uv run skills/github/scripts/gh-rulesets.py checks-plan \

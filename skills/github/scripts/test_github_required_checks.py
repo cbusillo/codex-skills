@@ -78,6 +78,7 @@ def test_classic_preserves_requirements_bindings_strictness_and_other_protection
 
 def test_ruleset_preserves_every_rule_parameter_and_bypass():
     landing = response_ruleset(rules.standard_specs(77)[0], 12)
+    landing["name"] = "Custom quality checks"
     landing["rules"].append({"type": "required_status_checks", "parameters": {
         "strict_required_status_checks_policy": True, "do_not_enforce_on_create": True,
         "required_status_checks": [{"context": "old", "integration_id": 44}]}})
@@ -93,6 +94,25 @@ def test_ruleset_preserves_every_rule_parameter_and_bypass():
     added_rule["parameters"].pop("required_status_checks")
     original_rule["parameters"].pop("required_status_checks")
     assert added_rule == original_rule
+
+
+def test_managed_targets_refuse_and_separate_checks_survive_standard_apply():
+    specs = rules.standard_specs(77)
+    names = [spec.name for spec in specs] + list(rules.LANDING_RULESET_ALIASES)
+    names += [spec.name for spec in rules.client_lock_specs(77, branches=True, tags=True)]
+    for name in names:
+        current = response_ruleset(specs[0], 12)
+        current["name"] = name
+        client = CheckClient(rulesets=[current])
+        refused(lambda: plan(client, "12"), "managed_ruleset_target")
+        assert client.writes == []
+    client = CheckClient(rulesets=[response_ruleset(spec, index) for index, spec in enumerate(specs, 1)])
+    reviewed = plan(client, "new")
+    rules.run_check_plan(client, reviewed, apply=True)
+    created = copy.deepcopy(client.repos["owner/repo"][-1])
+    rules.apply_repository(client, "owner/repo", specs)
+    assert created in client.repos["owner/repo"]
+    assert rules.run_check_plan(client, reviewed, apply=False)["verified"]
 
 
 def test_new_ruleset_does_not_replace_existing_protection_and_retry_writes_nothing():
@@ -153,6 +173,7 @@ def test_unbound_classic_checks_stay_explicit_and_conflicting_bindings_refuse():
 
 def test_incomplete_or_ambiguous_ruleset_refuses():
     landing = response_ruleset(rules.standard_specs(77)[0], 12)
+    landing["name"] = "Custom quality checks"
     client = CheckClient(rulesets=[landing])
     refused(lambda: plan(client, "12"), "validation_error")
     del client.repos["owner/repo"][0]["bypass_actors"]
@@ -167,6 +188,28 @@ def test_failed_write_or_readback_keeps_uncertain_outcome_without_retry():
         setattr(client, mode, True)
         exc = refused(lambda: rules.run_check_plan(client, reviewed, apply=True),
                       "provider_failure" if mode == "fail_readback" else "post_write_verification_failed")
+        assert cli.failure_context(is_write=True, payload=exc.payload)[0] == "unknown"
+        assert len(client.writes) == 1
+
+
+def test_malformed_post_write_readback_always_reports_an_unknown_write():
+    cli = load_cli()
+    for mode in ("contexts", "parameters", "login"):
+        class BrokenReadback(CheckClient):
+            def request(self, method, path, **kwargs):
+                result = super().request(method, path, **kwargs)
+                if self.writes and path.endswith("/protection") and mode == "contexts":
+                    result["required_status_checks"]["contexts"] = None
+                elif self.writes and path == "/repos/owner/repo" and mode == "login":
+                    result["owner"]["login"] = None
+                elif self.writes and mode == "parameters":
+                    malformed = response_ruleset(rules.standard_specs(77)[0], 13)
+                    malformed["rules"] = [{"type": "required_status_checks"}]
+                    self.repos["owner/repo"] = [malformed]
+                return result
+        client = BrokenReadback()
+        reviewed = plan(client)
+        exc = refused(lambda: rules.run_check_plan(client, reviewed, apply=True), "invalid_response")
         assert cli.failure_context(is_write=True, payload=exc.payload)[0] == "unknown"
         assert len(client.writes) == 1
 
