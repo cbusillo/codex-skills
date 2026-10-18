@@ -96,6 +96,33 @@ class QuestionCounterTests(unittest.TestCase):
         counter.update(self.path, seed=(self.seed[0] - 1, []), allocate=False)
         self.assertEqual(counter.update(self.path), allocated + 1)
 
+    def test_confirmed_comment_identity_survives_retry_and_shares_chat_sequence(self):
+        counter.update(self.path, seed=self.seed, allocate=False)
+        url = "https://github.com/owner/repo/issues/1#issuecomment-2"
+        first = counter.update(self.path, question_url=url)
+        chat = counter.update(self.path)
+        self.assertEqual(counter.update(self.path, question_url=url), first)
+        self.assertEqual(chat, first + 1)
+        self.assertEqual(json.loads(self.path.read_text())["last_id"], chat)
+
+    def test_question_heading_distinguishes_its_id_from_context(self):
+        for heading in ("Owner question:", "**Director question:**", "\n **Owner question: ", "***Director question:***"):
+            body = heading + " Continue? See Q72."
+            self.assertIsNone(counter.heading_id(body))
+            numbered = counter.number_heading(body, "Q73")
+            self.assertEqual(counter.heading_id(numbered), "Q73")
+            self.assertEqual(counter.number_heading(numbered, "Q74"), numbered)
+        self.assertIsNone(counter.heading_id("A report mentioning Owner question: Q72"))
+        for quarter in range(1, 5):
+            for context in (" budget: approve the spend?", ": approve the budget?", "-2026 hiring plan?"):
+                body = f"Owner question: Q{quarter}" + context
+                self.assertIsNone(counter.heading_id(body))
+                self.assertEqual(counter.heading_id(counter.number_heading(body, "Q73")), "Q73")
+        for separator in (".", " —"):
+            self.assertEqual(counter.heading_id("Owner question: Q3" + separator), "Q3")
+        self.assertEqual(counter.heading_id("Owner question: Q73 Continue?"), "Q73")
+        self.assertEqual(counter.number_heading("Owner question: Q73 Continue?", "Q74"), "Owner question: Q73 Continue?")
+
     def test_missing_and_corrupt_state_never_reset_the_counter(self):
         with self.assertRaises(ValueError):
             counter.update(self.path)

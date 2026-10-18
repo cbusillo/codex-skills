@@ -14,6 +14,9 @@ Use `scripts/gh-pr.py`, `scripts/gh-issue`, and `scripts/gh-comment` for PR and
 transactional issue workflows. Do not route broad planning, Project field, or
 relationship work through the execution helper surface.
 
+For Owner/Director question numbering and recovery, follow the shared
+[question guidance](../../references/talking-with-the-director.md#decisions-holds-and-work-state).
+
 ## Helper Invocation
 
 Choose the interpreter from the helper's extension and shebang before running

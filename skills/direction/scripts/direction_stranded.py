@@ -293,7 +293,8 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
     deliveries = {row["url"]: row for row in (delivery_view or {}).get("questions", [])}
     if delivery_view is not None and delivery_view.get("complete") is not True:
         gaps.append({"source": "question_delivery", "reason": "queue_view_incomplete",
-                     **{k: delivery_view.get(k, []) for k in ("missing_sources", "untrusted_sources", "untrusted_records")}})
+                     **{k: delivery_view.get(k, []) for k in
+                        ("missing_sources", "untrusted_sources", "untrusted_records", "unnumbered_sources")}})
 
     def add(kind, record, source, since, actor, detail, *, evidence=None, immediate=False):
         since = since if isinstance(since, dt.datetime) else stamp(since)
@@ -848,6 +849,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 "questions": [{**row, "status": "unread_source"} if row["url"] in unread_registered else row
                               for row in delivery_view.get("questions", [])]}
             if (not delivery_view["missing_sources"] and not delivery_view.get("untrusted_sources")
+                    and not delivery_view.get("unnumbered_sources")
                     and not delivery_view.get("untrusted_records") and unread_registered):
                 # The separate unread-source gap remains authoritative; these
                 # records are unexamined, not evidence that a source was deleted.

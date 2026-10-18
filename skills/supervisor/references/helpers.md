@@ -366,8 +366,9 @@ The independent daily stranded-work sweep owns that fleet-wide backstop.
 
 Registration accepts exact original question URLs so an old discussion's other
 questions are never enqueued incidentally. Each source comment URL is the
-registration identity; `question_id` preserves
-its existing heading's Q ID from the shared counter, if present. Registrations
+registration identity. For automatic numbering and unnumbered-source repair,
+follow [question numbering](../../references/talking-with-the-director.md#decisions-holds-and-work-state).
+Registrations
 store references, not a copy of the question. `director-question:delivery`
 first-line JSON records contain `version: 1`, `event: registered|delivered` and
 `question_url`; `delivered` also carries `delivery_url`. Only the Director and
