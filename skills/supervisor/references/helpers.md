@@ -1377,23 +1377,26 @@ The helper exports the account's `env` ahead of the command, including an agent
 started after `cd`. A command that sets or unsets account variables refuses, including through
 common shell wrappers. Keep brief text in `--brief-file`, separate from the
 shell settings in `--command-file`.
-A temporary write probe checks receipt storage before any tab is created; it
-is removed and never counted as a launch. A probe failure names the error type
-and asks for write access to the reader's storage root. An EPERM refusal adds
-the likely cause, macOS app-data protection: a process with no app behind it,
-such as a worker under the launchd-started tmux server, cannot reach the App
-Group store, and no wider grant is the fix. EPERM can also come from a file
-flag such as `uchg` on the storage root, so the message keeps the write-access
-check. Launches and model reviews of record for those workers run from the
-Supervisor's terminal session until Context Panel writes receipts for such
-callers ([context-panel#873](https://github.com/cbusillo/context-panel/issues/873)).
+Receipts for the reader's App Group default go through the snapshot
+command's executable, Context Panel's `--record-launch` mode: one receipt on
+stdin, and the app writes it. macOS refuses that store to a process with no app
+behind it, such as a worker under the launchd-started tmux server, and the app
+reaches it from any process with no new grant
+([#2069](https://github.com/cbusillo/codex-skills/issues/2069)). Before any tab
+is created the launcher checks that executable is installed. Exit 64 (invalid
+receipt), exit 1 (storage failure), a timeout or an unnamed file refuses the
+launch with Context Panel's reason; nothing is launched without a confirmed
+receipt. An explicit `--storage-root` is written directly, because the app
+takes no root override: a temporary write probe checks it before any tab is
+created, is removed and is never counted. A probe failure names the error type
+and asks for write access; EPERM there also names macOS app-data protection
+and the app route. The private GUI receipt below is always written directly.
 Each receipt is written
 atomically immediately before the launch command is
 submitted, after its tab has a session. A failed or uncertain submit retains its
-receipt; inspect the tab before retrying. Receipts use the snapshot command's
-`--storage-root`, or the reader's documented App Group default. The launcher
-prunes only its own day-old files (identified by the `supervisor-` filename
-suffix). A batch failure reports the completed launch identities and the failed tab,
+receipt; inspect the tab before retrying. Direct writes prune only this
+launcher's day-old files (identified by the `supervisor-` filename suffix);
+`--record-launch` prunes the same files itself. A batch failure reports the completed launch identities and the failed tab,
 including whether its receipt was written and whether submission was attempted.
 List and read these tabs before retrying, rather than replaying the whole batch.
 
@@ -2223,8 +2226,7 @@ restart boundary; do not interrupt another session to make cache maintenance run
 
 ## Pending reviews of record
 
-Read this when workers ask the Supervisor to run a review from its authorized
-terminal, including the receipt-store route in [#2069](https://github.com/cbusillo/codex-skills/issues/2069).
+Read this when workers ask the Supervisor to run a review from its terminal.
 Use `pending_reviews.py` there to discover and dispatch requests across the
 explicit Supervisor-owned repositories in the run's ledger. It does not alter
 the ledger, transcripts, launch files or account configuration. Run it once
@@ -2243,16 +2245,14 @@ results.
 
 ### Dispatcher timer
 
-While [#2069](https://github.com/cbusillo/codex-skills/issues/2069) keeps workers
-from running their own reviews, use the Supervisor harness's built-in recurring
-timer every three minutes. Each tick launches the command above with `--apply`
-as a background job of the Supervisor's own terminal session that can write
-Context Panel launch receipts, then reads its JSON when the job finishes.
+While workers post Supervisor review requests, use the Supervisor harness's
+built-in recurring timer every three minutes. Each tick launches the command
+above with `--apply` as a background job of the Supervisor's own terminal
+session, then reads its JSON when the job finishes.
 This leaves the Supervisor free to handle notices and checks while reviews run.
 Keep the same ledger, checkout mappings
 and durable evidence directory on every tick. This is the maintained route;
-no private fallback dispatcher is needed. Do not put the timer under the
-launchd-started worker tmux server, which has the same receipt-store refusal.
+no private fallback dispatcher is needed.
 
 Reviews run serially and may outlast a tick. A held sweep lock is expected:
 skip that tick and let the active pass finish. Reconcile `results[].status`
@@ -2264,10 +2264,7 @@ once-per-report-version routing and retained notification history.
 
 Record the timer's identity, command, state paths and routed-notification
 history in the Supervisor handoff
-and recreate it on takeover. Stop it when this run ends, or once the installed
-receipt writer from [context-panel#874](https://github.com/cbusillo/context-panel/pull/874)
-and the #2069 integration let these workers run their own reviews. A version
-label or source merge alone does not prove that; #2069 owns the worker proof.
+and recreate it on takeover. Stop it when this run ends.
 
 ### Dispatcher state and recovery
 
@@ -2520,7 +2517,7 @@ acknowledging a request at A never satisfies a new request at B.
 Shared paths keep their existing authority: the account reader's policy,
 capacity snapshot and launch-receipt store, the model review policy and the
 GitHub transport's private caches. A refusal there still stops the affected
-review; this helper cannot make workers' receipt-store problem disappear.
+review.
 Its own writable state lives only in the caller's private evidence directory.
 Apply requires that directory to have no group/other permissions (0700); a new
 directory is created privately. If an existing directory is too open, restrict

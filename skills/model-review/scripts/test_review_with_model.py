@@ -103,6 +103,23 @@ def completed(report: str) -> str:
     return json.dumps({"status": "completed", "review": report})
 
 
+# Context Panel's agent modes: the snapshot, and --record-launch reading one receipt from stdin.
+FAKE_CONTEXT_PANEL = f"""#!{sys.executable}
+import json, os, sys
+if sys.argv[1:] == ["--account-snapshot"]:
+    sys.stdout.write(open(os.environ["FAKE_SNAPSHOT_FILE"]).read())
+    sys.exit(0)
+name = "20261018T184448Z-supervisor-" + "0" * 32 + ".json"
+with open(os.environ["FAKE_RECORD_FILE"], "w") as record:
+    json.dump({{"argv": sys.argv[1:], "stdin": sys.stdin.read(), "name": name}}, record)
+code = int(os.environ.get("FAKE_RECORD_EXIT", "0"))
+if code:
+    sys.stderr.write(os.environ.get("FAKE_RECORD_STDERR", "") + "\\n")
+    sys.exit(code)
+print(name)
+"""
+
+
 class ReviewWithModelTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -436,6 +453,37 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"is_error": True, "result": "limit"}))
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertTrue(Path(result["launch_receipt"]).is_file())
+
+    def test_app_group_review_receipt_goes_through_the_readers_record_launch(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        app = self.bin / "Context Panel"
+        app.write_text(FAKE_CONTEXT_PANEL)
+        app.chmod(0o700)
+        config = self.home / ".code/skill-data/supervisor.toml"
+        config.write_text(config.read_text().replace(
+            json.dumps([str(self.reader), "--storage-root", str(self.storage)]),
+            json.dumps([str(app), "--account-snapshot"])))
+        capture, received = self.root / "child-env", self.root / "received.json"
+        for exit_code, reason in ((64, "receipt is not current"), (1, "storage unavailable")):
+            with self.subTest(exit_code=exit_code):
+                code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture),
+                                           FAKE_RECORD_FILE=str(received), FAKE_RECORD_EXIT=str(exit_code),
+                                           FAKE_RECORD_STDERR=reason)
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertIn(f"exit {exit_code}: {reason}", result["error"])
+                self.assertNotIn("launch_receipt", result)
+                self.assertFalse(capture.exists())
+        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture), FAKE_RECORD_FILE=str(received),
+                                   FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+        self.assertEqual((code, result["ok"]), (0, True))
+        self.assertTrue(capture.exists())
+        record = json.loads(received.read_text())
+        self.assertEqual(record["argv"], ["--record-launch", "--launcher", "supervisor"])
+        receipt = json.loads(record["stdin"])
+        self.assertEqual(set(receipt), {"schemaVersion", "provider", "accountID", "launchedAt"})
+        self.assertEqual((receipt["provider"], receipt["accountID"]), ("anthropic", result["account"]["account_id"]))
+        self.assertEqual(Path(result["launch_receipt"]).name, record["name"])
+        self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_each_provider_returns_its_review_and_the_model_that_ran(self) -> None:
         self.install("codex", FAKE_CODEX)

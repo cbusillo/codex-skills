@@ -98,15 +98,11 @@ budget, and put both results in the PR's review note.
    overrides are removed by name so they cannot bypass the selected home's login;
    no credentials or logins are read or changed by the helper. Missing config,
    unavailable choices or receipt-storage failures stop the review before launch.
-   JSON reports the account name and opaque ID plus the count-only launch receipt;
-   receipts use Context Panel's existing Launch Receipts store. macOS refuses that
-   store to a session under the Supervisor's launchd-started tmux server, so the
-   review stops with an EPERM refusal there. The Supervisor then runs the review
-   from its terminal session against the task worktree, and the authoring session
-   weighs the findings ([#2069](https://github.com/cbusillo/codex-skills/issues/2069)).
-   For this route, post the [Supervisor review request](../supervisor/references/helpers.md#worker-review-request)
-   on the PR before waiting; read that section for the canonical format and
-   author follow-through.
+   JSON reports the account name and opaque ID plus the count-only launch receipt.
+   The receipt goes through the installed Context Panel's `--record-launch`, so a
+   session macOS refuses the App Group store, such as a worker under the
+   Supervisor's launchd-started tmux server, runs its own review, with or without
+   a PR ([#2069](https://github.com/cbusillo/codex-skills/issues/2069)).
    No fixed review-home
    export is needed in a Supervisor launch file. Google uses the account reader's
    single existing agy login binding, without an account override.
