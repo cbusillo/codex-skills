@@ -1254,26 +1254,35 @@ The child's own waits and blockers and the retained PRs' holds still apply.
 Without `--handoff-comment`, resume stays on the claimed record.
 Both same-record and child successors also read the source issue's current
 native children and native child history from its timeline. A detached or
-reparented child remains visible through that history. Another child's claim
-for that same source or handoff refuses until
-an exact authored release or verified native session completion accounts for
-it; positive live-session evidence still refuses. Unrelated child work does
-not block the source. Cross-record inference applies only to ordinary
+reparented child remains visible through that history. Once a child records
+that source or handoff, its full ownership is checked, including later plain
+resumes that omit handoff metadata or change branch. Its claims refuse until
+exact authored releases or verified native session completion account for
+them; positive live-session evidence still refuses. A child with no record of
+that source remains unrelated and does not block it. Plain resume on a child
+also rechecks the original source family recorded in its claim history, so it
+cannot race a new holder on the parent or another child. Malformed lineage
+refuses with `claim_resume_lineage_invalid`. These checks read ownership only;
+they do not transfer authority or change the original parent's holds.
+Cross-record inference applies only to ordinary
 successors. Conflict-only refresh continues to use the source's canonical issue.
 The resume-source, handoff-author and native-parent guards retain their human
 explanations and expose stable `claim_resume_*`, `claim_handoff_*` or
 `claim_native_parent_*` codes. Native blocker and malformed child-history
 refusals also have specific codes.
 
-An unreadable current or historical child (including a 403 or ambiguous 404)
-blocks inheritance: absence of access is not proof that its source claim ended.
-Restore visibility through the record owner's existing process before retrying
-inheritance; do not grant access or skip that record to make the claim pass.
-If visibility cannot be restored, independent work can continue on a separately
+Unreadable current or historical children (including a 403 or ambiguous 404),
+and malformed child history (`claim_child_history_invalid`), block both
+parent-to-child handoffs and plain same-record `--resume-from` on the source.
+Missing evidence is not proof that a child's source ownership ended. Restore
+visibility or valid native history through the existing administrative process
+before retrying resume; do not grant access or skip the record to pass the gate.
+If the evidence cannot be restored, independent work can continue on a separately
 authorized issue and fresh branch, using an ordinary claim without
 `--resume-from` or `--handoff-comment` and without the retained source artifacts.
 That route still enforces its own ownership, waits and blockers; it does not
-release or transfer the unreadable child's source.
+release or transfer the child's source, or provide a way to retain the blocked
+same-record branch.
 
 For an explicitly authorized **conflict-only refresh** of a finished session's
 PR, claim its **canonical open planning issue**, even when the brief names only
