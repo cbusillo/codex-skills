@@ -79,12 +79,14 @@ class DaemonTests(unittest.TestCase):
     def test_open_admission_survives_unrelated_inventory_failure(self):
         for method in ("thread/loaded/list", "thread/read"):
             with self.subTest(method=method):
-                self.inspect(fail=method)
+                calls = self.inspect(fail=method)
+                self.assertFalse(any(c["method"] in {"thread/loaded/list", "thread/read"} for c in calls))
 
     def test_open_admission_does_not_wait_for_slow_loaded_threads(self):
         pages = {None: {"data": ["first", "second"], "nextCursor": None}}
-        self.inspect(pages=pages, states={"first": "active", "second": "idle"},
-                     inventory_latency=4)
+        calls = self.inspect(pages=pages, states={"first": "active", "second": "idle"},
+                             inventory_latency=4)
+        self.assertFalse(any(c["method"] in {"thread/loaded/list", "thread/read"} for c in calls))
 
     def test_draining_daemon_with_detached_active_worker_refuses(self):
         with self.assertRaises(iterm_tab.DaemonRefusal) as raised:
@@ -144,8 +146,9 @@ class DaemonTests(unittest.TestCase):
         with (patch.object(client, "unix_connect") as connect,
               patch.object(iterm_tab.subprocess, "run") as run):
             connect.return_value.__enter__.return_value = ws
-            with self.assertRaisesRegex(ValueError, "thread/resume.*timed out"):
+            with self.assertRaisesRegex(ValueError, "thread/resume") as raised:
                 iterm_tab.inspect_codex_daemon(Path("/fixture/account"))
+            self.assertIsInstance(raised.exception.__cause__, TimeoutError)
             run.assert_not_called()
 
     def test_socket_timeout_refuses_without_lifecycle_mutation(self):
@@ -160,8 +163,10 @@ class DaemonTests(unittest.TestCase):
         with (patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run,
               patch.object(iterm_tab.socket, "socket"),
               patch.object(iterm_tab, "inspect_codex_daemon", side_effect=TimeoutError)):
-            with self.assertRaisesRegex(ValueError, "WebSocket transport timed out; admission unknown"):
+            with self.assertRaises(ValueError) as raised:
                 iterm_tab.check_codex_daemon(choice)
+            self.assertIsInstance(raised.exception.__cause__, TimeoutError)
+            self.assertNotIn(type(raised.exception.__cause__).__name__, str(raised.exception))
             self.assertEqual([c.args[0][-1] for c in run.call_args_list], ["start"])
 
     def test_draining_preflight_never_restarts_and_refuses_before_receipt(self):
