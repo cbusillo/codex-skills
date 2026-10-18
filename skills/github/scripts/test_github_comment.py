@@ -1168,7 +1168,8 @@ def test_question_numbering_follows_confirmed_write_and_repairs_same_assignment(
 
 
 def test_numbered_questions_are_unchanged_without_counter_access() -> None:
-    for markdown in ("Owner question: Q12. Continue?", "**Director question:** Q13. Continue?"):
+    for markdown in ("Owner question: Q12. Continue?", "**Director question:** Q13. Continue?",
+                     "***Owner question:*** Q14. Continue?"):
         def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
             if endpoint == "/user":
                 return success({"login": "fixture-automation"})

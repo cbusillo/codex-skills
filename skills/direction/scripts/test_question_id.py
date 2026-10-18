@@ -106,7 +106,7 @@ class QuestionCounterTests(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())["last_id"], chat)
 
     def test_question_heading_distinguishes_its_id_from_context(self):
-        for heading in ("Owner question:", "**Director question:**", "\n **Owner question: "):
+        for heading in ("Owner question:", "**Director question:**", "\n **Owner question: ", "***Director question:***"):
             body = heading + " Continue? See Q72."
             self.assertIsNone(counter.heading_id(body))
             numbered = counter.number_heading(body, "Q73")

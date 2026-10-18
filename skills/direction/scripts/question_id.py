@@ -20,7 +20,7 @@ from typing import Any
 
 QUESTION = re.compile(r"\bQ([1-9][0-9]*)\b")
 ITEM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
-QUESTION_HEADING = re.compile(r"^\s*\*{0,2}(?:Owner|Director) question:[ \t]*\*{0,2}[ \t]*")
+QUESTION_HEADING = re.compile(r"^\s*\**(?:Owner|Director) question:[ \t*]*")
 
 
 def heading_id(body: str) -> str | None:
