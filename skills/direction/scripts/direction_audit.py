@@ -724,6 +724,23 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     def implements_issue(source_pull: dict[str, Any], source_repo: str) -> bool:
         return (repo.casefold(), issue["number"]) in issue_associations(source_pull, source_repo)
 
+    def delivers_issue(source_pull: dict[str, Any], source_repo: str) -> bool:
+        """A keyword line, or a prose mention in a PR opened after this issue existed.
+
+        A PR opened before the issue is usually its origin: its body may name
+        the follow-up it spawned, which is not delivery.
+        """
+        if implements_issue(source_pull, source_repo):
+            return True
+        mentioned = any(
+            ref.group(2) != "pull"
+            and ((ref.group(1) or ref.group(4) or source_repo).casefold(), int(ref.group(3) or ref.group(5)))
+            == (repo.casefold(), issue["number"])
+            for ref in WAIT_REFERENCE.finditer(str(source_pull.get("body") or ""))
+        )
+        opened, created = _parse_time(source_pull.get("created_at")), _parse_time(issue.get("created_at"))
+        return mentioned and not (opened and created and opened.tzinfo and created.tzinfo and opened < created)
+
     agent_wait = agent_delivery_wait(status, repo, issue["number"])
     if agent_wait and ";" in agent_wait:
         for (target_repo, number) in references(agent_wait):
@@ -738,7 +755,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     # historical PRs elsewhere in status cannot cancel or authorize selection.
     refs = references(next_action[1]) if next_action else {}
     # A PR named only elsewhere in status (often the PR a follow-up came from)
-    # counts only when it implements this issue.
+    # counts only when it delivers this issue.
     status_only = not refs
     if status_only:
         refs = references(status)
@@ -794,7 +811,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     for (target_repo, number), pull in pulls.items():
         if not isinstance(pull, dict) or "merged_at" not in pull:
             raise AuditError("unreadable linked pull")
-        if status_only and not implements_issue(pull, target_repo):
+        if status_only and not delivers_issue(pull, target_repo):
             continue
         merged = _parse_time(pull.get("merged_at"))
         if merged is None:

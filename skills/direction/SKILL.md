@@ -439,10 +439,12 @@ acceptance or live-test waits do not establish completion. These are review
 prompts, separate from audit findings and exit status: read the full issue and
 current evidence before correcting a status through `github-plan`. Nothing is
 closed, relabeled, or released automatically. Active records whose Next action
-names a PR, or whose Current Status elsewhere names a PR that references the
-issue, carry `merged_active_pr` evidence and `completion_proven: false` when
-that PR merged into the default branch after their GitHub `updated_at`. A
-follow-up that only mentions the PR it came from is not reported. Agent routing,
+names a PR, or whose Current Status elsewhere names a PR that delivers the issue,
+carry `merged_active_pr` evidence and `completion_proven: false` when
+that PR merged into the default branch after their GitHub `updated_at`. Delivery means a
+`Refs`/`Fixes`/`Closes`/`Resolves`/`Implements` line, or a mention in a PR
+opened after the issue. A follow-up that only mentions the PR it came from is
+not reported, even when that PR's body names the follow-up. Agent routing,
 landing and closeout waits are also reported after the named implementation PR
 merged, irrespective of later status edits. A closeout handoff naming its PR only
 in comments uses a bounded complete discussion read and the PR's own issue

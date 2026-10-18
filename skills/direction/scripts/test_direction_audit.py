@@ -2526,25 +2526,31 @@ def test_stale_wait_report_records_bare_reference_to_another_repository_as_unres
 
 
 def test_active_follow_up_naming_its_origin_pr_is_not_a_merged_status() -> None:
-    # context-panel#864 was filed from PR #863's review minutes before #863 merged.
+    # context-panel#864 was filed from PR #863's review minutes before #863 merged,
+    # and #863's body named it as the follow-up.
     module = load()
     origin = "## Current Status\nState: Active; not started.\nNext action: Add fixtures for the four cases before changing copy.\nWaiting for: None.\nLast verified: 2026-10-16, from PR #863 review.\n"
-    row = {**issue(864, "Follow-up from a PR review", labels=("plan", "plan:active"), body=origin),
-           "updated_at": "2026-10-16T15:22:41Z"}
-    def fetch_with(body: str) -> Any:
+    row = {**issue(864, "Follow-up from a PR review", labels=("plan", "plan:active"), body=origin,
+                   created="2026-10-16T15:22:41Z"), "updated_at": "2026-10-16T15:22:41Z"}
+    def fetch_with(body: str, opened: str = "2026-10-16T15:20:04Z") -> Any:
         def fetch(args: list[str]) -> Any:
             if args[1] == "repos/owner/catalog/issues/863":
                 return {"state": "closed", "pull_request": {}}
             if args[1] == "repos/owner/catalog/pulls/863":
-                return {"merged_at": "2026-10-16T15:40:00Z", "base": {"ref": "main"}, "body": body}
+                return {"merged_at": "2026-10-16T16:01:43Z", "created_at": opened, "base": {"ref": "main"}, "body": body}
             raise AssertionError(args[1])
         return current_repository_fetch(fetch)
-    report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with("Refs #850"))
-    assert report["complete"] and not report["items"]
-    # The same mention still counts when the PR implements the issue,
+    for body in ("Refs #850", "- Follow-up implementation is in #864, which this session has not started."):
+        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with(body))
+        assert report["complete"] and not report["items"], body
+    # A keyword line counts whenever the PR was opened,
     report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with("Refs #864"))
     assert [item["number"] for item in report["items"]] == [864]
-    # or when the Next action itself names the PR.
+    # and a prose mention counts from a PR opened after the issue.
+    for body in ("This change implements #864.", "## Related issue\n#864"):
+        report = module.stale_wait_report([row], "owner/catalog", fetch=fetch_with(body, opened="2026-10-16T15:30:00Z"))
+        assert [item["number"] for item in report["items"]] == [864], body
+    # The Next action naming the PR still counts.
     named = {**row, "body": origin.replace("Add fixtures", "After PR #863, add fixtures")}
     report = module.stale_wait_report([named], "owner/catalog", fetch=fetch_with("Refs #850"))
     assert [item["number"] for item in report["items"]] == [864]
