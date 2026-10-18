@@ -42,6 +42,35 @@ def self_signals_reach_sender():
         yield
 
 
+@contextlib.contextmanager
+def first_wakeup_signal_lost():
+    """Pin the lost wakeup that kept #2241 intermittent.
+
+    A signal that lands after the main thread's last signal check but before
+    its wait blocks is recorded, yet never interrupts that wait. Dropping the
+    first targeted signal makes every run take that route.
+    """
+    real_kill = signal.pthread_kill
+    dropped = []
+    def pthread_kill(thread_id, sig):
+        if not dropped:
+            dropped.append(sig)
+        else:
+            real_kill(thread_id, sig)
+    with patch.object(signal, "pthread_kill", pthread_kill):
+        yield
+
+
+FIXTURE_INTERRUPTED = threading.Event()
+
+
+def interrupt_once(_signum, _frame):
+    # A repeated stimulus must not raise a second KeyboardInterrupt into cleanup.
+    if not FIXTURE_INTERRUPTED.is_set():
+        FIXTURE_INTERRUPTED.set()
+        raise KeyboardInterrupt
+
+
 def cancellation_fixture(mode: str) -> None:
     """Exercise the real CLI envelope and reader/retry path, without GitHub."""
     from test_gh_plan_next import load_module
@@ -120,7 +149,11 @@ def cancellation_fixture(mode: str) -> None:
                 # A process-directed signal may reach this sender or the progress
                 # thread instead. Python then defers KeyboardInterrupt until the
                 # main thread's 60-second wait ends. Interrupt its syscall too.
+                # One that lands just before the wait blocks never interrupts it
+                # (#2241), so repeat until the main thread has handled one.
                 signal.pthread_kill(main_thread, signal.SIGINT)
+                while not FIXTURE_INTERRUPTED.wait(0.05):
+                    signal.pthread_kill(main_thread, signal.SIGINT)
             interrupter = threading.Thread(target=interrupt, daemon=True)
             interrupters.append(interrupter)
             interrupter.start()
@@ -418,9 +451,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--cancellation-fixture":
-        # A shell's background job inherits SIGINT ignored; the stimulus needs Python's handler.
-        signal.signal(signal.SIGINT, signal.default_int_handler)
-        with self_signals_reach_sender():
+        # A shell's background job inherits SIGINT ignored; the stimulus needs a Python handler.
+        signal.signal(signal.SIGINT, interrupt_once)
+        with self_signals_reach_sender(), first_wakeup_signal_lost():
             cancellation_fixture(sys.argv[2])
     else:
         main()
