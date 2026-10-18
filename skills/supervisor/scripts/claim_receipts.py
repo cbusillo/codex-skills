@@ -175,6 +175,40 @@ def shell_code(text, *, bodies=None):
     return "".join(code)
 
 
+def unparsed_command_text(value):
+    """Keep command expressions and referenced declarations, excluding JS prose.
+
+    This is conservative command discovery, not evaluation or completion proof.
+    Parsed literal tool arguments have already been removed by the caller.
+    """
+    atoms = list(re.finditer(r'''//[^\n]*|/\*[\s\S]*?\*/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`''', value))
+    code = list(value)
+    literals = []
+    for atom in atoms:
+        if not atom[0].startswith(("//", "/*")):
+            literals.append(atom)
+        code[atom.start():atom.end()] = ["\n" if c == "\n" else " " for c in atom[0]]
+    code = "".join(code)
+    def region(start, delimiter):
+        start += len(re.match(r"\s*", value[start:])[0])
+        end = re.search(delimiter, code[start:])
+        return start, start + end.start() if end else len(code)
+    declarations = {m[1]: region(m.end(), r"[;\n]")
+                    for m in re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=", code)}
+    pending = [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
+    pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)]
+    seen, pieces = set(), []
+    while pending:
+        start, end = pending.pop()
+        if (start, end) in seen:
+            continue
+        seen.add((start, end))
+        fragment = code[start:end] + " " + " ".join(m[0] for m in literals if start <= m.start() < end)
+        pieces.append(fragment)
+        pending.extend(declarations[word] for word in re.findall(r"\b\w+\b", fragment) if word in declarations)
+    return " ".join(pieces)
+
+
 def opaque_ownership(name, value):
     """Unparsed potentially writing code is uncertainty, never proof of no write."""
     value = arguments(value)
@@ -189,11 +223,10 @@ def opaque_ownership(name, value):
             if executable_wrapper(argv) and (OWNERSHIP_TEXT.search(" ".join(argv))
                                             or any(OWNERSHIP_TEXT.search(body) for body in bodies)):
                 return True
-    if name in {"exec", "functions.exec"} and isinstance(value, str) and "tools.exec_command" in value:
-        unparsed = SHELL_FIELD.sub("", value)
-        if re.search(r"\btools\.exec_command\s*\(", unparsed):
-            return bool(re.search(r"gh-plan\.py", unparsed) and re.search(r"\bclaim\b", unparsed)
-                        or re.search(r"gh-pr\.py|\bgh\s+pr\b", unparsed) and re.search(r"\bcreate\b", unparsed))
+    if name in {"exec", "functions.exec"} and isinstance(value, str):
+        unparsed = unparsed_command_text(SHELL_FIELD.sub("", value))
+        return bool(re.search(r"gh-plan\.py", unparsed) and re.search(r"\bclaim\b", unparsed)
+                    or re.search(r"gh-pr\.py|\bgh\s+pr\b", unparsed) and re.search(r"\bcreate\b", unparsed))
     return False
 
 
@@ -658,6 +691,8 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                         opaque.add(source)
                 if name in {"exec", "functions.exec"}:
                     serial = composed_calls(value)
+                    if not serial:
+                        opaque.add(source)  # Hidden/computed calls cannot borrow printed read results.
                     if len(serial) > 1 or any(stdout for _, _, stdout in serial):
                         serial_calls[source] = serial
                     required[source] = (sum(not stdout for _, _, stdout in serial)

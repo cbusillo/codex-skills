@@ -95,6 +95,39 @@ class ReceiptTests(unittest.TestCase):
             rows[2] = output({"exit_code": 0, "output": ""}, "codex", "tool-0")
             self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
 
+    def test_hidden_writer_cannot_borrow_saved_results_from_a_read(self):
+        writer = 'await tools.exec_command({cmd:"uv run gh-plan.py --repo example/a claim 1"});'
+        for read in ('text(await tools.exec_command({cmd:"cat saved-exec.json"}));',
+                     'text((await tools.exec_command({cmd:"cat saved-exec.json"})).output);'):
+            with self.subTest(read=read):
+                rows = history("codex", {})
+                rows[1]["payload"].update(name="functions.exec", arguments=writer + read)
+                saved = {"exit_code": 0, "output": json.dumps({"exit_code": 0, "output": ""})}
+                rows[2] = output(saved, "codex", "tool-0")
+                self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+
+    def test_aliased_and_bracketed_exec_ownership_stays_pending(self):
+        command = '"uv run gh-plan.py --repo example/a claim 1"'
+        for cell in ('const run=tools.exec_command;text(await run({cmd:' + command + '}));',
+                     'text(await tools["exec_command"]({cmd:' + command + '}));',
+                     'const run=tools.exec_command;text(await run({cmd:\n' + command + '}));'):
+            with self.subTest(cell=cell):
+                rows = history("codex", {})
+                rows[1]["payload"].update(name="functions.exec", arguments=cell)
+                rows[2] = output({"session_id": 123, "output": ""}, "codex", "tool-0")
+                self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+
+    def test_computed_reads_cannot_borrow_ownership_from_noncommand_js(self):
+        for helper, note in (('gh-plan.py show', 'text("next: claim");'),
+                             ('gh-plan.py show', 'const note="claim";text(note);'),
+                             ('gh pr view', '// create the next report\n'),
+                             ('gh-pr.py view', '/* create later */')):
+            with self.subTest(helper=helper, note=note):
+                rows = history("codex", {})
+                rows[1]["payload"].update(name="functions.exec", arguments=
+                    'for(const n of [1,2]) text(await tools.exec_command({cmd:`uv run ' + helper + ' ${n}`}));' + note)
+                self.assertFalse(receipts.ownership_state(rows, "codex")["indices"])
+
     def test_ownership_help_is_read_only_on_both_harnesses(self):
         for harness in ("codex", "claude"):
             for command in ('uv run gh-plan.py claim --help', 'uv run gh-pr.py create --help', 'gh pr create --help'):
