@@ -85,7 +85,10 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
             # known native transcript stable, and process absence checked below.
             after = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
             verified = transcript_snapshot(session, thread["path"])
-            if (before == verified and all(s["safe_verdict"] for s in before.values()) and after.get("id") == session
+            # This proves actual exit for recovery of an unreleased claim,
+            # not permission to exit. Requiring pre-exit claim release here
+            # would make the ended-ownership recovery circular.
+            if (before == verified and all(s.get("declared_safe_verdict", s["safe_verdict"]) for s in before.values()) and after.get("id") == session
                     and after.get("status", {}).get("type") == "notLoaded"):
                 states[session] = {"state": "ended", "source": "codex_app_server",
                                    "ended_at": max(s["timestamp"] for s in before.values())}

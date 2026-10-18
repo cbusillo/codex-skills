@@ -39,6 +39,8 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.issue = {"body": "", "number": 1}
         self.pulls = []
         self.reader = Mock()
+        self.reader.expected_actor = ACTOR
+        self.reader.deadline_at = None
         self.reader.get_json.side_effect = self.get
         self.reader.paged_json.side_effect = self.paged
 
@@ -48,6 +50,8 @@ class ClaimCloseoutTests(unittest.TestCase):
         return self.issue
 
     def paged(self, path, **kwargs):
+        if path == "/installation/repositories":
+            return [{"full_name": REPO}]
         return self.pulls if path.endswith("/pulls") else self.comments
 
     def check(self):
@@ -69,6 +73,36 @@ class ClaimCloseoutTests(unittest.TestCase):
         result = self.check()
         self.assertEqual([r["claim_comment"] for r in result], [self.source["id"]])
         self.assertEqual(result[0]["retained_prs"], [])
+
+    def test_the_claim_helpers_bare_exact_recovery_release_is_accepted(self):
+        self.comments.append({**self.release, "body": "Released claim 10"})
+        self.assertEqual(self.check()[0]["claim_comment"], self.source["id"])
+
+    def recovered_release(self):
+        evidence = comment(88, f"Closed session {SESSION}\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes", at="2026-01-01T00:03:00Z")
+        evidence["issue_url"] = f"https://api.github.com/repos/{REPO}/issues/1"
+        body = helper.release.prepare_release(self.source, evidence, self.comments,
+            {"sessions": [], "worktrees": []}, actor=ACTOR, role="supervisor", releaser_session="supervisor-fixture",
+            evidence_url=f"https://github.com/{REPO}/issues/1#issuecomment-88", retained_prs=[p["html_url"] for p in self.pulls],
+            checked_prs=[p["html_url"] for p in self.pulls], related=[])
+        self.comments.append(comment(89, body, at="2026-01-01T00:04:00Z"))
+        get = self.get
+        self.reader.get_json.side_effect = lambda path, **kw: evidence if path.endswith("/issues/comments/88") else {"commit": {"committer": {"date": "2026-01-01T00:01:30Z"}}} if "/commits/" in path else get(path, **kw)
+        return evidence
+
+    def test_verified_supervisor_recovery_can_be_read_back_by_the_source(self):
+        evidence = self.recovered_release()
+        self.assertEqual(self.check()[0]["claim_comment"], self.source["id"])
+        evidence["updated_at"] = "2026-01-01T00:05:00Z"
+        with self.assertRaises(ValueError):
+            self.check()
+
+    def test_recovered_retained_pr_is_verified_and_can_get_a_fresh_authored_handoff(self):
+        self.pulls = [{**pull(), "head": {**pull()["head"], "sha": "fixture-sha"}}]
+        self.recovered_release()
+        self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
+        self.comments.append(comment(90, "Released claim 10\n" + self.pulls[0]["html_url"], at="2026-01-01T00:05:00Z"))
+        self.assertTrue(self.check()[0]["release_url"].endswith("issuecomment-90"))
 
     def test_prose_handoff_does_not_release(self):
         self.comments.append(comment(11, "Handing off to Supervisor. Safe to exit: yes"))
@@ -127,9 +161,10 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual(set(self.check()[0]["retained_prs"]), {p["html_url"] for p in self.pulls})
 
     def test_bare_dependency_issue_is_not_a_retained_pr(self):
-        self.comments.append({**self.release, "body": self.release["body"] + "\nBlocked on #99"})
-        self.pulls = [pull(99, branch="unrelated", body="Unrelated", user={"login": "other[bot]"})]
-        self.assertEqual(self.check()[0]["retained_prs"], [])
+        for mention in ("Blocked on #99", "Superseded by PR #99"):
+            self.comments = [self.source, {**self.release, "body": self.release["body"] + "\n" + mention}]
+            self.pulls = [pull(99, branch="unrelated", body="Unrelated", user={"login": "other[bot]"})]
+            self.assertEqual(self.check()[0]["retained_prs"], [])
 
     def test_native_pr_creation_exposes_an_unnamed_split_branch(self):
         self.comments.append(self.release)
@@ -183,6 +218,7 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_global_inventory_accounts_for_cross_repo_closed_issues_and_prs(self):
         entries = [("test/a", 1), ("test/b", 5), ("test/b", 6)]
+        self.reader.paged_json.side_effect = lambda *_a, **_k: [{"full_name": "test/a"}, {"full_name": "test/b"}]
         with patch.object(helper.sessions, "discover", return_value=(entries, ["test/a", "test/b"])), \
                 patch.object(helper, "check_record", side_effect=[[], ValueError("held"), []]) as check:
             result = helper.check(self.reader, "test", {"session_id": SESSION, "harness": "codex"}, ACTOR)
@@ -198,16 +234,121 @@ class ClaimCloseoutTests(unittest.TestCase):
                 if path == "/installation/repositories":
                     return [{"full_name": "test/a"}, {"full_name": "test/b"}]
                 if path.endswith("/issues"):
-                    self.assertEqual(kwargs["params"]["state"], "all")
-                    return []
+                    return [{"number": 1, "state": "closed", "body": helper.claim.marker(SOURCE)}] if kwargs["params"].get("state") == "all" else []
                 if path.endswith("/issues/comments"):
-                    repo = "/".join(path.split("/")[2:4])
-                    return [{**self.source, "issue_url": f"https://api.github.com/repos/{repo}/issues/1"}]
+                    return []  # Closed status discovery is the only route.
                 return self.comments
             self.reader.paged_json.side_effect = paged
             result = helper.check(self.reader, "test", {"session_id": SESSION, "harness": "codex", "transcript": str(transcript)}, ACTOR)
         self.assertFalse(result["claims_clear"])
         self.assertEqual(len(result["blocked"]), len(result["coverage"]["repositories"]))
+
+    def test_default_installation_prevents_vacuous_no_receipt_all_clear(self):
+        self.reader.paged_json.side_effect = lambda *_a, **_k: []
+        with self.assertRaises(ValueError):
+            helper.check(self.reader, [], {"session_id": SESSION, "harness": "codex"}, ACTOR)
+
+    def test_default_inventory_uses_its_resolved_client_actor(self):
+        client_actor = "client-fixture[bot]"
+        self.reader.expected_actor = client_actor
+        self.source["user"]["login"] = client_actor
+        self.comments.append({**self.release, "user": {"login": client_actor}})
+        def pages(path, **kw):
+            if path == "/installation/repositories": return [{"full_name": REPO}]
+            if path.endswith("/issues/comments"):
+                return [{**c, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"} for c in self.comments]
+            if path.endswith("/issues") or path.endswith("/pulls"): return []
+            return self.comments
+        self.reader.paged_json.side_effect = pages
+        entry = {"harness": "codex", "session_id": SESSION, "_transcript_records": [
+            {"type": "session_meta", "timestamp": SOURCE["claimed_at"], "payload": {"id": SESSION}}]}
+        report = helper.check(self.reader, "test", entry, ACTOR)
+        self.assertTrue(report["claims_clear"])
+        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
+
+    def test_missing_receipts_still_discover_a_held_default_installation_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "native.jsonl"
+            path.write_text(json.dumps({"type": "session_meta", "timestamp": SOURCE["claimed_at"], "payload": {"id": SESSION}}) + "\n")
+            def pages(endpoint, **kw):
+                if endpoint == "/installation/repositories": return [{"full_name": REPO}]
+                if endpoint.endswith("/issues/comments"):
+                    return [{**self.source, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"}]
+                return [] if endpoint.endswith("/issues") else self.comments
+            self.reader.paged_json.side_effect = pages
+            report = helper.check(self.reader, [], {"harness": "codex", "session_id": SESSION, "transcript": str(path)}, ACTOR)
+            self.assertFalse(report["claims_clear"])
+
+    def test_uncertain_renewal_reads_its_original_record_outside_the_time_window(self):
+        from test_claim_receipts import history
+        value = {"operation": helper.claim_receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "unknown",
+                 "claim": {"session": SESSION}, "issue": {"repo": REPO, "number": 1}}
+        records = history("codex", value)
+        for record in records: record["timestamp"] = "2026-01-02T00:00:00Z"
+        self.comments.append(self.release)
+        entry = {"session_id": SESSION, "harness": "codex", "_transcript_records": records}
+        original_pages = self.paged
+        self.reader.paged_json.side_effect = lambda path, **kw: [] if path.endswith("/issues/comments") or path.endswith("/issues") else original_pages(path, **kw)
+        report = helper.check(self.reader, [], entry, ACTOR)
+        self.assertTrue(report["claims_clear"], report)
+        self.assertTrue(report["receipt_reconciliation"])
+        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
+
+    def test_a_second_installation_and_its_client_actor_are_checked(self):
+        from test_claim_receipts import claim as native_claim, history, SESSION as native_session
+        foreign, client_actor = "second/b", "client-fixture[bot]"
+        native = [native_claim(REPO), native_claim(foreign, 2, 20)]
+        entry = {"harness": "codex", "session_id": native_session, "_transcript_records": history("codex", *native)}
+        for record in entry["_transcript_records"]: record["timestamp"] = SOURCE["claimed_at"]
+        def rows(repo, identifier, actor):
+            source = comment(identifier, helper.claim.marker({**SOURCE, "session": native_session}), actor)
+            return [source, comment(identifier + 1, f"Released claim {identifier}", actor, at="2026-01-01T00:02:00Z")]
+        local_comments, client_comments = rows(REPO, 10, ACTOR), rows(foreign, 20, client_actor)
+        client = Mock(expected_actor=client_actor)
+        client.get_json.return_value = {"body": "", "number": 2}
+        def pages(repo, comments, endpoint, **kw):
+            if endpoint == "/installation/repositories":
+                if repo == foreign: raise AssertionError("foreign installation enumeration must not use the default token")
+                return [{"full_name": REPO}]
+            if endpoint.endswith("/issues/comments"):
+                return [{**c, "issue_url": f"https://api.github.com/repos/{repo}/issues/{2 if repo == foreign else 1}"} for c in comments]
+            if endpoint.endswith("/issues") or endpoint.endswith("/pulls"): return []
+            return comments
+        self.reader.paged_json.side_effect = lambda path, **kw: pages(REPO, local_comments, path, **kw)
+        client.paged_json.side_effect = lambda path, **kw: pages(foreign, client_comments, path, **kw)
+        report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
+        self.assertTrue(report["claims_clear"], report)
+        self.assertEqual({r["repository"] for r in report["released_claims"]}, {REPO, foreign})
+        records = history("claude", native[0])
+        records[-1:-1] = [
+            {"type": "assistant", "sessionId": native_session, "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "redirected-child", "input": {"command": "cd /foreign-repo && uv run /catalog/gh-plan.py claim 2 > claim.json"}}]}},
+            {"type": "user", "sessionId": native_session, "message": {"content": [{"type": "tool_result", "tool_use_id": "redirected-child", "content": ""}]}},
+        ]
+        for record in records: record["timestamp"] = SOURCE["claimed_at"]
+        entry = {"harness": "claude", "session_id": native_session, "_transcript_records": records}
+        with self.assertRaises(ValueError):
+            helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: client)
+        entry["_extra_repositories"] = [foreign]
+        self.assertTrue(helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: client)["claims_clear"])
+        client_comments.pop()  # The explicit route must still refuse a held claim.
+        self.assertFalse(helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda *_: client)["claims_clear"])
+
+    def test_claude_sidechain_claims_are_included_in_the_native_inventory(self):
+        from test_claim_receipts import history, claim as native_claim
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / (SESSION + ".jsonl")
+            parent.write_text(json.dumps({"type": "user", "sessionId": SESSION}) + "\n")
+            child = Path(tmp) / SESSION / "subagents" / "agent-fixture.jsonl"
+            child.parent.mkdir(parents=True)
+            value = native_claim(REPO)
+            value["claim"]["session"] = SESSION
+            records = history("claude", value)
+            # Native delegated records carry the parent's inherited identity.
+            for record in records: record["sessionId"] = SESSION
+            child.write_text("".join(json.dumps(r) + "\n" for r in records))
+            sources, errors = helper.claim_receipts.sources(helper.receipt_history(parent, "claude", SESSION), "claude", SESSION)
+            self.assertFalse(errors)
+            self.assertEqual([(r["repository"], r["claim_comment"]) for r in sources], [(REPO, 10)])
 
     def test_cli_can_finish_on_both_native_transcript_formats(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -279,7 +420,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         entry = {"harness": "codex", "session_id": native_session,
                  "_transcript_records": history("codex", native_claim("test/a"), native_claim("second/b", 2, 20))}
         with patch.object(helper.sessions, "discover", side_effect=[([], ["second/b"]), ([], ["test/a"])]) as discover:
-            result = helper.check(self.reader, "test", entry, ACTOR)
+            result = helper.check(self.reader, "test", entry, ACTOR, reader_for_repo=lambda *_: self.reader)
         self.assertEqual({call.args[1] for call in discover.call_args_list}, {"test", "second"})
         self.assertFalse(result["claims_clear"])  # Missing source readback cannot be an empty all-clear.
 

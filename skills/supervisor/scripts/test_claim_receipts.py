@@ -100,20 +100,86 @@ class ReceiptTests(unittest.TestCase):
     def test_a_later_failed_attempt_cannot_reuse_the_old_proof(self):
         records = history("codex", claim(), proof(("example/a", 1, 10)))
         records[-2:-2] = [
-            {"type": "response_item", "payload": {"type": "function_call", "call_id": "bad-check", "arguments": json.dumps({"cmd": "uv run scripts/check_claims.py --bad-argument"})}},
+            {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "bad-check", "arguments": json.dumps({"cmd": "uv run scripts/check_claims.py --bad-argument"})}},
             {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "bad-check", "output": "argument parsing failed"}},
         ]
         self.assertFalse(session_record.summarize(records, "codex")["safe_verdict"])
 
     def test_codex_orchestration_poll_binds_to_the_original_check(self):
         records = history("codex", claim())
-        call = {"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "launch", "input":
+        call = {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "launch", "input":
                 'text(await tools.exec_command({cmd:"uv run scripts/check_claims.py"}));'}}
         started = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "launch", "output": json.dumps({"session_id": 123, "output": ""})}}
-        poll = {"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "poll", "input":
+        poll = {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "poll", "input":
                 'text(await tools.write_stdin({session_id:123}));'}}
         records[-2:-2] = [call, started, poll, output(proof(("example/a", 1, 10)), "codex", "poll")]
         self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
+
+    def test_plain_codex_process_handle_binds_a_long_running_check(self):
+        records = history("codex", claim(), proof(("example/a", 1, 10)))
+        launch, result = records[-4:-2]
+        result["payload"]["output"] = "Process running with session ID 123"
+        records[-2:-2] = [
+            {"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin", "call_id": "poll", "arguments": json.dumps({"session_id": 123})}},
+            output(proof(("example/a", 1, 10)), "codex", "poll")]
+        self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
+
+    def test_tool_prompts_and_echoed_commands_are_not_check_invocations(self):
+        for harness in ("codex", "claude"):
+            records = history(harness, claim(), {**proof(("example/a", 1, 10)), "harness": harness})
+            call = records[3]
+            if harness == "codex":
+                call["payload"]["arguments"] = json.dumps({"cmd": 'echo "uv run scripts/check_claims.py"; cat saved.json'})
+            else:
+                block = call["message"]["content"][0]
+                block.update(name="Agent", input={"prompt": "uv run scripts/check_claims.py"})
+            self.assertFalse(session_record.summarize(records, harness)["safe_verdict"])
+
+    def test_a_heredoc_mention_is_data_and_claude_error_output_is_not_proof(self):
+        records = history("codex", claim(), proof(("example/a", 1, 10)))
+        records[3]["payload"]["arguments"] = json.dumps({"cmd": "cat <<'EOF'\nuv run scripts/check_claims.py\nEOF\ncat saved.json"})
+        self.assertFalse(session_record.summarize(records, "codex")["safe_verdict"])
+        records = history("claude", claim(), {**proof(("example/a", 1, 10)), "harness": "claude"})
+        records[4]["message"]["content"][0]["is_error"] = True
+        self.assertFalse(session_record.summarize(records, "claude")["safe_verdict"])
+
+    def test_delegated_work_requires_inventory_even_without_parent_claim_receipts(self):
+        records = history("claude")
+        records[1:1] = [
+            {"type": "assistant", "sessionId": SESSION, "message": {"content": [{"type": "tool_use", "name": "Agent", "id": "child", "input": {"prompt": "complete assigned work"}}]}},
+            {"type": "user", "sessionId": SESSION, "message": {"content": [{"type": "tool_result", "tool_use_id": "child", "content": "completed"}]}},
+        ]
+        self.assertFalse(session_record.summarize(records, "claude")["safe_verdict"])
+        checked = history("claude", {**proof(), "harness": "claude"})
+        records[-1:-1] = checked[1:-1]
+        self.assertTrue(session_record.summarize(records, "claude")["safe_verdict"])
+
+    def test_a_redirected_claim_or_delegation_needs_a_complete_inventory(self):
+        for harness in ("codex", "claude"):
+            records = history(harness, claim())
+            records[2] = output({}, harness, "tool-0")
+            self.assertFalse(session_record.summarize(records, harness)["safe_verdict"])
+            check = {**proof(), "harness": harness}
+            records = history(harness, claim(), check)
+            records[2] = output({}, harness, "tool-0")
+            self.assertTrue(session_record.summarize(records, harness)["safe_verdict"])
+
+    def test_unknown_claim_write_can_be_reconciled_by_complete_github_readback(self):
+        value = {"operation": receipts.CLAIM_OPERATION, "claim": {"session": SESSION}, "ok": False, "write_outcome": "unknown"}
+        report = {**proof(), "receipt_reconciliation": True}
+        self.assertTrue(session_record.summarize(history("codex", value, report), "codex")["safe_verdict"])
+
+    def test_plain_gh_pr_create_after_a_proof_invalidates_it(self):
+        records = history("codex", claim(), proof(("example/a", 1, 10)))
+        records[-2:-2] = [{"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "create", "arguments": json.dumps({"cmd": "gh pr create --title example"})}}]
+        self.assertFalse(session_record.summarize(records, "codex")["safe_verdict"])
+        url = "https://github.com/example/a/pull/3"
+        records[-2:-2] = [{"type": "response_item", "payload": {"type": "function_call_output", "call_id": "create", "output": url}}]
+        self.assertEqual(receipts.created_prs(records, "codex"), {url})
+
+    def test_brace_heavy_output_does_not_hide_a_receipt(self):
+        value = proof()
+        self.assertEqual(list(receipts.envelopes("{" * 20000 + json.dumps(value))), [value])
 
     def test_missing_native_identity_does_not_erase_claim_receipts(self):
         records = history("codex", claim())[1:]

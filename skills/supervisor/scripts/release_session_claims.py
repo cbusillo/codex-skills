@@ -214,9 +214,7 @@ def discover(reader, owner, entries, repos=None):
     return sorted(issues), repos
 
 
-def active_claims(reader, repo, number, session, actor, *, comments=None):
-    if comments is None:
-        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_claim_discussion")
+def verified_comments(reader, comments):
     # Use the same evidence validity and ownership classifier as claim, rather
     # than deciding that any release-shaped text erases ownership.
     for c, receipt in release.receipts(comments):
@@ -232,6 +230,14 @@ def active_claims(reader, repo, number, session, actor, *, comments=None):
             if isinstance(error, GitHubReadError) and getattr(error.result, "status", None) not in {403, 404}:
                 raise
             comments = [release.without_release(r) if r["id"] == c["id"] else r for r in comments]
+    return release.effective_comments(comments)
+
+
+def active_claims(reader, repo, number, session, actor, *, comments=None, verified=False):
+    if comments is None:
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_claim_discussion")
+    if not verified:
+        comments = verified_comments(reader, comments)
     conflicts, _ = claim.discussion_evidence("", comments, {
         "session": "", "worker": "", "branch": "", "claimed_at": ""
     })

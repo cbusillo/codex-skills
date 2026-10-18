@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import ast
+from pathlib import Path
 
 CHECK_OPERATION = "work-closeout.claims"
 CLAIM_OPERATION = "github.plan.claim"
@@ -37,8 +40,7 @@ def envelopes(value, depth=0):
         decoder, cursor = json.JSONDecoder(), 0
         while (start := value.find("{", cursor)) >= 0:
             try:
-                item, length = decoder.raw_decode(value[start:])
-                cursor = start + length
+                item, cursor = decoder.raw_decode(value, start)
             except ValueError:
                 cursor = start + 1
                 continue
@@ -60,56 +62,198 @@ def outputs(records, harness):
                         yield index, {**value, "_tool_error": block.get("is_error") is True}
 
 
-def check_outputs(records, harness, *, receipts=None):
-    """Only a check invocation (or its process poll) can attest disposition.
+def calls_and_results(record, harness):
+    payload = record.get("payload") or {}
+    if harness == "codex":
+        calls = [(payload.get("call_id"), payload.get("name"), payload.get("arguments") or payload.get("input"))] if payload.get("type") in {"function_call", "custom_tool_call"} else []
+        results = [payload.get("call_id")] if payload.get("type") in {"function_call_output", "custom_tool_call_output"} else []
+    else:
+        message = record.get("message")
+        blocks = (message.get("content") or []) if isinstance(message, dict) else []
+        calls = [(b.get("id"), b.get("name"), b.get("input")) for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
+        results = [b.get("tool_use_id") for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
+    return calls, results
 
-    Reading a saved JSON report is not a fresh check. Track native call IDs and
-    exec process handles so Codex orchestration and long-running reads work.
-    """
-    calls, processes = {}, set()
+
+def arguments(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def shell_commands(name, value):
+    """Only shell tools execute commands; tool prompts and echo operands do not."""
+    value = arguments(value)
+    if name in {"exec_command", "Bash"} and isinstance(value, dict):
+        texts = [value.get("cmd") or value.get("command") or ""]
+    elif name in {"exec", "functions.exec"} and isinstance(value, str):
+        texts = []
+        for m in re.finditer(r'''\b(?:cmd|command)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''', value):
+            try:
+                texts.append(ast.literal_eval(m[1]))
+            except (ValueError, SyntaxError):
+                pass
+    else:
+        return
+    for text in texts:
+        if "<<" in text:
+            continue  # Heredoc bodies are data, not checker invocations.
+        try:
+            lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|\n")
+            lexer.whitespace = " \t\r"
+            lexer.whitespace_split = True
+            command = []
+            for token in lexer:
+                if token and all(c in ";&|\n" for c in token):
+                    if command:
+                        yield command
+                    command = []
+                else:
+                    command.append(token)
+            if command:
+                yield command
+        except ValueError:
+            continue
+
+
+def script(argv):
+    if not argv:
+        return ""
+    name = Path(argv[0]).name
+    if name == "uv" and len(argv) > 2 and argv[1] == "run":
+        return Path(argv[2]).name
+    if re.fullmatch(r"python[0-9.]*", name) and len(argv) > 1:
+        return Path(argv[1]).name
+    return ""
+
+
+def ownership_activity(records, harness):
+    """Missing/redirected outputs and delegated writes still require readback."""
+    delegates = set()
+    for index, record in enumerate(records):
+        calls, results = calls_and_results(record, harness)
+        if delegates.intersection(results):
+            yield index
+        for identifier, name, value in calls:
+            if name in {"Agent", "Task", "spawn_agent", "collaboration.spawn_agent"}:
+                delegates.add(identifier)
+                yield index
+            for argv in shell_commands(name, value):
+                if (script(argv) == "gh-plan.py" and "claim" in argv
+                        or script(argv) == "gh-pr.py" and "create" in argv
+                        or argv[:3] == ["gh", "pr", "create"]):
+                    yield index
+
+
+def target_repositories(records, harness):
+    repos = set()
+    for record in records:
+        calls, _ = calls_and_results(record, harness)
+        for _, name, value in calls:
+            for argv in shell_commands(name, value):
+                if script(argv) not in {"gh-plan.py", "gh-pr.py"} and argv[:2] not in (["gh", "pr"], ["gh", "issue"]):
+                    continue
+                for i, token in enumerate(argv):
+                    repo = argv[i + 1] if token in {"--repo", "-R"} and i + 1 < len(argv) else token.removeprefix("--repo=") if token.startswith("--repo=") else ""
+                    if re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+                        repos.add(repo)
+                    match = re.match(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/", token)
+                    if match:
+                        repos.add(match[1])
+    return repos
+
+
+def target_records(records, harness):
+    targets = set()
+    for record in records:
+        calls, _ = calls_and_results(record, harness)
+        for _, name, value in calls:
+            for argv in shell_commands(name, value):
+                if script(argv) != "gh-plan.py" or "claim" not in argv:
+                    continue
+                target = argv[argv.index("claim") + 1:]
+                if not target:
+                    continue
+                url = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)", target[0])
+                if url:
+                    targets.add((url[1], int(url[2])))
+                elif re.fullmatch(r"[1-9]\d*", target[0]):
+                    repos = {argv[i + 1] for i, token in enumerate(argv[:-1]) if token in {"--repo", "-R"}}
+                    repos.update(token.removeprefix("--repo=") for token in argv if token.startswith("--repo="))
+                    targets.update((repo, int(target[0])) for repo in repos or {None})
+    return targets
+
+
+def bound_outputs(records, harness, predicate, *, receipts=None):
+    """Bind native outputs and process polls to an actual tool invocation."""
+    calls, processes = {}, {}
     parsed = {}
     for index, value in outputs(records, harness) if receipts is None else receipts:
         parsed.setdefault(index, []).append(value)
     for index, record in enumerate(records):
-        payload = record.get("payload") or {}
-        message = record.get("message")
-        blocks = (message.get("content") or []) if isinstance(message, dict) else []
-        invocations = []
-        results = []
-        if harness == "codex":
-            if payload.get("type") in {"function_call", "custom_tool_call"}:
-                invocations.append((payload.get("call_id"), payload.get("arguments") or payload.get("input")))
-            if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
-                results.append(payload.get("call_id"))
-        else:
-            for block in blocks:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "tool_use":
-                    invocations.append((block.get("id"), block.get("input")))
-                if block.get("type") == "tool_result":
-                    results.append(block.get("tool_use_id"))
-        for call_id, arguments in invocations:
-            text = arguments if isinstance(arguments, str) else json.dumps(arguments)
-            # JSON arguments can contain escaped shell commands; decode one
-            # envelope before matching the maintained helper invocation.
-            try:
-                value = json.loads(text)
-                if isinstance(value, dict):
-                    text = value.get("cmd") or value.get("command") or value.get("code") or text
-            except ValueError:
-                pass
-            invoked = bool(re.search(r"\b(?:uv\s+run|python[0-9.]*)\s+(?:[^\s\"']*/)?check_claims\.py\b", text))
-            polls = {int(n) for n in re.findall(r"session_id[\"']?\s*:\s*([0-9]+)", text)}
-            calls[call_id] = invoked or bool(polls & processes)
+        invocations, results = calls_and_results(record, harness)
+        for call_id, name, value in invocations:
+            invoked = predicate(name, value)
+            value = arguments(value)
+            polls = set()
+            if name in {"write_stdin", "wait", "functions.wait"} and isinstance(value, dict):
+                polls.update(str(value[k]) for k in ("session_id", "cell_id") if k in value)
+            elif name in {"exec", "functions.exec"} and isinstance(value, str):
+                polls.update(re.findall(r'''\b(?:session_id|cell_id)\s*:\s*["']?([\w-]+)''', value))
+            source = call_id if invoked else next((processes[p] for p in polls if p in processes), None)
+            calls[call_id] = source
             if invoked:
-                yield index, {"operation": CHECK_OPERATION, "_attempt": True}
-        if any(calls.get(call_id) for call_id in results):
+                yield index, source, {"_attempt": True}
+        source = next((calls[result] for result in results if calls.get(result)), None)
+        if source is not None:
+            yield index, source, {"_result": True}
             for value in parsed.get(index, []):
                 if isinstance(value.get("session_id"), int):
-                    processes.add(value["session_id"])
-                if value.get("operation") == CHECK_OPERATION and not value.get("_tool_error"):
-                    yield index, value
+                    processes[str(value["session_id"])] = source
+                yield index, source, value
+            # Stock shell/orchestration tools may expose their handle as text.
+            raw = json.dumps(record)
+            for handle in re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw):
+                processes[handle] = source
+
+
+def check_outputs(records, harness, *, receipts=None):
+    """A saved report or tool prompt cannot attest a fresh executing check."""
+    predicate = lambda name, value: any(script(argv) == "check_claims.py" for argv in shell_commands(name, value))
+    for index, _, value in bound_outputs(records, harness, predicate, receipts=receipts):
+        if value.get("_attempt"):
+            yield index, {"operation": CHECK_OPERATION, "_attempt": True}
+        elif value.get("operation") == CHECK_OPERATION and not value.get("_tool_error"):
+            yield index, value
+
+
+def unscoped_claim_invocations(records, harness):
+    """A different claim's receipt cannot fill a redirected invocation's gap."""
+    def commands(name, value):
+        return [argv for argv in shell_commands(name, value) if script(argv) == "gh-plan.py" and "claim" in argv]
+    pending, receipts = {}, {}
+    for _, source, value in bound_outputs(records, harness, lambda name, value: bool(commands(name, value))):
+        if value.get("_attempt"):
+            pending[source] = True
+        elif value.get("operation") == CLAIM_OPERATION:
+            issue_repo = (value.get("issue") or {}).get("repo")
+            url = ((value.get("claim_comment") or {}).get("comment") or {}).get("url") or (value.get("claim_comment") or {}).get("url")
+            if isinstance(issue_repo, str) and re.fullmatch(r"[\w.-]+/[\w.-]+", issue_repo) or COMMENT.fullmatch(url or ""):
+                receipts[source] = receipts.get(source, 0) + 1
+    unknown = []
+    for record in records:
+        calls, _ = calls_and_results(record, harness)
+        for identifier, name, value in calls:
+            attempted = commands(name, value)
+            if identifier not in pending or not attempted:
+                continue
+            targets = target_records([record], harness)
+            if any(repo is None for repo, _ in targets) and receipts.get(identifier, 0) < len(attempted):
+                unknown.append(identifier)
+    return unknown
 
 
 def sources(records, harness, session, *, parsed=None):
@@ -140,10 +284,16 @@ def sources(records, harness, session, *, parsed=None):
 
 
 def created_prs(records, harness):
-    return {value["url"] for _, value in outputs(records, harness)
+    found = {value["url"] for _, value in outputs(records, harness)
             if value.get("operation") == "github.pr.create" and value.get("ok") is True
             and isinstance(value.get("url"), str)
             and re.fullmatch(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", value["url"])}
+    def creating(name, value):
+        return any(argv[:3] == ["gh", "pr", "create"] for argv in shell_commands(name, value))
+    for index, _, value in bound_outputs(records, harness, creating):
+        if value.get("_result"):
+            found.update(re.findall(r"https://github\.com/[^/\s\"\\]+/[^/\s\"\\]+/pull/[1-9]\d*", json.dumps(records[index])))
+    return found
 
 
 def acceptance(records, harness, session):
@@ -154,13 +304,13 @@ def acceptance(records, harness, session):
     """
     parsed = list(outputs(records, harness))
     expected, errors = sources(records, harness, session, parsed=parsed)
-    if errors:
-        return {"clear": False, "reason": "incomplete_claim_receipts"}
-    if not expected:
+    activity = list(ownership_activity(records, harness))
+    if not expected and not errors and not activity:
         return {"clear": True, "reason": "no_claim_receipts"}
     keys = {(r["repository"], r["record"], r["claim_comment"]) for r in expected}
-    last_claim = max(r["index"] for r in expected)
-    last_claim = max([last_claim, *(i for i, v in parsed if v.get("operation") == "github.pr.create" and v.get("ok"))])
+    last_claim = max([r["index"] for r in expected] + activity + [-1])
+    last_claim = max([last_claim, *(i for i, v in parsed if v.get("operation") == CLAIM_OPERATION
+                                  or v.get("operation") == "github.pr.create" and v.get("ok"))])
     checks = list(check_outputs(records, harness, receipts=parsed))
     last_attempt = max((i for i, v in checks if v.get("_attempt")), default=-1)
     for index, value in reversed(checks):
@@ -171,6 +321,7 @@ def acceptance(records, harness, session):
         observed = {(r.get("repository"), r.get("record"), r.get("claim_comment"))
                     for r in value.get("released_claims", []) if isinstance(r, dict)}
         clear = (value.get("ok") is True and value.get("claims_clear") is True
-                 and coverage.get("complete") is True and keys <= observed)
+                 and coverage.get("complete") is True and keys <= observed
+                 and (not errors or value.get("receipt_reconciliation") is True))
         return {"clear": clear, "reason": "verified_claim_disposition" if clear else "claim_disposition_not_clear"}
     return {"clear": False, "reason": "claim_disposition_not_checked"}

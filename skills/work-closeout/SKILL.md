@@ -30,7 +30,7 @@ commands:
     source: skill
     resource_path: scripts/check_claims.py
     example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--harness", "codex", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
-    purpose: Inventories the session's claims across installed repositories of every account derived from native receipts and refuses an all-clear until releases and retained PR handoffs are verified; never writes.
+    purpose: Inventories the default installation and native or explicitly added claim repositories and refuses an all-clear until releases and retained PR handoffs are verified; never writes.
   - name: session-reminder-link
     source: skill
     resource_path: scripts/reminder_link.py
@@ -242,10 +242,16 @@ uv run <skill-dir>/scripts/check_claims.py --harness codex \
 
 Use `--harness claude` on Claude Code. Both use the same procedure. The native
 transcript must belong to that exact session and retain its timestamped history.
-The check derives GitHub accounts from maintained claim-write receipts in the
-native transcript, then inventories paged comments and status on their installed
-repositories, including closed issues and PR-only claims. Optional repeated
-`--owner ACCOUNT` flags add scope; they never narrow the accounts found in history.
+The check always inventories the default installation, including closed issues
+and PR-only claims. Native claim receipts and helper command targets add exact
+repositories outside that installation. Those reads use the repository's existing
+configured App route and source automation identity. No identity/configuration is
+changed and no refused request is retried under another identity. Repeated
+`--repository ACCOUNT/REPOSITORY` adds context for missing/truncated receipts or
+another installation; `--owner ACCOUNT` requires that account to be covered, and
+refuses if no repository context is known. Neither option narrows native scope.
+Claude's native session subagent directory is included because its delegated
+tools may inherit the parent's session ID.
 Missing native identity or a different running harness refuses an all-clear.
 Preserve its coverage
 and released-claim links as closeout evidence; it proves claim disposition only,
@@ -264,9 +270,17 @@ claim. Run the check after the write; only exit 0 with `claims_clear: true`
 and complete coverage permits an all-clear. Leave its JSON visible in the native
 tool output; use `tee` if a saved copy is needed. The Supervisor's safe-verdict
 reader requires that fresh invocation result to cover every native source claim.
+Claim invocations with redirected or missing outputs, and delegated work, also
+require readback; absence of a receipt alone does not exempt them. Missing source
+receipts are reconciled through complete session inventory in the known repository
+scope. When an invocation lacks its own repository evidence, add its exact
+`--repository` and check again; another invocation's receipt cannot fill that gap.
 A saved report read with `cat`, an earlier proof before another claim or PR was
-created, and final-answer prose do not satisfy shutdown acceptance. Sessions
-whose native history contains no claims keep their existing exit path.
+created, and final-answer prose do not satisfy shutdown acceptance. For long
+checks, use the shell tool's sufficient foreground timeout (at least 600 seconds
+on Claude Bash), or Codex's process handle and `write_stdin` polls. Keep all result
+JSON visible; do not background Claude Bash checks. Sessions without claim or
+delegation activity keep their existing exit path.
 
 An open PR need not merge before a session exits. Its exact authored release
 must name the retained PR, and the check verifies the same repository, source
@@ -282,12 +296,16 @@ not a substitute for this executing-session check. Recovery after verified proce
 exit still reads the original unqualified declaration and checks live activity,
 so historical ended sessions without a pre-exit receipt can release through the
 existing Supervisor attestation route.
-Normal Supervisor close-out candidates, native ended-session proof and guarded
-terminal cleanup consume the accepted verdict. A historical claimed session
-without the new proof remains ineligible there; its claims can still be recovered
-through the verified post-process route. Resume the source session and complete
-its check before requesting normal safe-exit acceptance. Preserve its terminal
-when that proof cannot be obtained.
+Native ended-session proof likewise uses independently verified inactivity and
+the original declaration, preserving its claim handoff route. Normal Supervisor
+close-out candidates and guarded terminal cleanup consume the accepted verdict.
+After recovery, resume the source session and run this check: it accepts validated
+Supervisor/Direction releases as well as exact source-authored releases, rereading
+their closure evidence and retained PR state. A bare exact release supplied by
+the claim helper remains valid; an explicit conflicting session field refuses.
+For missing native identity, ambiguous resume/fork histories or inaccessible
+scope, preserve the terminal and use the existing verified post-process recovery
+route for claims. Do not edit native transcripts or substitute another session ID.
 
 ## Consuming Readiness Evidence
 
