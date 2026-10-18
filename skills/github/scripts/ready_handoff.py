@@ -51,10 +51,10 @@ REVIEW_OUTCOME = re.compile(
 # that result for unfinished review status; the findings describe the code.
 REVIEW_RESULT = re.compile(
     r"(?i)\b(?:found|reviewed)\b[^\n]*[;,]\s*(?:now )?fixed\b"
-    r"|\brun by (?:the )?supervisor\b"
+    r"|,\s*run by (?:the )?supervisor\b"
     r"|\b(?:no findings|none(?: to act on)?|nothing to act on|no changes needed)\b(?=[ \t*_`]*(?:[.,;!]|$|\n))"
-    r"|\bfindings?\s*:(?=\s|$)|\bfindings? (?:acted on|fixed|addressed|declined)\b"
-    r"|\bacted on\b|\bis correct\b|\bfixed\s*:"
+    r"|\bfindings?\s*:(?=\s|$)|\bfindings? (?:were |have been )?(?:acted on|fixed|addressed|declined)\b"
+    r"|\band acted on\b|\bis correct\b|\bfixed\s*:"
 )
 REVIEW_UNFINISHED = re.compile(
     r"(?i)\b(?:not|never|neither|cannot|unable|pending|blocked|requested|needed|waiting"
