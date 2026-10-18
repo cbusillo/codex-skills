@@ -339,6 +339,17 @@ class DispatchTests(unittest.TestCase):
         self.assertFalse(report["results"][0]["requested_provider_confirmed"])
         self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
 
+    def test_disposition_before_new_manual_report_cannot_acknowledge_that_report(self):
+        self.io.comments.append(comment(11, review_result_body("Earlier review weighed.", SHA)))
+        self.io.comments.append(comment(12, f"Review of record, run by the Supervisor at head {SHA}\nNew report."))
+        result = self.dispatch()
+        self.assertEqual(result["status"], "reported_review")
+        self.assertTrue(result["needs_attention"])
+        self.assertTrue(result["notification_needed"])
+        self.io.comments.append(comment(13, review_result_body("Newer manual report checked and weighed.", SHA)))
+        self.assertFalse(self.dispatch()["needs_attention"])
+        self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
+
     def test_unconfirmed_receipt_becomes_informational_after_weighing(self):
         self.io.comments.append(comment(11, '<!-- supervisor-review ' + json.dumps({
             "request": 10, "head": SHA, "author_session": SESSION, "author_provider": "openai"}) + ' -->'))

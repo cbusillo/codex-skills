@@ -178,6 +178,8 @@ def completion_record(comments, request, head, logins):
         supervisor["acknowledged"] = (weighed is not None and weighed["acknowledged"]
                                       and key(weighed["comment"]) >= key(supervisor["comment"]))
         return supervisor
+    if reported and (weighed is None or key(reported["comment"]) > key(weighed["comment"])):
+        return reported
     return weighed or reported
 
 
