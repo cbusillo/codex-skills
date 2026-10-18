@@ -712,6 +712,10 @@ class ReleaseTests(unittest.TestCase):
                 "--repo=test/x -R {r}", "-R test/x --repo={r}", "--repo test/x -R{r}",
                 "--repo=test/a -R {r}", "-R test/a --repo={r}", "--repo=test/a --rep {r}")},
             "gh-comment repository after the positionals": "gh-comment issue 1 --body-file c.md -R {r}",
+            # The helper accepts HOST/OWNER/REPO and a .git suffix, and posts to OWNER/REPO.
+            **{f"gh-comment {form}": f"gh-comment {form.format(r='{r}')} issue 1 --body-file c.md" for form in (
+                "-R github.com/{r}", "--repo={r}.git", "-R /{r}/")},
+            "gh-comment repository in a variable": 'repo=github.com/{r}; gh-comment -R "$repo" issue 1 --body-file c.md',
             **{f"gh-comment {form}": f"gh-comment -R {{r}} issue 1 {form}" for form in (
                 "--body-file=c.md", "--body c.md", "--body-file other.md --body-file c.md")},
             **{f"gh-pr.py {form}": f"gh-pr.py {form.format(r='{r}')} comment 1 --body-file c.md" for form in (
@@ -732,8 +736,10 @@ class ReleaseTests(unittest.TestCase):
 
     def test_grouped_or_undecodable_working_directory_is_unknown(self):
         # The session cwd holds c.md, but each write ran elsewhere.
-        for command in ("( cd /other && gh-comment -R test/a issue 1 --body-file c.md )",
-                        "(cd /other && gh-comment -R test/a issue 1 --body-file c.md)"):
+        # The group closes in its own part, so the write itself parses; only the cwd guard rejects it.
+        for command in ("(cd /other && gh-comment -R test/a issue 1 --body-file c.md; )",
+                        "( cd /other; gh-comment -R test/a issue 1 --body-file c.md; )",
+                        "{ cd /other; gh-comment -R test/a issue 1 --body-file c.md; }"):
             with self.subTest(command=command):
                 entry = self.summarized_write(command, self.entry["handoff_url"])
                 with self.assertRaisesRegex(ValueError, "no authored handoff"):

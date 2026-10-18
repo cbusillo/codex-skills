@@ -36,7 +36,7 @@ import github_plan_claim as claim
 import github_plan_release as release
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_comment import OPERATION_MARKER_LINE_RE, CommentError, comment
-from github_comment import build_parser as comment_parser
+from github_comment import build_parser as comment_parser, normalized_repo
 import github_api
 
 
@@ -373,9 +373,10 @@ def discover_handoff(reader, entry, actor):
         except ValueError:
             return [], {}, False
     def comment_target(tokens):
-        """Parse a comment write with its helper's own parser: (repository, number, body file), or None.
+        """Parse a comment write with its helper's own parser, or return None.
 
-        Either of the first two may be unknown. A command its helper would reject posts nothing.
+        Returns (repository, number, body file, repository resolver); either of the first
+        two may be unknown. A command its helper would reject posts nothing.
         """
         for index, token in enumerate(tokens):
             name = Path(token).name
@@ -391,7 +392,8 @@ def discover_handoff(reader, entry, actor):
             try:
                 if name in {"gh-comment", "github_comment.py"}:
                     args = comment_parser().parse_args(argv)
-                    return args.repo, str(args.number), args.body_file
+                    # The helper posts to its normalized OWNER/REPO and refuses any other form.
+                    return args.repo, str(args.number), args.body_file, normalized_repo
                 if name == "gh-pr.py":
                     cli = pr_cli()
                     args = cli.build_parser().parse_args(argv)
@@ -399,9 +401,10 @@ def discover_handoff(reader, entry, actor):
                         return None
                     # A pull request URL names its own repository, over --repo.
                     if pr_url := cli.parse_pr_url(args.pr):
-                        return pr_url[0], str(pr_url[1]), args.body_file
+                        return pr_url[0], str(pr_url[1]), args.body_file, str
                     # A branch name leaves the number, and so any printed URL, unmatched.
-                    return args.repo, args.pr if args.pr.isdigit() else None, args.body_file
+                    # gh-pr.py uses an explicit --repo as given.
+                    return args.repo, args.pr if args.pr.isdigit() else None, args.body_file, str
             except (github_api.ArgumentParsingError, SystemExit):
                 return None
             return None
@@ -501,15 +504,19 @@ def discover_handoff(reader, entry, actor):
                     files[target] = heredocs[stdin]
             if tokens[0] == "apply_patch":
                 # An argv patch is one single-quoted word; quoting() marked its dollars.
-                patch_text = heredocs.get(stdin) if tokens[1:] == ["<", stdin] else (
+                shell_patch = heredocs.get(stdin) if tokens[1:] == ["<", stdin] else (
                     tokens[1].replace("\0", "$") if len(tokens) == 2 else None)
-                note_patch(patch_text or "", cwd)
+                note_patch(shell_patch or "", cwd)
             target_of_write = comment_target(tokens)
             if target_of_write is None:
                 continue
             wrote = True
-            repo, number, path = target_of_write
+            repo, number, path, resolve_repo = target_of_write
             repo = literal(repo, variables) if repo else None
+            try:
+                repo = resolve_repo(repo) if repo else None
+            except ValueError:
+                repo = None  # the helper refuses this repository and posts nothing
             path = literal(path, variables)
             if not complete or path is None:
                 continue
