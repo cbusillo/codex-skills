@@ -81,8 +81,8 @@ the author verifies it.
 - Under the global Tests rules, never add a test that asserts a literal defined
   elsewhere, workflow or config text, or a change-detector. Deleting a test that
   fails the keep-only-if rule is an improvement, not lost coverage.
-- Make the smallest change that removes the demonstrated problem, or its whole
-  kind. A reviewer's proposed wording or patch is a suggestion.
+- Make the smallest change that removes the demonstrated problem, including its
+  whole kind. A reviewer's proposed wording or patch is a suggestion.
 - A rereview covers the changed behavior plus what it touches. A purely local,
   additive fix can skip a full rereview.
 - When reviewers disagree, or you disagree with one, test it rather than
