@@ -229,6 +229,14 @@ class SectionTests(unittest.TestCase):
                                   "State: Waiting.\n\n" + PLAN.github_plan_wait.marker(new))
         self.assert_records(body, new)
 
+    def test_indented_claims_are_recognized_as_the_claim_reader_does(self) -> None:
+        successor = {**CLAIM, "worker": "next", "session": "s2"}
+        body = self.update_status(" " + PLAN.github_plan_claim.marker(CLAIM), "State: Done.")
+        self.assertEqual(PLAN.github_plan_claim.records(body), [CLAIM])
+        body = self.update_status(PLAN.github_plan_claim.marker(CLAIM),
+                                  "State: Active.\n " + PLAN.github_plan_claim.marker(successor))
+        self.assertEqual(PLAN.github_plan_claim.records(body), [successor])
+
     def test_fenced_marker_examples_are_not_carried(self) -> None:
         example = PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Example."))
         body = self.update_status(f"```text\n{example}\n```", "State: Done.")

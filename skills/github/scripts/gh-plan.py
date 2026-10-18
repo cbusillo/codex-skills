@@ -1534,11 +1534,14 @@ def close_relationship_preflight(
 
 
 def section_machine_markers(text: str) -> dict[str, list[str]]:
-    """Live helper records by kind; fenced examples and reserved markers are not records."""
+    """Live helper records by kind, recognized as each kind's reader does; examples are not records."""
     found: dict[str, list[str]] = {}
+    claims = github_plan_claim.live_lines(text)
+    if claims:
+        found["github-plan:claim"] = claims
     for _, line in github_plan_wait.live_lines(text, prefix="<!-- "):
         match = re.match(r"<!-- (github-plan:[\w-]+|github-skill-operation):?", line)
-        if match and line.strip() not in PLAN_RESERVED_MARKERS:
+        if match and match.group(1) != "github-plan:claim" and line.strip() not in PLAN_RESERVED_MARKERS:
             found.setdefault(match.group(1), []).append(line)
     return found
 

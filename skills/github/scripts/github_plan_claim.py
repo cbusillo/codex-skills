@@ -73,12 +73,15 @@ def marker(claim: dict[str, str]) -> str:
     return "<!-- " + MARKER + json.dumps(claim, sort_keys=True) + " -->"
 
 
-def records(text: str) -> list[dict[str, str]]:
-    found = []
+def live_lines(text: str) -> list[str]:
     # Format examples and incidental prose are not live ownership records.
     text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", text)
-    lines = [line.strip() for line in text.splitlines() if line.strip().startswith("<!-- " + MARKER)]
-    for line in lines:
+    return [line for line in text.splitlines() if line.strip().startswith("<!-- " + MARKER)]
+
+
+def records(text: str) -> list[dict[str, str]]:
+    found = []
+    for line in (line.strip() for line in live_lines(text)):
         match = re.fullmatch(r"<!-- github-plan:claim (.*?) -->", line)
         if not match:
             raise ValueError("Malformed claim marker; preserve ownership for owner review")
