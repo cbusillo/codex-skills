@@ -58,6 +58,7 @@ def verify_process_exit(entry, *, ended_at=None):
     pid, tty = entry.get("pid"), entry.get("tty")
     if not historical and (type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty):
         raise ValueError("closure requires the matched process PID and TTY")
+    tty = tty.removeprefix("/dev/") if isinstance(tty, str) else tty
     rows = inventory()
     for process_pid, process_tty, command in rows:
         if process_pid in {pid, entry.get("launch_pid")}:

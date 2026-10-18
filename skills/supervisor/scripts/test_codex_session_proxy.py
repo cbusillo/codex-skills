@@ -48,7 +48,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
                 with f.transcript.open("a") as stream:
                     for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
-                        stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
+                        stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
             finally:
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
@@ -137,8 +137,10 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     with patch.object(capacity_retry, "verified_target", return_value=(f.home, proxy.Ingress(f.home).upstream)):
                         await asyncio.to_thread(capacity_retry.queue_continue, f.entry, f.home,
                                                 proxy.Ingress(f.home).upstream, {})
-                self.assertEqual([r["params"]["message"] for r in f.mutations if r["method"] == "thread/queue/add"],
-                                 ["status?", "continue"])
+                queued = [r["params"] for r in f.mutations if r["method"] == "thread/queue/add"]
+                self.assertEqual(len(queued), 2)
+                self.assertEqual(queued[0]["message"], args.message)
+                self.assertTrue(all(r["threadId"] == f.session and r["message"].strip() for r in queued))
                 self.assertFalse(task.done())
             finally:
                 (f.root / "stop").touch()

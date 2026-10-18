@@ -337,6 +337,25 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 with ThreadPoolExecutor(max_workers=1) as pool:
                     pool.submit(own_action).result(timeout=3)
 
+    def test_device_prefixed_tty_blocks_exit_without_leasing_the_live_worker(self):
+        with ReceiptFixture() as f:
+            rows = CLOSURE.log_rows()
+            row = next(r for r in rows if r.get("session_id") == f.session)
+            row["tty"] = "/dev/" + f.entry["tty"]
+            CLOSURE.replace_rows(rows)
+            f.process_rows = [(456, f.entry["tty"], "codex worker")]
+            from github_plan_release import stamp
+            with patch.object(CLOSURE, "process_started_at", return_value=stamp(f.entry["launch_started_at"])):
+                with self.assertRaises(ValueError):
+                    f.release.verify_process_exit(row, ended_at=stamp(row["ended_at"]))
+                with CLOSURE.admission():
+                    self.assert_live(f)
+                    def own_action():
+                        with CLOSURE.resume_guard(f.session):
+                            pass
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(own_action).result(timeout=3)
+
     def test_resume_and_admission_share_a_lease_and_handoff_disables_old_resume(self):
         with ReceiptFixture() as f:
             with CLOSURE.admission():
