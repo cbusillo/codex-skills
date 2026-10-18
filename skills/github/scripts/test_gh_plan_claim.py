@@ -87,11 +87,13 @@ class ClaimTests(unittest.TestCase):
         self.args.planning_checkout = None
         self.targets = {}
         self.closed_pulls = {}
+        self.parent = None
         self.api_failure = None
         self.configs = {}
         self.planning_inventory = None
         self.target_comments = {}
         self.comments: list[dict[str, Any]] = []
+        self.comment_id_offset = 0
         self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": [],
                           "session_coverage": {"codex": {"status": "unavailable"}, "claude": {"status": "available"}}}
         self.pulls = []
@@ -111,6 +113,12 @@ class ClaimTests(unittest.TestCase):
         return "bot", issue
 
     def read_api(self, _method, path, **_):
+        if path.endswith("/parent"):
+            if self.api_failure:
+                raise PLAN.PlanError("Unavailable", api_result=self.api_failure)
+            if self.parent is None:
+                raise PLAN.PlanError("Not found", api_result={"status": 404})
+            return "bot", copy.deepcopy(self.parent)
         n = int(path.rsplit("/", 1)[1])
         if self.api_failure:
             raise PLAN.PlanError("Unavailable", api_result=self.api_failure)
@@ -135,7 +143,7 @@ class ClaimTests(unittest.TestCase):
     def post(self, _kind, _number, body, **_):
         self.events.append("post")
         self.post_route = (_kind, _number, _["repo"])
-        comment_id = len(self.comments) + 1
+        comment_id = self.comment_id_offset + len(self.comments) + 1
         self.comments.append({"id": comment_id, "body": body, "user": {"login": TEST_BOT}})
         self.after_post()
         return {"ok": True, "comment": {"id": comment_id}}
@@ -1005,6 +1013,98 @@ class ClaimTests(unittest.TestCase):
         self.assertNotIn("Conflict-only refresh:", self.comments[-1]["body"])
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
+
+    def parent_handoff_fixture(self):
+        self.ordinary_handoff_fixture()
+        self.parent = {"number": 41, "state": "open", "html_url": "https://github.com/owner/repo/issues/41"}
+        parent_wait = wait_record.reviewed(evidence="Client qualification is still pending",
+                                          waiting_for="Client qualification", ends_when="Client accepts")
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        self.comments[0]["created_at"] = source["claimed_at"]
+        self.comments[-1]["created_at"] = "2026-10-02T00:00:00Z"
+        self.targets["41"] = {**copy.deepcopy(self.issue), **self.parent,
+                              "labels": [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}],
+                              "body": (f"## Current Status\n\nState: Active; owned by {source['worker']}.\n"
+                                       f"Session: {source['session']}\nBranch: {source['branch']}\n"
+                                       + CLAIM.marker(source) + "\n" + wait_record.marker(parent_wait))}
+        self.target_comments["/repos/owner/repo/issues/41/comments"] = self.comments
+        self.comment_id_offset = max(c["id"] for c in self.comments)
+        self.comments = []
+        for pull in [*self.pulls, *self.closed_pulls.values()]:
+            pull["body"] = "Refs #41"
+
+    def test_native_child_resumes_parent_handoff_and_preserves_parent_waits(self):
+        self.parent_handoff_fixture()
+        before = copy.deepcopy((self.targets, self.target_comments, self.inventory, self.pulls))
+        self.run_claim()
+        output = self.emitted.call_args.args[0]
+        self.assertTrue(output["ok"])
+        self.assertIn("metadata_readback", output["completed_steps"])
+        self.assertEqual(output["claim"]["retained_handoff"],
+                         f"{self.parent['html_url']}#issuecomment-{self.args.handoff_comment}")
+        self.assertEqual(before, (self.targets, self.target_comments, self.inventory, self.pulls))
+        self.assertEqual(self.post_route, ("issue", self.issue["number"], self.issue["repo"]))
+        self.inventory["local_branches"].append(self.args.branch)
+        self.inventory["remote_branches"].append(self.args.branch)
+        self.inventory["worktrees"].append({"branch": self.args.branch, "path": "/successor"})
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(len(self.comments), 1)  # Same-session recovery reuses its claim.
+
+    def test_parent_resume_preserves_release_handoff_and_ownership_refusals(self):
+        self.parent_handoff_fixture()
+        self.run_claim()  # Establish the supported route before testing its independent refusals.
+        for change in ("no_link", "unreadable_link", "foreign_parent", "no_release", "foreign_release",
+                       "foreign_handoff", "missing_pr_link", "live_source", "live_tree", "other_claim",
+                       "child_claim", "unmentioned_pr", "child_blocker", "child_wait", "no_handoff",
+                       "wrong_parent", "parent_status", "retained_pr_wait"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.parent_handoff_fixture()
+                source = self.target_comments["/repos/owner/repo/issues/41/comments"]
+                if change == "no_link": self.parent = None
+                if change == "wrong_parent": self.parent["number"] = 40
+                if change == "no_handoff": self.args.handoff_comment = None
+                if change == "unreadable_link": self.api_failure = {"status": 403}
+                if change == "foreign_parent": self.parent["html_url"] = "https://github.com/other/repo/issues/41"
+                if change == "no_release": source[-1]["body"] = "Source handoff: PR #99 and #100"
+                if change == "foreign_release": source[-1]["user"] = {"login": "stranger"}
+                if change == "foreign_handoff":
+                    source.append({"id": 4, "body": source[-1]["body"], "user": {"login": "stranger"}})
+                    self.args.handoff_comment = 4
+                if change == "missing_pr_link": self.pulls[0]["body"] = "Repair another issue"
+                if change == "live_source": self.inventory["sessions"] = [{"sessionId": OTHER["session"], "cwd": "/elsewhere"}]
+                if change == "live_tree": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": self.inventory["worktrees"][0]["path"]}]
+                if change == "other_claim": source.append({"id": 4, "body": CLAIM.marker({**OTHER, "session": "third"}), "user": {"login": TEST_BOT}})
+                if change == "child_claim": self.compete()
+                if change == "unmentioned_pr": self.pulls.append({**self.pulls[0], "number": 101})
+                if change == "child_blocker": self.blockers = [{"state": "open"}]
+                if change == "child_wait": self.wait = wait_record.reviewed(evidence="Child needs acceptance", waiting_for="Client", ends_when="Client accepts")
+                if change == "parent_status": self.targets["41"]["body"] += "\n" + CLAIM.marker({**OTHER, "session": "third"})
+                if change == "retained_pr_wait": self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_parent_resume_rechecks_native_link_and_proofs_on_both_readbacks(self):
+        for phase in ("after_post", "after_status"):
+            for change in ("link", "reparent", "release", "parent_claim", "source_peer", "child_peer"):
+                with self.subTest(phase=phase, change=change):
+                    self.setUp()
+                    self.parent_handoff_fixture()
+                    def race():
+                        source = self.target_comments["/repos/owner/repo/issues/41/comments"]
+                        if change == "link": self.parent = None
+                        if change == "reparent": self.parent["number"] = 40
+                        if change == "release": source[-1]["body"] = "Source handoff: PR #99 and #100"
+                        if change == "parent_claim": source.append({"id": 80, "body": CLAIM.marker({**OTHER, "session": "third"}), "user": {"login": TEST_BOT}})
+                        if change == "source_peer": self.inventory["sessions"] = [{"sessionId": OTHER["session"], "cwd": "/elsewhere"}]
+                        if change == "child_peer": self.compete()
+                    setattr(self, phase, race)
+                    with self.assertRaises(PLAN.PlanError) as caught:
+                        self.run_claim()
+                    self.assertIn("post", self.events)
+                    self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def cleanup_handoff_fixture(self):
         self.ordinary_handoff_fixture()

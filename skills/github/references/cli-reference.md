@@ -1198,8 +1198,9 @@ outside the helper-generated fields still refuses. The original status remains q
 the successor's claim comment. Without `--handoff-comment`, only the source
 claim's exact retained branch, worktree, and PR evidence is accepted;
 other Current Status ownership, unreleased comments,
-other artifacts, and visible peer sessions still refuse. Records on another issue must use that
-canonical planning issue's supported handoff route.
+other artifacts, and visible peer sessions still refuse. A source on the claimed
+issue's native parent uses the retained-handoff route below; prose links alone
+cannot select a source record.
 This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
@@ -1238,6 +1239,19 @@ binds its source and handoff so recovery cannot silently discard that proof or
 become conflict-only refresh. Create a new linked worktree only after confirmed
 success; preserve the original checkouts. This route grants no live-operation,
 PR-change, cleanup, access, or takeover authority.
+
+When actionable source work is split from a waiting parent, use its native child
+as `<canonical-issue>` with the parent's original `--resume-from` and
+`--handoff-comment` IDs. If the source claim is absent on the child, the helper
+reads the child's native parent in the same repository and verifies that
+parent's complete source/release/handoff records. The retained PRs must
+independently link that parent. A body link alone, a different parent, or an
+unreadable native relationship cannot supply this proof. Both readbacks recheck
+the native relationship, parent's ownership and release, retained artifacts and
+live sessions. The claim records the handoff's actual parent URL, writes only
+the child's claim/status/labels, and preserves the parent's waits and labels.
+The child's own waits and blockers and the retained PRs' holds still apply.
+Without `--handoff-comment`, resume stays on the claimed record.
 
 For an explicitly authorized **conflict-only refresh** of a finished session's
 PR, claim its **canonical open planning issue**, even when the brief names only
