@@ -23,24 +23,30 @@ import iterm_tab
 import tmux_terminal
 
 ADMISSION_OPEN = json.loads((Path(__file__).parent / "fixtures" / "codex-admission-open.json").read_text())["response"]
+RPC_FAILURE = {"error": {"code": -1, "message": "unavailable"}}
 
 
 class DaemonTests(unittest.TestCase):
-    def inspect(self, *, draining=False, pages=None, states=None, probe=None, fail=None):
+    def inspect(self, *, draining=False, pages=None, states=None, probe=None, fail=None,
+                inventory_latency=0):
         pages = pages or {None: {"data": ["detached-worker"], "nextCursor": None}}
         states = states or {"detached-worker": "active"}
         calls = []
         pending = []
+        now = 0
         ws = Mock()
 
         def send(raw):
+            nonlocal now
             message = json.loads(raw)
             calls.append(message)
             if "id" not in message:
                 return
             method, params = message["method"], message["params"]
+            if method in {"thread/loaded/list", "thread/read"}:
+                now += inventory_latency
             if method == fail:
-                response = {"error": {"code": -1, "message": "unavailable"}}
+                response = RPC_FAILURE
             elif method == "thread/loaded/list":
                 response = {"result": pages[params["cursor"]]}
             elif method == "thread/read":
@@ -55,20 +61,30 @@ class DaemonTests(unittest.TestCase):
 
         ws.send.side_effect = send
         ws.recv.side_effect = lambda **_: pending.pop(0)
-        with patch.object(client, "unix_connect") as connect:
+        with (patch.object(client, "unix_connect") as connect,
+              patch.object(iterm_tab.time, "monotonic", side_effect=lambda: now)):
             connect.return_value.__enter__.return_value = ws
             iterm_tab.inspect_codex_daemon(Path("/fixture/account"))
         return calls
 
     def test_healthy_busy_daemon_is_reused_without_loading_or_creating_a_thread(self):
         calls = self.inspect()
-        self.assertTrue(any(c["method"] == "thread/read" for c in calls))
         resume = next(c for c in calls if c["method"] == "thread/resume")
         # Invalid native identity cannot resume anybody else's real thread.
         import uuid
         with self.assertRaises(ValueError):
             uuid.UUID(resume["params"]["threadId"])
         self.assertFalse(any(c["method"] in {"thread/start", "turn/start", "turn/interrupt"} for c in calls))
+
+    def test_open_admission_survives_unrelated_inventory_failure(self):
+        for method in ("thread/loaded/list", "thread/read"):
+            with self.subTest(method=method):
+                self.inspect(fail=method)
+
+    def test_open_admission_does_not_wait_for_slow_loaded_threads(self):
+        pages = {None: {"data": ["first", "second"], "nextCursor": None}}
+        self.inspect(pages=pages, states={"first": "active", "second": "idle"},
+                     inventory_latency=4)
 
     def test_draining_daemon_with_detached_active_worker_refuses(self):
         with self.assertRaises(iterm_tab.DaemonRefusal) as raised:
@@ -88,13 +104,49 @@ class DaemonTests(unittest.TestCase):
             self.inspect(draining=True, pages=pages, states={"idle": "idle", "running": "active"})
         self.assertEqual(raised.exception.active_threads, 1)
 
-    def test_unavailable_or_unknown_inventory_and_admission_refuse(self):
+    def test_draining_inventory_failure_stays_draining_with_unknown_count(self):
         for kwargs in ({"fail": "thread/loaded/list"}, {"fail": "thread/read"},
                        {"states": {"detached-worker": "future-state"}},
-                       {"probe": {"error": {"code": -32600, "message": "different refusal"}}},
-                       {"probe": {"result": {}}}):
-            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                self.inspect(**kwargs)
+                       {"inventory_latency": 11},
+                       {"pages": {None: {"data": None}}}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(iterm_tab.DaemonRefusal) as raised:
+                self.inspect(draining=True, **kwargs)
+            self.assertEqual(raised.exception.state, "draining")
+            self.assertIsNone(raised.exception.active_threads)
+            self.assertIsNotNone(raised.exception.inventory_error)
+
+    def test_partial_inventory_never_reports_a_complete_active_count(self):
+        pages = {None: {"data": ["running"], "nextCursor": "next"},
+                 "next": {"data": None}}
+        with self.assertRaises(iterm_tab.DaemonRefusal) as raised:
+            self.inspect(draining=True, pages=pages, states={"running": "active"})
+        self.assertEqual(raised.exception.state, "draining")
+        self.assertIsNone(raised.exception.active_threads)
+
+    def test_unknown_or_malformed_admission_refuses(self):
+        for probe in ({"error": {"code": -32600, "message": "different refusal"}},
+                      {"result": {}}, {"error": None}, {"error": {"message": []}}):
+            with self.subTest(probe=probe), self.assertRaises(iterm_tab.DaemonRefusal) as raised:
+                self.inspect(probe=probe)
+            self.assertEqual(raised.exception.state, "unknown")
+            self.assertIsNone(raised.exception.active_threads)
+
+    def test_draining_read_failure_retains_rpc_code_without_server_payload(self):
+        with self.assertRaises(iterm_tab.DaemonRefusal) as raised:
+            self.inspect(draining=True, fail="thread/read")
+        self.assertIn("thread/read", raised.exception.inventory_error)
+        self.assertIn(str(RPC_FAILURE["error"]["code"]), raised.exception.inventory_error)
+        self.assertNotIn(RPC_FAILURE["error"]["message"], raised.exception.inventory_error)
+
+    def test_admission_timeout_names_the_method_without_lifecycle_mutation(self):
+        ws = Mock()
+        ws.recv.side_effect = [json.dumps({"id": 1, "result": {}}), TimeoutError]
+        with (patch.object(client, "unix_connect") as connect,
+              patch.object(iterm_tab.subprocess, "run") as run):
+            connect.return_value.__enter__.return_value = ws
+            with self.assertRaisesRegex(ValueError, "thread/resume.*timed out"):
+                iterm_tab.inspect_codex_daemon(Path("/fixture/account"))
+            run.assert_not_called()
 
     def test_socket_timeout_refuses_without_lifecycle_mutation(self):
         with (patch.object(client, "unix_connect", side_effect=TimeoutError),
@@ -102,6 +154,15 @@ class DaemonTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 iterm_tab.inspect_codex_daemon(Path("/fixture/account"))
             run.assert_not_called()
+
+    def test_transport_timeout_keeps_phase_in_launch_refusal(self):
+        choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
+        with (patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run,
+              patch.object(iterm_tab.socket, "socket"),
+              patch.object(iterm_tab, "inspect_codex_daemon", side_effect=TimeoutError)):
+            with self.assertRaisesRegex(ValueError, "WebSocket transport timed out; admission unknown"):
+                iterm_tab.check_codex_daemon(choice)
+            self.assertEqual([c.args[0][-1] for c in run.call_args_list], ["start"])
 
     def test_draining_preflight_never_restarts_and_refuses_before_receipt(self):
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}

@@ -508,20 +508,23 @@ def codex_daemon_endpoint(home):
 
 
 class DaemonRefusal(ValueError):
-    def __init__(self, state, active_threads):
+    def __init__(self, state, active_threads=None, inventory_error=None):
         self.state = state
         self.active_threads = active_threads
-        super().__init__(f"Codex daemon admission {state}; {active_threads} active thread(s). "
+        self.inventory_error = inventory_error
+        inventory = ("active threads unknown" if active_threads is None
+                     else f"{active_threads} active thread(s)")
+        detail = f"; {inventory_error}" if inventory_error else ""
+        super().__init__(f"Codex daemon admission {state}; {inventory}{detail}. "
                          "Do not restart or stop it. Wait for it to exit, or select another "
                          "Context Panel account with --account; inspect active threads before any manual restart")
 
 
 def inspect_codex_daemon(home):
-    """Read loaded thread states and check admission without creating a thread."""
+    """Check admission; inventory only explains a draining refusal, never permits restart."""
     from websockets.sync.client import unix_connect
 
     deadline = time.monotonic() + 10
-    active = 0
     with unix_connect(str(codex_daemon_endpoint(home)), open_timeout=2, close_timeout=1) as ws:
         request_id = 0
 
@@ -532,46 +535,65 @@ def inspect_codex_daemon(home):
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("daemon inspection timed out")
-                message = json.loads(ws.recv(timeout=remaining))
+                    raise ValueError(f"daemon {method} timed out; do not restart")
+                try:
+                    message = json.loads(ws.recv(timeout=remaining))
+                except TimeoutError as error:
+                    raise ValueError(f"daemon {method} timed out; do not restart") from error
                 if message.get("id") == request_id:
                     return message
 
         def result(method, params):
             response = request(method, params)
             if "error" in response or not isinstance(response.get("result"), dict):
-                raise ValueError(f"daemon {method} read failed; active threads unknown; do not restart")
+                error = response.get("error")
+                code = error.get("code") if isinstance(error, dict) else None
+                raise ValueError(f"daemon {method} read failed (RPC code {code}); "
+                                 "active threads unknown; do not restart")
             return response["result"]
 
         result("initialize", {"clientInfo": {"name": "supervisor_launch_preflight", "version": "1"}})
         ws.send(json.dumps({"method": "initialized", "params": {}}))
-        cursor, seen = None, set()
-        while True:
-            page = result("thread/loaded/list", {"cursor": cursor, "limit": 100})
-            if not isinstance(page.get("data"), list):
-                raise ValueError("daemon thread inventory unavailable; do not restart")
-            for thread_id in page["data"]:
-                thread = result("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
-                state = thread["status"]["type"]
-                if state not in {"active", "idle", "systemError", "notLoaded"}:
-                    raise ValueError("daemon thread state unknown; do not restart")
-                active += state == "active"
-            cursor = page.get("nextCursor")
-            if cursor is None:
-                break
-            if not isinstance(cursor, str) or cursor in seen:
-                raise ValueError("daemon thread pagination unavailable; do not restart")
-            seen.add(cursor)
         # The daemon gates thread/resume before parsing the native UUID. An
         # invalid UUID cannot load/create a thread or run its hooks. There is
         # currently no read-only draining flag in the native protocol.
         probe = request("thread/resume", {"threadId": "supervisor-launch-preflight-invalid-id"})
         error = probe.get("error", {})
+        if not isinstance(error, dict):
+            raise DaemonRefusal("unknown")
         message = error.get("message", "")
-        if "Server is draining" in message:
-            raise DaemonRefusal("draining", active)
-        if error.get("code") != -32600 or not message.startswith("invalid session id:"):
-            raise DaemonRefusal("unknown", active)
+        if not isinstance(message, str):
+            raise DaemonRefusal("unknown")
+        if error.get("code") == -32600 and message.startswith("invalid session id:"):
+            return
+        if "Server is draining" not in message:
+            raise DaemonRefusal("unknown")
+
+        # Admission is already refused. A concurrent thread unload, storage
+        # failure or slow inventory must not obscure that known draining state.
+        active, inventory_error = 0, None
+        cursor, seen = None, set()
+        try:
+            while True:
+                page = result("thread/loaded/list", {"cursor": cursor, "limit": 100})
+                if not isinstance(page.get("data"), list):
+                    raise ValueError("daemon thread inventory unavailable; do not restart")
+                for thread_id in page["data"]:
+                    thread = result("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
+                    state = thread["status"]["type"]
+                    if state not in {"active", "idle", "systemError", "notLoaded"}:
+                        raise ValueError("daemon thread state unknown; do not restart")
+                    active += state == "active"
+                cursor = page.get("nextCursor")
+                if cursor is None:
+                    break
+                if not isinstance(cursor, str) or cursor in seen:
+                    raise ValueError("daemon thread pagination unavailable; do not restart")
+                seen.add(cursor)
+        except Exception as error:
+            active = None
+            inventory_error = str(error) if isinstance(error, ValueError) else type(error).__name__
+        raise DaemonRefusal("draining", active, inventory_error)
 
 
 def check_codex_daemon(choice):
@@ -611,6 +633,8 @@ def check_codex_daemon(choice):
         inspect_codex_daemon(home)
     except Exception as error:
         detail = str(error) if isinstance(error, ValueError) else type(error).__name__
+        if isinstance(error, TimeoutError):
+            detail = "daemon Unix WebSocket transport timed out; admission unknown"
         raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
                          "no terminal was launched; do not restart the daemon automatically") from error
 
