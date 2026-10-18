@@ -579,7 +579,10 @@ for recovery or repeat them as fact.
 5. Recreate the ~23-minute check and morning digest with the harness's own
    scheduling feature. Arm Claude Code turn-end notices (`notify_when_idle`)
    and the bounded `skills/supervisor/scripts/codex_idle_watch.py` watch for
-   Codex turn ends. A notice prompts verification, never a completion verdict.
+   Codex turn ends. On either notice, immediately run
+   [finished-session verification](#close-finished-sessions-on-every-notice-and-check)
+   for that exact session; do not defer it to the ~23-minute check. A notice
+   prompts verification, never a completion verdict.
    Start the bounded `skills/supervisor/scripts/foreign_watch.py` watch for the
    run's Director-owned repositories and configured own/Launchplane logins,
    with the Director's login and mention approval so mentions outside those
@@ -631,7 +634,26 @@ For an enrolled Supervisor Claude session with a pending rate-limit move, read
 [account moves](references/claude-account-moves.md) for relaunch qualification
 and its terminal, transcript and account readbacks before sending input.
 
-## Close Finished Sessions On Every Check
+## Close Finished Sessions On Every Notice And Check
+
+Handle turn-end notices as they arrive. For a Codex notice with
+`closeout_request`, start this procedure immediately. For a Claude
+`notify_when_idle` notice, resolve its exact native session in the ledger and
+run `finished_map.py --ledger <private-ledger.json> --session-id <native-id>`;
+its `closeout_request` enters the same procedure. Re-read the transcript even
+when the notice supplies a request. A request is a verification task, not
+permission to send an exit command. An absent request leaves the session open
+for normal stall or capacity handling. Every scheduled check still scans all
+sessions, recovering missed notices. Re-arm an expired or failed watch; do not
+let loss of the watch look like a fleet with no finished sessions.
+
+Aim to finish verification and shutdown within two minutes of the worker's
+verdict. If a check fails, keep the session open and report the exact missing
+proof and next action immediately. Do not bypass a check to meet that target.
+Run each session's verification and claim discovery separately from global
+work selection, train polling and other finished sessions; a slow GitHub read,
+uncertain release or pending permission on one session must not hold up the
+others. A missed target remains visible in the next check and handoff.
 
 1. Match the ledger's session to its transcript, process, and terminal tab.
    Leave the Director's own sessions alone. Keep thread-only sessions without
@@ -693,6 +715,10 @@ and its terminal, transcript and account readbacks before sending input.
    verified closure times and transcript/issue handoffs in that log. It never
    treats log age, a merged PR or an idle tab as closure evidence. Preserve
    status, waits, blockers and retained artifacts; release is ownership only.
+   Name retained PRs and worktrees in the handoff and record any incomplete
+   reconciliation before reporting shutdown complete. The closed-session log
+   records the transcript's verified verdict and observed process exit; never
+   write a fixed "safe-exit yes" just because a close command was attempted.
 
 6. After the process-exit wait, read `list`. If the exact session is gone,
    record that the tab already closed. For a surviving idle shell, preview `close_ttys.py` with the verified

@@ -691,10 +691,13 @@ class LedgerTests(unittest.TestCase):
 
     def test_watch_dedup_resume_and_abort_notice(self):
         seen = {}
+        self.write([event("agent_message", message="Waiting for the next step."),
+                    event("task_complete")])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1050), [])
         notice = codex_idle_watch.poll(self.ledger, seen, 90, 1200)
         self.assertEqual(notice[0]["session_id"], self.entry["session_id"])
         self.assertIsNone(notice[0]["clean"])
+        self.assertIsNone(notice[0]["closeout_request"])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
         self.write([event("task_complete"), event("task_started")])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
@@ -703,6 +706,83 @@ class LedgerTests(unittest.TestCase):
             codex_idle_watch.poll(self.ledger, {}, 90, 1200)[0]["turn_end"],
             "turn_aborted",
         )
+
+    def test_finished_notice_routes_immediately_without_idle_delay(self):
+        seen = {}
+        notices = codex_idle_watch.poll(self.ledger, seen, 90, 1001)
+        self.assertEqual(len(notices), 1)
+        notice = notices[0]
+        request = notice["closeout_request"]
+        self.assertEqual(request, finished_map.candidates(self.ledger)[0]["closeout_request"])
+        self.assertEqual(request["session_id"], self.entry["session_id"])
+        self.assertEqual(request["handoff_url"], self.entry["handoff_url"])
+        self.assertIsNone(notice["clean"])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1002), [])
+        # The notice is historical evidence: fresh verification must reject new work.
+        self.write([event("agent_message", message="Safe to exit: yes"),
+                    event("task_complete"), event("task_started")])
+        self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
+
+    def test_early_closeout_requires_owned_completed_unqualified_response(self):
+        for text, tail, owned in (
+            ("Safe to exit: yes", "task_complete", False),
+            ("Still working.", "task_complete", True),
+            ('"Safe to exit: yes"', "task_complete", True),
+            ("Safe to exit: yes, when CI passes", "task_complete", True),
+            ("Safe to exit: yes", "turn_aborted", True),
+            ("Safe to exit: yes", "task_started", True),
+        ):
+            with self.subTest(text=text, tail=tail, owned=owned):
+                self.entry["supervisor_owned"] = owned
+                self.write([event("agent_message", message=text), event(tail)])
+                self.assertEqual(codex_idle_watch.poll(self.ledger, {}, 90, 1001), [])
+                self.assertIsNone(finished_map.candidates(self.ledger)[0].get("closeout_request"))
+
+    def test_notice_rechecks_changed_ledger_ownership(self):
+        seen = {}
+        self.entry["supervisor_owned"] = False
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.assertIsNone(codex_idle_watch.poll(self.ledger, seen, 90, 1200)[0].get("closeout_request"))
+        self.entry["supervisor_owned"] = True
+        self.ledger.write_text(json.dumps([self.entry]))
+        notices = codex_idle_watch.poll(self.ledger, seen, 90, 1201)
+        self.assertEqual(len(notices), 1)
+        self.assertIsNotNone(notices[0]["closeout_request"])
+
+    def test_claude_native_notice_uses_exact_session_and_shared_route(self):
+        self.entry["harness"] = "claude"
+        records = [{**claude("Safe to exit: yes"), "sessionId": self.entry["session_id"]}]
+        self.transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
+        self.ledger.write_text(json.dumps([self.entry]))
+        command = [sys.executable, str(Path(finished_map.__file__)),
+                   "--ledger", str(self.ledger), "--session-id", self.entry["session_id"]]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        candidate = json.loads(result.stdout)[0]
+        self.assertTrue(candidate["candidate"])
+        self.assertEqual(candidate["closeout_request"]["harness"], self.entry["harness"])
+        # A native idle notice arriving after a new user turn is no longer finish evidence.
+        with self.transcript.open("a") as stream:
+            stream.write(json.dumps({"type": "user", "sessionId": self.entry["session_id"],
+                                     "message": {"content": "Continue working."}}) + "\n")
+        self.assertIsNone(finished_map.candidates(self.ledger, self.entry["session_id"])[0]["closeout_request"])
+        result = subprocess.run(command[:-1] + ["other-session"], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("error", json.loads(result.stdout))
+
+    def test_claude_closeout_with_live_background_task_stays_open(self):
+        self.entry["harness"] = "claude"
+        records = [
+            {"type": "user", "toolUseResult": {"taskId": "running-ci"}},
+            claude("Safe to exit: yes"),
+        ]
+        self.transcript.write_text("".join(json.dumps({**r, "sessionId": self.entry["session_id"]}) + "\n"
+                                          for r in records))
+        self.ledger.write_text(json.dumps([self.entry]))
+        candidate = finished_map.candidates(self.ledger)[0]
+        self.assertFalse(candidate["candidate"])
+        self.assertIsNone(candidate["closeout_request"])
 
     def test_close_only_exited_exact_session_and_never_force(self):
         entry = session_record.load_ledger(self.ledger)[0]

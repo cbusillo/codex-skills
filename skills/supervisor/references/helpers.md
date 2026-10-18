@@ -137,8 +137,31 @@ uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json>
 ```
 
 Rebuild the ~23-minute check and morning digest using the harness's scheduler.
-For each check, read statuses, verify turn-end notices, nudge stalls with exact
-facts, gather Director questions and perform the skill's finished-session step.
+On a turn-end notice, immediately enter the skill's
+[finished-session procedure](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
+for its exact session. Do not collect notices until the next check. Codex
+notices include `closeout_request` only when the latest completed response has
+an unqualified verdict, the ledger says Supervisor-owned and no background
+task remains. Those notices bypass `--idle-seconds` and arrive on the next
+watch poll (45 seconds by default); ordinary turn ends retain the idle delay.
+The request names the session, harness, known handoff URL and verification
+procedure. It does not establish input, handoff or process proof.
+
+For Claude's native `notify_when_idle` notice, read back only the matched
+session through the same candidate router:
+
+```sh
+uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json> --session-id <native-id>
+```
+
+A missing or mismatched native identity, malformed transcript, later work,
+unqualified-verdict failure or live background task cannot request shutdown.
+Run the full existing verification before sending keys. A notice containing
+`closeout_request: null` is still useful for stall or capacity handling and
+never authorizes closing. No script here sends an exit command automatically.
+
+For each scheduled check, scan all sessions as a fallback for missed notices,
+nudge stalls with exact facts and gather Director questions.
 The watcher exits at its wall-clock bound; re-arm it with the harness's built-in
 monitor/scheduler. A new watcher may repeat a notice. `clean: null` means a turn
 ended, not that work succeeded; an abort is also a notice. Use Claude Code's

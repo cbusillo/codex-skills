@@ -12,6 +12,7 @@ from pathlib import Path
 
 from session_record import load_ledger, session_status
 from capacity_retry import locked_state, resume, retry_status
+from finished_map import closeout_request
 
 
 def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
@@ -48,10 +49,12 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
                 )
                 seen[entry["session_id"]] = key
             continue
-        key = (status["mtime"], status["size"], json.dumps(retry, sort_keys=True))
+        closeout = closeout_request(entry, status)
+        key = (status["mtime"], status["size"], json.dumps(retry, sort_keys=True),
+               json.dumps(closeout, sort_keys=True))
         if (
             status["at_turn_end"]
-            and now - status["mtime"] >= idle_seconds
+            and (closeout is not None or now - status["mtime"] >= idle_seconds)
             and seen.get(entry["session_id"]) != key
         ):
             seen[entry["session_id"]] = key
@@ -63,6 +66,7 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
                     "clean": None,
                     "state": status["state"],
                     "capacity_retry": retry,
+                    "closeout_request": closeout,
                 }
             )
     return notices
