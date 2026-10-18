@@ -238,7 +238,7 @@ def unparsed_command_text(value):
         expression = value[start:end].strip()
         if expression.startswith('`'):
             command = re.sub(r"\$\{[^}]*\}", "computed-operand", expression.strip('`'))
-            if not OWNERSHIP_TEXT.search(command) and not any(c in command for c in "`$;&|\n"):
+            if not any(c in command for c in "`$;&|\n"):
                 # A computed operand does not change the executable of a read.
                 argv = shlex.split(command)
                 if argv and Path(argv[0]).name in {"rg", "grep", "cat", "sed", "head", "tail", "ls"}:
@@ -270,8 +270,17 @@ def opaque_ownership(name, value):
         for argv in shell_commands("exec_command", {"cmd": text}):
             child = unwrapped_command(argv)
             executable = helper_argv(argv)
-            if executable and executable[0].startswith("$") and any(word in {"claim", "create"} for word in executable[1:]):
+            _, action = helper_action(argv)
+            if executable and executable[0].startswith("$") and action[:1] in (["claim"], ["create"]):
                 return True
+            if not ownership_command(argv):
+                inspected = child
+                while inspected and inspected[0] in {"do", "then", "else"}:
+                    inspected = unwrapped_command(inspected[1:])
+                if inspected and Path(inspected[0]).name not in {"echo", "printf", "cat", "rg", "grep", "sed", "head", "tail", "ls"}:
+                    if any(ownership_command(argv[i:]) for i, word in enumerate(argv)
+                           if Path(word).name in {"gh-plan.py", "gh-pr.py", "gh"}):
+                        return True
             if child and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}:
                 if any(executable_content(word) for i, word in enumerate(child[1:], 1)
                        if child[i - 1].startswith("-") and "c" in child[i - 1]):
@@ -345,7 +354,8 @@ def unwrapped_command(argv):
             argv = argv[2:]
             while argv and argv[0].startswith("-"):
                 flag = argv.pop(0)
-                if flag in {"--directory", "--project", "--python", "--with", "--group"} and argv:
+                if flag in {"--directory", "--project", "--python", "-p", "--with", "-w", "--group",
+                            "--env-file", "--package", "--with-requirements", "--with-editable", "--extra"} and argv:
                     argv.pop(0)
         else:
             break
@@ -822,6 +832,35 @@ def no_write_claims(records, harness):
             and not values[0].get("completed_steps") and not values[0].get("claim_comment")}
 
 
+def claim_operand(argv):
+    """Read claim's positional after its known scalar argparse options.
+
+    Unrecognized syntax stays unresolved rather than treating an option value
+    or a redirect destination as the issue. New CLI options are conservative
+    until their arity is supported here.
+    """
+    name, action = helper_action(argv)
+    if name != "gh-plan.py" or action[:1] != ["claim"]:
+        return None
+    options = {"--agent", "--agent-override", "--worker", "--session", "--branch",
+               "--next-action", "--resume-from", "--refresh-pr", "--handoff-comment",
+               "--planning-checkout", "--wait-resolved", "--admission", "--admission-link",
+               "--admission-unlinked"}
+    tokens = iter(action[1:])
+    for token in tokens:
+        if token == "--":
+            return next(tokens, None)
+        option, equal, _ = token.partition("=")
+        if option in options:
+            if not equal and next(tokens, None) is None:
+                return None
+        elif token.startswith("-") or token in {">", ">>", "<", "<<", "2>", "2>>"}:
+            return None
+        else:
+            return token
+    return None
+
+
 def claim_targets(records, harness):
     """Resolve explicit references; bind unscoped numbers to their own receipts."""
     def claiming(name, value):
@@ -846,25 +885,26 @@ def claim_targets(records, harness):
             if identifier in no_writes:
                 continue
             commands = claim_commands(name, value)
+            own = canonical.get(identifier, set())
+            if len(commands) != 1 or len(own) != 1 or not isolated_command(name, value, "gh-plan.py"):
+                own = set()
             for argv in commands:
-                target = argv[argv.index("claim") + 1:]
-                if not target:
-                    continue
-                explicit = (re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)", target[0])
-                            or re.fullmatch(r"([^/\s]+/[^#\s]+)#([1-9]\d*)", target[0]))
+                target = claim_operand(argv) or ""
+                explicit = (re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/([1-9]\d*)", target)
+                            or re.fullmatch(r"([\w.-]+/[\w.-]+)#([1-9]\d*)", target))
                 if explicit:
                     resolved = {(explicit[1], int(explicit[2]))}
-                elif re.fullmatch(r"#?[1-9]\d*", target[0]):
-                    number = int(target[0].removeprefix("#"))
+                elif re.fullmatch(r"#?[1-9]\d*", target):
+                    number = int(target.removeprefix("#"))
                     repos = {argv[i + 1] for i, token in enumerate(argv[:-1]) if token in {"--repo", "-R"}}
                     repos.update(token.removeprefix("--repo=") for token in argv if token.startswith("--repo="))
-                    # A native invocation can contain several shell commands.
-                    # Its receipts do not identify which command produced them.
-                    own = canonical.get(identifier, set()) if len(commands) == 1 else set()
+                    repos = {repo for repo in repos if re.fullmatch(r"[\w.-]+/[\w.-]+", repo)}
+                    # Only isolated native output can establish an invocation's
+                    # destination; another command may print a saved receipt.
                     resolved = {(repo, number) for repo in repos} or {
                         pair for pair in own if pair[1] == number} or {(None, number)}
                 else:
-                    continue
+                    resolved = own or {(None, None)}
                 for repo, number in resolved:
                     targets.append({"invocation": identifier, "repository": repo, "number": number})
     return targets

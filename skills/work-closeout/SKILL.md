@@ -295,9 +295,11 @@ command scope and its own receipt are both unavailable, retain conditional/no,
 record the blocker and next actor, and continue independent work. Do not repeat
 a write to manufacture evidence for the earlier invocation. For future claims,
 put `--repo OWNER/REPO` in each command and keep receipts visible with `tee`.
-A numeric claim with its own canonical receipt uses only that receipt's
-repository; batched commands need explicit repository operands because their
-shared native output cannot bind receipts to individual shell commands.
+A numeric or variable issue operand can use its own unique canonical receipt
+from an isolated claim invocation to establish missing scope. Batched commands
+need explicit repository operands because their shared native output cannot
+bind receipts to individual shell commands. Unknown operands without that
+evidence keep coverage incomplete, even when an older claim was released.
 Another invocation's receipt cannot fill a missing scope gap.
 A saved report read with `cat`, an earlier proof before another claim or PR was
 created, and final-answer prose do not satisfy shutdown acceptance. Run the

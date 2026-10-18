@@ -186,6 +186,8 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
     expanded = set()
     for target in targets:
         repo, number = target["repository"], target["number"]
+        if number is None:
+            continue  # Unknown operands stay incomplete without guessed API paths.
         if repo:
             native_issues.add((repo, number))
         else:

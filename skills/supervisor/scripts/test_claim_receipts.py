@@ -122,7 +122,7 @@ class ReceiptTests(unittest.TestCase):
                             payload.pop("arguments")
                             rows[index + 1]["payload"]["type"] = "local_shell_call_output"
                         else:
-                            payload.update(name=tool, arguments=json.dumps({"command": command} if tool == "shell_command" else {"cmd": ["/bin/bash", "-lc", command]}))
+                            payload.update(name=tool, arguments=json.dumps({"command": command} if tool == "shell_command" else {"command": ["/bin/bash", "-lc", command]}))
                     without_check = [*rows[:3], *rows[-2:]]
                     self.assertFalse(session_record.summarize(without_check, "codex")["safe_verdict"])
                     self.assertTrue(receipts.ownership_state(rows, "codex")["indices"])
@@ -132,7 +132,10 @@ class ReceiptTests(unittest.TestCase):
         helper = "/catalog/gh-plan.py --repo example/a claim 1"
         commands = ("timeout 300 uv run " + helper, "GH_PROMPT_DISABLED=1 uv run " + helper,
                     "env X=1 uv run " + helper, "uv run --directory /repo " + helper,
-                    "uv run --script " + helper, "uv run python3 " + helper)
+                    "uv run --script " + helper, "uv run python3 " + helper,
+                    "uv run --env-file .env " + helper, "uv run --package pkg " + helper,
+                    "uv run -p 3.12 " + helper, "uv run --with-requirements deps.txt " + helper,
+                    "uv run --extra deps " + helper)
         for harness in ("codex", "claude"):
             for command in commands:
                 with self.subTest(harness=harness, command=command):
@@ -164,10 +167,13 @@ class ReceiptTests(unittest.TestCase):
                         rows[1]["message"]["content"][0]["input"] = {"command": command}
                     self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
                     self.assertTrue(receipts.acceptance(rows, harness, SESSION)["clear"])
-        rows = history("codex", {})
-        rows[1]["payload"].update(name="functions.exec", arguments=
-            'const query="claim"; text(await tools.exec_command({cmd:`uv run gh-plan.py --repo example/a search ${query}`}));')
-        self.assertFalse(receipts.ownership_state(rows, "codex")["indices"])
+        for cell in ('const query="claim"; text(await tools.exec_command({cmd:`uv run gh-plan.py --repo example/a search ${query}`}));',
+                     'for(const n of [1,2]) text(await tools.exec_command({cmd:`uv run gh-plan.py show ${n} --sections claim`}));',
+                     'const r="example/a";text(await tools.exec_command({cmd:`uv run gh-plan.py --repo ${r} search claim`}));'):
+            with self.subTest(cell=cell):
+                rows = history("codex", {})
+                rows[1]["payload"].update(name="functions.exec", arguments=cell)
+                self.assertFalse(receipts.ownership_state(rows, "codex")["indices"])
 
     def test_wrapped_pr_creation_keeps_repository_and_created_pr_provenance(self):
         url = "https://github.com/example/a/pull/2"
@@ -200,6 +206,38 @@ class ReceiptTests(unittest.TestCase):
                         rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
                         self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
                         self.assertFalse(receipts.acceptance(rows, harness, SESSION)["clear"])
+            for action in ("--repo example/a show 1 --sections claim", "--repo=example/a search create"):
+                with self.subTest(harness=harness, read=action):
+                    rows = history(harness, {})
+                    command = 'GHP=/catalog/gh-plan.py; uv run "$GHP" ' + action
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+
+    def test_unknown_launchers_and_shell_keywords_preserve_ownership_uncertainty(self):
+        helper = "/catalog/gh-plan.py --repo example/a claim 1"
+        for harness in ("codex", "claude"):
+            for command in ("builtin command uv run " + helper,
+                            "for n in 1 2; do uv run " + helper + "; done",
+                            "if true; then uv run " + helper + "; fi"):
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                    self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+                    self.assertFalse(receipts.acceptance(rows, harness, SESSION)["clear"])
+            for command in ("rg /catalog/gh-plan.py claim", "for n in 1; do cat /catalog/gh-plan.py claim; done"):
+                rows = history(harness, {})
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
 
     def test_claude_shared_result_record_does_not_decode_an_unrelated_deep_read(self):
         rows = history("claude", claim(), {**proof(("example/a", 1, 10)), "harness": "claude"})
@@ -1041,6 +1079,82 @@ class ReceiptTests(unittest.TestCase):
         value = {"operation": receipts.CLAIM_OPERATION, "claim": {"session": SESSION}, "ok": False,
                  "write_outcome": "unknown"}
         self.assertFalse(session_record.summarize(history("codex", value), "codex")["safe_verdict"])
+
+
+    def test_claim_options_before_operand_preserve_exact_or_unresolved_scope(self):
+        options = "--worker w --session native-fixture --branch b --next-action n"
+        cases = ((f"{options} client/repo#7", ("client/repo", 7)),
+                 (f"{options} $ISSUE", (None, None)),
+                 (f"{options} $OWNER/repo#7", (None, None)),
+                 (f"{options} 7", (None, 7)),
+                 (options, (None, None)),
+                 ("--worker=w --session=native-fixture --branch=b --next-action=n -- client/repo#7", ("client/repo", 7)))
+        for harness in ("codex", "claude"):
+            for action, target in cases:
+                with self.subTest(harness=harness, action=action):
+                    rows = history(harness, claim(), {})
+                    command = "uv run /catalog/gh-plan.py claim " + action + " > claim.json"
+                    if harness == "codex":
+                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[3]["message"]["content"][0]["input"] = {"command": command}
+                    rows[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
+                    self.assertIn({"invocation": "tool-1", "repository": target[0], "number": target[1]},
+                                  receipts.claim_targets(rows, harness))
+                    self.assertIn(("example/a", 1), receipts.target_records(rows, harness))
+                    if target[0]:
+                        self.assertIn(target[0], receipts.target_repositories(rows, harness))
+            rows = history(harness, claim("client/repo", 7))
+            command = "uv run /catalog/gh-plan.py claim " + options + " 7"
+            if harness == "codex":
+                rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else:
+                rows[1]["message"]["content"][0]["input"] = {"command": command}
+            self.assertEqual(receipts.target_records(rows, harness), {("client/repo", 7)})
+
+
+    def test_only_an_isolated_claim_can_supply_its_own_unknown_operand_scope(self):
+        for harness in ("codex", "claude"):
+            for operand in ("$ISSUE", "7"):
+                for wrapper in ("{}", "cd /repo && {} 2>&1 | tee claim.json"):
+                    with self.subTest(harness=harness, operand=operand, wrapper=wrapper):
+                        rows = history(harness, claim("client/repo", 7))
+                        command = wrapper.format("uv run /catalog/gh-plan.py claim --worker w " + operand)
+                        if harness == "codex":
+                            rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        else:
+                            rows[1]["message"]["content"][0]["input"] = {"command": command}
+                        self.assertEqual(receipts.target_records(rows, harness), {("client/repo", 7)})
+            for operand, number in (("$ISSUE", None), ("7", 7)):
+                for suffix, result in ((" > claim.json; cat old.json", claim("client/repo", 7)),
+                                       ("", [claim("client/repo", 7), claim("other/repo", 7)])):
+                    with self.subTest(harness=harness, operand=operand, suffix=suffix):
+                        rows = history(harness, claim(), {})
+                        command = "uv run /catalog/gh-plan.py claim --worker w " + operand + suffix
+                        if harness == "codex":
+                            rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        else:
+                            rows[3]["message"]["content"][0]["input"] = {"command": command}
+                        rows[4] = output(result, harness, "tool-1")
+                        self.assertIn({"invocation": "tool-1", "repository": None, "number": number},
+                                      receipts.claim_targets(rows, harness))
+
+
+    def test_numeric_claim_variable_repository_needs_its_own_canonical_destination(self):
+        for harness in ("codex", "claude"):
+            for option in ('--repo "$REPO"', '--repo=${REPO}'):
+                for canonical in (True, False):
+                    with self.subTest(harness=harness, option=option, canonical=canonical):
+                        rows = history(harness, claim("client/repo", 7) if canonical else {})
+                        command = "uv run /catalog/gh-plan.py " + option + " claim --worker w 7"
+                        if harness == "codex":
+                            rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        else:
+                            rows[1]["message"]["content"][0]["input"] = {"command": command}
+                        self.assertEqual(receipts.target_records(rows, harness),
+                                         {("client/repo" if canonical else None, 7)})
+                        self.assertEqual(receipts.target_repositories(rows, harness),
+                                         {"client/repo"} if canonical else set())
 
 
 if __name__ == "__main__":
