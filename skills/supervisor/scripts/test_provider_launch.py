@@ -7,6 +7,7 @@
 
 import argparse
 import asyncio
+import errno
 import json
 import os
 from pathlib import Path
@@ -108,7 +109,9 @@ class ResumeLaunchTests(unittest.TestCase):
     def test_daemon_failures_stay_on_source_and_refuse_before_receipt_preparation(self):
         from websockets.exceptions import InvalidHandshake, ConnectionClosedError
         for failure in (InvalidHandshake("fixture handshake"), ConnectionClosedError(None, None),
-                        iterm_tab.DaemonRefusal("draining", 2), TimeoutError()):
+                        iterm_tab.DaemonRefusal("draining", 2), TimeoutError(),
+                        ConnectionRefusedError(errno.ECONNREFUSED, "fixture"),
+                        FileNotFoundError(errno.ENOENT, "fixture")):
             with self.subTest(failure=type(failure).__name__):
                 self.inspect.side_effect = failure
                 with self.assertRaises(ValueError) as caught:
@@ -116,6 +119,15 @@ class ResumeLaunchTests(unittest.TestCase):
                 self.assertIn(str(self.home), str(caught.exception))
                 self.assertNotIn("--account", str(caught.exception))
         self.prepare.assert_not_called()
+        self.start.assert_not_called()
+
+    def test_missing_source_socket_refuses_before_account_or_launch_effects(self):
+        self.endpoint.unlink()
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
+        self.select.assert_not_called()
+        self.prepare.assert_not_called()
+        self.inspect.assert_not_called()
         self.start.assert_not_called()
 
     def test_bad_identity_and_launch_options_refuse_before_receipt_preparation(self):

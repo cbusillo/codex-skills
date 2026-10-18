@@ -10,6 +10,7 @@
 
 import argparse
 import asyncio
+import errno
 import json
 import os
 import re
@@ -674,6 +675,9 @@ def preflight_codex_daemon(choice, *, exact_source=False):
         remedy = ("keep this source account and wait for its daemon to admit resumption; "
                   "do not restart the daemon" if exact_source else
                   "do not restart the daemon automatically")
+        if exact_source and isinstance(error, OSError) and error.errno in {errno.ENOENT, errno.ECONNREFUSED}:
+            from codex_session_proxy import stopped_daemon_remedy
+            remedy = stopped_daemon_remedy(home)
         raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
                          f"no terminal was launched; {remedy}") from error
 

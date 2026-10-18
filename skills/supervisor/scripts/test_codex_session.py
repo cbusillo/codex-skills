@@ -102,6 +102,18 @@ class ResumeTests(unittest.TestCase):
         with contextlib.redirect_stdout(output): SESSION.run(self.args)
         self.assertEqual(json.loads(output.getvalue())["pid"], self.child.pid)
 
+    def test_missing_source_socket_refuses_resume_and_queue_without_an_action(self):
+        codex_daemon_endpoint(self.home).unlink()
+        with patch.object(SESSION, "run_client", new_callable=AsyncMock) as guarded:
+            for command in ("resume", "queue"):
+                with self.subTest(command=command):
+                    self.args.command = command
+                    with self.assertRaises(ValueError):
+                        SESSION.run(self.args)
+            guarded.assert_not_called()
+        self.spawn.assert_not_called()
+        self.assertFalse(self.log.exists())
+
     def test_source_validation_refuses_unconfigured_home_wrong_transcript_and_socket(self):
         with patch.object(SESSION, "run_client", new_callable=AsyncMock) as guarded:
             self.homes.return_value = []

@@ -1948,6 +1948,18 @@ exact pane for inspection; never replay an uncertain launch. Daemon refusal
 requires waiting or diagnosis on this same source account, without switching
 accounts or restarting the daemon.
 
+A missing socket or connection refusal can mean that this source's daemon is
+stopped, for example after a reboot. Verify that it is stopped first, then use
+the existing native start route on its exact configured home and retry recovery:
+
+```sh
+env CODEX_HOME="<source-home>" codex app-server daemon start
+```
+
+The recovery launcher, resume and queue never start it automatically. Native
+`start` brings back a stopped daemon; do not use `stop`, `restart` or `bootstrap`,
+and never treat draining or an unknown admission response as permission to restart.
+
 If recording generation metadata fails after a native resume, the RPC reports
 that partial outcome and retains the connection and durable invalidation. Retry
 the exact resume for metadata, preserving the source in the meantime.
