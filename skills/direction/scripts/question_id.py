@@ -33,7 +33,7 @@ def heading_id(body: str) -> str | None:
     if int(match[1]) > 4:
         return match[0]
     suffix = body[match.end():].lstrip(" *\t")
-    return match[0] if not suffix or suffix[0] in ".:=—–-\r\n" else None
+    return match[0] if not suffix or suffix[0] in ".—–" else None
 
 
 def number_heading(body: str, question: str) -> str:

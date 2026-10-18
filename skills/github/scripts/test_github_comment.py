@@ -1162,12 +1162,72 @@ def test_question_numbering_follows_confirmed_write_and_repairs_same_assignment(
             assert result["question_id"] == assigned
             assert counter.heading_id(saved["body"]) == assigned
             assert json.loads(path.read_text())["last_id"] == seed + 1
+            for edit in ({"edit_comment": saved["id"]}, {"edit_last": True}):
+                before = dict(saved)
+                patches = sum(call["method"] == "PATCH" for call in _calls)
+                try:
+                    github_comment.comment("issue", 42, "Owner question: Q80. Reworded?",
+                                           repo="owner/repo", gh_cmd="fake-gh", **edit)
+                except github_comment.CommentError as error:
+                    assert error.failure.write_outcome == "not_started"
+                else:
+                    raise AssertionError("an edit must preserve the original question identity")
+                assert saved == before
+                assert sum(call["method"] == "PATCH" for call in _calls) == patches
             repeated = github_comment.comment("issue", 42, text, repo="owner/repo", dedupe_body=True, gh_cmd="fake-gh")
             assert repeated["comment_action"] == "existing"
             # Rewording an existing question keeps its heading ID.
             github_comment.comment("pr", 42, "Director question: Continue now?", repo="owner/repo", edit_last=True, gh_cmd="fake-gh")
             assert counter.heading_id(saved["body"]) == assigned
             assert json.loads(path.read_text())["last_id"] == seed + 1
+
+        with_call_stub(callback, run)
+
+
+def test_concurrent_numbering_reconciles_the_same_saved_body() -> None:
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}):
+        path = question_counter.counter_path()
+        seed = question_counter.update(path, seed=(50, ["fixture"]), allocate=False)
+        saved = {}
+        reads = 0
+        changed_question = False
+
+        def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            nonlocal reads
+            if endpoint == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "POST":
+                saved.update(comment_body(1001, body=body["body"]))
+                saved["issue_url"] = "https://api.github.com/repos/owner/repo/issues/42"
+                return success(dict(saved))
+            assert method == "GET", method
+            if "/comments/" not in endpoint:
+                return success([])
+            reads += 1
+            if reads == 2:
+                assigned = question_counter.update(path, question_url=saved["html_url"])
+                saved["body"] = question_counter.number_heading(saved["body"], f"Q{assigned}")
+                if changed_question:
+                    saved["body"] += " Changed by another editor."
+            return success(dict(saved))
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            nonlocal reads, changed_question
+            result = github_comment.comment("issue", 42, "Owner question: Continue?", repo="owner/repo", gh_cmd="fake-gh")
+            assert result["question_id"] == question_counter.heading_id(saved["body"])
+            assert json.loads(path.read_text())["last_id"] == seed + 1
+            assert sum(call["method"] == "POST" for call in calls) == 1
+            assert not any(call["method"] == "PATCH" for call in calls)
+            reads, changed_question = 0, True
+            try:
+                github_comment.comment("issue", 42, "Owner question: Continue?", repo="owner/repo", gh_cmd="fake-gh")
+            except github_comment.CommentError as error:
+                assert error.failure.cause == "comment_conflict"
+                assert error.failure.write_outcome == "applied"
+            else:
+                raise AssertionError("a concurrent text edit must remain a conflict")
+            assert json.loads(path.read_text())["last_id"] == seed + 1
+            assert not any(call["method"] == "PATCH" for call in calls)
 
         with_call_stub(callback, run)
 
@@ -1224,6 +1284,7 @@ def test_personal_question_uses_chat_id_before_exact_text_approval() -> None:
 
 
 TESTS: list[Callable[[], None]] = [
+    test_concurrent_numbering_reconciles_the_same_saved_body,
     test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
     test_numbered_questions_are_unchanged_without_counter_access,
     test_personal_question_uses_chat_id_before_exact_text_approval,

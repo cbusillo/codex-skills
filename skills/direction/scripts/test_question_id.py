@@ -114,10 +114,11 @@ class QuestionCounterTests(unittest.TestCase):
             self.assertEqual(counter.number_heading(numbered, "Q74"), numbered)
         self.assertIsNone(counter.heading_id("A report mentioning Owner question: Q72"))
         for quarter in range(1, 5):
-            body = f"Owner question: Q{quarter} budget: approve the spend?"
-            self.assertIsNone(counter.heading_id(body))
-            self.assertEqual(counter.heading_id(counter.number_heading(body, "Q73")), "Q73")
-        for separator in (".", ":", "=", " —", " -", "\n", ""):
+            for context in (" budget: approve the spend?", ": approve the budget?", "-2026 hiring plan?"):
+                body = f"Owner question: Q{quarter}" + context
+                self.assertIsNone(counter.heading_id(body))
+                self.assertEqual(counter.heading_id(counter.number_heading(body, "Q73")), "Q73")
+        for separator in (".", " —"):
             self.assertEqual(counter.heading_id("Owner question: Q3" + separator), "Q3")
         self.assertEqual(counter.heading_id("Owner question: Q73 Continue?"), "Q73")
         self.assertEqual(counter.number_heading("Owner question: Q73 Continue?", "Q74"), "Owner question: Q73 Continue?")

@@ -198,6 +198,9 @@ class DeliveryTests(unittest.TestCase):
 
     def test_receipt_requires_registered_question_and_never_accepts_source_as_delivery(self):
         with self.assertRaises(ValueError):
+            self.run_queue(ack="https://github.com/cbusillo/codex-skills/issues/1#issuecomment-999999",
+                           delivery_url="https://discord.com/channels/1/2/3")
+        with self.assertRaises(ValueError):
             self.run_queue(ack=self.questions[0]["url"], delivery_url="https://discord.com/channels/1/2/3")
         report = self.run_queue(register=True)
         row = report["questions"][0]

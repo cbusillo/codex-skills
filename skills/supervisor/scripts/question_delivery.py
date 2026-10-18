@@ -254,7 +254,7 @@ def reconcile(args, fetch):
                 writes.append(marker_body("registered", question["url"]))
     if args.ack:
         validate_receipt(args.delivery_url)
-        question = next((q for q in report["questions"] if q["url"] == args.ack), None)
+        question: dict[str, Any] | None = next((q for q in report["questions"] if q["url"] == args.ack), None)
         if question is None or not question["registration_url"]:
             raise ValueError("acknowledgement requires a registered unresolved question")
         if not question["question_id"]:
