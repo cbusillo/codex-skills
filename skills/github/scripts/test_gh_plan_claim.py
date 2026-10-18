@@ -1227,9 +1227,13 @@ class ClaimTests(unittest.TestCase):
                     if phase == "preflight": self.assert_no_writes()
                     else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
-    def test_plain_child_resume_rechecks_the_original_source_family(self):
-        for phase, holder in product(("preflight", "after_post", "after_status"), ("parent", "sibling", "none")):
-            with self.subTest(phase=phase, holder=holder):
+    def test_child_resume_rechecks_the_original_source_family(self):
+        for phase, holder, route, own_session in product(
+                ("preflight", "after_post", "after_status"),
+                ("parent", "sibling", "none", "foreign_tree", "source_live", "source_unreleased"),
+                ("plain", "handoff", "fresh"),
+                ("absent", "requester", "source_requester", "observed_requester")):
+            with self.subTest(phase=phase, holder=holder, route=route, own_session=own_session):
                 self.setUp()
                 self.parent_handoff_fixture()
                 inherited = {**OTHER, "session": "first-child", "branch": "work/source-followup",
@@ -1244,6 +1248,26 @@ class ClaimTests(unittest.TestCase):
                     {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT},
                      "created_at": "2026-10-02T00:00:00Z"}]
                 self.args.resume_from, self.args.handoff_comment = 88, None
+                if route == "handoff":
+                    self.args.handoff_comment = 89
+                    self.comments[-1]["body"] += "\n\nSource handoff: PR #99 and #100 are reviewed; work is finished."
+                    for pull in [*self.pulls, *self.closed_pulls.values()]:
+                        pull["body"] += "\nRefs #43"
+                if route == "fresh":
+                    self.args.resume_from = None
+                if own_session not in {"absent", "observed_requester"}:
+                    if own_session == "source_requester":
+                        self.args.session = CLAIM.records(
+                            self.target_comments["/repos/owner/repo/issues/41/comments"][0]["body"])[0]["session"]
+                    self.inventory["sessions"] = [{"sessionId": self.args.session,
+                                                   "cwd": self.inventory["worktrees"][1]["path"]}]
+                    self.inventory["session_states"] = {self.args.session: {"state": "live"}}
+                if own_session == "observed_requester":
+                    def observed(inv, _comments):
+                        return {**inv, "sessions": [*inv["sessions"], {"sessionId": self.args.session,
+                                "cwd": inv["worktrees"][1]["path"]}],
+                                "session_states": {**inv.get("session_states", {}), self.args.session: {"state": "live"}}}
+                    self.observe_inventory = observed
                 resumed_elsewhere = {**inherited, "session": "new-source-holder", "branch": "work/source-elsewhere"}
                 def successor():
                     if holder == "parent":
@@ -1256,6 +1280,19 @@ class ClaimTests(unittest.TestCase):
                         self.children["/repos/owner/repo/issues/41/sub_issues"].append(sibling)
                         self.target_comments["/repos/owner/repo/issues/44/comments"] = [
                             {"id": 90, "body": CLAIM.marker(resumed_elsewhere), "user": {"login": TEST_BOT}}]
+                    elif holder == "foreign_tree":
+                        self.inventory["sessions"].append({"sessionId": "foreign-peer",
+                                                           "cwd": self.inventory["worktrees"][1]["path"]})
+                    elif holder == "source_live":
+                        earlier = {**OTHER, "session": "earlier-source", "branch": "work/source-earlier"}
+                        self.target_comments["/repos/owner/repo/issues/41/comments"].extend([
+                            {"id": 70, "body": CLAIM.marker(earlier), "user": {"login": TEST_BOT},
+                             "created_at": earlier["claimed_at"]},
+                            {"id": 71, "body": "Released claim 70", "user": {"login": TEST_BOT},
+                             "created_at": "2026-10-02T00:00:00Z"}])
+                        self.inventory["sessions"].append({"sessionId": earlier["session"], "cwd": "/elsewhere"})
+                    elif holder == "source_unreleased":
+                        self.target_comments["/repos/owner/repo/issues/41/comments"].pop()
                 if phase == "preflight": successor()
                 else: setattr(self, phase, successor)
                 if holder == "none":
@@ -1270,9 +1307,21 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
-                record_number = self.parent["number"] if holder == "parent" else 44
+                if holder == "foreign_tree" and route == "handoff" and phase != "preflight":
+                    # Existing retained-artifact readback rejects this activity
+                    # before the inherited-family check, on the claimed record.
+                    self.assertIn("claude_session", [entry["source"] for entry in
+                                  caught.exception.payload["competing_evidence"]])
+                    self.assertEqual(caught.exception.payload["coordination"][0]["work_record"],
+                                     "https://github.com/owner/repo/issues/43")
+                    self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                    continue
+                record_number = 44 if holder == "sibling" else self.parent["number"]
+                claim_id = (70 if holder == "source_live" else
+                            self.target_comments["/repos/owner/repo/issues/41/comments"][0]["id"]
+                            if holder in {"foreign_tree", "source_unreleased"} else 90)
                 self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
-                                 f"https://github.com/owner/repo/issues/{record_number}#issuecomment-90")
+                                 f"https://github.com/owner/repo/issues/{record_number}#issuecomment-{claim_id}")
                 if phase == "preflight": self.assert_no_writes()
                 else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 

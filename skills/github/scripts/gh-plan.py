@@ -2497,6 +2497,14 @@ def claim_once(args: argparse.Namespace) -> None:
         peer_records = github_plan_claim.records(peer_status) + [
             record for c in peer_comments for record in github_plan_claim.records(c.get("body") or "")]
         peer_inventory = github_plan_claim.observe_sessions(source_inventory, peer_comments)
+        # The requester can occupy a released source worktree. Exclude only its
+        # native identity, including observations added by observe_sessions;
+        # foreign sessions and unreleased discussion ownership still compete.
+        peer_inventory = {**peer_inventory,
+                          "sessions": [peer for peer in peer_inventory["sessions"]
+                                       if peer.get("sessionId") != claim["session"]],
+                          "session_states": {session: state for session, state in peer_inventory.get("session_states", {}).items()
+                                             if session != claim["session"]}}
         ended = github_plan_claim.ended_ownership(peer_comments, peer_inventory)
         conflicts, owned = github_plan_claim.discussion_evidence(
             peer_status, peer_comments, claim, ended_claims={entry["claim_id"] for entry in ended})
@@ -2565,7 +2573,7 @@ def claim_once(args: argparse.Namespace) -> None:
             check_peer_ownership(peer_repo, peer_number, peer_status, peer_comments, source_inventory)
 
     def check_inherited_sources(current_comments: list[dict[str, Any]], current_status: str) -> None:
-        """A child's plain resume cannot race a successor of its original source."""
+        """Later work on a child cannot race a holder of its original source."""
         checked = set()
         for record in github_plan_claim.records(current_status) + [
                 record for c in current_comments for record in github_plan_claim.records(c.get("body") or "")]:
@@ -2580,6 +2588,10 @@ def claim_once(args: argparse.Namespace) -> None:
                 raise ClassifiedPlanError("claim_resume_lineage_invalid", "Retained source lineage is malformed; preserve its ownership evidence")
             parent_repo, parent_number = match.group(1), int(match.group(2))
             if parent_repo.casefold() != issue_repo.casefold():
+                if not args.resume_from and not handoff_id:
+                    # Foreign historical handoffs cannot supply native lineage
+                    # for independent fresh work. Explicit resume still refuses.
+                    continue
                 raise ClassifiedPlanError("claim_resume_lineage_invalid", "Retained source lineage must stay in the claimed issue's repository")
             key = (parent_number, source_id, handoff_url)
             if parent_number == number or key in checked:
@@ -2593,9 +2605,10 @@ def claim_once(args: argparse.Namespace) -> None:
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str) -> set[str]:
         nonlocal retained_waits
         if not handoff_id:
+            if record_kind == "issue":
+                check_inherited_sources(current_comments, current_status)
             if args.resume_from and record_kind == "issue":
                 check_handoff_successors(number, inventory)
-                check_inherited_sources(current_comments, current_status)
             return set()
         source_number, source_comments, source_status = resume_source(current_comments, current_status)
         _, target_pulls = collect_paged_rest_items(
@@ -2698,6 +2711,8 @@ def claim_once(args: argparse.Namespace) -> None:
         if live_sources:
             owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]
             refuse(live_sources, owner_comments=owner_comments, owner_repo=owner_repo, owner_number=owner_number)
+        if not refresh_pr:
+            check_inherited_sources(current_comments, current_status)
         check_handoff_successors(source_number, target_inventory)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)
         for checked_number, checked_repo in dict.fromkeys(

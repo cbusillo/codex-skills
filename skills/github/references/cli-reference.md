@@ -1259,9 +1259,12 @@ that source or handoff, its full ownership is checked, including later plain
 resumes that omit handoff metadata or change branch. Its claims refuse until
 exact authored releases or verified native session completion account for
 them; positive live-session evidence still refuses. A child with no record of
-that source remains unrelated and does not block it. Plain resume on a child
-also rechecks the original source family recorded in its claim history, so it
-cannot race a new holder on the parent or another child. Malformed lineage
+that source remains unrelated and does not block it. Later claims on a child,
+including plain resume, retained handoff and fresh claims, also recheck the
+original source family recorded in its claim history, so they cannot race a
+new holder on the parent or another child. The requester's own native session
+may occupy a released source worktree; foreign sessions and unreleased
+ownership still refuse. Malformed lineage
 refuses with `claim_resume_lineage_invalid`. These checks read ownership only;
 they do not transfer authority or change the original parent's holds.
 Cross-record inference applies only to ordinary
