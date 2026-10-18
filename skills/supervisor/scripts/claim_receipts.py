@@ -152,20 +152,32 @@ def single_composed_call(value, method):
 
 
 def isolated_command(name, value, helper):
-    """One helper invocation, optionally piped to tee, with no other output source."""
-    commands, texts = list(shell_commands(name, value)), list(shell_texts(name, value))
-    if (not commands or script(commands[0]) != helper or len(commands) > 2
-            or any(argv[0] != "tee" for argv in commands[1:]) or len(texts) != 1
-            or "$(" in texts[0] or "`" in texts[0]):
+    """One helper, optional leading cd, stderr merge and tee; no other output source."""
+    texts = list(shell_texts(name, value))
+    if len(texts) != 1 or "$(" in texts[0] or "`" in texts[0]:
         return False
-    lexer = shlex.shlex(texts[0], posix=True, punctuation_chars=";&|<>\n")
+    lexer = shlex.shlex(texts[0].strip(), posix=True, punctuation_chars=";&|<>\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     try:
-        operators = [t for t in lexer if t and all(c in ";&|<>\n" for c in t)]
+        tokens = list(lexer)
     except ValueError:
         return False
-    if operators not in ([], ["|"]):
+    # Merging stderr preserves visible helper output; other redirections do not.
+    normalized, cursor = [], 0
+    while cursor < len(tokens):
+        if tokens[cursor:cursor + 3] == ["2", ">&", "1"]:
+            cursor += 3
+        else:
+            normalized.append(tokens[cursor])
+            cursor += 1
+    if len(normalized) >= 3 and normalized[0] == "cd" and normalized[2] == "&&":
+        normalized = normalized[3:]
+    operators = [t for t in normalized if t and all(c in ";&|<>\n" for c in t)]
+    if not normalized or operators not in ([], ["|"]):
+        return False
+    pipe = normalized.index("|") if "|" in normalized else len(normalized)
+    if script(normalized[:pipe]) != helper or (pipe < len(normalized) and normalized[pipe + 1:pipe + 2] != ["tee"]):
         return False
     native = arguments(value)
     if name in {"exec", "functions.exec"} and isinstance(native, str):
@@ -321,6 +333,8 @@ def check_outputs(records, harness, *, receipts=None):
     isolated = set()
     for record in records:
         calls, _ = calls_and_results(record, harness)
+        if sum(bool(predicate(name, value)) for _, name, value in calls) != 1:
+            continue  # Parallel checks share one snapshot-order boundary.
         for identifier, name, value in calls:
             if isolated_command(name, value, "check_claims.py"):
                 isolated.add(identifier)
@@ -329,12 +343,14 @@ def check_outputs(records, harness, *, receipts=None):
     for index, value in parsed:
         if value.get("operation") == CHECK_OPERATION:
             counts[index] = counts.get(index, 0) + 1
+    starts = {}
     for index, source, value in bound_outputs(records, harness, predicate, receipts=parsed, isolated_polls=True):
         if value.get("_attempt"):
+            starts[source] = index
             yield index, {"operation": CHECK_OPERATION, "_attempt": True}
         elif (source in isolated and counts.get(index) == 1
               and value.get("operation") == CHECK_OPERATION and not value.get("_tool_error")):
-            yield index, value
+            yield index, {**value, "_invoked_at": starts[source]}
 
 
 def unscoped_claim_invocations(records, harness):
@@ -428,8 +444,10 @@ def _acceptance(records, harness, session, histories):
     checks = list(check_outputs(records, harness, receipts=parsed))
     last_attempt = max((i for i, v in checks if v.get("_attempt")), default=-1)
     for index, value in reversed(checks):
+        started = value.get("_invoked_at", -1)
         if (value.get("operation") != CHECK_OPERATION or value.get("session_id") != session
-                or value.get("harness") != harness or index <= max(last_claim, last_attempt)):
+                or value.get("harness") != harness or started <= last_claim
+                or started < last_attempt or index <= started):
             continue
         coverage = value.get("coverage") or {}
         observed = {(r.get("repository"), r.get("record"), r.get("claim_comment"))

@@ -64,6 +64,9 @@ class ClaimCloseoutTests(unittest.TestCase):
             refused = {"operation": helper.claim_receipts.CLAIM_OPERATION, "ok": False,
                        "write_outcome": "not_started", "completed_steps": []}
             rows = history(harness, refused)
+            command = "cd /repo && uv run scripts/gh-plan.py claim 1 2>&1"
+            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else: rows[1]["message"]["content"][0]["input"] = {"command": command}
             for row in rows: row["timestamp"] = SOURCE["claimed_at"]
             entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
             with patch.object(helper.sessions, "discover", return_value=([], [REPO])):

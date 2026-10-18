@@ -279,6 +279,8 @@ failure with `ok: false`, `write_outcome: not_started`, no completed steps and
 no claim-comment receipt proves that invocation wrote no ownership; it needs
 no release or remote check by itself. Ambiguous batch output, missing output
 and partial or uncertain writes retain the disposition requirement.
+One leading `cd DIR &&`, `2>&1` stderr merge, and an optional pipe to `tee`
+preserve this binding. Saved-file reads and output-hiding redirection do not.
 Delegation alone uses local
 child histories: with no ownership activity in parent or children, keep the
 existing N/A path without GitHub access. For claimed children, the parent checks
@@ -312,6 +314,10 @@ checks, use the shell tool's sufficient foreground timeout (at least 600 seconds
 on Claude Bash), or Codex's process handle and `write_stdin` polls. Keep all result
 JSON visible; do not background Claude Bash checks. Quiet no-GitHub child
 histories keep the existing exit path.
+Freshness is measured at the check's bound launch, including long-running
+checks collected by later polls. Any later ownership activity requires a new
+check after it; receiving an older result afterward cannot cover that activity.
+Run one checker at a time rather than parallel checks in the same native record.
 
 An open PR need not merge before a session exits. Its exact authored release
 must name the retained PR, and the check verifies the same repository, source

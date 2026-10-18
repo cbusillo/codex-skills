@@ -64,6 +64,46 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_delayed_check_cannot_cover_ownership_or_newer_attempts_after_launch(self):
+        for harness in ("codex", "claude"):
+            checked = {**proof(("example/a", 1, 10)), "harness": harness}
+            for command, value in (("gh pr create --title x", "https://github.com/example/a/pull/5"),
+                                   ("uv run scripts/gh-pr.py create --title x", {"operation": "github.pr.create", "ok": True, "url": "https://github.com/example/a/pull/5"}),
+                                   ("uv run scripts/gh-plan.py --repo example/a claim 5 > claim.json", {}),
+                                   ("uv run scripts/check_claims.py --bad-argument", {})):
+                rows = history(harness, claim(), checked)
+                late = ({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "late", "arguments": json.dumps({"cmd": command})}}
+                        if harness == "codex" else {"type": "assistant", "sessionId": SESSION, "message": {"content": [
+                            {"type": "tool_use", "name": "Bash", "id": "late", "input": {"command": command}}]}})
+                if harness == "codex":
+                    rows[4]["payload"]["output"] = "Process running with session ID 123"
+                    poll = {"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin", "call_id": "poll", "arguments": '{"session_id":123}'}}
+                    rows[-2:-2] = [late, output(value, harness, "late"), poll, output(checked, harness, "poll")]
+                else:
+                    # Parallel Bash calls in one assistant record; the check
+                    # returns after the ownership tool's result.
+                    rows[3]["message"]["content"].extend(late["message"]["content"])
+                    rows.insert(4, output(value, harness, "late"))
+                self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_compound_no_write_refusal_keeps_the_supported_exit_path(self):
+        refused = {"operation": receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "not_started", "completed_steps": []}
+        for harness in ("codex", "claude"):
+            for command in ("cd /repo && uv run scripts/gh-plan.py claim 42",
+                            "uv run scripts/gh-plan.py claim 42 2>&1",
+                            "cd /repo && uv run scripts/gh-plan.py claim 42 2>&1 | tee claim.json"):
+                rows = history(harness, refused)
+                if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                self.assertEqual(receipts.claim_targets(rows, harness), [])
+                self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+            for command in ("cd /repo && uv run scripts/gh-plan.py claim 42 > claim.json; cat saved.json",
+                            "uv run scripts/gh-plan.py claim 42 2> error.json; cat saved.json"):
+                rows = history(harness, refused)
+                if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
+
     def test_claim_and_checker_polls_require_one_tool_and_one_output(self):
         refused = {"operation": receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "not_started"}
         checked = proof(("example/a", 1, 10))
