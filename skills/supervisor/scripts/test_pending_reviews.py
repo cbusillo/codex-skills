@@ -6,6 +6,8 @@
 """Exercise discovery, exact bindings and refusal-to-publish with synthetic PRs and real Git."""
 
 import copy
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -119,7 +121,10 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(report["author_session"], SESSION)
         self.assertEqual(report["status"], "posted")
         self.assertTrue(report["notification_needed"])
-        self.assertEqual(self.dispatch()["status"], "already_completed")
+        recovered = self.dispatch()
+        self.assertEqual(recovered["status"], "already_completed")
+        self.assertTrue(recovered["requested_provider_confirmed"])
+        self.assertFalse(recovered["needs_attention"])
         self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
         body = next(c[3] for c in self.io.calls if c[0] == "post")
         self.assertIsNone(reviews.review_receipt_head(body))
@@ -175,6 +180,7 @@ class DispatchTests(unittest.TestCase):
         result = self.dispatch()
         self.assertEqual(result["author_session"], SESSION)
         self.assertTrue(result["notification_needed"])
+        self.assertTrue(result["requested_provider_confirmed"])
         self.assertEqual(sum(c[0] == "post" for c in self.io.calls), 1)
 
     def test_quoted_marker_does_not_hide_a_review_request(self):
@@ -237,9 +243,110 @@ class DispatchTests(unittest.TestCase):
     def test_editing_a_served_request_never_repeats_inference(self):
         self.dispatch()
         self.io.request["updated_at"] = "2026-10-17T21:00:00Z"
+        result = self.dispatch()
+        self.assertEqual(result["status"], "already_completed")
+        self.assertTrue(result["request_edited_after_review"])
+        self.assertTrue(result["needs_attention"])
+        self.assertIn("completion_comment", result)
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+
+    def test_legacy_completion_preserves_report_when_claim_binding_fails(self):
+        self.io.comments.append(comment(11, '<!-- supervisor-review ' + json.dumps({"request": 10, "head": SHA}) + ' -->'))
+        for error in [ValueError("malformed claim"), reviews.GitHubReadError("unavailable", result=None, diagnostics={})]:
+            with self.subTest(error=error), patch.object(reviews, "bind_session", side_effect=error):
+                result = self.dispatch()
+                self.assertEqual(result["status"], "already_completed")
+                self.assertEqual(result["completion_comment"], 11)
+                self.assertEqual(result["notification_error"], str(error))
+                self.assertTrue(result["needs_attention"])
+        self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+
+    def test_unrelated_malformed_referenced_claim_does_not_hide_valid_author(self):
+        self.io.pr["body"] = "Related #99"
+        pages = self.io.paged_json
+        other = marker({"branch": "work/unrelated", "session": "elsewhere"})
+        def references(path, **kwargs):
+            if path.endswith("/99/comments"):
+                return [comment(6, other)]
+            return pages(path, **kwargs)
+        self.io.paged_json = references
+        self.assertEqual(self.dispatch(apply=False)["author_session"], SESSION)
+        other = marker({"branch": BRANCH, "session": "elsewhere"})
+        with self.assertRaises(ValueError):
+            self.dispatch()
+        self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+
+    def test_other_runs_trusted_branch_claim_is_not_this_runs_failure(self):
+        self.io.claims = [comment(5, marker({"branch": BRANCH, "session": "other-run-session",
+                                            "worker": "another-worker", "claimed_at": STAMP}))]
+        # No checkout or local worktree is required to report an authoritative other-run claim.
+        result = reviews.sweep(self.io, self.entries, {}, TRUSTED, self.evidence, apply=True)
+        self.assertEqual(result[0]["status"], "not_owned")
+        self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+
+    def test_overlapping_branch_claims_require_explicit_author_from_this_run(self):
+        self.io.claims.append(comment(6, marker({"branch": BRANCH, "session": "other-run-session",
+                                                "worker": "another-worker", "claimed_at": STAMP})))
         with self.assertRaises(reviews.ReviewError):
             self.dispatch()
-        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+        self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+        self.io.request["body"] += f"\nAuthor session: {SESSION}\n"
+        self.assertEqual(self.dispatch()["author_session"], SESSION)
+
+    def test_copied_receipt_does_not_confirm_requested_provider(self):
+        self.io.comments.append(comment(11, '<!-- supervisor-review ' + json.dumps({
+            "request": 10, "head": SHA, "author_session": SESSION, "author_provider": "openai"}) + ' -->'))
+        result = self.dispatch()
+        self.assertFalse(result["requested_provider_confirmed"])
+        self.assertTrue(result["needs_attention"])
+        self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+
+    def test_weighed_other_review_needs_visible_attention(self):
+        self.io.comments.append(comment(11, review_result_body("Different review weighed.", SHA)))
+        ledger = Path(self.temp.name) / "ledger.json"
+        ledger.write_text(json.dumps(self.entries))
+        args = ["pending_reviews", "--ledger", str(ledger), "--evidence-dir", str(self.evidence)]
+        output = io.StringIO()
+        with patch.object(sys, "argv", args), patch.object(reviews, "IO", return_value=self.io), \
+                patch.object(reviews, "configured_bot_logins", return_value=[BOT]), \
+                patch.object(reviews, "automation_login", return_value=BOT), contextlib.redirect_stdout(output):
+            self.assertEqual(reviews.main(), 1)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["attention"][0]["status"], "already_weighed")
+        self.assertFalse(report["attention"][0]["requested_provider_confirmed"])
+
+    def test_pending_report_heading_cannot_hide_real_request(self):
+        self.io.comments.append(comment(12, f"Review of record, run by the Supervisor: pending at head {SHA}"))
+        self.assertEqual(self.dispatch(apply=False)["status"], "pending")
+
+    def test_plain_prompt_takes_precedence_over_quoted_context(self):
+        self.io.request["body"] = (f"Supervisor runs the review.\nHead: {SHA}\n"
+                                    "> Director: keep it productive.\nPrompt:\nInspect the real changed helper.")
+        self.dispatch()
+        prompt = next(c[2] for c in self.io.calls if c[0] == "review")
+        self.assertTrue(prompt.endswith("Review prompt:\nInspect the real changed helper."))
+
+    def test_failed_and_unknown_posts_preserve_diagnostics_without_replay(self):
+        adapter = reviews.IO.__new__(reviews.IO)
+        self.io.post = adapter.post
+        cases = [({"ok": False, "outcome_certainty": "confirmed_not_applied", "error": "denied"}, "post_failed"),
+                 ({"ok": False, "outcome_certainty": "unknown"}, "post_unknown"),
+                 (None, "post_unknown")]
+        for index, (payload, phase) in enumerate(cases):
+            with self.subTest(payload=payload):
+                self.evidence = Path(self.temp.name) / f"post-case-{index}"
+                completed = subprocess.CompletedProcess([], 1, json.dumps(payload) if payload else "invalid-json", "diagnostic")
+                with patch.object(reviews, "run", return_value=completed) as command:
+                    for _ in range(2):
+                        with self.assertRaises(reviews.ReviewError):
+                            self.dispatch()
+                self.assertEqual(command.call_count, 1)
+                journal = json.loads(next(self.evidence.glob("*.json")).read_text())
+                self.assertEqual(journal["phase"], phase)
+                self.assertTrue(journal["error"])
+                if payload:
+                    self.assertEqual(journal["post"], payload)
 
     def test_checkout_keys_are_case_insensitive(self):
         reports = reviews.sweep(self.io, self.entries, {REPO.upper(): Path(self.temp.name)}, TRUSTED, self.evidence)
@@ -278,9 +385,11 @@ class DispatchTests(unittest.TestCase):
         self.assert_no_post()
 
     def test_dirty_worktree_during_review_never_posts(self):
-        with patch.object(reviews, "check_worktree", side_effect=reviews.ReviewError("dirty")):
+        with patch.object(reviews, "check_worktree", side_effect=[None, reviews.ReviewError("dirty")]):
             with self.assertRaises(reviews.ReviewError):
                 self.dispatch()
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+        self.assertEqual(next(self.evidence.glob("*.md")).read_text().strip(), self.io.review_text)
         self.assert_no_post()
 
     def test_failed_or_empty_review_never_posts(self):
@@ -293,6 +402,9 @@ class DispatchTests(unittest.TestCase):
                     self.dispatch()
                 self.assert_no_post()
                 self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+                journal = json.loads(next(self.evidence.glob("*.json")).read_text())
+                self.assertEqual(journal["phase"], "review_failed")
+                self.assertTrue(journal["error"])
 
     def test_failed_or_interrupted_launch_is_not_replayed_on_next_sweep(self):
         self.io.review_error = reviews.ReviewError("permission denied")
@@ -499,6 +611,35 @@ class RunLockTests(unittest.TestCase):
                 self.assertEqual(attempt(ledger), 3)
                 self.assertEqual(attempt(second / "ledger.json"), 0)
             self.assertEqual(attempt(ledger), 0)
+
+
+    def test_read_only_discovery_remains_available_while_apply_locks_are_held(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ledger, evidence = root / "ledger.json", root / "evidence"
+            ledger.write_text(json.dumps([entry()]))
+            evidence.mkdir()
+            with reviews.run_lock(ledger), (evidence / "pending-reviews.lock").open("a") as lock:
+                reviews.fcntl.flock(lock, reviews.fcntl.LOCK_EX | reviews.fcntl.LOCK_NB)
+                args = ["pending_reviews", "--ledger", str(ledger), "--evidence-dir", str(evidence)]
+                fake = FakeIO()
+                fake.comments = []
+                with patch.object(sys, "argv", args), patch.object(reviews, "IO", return_value=fake), \
+                        patch.object(reviews, "configured_bot_logins", return_value=[BOT]), \
+                        patch.object(reviews, "automation_login", return_value=BOT), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(reviews.main(), 0)
+                self.assertFalse(any(c[0] in {"review", "post"} for c in fake.calls))
+
+    def test_handoff_with_same_evidence_directory_cannot_overlap_across_run_directories(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first, second, evidence = root / "first", root / "second", root / "shared-evidence"
+            first.mkdir()
+            second.mkdir()
+            with reviews.sweep_lock(first / "ledger.json", evidence, apply=True):
+                with self.assertRaises(BlockingIOError):
+                    with reviews.sweep_lock(second / "ledger.json", evidence, apply=True):
+                        self.fail("handoff dispatched twice")
 
 
 class AdapterTests(unittest.TestCase):
