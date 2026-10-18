@@ -116,8 +116,9 @@ languages and non-PyCharm lanes keep the Inspection API.
 `JB_INSPECT_DEFAULT_BACKEND=api|qodana` pins the default. Read
 [local Qodana](references/qodana-backend.md) before diagnosing a Qodana result
 or changing the runner. It uses an isolated per-run profile and the same agent
-envelope. Existing local IDE/plugin license files may be copied read-only into
-that profile, never printed, logged or archived, and deleted after the run.
+envelope. Never copy, export or move license or credential files. Licensed
+headless runs use only an independently Director-activated profile; see
+[Director activation](references/qodana-backend.md#director-activation).
 Stop on trial start, activation or purchase. Run one capped, niced Qodana
 worker at a time and pause above load1 64. Coverage that cannot be proved
 remains UNKNOWN. Results name profile inspections the engine does not run in

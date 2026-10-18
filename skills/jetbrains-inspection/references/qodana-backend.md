@@ -56,14 +56,42 @@ Use `--qodana-plugin-zip` for an existing public plugin ZIP with its distributio
 folder at the top level. The extracted package is copied into a run-specific
 folder in the container's plugins directory; it never replaces a
 built-in image plugin or copies a desktop plugin directory. Supply only
-existing IDE keys or paid-plugin activation files through repeatable
-`--qodana-license-file`; no account directory, token store or Keychain source.
-Files are read from their local sources into the private profile, filesystem
-read-only, copied read-only into the container, then deleted with the profile
-and the container's writable layer after success, refusal, timeout or handled
-interruption. Never print, log, upload, archive or retain their
-contents. Do not use this local licensing route on CI. Desktop IDEs and their
+public plugin code, without activation-bearing files. Desktop IDEs and their
 configuration/plugin installations stay untouched.
+
+## Director activation
+
+The former license-copy route is removed; use an independently Director-activated
+headless profile, never a copied license or credential file.
+
+On Chris-Studio, Chris activated the independent **JBTEST-D1** PyCharm and Odoo
+IDE profile on October 18, 2026 ([activation decision](https://github.com/cbusillo/codex-skills/issues/1833#issuecomment-6251613312)).
+Use that profile in place only through its qualified native runner, with exclusive
+use and isolated system/cache/log paths. Do not copy its config, activation,
+account store or credentials into another profile or a container. Native-runner
+integration and qualification live in [#1833](https://github.com/cbusillo/codex-skills/issues/1833);
+this Qodana backend does not implement that native route or import its activation.
+If no independently activated, qualified profile is available, stop the licensed
+run with an `Owner question:` asking the Director to activate an independent
+profile through the product UI using existing entitlements. Do not start a
+trial, purchase, grant access, or open activation-bearing files.
+
+`--qodana-license-file` remains recognized only to return UNKNOWN and this
+supported route before accessing the supplied path or starting Docker.
+Credential locations in the source snapshot, explicit uv/plugin inputs and plugin
+archive members are refused before reading or transferring them. Keep credentials
+outside project inputs or ignored by Git, and supply public plugin code separately.
+The location guard recognizes common credential names and directories; it cannot
+identify secrets stored under arbitrary source filenames. No contents are scanned.
+`diagnostic.qodana.refused_input` identifies the refused relative path, or only
+the basename for an external input. This refusal asks the agent to remove the
+input from staging, not to obtain activation. The guard also refuses ambiguous
+public names, such as REUSE sidecars ending in `.license`, Keynote `.key` files,
+and public `.pem` fixtures. Use the existing `--backend api` route for those
+projects without copying these files; do not weaken the guard or move credentials
+into another profile to continue.
+
+## Execution and recovery
 
 Trial availability and dry-run refusal are permitted under
 [Q261](https://github.com/cbusillo/jetbrains-inspection-api/issues/498#issuecomment-6153109838).
@@ -86,7 +114,7 @@ runtime qualification is separate from this Mac's measured run.
 
 The engine's project, venv, caches, SDK state and results live in the
 container's own layer under `/work`. `docker create` makes the container,
-`docker cp` streams the private snapshot, configuration, licenses and plugins
+`docker cp` streams the private snapshot, configuration and public plugins
 in, and the results and the venv's `pyvenv.cfg` come back out after exit.
 Docker Desktop keeps a host handle for every bind-mounted path the engine
 touches, even after the container exits; with the whole profile mounted, runs
@@ -113,7 +141,7 @@ recovery; process exit zero is not a green gate.
 
 The state directory is resolved through the operating system's UID home,
 independently of a harness's HOME override. An owner-only journal records each run before
-license copying. After SIGKILL/crash, the next invocation holds the kernel lock
+input staging. After SIGKILL/crash, the next invocation holds the kernel lock
 and recovers only journaled profiles with matching ownership markers and
 containers with the exact run label and that run's log mount, on the journaled local
 Docker socket. The marker is deleted last, so partial cleanup can resume.
@@ -131,7 +159,7 @@ Client termination precedes container removal to prevent late creation. The
 native analysis timeout is also supplied to Qodana. A monitor or host crash
 keeps the journal for proved recovery; never bypass a live monitor's lock.
 
-Recover without starting a new inspection or copying licenses:
+Recover without starting a new inspection:
 
 ```sh
 uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
