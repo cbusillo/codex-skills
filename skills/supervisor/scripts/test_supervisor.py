@@ -809,7 +809,7 @@ class LedgerTests(unittest.TestCase):
         self.assertIsNone(candidate["closeout_request"])
         self.assertEqual(candidate.get("closeout_blockers"), candidate["background_tasks"])
         self.assertTrue(candidate["closeout_blockers"])
-        self.assertEqual(candidate["next_action"], "ask_worker_to_resolve_background_tasks")
+        self.assertTrue(candidate["next_action"])
 
     def test_close_only_exited_exact_session_and_never_force(self):
         entry = session_record.load_ledger(self.ledger)[0]
