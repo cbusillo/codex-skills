@@ -1178,8 +1178,11 @@ def test_numbered_questions_are_unchanged_without_counter_access() -> None:
             assert github_comment._canonical_comment_body(body["body"]) == markdown
             return success(comment_body(1001, body=body["body"]))
 
+        def run(_calls: list[dict[str, Any]]) -> None:
+            github_comment.comment("issue", 42, markdown, repo="owner/repo", gh_cmd="fake-gh")
+
         with patch.object(question_counter, "update", side_effect=AssertionError("already numbered")):
-            with_call_stub(callback, lambda _calls: github_comment.comment("issue", 42, markdown, repo="owner/repo", gh_cmd="fake-gh"))
+            with_call_stub(callback, run)
 
 
 TESTS: list[Callable[[], None]] = [

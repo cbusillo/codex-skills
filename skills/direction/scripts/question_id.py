@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 QUESTION = re.compile(r"\bQ([1-9][0-9]*)\b")
 ITEM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
@@ -72,6 +73,7 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
     descriptor = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
     with os.fdopen(descriptor, "rb") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        state: dict[str, Any]
         try:
             state = json.loads(path.read_text())
         except FileNotFoundError:
