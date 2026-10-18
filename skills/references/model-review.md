@@ -81,5 +81,20 @@ A finding is a hypothesis, not a task.
 
 In the pull request or the owning issue, give the reviewers by provider and
 model, what was acted on, what was declined and why, and what was reproduced.
-Keep it short; the declined list is what keeps dissent visible without turning
-it into code.
+For a review that gates ready or auto-enqueue, post the weighed disposition
+through the existing PR comment helper:
+
+```sh
+uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO comment N --body-file disposition.md --reviewed-head FULL_REVIEWED_SHA
+```
+
+The helper adds explicit head-bound `Review result: weighed` metadata. This
+attests that the completed review was weighed; use ordinary comments for
+requests, launches, partial reports and the Supervisor's raw findings. The
+body stays free text: Acted on, Declined, Deferred, Tracked and Unresolved are
+all valid dispositions. No vocabulary in that body can complete a review.
+A new head needs a new weighed record; rerun the model only when the review
+policy or task requires it. Existing completed reviews can be weighed and
+recorded through the helper without repeating inference just to add metadata.
+See [ready handoffs](../github/references/cli-reference.md#ready-handoffs).
+Keep it short; the declined list keeps dissent visible.
