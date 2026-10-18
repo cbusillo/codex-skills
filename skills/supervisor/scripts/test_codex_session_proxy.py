@@ -907,6 +907,14 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.send(task, request, response, "turn/start", started,
                                          outputSchema=schema, input=[{"type": "text", "text": "go"}])
                 self.assertIn("result", result)
+                # Request-side targets keep their own references beside the new thread's.
+                for named in (f.session, started):
+                    result = await self.send(task, request, response, "thread/start", None,
+                                             config={"mcp_servers": {"x": {"env": {"threadId": named}}}})
+                    self.assertIn("result", result)
+                    for source in {named, started}:
+                        with closure.ownership(source) as owned:
+                            self.assertTrue(owned)
                 f.rpc_results["thread/start"] = {"thread": {"id": ""}}
                 self.assertIn("error", await self.send(task, request, response, "thread/start", None))
                 for method, params in (("thread/start", {"threadId": 5}), ("thread/start", {"conversationId": ""}),

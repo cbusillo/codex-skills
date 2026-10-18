@@ -214,8 +214,9 @@ class Ingress:
                                     reads[asyncio.create_task(native.recv())] = "native"
                                     continue
                             # Bidirectional ID namespaces remain independent.
-                            completed = requests.pop(identity, None) if not method else None
-                            guarded, session, started = completed if completed is not None else (set(), None, False)
+                            unguarded = set(), None, False
+                            guarded, session, started = requests.pop(identity, unguarded) if not method else unguarded
+                            owned = set()  # Separate references: start params may name the same thread.
                             try:
                                 if started and "result" in message:
                                     # A fresh thread has no identity until native
@@ -226,11 +227,11 @@ class Ingress:
                                     try:
                                         if not isinstance(target, str) or not target:
                                             raise ValueError("started native thread identity is unavailable")
-                                        guarded = acquire({target})
+                                        owned = acquire({target})
                                     except (OSError, ValueError) as error:
                                         raw = json.dumps({"id": identity, "error": {"code": -32603,
                                             "message": "native thread start succeeded but its ownership lease was not created: " + str(error)}})
-                                for target in guarded:
+                                for target in guarded | owned:
                                     closure.set_action_pending(target, True)
                                 if session and "result" in message and self.child_metadata:
                                     thread = message["result"]["thread"]
@@ -248,6 +249,7 @@ class Ingress:
                                 await client.send(raw)
                             finally:
                                 release(guarded)
+                                release(owned)
                             reads[asyncio.create_task(native.recv())] = "native"
             except ConnectionClosed:
                 pass
