@@ -4498,9 +4498,11 @@ def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str,
 
 
 def summarize_http_error(
-    *, operation: str, request: dict[str, object], exc: urllib.error.HTTPError
+    *, operation: str, request: dict[str, object], exc: urllib.error.HTTPError,
+    provider_payload: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    provider_payload = _error_payload_from_http(exc)
+    if provider_payload is None:
+        provider_payload = _error_payload_from_http(exc)
     status = _status_for_http_error(exc.code, provider_payload)
     error = provider_payload.get("error")
     if not isinstance(error, dict):

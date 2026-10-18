@@ -241,6 +241,61 @@ def test_changed_request_in_response_does_not_acknowledge_the_wrong_build():
     post.assert_called_once()
 
 
+def test_invalid_trace_does_not_discard_an_aligned_accepted_operation():
+    response = receipt()
+    response["trace_id"] = "https://PRIVATE_SENTINEL.invalid/private"
+    code, output, post, _, _ = invoke(response)
+    assert code == 0
+    assert output["result"]["operation"]["operation_id"] == response["result"]["operation_id"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+    post.assert_called_once()
+
+
+def test_uncertain_receipt_keeps_its_safe_operation_reference_without_claiming_alignment():
+    response = receipt()
+    response["result"]["product"] = "another-product"
+    code, output, post, _, _ = invoke(response)
+    assert code != 0 and output["status"] == "outcome_unknown"
+    assert output["summary"]["operation_id"] == response["result"]["operation_id"]
+    post.assert_called_once()
+
+
+def test_active_operation_conflict_exposes_only_the_pollable_blocker():
+    operation = receipt()["result"]
+    error = urllib.error.HTTPError(SERVICE_URL, 409, "Conflict", {}, io.BytesIO(json.dumps({
+        "trace_id": "launchplane_req_busy",
+        "error": {"code": "odoo_stable_target_replacement_operation_active"},
+        "operation": operation,
+    }).encode()))
+    code, output, post, read, _ = invoke(error=error)
+    assert code != 0
+    assert output["result"]["operation"] == {
+        key: operation[key] for key in ("operation_id", "status", "phase")
+    }
+    assert output["summary"]["trace_id"] == "launchplane_req_busy"
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+    post.assert_called_once()
+    read.assert_not_called()
+
+
+def test_uppercase_source_is_rejected_before_configuration():
+    args = arguments()
+    args[args.index("--source-git-ref") + 1] = "A" * 40
+    code, _, post, _, settings = invoke(receipt(), args=args)
+    assert code != 0
+    settings.assert_not_called()
+    post.assert_not_called()
+
+
+def test_replay_diagnostics_distinguish_original_acceptance():
+    response = {**receipt(), "replayed": True, "original_trace_id": "launchplane_req_original"}
+    code, output, post, _, _ = invoke(response)
+    assert code == 0
+    assert output["summary"]["replayed"] is True
+    assert output["summary"]["original_trace_id"] == response["original_trace_id"]
+    post.assert_called_once()
+
+
 @pytest.mark.parametrize("error", [
     TimeoutError("PRIVATE_SENTINEL"),
     helper.LaunchplaneSafetyError("unsafe_redirect"),

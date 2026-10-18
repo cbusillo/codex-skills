@@ -42,7 +42,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
         h._require_idempotency(args)
     product = h._required_argument(args, "product")
     artifact = h._required_argument(args, "artifact_id")
-    source = h._required_argument(args, "source_git_ref").lower()
+    source = h._required_argument(args, "source_git_ref")
     reason = h._required_argument(args, "reason")
     if len(reason) > 1000:
         raise ValueError("invalid_reason")
@@ -50,7 +50,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
         if not h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value):
             raise ValueError("invalid_" + field)
         h.public_identifier(value)
-    if re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", source) is None:
+    if re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", source) is None:
         raise ValueError("immutable_source_commit_required")
     replacement: dict[str, object] = {
         "product": product,
@@ -125,7 +125,7 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
             body={**body, "replacement": replacement}, timeout=args.timeout)
         output = h.base_payload(status="ok", operation=PLAN_COMMAND, request=request)
         output["result"] = project_plan(h, response, body, service_url=settings["service_url"])
-        output["summary"] = {"trace_id": h.public_trace_id(response.get("trace_id")),
+        output["summary"] = {**h.service_response_diagnostics(response),
             "recommendation": "Inspect this admission evidence and save it for submit. The worker must still verify the new copy before cutover."}
         h.emit(output)
         return 0
@@ -157,6 +157,50 @@ def project_receipt(h: Any, response: dict[str, Any], body: dict[str, object]) -
     return h._project_target_replacement_operation({"operation": operation})
 
 
+def replay_diagnostics(h: Any, response: dict[str, Any]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    if type(response.get("replayed")) is bool:
+        result["replayed"] = response["replayed"]
+    original = h.service_response_diagnostics({"trace_id": response.get("original_trace_id")})
+    if original.get("trace_id"):
+        result["original_trace_id"] = original["trace_id"]
+    return result
+
+
+def rejection(h: Any, request: dict[str, object], error: urllib.error.HTTPError) -> dict[str, object]:
+    provider = h._error_payload_from_http(error)
+    output = h.summarize_http_error(operation=COMMAND, request=request, exc=error, provider_payload=provider)
+    summary = output["summary"]
+    if error.code == 409 and summary.get("error_code") == "odoo_stable_target_replacement_operation_active":
+        try:
+            projected = h._project_target_replacement_operation({"operation": provider.get("operation")})["operation"]
+            output["result"] = {"operation": {key: projected[key] for key in ("operation_id", "status", "phase")}}
+        except (h.LaunchplaneSafetyError, ValueError):
+            pass
+        summary["recommendation"] = "Read the blocking operation with target-replacement-operation-read. Preserve the original request and key; do not submit under a new key."
+    elif error.code == 409 and summary.get("error_code") == "idempotency_key_reused":
+        summary["recommendation"] = "Restore the original request arguments for this key. Do not change the key to bypass the conflict."
+    elif error.code in {400, 404} and output["status"] != "denied":
+        summary["recommendation"] = "Confirm the deployed service supports native testing rebuild preflight and submission. It may predate this capability; do not fall back to a legacy route or provider call."
+    h.assert_public_safe_shape(output["summary"])
+    h.assert_public_safe_shape(output["result"])
+    return output
+
+
+def uncertain_operation_reference(h: Any, response: dict[str, Any] | None) -> dict[str, object]:
+    if response is None:
+        return {}
+    candidates = []
+    for container, key in (("result", "operation_id"), ("records", "odoo_stable_target_replacement_operation_id")):
+        value = response.get(container)
+        if isinstance(value, dict) and value.get(key):
+            try:
+                candidates.append(h.public_identifier(value[key]))
+            except h.LaunchplaneSafetyError:
+                pass
+    return {"operation_id": candidates[0]} if candidates and len(set(candidates)) == 1 else {}
+
+
 def execute(h: Any, args: argparse.Namespace) -> int:
     request, body = intent(h, args)
     if args.command == PLAN_COMMAND:
@@ -185,19 +229,22 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         output = h.base_payload(status="accepted", operation=COMMAND, request=request)
         output["result"] = result
         output["summary"] = {
-            "trace_id": h.public_trace_id(response.get("trace_id")),
             "recommendation": (
                 "Read this operation with target-replacement-operation-read. Acceptance is not "
                 "completion. Preserve its operation ID and original idempotency key."
             ),
             **h.service_response_diagnostics(response),
+            **replay_diagnostics(h, response),
         }
         h.assert_public_safe_shape(output["summary"])
         h.emit(output)
         return 0
     except urllib.error.HTTPError as error:
         if 400 <= error.code < 500 and error.code != 408:
-            h.emit_http_error_payload(operation=COMMAND, request=request, exc=error)
+            try:
+                h.emit(rejection(h, request, error))
+            finally:
+                error.close()
             return 1
         try:
             summary = h.summarize_http_error(operation=COMMAND, request=request, exc=error)["summary"]
@@ -216,10 +263,11 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     )
     output["summary"].update(h.service_response_diagnostics(response))
     output["summary"].update(diagnostics)
-    if response is not None:
-        try:
-            output["summary"]["trace_id"] = h.public_trace_id(response.get("trace_id"))
-        except h.LaunchplaneSafetyError:
-            pass
+    output["summary"].update(uncertain_operation_reference(h, response))
+    output["summary"]["recommendation"] = (
+        "If an operation ID is present, read it with target-replacement-operation-read. "
+        "Otherwise explicitly recover by submitting the identical original arguments, "
+        "reviewed evidence and idempotency key. Do not generate a new key or change intent."
+    )
     h.emit(output)
     return 1

@@ -400,7 +400,7 @@ local extensions until the vendored artifact is refreshed.
   `testing`, strategy to `replace-and-cutover` and health verification on.
   `--copy-source` is `empty`, `production` (sanitized production copy) or
   `upstream` (the lane's configured upstream). The build/source pair must use
-  an immutable 40- or 64-character hexadecimal source commit. A concrete
+  an immutable 40- or 64-character lowercase hexadecimal source commit. A concrete
   reason is required and retained by the service; public helper output carries
   only its request digest. Empty allows
   initialization of independent empty storage. No target, host, credential,
@@ -419,7 +419,9 @@ local extensions until the vendored artifact is refreshed.
   These commands add no grant and never invoke a provider or local live-target
   CLI. They require a deployed service with native testing rebuild and preflight/
   reason support (Launchplane #3997 and #4002 source); a source PR is not activation.
-  Missing capability or a denial is reported, with no legacy rebuild,
+  A 400 can mean the service predates this capability, while 404 means the
+  route is absent; confirm deployed support before use. A denial retains its
+  code and trace and stops the action. There is no legacy rebuild,
   alternate identity or workflow fallback.
 
   The receipt must agree with the submitted product, testing instance,
