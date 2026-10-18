@@ -108,6 +108,28 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(account.move_environment(self.argv, self.env)["CLAUDE_CONFIG_DIR"], str(self.new))
         self.assertEqual(len(list((self.root / "panel" / "Launch Receipts").glob("*.json"))), 1)
 
+    def test_request_saved_without_a_receipt_route_records_through_the_current_route(self):
+        self.record()
+        with patch.object(account_choice, "record_launch", side_effect=ValueError("store refused")):
+            self.assertEqual(self.move(), self.env)
+        legacy = json.loads(self.request.read_text())
+        self.assertIsNone(legacy.pop("receipt_app"))  # a request saved before the route existed
+        self.request.write_text(json.dumps(legacy))
+        received = self.root / "received.json"
+        app = self.root / "Context Panel"
+        app.write_text(f"#!{sys.executable}\nimport sys\nopen({str(received)!r}, 'w').write(sys.stdin.read())\n"
+                       "print('20261018T184448Z-supervisor-' + '0' * 32 + '.json')\n")
+        app.chmod(0o700)
+        route = {"storage_root": self.root / "panel", "receipt_app": str(app)}
+        with patch.object(account_choice, "receipt_route", return_value=route), \
+             patch.object(account_choice, "load_config", return_value={"snapshot_command": [str(app)]}), \
+             patch.object(account_choice, "choose", side_effect=AssertionError("must keep the chosen account")):
+            moved = account.move_environment(self.argv, self.env)
+        self.assertEqual(moved["CLAUDE_CONFIG_DIR"], str(self.new))
+        self.assertEqual(json.loads(received.read_text())["accountID"], "anthropic-b")
+        self.assertEqual(json.loads(self.request.read_text())["receipt_app"], str(app))
+        self.assertFalse((self.root / "panel" / "Launch Receipts").exists())
+
     def test_choice_failure_and_same_account_preserve_recovery(self):
         self.record()
         with patch.object(account_choice, "load_config", side_effect=ValueError("snapshot unavailable")):
