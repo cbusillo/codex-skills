@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import github_api as github_api_core
@@ -18,6 +20,9 @@ import github_rulesets
 COMMAND_CONTEXT = {
     "plan": ("read", False),
     "apply": ("mixed", True),
+    "checks-plan": ("read", False),
+    "checks-apply": ("mixed", True),
+    "checks-readback": ("read", False),
 }
 
 
@@ -66,11 +71,58 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 type=int,
                 help="Required for more than one repository and must equal the resolved repository count.",
             )
+    plan = subparsers.add_parser("checks-plan")
+    plan.add_argument("--repo", required=True)
+    plan.add_argument("--target", required=True, help="classic, new, or an existing default-branch ruleset id")
+    plan.add_argument("--checks-file", required=True, type=Path, help="JSON list of context/app_id objects; null means any App")
+    plan.add_argument("--out", required=True, type=Path, help="New file for the reviewable plan")
+    for command in ("checks-apply", "checks-readback"):
+        sub = subparsers.add_parser(command)
+        sub.add_argument("--plan-file", required=True, type=Path)
+        sub.add_argument("--plan-digest", required=True)
+        if command == "checks-apply":
+            sub.add_argument("--confirm-owner-admin-write", action="store_true")
     return parser.parse_args(argv)
 
 
+def read_check_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise github_rulesets.RulesetError(f"cannot read required-check input: {exc}", cause="validation_error") from exc
+
+
+def run_checks(args: argparse.Namespace, client: github_rulesets.RulesetClientProtocol) -> dict[str, Any]:
+    if args.command == "checks-plan":
+        checks = read_check_json(args.checks_file)
+        # Validate additions before using the owner client.
+        github_rulesets.normalize_checks(checks, binding="app_id")
+        owner, _ = github_rulesets.resolve_repositories(client=client, repos=[args.repo], all_owned=False, owner=None)
+        plan = github_rulesets.build_check_plan(args.repo, args.target, checks,
+                                               github_rulesets.check_snapshot(client, args.repo, args.target))
+        try:
+            with args.out.open("x") as stream:
+                json.dump(plan, stream, indent=2, sort_keys=True, allow_nan=False)
+                stream.write("\n")
+        except (OSError, ValueError, TypeError) as exc:
+            raise github_rulesets.RulesetError(f"cannot save required-check plan: {exc}", cause="validation_error") from exc
+        return {"owner": owner, "actor": client.actor, "plan_file": str(args.out),
+                "plan_digest": github_rulesets.check_plan_digest(plan), "plan": plan,
+                "changed": plan["changed"], "write_authorized": False}
+    plan = github_rulesets.validate_check_plan(read_check_json(args.plan_file), args.plan_digest)
+    applying = args.command == "checks-apply"
+    if applying and not args.confirm_owner_admin_write:
+        raise github_rulesets.RulesetError("checks-apply requires --confirm-owner-admin-write",
+                                           cause="authorization_required")
+    owner, _ = github_rulesets.resolve_repositories(client=client, repos=[plan["repo"]], all_owned=False, owner=None)
+    result = github_rulesets.run_check_plan(client, plan, apply=applying)
+    return {"owner": owner, "actor": client.actor, "plan_digest": args.plan_digest,
+            "write_authorized": applying, **result,
+            "limits": ["GitHub has no conditional-write token for this endpoint; preflight and readback cannot lock concurrent settings writers."]}
+
+
 def operation_name(command: str) -> str:
-    return f"github.rulesets.{command}"
+    return f"github.rulesets.{command.replace('-', '.')}"
 
 
 def run(
@@ -80,6 +132,8 @@ def run(
     app_id: int | None = None,
 ) -> dict[str, Any]:
     client = client or github_rulesets.RulesetClient()
+    if args.command.startswith("checks-"):
+        return run_checks(args, client)
     app_id = github_rulesets.configured_app_id() if app_id is None else app_id
     lock_branches = bool(getattr(args, "client_lock", False))
     lock_tags = bool(getattr(args, "client_lock_tags", False))
