@@ -243,6 +243,10 @@ def unparsed_command_text(value):
                 argv = shlex.split(command)
                 if argv and Path(argv[0]).name in {"rg", "grep", "cat", "sed", "head", "tail", "ls"}:
                     continue
+                helper, action = helper_action(argv)
+                if (helper in {"gh-plan.py", "gh-pr.py"}
+                        and action[:1] in (["search"], ["show"], ["index"], ["view"], ["list"])):
+                    continue
         fragment = code[start:end] + " " + " ".join(m[0] for m in literals if start <= m.start() < end)
         pieces.append(fragment)
         pending.extend(declarations[word] for word in re.findall(r"\b\w+\b", fragment) if word in declarations)
@@ -749,10 +753,11 @@ def ownership_state(records, harness, *, file_candidates=()):
     return {"indices": [positions[i] for i in indices], "pending": bool(pending)}
 
 
-def ownership_command(argv):
+def helper_action(argv):
+    """Only the actual subcommand, after helper-wide options, selects an action."""
     helper = helper_argv(argv)
     if not helper:
-        return False
+        return "", []
     name, action = Path(helper[0]).name, helper[1:]
     while action:
         if action[0] == "--repo" and len(action) > 1:
@@ -761,10 +766,15 @@ def ownership_command(argv):
             action = action[1:]
         else:
             break
+    return name, action
+
+
+def ownership_command(argv):
+    name, action = helper_action(argv)
     verb = "claim" if name == "gh-plan.py" else "create"
     owning = (name == "gh-plan.py" and action[:1] == ["claim"]
               or name == "gh-pr.py" and action[:1] == ["create"]
-              or helper[:3] == ["gh", "pr", "create"])
+              or helper_argv(argv)[:3] == ["gh", "pr", "create"])
     # Only the observed bare action help form is exempt. Elsewhere a flag-like
     # word may be an option value rather than a help request.
     help_only = action[-2:] in ([verb, "--help"], [verb, "-h"]) and action.count(verb) == 1

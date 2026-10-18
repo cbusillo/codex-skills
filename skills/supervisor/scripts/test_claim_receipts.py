@@ -164,6 +164,10 @@ class ReceiptTests(unittest.TestCase):
                         rows[1]["message"]["content"][0]["input"] = {"command": command}
                     self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
                     self.assertTrue(receipts.acceptance(rows, harness, SESSION)["clear"])
+        rows = history("codex", {})
+        rows[1]["payload"].update(name="functions.exec", arguments=
+            'const query="claim"; text(await tools.exec_command({cmd:`uv run gh-plan.py --repo example/a search ${query}`}));')
+        self.assertFalse(receipts.ownership_state(rows, "codex")["indices"])
 
     def test_wrapped_pr_creation_keeps_repository_and_created_pr_provenance(self):
         url = "https://github.com/example/a/pull/2"
