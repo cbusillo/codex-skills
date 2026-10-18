@@ -64,6 +64,26 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_every_process_in_an_ownership_batch_must_reach_its_terminal_result(self):
+        rows = history("codex", claim())
+        rows[1]["payload"].update(name="functions.exec", arguments='text(await tools.exec_command({cmd:"gh pr create --title x"})); text(await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 1 > claim.json"}));')
+        rows[2] = output([{"session_id": 123, "output": ""}, {"session_id": 456, "output": ""}], "codex", "tool-0")
+        def poll(identifier, handle):
+            return {"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin", "call_id": identifier,
+                    "arguments": json.dumps({"session_id": handle})}}
+        checked = history("codex", proof())[1:-2]
+        checked[0]["payload"]["call_id"] = "check"
+        checked[1]["payload"]["call_id"] = "check"
+        rows[-2:-2] = [poll("first", 123), output({}, "codex", "first"), *checked]
+        self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+        rows[-2:-2] = [poll("second", 456), output({}, "codex", "second")]
+        self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+        fresh = history("codex", proof())[1:-2]
+        fresh[0]["payload"]["call_id"] = "fresh"
+        fresh[1]["payload"]["call_id"] = "fresh"
+        rows[-2:-2] = fresh
+        self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
+
     def test_claude_background_ownership_needs_terminal_notice_before_a_new_check(self):
         checked = {**proof(), "harness": "claude"}
         rows = history("claude", claim(), checked)

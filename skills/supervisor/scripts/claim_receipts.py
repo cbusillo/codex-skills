@@ -319,7 +319,7 @@ def claim_targets(records, harness):
 
 def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=False):
     """Bind native outputs and process polls to an actual tool invocation."""
-    calls, processes, background = {}, {}, set()
+    calls, processes, background, polled, outstanding = {}, {}, set(), {}, {}
     parsed = {}
     for index, value in outputs(records, harness) if receipts is None else receipts:
         parsed.setdefault(index, []).append(value)
@@ -338,6 +338,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                 polls.clear()
             source = call_id if invoked else next((processes[p] for p in polls if p in processes), None)
             calls[call_id] = source
+            polled[call_id] = polls if not invoked else set()
             if invoked and name == "Bash" and isinstance(value, dict) and value.get("run_in_background"):
                 background.add(source)
             if invoked:
@@ -355,9 +356,12 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             handles.update(re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw))
             for handle in handles:
                 processes[handle] = source
+            active = outstanding.setdefault(source, set())
+            active.difference_update(polled.get(result, set()))
+            active.update(handles)
             native_task = record.get("toolUseResult")
             task = (native_task.get("backgroundTaskId") or native_task.get("taskId")) if harness == "claude" and isinstance(native_task, dict) else None
-            yield index, source, {"_result": True, "_pending": bool(handles) or bool(task) or source in background,
+            yield index, source, {"_result": True, "_pending": bool(active) or bool(task) or source in background,
                                   "_background_task": task}
             for value in values:
                 yield index, source, value

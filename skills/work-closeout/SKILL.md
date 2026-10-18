@@ -317,6 +317,8 @@ histories keep the existing exit path.
 Freshness is measured at the check's bound launch, including long-running
 checks collected by later polls. Every ownership command must have a terminal
 native result before the check launches; a process handle is still pending.
+Every observed process handle in an ownership batch must finish; one terminal
+poll cannot clear other processes from that batch.
 Claude background ownership waits for its native terminal task notice; a
 progress notice or a `TaskStop` invocation alone does not prove completion.
 Any later ownership activity requires a new check after its terminal result;
