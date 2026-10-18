@@ -719,7 +719,9 @@ class ReleaseTests(unittest.TestCase):
             **{f"gh-comment {form}": f"gh-comment -R {{r}} issue 1 {form}" for form in (
                 "--body-file=c.md", "--body c.md", "--body-file other.md --body-file c.md")},
             **{f"gh-pr.py {form}": f"gh-pr.py {form.format(r='{r}')} comment 1 --body-file c.md" for form in (
-                "--repo {r}", "--repo={r}", "--rep {r}", "--repo=test/x --repo {r}")},
+                "--repo {r}", "--repo={r}", "--rep {r}", "--repo=test/x --repo {r}",
+                # gh-pr.py comment posts through github_comment, which normalizes the same forms.
+                "--repo github.com/{r}", "--repo={r}.git", "--repo /{r}/")},
             # A pull request URL names its own repository, over --repo.
             "gh-pr.py pull request URL": "gh-pr.py --repo test/x comment https://github.com/{r}/pull/1 --body-file c.md",
             "gh-pr.py pulls URL": "gh-pr.py comment https://github.com/{r}/pulls/1 --body-file=c.md",

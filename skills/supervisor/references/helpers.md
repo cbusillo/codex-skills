@@ -1679,7 +1679,8 @@ was summarized or chained, is bound only when the comment's body is exactly what
 that call sent to that comment's own repository and issue, and it names no other
 session. The write is read with the comment helper's own argument parser, so its
 target and body file are what the helper used, whatever the flag form or order,
-including the `HOST/OWNER/REPO` and `.git` repository forms `gh-comment` accepts.
+including the `HOST/OWNER/REPO` and `.git` repository forms that both comment
+helpers accept.
 It must name its repository with `-R`/`--repo` or a pull request URL: without
 one, the helper uses `GH_REPO` or the working directory's remote, which the
 transcript cannot prove. What a call sent is a heredoc consumed by that comment command's stdin,

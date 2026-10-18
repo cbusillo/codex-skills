@@ -392,7 +392,8 @@ def discover_handoff(reader, entry, actor):
             try:
                 if name in {"gh-comment", "github_comment.py"}:
                     args = comment_parser().parse_args(argv)
-                    # The helper posts to its normalized OWNER/REPO and refuses any other form.
+                    # Both helpers post through github_comment, which normalizes OWNER/REPO
+                    # and refuses any other form.
                     return args.repo, str(args.number), args.body_file, normalized_repo
                 if name == "gh-pr.py":
                     cli = pr_cli()
@@ -401,10 +402,9 @@ def discover_handoff(reader, entry, actor):
                         return None
                     # A pull request URL names its own repository, over --repo.
                     if pr_url := cli.parse_pr_url(args.pr):
-                        return pr_url[0], str(pr_url[1]), args.body_file, str
+                        return pr_url[0], str(pr_url[1]), args.body_file, normalized_repo
                     # A branch name leaves the number, and so any printed URL, unmatched.
-                    # gh-pr.py uses an explicit --repo as given.
-                    return args.repo, args.pr if args.pr.isdigit() else None, args.body_file, str
+                    return args.repo, args.pr if args.pr.isdigit() else None, args.body_file, normalized_repo
             except (github_api.ArgumentParsingError, SystemExit):
                 return None
             return None
