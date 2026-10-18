@@ -2176,30 +2176,51 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def attested_handoff_fixture(self):
+    def attested_handoff_fixture(self, *, elsewhere=False, terminated=False):
         # codex-skills#2111: claim 6241211301, note 6241527690, evidence 6243185845, release 6243187633.
         import github_plan_release as release_helper
+        import github_plan_termination as termination
         source = {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT},
                   "created_at": "2026-10-01T00:00:00Z"}
         note = {"id": 2, "body": "Claimed by trial-alias as a repeat-stop. Implementation: PR #7. "
                 "The review of record is pending with the Supervisor.",
                 "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:01:00Z"}
-        evidence = {"id": 88, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:01:40Z",
-                    "body": "Closed session session-b\nEnded at: 2026-10-01T00:01:30Z\nSafe to exit: yes\n"
-                            "Handoff: https://github.com/owner/repo/issues/42#issuecomment-2",
-                    "issue_url": "https://api.github.com/repos/owner/repo/issues/42"}
-        self.comments = [source, note, evidence]
+        body = "Closed session session-b\nEnded at: 2026-10-01T00:01:30Z\nSafe to exit: yes"
+        if terminated:
+            body = termination.body({"session_id": "session-b", "pid": 4242, "host": "fixture-host", "cause": "host crash",
+                                     "retained_artifacts": [], "last_activity_at": "2026-10-01T00:01:20Z",
+                                     "ended_at": "2026-10-01T00:01:30Z", "checked_at": "2026-10-01T00:07:00Z",
+                                     "terminal_state": "pane dead"})
+        thread = "owner/control/issues/884" if elsewhere else "owner/repo/issues/42"
+        evidence = {"id": 88, "user": {"login": TEST_BOT},
+                    "created_at": "2026-10-01T00:07:10Z" if terminated else "2026-10-01T00:01:40Z",
+                    "body": body + "\nHandoff: https://github.com/owner/repo/issues/42#issuecomment-2",
+                    "issue_url": f"https://api.github.com/repos/{thread}"}
+        self.comments = [source, note] + ([] if elsewhere else [evidence])
         self.closed_pulls[88] = evidence
-        self.comments.append({"id": 3, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:02:00Z",
+        self.comments.append({"id": 3, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:08:00Z",
             "body": release_helper.prepare_release(
                 source, evidence, self.comments, self.inventory, actor=TEST_BOT, role="supervisor",
-                releaser_session="supervisor-native", evidence_url="https://github.com/owner/repo/issues/42#issuecomment-88",
+                releaser_session="supervisor-native", evidence_url=f"https://github.com/{thread}#issuecomment-88",
                 retained_prs=[], related=[])})
 
     def test_attested_handoff_note_is_accounted_for_by_the_supervisor_release(self):
-        self.attested_handoff_fixture()
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        for elsewhere, terminated in ((False, False), (True, False), (False, True)):
+            with self.subTest(elsewhere=elsewhere, terminated=terminated):
+                self.setUp()
+                self.attested_handoff_fixture(elsewhere=elsewhere, terminated=terminated)
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_external_or_terminated_evidence_must_still_name_the_note(self):
+        for elsewhere, terminated in ((True, False), (False, True)):
+            with self.subTest(elsewhere=elsewhere, terminated=terminated):
+                self.setUp()
+                self.attested_handoff_fixture(elsewhere=elsewhere, terminated=terminated)
+                self.closed_pulls[88]["body"] = self.closed_pulls[88]["body"].replace("issuecomment-2", "issuecomment-99")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
 
     def test_attested_handoff_note_requires_exact_evidence_author_session_and_chronology(self):
         for change in ("unnamed_note", "other_comment_named", "foreign_note", "foreign_evidence", "other_session_evidence",

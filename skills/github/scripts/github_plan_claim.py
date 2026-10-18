@@ -435,7 +435,7 @@ def released_explanatory_note(
 
 def attested_handoff_note(text: str, index: int, comments: list[dict[str, Any]]) -> bool:
     """A released session's closure evidence that names this exact note as its handoff accounts for it."""
-    from github_plan_release import COMMENT_URL, evidence_header, receipt_for, related_sessions_match, stamp
+    from github_plan_release import COMMENT_URL, receipt_for, related_sessions_match, stamp, validate_evidence
     header = re.match(r"Claimed by:?\s+\S+", text, re.IGNORECASE)
     if not header:
         return False
@@ -449,15 +449,19 @@ def attested_handoff_note(text: str, index: int, comments: list[dict[str, Any]])
                 or (note.get("user") or {}).get("login") != author
                 or not related_sessions_match(text, record["session"])):
             continue
+        # Claim reads attach evidence fetched from any issue; otherwise use this issue's copy.
         evidence_ids = {int(m.group(3)) for m in COMMENT_URL.finditer(receipt["evidence_url"])}
-        evidence = next((c for c in comments if c.get("id") in evidence_ids), None)
-        if evidence is None or (evidence.get("user") or {}).get("login") != author:
+        evidence = release.get("_release_evidence") or next((c for c in comments if c.get("id") in evidence_ids), None)
+        if evidence is None or evidence.get("id") not in evidence_ids:
             continue
-        lines = (evidence.get("body") or "").splitlines()
-        handoffs = {int(m.group(3)) for line in lines
+        try:
+            validate_evidence(receipt, evidence, (release.get("user") or {}).get("login", ""))
+        except (KeyError, ValueError, TypeError):
+            continue
+        handoffs = {int(m.group(3)) for line in (evidence.get("body") or "").splitlines()
                     if re.match(r"Handoff(?: context \([^)\n]*\))?: ", line)
                     for m in COMMENT_URL.finditer(line)}
-        if lines[:1] != [evidence_header(source["id"], record)] or note.get("id") not in handoffs:
+        if note.get("id") not in handoffs:
             continue
         try:
             if not max(stamp(source.get("updated_at") or source.get("created_at")), stamp(record["claimed_at"])) < stamp(
