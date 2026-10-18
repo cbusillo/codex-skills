@@ -466,24 +466,26 @@ def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None,
     """
     if direction_text is None:
         return None
+    path: pathlib.Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
     try:
         path = direction_mark.marker_path()
         # Retain closures that happen while listings are being fetched for the
         # next audit instead of skipping ahead to the completion time.
         direction_mark.mark_audit(path, repo, started_at, held)
         return str(path)
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return None
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise AuditError(f"Could not record direction audit marker at {path}: {exc}") from exc
 
 
 def drop_archived(repo: str) -> str | None:
     """Remove a repository this audit confirmed archived from the local marker."""
+    path: pathlib.Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
     try:
         path = direction_mark.marker_path()
         direction_mark.drop_audit(path, repo)
         return str(path)
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return None
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise AuditError(f"Could not remove archived direction audit marker at {path}: {exc}") from exc
 
 
 def previous_audit_stamp(repo: str) -> dt.datetime | None:
@@ -2017,13 +2019,19 @@ def main(argv: list[str] | None = None) -> int:
     archived = result["stale_wait_report"]["repository"]["archived"]
     result["marked_skipped"] = ("archived" if archived is True else "window_open" if held
                                 else "archive_state_unknown" if archived is not False else None)
-    result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)
-    # A held window still records that this audit ran, so it is not read as missed.
-    result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held))
-                              if held and archived is False else result["marked"])
-    result["dropped"] = drop_archived(repo) if archived is True else None
+    result["marked"] = result["run_recorded"] = result["dropped"] = None
+    try:
+        result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)
+        # A held window still records that this audit ran, so it is not read as missed.
+        result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held))
+                                  if held and archived is False else result["marked"])
+        result["dropped"] = drop_archived(repo) if archived is True else None
+    except AuditError as exc:
+        result["ok"] = False
+        result["marker_error"] = str(exc)
+        print(f"ERROR: {exc}. The reminder still has the previous audit state.", file=sys.stderr)
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0 if result["ok"] else 3
+    return 1 if "marker_error" in result else 0 if result["ok"] else 3
 
 
 if __name__ == "__main__":

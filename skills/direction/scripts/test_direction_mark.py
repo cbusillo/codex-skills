@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -116,6 +116,40 @@ def test_turn_cli_requires_coverage_and_reports_written_repository() -> None:
         output = json.loads(printed.getvalue())
         assert output["ok"] is False and output["shared"]["ok"] is False
         assert json.loads(path.read_text())["turn"] == output["turn"], "the local turn is still recorded"
+
+
+def test_turn_cli_reports_local_write_failure_without_sharing() -> None:
+    mark = load(SCRIPT, "direction_mark_local_failure")
+    with tempfile.TemporaryDirectory() as tmp:
+        parent = Path(tmp) / "not-a-directory"
+        parent.write_text("keep")
+        path = parent / "marker.json"
+        output, errors = io.StringIO(), io.StringIO()
+        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}),
+              patch.object(mark, "share_turn") as shared,
+              redirect_stdout(output), redirect_stderr(errors)):
+            assert mark.main(["turn", "--repo", "owner/start"]) == 1
+        result = json.loads(output.getvalue())
+        assert result["ok"] is False and result["local_recorded"] is False
+        assert result["marker"] == str(path) and result["error"]
+        assert str(path) in errors.getvalue() and result["error"] in errors.getvalue()
+        shared.assert_not_called()
+        assert parent.read_text() == "keep"
+
+
+def test_turn_cli_reports_marker_path_resolution_failure_without_sharing() -> None:
+    mark = load(SCRIPT, "direction_mark_path_failure")
+    marker = "~unresolvable-user/marker.json"
+    output, errors = io.StringIO(), io.StringIO()
+    with (patch.dict(os.environ, {"DIRECTION_MARKER": marker}),
+          patch.object(Path, "expanduser", side_effect=RuntimeError("Could not determine home directory.")),
+          patch.object(mark, "share_turn") as shared,
+          redirect_stdout(output), redirect_stderr(errors)):
+        assert mark.main(["turn", "--repo", "owner/start"]) == 1
+    result = json.loads(output.getvalue())
+    assert result["ok"] is False and result["local_recorded"] is False
+    assert result["marker"] == marker and result["error"] in errors.getvalue()
+    shared.assert_not_called()
 
 
 class FakeGitHub:
