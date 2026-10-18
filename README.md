@@ -1109,7 +1109,7 @@ uv run skills/github/scripts/gh-rulesets.py apply \
   --confirm-owner-admin-write
 ```
 
-For additive required status checks, use the same verified-owner writer's
+For additive required status checks, use the same verified repository owner writer's
 `checks-plan`, `checks-apply` and `checks-readback` route. It handles one
 repository's default branch at a time. The checks file is a JSON list such as
 `[{"context":"validation","app_id":123}]`; use `null` explicitly for any App.
@@ -1148,7 +1148,7 @@ not lock out another settings writer between those calls. Coordinate settings
 changes while applying. This path adds no App grant or identity fallback.
 It does not apply repository flags, remove collaborators or manage custom tag
 rules. Implementation tests use fixtures and injected clients, with no live
-owner calls. A rollout's default-head and ordinary-PR check proof is still its
+repository owner calls. A rollout's default-head and ordinary-PR check proof is still its
 own preflight requirement, separate from the settings snapshot.
 
 On a repository where Clients or their staff are collaborators, add

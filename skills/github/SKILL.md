@@ -302,7 +302,7 @@ commands:
     source: skill
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-plan", "--repo", "OWNER/REPO", "--target", "classic", "--checks-file", "checks.json", "--out", "plan.json"]
-    purpose: Saves an additive required-check plan and digest using the existing verified-owner writer.
+    purpose: Saves an additive required-check plan and digest using the existing verified repository owner writer.
   - name: github-required-checks-apply
     source: skill
     resource_path: scripts/gh-rulesets.py

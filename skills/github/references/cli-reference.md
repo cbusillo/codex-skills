@@ -492,14 +492,14 @@ requested.
 
 ### Required Status Checks
 
-The existing `gh-rulesets.py` verified-owner writer supports
+The existing `gh-rulesets.py` verified repository owner writer supports
 `checks-plan --repo OWNER/REPO --target classic|new|RULESET_ID --checks-file checks.json --out plan.json`,
 `checks-apply --plan-file plan.json --plan-digest SHA256 --confirm-owner-admin-write`,
 and `checks-readback --plan-file plan.json --plan-digest SHA256`.
 Read [the required-check procedure](https://github.com/cbusillo/codex-skills#standard-repository-rulesets)
 before using it: it owns explicit App bindings, additive preservation, plan
 review, state-drift refusal, idempotence, readback and the concurrent-writer
-limit. This uses the writer's existing active human owner, never App-admin
+limit. This uses the writer's existing active human repository owner, never App-admin
 fallback. Source implementation and fixture tests do not authorize live calls
 or a rollout apply.
 
