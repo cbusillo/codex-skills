@@ -1533,6 +1533,24 @@ def close_relationship_preflight(
     return actor, preflight
 
 
+def section_machine_markers(text: str) -> dict[str, list[str]]:
+    """Live helper records by kind; fenced examples and reserved markers are not records."""
+    found: dict[str, list[str]] = {}
+    for _, line in github_plan_wait.live_lines(text, prefix="<!-- "):
+        match = re.match(r"<!-- (github-plan:[\w-]+|github-skill-operation):?", line)
+        if match and line.strip() not in PLAN_RESERVED_MARKERS:
+            found.setdefault(match.group(1), []).append(line)
+    return found
+
+
+def with_carried_markers(old_text: str, new_text: str) -> str:
+    """Keep the section's wait, claim and other helper records unless the caller supplies that kind."""
+    supplied = section_machine_markers(new_text)
+    carried = [line for kind, lines in section_machine_markers(old_text).items()
+               if kind not in supplied for line in lines]
+    return "\n\n".join(part for part in (new_text.strip(), "\n".join(carried)) if part)
+
+
 def replace_section(body: str, section: str, new_text: str) -> str:
     body = body or ""
     if any(marker in new_text for marker in PLAN_RESERVED_MARKERS):
@@ -1540,7 +1558,9 @@ def replace_section(body: str, section: str, new_text: str) -> str:
     pattern = re.compile(rf"(?ms)^##\s+{re.escape(section)}\s*\n.*?(?=^##\s+|\Z)")
     replacement = f"## {section}\n\n{new_text.strip()}\n\n"
     if pattern.search(body):
-        return pattern.sub(lambda _match: replacement, body).rstrip() + "\n"
+        return pattern.sub(
+            lambda match: f"## {section}\n\n{with_carried_markers(match.group(0), new_text)}\n\n",
+            body).rstrip() + "\n"
     if body and not body.endswith("\n"):
         body += "\n"
     return f"{body}\n{replacement}".lstrip()
