@@ -326,7 +326,10 @@ cell with hidden, computed, missing or ambiguous results retains the refusal;
 checker acceptance still requires the isolated check and poll forms above.
 Mixed cells with stdout-only reads require a complete printed block for each
 call, matched by position; read stdout cannot supply native execution wrappers
-or process handles. Incomplete or deferred mixed cells retain the refusal.
+or process handles. Incomplete cells retain the refusal. Deferred serial output
+can complete only when fresh top-level blocks collected through its native
+outer-cell handle match every printed call; saved output cannot supply that
+handle or a missing result.
 Keep ownership results visible: use one foreground shell command or one
 `text(await tools.exec_command(...));` cell. Do not launch ownership commands
 with shell `&` or drop an inner execution result. A detached writer with no

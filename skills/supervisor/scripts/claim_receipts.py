@@ -14,7 +14,7 @@ from pathlib import Path
 CHECK_OPERATION = "work-closeout.claims"
 CLAIM_OPERATION = "github.plan.claim"
 COMMENT = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
-SHELL_FIELD = re.compile(r'''\b(?:cmd|command)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?=\s*[,}])''')
+SHELL_FIELD = re.compile(r'''\btools\.exec_command\s*\(\s*\{(?:(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|[^{}"'`])*?\b(?:cmd|command)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?=\s*[,}])''')
 OWNERSHIP_TEXT = re.compile(r"gh-plan\.py[\s\S]*\bclaim\b|gh-pr\.py[\s\S]*\bcreate\b|\bgh\s+pr\s+create\b")
 
 
@@ -191,8 +191,9 @@ def opaque_ownership(name, value):
                 return True
     if name in {"exec", "functions.exec"} and isinstance(value, str) and "tools.exec_command" in value:
         unparsed = SHELL_FIELD.sub("", value)
-        if re.search(r"\b(?:cmd|command)\s*:|\{\s*(?:cmd|command)\s*[,}]", unparsed):
-            return OWNERSHIP_TEXT.search(unparsed) is not None
+        if re.search(r"\btools\.exec_command\s*\(", unparsed):
+            return bool(re.search(r"gh-plan\.py", unparsed) and re.search(r"\bclaim\b", unparsed)
+                        or re.search(r"gh-pr\.py|\bgh\s+pr\b", unparsed) and re.search(r"\bcreate\b", unparsed))
     return False
 
 
@@ -345,21 +346,32 @@ def single_composed_call(value, method):
     return len(calls) == 1 and calls[0][0] == method and not calls[0][2]
 
 
-def mixed_native_results(record, serial):
-    """Match printed calls to native blocks before interpreting their contents."""
+def serial_native_chunk(record):
+    """Read fresh top-level prints and the transport's own outer-cell status."""
     blocks = (record.get("payload") or {}).get("output")
     if not isinstance(blocks, list):
-        return None
-    if blocks and isinstance(blocks[0], dict) and str(blocks[0].get("text", "")).startswith("Script completed\nWall time "):
-        blocks = blocks[1:]
-    if len(blocks) != len(serial):
+        return None, None
+    if blocks and isinstance(blocks[0], dict):
+        header = str(blocks[0].get("text", ""))
+        running = re.match(r"Script running with cell ID ([\w-]+)\nWall time ", header)
+        if running:
+            return blocks[1:], running[1]
+        if header.startswith("Script completed\nWall time "):
+            return blocks[1:], None
+    return blocks, None
+
+
+def serial_native_results(blocks, serial):
+    """Match printed calls to native blocks before interpreting their contents."""
+    if blocks is None or len(blocks) != len(serial):
         return None
     wrappers = []
     for (_, _, stdout), block in zip(serial, blocks):
-        if stdout:
-            continue  # Even native-looking JSON here is only read stdout.
         if not isinstance(block, dict) or not isinstance(block.get("text"), str):
             return None
+        if stdout:
+            wrappers.append(None)  # Preserve the slot, never decode read stdout.
+            continue
         try:
             value = json.loads(block["text"])
         except ValueError:
@@ -372,40 +384,45 @@ def mixed_native_results(record, serial):
 
 
 def serial_ownership_records(records):
-    """Bind visible serial call results before tracking ownership process handles.
+    """Bind visible serial calls, collecting only fresh prints across outer waits.
 
     Never split a computed/hidden call or borrow nested stdout as a native result.
     Checker receipts still use their separate isolated-invocation contract.
     """
-    expanded, positions, launches = [], [], {}
+    expanded, positions, launches, cells, polls, printed = [], [], {}, {}, {}, {}
     for index, record in enumerate(records):
         calls, results = calls_and_results(record, "codex")
         for identifier, name, value in calls:
             serial = composed_calls(value) if name in {"exec", "functions.exec"} else []
-            if len(serial) > 1 and not any(stdout for _, _, stdout in serial):
+            if len(serial) > 1:
                 launches[identifier] = serial
+            args = arguments(value)
+            if name in {"wait", "functions.wait"} and isinstance(args, dict):
+                source = cells.get(str(args.get("cell_id")))
+                if source is not None:
+                    polls[identifier] = source
         split = None
         for identifier in results:
-            if identifier not in launches:
+            source = identifier if identifier in launches else polls.get(identifier)
+            if source is None:
                 continue
-            raw = (record.get("payload") or {}).get("output")
-            wrappers = []
-            for block in raw if isinstance(raw, list) else []:
-                if not isinstance(block, dict) or not isinstance(block.get("text"), str):
-                    continue
-                try:
-                    value = json.loads(block["text"])
-                except ValueError:
-                    continue
-                if isinstance(value, dict) and not value.get("operation") and (type(value.get("exit_code")) is int or type(value.get("session_id")) is int):
-                    wrappers.append(value)
-            if len(wrappers) == len(launches[identifier]):
+            blocks, outer = serial_native_chunk(record)
+            if blocks is None:
+                continue
+            printed.setdefault(source, []).extend(blocks)
+            if outer:
+                cells[outer] = source
+                continue
+            wrappers = serial_native_results(printed[source], launches[source])
+            if wrappers is not None:
                 split = []
-                for part, ((method, args, _), wrapper) in enumerate(zip(launches[identifier], wrappers)):
-                    source = f"{identifier}:serial:{part}"
-                    split.extend([
-                        {"payload": {"type": "function_call", "name": method, "call_id": source, "arguments": json.dumps(args)}},
-                        {"payload": {"type": "function_call_output", "call_id": source, "output": json.dumps(wrapper)}}])
+                for part, ((method, args, _), wrapper) in enumerate(zip(launches[source], wrappers)):
+                    part_id = f"{source}:serial:{part}"
+                    split.append({"payload": {"type": "function_call", "name": method, "call_id": part_id, "arguments": json.dumps(args)}})
+                    # A stdout-only writer/poll has no native terminal wrapper.
+                    # Retain its launch so it cannot become a false all-clear.
+                    if wrapper is not None:
+                        split.append({"payload": {"type": "function_call_output", "call_id": part_id, "output": json.dumps(wrapper)}})
         if split is not None:
             expanded.extend(split)
             positions.extend([index] * len(split))
@@ -605,7 +622,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
     """Bind native outputs and process polls to an actual tool invocation."""
     calls, processes, background, polled, outstanding = {}, {}, set(), {}, {}
     opaque, required, deferred, visible = set(), {}, {}, {}
-    mixed = {}
+    serial_calls = {}
     parsed = {}
     for index, value in outputs(records, harness) if receipts is None else receipts:
         parsed.setdefault(index, []).append(value)
@@ -641,8 +658,8 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                         opaque.add(source)
                 if name in {"exec", "functions.exec"}:
                     serial = composed_calls(value)
-                    if any(stdout for _, _, stdout in serial):
-                        mixed[source] = serial
+                    if len(serial) > 1 or any(stdout for _, _, stdout in serial):
+                        serial_calls[source] = serial
                     required[source] = (sum(not stdout for _, _, stdout in serial)
                         if serial and not any(stdout and predicate(method, args) for method, args, stdout in serial)
                         else len(list(shell_texts(name, value))))
@@ -656,11 +673,12 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             raw = json.dumps((record.get("payload") or {}).get("output")) if harness == "codex" else json.dumps([
                 b.get("content") for b in (record.get("message") or {}).get("content", [])
                 if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == result])
-            if source in mixed and result == source:
-                wrappers = mixed_native_results(record, mixed[source])
-                values = [v for wrapper in wrappers or [] for v in envelopes(wrapper)]
+            if source in serial_calls and result == source:
+                blocks, _ = serial_native_chunk(record)
+                wrappers = serial_native_results(blocks, serial_calls[source])
+                values = [v for wrapper in wrappers or [] if wrapper is not None for v in envelopes(wrapper)]
                 # Read stdout cannot supply handles or terminal execution proof.
-                # A partial/deferred mixed cell cannot prove the missing writer.
+                # A partial/deferred serial cell cannot prove the missing writer.
                 raw = ""
                 if wrappers is None:
                     opaque.add(source)

@@ -78,11 +78,22 @@ def file_execution_histories(harness):
 
 class ReceiptTests(unittest.TestCase):
     def test_dynamic_read_does_not_borrow_ownership_words_from_another_command(self):
-        rows = history("codex", {})
-        rows[1]["payload"].update(name="functions.exec", arguments=
-            'for (const ref of [1, 2]) { text(await tools.exec_command({cmd:`uv run gh-plan.py show ${ref} --full`})); }'
-            'text(await tools.exec_command({cmd:"rg claim docs.md"}));')
-        self.assertFalse(receipts.ownership_state(rows, "codex")["indices"])
+        for options in ('', 'workdir:root,'):
+            rows = history("codex", {})
+            rows[1]["payload"].update(name="functions.exec", arguments=
+                'for (const ref of [1, 2]) { text(await tools.exec_command({cmd:`uv run gh-plan.py show ${ref} --full`})); }'
+                'text(await tools.exec_command({' + options + 'cmd:"rg claim docs.md"}));')
+            self.assertFalse(receipts.ownership_state(rows, "codex")["indices"])
+
+    def test_computed_ownership_cannot_hide_its_words_in_a_data_command_field(self):
+        for cell in (
+            'const a={cmd:"claim"};text(await tools.exec_command({cmd:`uv run gh-plan.py ${a.cmd} 5`}));',
+            'const a={cmd:"uv run gh-plan.py --repo example/a claim 1"};text(await tools.exec_command({cmd:a.cmd+" &"}));',
+        ):
+            rows = history("codex", {})
+            rows[1]["payload"].update(name="functions.exec", arguments=cell)
+            rows[2] = output({"exit_code": 0, "output": ""}, "codex", "tool-0")
+            self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
 
     def test_ownership_help_is_read_only_on_both_harnesses(self):
         for harness in ("codex", "claude"):
@@ -109,7 +120,12 @@ class ReceiptTests(unittest.TestCase):
         self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
 
     def test_stdout_read_cannot_supply_or_poison_a_writers_native_result(self):
-        read = 'text((await tools.exec_command({cmd:"cat saved-exec.json"})).output);'
+        self.check_read_cannot_supply_or_poison_a_writers_native_result(stdout=True)
+        self.check_read_cannot_supply_or_poison_a_writers_native_result(stdout=False)
+
+    def check_read_cannot_supply_or_poison_a_writers_native_result(self, *, stdout):
+        read = ('text((await tools.exec_command({cmd:"cat saved-exec.json"})).output);' if stdout else
+                'text(await tools.exec_command({cmd:"cat saved-exec.json"}));')
         writer = 'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo example/a claim 1"}));'
         for read_first in (False, True):
             for state in ("missing", "running", "finished"):
@@ -119,7 +135,8 @@ class ReceiptTests(unittest.TestCase):
                         rows = history("codex", claim())
                         rows[1]["payload"].update(name="functions.exec", arguments=read + writer if read_first else writer + read)
                         native = None if state == "missing" else {"session_id": 123, "output": ""} if state == "running" else {"exit_code": 0, "output": json.dumps(claim())}
-                        blocks = [{"type": "input_text", "text": json.dumps(cached)}]
+                        read_value = cached if stdout else {"exit_code": 0, "output": json.dumps(cached)}
+                        blocks = [{"type": "input_text", "text": json.dumps(read_value)}]
                         if native is not None:
                             blocks.insert(1 if read_first else 0, {"type": "input_text", "text": json.dumps(native)})
                         blocks.insert(0, {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"})
@@ -127,15 +144,21 @@ class ReceiptTests(unittest.TestCase):
                         self.assertEqual(receipts.ownership_state(rows, "codex")["pending"], state != "finished")
 
     def test_visible_serial_poll_results_bind_only_their_own_native_wrapper(self):
+        self.check_visible_serial_poll_results(stdout=False)
+        self.check_visible_serial_poll_results(stdout=True)
+
+    def check_visible_serial_poll_results(self, *, stdout):
         for writer_finished in (False, True):
             rows = history("codex", claim())
             rows[2] = output({"session_id": 123, "output": ""}, "codex", "tool-0")
             poll = {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "functions.exec", "call_id": "poll", "input":
-                'text(await tools.exec_command({cmd:"cat docs.md"}));'
+                ('text((await tools.exec_command({cmd:"cat docs.md"})).output);' if stdout else
+                 'text(await tools.exec_command({cmd:"cat docs.md"}));') +
                 'text(await tools.write_stdin({session_id:123,chars:""}));'}}
             # The first read may print an old terminal/check report. Only the
             # second native wrapper describes the actual writer's process.
-            read = {"exit_code": 0, "output": json.dumps({"exit_code": 0, "output": json.dumps(proof())})}
+            cached = {"exit_code": 0, "output": json.dumps(proof())}
+            read = cached if stdout else {"exit_code": 0, "output": json.dumps(cached)}
             writer = {"exit_code": 0, "output": json.dumps(claim())} if writer_finished else {"session_id": 123, "output": ""}
             result = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "poll", "output": [
                 {"type": "input_text", "text": json.dumps(value)} for value in (read, writer)]}}
@@ -336,14 +359,23 @@ class ReceiptTests(unittest.TestCase):
         self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
         # Each wait returns only new output, so preserve earlier visible results.
         rows[1]["payload"]["arguments"] += 'text(await tools.exec_command({cmd:"gh pr create --title x"}));'
-        rows[2] = output([{"exit_code": 0, "output": ""}, "Script running with cell ID owning-cell"], "codex", "tool-0")
-        rows[4] = output({"exit_code": 0, "output": ""}, "codex", "wait")
+        rows[2] = {"payload": {"type": "custom_tool_call_output", "call_id": "tool-0", "output": [
+            {"type": "input_text", "text": "Script running with cell ID owning-cell\nWall time 0.1 seconds\nOutput:\n"},
+            {"type": "input_text", "text": json.dumps({"exit_code": 0, "output": json.dumps({"exit_code": 0})})}]}}
+        rows[4] = {"payload": {"type": "custom_tool_call_output", "call_id": "wait", "output": [
+            {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
+            {"type": "input_text", "text": json.dumps({"exit_code": 0, "output": ""})}]}}
         self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
+        # An empty final wait cannot borrow saved native JSON from earlier stdout.
+        rows[4]["payload"]["output"].pop()
+        self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+        self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
 
     def test_every_process_in_an_ownership_batch_must_reach_its_terminal_result(self):
         rows = history("codex", claim())
         rows[1]["payload"].update(name="functions.exec", arguments='text(await tools.exec_command({cmd:"gh pr create --title x"})); text(await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 1 > claim.json"}));')
-        rows[2] = output([{"session_id": 123, "output": ""}, {"session_id": 456, "output": ""}], "codex", "tool-0")
+        rows[2] = {"payload": {"type": "custom_tool_call_output", "call_id": "tool-0", "output": [
+            {"type": "input_text", "text": json.dumps({"session_id": handle, "output": ""})} for handle in (123, 456)]}}
         def poll(identifier, handle):
             return {"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin", "call_id": identifier,
                     "arguments": json.dumps({"session_id": handle})}}
