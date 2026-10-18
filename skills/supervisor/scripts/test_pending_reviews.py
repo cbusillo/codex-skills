@@ -293,6 +293,67 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(self.dispatch()["status"], "not_owned")
         self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
 
+    def test_weighed_disposition_repeating_delegation_cannot_replace_the_served_request(self):
+        self.dispatch()
+        self.io.comments.append(comment(12, review_result_body("Supervisor runs the review.", SHA)))
+        result = self.dispatch()
+        self.assertEqual(result["request"], self.io.request["id"])
+        self.assertEqual(result["status"], "already_completed")
+        self.assertEqual(result["completion_comment"], 11)
+        self.assertFalse(result["notification_needed"])
+        self.io.pr["head"]["sha"] = "b" * 40
+        self.assertEqual(self.dispatch()["status"], "completed_stale")
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_disposition_repeating_delegation_during_inference_does_not_strand_paid_result(self):
+        post = self.io.post
+        def ordered_post(repo, number, body):
+            result = post(repo, number, body)
+            self.io.comments[-1]["id"] = 13  # The actual report is created after the unrelated disposition.
+            return result
+        self.io.post = ordered_post
+        self.io.after_review = lambda: self.io.comments.append(comment(12, review_result_body(
+            "An unrelated review was weighed, so Supervisor runs the review.", SHA)))
+        result = self.dispatch()
+        self.assertEqual(result["status"], "posted")
+        self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+        self.assertEqual(sum(c[0] == "post" for c in self.io.calls), 1)
+        self.assertTrue(self.dispatch()["notification_needed"])
+
+    def test_malformed_other_ledger_issue_cannot_block_an_unrelated_branch(self):
+        self.entries.append({**entry(), "issue": 99, "session_id": "other"})
+        other = marker({"branch": "work/unrelated", "session": "other"})
+        pages = self.io.paged_json
+        def claims(path, **kwargs):
+            if path.endswith("/99/comments"):
+                return [comment(6, other)]
+            return pages(path, **kwargs)
+        self.io.paged_json = claims
+        self.assertEqual(self.dispatch(apply=False)["author_session"], SESSION)
+        for branch in (BRANCH, "", None):
+            other = marker({"branch": branch, "session": "other"})
+            with self.subTest(branch=branch), self.assertRaises(ValueError):
+                self.dispatch()
+        self.assertFalse(any(c[0] in {"review", "post"} for c in self.io.calls))
+
+    def test_selection_failure_keeps_structured_metadata_without_authorizing_replay(self):
+        self.io.review = reviews.IO.__new__(reviews.IO).review
+        metadata = {"ok": False, "provider": "anthropic", "phase": "selection", "outcome": "unavailable",
+                    "installed": False, "error": "CLI is not installed"}
+        process = subprocess.CompletedProcess([], 2, json.dumps(metadata), "")
+        with patch.object(reviews, "run", return_value=process) as command:
+            with self.assertRaises(reviews.ReviewError):
+                self.dispatch()
+            journal = json.loads(next(self.evidence.glob("*.json")).read_text())
+            self.assertEqual(journal["review_failure"], metadata)
+            discovery = self.dispatch(apply=False)
+            self.assertEqual(discovery["review_phase"], metadata["phase"])
+            self.assertEqual(discovery["review_outcome"], metadata["outcome"])
+            with self.assertRaises(reviews.ReviewError):
+                self.dispatch()
+        self.assertEqual(command.call_count, 1)
+        self.assert_no_post()
+
     def test_comment_reactions_and_endpoint_shape_differences_do_not_invalidate_prompt(self):
         get = self.io.get_json
         def single(path, **kwargs):

@@ -48,6 +48,12 @@ class OtherRun(ReviewError):
     """A trusted branch claim belongs to a session outside this run."""
 
 
+class ReviewFailure(ReviewError):
+    def __init__(self, metadata):
+        super().__init__(f"review failed; no result posted: {json.dumps(metadata)}")
+        self.metadata = metadata
+
+
 class PostError(ReviewError):
     def __init__(self, message, *, phase="post_unknown", payload=None):
         super().__init__(message)
@@ -162,7 +168,8 @@ def reported_review(body):
 
 
 def latest_request(comments, logins):
-    asks = [c for c in comments if trusted(c, logins) and supervisor_review_request(c.get("body") or "")
+    asks = [c for c in comments if trusted(c, logins) and review_receipt_head(c.get("body") or "") is None
+            and supervisor_review_request(c.get("body") or "")
             and raw_receipt(c.get("body") or "") is None and not reported_review(c.get("body") or "")]
     return max(asks, key=lambda c: (c["created_at"], c["id"]), default=None)
 
@@ -382,7 +389,7 @@ def stale_completion(comments, request, current_head, logins):
     return completed[0] if completed else None
 
 
-def live_claim_comments(comments, branches, *, referenced):
+def live_claim_comments(comments, branches):
     comments = sorted(effective_comments(comments), key=lambda c: (c["created_at"], c["id"]))
     cleaned = []
     for comment in comments:
@@ -393,7 +400,7 @@ def live_claim_comments(comments, branches, *, referenced):
             except ValueError:
                 match = re.fullmatch(r"\s*<!-- github-plan:claim (.*?) -->\s*", line)
                 raw = json.loads(match[1]) if match else None
-                if (referenced and isinstance(raw, dict) and isinstance(raw.get("branch"), str)
+                if (isinstance(raw, dict) and isinstance(raw.get("branch"), str)
                         and raw["branch"] and raw["branch"] not in branches):
                     body = body.replace(line, "", 1)
                     continue
@@ -419,8 +426,7 @@ def bind_session(io, repo, branches, entries, logins, request, pr):
     matches, outside = {}, set()
     for issue in sorted(issues):
         comments = io.paged_json(f"/repos/{repo}/issues/{issue}/comments", step_prefix="author_claims")
-        comments = live_claim_comments([c for c in comments if trusted(c, logins)], branches,
-                                       referenced=issue not in owned_issues)
+        comments = live_claim_comments([c for c in comments if trusted(c, logins)], branches)
         for comment in comments:
             for claim in records(comment["body"]):
                 if claim["branch"] in branches:
@@ -522,7 +528,7 @@ class IO:
                 or metadata.get("outcome") in {"refused", "incomplete", "unavailable"}
                 or metadata.get("response_file") != str(output)
                 or not output.is_file() or not output.read_text().strip()):
-            raise ReviewError(f"review failed; no result posted: {json.dumps(metadata)}")
+            raise ReviewFailure(metadata)
         return metadata
 
     def post(self, repo, number, body):
@@ -623,7 +629,10 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
                     raise ReviewError("journal is not an object")
             except (ValueError, OSError) as error:
                 prior = {"phase": "unreadable", "error": str(error)}
+            failure = prior.get("review_failure")
+            failure = failure if isinstance(failure, dict) else {}
             return {**report, "status": "blocked", "journal": str(journal), "journal_phase": prior.get("phase"),
+                    "review_phase": failure.get("phase"), "review_outcome": failure.get("outcome"),
                     "error": prior.get("error"), "needs_attention": True,
                     "reason": "prior launch exists; reconcile retained evidence, never replay inference or an unknown write"}
         return report
@@ -651,7 +660,8 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
             if not review or metadata.get("ok") is not True:
                 raise ReviewError("review completion missing or empty")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
-            atomic_text(journal, json.dumps({**launch, "phase": "review_failed", "error": str(error)}, indent=2))
+            atomic_text(journal, json.dumps({**launch, "phase": "review_failed", "error": str(error),
+                                            "review_failure": getattr(error, "metadata", None)}, indent=2))
             raise
         # Keep every completed review before any freshness check or remote write.
         # Changed inputs prevent posting, but cannot discard paid inference.
@@ -664,7 +674,7 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         except (GitHubReadError, GitHubReadShapeError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
             atomic_text(journal, json.dumps({**retained, "phase": "post_blocked", "error": str(error)}, indent=2))
             raise
-        if existing:
+        if existing and existing["kind"] != "weighed_without_review":
             return completion_report(existing, io, repo, pr, entries, logins, request, evidence)
         atomic_text(journal, json.dumps({**retained, "phase": "post_pending"}, indent=2))
         body = folder / "post.md"

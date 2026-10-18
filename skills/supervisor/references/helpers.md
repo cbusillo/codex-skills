@@ -1832,7 +1832,11 @@ transport retries; the comment helper owns write reconciliation. This helper nev
 Journals retain `review_failed` for failed/empty inference, `post_failed` for
 confirmed non-applied writes, and `post_unknown` for uncertain delivery or
 invalid transport metadata, including their errors and structured post outcome
-when available. `post_attempted` records entry into the write call; an interrupted
+when available. A failed model-review call also retains its structured
+`review_failure` metadata; discovery exposes its declared `review_phase` and
+`review_outcome`. A selection failure remains spent and does not authorize
+retry, a new provider or another identity. Inspect the error before deciding
+whether a new request is permitted; a policy/permission denial is never evaded. `post_attempted` records entry into the write call; an interrupted
 call is uncertain, never permission to retry. Read a refused outcome and its
 journal; a real permission or authorization refusal stops that action. Do not
 renew a request to evade a denial. A completed review whose final input check
@@ -1854,7 +1858,9 @@ confirmed posts without replaying them.
 A request comes from a configured automation identity and uses the shared
 Supervisor-specific delegation predicate. Generic worker-run review requests
 and readiness status notes do not delegate, trigger or supersede this work.
-Quoted, fenced and indented examples and HTML comments are not delegations. Write `Supervisor runs the review` on its own
+Quoted, fenced and indented examples and HTML comments are not delegations.
+Head-bound weighed dispositions are outcomes even when their text repeats the
+Supervisor directive; they cannot supersede a real delegation. Write `Supervisor runs the review` on its own
 line, a head SHA (a matching abbreviated SHA is accepted), and an explicit
 prompt. Quoted Supervisor phrases and incidental prose do not create requests.
 Requests are ordered by creation time; editing an older request does not
@@ -1916,9 +1922,9 @@ at another head supplies no ownership evidence. An explicit author matching an
 outside-run claim remains `not_owned` despite unrelated same-head branches. Missing or ambiguous ownership
 still refuses; it cannot prove another run owns the item. Overlapping claims
 from this and other runs require an explicit matching `Author session:`.
-Malformed claims on
-referenced issues are ignored only when a parseable branch explicitly differs
-from the reviewed branches. A matching/unknown malformed claim or an unavailable
+Malformed claims are ignored only when a parseable branch explicitly differs
+from the reviewed branches, whether their issue is in the ledger or referenced
+by the PR. An unrelated session's malformed record cannot block other branches. A matching/unknown malformed claim or an unavailable
 claim read still blocks pending inference. When the selected worktree is on a successor
 branch rather than the PR branch, `Author session:` is required. A branch that
 happens to share the commit must not become the inferred author or provider. The ledger's `author_provider`, when present, records the actual
