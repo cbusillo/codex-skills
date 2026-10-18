@@ -1002,8 +1002,11 @@ their endpoint; `--require-browser` makes `--remote unix://` check the selected
 daemon's `plugin/list` for the launch's `-C` directory, refusing inventory
 failure or missing plugins. Source launches skip this unrequested inventory;
 daemon admission remains an independent check. Optional local discovery failure
-warns but keeps the validated local route. If marketplace setup itself fails,
-the warning names the fallback to the selected-home daemon. Other explicit remote endpoints are
+warns but keeps the validated local route. An explicit `--no-daemon` is retained
+once and never triggers daemon admission, including without the opt-in. If
+marketplace setup itself fails, the warning names the fallback to the
+selected-home daemon, or the retained local configuration when `--no-daemon`
+was explicit. Other explicit remote endpoints are
 unverified and cannot satisfy `--require-browser`. Use local `codex -C` for
 the supported browser route. Nothing restarts an existing daemon or edits
 shared config. Discovery does not prove a working extension, runtime or OS grant.

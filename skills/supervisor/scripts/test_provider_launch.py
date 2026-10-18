@@ -294,11 +294,21 @@ class ProviderLaunchTests(unittest.TestCase):
                 self.assertEqual(choice["tools"]["route"], "local")
                 self.assertTrue(choice["tools"]["warnings"])
                 inventory.side_effect = None
+                command = iterm_tab.prepare_codex_tools("codex --no-daemon -C /fixture/repo", choice)
+                self.assertEqual(shlex.split(command).count("--no-daemon"), 1)
                 fallback = {"provider": "openai", "env": {"CODEX_HOME": str(account)}}
                 with patch.object(iterm_tab.gui_launch, "marketplace", side_effect=ValueError("fixture setup unavailable")):
                     command = iterm_tab.prepare_codex_tools("codex -C /fixture/repo", fallback)
                 self.assertNotIn("--no-daemon", shlex.split(command))
                 self.assertIn("daemon", " ".join(fallback["tools"]["warnings"]))
+                with patch.object(iterm_tab.gui_launch, "marketplace", side_effect=ValueError("fixture setup unavailable")):
+                    command = iterm_tab.prepare_codex_tools("codex --no-daemon -C /fixture/repo", fallback)
+                self.assertEqual(fallback["tools"]["route"], "local")
+                self.assertIn("--no-daemon", shlex.split(command))
+                with patch.object(iterm_tab, "CHROME_OPT_IN", root / "absent"):
+                    fresh = {"provider": "openai", "env": {"CODEX_HOME": str(account)}}
+                    iterm_tab.prepare_codex_tools("codex --no-daemon -C /fixture/repo", fresh)
+                self.assertEqual(fresh["tools"]["route"], "local")
                 inventory.reset_mock()
                 remote = "codex --remote unix:// -C /fixture/repo"
                 self.assertEqual(iterm_tab.prepare_codex_tools(remote, choice, required=True), remote)

@@ -1267,6 +1267,7 @@ For enrolled homes, local Supervisor Codex launches add `--no-daemon`, validate
 the account-relative bundle link, pass its marketplace source override, and
 check installed/enabled plugins. Desktop GUI briefs require `computer-use`;
 `--require-browser` needs `chrome` and `browser`. Briefs asking for both need both sets.
+An explicit `--no-daemon` is retained once and stays local even without the opt-in.
 `--remote unix://` source launches check daemon admission without unrequested
 plugin warnings. With `--require-browser`, they inspect the selected daemon's
 `plugin/list` and refuse missing plugins. Explicit

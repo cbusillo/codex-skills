@@ -830,7 +830,12 @@ def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
             raise ValueError(warning)
         choice["tools"] = {"warnings": [warning], "remote_endpoint_unverified": True}
     must_work = required or gui
-    if remote or (not must_work and not CHROME_OPT_IN.is_file()):
+    if remote:
+        return command_text
+    local_flag = "--no-daemon" in words
+    if not must_work and not CHROME_OPT_IN.is_file():
+        if local_flag:
+            choice["tools"] = {"warnings": [], "route": "local"}
         return command_text
     needed = ((agent_tools.CODEX_BROWSER_PLUGINS if required else set())
               | ({agent_tools.COMPUTER_USE} if gui else set())) if must_work else None
@@ -840,7 +845,10 @@ def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
     except ValueError as error:
         if must_work:
             raise
-        choice["tools"] = {"warnings": [str(error) + "; source launch falls back to the selected-home daemon"]}
+        route = "local" if local_flag else "daemon"
+        detail = ("source launch keeps its explicit local configuration" if local_flag
+                  else "source launch falls back to the selected-home daemon")
+        choice["tools"] = {"warnings": [str(error) + "; " + detail], "route": route}
         return command_text
     try:
         missing = agent_tools.missing_codex_plugins(
@@ -858,7 +866,7 @@ def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
     choice["tools"] = {"warnings": warnings, "marketplace": market, "route": "local"}
     choice["env"][agent_tools.CODEX_SOURCE_ENV] = market["path"]
     override = "marketplaces.openai-bundled.source=" + json.dumps(market["path"])
-    return command_text + " --no-daemon -c " + shlex.quote(override)
+    return command_text + ("" if local_flag else " --no-daemon") + " -c " + shlex.quote(override)
 
 
 def codex_directory(words):
