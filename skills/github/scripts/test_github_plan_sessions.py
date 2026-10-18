@@ -51,8 +51,8 @@ class ReceiptFixture:
             {"type": "event_msg", "timestamp": "2026-10-01T02:00:00Z", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
             {"type": "event_msg", "timestamp": "2026-10-01T02:00:01Z", "payload": {"type": "task_complete"}},
         ]) + "\n")
-        self.log = self.root / "shared/skill-data/supervisor-closed-sessions.json"
-        self.stack.enter_context(patch.dict(os.environ, {"CODE_HOME": str(self.log.parent.parent)}))
+        self.log = self.root / ".code/skill-data/supervisor-closed-sessions.json"
+        self.stack.enter_context(patch.dict(os.environ, {"HOME": str(self.root), "CODE_HOME": str(self.log.parent.parent)}))
         self.stack.enter_context(patch.object(CLOSURE, "closed_log", return_value=self.log))
         self.stack.enter_context(patch.object(CLOSURE, "host_identity", return_value={"boot": "fixture-boot", "uid": os.getuid()}))
         self.stack.enter_context(patch.object(SESSIONS, "codex_homes", side_effect=lambda **_kw: sorted(self.homes)))
@@ -87,7 +87,7 @@ class ReceiptFixture:
                     elif method == "thread/items/list": result = {"data": [{"item": item, "turnId": "source-turn"} for item in self.execution_items], "nextCursor": None}
                     elif method == "thread/read": result = {"thread": {
                         "id": self.session, "cwd": "/retained/source", "path": str(self.transcript), "status": {"type": self.native_state}}}
-                    elif method == "thread/resume":
+                    elif method in {"thread/resume", "thread/fork", "turn/start"}:
                         self.mutations.append(request)
                         target = request["params"]["threadId"]
                         if self.approval_on_resume:
@@ -104,7 +104,7 @@ class ReceiptFixture:
             app.router.add_get("/", handler)
             runner = web.AppRunner(app)
             await runner.setup()
-            path = self.home / "app-server-control/app-server-control.sock"
+            path = CLOSURE.daemon_endpoint(self.home)
             path.parent.mkdir()
             await web.UnixSite(runner, str(path)).start()
             os.chmod(path, 0o600)
@@ -186,7 +186,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
 
     def test_registration_without_guarded_attachment_is_not_process_coverage(self):
         with ReceiptFixture() as f:
-            native = ["codex", "--remote", "unix://" + str(f.home / "app-server-control/app-server-control.sock"), "--", "task"]
+            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "task"]
             born = datetime(2026, 10, 1, tzinfo=timezone.utc)
             with patch.object(CLOSURE.os, "getpid", return_value=456), patch.object(CLOSURE, "process_started_at", return_value=born):
                 CLOSURE.register_launch(native, str(f.home))
@@ -195,7 +195,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
 
     def test_managed_unrelated_interactive_client_has_exact_process_birth_and_observed_home(self):
         with ReceiptFixture() as f:
-            native = ["codex", "--remote", "unix://" + str(f.home / "app-server-control/app-server-control.sock"), "--", "unrelated task"]
+            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "unrelated task"]
             born = datetime(2026, 10, 1, tzinfo=timezone.utc)
             with patch.object(CLOSURE, "process_started_at", return_value=born):
                 f.managed(native)
@@ -460,10 +460,34 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+    def test_runtime_and_account_overrides_cannot_hide_a_frozen_source(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODE_HOME": str(Path(folder) / ".code")}):
+            path = CLOSURE.closed_log()
+            path.parent.mkdir(parents=True)
+            CLOSURE.replace_rows([{"session_id": "handed-off", "closure_evidence": {}}])
+            with CLOSURE.ownership("handed-off", create=True):
+                CLOSURE.admit_sources({"handed-off"})
+            with patch.dict(os.environ, {"CODE_HOME": str(Path(folder) / "other-runtime"), "CODEX_HOME": str(Path(folder) / "other-account")}):
+                with self.assertRaisesRegex(ValueError, "handed off"):
+                    with CLOSURE.resume_guard("handed-off"):
+                        self.fail("a divergent runtime bypassed predecessor freeze")
+
+    def test_receipt_account_inventory_ignores_runtime_and_account_configs(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):
+            root = Path(folder)
+            for name in (".code", "other-runtime", "other-account"):
+                path = root / name / "skill-data/supervisor.toml"
+                path.parent.mkdir(parents=True)
+                path.write_text('[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                                + 'env={CODEX_HOME=' + json.dumps(str(root / (name + "-sessions"))) + '}\n')
+            expected = [(root / ".code-sessions").resolve()]
+            with patch.dict(os.environ, {"CODE_HOME": str(root / "other-runtime"), "CODEX_HOME": str(root / "other-account")}):
+                self.assertEqual(SESSIONS.codex_homes(strict=True, configured_only=True), expected)
+
     def test_configured_receipt_homes_do_not_depend_on_caller_account_or_order(self):
         config = {"accounts": [{"provider": "openai", "env": {"CODEX_HOME": "/fixture/b"}},
                                {"provider": "openai", "env": {"CODEX_HOME": "/fixture/a"}}]}
-        helpers = SimpleNamespace(load_config=lambda: config)
+        helpers = SimpleNamespace(load_config=lambda **_kw: config)
         results = []
         for current in ("/fixture/a", "/fixture/b", "/fixture/unconfigured"):
             with patch.dict(os.environ, {"CODEX_HOME": current}), \
@@ -480,9 +504,9 @@ class ObservationMergeTests(unittest.TestCase):
                 SESSIONS.codex_homes(strict=True)
 
     def test_shared_log_is_independent_of_provider_account_home(self):
-        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"CODE_HOME": folder}):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):
             first = CLOSURE.closed_log()
-            with patch.dict(os.environ, {"CODEX_HOME": str(Path(folder) / "other-account")}):
+            with patch.dict(os.environ, {"CODE_HOME": str(Path(folder) / "other-runtime"), "CODEX_HOME": str(Path(folder) / "other-account")}):
                 self.assertEqual(CLOSURE.closed_log(), first)
             self.assertTrue(first.is_relative_to(folder))
             self.assertFalse(first.exists())

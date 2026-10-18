@@ -12,6 +12,7 @@ import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 from test_github_plan_sessions import ReceiptFixture
@@ -20,23 +21,144 @@ import codex_session_proxy as proxy
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
-    async def start_client(self, f, *, resume=None, wrapper=False):
+    async def test_refused_exact_resume_removes_its_registered_proxy(self):
+        with ReceiptFixture() as f:
+            with closure.ownership(f.session):
+                closure.admit_sources({f.session})
+            popen = subprocess.Popen
+            def no_client(argv, **kwargs):
+                if any(str(arg).endswith("codex-session.py") for arg in argv):
+                    self.fail("a refused resume started its native client")
+                return popen(argv, **kwargs)
+            with patch.object(subprocess, "Popen", side_effect=no_client):
+                with self.assertRaisesRegex(ValueError, "handed off"):
+                    await proxy.run_client(f.home, ["codex"], session=f.session)
+            self.assertFalse(any(r.get("record_kind") == "managed_proxy" for r in closure.log_rows()))
+
+    async def test_slow_closure_verification_does_not_block_launch_or_first_turn(self):
+        with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
+            transcript = f.home / "sessions/closing-source.jsonl"
+            transcript.write_text(f.transcript.read_text().replace(f.session, "closing-source"))
+            entry = {**f.entry, "session_id": "closing-source", "transcript": str(transcript)}
+            verifying, release = threading.Event(), threading.Event()
+            validate = f.release.validate_closure
+            def slow(*args, **kwargs):
+                verifying.set()
+                if not release.wait(12):
+                    raise TimeoutError("fixture verification was not released")
+                return validate(*args, **kwargs)
+            with patch.object(f.release, "validate_closure", side_effect=slow):
+                finish = pool.submit(f.release.record_closure, f.log, entry, "supervisor")
+                try:
+                    self.assertTrue(await asyncio.to_thread(verifying.wait, 3))
+                    task, request, response, _ = await self.start_client(f)
+                    result = await self.send(task, request, response, "turn/start", "brand-new-thread")
+                    self.assertIn("result", result)
+                    self.assertFalse(finish.done())
+                finally:
+                    release.set()
+                    await asyncio.to_thread(finish.result, 3)
+                    if "task" in locals():
+                        self.assertTrue(any(r.get("record_kind") == "managed_proxy" for r in closure.log_rows()))
+                        (f.root / "stop").touch()
+                        await asyncio.wait_for(task, 8)
+
+    async def test_first_turn_without_receipt_does_not_wait_for_other_store_mutation(self):
+        with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
+            task, request, response, _ = await self.start_client(f)
+            held, release = threading.Event(), threading.Event()
+            def mutate():
+                with closure.store_lock(f.log):
+                    held.set()
+                    release.wait(6)
+            mutation = pool.submit(mutate)
+            try:
+                self.assertTrue(await asyncio.to_thread(held.wait, 3))
+                result = await self.send(task, request, response, "turn/start", "brand-new-thread")
+                self.assertIn("result", result)
+            finally:
+                release.set()
+                await asyncio.to_thread(mutation.result, 3)
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_failed_generation_publication_keeps_connection_and_invalidation(self):
+        with ReceiptFixture() as f:
+            task, request, response, _ = await self.start_client(f)
+            try:
+                with patch.object(closure, "resumed_launch", side_effect=closure.LeaseBusy("fixture busy store")):
+                    result = await self.send(task, request, response, "thread/resume", f.session)
+                self.assertIn("error", result)
+                self.assertTrue(next(r for r in closure.log_rows() if r.get("session_id") == f.session)["resumed_at"])
+                result = await self.send(task, request, response, "thread/read", f.session)
+                self.assertIn("result", result)
+                result = await self.send(task, request, response, "thread/resume", f.session)
+                self.assertIn("result", result)
+                self.assertTrue(next(r for r in closure.log_rows() if r.get("session_id") == f.session)["resumed_generation"])
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_child_metadata_failure_reaps_only_the_owned_child(self):
+        with ReceiptFixture() as f:
+            children = []
+            rescued = threading.Event()
+            popen, metadata = subprocess.Popen, closure.launch_metadata
+            native = f.root / "codex"
+            native.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(10)\n")
+            native.chmod(0o700)
+            def spawn(*args, **kwargs):
+                child = popen(*args, **kwargs)
+                if not any(str(arg).endswith("codex-session.py") for arg in args[0]):
+                    return child
+                children.append(child)
+                # Bounds the old broken synchronous Popen.__exit__ in this
+                # regression, without killing any process outside the fixture.
+                def rescue():
+                    if child.poll() is None:
+                        rescued.set()
+                        child.terminate()
+                timer = threading.Timer(2, rescue)
+                timer.start()
+                self.addCleanup(timer.cancel)
+                return child
+            def capture(pid, *args):
+                if pid != os.getpid():
+                    raise OSError("fixture ps failed")
+                return metadata(pid, *args)
+            with patch.object(subprocess, "Popen", side_effect=spawn), patch.object(closure, "launch_metadata", side_effect=capture):
+                with self.assertRaisesRegex(OSError, "fixture ps failed"):
+                    await proxy.run_client(f.home, [str(native)])
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0].poll())
+            # The timer has not had to rescue a synchronously blocked exit.
+            self.assertFalse(rescued.is_set())
+
+    async def test_removed_store_does_not_replace_client_exit_status(self):
+        with ReceiptFixture() as f:
+            task, _, _, _ = await self.start_client(f)
+            f.log.unlink()
+            (f.root / "stop").touch()
+            self.assertEqual(await asyncio.wait_for(task, 8), 0)
+
+    async def start_client(self, f, *, resume=None, wrapper=False, external=False):
         ready, request, response, stop = [f.root / name for name in ("ready", "request", "response", "stop")]
         child = f.root / "codex"
         child.write_text(f"#!{sys.executable}\n" +
             "import json, os, sys, time\nfrom pathlib import Path\nfrom websockets.sync.client import unix_connect\n" +
+            "def publish(path, value):\n temporary=path.with_suffix('.pending');temporary.write_text(value);temporary.replace(path)\n" +
             f"ready,request,response,stop=map(Path,{[str(p) for p in (ready,request,response,stop)]!r})\n" +
             "endpoint=sys.argv[sys.argv.index('--remote')+1][7:]\n" +
             "with unix_connect(endpoint) as ws:\n"
             " ws.send(json.dumps({'id':0,'method':'initialize','params':{}}))\n ws.recv()\n"
-            " ready.write_text(json.dumps({'pid':os.getpid()}))\n"
+            " publish(ready,json.dumps({'pid':os.getpid()}))\n"
             " deadline=time.monotonic()+25\n"
             " while not stop.exists() and time.monotonic()<deadline:\n"
             "  if request.exists():\n"
             "   message=request.read_text();request.unlink();ws.send(message);reply=json.loads(ws.recv())\n"
             "   while reply.get('method') and 'id' in reply:\n"
             "    ws.send(json.dumps({'id':reply['id'],'result':{'decision':'approved'}}));reply=json.loads(ws.recv())\n"
-            "   response.write_text(json.dumps(reply))\n"
+            "   publish(response,json.dumps(reply))\n"
             "  time.sleep(.01)\n")
         child.chmod(0o700)
         if wrapper:
@@ -51,7 +173,12 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             native += ["resume", resume]
         else:
             native += ["--", "task with  repeated spaces\nnext\tline"]
-        task = asyncio.create_task(proxy.run_client(f.home, native, session=resume))
+        if external:
+            child = await asyncio.create_subprocess_exec(sys.executable, str(Path(proxy.__file__).with_name("codex-session.py")),
+                "launch", "--codex-home", str(f.home), "--", *native)
+            task = asyncio.create_task(child.wait())
+        else:
+            task = asyncio.create_task(proxy.run_client(f.home, native, session=resume))
         async def finish():
             if not task.done():
                 if stop.parent.exists():
@@ -65,6 +192,11 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         # Read the actual host ps rendering. Do not reconstruct argv in a fixture.
         f.commands = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "pid=,args="],
                                     check=True, capture_output=True, text=True).stdout
+        if external:
+            parent = int(subprocess.run(["ps", "-p", str(pid), "-o", "ppid="], check=True,
+                                        capture_output=True, text=True).stdout)
+            f.commands = subprocess.run(["ps", "-ww", "-p", ",".join(map(str, {pid, parent, child.pid})), "-o", "pid=,args="],
+                                        check=True, capture_output=True, text=True).stdout
         return task, request, response, pid
 
     async def wait_file(self, path, task):
@@ -77,7 +209,9 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
 
     async def send(self, task, request, response, method, session, **extra):
         response.unlink(missing_ok=True)
-        request.write_text(json.dumps({"id": 2, "method": method, "params": {"threadId": session, **extra}}))
+        temporary = request.with_suffix(".pending")
+        temporary.write_text(json.dumps({"id": 2, "method": method, "params": {"threadId": session, **extra}}))
+        temporary.replace(request)
         await self.wait_file(response, task)
         return json.loads(response.read_text())
 
@@ -147,6 +281,22 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
 
+    async def test_real_cli_proxy_wrapper_and_native_process_lines_are_all_observed(self):
+        from github_plan_sessions import codex_argv_start
+        with ReceiptFixture() as f:
+            task, _, _, _ = await self.start_client(f, wrapper=True, external=True)
+            try:
+                lines = [line.split() for line in f.commands.splitlines() if line.split() and line.split()[0].isdigit()]
+                self.assertEqual(len(lines), 3)  # Owned proxy, waiting wrapper, native client.
+                for line in lines:
+                    self.assertIsNotNone(codex_argv_start(line[1:]), "real client/helper line was ignored: " + " ".join(line[1:3]))
+                _, states, coverage = await asyncio.to_thread(f.observe)
+                self.assertEqual(coverage["process_coverage"], "complete")
+                self.assertEqual(states[f.session]["state"], "ended")
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
     async def test_concurrent_admission_lease_refuses_tui_resume_without_sending(self):
         with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
             task, request, response, _ = await self.start_client(f)
@@ -191,9 +341,10 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         with ReceiptFixture() as f:
             task, request, response, _ = await self.start_client(f)
             try:
-                for extra in ({"path": str(f.transcript)}, {"history": []}):
-                    result = await self.send(task, request, response, "thread/resume", "other-thread", **extra)
-                    self.assertIn("error", result)
+                for method in ("thread/resume", "thread/fork"):
+                    for extra in ({"path": str(f.transcript)}, {"history": []}):
+                        result = await self.send(task, request, response, method, "other-thread", **extra)
+                        self.assertIn("error", result)
                 self.assertFalse(f.mutations)
                 result = await self.send(task, request, response, "thread/resume", f.session, path=str(f.transcript))
                 self.assertIn("result", result)

@@ -338,7 +338,8 @@ def append_brief(command_text, brief):
 
 
 async def send(session, text, submit=True, allow_tabs=False):
-    validate_resume_input(text)
+    if resume_input(text):
+        validate_resume_input(text, tty=await session.async_get_variable("tty"))
     validate_text(text, allow_tabs=allow_tabs)
     if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
@@ -873,8 +874,23 @@ def prepare_launches(args):
     return command_texts, choices
 
 
-def validate_resume_input(text):
-    if any(re.match(r"^\s*/resume(?:\s|$)", line, re.IGNORECASE) for line in text.splitlines()):
+def resume_input(text):
+    return "\n" not in text and re.match(r"^\s*/resume(?:\s|$)", text, re.IGNORECASE)
+
+
+def validate_resume_input(text, *, tty=None):
+    if resume_input(text):
+        if isinstance(tty, str) and tty:
+            from close_ttys import inventory
+            commands = [command.split() for _, terminal, command in inventory()
+                        if terminal == tty.removeprefix("/dev/")]
+            # A positively identified Claude-only target keeps its own resume
+            # command. Unknown or mixed targets retain the conservative route.
+            claude = any(argv and (Path(argv[0]).name in {"claude", "claude.js"} or
+                         len(argv) > 1 and Path(argv[0]).name in {"node", "nodejs", "bun"} and Path(argv[1]).name in {"claude", "claude.js"}) for argv in commands)
+            codex = any(Path(arg).name.startswith("codex") for argv in commands for arg in argv)
+            if claude and not codex:
+                return
         raise ValueError("Run codex-session.py resume --session-id <native-id> --codex-home <source-home> instead; TUI resume bypasses ownership coordination")
 
 
@@ -897,7 +913,12 @@ def source_launch_metadata(result, choice):
                       if terminal == tty.removeprefix("/dev/") and codex_argv_start(command.split()) is not None]
         # The guarded parent is a Python helper on the same TTY. Prefer the
         # native executable over the wrapper when both are visible.
-        matches = [pid for pid, kind in candidates if kind == 0] or [pid for pid, _ in candidates]
+        matches = [pid for pid, kind in candidates if kind == 0]
+        if not matches:
+            proxies = {r.get("launch_pid"): r for r in github_plan_closure.log_rows()
+                       if r.get("record_kind") == "managed_proxy" and r.get("codex_home") == result["codex_home"]}
+            matches = [pid for pid, _ in candidates if pid in proxies and
+                       github_plan_closure.process_started_at(pid).isoformat() == proxies[pid].get("launch_started_at")]
         if len(matches) != 1:
             raise ValueError("native client PID is not unique on the launch TTY")
         result.update(github_plan_closure.launch_metadata(matches[0], result["session_id"], home))

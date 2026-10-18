@@ -475,7 +475,7 @@ def fixture_tmux_environment(root):
     config = root / "tmux.conf"
     config.write_text("set-option -g default-shell /bin/sh\nset-option -g default-command 'exec /bin/sh'\n")
     wrapper = binary / "tmux"
-    wrapper.write_text("#!/bin/sh\nunset ENV\nexport ZDOTDIR=" + shlex.quote(str(startup)) + "\nexec "
+    wrapper.write_text("#!/bin/sh\nunset ENV\nexport HOME=" + shlex.quote(str(root)) + "\nexport ZDOTDIR=" + shlex.quote(str(startup)) + "\nexec "
                        + shlex.quote(executable) + " -f " + shlex.quote(str(config)) + ' "$@"\n')
     wrapper.chmod(0o700)
     return {"PATH": str(binary) + os.pathsep + os.environ["PATH"], "TMUX_TMPDIR": str(root)}, startup
@@ -530,6 +530,7 @@ class TmuxFixture(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
         self.root = Path(self.folder.name)
         environment_values, self.shell_startup = fixture_tmux_environment(self.root)
+        environment_values["HOME"] = str(self.root)
         environment = patch.dict(os.environ, environment_values)
         environment.start()
         self.addCleanup(environment.stop)
@@ -741,8 +742,8 @@ class TmuxTests(TmuxFixture):
         native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
         native_socket.bind(str(endpoint))
         endpoint.chmod(0o600)
-        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote {shlex.quote('unix://' + str(home.resolve() / 'app-server-control/app-server-control.sock'))} -C {shlex.quote(str(self.root))}")
-        code = self.root / "codex-launch-registry"
+        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote {shlex.quote('unix://' + str(iterm_tab.codex_daemon_endpoint(home.resolve())))} -C {shlex.quote(str(self.root))}")
+        code = self.root / ".code"
         (code / "skill-data").mkdir(parents=True)
         (code / "skill-data/supervisor.toml").write_text(
             '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'

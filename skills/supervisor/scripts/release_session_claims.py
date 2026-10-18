@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import json
 import fcntl
@@ -136,20 +137,17 @@ def transcript_roots(harness, configured, explicit):
 
 
 def record_closure(path, entry, supervisor_session, *, persist=True):
-    if path.resolve() != closure.closed_log().resolve():
-        with closure.store_lock(path, create=persist):
-            return _record_closure(path, entry, supervisor_session, persist=persist)
-    with closure.ownership(entry["session_id"], create=persist):
-        with closure.store_lock(path, create=persist):
-            return _record_closure(path, entry, supervisor_session, persist=persist)
+    coordination = closure.ownership(entry["session_id"], create=persist) if path.resolve() == closure.closed_log().resolve() else nullcontext()
+    with coordination:
+        return _record_closure(path, entry, supervisor_session, persist=persist)
 
 
 def _record_closure(path, entry, supervisor_session, *, persist=True):
     """Observe exit now; never replace an older actual closure time on retry."""
     records = [{k: v for k, v in e.items() if not k.startswith("_")}
                for e in session_record.load_ledger(path, closed_log=True)] if path.exists() else []
-    launches = [r for r in json.loads(path.read_text()) if r.get("record_kind") in {"managed_launch", "managed_proxy"} and "session_id" not in r] if path.exists() else []
     existing = [r for r in records if r["session_id"] == entry["session_id"]]
+    original = [r for r in json.loads(path.read_text()) if r.get("session_id") == entry["session_id"]] if path.exists() else []
     if existing and existing[0].get("resumed_at"):
         resumed = existing[0].get("resumed_generation") or {}
         if not resumed or any(entry.get(k) != resumed.get(k) for k in (
@@ -165,6 +163,10 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
             raise ValueError("closure log identity changed; preserve the original record")
         closed = {**existing[0], **{k: v for k, v in entry.items() if k.startswith("_")}}
         validate_closure(closed, supervisor_session)
+        with closure.store_lock(path):
+            current = json.loads(path.read_text())
+            if [r for r in current if r.get("session_id") == entry["session_id"]] != original:
+                raise ValueError("source closure changed during verification; preserve the current generation")
         return closed
     verify_closed(entry, supervisor_session)
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
@@ -178,14 +180,21 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
     validate_closure(closed, supervisor_session)
     if not persist:
         return closed
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        json.dump([*launches, *records, {k: v for k, v in closed.items() if not k.startswith("_")}], stream)
-    try:
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    # Slow native/process/transcript verification owns only this source. The
+    # shared store lock covers a fresh read/compare/write, preserving launches
+    # and closures published for other sources while verification was running.
+    with closure.store_lock(path, create=True):
+        current = json.loads(path.read_text()) if path.exists() else []
+        if [r for r in current if r.get("session_id") == entry["session_id"]] != original:
+            raise ValueError("source closure changed during verification; preserve the current generation")
+        retained = [r for r in current if r.get("session_id") != entry["session_id"]]
+        with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump([*retained, {k: v for k, v in closed.items() if not k.startswith("_")}], stream)
+        try:
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
     return closed
 
 

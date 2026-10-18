@@ -141,8 +141,13 @@ def register_proxy(home: str, endpoint: str) -> dict:
 
 
 def remove_registration(pid: int, generation: str) -> None:
-    with store_lock(closed_log(), create=True):
-        rows = log_rows()
+    if not closed_log().exists():
+        return
+    with store_lock(closed_log()):
+        try:
+            rows = log_rows()
+        except FileNotFoundError:
+            return
         replace_rows(prune_registrations([r for r in rows if not (
             r.get("record_kind") in {"managed_launch", "managed_proxy"}
             and r.get("launch_pid") == pid and r.get("launch_generation") == generation)]))
@@ -189,7 +194,7 @@ def managed_launch(pid: int, argv: list[str], sockets: set[str]) -> bool:
         row = matches[0]
         if argv_signature(argv) != row["argv_digest"]:
             return False
-        endpoint = str(Path(row["codex_home"]) / "app-server-control/app-server-control.sock")
+        endpoint = str(daemon_endpoint(Path(row["codex_home"])))
         if endpoint not in sockets:
             return False
         if row["launch_pid"] == pid and process_started_at(pid).isoformat() != row["launch_started_at"]:
@@ -250,7 +255,10 @@ def resume_guard(session: str):
     """Invalidate the closed generation before an exact native resume/queue."""
     with ownership(session, create=True):
         path = closed_log()
-        if path.exists():
+        # The source lease also serializes closure publication for this ID.
+        # A new thread has no receipt to invalidate and need not wait behind
+        # unrelated store mutations before its first turn.
+        if path.exists() and any(r.get("session_id") == session for r in log_rows()):
             with store_lock(path, create=True):
                 rows = log_rows()
                 matches = [r for r in rows if r.get("session_id") == session]
@@ -281,11 +289,16 @@ def admit_sources(sessions: set[str]) -> None:
 
 
 def closed_log() -> Path:
-    # CODEX_HOME varies by account. Successors must use the shared runtime home.
-    root = Path(os.environ.get("CODE_HOME") or str(Path.home() / ".code")).expanduser()
-    if not root.is_absolute():
-        raise ValueError("the shared runtime home must be absolute")
-    return root / "skill-data/supervisor-closed-sessions.json"
+    # Neither an account switch nor a shell's CODE_HOME may select a different
+    # freeze/lease namespace. This is user-wide coordination, not runtime data.
+    return Path.home() / ".code/skill-data/supervisor-closed-sessions.json"
+
+
+def daemon_endpoint(home: Path) -> Path:
+    from github_plan_sessions import native_helpers
+    native_helpers()
+    from iterm_tab import codex_daemon_endpoint
+    return codex_daemon_endpoint(home)
 
 
 def host_identity() -> dict:

@@ -269,9 +269,9 @@ class Terminal:
         return {**row, "screen": screen, "input_line": iterm_tab.input_line(screen, styles)}
 
     async def send(self, identity, text, submit=True, allow_tabs=False):
-        iterm_tab.validate_resume_input(text)
         iterm_tab.validate_text(text, allow_tabs=allow_tabs)
         row = self.select(identity)
+        iterm_tab.validate_resume_input(text, tty=row.get("tty"))
         if row["dead"]:
             raise ValueError("agent process has exited; no input was sent")
         if "\n" in text or "\t" in text:

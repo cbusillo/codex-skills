@@ -63,6 +63,35 @@ class ProviderLaunchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             iterm_tab.validate_resume_input("/resume source")
 
+    def test_claude_resume_and_pasted_reference_keep_their_own_meaning(self):
+        target = SimpleNamespace(session_id="fixture-target", async_get_variable=AsyncMock(return_value="/dev/fixture"),
+                                 async_send_text=AsyncMock())
+        with patch.object(close_ttys, "inventory", return_value=[(456, "fixture", "claude --model opus")]):
+            asyncio.run(iterm_tab.send(target, "/resume source", submit=False))
+        self.assertEqual(target.async_send_text.call_args.args[0], "/resume source")
+        pasted = "The command is:\n/resume source"
+        asyncio.run(iterm_tab.send(target, pasted, submit=False))
+        self.assertIn(pasted, target.async_send_text.call_args.args[0])
+        with patch.object(close_ttys, "inventory", return_value=[(456, "fixture", "codex --remote unix:///fixture")]):
+            with self.assertRaises(ValueError):
+                asyncio.run(iterm_tab.send(target, "/resume source", submit=False))
+
+    def test_cold_launch_uses_live_proxy_identity_before_native_exec(self):
+        import github_plan_closure as closure
+        from datetime import datetime, timezone
+        born = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        source = {"session_id": "terminal-generation", "tty": "/dev/fixture"}
+        choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
+        with patch.object(close_ttys, "inventory", return_value=[
+                (456, "fixture", "python3 /fixture/codex-session.py launch --codex-home /fixture/account"),
+                (457, "fixture", "python3 /fixture/codex-session.py native --codex-home /fixture/account")]), \
+                patch.object(closure, "process_started_at", return_value=born), \
+                patch.object(closure, "log_rows", return_value=[{"record_kind": "managed_proxy", "launch_pid": 456,
+                    "codex_home": choice["env"]["CODEX_HOME"], "launch_started_at": born.isoformat()}]):
+            result = iterm_tab.source_launch_metadata(source, choice)
+        self.assertEqual(result["pid"], 456)
+        self.assertNotIn("launch_identity_unavailable", result)
+
     def test_wrong_harness_refuses_with_or_without_a_brief(self):
         for provider, expected, env in HARNESS_CHOICES:
             for _, agent, _ in HARNESS_CHOICES:

@@ -826,7 +826,7 @@ class ClaimTests(unittest.TestCase):
         self.observe_inventory = CLAIM.observe_sessions
         self.args.resume_from = 71
         with ReceiptFixture(OTHER["session"]) as fixture:
-            native = ["codex", "--remote", "unix://" + str(fixture.home / "app-server-control/app-server-control.sock"), "--", "unrelated task"]
+            native = ["codex", "--remote", "unix://" + str(github_plan_closure.daemon_endpoint(fixture.home)), "--", "unrelated task"]
             from datetime import datetime, timezone
             born = datetime(2026, 10, 1, tzinfo=timezone.utc)
             with patch.object(github_plan_closure, "process_started_at", return_value=born):

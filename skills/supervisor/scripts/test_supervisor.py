@@ -1554,7 +1554,7 @@ class CodexProjectTests(unittest.TestCase):
             endpoint.chmod(0o600)
             launch = root / "launch"
             launch.write_text(f"{shlex.quote(str(fake_codex))} -C {shlex.quote(str(repository))}")
-            code = root / "code"
+            code = root / ".code"
             (code / "skill-data").mkdir(parents=True)
             (code / "skill-data/supervisor.toml").write_text(
                 '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
@@ -1567,7 +1567,7 @@ class CodexProjectTests(unittest.TestCase):
                   patch.object(account_choice, "prepare_launch")):
                 commands, _ = iterm_tab.prepare_launches(args)
             result = subprocess.run(["/bin/sh", "-c", commands[0]], cwd=root,
-                                    env={**os.environ, "CODE_HOME": str(code)},
+                                    env={**os.environ, "HOME": str(root), "CODE_HOME": str(code)},
                                     capture_output=True, text=True, check=True)
             self.assertEqual(json.loads(result.stdout), [str(repository.resolve()), args.brief_file[0].read_text()])
 

@@ -43,7 +43,7 @@ def thread_targets(value):
 class Ingress:
     def __init__(self, home: Path):
         self.home = home
-        self.upstream = home / "app-server-control/app-server-control.sock"
+        self.upstream = closure.daemon_endpoint(home)
         self.child_metadata = None
         self.child_tty = "?"
 
@@ -88,7 +88,7 @@ class Ingress:
                                 method = message.get("method")
                                 if method and method not in READS:
                                     try:
-                                        if method == "thread/resume":
+                                        if method in {"thread/resume", "thread/fork"}:
                                             message = self.exact_resume(message)
                                             raw = json.dumps(message)
                                         targets = set(thread_targets(message.get("params", {})))
@@ -130,7 +130,14 @@ class Ingress:
                                     path = Path(thread.get("path") or "/").resolve()
                                     if thread.get("id") != session or not any(path.is_relative_to((self.home / root).resolve()) for root in ("sessions", "archived_sessions")):
                                         raise ValueError("resumed native transcript identity is unavailable")
-                                    closure.resumed_launch(session, self.child_metadata, str(path), self.child_tty)
+                                    try:
+                                        await asyncio.to_thread(closure.resumed_launch, session, self.child_metadata, str(path), self.child_tty)
+                                    except (OSError, ValueError) as error:
+                                        # Resume already happened, with invalidation persisted.
+                                        # Keep the lease and connection, but expose missing
+                                        # metadata so the caller can retry this exact resume.
+                                        raw = json.dumps({"id": message["id"], "error": {"code": -32603,
+                                            "message": "native resume succeeded but launch metadata was not recorded; preserve this source and retry the exact resume: " + str(error)}})
                                 await client.send(raw)
                                 reads[asyncio.create_task(native.recv())] = "native"
                 except ConnectionClosed:
@@ -170,18 +177,21 @@ async def run_client(home: Path, native: list[str], *, session: str | None = Non
                     "--codex-home", str(home), "--proxy", str(endpoint), "--proxy-parent", str(os.getpid()), "--", *command]
             # For exact resume, invalidate before even starting the client.
             # The ingress reacquires and retains ownership before any RPC acts.
-            if session:
-                with closure.resume_guard(session):
-                    pass
             try:
+                if session:
+                    with closure.resume_guard(session):
+                        pass
                 with subprocess.Popen(boot, env={**os.environ, "CODEX_HOME": str(home)}) as child:
-                    ingress.child_metadata = closure.launch_metadata(child.pid, proxy["launch_generation"], str(home))
-                    ingress.child_tty = os.ttyname(0).removeprefix("/dev/") if os.isatty(0) else "?"
                     try:
+                        ingress.child_metadata = closure.launch_metadata(child.pid, proxy["launch_generation"], str(home))
+                        ingress.child_tty = os.ttyname(0).removeprefix("/dev/") if os.isatty(0) else "?"
                         return await asyncio.to_thread(child.wait)
                     finally:
                         if child.poll() is None:
                             child.terminate()
                             await asyncio.to_thread(child.wait)
             finally:
-                closure.remove_registration(os.getpid(), proxy["launch_generation"])
+                try:
+                    closure.remove_registration(os.getpid(), proxy["launch_generation"])
+                except (OSError, ValueError) as error:
+                    print("native client cleanup incomplete: " + str(error), file=sys.stderr)

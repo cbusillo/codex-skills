@@ -26,7 +26,8 @@ def native_helpers():
 def codex_homes(*, strict: bool = False, configured_only: bool = False) -> list[Path]:
     homes = [] if configured_only else [Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))]
     try:
-        config = native_helpers()[0].load_config()
+        config = native_helpers()[0].load_config(
+            path=github_plan_closure.closed_log().with_name("supervisor.toml")) if configured_only else native_helpers()[0].load_config()
         homes.extend(Path(a["env"]["CODEX_HOME"]) for a in config["accounts"] if a["provider"] == "openai")
     except (ValueError, OSError, ImportError):
         if strict:
@@ -50,7 +51,7 @@ def transcript_snapshot(session: str, primary: str) -> dict[str, dict]:
 async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] | None = None):
     """Read the existing stock daemon over its native socket; only read RPCs."""
     import stat
-    binding = home / "app-server-control/app-server-control.sock"
+    binding = github_plan_closure.daemon_endpoint(home)
     coverage = {"status": "incomplete", "peer_complete": False, "socket": str(binding)}
     try:
         socket_path = binding.resolve(strict=True)

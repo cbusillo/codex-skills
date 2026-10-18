@@ -982,9 +982,12 @@ The helper invalidates the old receipt before sending or launching. `status`
 returns the resumed generation's metadata for the ledger; preserve the native
 thread and verified handoff when updating it. A later `finish` accepts that new
 generation, never the old receipt. Terminal `/resume` input names this route
-instead. Once successor admission starts, the old generation stays frozen even
-if the external claim write needs recovery. Retry the normal claim recovery or
-start a new thread and claim available work; never resume the handed-off source.
+instead for a single-line Codex command; Claude targets retain their own resume
+command, and multiline pasted reference text is unchanged. When successor
+admission uses a leased idle-closure receipt, that old generation stays frozen
+even if the external claim write needs recovery. Retry the normal claim recovery
+or start a new thread and claim available work; never resume that handed-off
+source. Ordinary unloaded-thread admission keeps its existing recovery behavior.
 
 ### tmux launches
 
@@ -1615,9 +1618,13 @@ uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <priv
 ```
 
 The default closed-session log is
-`$CODE_HOME/skill-data/supervisor-closed-sessions.json`, or the same path under
-`~/.code` when `CODE_HOME` is unset. It is shared across account homes on this
-host. `--closed-log` still selects an explicit private log for historical or
+`~/.code/skill-data/supervisor-closed-sessions.json`. Its ownership leases and
+receipt account inventory (`~/.code/skill-data/supervisor.toml`) use this same
+user-wide location even when the caller exports another `CODE_HOME` or
+`CODEX_HOME`. Keep the configured account inventory there; an account-local or
+alternate-runtime config cannot substitute for it. This prevents a later shell
+environment from hiding an admitted predecessor's freeze. `--closed-log` still
+selects an explicit private log for historical or
 resumed-session recovery; successor observation reads only the shared default.
 For Codex entries with a configured absolute `codex_home`, closure also records
 the host boot identity, launch generation and fingerprints of every configured
@@ -1655,8 +1662,14 @@ depends on that text check for managed clients.
 
 Close, supported resume/queue and admission share a nonblocking per-thread
 ownership lease. Claim retains it through final readback and freezes the source
-before its first external write. The shared-log mutation lock is brief; the
-release-discovery operation has its own lock. Global observation creates no log,
+before its first external write. Slow closure verification holds only its source
+lease, then compares that source's current record under a brief shared-log lock
+before publication. Other launches and new-thread first turns can continue;
+a thread with no receipt does not take the store lock to invalidate nothing.
+If recording generation metadata fails after a native resume, the RPC reports
+that partial outcome and retains the connection, lease and invalidation. Retry
+the exact resume for metadata, preserving the source in the meantime.
+The release-discovery operation has its own lock. Global observation creates no log,
 directory or lease file, and receipt file work runs off the native RPC event loop
 with a bounded scan budget. A busy or missing lease, unavailable account config,
 missing/malformed/stale receipt, changed transcript path or changed fingerprint
