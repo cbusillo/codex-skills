@@ -1358,6 +1358,8 @@ def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
         ["api", "user/repos", "--unknown"],
         ["api", "-i=false", "-XPOST", "user/repos"],
         ["api", "user/repos", "--input=", "--input", "body.json"],
+        ["api", "user/repos", "-X="],
+        ["api", "user/repos", "-i="],
     ):
         assert _api.infer_gh_command_context(args).is_write is True, args
     for args in (

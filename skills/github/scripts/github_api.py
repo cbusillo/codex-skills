@@ -967,15 +967,18 @@ def parse_gh_api_args(args: list[str]) -> Optional[GhApiCommand]:
         group = token[1:]
         while group:
             letter, group = group[0], group[1:]
+            # pflag drops an attached "=" only when a value follows it: -X=
+            # sets the method "=", and -i= leaves "=" as an unknown shorthand.
+            explicit_value = len(group) > 1 and group.startswith("=")
             if letter in _GH_API_BOOLEAN_SHORTHANDS:
-                if group.startswith("="):
+                if explicit_value:
                     break
                 continue
             flag = _GH_API_VALUE_SHORTHANDS.get(letter)
             if flag is None:
                 return None
             if group:
-                value = group.removeprefix("=")
+                value = group[1:] if explicit_value else group
             elif index < len(args):
                 value = args[index]
                 index += 1
