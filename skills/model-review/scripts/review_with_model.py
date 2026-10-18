@@ -51,6 +51,7 @@ PREAMBLE = (
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
     "Do not modify, create, or delete anything.\n\n"
 )
+UNREACHABLE_LINKS_HINT = "The reviewer could not open these; save any content the review needs and pass it with --input."
 OUTPUT_INSTRUCTIONS = (
     '\n\nReturn one JSON object, without Markdown fences, with keys "status" and "review". '
     'Set status to "completed" only when you completed the requested review; review contains your '
@@ -594,6 +595,8 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
            choice: dict[str, Any] | None = None, inputs: Sequence[Path] = ()) -> dict[str, Any]:
     if shutil.which(PROVIDERS[provider]) is None:
         return failed(provider, f"`{PROVIDERS[provider]}` is not installed", installed=False)
+    links = unreachable_links(prompt)
+    notes = {"unreachable_links": links, "unreachable_links_hint": UNREACHABLE_LINKS_HINT} if links else {}
     # File-tool reviewers need the generated diff under their authorized read root.
     # Do not change TMPDIR: child tools such as uv would leave locks in the checkout.
     scratch_options = {"dir": repo} if provider in {"google", "anthropic"} else {}
@@ -620,6 +623,11 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 copied = Path(scratch) / f"input-{index}-{source.name}"
                 shutil.copyfile(source, copied)
                 preamble += f"Supporting file for this review: {copied}. Read it with your read-only tools.\n\n"
+            if links:
+                preamble += (
+                    "You have no network, so the links in this request cannot be opened; treat them as "
+                    "references. If one held content this review needed, report that as a coverage gap.\n\n"
+                )
             if choice is not None or provider in account_choice.ACCOUNT_VARIABLES:
                 choice = choice or account_choice.select(provider)
                 account_choice.prepare_launch(choice)
@@ -649,16 +657,31 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 if refusal.get("command_diagnostic"):
                     result["recovery"]["command_diagnostic"] = refusal["command_diagnostic"]
     except subprocess.TimeoutExpired:
-        return failed(provider, f"no answer within {timeout} seconds", **launch)
+        return failed(provider, f"no answer within {timeout} seconds", **launch, **notes)
     except (OSError, RuntimeError, ValueError) as exc:
-        return failed(provider, str(exc), **launch)
+        return failed(provider, str(exc), **launch, **notes)
     if result["ok"] and not result["response"].strip():
         result = {**result, "ok": False, "error": "the reviewer returned nothing"}
         result.pop("response")
     result = completed_review(result)
     if not result["ok"] and result.get("recovery", {}).get("denied_commands") and not result.get("denied_commands"):
         result["error"] += "; previous refused command: " + "; ".join(result["recovery"]["denied_commands"])
-    return {**result, **launch}
+    return {**result, **launch, **notes}
+
+
+def unreachable_links(prompt: str) -> list[str]:
+    """Web links in the request, in order and without repeats; reviewers have no network to open them."""
+    return list(dict.fromkeys(trim_link(match) for match in re.findall(r"https?://[^\s<>\"`]+", prompt)))
+
+
+def trim_link(link: str) -> str:
+    """Drop prose punctuation after a link, keeping brackets and quotes the link itself opened."""
+    while link and link[-1] in ".,;:!?')]":
+        opener = {")": "(", "]": "["}.get(link[-1])
+        if opener and link.count(opener) >= link.count(link[-1]):
+            break
+        link = link[:-1]
+    return link
 
 
 def fault_marker(source: Mapping[str, str] = os.environ) -> Path:

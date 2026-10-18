@@ -831,6 +831,32 @@ class ReviewWithModelTests(unittest.TestCase):
                                        "--prompt-file", str(self.prompt), "--input", str(self.root / "absent.md"), **env)
         self.assertEqual((code, result["ok"], result["phase"]), (1, False, "inputs"))
 
+    def test_links_in_the_request_are_reported_to_caller_and_reviewer(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.commit_base_on_main("base\n")
+        sent = self.root / "agy-prompt"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+               "FAKE_AGY_PROMPT_FILE": str(sent)}
+        code, result = self.review("google", **env)
+        self.assertEqual(code, 0)
+        self.assertNotIn("unreachable_links", result)
+        without_links = sent.read_text()
+        link = "https://github.com/OWNER/REPO/issues/1#issuecomment-2"
+        self.prompt.write_text(f"Review skills/x.md. Context: {link}, and again ({link}).\n")
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["unreachable_links"]), (0, [link]))
+        self.assertIn("--input", result["unreachable_links_hint"])
+        told = sent.read_text().replace(f" Context: {link}, and again ({link}).", "")
+        self.assertNotEqual(told, without_links, "the reviewer is told the links cannot be opened")
+
+    def test_links_keep_their_own_brackets_and_lose_surrounding_prose(self) -> None:
+        wiki = "https://en.wikipedia.org/wiki/Capability-based_security_(computing)"
+        quoted = "https://example.com/it's-here"
+        prompt = (f"See {wiki}. Also ({wiki}), [the page]({quoted}), '{quoted}' and "
+                  f"<https://example.com/a>; https://example.com/b?x=1&y=[2].")
+        self.assertEqual(review_with_model.unreachable_links(prompt),
+                         [wiki, quoted, "https://example.com/a", "https://example.com/b?x=1&y=[2]"])
+
     def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
         self.install("agy", FAKE_AGY)
         source = self.commit_base_on_main("before\n")
