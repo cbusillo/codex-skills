@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Offline safety checks for additive owner-writer plans and readback."""
+from __future__ import annotations
+
+import copy
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import github_rulesets as rules
+from test_github_rulesets import FakeClient, load_cli, response_ruleset
+
+
+class CheckClient(FakeClient):
+    def __init__(self, *, classic: bool = True, rulesets=None):
+        super().__init__({"owner/repo": rulesets or []})
+        self.repository = {"id": 9, "full_name": "owner/repo", "owner": {"login": "owner", "type": "User"},
+                           "default_branch": "main", "archived": False}
+        self.protection = {"enforce_admins": {"enabled": True}, "required_pull_request_reviews": {
+            "require_code_owner_reviews": True, "bypass_pull_request_allowances": {"apps": [{"id": 88}]}},
+            "required_status_checks": {"strict": True, "contexts": ["old"],
+                                       "checks": [{"context": "old", "app_id": 44}]}} if classic else None
+        self.drop_write = False
+        self.fail_readback = False
+        self.calls = []
+
+    def request(self, method, path, *, operation, body=None, allow_unprotected=False):
+        self.calls.append((method, path, operation, copy.deepcopy(body)))
+        if method == "PATCH":
+            self.writes.append(("patch", "checks", None))
+            if not self.drop_write:
+                self.protection["required_status_checks"] = {
+                    "strict": body["strict"], "contexts": sorted({item["context"] for item in body["checks"]}),
+                    "checks": [{**item, "app_id": None if item["app_id"] == -1 else item["app_id"]}
+                               for item in body["checks"]]}
+            return {}
+        if self.fail_readback and self.writes:
+            raise rules.RulesetError("readback unavailable", cause="provider_failure")
+        return copy.deepcopy(self.protection if path.endswith("/protection") else self.repository)
+
+
+def plan(client, target="classic", checks=None):
+    return rules.build_check_plan("owner/repo", target, checks or [{"context": "new", "app_id": 55}],
+                                  rules.check_snapshot(client, "owner/repo"))
+
+
+def refused(call, cause):
+    try:
+        call()
+    except rules.RulesetError as exc:
+        assert exc.cause == cause, (exc.cause, str(exc))
+        return exc
+    raise AssertionError(f"expected {cause}")
+
+
+def test_classic_preserves_requirements_bindings_strictness_and_other_protection():
+    client = CheckClient()
+    before = copy.deepcopy(client.protection)
+    reviewed = plan(client)
+    assert client.writes == []
+    assert reviewed["added"] == [{"context": "new", "app_id": 55}]
+    assert rules.run_check_plan(client, reviewed, apply=True)["verified"]
+    after = copy.deepcopy(client.protection)
+    old = before.pop("required_status_checks")
+    checks = after.pop("required_status_checks")
+    assert before == after
+    assert checks["strict"] == old["strict"]
+    assert all(item in checks["checks"] for item in old["checks"])
+    assert not rules.run_check_plan(client, reviewed, apply=True)["changed"]
+    assert rules.run_check_plan(client, reviewed, apply=False)["verified"]
+    assert len(client.writes) == 1
+
+
+def test_ruleset_preserves_every_rule_parameter_and_bypass():
+    landing = response_ruleset(rules.standard_specs(77)[0], 12)
+    landing["rules"].append({"type": "required_status_checks", "parameters": {
+        "strict_required_status_checks_policy": True, "do_not_enforce_on_create": True,
+        "required_status_checks": [{"context": "old", "integration_id": 44}]}})
+    client = CheckClient(rulesets=[landing])
+    reviewed = plan(client, "12")
+    rules.run_check_plan(client, reviewed, apply=True)
+    after = client.repos["owner/repo"][0]
+    original = copy.deepcopy(landing)
+    added_rule = after["rules"].pop()
+    original_rule = original["rules"].pop()
+    assert after == original
+    assert original_rule["parameters"]["required_status_checks"][0] in added_rule["parameters"]["required_status_checks"]
+    added_rule["parameters"].pop("required_status_checks")
+    original_rule["parameters"].pop("required_status_checks")
+    assert added_rule == original_rule
+
+
+def test_new_ruleset_does_not_replace_existing_protection_and_retry_writes_nothing():
+    client = CheckClient(classic=False, rulesets=[response_ruleset(rules.standard_specs(77)[1], 2)])
+    before = copy.deepcopy(client.repos)
+    reviewed = plan(client, "new", [{"context": "new", "app_id": None}])
+    assert rules.run_check_plan(client, reviewed, apply=True)["verified"]
+    assert client.repos["owner/repo"][:-1] == before["owner/repo"]
+    assert client.repos["owner/repo"][-1]["bypass_actors"] == []
+    assert client.protection is None
+    assert not rules.run_check_plan(client, reviewed, apply=True)["changed"]
+    assert len(client.writes) == 1
+
+
+def test_drift_in_any_protection_ruleset_or_repository_refuses_before_write():
+    for change in ("strict", "bypass", "rule", "branch", "archived", "check"):
+        client = CheckClient(rulesets=[response_ruleset(rules.standard_specs(77)[0], 1)])
+        reviewed = plan(client)
+        if change == "strict":
+            client.protection["required_status_checks"]["strict"] = False
+        elif change == "check":
+            client.protection["required_status_checks"]["checks"][0]["app_id"] = 99
+        elif change == "bypass":
+            client.repos["owner/repo"][0]["bypass_actors"] = []
+        elif change == "rule":
+            client.repos["owner/repo"][0]["rules"].append({"type": "deletion"})
+        elif change == "branch":
+            client.repository["default_branch"] = "trunk"
+        else:
+            client.repository["archived"] = True
+        refused(lambda: rules.run_check_plan(client, reviewed, apply=True),
+                "owner_actor_mismatch" if change == "archived" else "plan_state_drift")
+        assert client.writes == []
+
+
+def test_digest_and_recomputed_payload_prevent_tampering():
+    reviewed = plan(CheckClient())
+    digest = rules.check_plan_digest(reviewed)
+    assert rules.validate_check_plan(reviewed, digest) == reviewed
+    edited = copy.deepcopy(reviewed)
+    edited["payload"]["checks"] = []
+    refused(lambda: rules.validate_check_plan(edited, digest), "plan_digest_mismatch")
+    refused(lambda: rules.validate_check_plan(edited, rules.check_plan_digest(edited)), "validation_error")
+
+
+def test_unbound_classic_checks_stay_explicit_and_conflicting_bindings_refuse():
+    client = CheckClient()
+    client.protection["required_status_checks"]["checks"][0]["app_id"] = None
+    reviewed = plan(client, checks=[{"context": "new", "app_id": None}])
+    assert all(item["app_id"] == -1 for item in reviewed["payload"]["checks"])
+    assert rules.run_check_plan(client, reviewed, apply=True)["verified"]
+    refused(lambda: plan(client, checks=[{"context": "old", "app_id": 33}]), "validation_error")
+    del client.protection["required_status_checks"]["checks"]
+    refused(lambda: plan(client), "validation_error")
+
+
+def test_incomplete_or_ambiguous_ruleset_refuses():
+    landing = response_ruleset(rules.standard_specs(77)[0], 12)
+    client = CheckClient(rulesets=[landing])
+    refused(lambda: plan(client, "12"), "validation_error")
+    del client.repos["owner/repo"][0]["bypass_actors"]
+    refused(lambda: plan(client), "invalid_response")
+
+
+def test_failed_write_or_readback_keeps_uncertain_outcome_without_retry():
+    cli = load_cli()
+    for mode in ("drop_write", "fail_readback"):
+        client = CheckClient()
+        reviewed = plan(client)
+        setattr(client, mode, True)
+        exc = refused(lambda: rules.run_check_plan(client, reviewed, apply=True),
+                      "provider_failure" if mode == "fail_readback" else "post_write_verification_failed")
+        assert cli.failure_context(is_write=True, payload=exc.payload)[0] == "unknown"
+        assert len(client.writes) == 1
+
+
+def test_second_preflight_catches_a_concurrent_change_before_the_mutation():
+    class ChangingClient(CheckClient):
+        repository_reads = 0
+
+        def request(self, method, path, **kwargs):
+            if path == "/repos/owner/repo":
+                self.repository_reads += 1
+                if self.repository_reads == 3:
+                    self.protection["enforce_admins"]["enabled"] = False
+            return super().request(method, path, **kwargs)
+
+    client = ChangingClient()
+    reviewed = plan(client)
+    refused(lambda: rules.run_check_plan(client, reviewed, apply=True), "plan_state_drift")
+    assert client.writes == []
+
+
+def test_cli_plan_apply_readback_use_the_existing_owner_and_confirmation():
+    cli = load_cli()
+    with tempfile.TemporaryDirectory() as directory:
+        checks = Path(directory) / "checks.json"
+        output = Path(directory) / "plan.json"
+        checks.write_text(json.dumps([{"context": "new", "app_id": 55}]))
+        client = CheckClient()
+        with patch.object(rules, "RulesetClient", side_effect=AssertionError("live client forbidden")):
+            result = cli.run(cli.parse_args(["checks-plan", "--repo", "owner/repo", "--target", "classic",
+                                            "--checks-file", str(checks), "--out", str(output)]), client=client)
+            common = ["--plan-file", str(output), "--plan-digest", result["plan_digest"]]
+            refused(lambda: cli.run(cli.parse_args(["checks-apply", *common]), client=client), "authorization_required")
+            assert client.writes == []
+            assert cli.run(cli.parse_args(["checks-apply", *common, "--confirm-owner-admin-write"]), client=client)["verified"]
+            assert cli.run(cli.parse_args(["checks-readback", *common]), client=client)["verified"]
+            stranger = CheckClient()
+            stranger.owner = "stranger"
+            refused(lambda: cli.run(cli.parse_args(["checks-readback", *common]), client=stranger), "owner_actor_mismatch")
+
+
+def test_transport_only_accepts_explicit_branch_not_protected_and_pages_all_rulesets():
+    calls = []
+    def fake_call(method, path, body=None, **kwargs):
+        calls.append((method, path, kwargs))
+        if path.endswith("/protection"):
+            return rules.github_api_core.ApiResult(ok=False, status=404, body={"message": "Branch not protected"})
+        if "/rulesets?" in path:
+            return rules.github_api_core.ApiResult(ok=True, status=200, body=[{"id": 1}] if path.endswith("&page=1") else [])
+        return rules.github_api_core.ApiResult(ok=True, status=200, body={"id": 1})
+    client = rules.RulesetClient(call=fake_call)
+    assert client.request("GET", "/protection", operation="github.rulesets.checks.read", allow_unprotected=True) is None
+    with patch.object(rules, "PER_PAGE", 1):
+        assert client.list_rulesets("owner/repo") == [{"id": 1}]
+    assert len([call for call in calls if "/rulesets?" in call[1]]) == 2
+    def not_found(*_args, **_kwargs):
+        return rules.github_api_core.ApiResult(ok=False, status=404, body={"message": "Not Found"})
+    client.call = not_found
+    refused(lambda: client.request("GET", "/protection", operation="github.rulesets.checks.read", allow_unprotected=True),
+            "github_request_failed")
+
+
+if __name__ == "__main__":
+    for name, test in list(globals().items()):
+        if name.startswith("test_") and callable(test):
+            test()
+            print(f"ok {name}")

@@ -400,7 +400,8 @@ class RulesetClient:
             self.active_gh,
         ]
 
-    def request(self, method: str, path: str, *, operation: str, body: Any = None) -> Any:
+    def request(self, method: str, path: str, *, operation: str, body: Any = None,
+                allow_unprotected: bool = False) -> Any:
         result = self.call(
             method,
             path,
@@ -413,6 +414,9 @@ class RulesetClient:
             expected_actor=self.actor,
             bucket="rest_core",
         )
+        if (allow_unprotected and result.status == 404 and isinstance(result.body, dict)
+                and result.body.get("message") == "Branch not protected"):
+            return None
         if not result.ok:
             failure = result.failure
             raise RulesetError(
@@ -455,14 +459,20 @@ class RulesetClient:
         raise RulesetError("owned repository listing hit the page cap", cause="coverage_incomplete")
 
     def list_rulesets(self, repo: str) -> list[dict[str, Any]]:
-        path = f"/repos/{repo_path(repo)}/rulesets?includes_parents=false&targets=branch,tag&per_page={PER_PAGE}"
-        body = self.request("GET", path, operation="github.rulesets.list")
-        if not isinstance(body, list):
-            raise RulesetError("ruleset listing returned an invalid response", cause="invalid_response")
+        summaries = []
+        for page in range(1, MAX_PAGES + 1):
+            path = (f"/repos/{repo_path(repo)}/rulesets?includes_parents=false&targets=branch,tag"
+                    f"&per_page={PER_PAGE}&page={page}")
+            body = self.request("GET", path, operation="github.rulesets.list")
+            if not isinstance(body, list) or any(not isinstance(item, dict) for item in body):
+                raise RulesetError("ruleset listing returned an invalid response", cause="invalid_response")
+            summaries.extend(body)
+            if len(body) < PER_PAGE:
+                break
+        else:
+            raise RulesetError("ruleset listing hit the page cap", cause="coverage_incomplete")
         details: list[dict[str, Any]] = []
-        for summary in body:
-            if not isinstance(summary, Mapping):
-                continue
+        for summary in summaries:
             ruleset_id = positive_int(summary.get("id"), "ruleset id")
             detail = self.request(
                 "GET",
@@ -621,3 +631,213 @@ def apply_repository(
             },
         )
     return {"repo": repo, "changed": bool(applied), "applied": applied, "verified": True}
+
+
+# The additive status-check route deliberately shares RulesetClient and the
+# verified-owner resolver above. It never applies the standard-pair specs.
+CHECK_RULESET_NAME = "Required status checks on the default branch"
+RULESET_FIELDS = ("name", "target", "enforcement", "bypass_actors", "conditions", "rules")
+
+
+def _check_error(message: str, cause: str = "validation_error") -> None:
+    raise RulesetError(message, cause=cause)
+
+
+def _checks(value: Any, *, binding: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        _check_error("checks must be a list")
+    result = []
+    for item in value:
+        if (not isinstance(item, dict) or set(item) != {"context", binding}
+                or not isinstance(item["context"], str) or not item["context"].strip()
+                or isinstance(item[binding], bool)
+                or not (item[binding] is None or isinstance(item[binding], int))
+                or (item[binding] is not None and item[binding] <= 0)):
+            _check_error(f"each check needs a nonempty context and explicit {binding} (positive id or null)")
+        if item not in result:
+            if any(existing["context"] == item["context"] for existing in result):
+                _check_error("a check context cannot have conflicting App bindings")
+            result.append(copy.deepcopy(item))
+    return sorted(result, key=lambda item: (item["context"], item[binding] or 0))
+
+
+def _classic_checks(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value.get("strict"), bool):
+        _check_error("classic checks lack strictness", "invalid_response")
+    # Do not infer App bindings from the legacy contexts list.
+    checks = _checks(value.get("checks"), binding="app_id")
+    if set(value.get("contexts", [])) != {item["context"] for item in checks}:
+        _check_error("classic contexts and App-bound checks disagree", "invalid_response")
+    return {**value, "checks": checks, "contexts": sorted(set(value["contexts"]))}
+
+
+def check_snapshot(client: RulesetClient, repo: str) -> dict[str, Any]:
+    path = f"/repos/{repo_path(repo)}"
+    repository = client.request("GET", path, operation="github.rulesets.checks.read")
+    owner = repository.get("owner", {}) if isinstance(repository, dict) else {}
+    if (owner.get("type") != "User" or owner.get("login", "").casefold() != repo.split("/")[0].casefold()
+            or repository.get("archived") is not False or not repository.get("default_branch")
+            or str(repository.get("full_name", "")).casefold() != repo.casefold()):
+        _check_error("required-check plans need an active repository owned by the verified human", "owner_actor_mismatch")
+    branch = repository["default_branch"]
+    protection = client.request(
+        "GET", f"{path}/branches/{urllib.parse.quote(branch, safe='')}/protection",
+        operation="github.rulesets.checks.read", allow_unprotected=True,
+    )
+    if protection is not None:
+        if not isinstance(protection, dict):
+            _check_error("invalid branch protection response", "invalid_response")
+        protection = copy.deepcopy(protection)
+        if protection.get("required_status_checks") is not None:
+            protection["required_status_checks"] = _classic_checks(protection["required_status_checks"])
+    rulesets = []
+    for item in client.list_rulesets(repo):
+        if not all(key in item for key in RULESET_FIELDS):
+            _check_error("incomplete ruleset detail, including bypass actors", "invalid_response")
+        normalized = {"id": positive_int(item.get("id"), "ruleset id"),
+                      **{key: copy.deepcopy(item[key]) for key in RULESET_FIELDS}}
+        for rule in normalized["rules"]:
+            if rule.get("type") == "required_status_checks":
+                parameters = rule["parameters"]
+                parameters["required_status_checks"] = _checks([
+                    {**check, "integration_id": check.get("integration_id")}
+                    for check in parameters["required_status_checks"]], binding="integration_id")
+        rulesets.append(normalized)
+    return {
+        "repository": {key: repository[key] for key in ("id", "full_name", "default_branch", "archived", "owner")},
+        "protection": protection,
+        "rulesets": sorted(rulesets, key=lambda item: item["id"]),
+    }
+
+
+def check_plan_digest(plan: Mapping[str, Any]) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(json.dumps(dict(plan), sort_keys=True, separators=(",", ":"),
+                                     allow_nan=False).encode()).hexdigest()
+
+
+def build_check_plan(repo: str, target: str, checks: Any, before: dict[str, Any]) -> dict[str, Any]:
+    repo_path(repo)
+    additions = _checks(checks, binding="app_id")
+    if not additions:
+        _check_error("at least one required check is needed")
+    after = copy.deepcopy(before)
+    added = []
+    if target == "classic":
+        protection = after.get("protection")
+        if not isinstance(protection, dict) or not isinstance(protection.get("required_status_checks"), dict):
+            _check_error("classic target needs existing status-check protection; use target new for an isolated ruleset")
+        current = _classic_checks(protection["required_status_checks"])
+        for item in additions:
+            if item not in current["checks"]:
+                current["checks"].append(copy.deepcopy(item))
+                added.append(item)
+        current["checks"] = _checks(current["checks"], binding="app_id")
+        current["contexts"] = sorted({item["context"] for item in current["checks"]})
+        protection["required_status_checks"] = current
+        payload = {"strict": current["strict"], "checks": [
+            {**item, "app_id": item["app_id"] if item["app_id"] is not None else -1}
+            for item in current["checks"]]}
+    else:
+        if target == "new":
+            if any(item["name"] == CHECK_RULESET_NAME for item in before["rulesets"]):
+                _check_error("required-check ruleset already exists; select its id")
+            current = {
+                "id": None, "name": CHECK_RULESET_NAME, "target": "branch", "enforcement": "active",
+                "bypass_actors": [], "conditions": {"ref_name": {"include": [DEFAULT_REF], "exclude": []}},
+                "rules": [{"type": "required_status_checks", "parameters": {
+                    "strict_required_status_checks_policy": False, "do_not_enforce_on_create": False,
+                    "required_status_checks": []}}],
+            }
+            after["rulesets"].append(current)
+        else:
+            ruleset_id = positive_int(target, "target ruleset id")
+            matches = [item for item in after["rulesets"] if item["id"] == ruleset_id]
+            if len(matches) != 1:
+                _check_error("target ruleset not found")
+            current = matches[0]
+            refs = current["conditions"].get("ref_name", {})
+            if (current["target"] != "branch" or current["enforcement"] != "active"
+                    or refs.get("exclude") != []
+                    or refs.get("include") not in ([DEFAULT_REF], [f"refs/heads/{before['repository']['default_branch']}"])):
+                _check_error("target must be an active ruleset covering exactly the default branch")
+        rules = [rule for rule in current["rules"] if rule["type"] == "required_status_checks"]
+        if len(rules) != 1:
+            _check_error("target needs exactly one existing required-status-check rule; use target new")
+        parameters = rules[0]["parameters"]
+        if not isinstance(parameters.get("strict_required_status_checks_policy"), bool):
+            _check_error("ruleset lacks status-check strictness")
+        existing = _checks(parameters.get("required_status_checks"), binding="integration_id")
+        for item in additions:
+            translated = {"context": item["context"], "integration_id": item["app_id"]}
+            if translated not in existing:
+                existing.append(translated)
+                added.append(item)
+        parameters["required_status_checks"] = _checks(existing, binding="integration_id")
+        payload = {key: copy.deepcopy(current[key]) for key in RULESET_FIELDS}
+    return {"version": 1, "repo": repo, "target": target, "checks": additions,
+            "before": before, "after": after, "payload": payload, "added": added,
+            "changed": bool(added)}
+
+
+def validate_check_plan(plan: Any, digest: str) -> dict[str, Any]:
+    try:
+        if not isinstance(plan, dict) or check_plan_digest(plan) != digest:
+            _check_error("reviewed plan digest mismatch", "plan_digest_mismatch")
+        rebuilt = build_check_plan(plan["repo"], plan["target"], plan["checks"], plan["before"])
+        if rebuilt != plan:
+            _check_error("reviewed plan is not the additive change computed from its snapshot")
+        return rebuilt
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise RulesetError("invalid reviewed check plan", cause="validation_error") from exc
+
+
+def _matches_check_after(plan: dict[str, Any], live: dict[str, Any]) -> bool:
+    observed = copy.deepcopy(live)
+    if plan["target"] == "new":
+        matches = [item for item in observed["rulesets"] if item["name"] == CHECK_RULESET_NAME]
+        if len(matches) != 1:
+            return False
+        created = matches[0]
+        observed["rulesets"].remove(created)
+        created["id"] = None
+        observed["rulesets"].append(created)
+    return observed == plan["after"]
+
+
+def run_check_plan(client: RulesetClient, plan: dict[str, Any], *, apply: bool) -> dict[str, Any]:
+    repo = plan["repo"]
+    live = check_snapshot(client, repo)
+    if _matches_check_after(plan, live):
+        return {"repo": repo, "changed": False, "verified": True, "applied": []}
+    if live != plan["before"]:
+        _check_error("current protection or rulesets differ from the reviewed plan; plan and review again", "plan_state_drift")
+    if not apply:
+        _check_error("reviewed change is not present", "post_write_verification_failed")
+    attempted = False
+    try:
+        # Fresh comparison immediately before the single mutation. GitHub exposes
+        # no conditional-write token for these endpoints; the final API race is
+        # reported as a limit, never described as a server-side transaction.
+        if check_snapshot(client, repo) != live:
+            _check_error("protection changed during preflight", "plan_state_drift")
+        attempted = True
+        if plan["target"] == "classic":
+            branch = urllib.parse.quote(live["repository"]["default_branch"], safe="")
+            client.request("PATCH", f"/repos/{repo_path(repo)}/branches/{branch}/protection/required_status_checks",
+                           operation="github.rulesets.checks.update", body=plan["payload"])
+        else:
+            spec = RulesetSpec("required_checks", plan["payload"]["name"], frozenset(), plan["payload"])
+            if plan["target"] == "new":
+                client.create_ruleset(repo, spec)
+            else:
+                client.update_ruleset(repo, positive_int(plan["target"], "ruleset id"), spec)
+        if not _matches_check_after(plan, check_snapshot(client, repo)):
+            _check_error("required-check readback differs from the reviewed result", "post_write_verification_failed")
+    except RulesetError as exc:
+        raise RulesetError(str(exc), cause=exc.cause, payload={**exc.payload, "repo": repo,
+                           "failed_step": "check_write_or_readback" if attempted else "preflight",
+                           "write_attempted": attempted}) from exc
+    return {"repo": repo, "changed": True, "verified": True, "applied": plan["added"]}

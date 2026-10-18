@@ -298,6 +298,21 @@ commands:
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "plan", "--repo", "OWNER/REPO"]
     purpose: Reads the active repository owner's full ruleset state and reports the idempotent standard-pair and selected client-lock changes without writing.
+  - name: github-required-checks-plan
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-plan", "--repo", "OWNER/REPO", "--target", "classic", "--checks-file", "checks.json", "--out", "plan.json"]
+    purpose: Saves an additive required-check plan and digest using the existing verified-owner writer.
+  - name: github-required-checks-apply
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-apply", "--plan-file", "plan.json", "--plan-digest", "SHA256", "--confirm-owner-admin-write"]
+    purpose: Applies only the reviewed additive plan after state comparison, then reads it back.
+  - name: github-required-checks-readback
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-readback", "--plan-file", "plan.json", "--plan-digest", "SHA256"]
+    purpose: Verifies the reviewed required-check result without writing.
   - name: github-rulesets-apply
     source: skill
     resource_path: scripts/gh-rulesets.py
