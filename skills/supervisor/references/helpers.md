@@ -1842,6 +1842,8 @@ second native idle read, fresh process checks and complete native coverage.
 Any active thread, source PID (including reuse), old worker on the source TTY,
 resume process, unknown client, changed generation or unavailable evidence keeps
 it live. A proven new TTY occupant born after closure is not the old worker.
+Finish retries use the saved closure time for this check. A first closure uses
+its own observation time, never an unverified end time supplied by the ledger.
 Unidentified interactive clients, pickers, stdio servers and unobserved daemons
 still refuse. Fresh noninteractive execs cannot attach to the predecessor.
 The supported daemon-routed fresh and resume launchers run each TUI through a

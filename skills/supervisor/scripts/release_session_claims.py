@@ -83,7 +83,7 @@ def verify_process_exit(entry, *, ended_at=None):
             raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity before the documented manual release-claim route")
 
 
-def verify_closed(entry, supervisor_session, *, ended_at=None):
+def verify_closed(entry, supervisor_session, *, ended_at):
     historical = entry.get("_inventory") is True
     if entry["session_id"] == supervisor_session or (
         not historical and entry.get("supervisor_owned") is not True
@@ -108,7 +108,7 @@ def validate_closure(entry, supervisor_session):
     ended = release.stamp(entry["ended_at"])
     if ended > datetime.now(timezone.utc):
         raise ValueError("closure timestamp is in the future")
-    status = verify_closed(entry, supervisor_session)
+    status = verify_closed(entry, supervisor_session, ended_at=ended)
     if not status["timestamp"] or release.stamp(status["timestamp"]) > ended:
         raise ValueError("transcript resumed after the recorded closure")
     if "verdict_at" in entry and entry["verdict_at"] != status["timestamp"]:
@@ -184,8 +184,9 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
             if [r for r in current if r.get("session_id") == entry["session_id"]] != original:
                 raise ValueError("source closure changed during verification; preserve the current generation")
         return closed
-    status = verify_closed(entry, supervisor_session)
-    closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
+    ended = datetime.now(timezone.utc)
+    status = verify_closed(entry, supervisor_session, ended_at=ended)
+    closed = {**entry, "ended_at": ended.isoformat(),
               "verdict_at": status["timestamp"], "process_exit_verified": True}
     if entry.get("harness") == "codex" and entry.get("codex_home"):
         try:
@@ -1003,7 +1004,9 @@ def main():
             if len(entries) != 1:
                 raise ValueError("native session must match exactly one ledger entry")
             entries[0]["_transcript_roots"] = transcript_roots(entries[0]["harness"], args.account_config, args.transcript_root)
-            verify_closed(entries[0], args.supervisor_session)
+            # record_closure verifies exit against the saved closure on retry,
+            # or a fresh observation time for a new closure. A ledger timestamp
+            # alone is not proof that this generation has already ended.
             if args.apply:
                 entries = [record_closure(args.closed_log, entries[0], args.supervisor_session)]
             else:

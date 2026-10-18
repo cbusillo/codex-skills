@@ -12,7 +12,7 @@ import itertools
 import fcntl
 import importlib
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import subprocess
@@ -65,6 +65,10 @@ class ReleaseTests(unittest.TestCase):
                       "supervisor_owned": True, "process_exit_verified": True,
                       "ended_at": "2026-01-01T00:02:00Z",
                       "handoff_url": "https://github.com/test/a/issues/1#issuecomment-99"}
+        started = patch.object(helper.closure, "process_started_at", return_value=
+                               helper.release.stamp(self.entry["ended_at"]) - timedelta(seconds=1))
+        started.start()
+        self.addCleanup(started.stop)
         self.source = comment(1, "Claimed by trial\n\n" + helper.claim.marker(SOURCE))
         self.reader = Mock()
         self.reader.get_json.return_value = {**comment(99, "Handoff"),
@@ -187,7 +191,7 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "single timezone"):
             helper.validate_closure({**self.entry, "ended_at": "2026-01-01 00:02:00+00:00"}, "supervisor")
 
-    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body="", scoped=False, evidence=None):
+    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body="", scoped=False, evidence=None, apply=True):
         ledger, log = self.root / "ledger.json", self.root / "closed.json"
         ledger.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
         log.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
@@ -199,7 +203,9 @@ class ReleaseTests(unittest.TestCase):
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
                 "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
                 "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
-                "--verified-handoff", "--handoff-thread", "test/a#2", "--transcript-root", str(self.root), "--apply"]
+                "--verified-handoff", "--handoff-thread", "test/a#2", "--transcript-root", str(self.root)]
+        if apply:
+            argv.append("--apply")
         if scoped:
             argv += ["--repo", "test/a"]
         output = io.StringIO()
@@ -232,6 +238,58 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(report["reports"][0]["released_claims"], [])
         self.assertFalse(report["needs_reconciliation"])
+
+    def test_finish_retry_uses_original_closure_to_distinguish_tty_reuse(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        for apply in (False, True):
+            for born, expected in ((ended - timedelta(seconds=1), 1), (ended, 1),
+                                   (ended + timedelta(seconds=22), 0),
+                                   (datetime.now(timezone.utc) + timedelta(days=1), 1)):
+                with self.subTest(apply=apply, born=born), \
+                        patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex")]), \
+                        patch.object(helper.closure, "process_started_at", return_value=born):
+                    result, report = self.finish_thread([self.source, self.own_release()], apply=apply)
+                    self.assertEqual(result, expected, report)
+                    saved = json.loads((self.root / "closed.json").read_text())[0]
+                    self.assertEqual(saved["ended_at"], self.entry["ended_at"])
+
+    def test_finish_retry_never_excuses_recorded_pids_or_native_resume(self):
+        self.entry["launch_pid"] = 124
+        ended = helper.release.stamp(self.entry["ended_at"])
+        for pid, tty, command in ((self.entry["pid"], "other-tty", "codex"),
+                                  (self.entry["launch_pid"], "other-tty", "shell"),
+                                  (456, self.entry["tty"], "codex resume source-session")):
+            for born in (ended - timedelta(seconds=1), ended + timedelta(seconds=22)):
+                with self.subTest(pid=pid, born=born), \
+                        patch.object(helper, "inventory", return_value=[(pid, tty, command)]), \
+                        patch.object(helper.closure, "process_started_at", return_value=born):
+                    result, report = self.finish_thread([])
+                    self.assertEqual(result, 1, report)
+
+    def test_finish_retry_preserves_claims_when_tty_start_is_unavailable(self):
+        with patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex")]), \
+                patch.object(helper.closure, "process_started_at", side_effect=ValueError("start unavailable")):
+            result, report = self.finish_thread([self.source, self.own_release()])
+        self.assertEqual(result, 1, report)
+
+    def test_new_closure_does_not_trust_ledger_end_to_excuse_existing_work(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        with patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex")]), \
+                patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)):
+            with self.assertRaisesRegex(ValueError, "source PID"):
+                helper.record_closure(self.root / "new-closure.json", self.entry, "supervisor")
+        self.assertFalse((self.root / "new-closure.json").exists())
+
+    def test_new_closure_keeps_observation_time_when_tty_is_reused_during_verification(self):
+        observed = helper.release.stamp(self.entry["ended_at"]) + timedelta(days=1)
+        log = self.root / "new-closure.json"
+        with patch.object(helper, "datetime") as clock, \
+                patch.object(helper, "inventory", side_effect=[[], [(456, self.entry["tty"], "codex")]]), \
+                patch.object(helper.closure, "process_started_at", return_value=observed + timedelta(seconds=1)):
+            clock.now.side_effect = itertools.chain([observed], itertools.repeat(observed + timedelta(seconds=2)))
+            closed = helper.record_closure(log, self.entry, "supervisor")
+        self.assertEqual(helper.release.stamp(closed["ended_at"]), observed)
+        self.assertEqual(json.loads(log.read_text())[0]["ended_at"], closed["ended_at"])
 
     def test_finish_self_release_with_session_field_and_progress_note(self):
         released = self.own_release(body="Released claim 1\n\nSession: source-session\nEngineering handoff")
