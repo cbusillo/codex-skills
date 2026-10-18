@@ -20,7 +20,9 @@ READS = {"thread/read", "thread/list", "thread/loaded/list", "thread/items/list"
          "thread/goal/get", "thread/queue/list", "thread/attachment/list", "thread/attachmentOwner/list",
          "thread/turns/list", "thread/items/read", "thread/timeline/list", "thread/searchOccurrences",
          "thread/backgroundTerminals/list", "thread/search", "thread/realtime/listVoices"}
-NON_THREAD_REQUESTS = {"account/chatgptAuthTokens/refresh", "attestation/generate", "currentTime/read"}
+# Server housekeeping does not attach execution, even when a clock read names
+# its source thread. Track replies without invalidating that thread's verdict.
+NON_ACTION_REQUESTS = {"account/chatgptAuthTokens/refresh", "attestation/generate", "currentTime/read"}
 # These change stored presentation state or detach this subscriber, without
 # attaching execution. Archive is deliberately excluded: it shuts down the
 # spawn subtree, including descendants that may have independently resumed.
@@ -206,9 +208,9 @@ class Ingress:
                                     if identity in approvals:
                                         raise ValueError("native approval ID is already pending")
                                     targets = set(thread_targets(message.get("params", {})))
-                                    if method not in NON_THREAD_REQUESTS and not targets:
+                                    if method not in NON_ACTION_REQUESTS and not targets:
                                         raise ValueError("native approval source is unavailable")
-                                    approvals[identity] = acquire(targets)
+                                    approvals[identity] = acquire(set() if method in NON_ACTION_REQUESTS else targets)
                                 except (OSError, ValueError) as error:
                                     await native.send(json.dumps({"id": identity, "error": {"code": -32600, "message": str(error)}}))
                                     reads[asyncio.create_task(native.recv())] = "native"
