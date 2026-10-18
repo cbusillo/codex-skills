@@ -972,6 +972,71 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertEqual(result["detail"], event.get("message") or event["error"]["message"])
 
+    def test_recorded_incomplete_review_preserves_the_execution_cause(self) -> None:
+        fixture = json.loads(SCRIPT.with_name("fixtures").joinpath("openai-incomplete-2166.json").read_text())
+        events = fixture["events"]
+        proc = subprocess.CompletedProcess([], fixture["returncode"],
+                                           "\n".join(map(json.dumps, events)), "")
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        (scratch / "answer.md").write_text(fixture["answer"])
+        elapsed = fixture["provenance"]["duration_seconds"]
+        with patch.object(review_with_model, "run_cli", return_value=proc) as run, \
+                patch("time.monotonic", side_effect=[10, 10 + elapsed]):
+            result = review_with_model.completed_review(
+                review_with_model.review_openai("private prompt", self.repo, None, 1800, scratch))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["outcome"], json.loads(fixture["answer"])["status"])
+        execution = result["execution"]
+        self.assertEqual(execution["terminal_event"], "turn.completed")
+        self.assertEqual(execution["last_event"], events[-1]["type"])
+        self.assertEqual(execution["elapsed_seconds"], elapsed)
+        self.assertEqual(execution["exit_code"], proc.returncode)
+        self.assertTrue(execution["final_answer_produced"])
+        self.assertEqual(execution["command_diagnostics"], ["github_connection_failed"])
+        self.assertEqual(execution["failed_commands"], 0)  # The trailing cat hid gh's exit code.
+        self.assertTrue(result["completion_shape"])
+        self.assertNotIn("response", result)
+        run.assert_called_once()
+
+    def test_incomplete_diagnostics_do_not_expose_command_or_partial_review_text(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        output = self.root / "review.md"
+        events = [
+            {"type": "item.completed", "item": {"type": "command_execution", "status": "completed", "exit_code": 0,
+                "command": "token=PRIVATE-COMMAND", "aggregated_output": "PRIVATE-SOURCE\n" * 1000 +
+                "error connecting to api.github.com\n"}},
+            {"type": "PRIVATE-EVENT-token=private"},
+        ]
+        code, result = self.run_helper(
+            "run", "--provider", "openai", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
+            "--out", str(output), FAKE_CODEX_EVENTS="\n".join(map(json.dumps, events)),
+            FAKE_ANSWER=json.dumps({"status": "incomplete", "review": "PRIVATE-PARTIAL" * 1000}))
+        self.assertEqual(code, 1)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertFalse(output.exists())
+        self.assertEqual(result["execution"]["last_event"], "unknown")
+        self.assertIsNone(result["execution"]["terminal_event"])
+        self.assertLess(len(json.dumps(result["execution"])), 500)
+
+    def test_openai_timeout_keeps_terminal_evidence_without_the_partial_answer(self) -> None:
+        stdout = b'{"type":"turn.started"}\n{"type":"item.started"}\n{"partial'
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        (scratch / "answer.md").write_text("PRIVATE-PARTIAL")
+        with patch.object(review_with_model, "run_cli", side_effect=subprocess.TimeoutExpired(
+                ["codex", "private prompt"], 20, output=stdout, stderr=b"token=PRIVATE-STDERR")) as run:
+            result = review_with_model.review_openai("private prompt", self.repo, None, 20, scratch)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["execution"]["jsonl_state"], "malformed")
+        self.assertEqual(result["execution"]["last_event"], "item.started")
+        self.assertIsNone(result["execution"]["terminal_event"])
+        self.assertIsNone(result["execution"]["exit_code"])
+        self.assertTrue(result["execution"]["final_answer_produced"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertGreaterEqual(result["execution"]["elapsed_seconds"], 0)
+        run.assert_called_once()
+
     def test_openai_interrupted_reconnect_retains_distinct_stderr(self) -> None:
         self.install("codex", FAKE_CODEX)
         event = {"type": "error", "message": "Reconnecting... 2/5"}
