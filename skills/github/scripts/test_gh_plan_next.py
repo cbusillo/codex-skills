@@ -2611,10 +2611,19 @@ def test_bare_reference_missing_here_keeps_post_merge_evidence_complete() -> Non
     assert {ref["source"] for ref in report["unresolved_references"]} == {"wait_reference"}
     assert report["references"]["https://github.com/someone/product/issues/104"]["state"] == "unknown"
     assert "post_merge_evidence_complete" not in candidates[0]
-    named = {**parked, "body": parked["body"].replace("#104", "someone/product#104")}
+    named = {**parked, "number": 12, "body": parked["body"].replace("#104", "someone/product#104")}
     with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG, api_json=waiting("not_found")):
         report = module.next_wait_context([named], scan_limit=1, inventory_complete=True)
     assert not report["complete"] and report["unavailable"] and not report["unresolved_references"]
+    # Each occurrence is classified on its own, whichever issue reads the target first.
+    prose = [{**row, "body": f"## Current Status\nState: Waiting.\nWaiting for: approval on {ref}.\n"}
+             for row, ref in ((parked, "#104"), (named, "someone/product#104"))]
+    for order in (prose, prose[::-1]):
+        with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG, api_json=waiting("not_found")):
+            report = module.next_wait_context(order, scan_limit=2, inventory_complete=True)
+        assert not report["complete"]
+        assert {(row["number"], row["source"]) for row in report["unavailable"]} == {(12, "wait_reference")}
+        assert {(row["number"], row["source"]) for row in report["unresolved_references"]} == {(11, "wait_reference")}
 
 
 def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output() -> None:

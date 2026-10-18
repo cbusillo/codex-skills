@@ -4139,6 +4139,7 @@ def next_wait_context(
     fetch_lock = threading.Lock()
     unavailable: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
+    failures: dict[str, direction_audit.AuditError] = {}
     budget = max(1, scan_limit) * 5
 
     def fetch(argv: list[str]) -> Any:
@@ -4249,26 +4250,32 @@ def next_wait_context(
             for row in github_direction_next.waiting_records(own, status, reference_repositories=known_repos):
                 for reference in row["references"]:
                     url = reference["url"]
-                    if url in references:
+                    stored = {key: value for key, value in reference.items() if key != "bare"}
+                    if url not in references:
+                        try:
+                            target = fetch(["api", f"repos/{reference['repo']}/issues/{reference['number']}"])
+                            state = target.get("state") if isinstance(target, dict) else None
+                            if state not in {"open", "closed"}:
+                                raise direction_audit.AuditError("unknown wait reference state")
+                            references[url] = {**stored, "state": state, "closed_at": target.get("closed_at"),
+                                               "state_reason": target.get("state_reason")}
+                        except direction_audit.AuditError as exc:
+                            references[url] = {**stored, "state": "unknown"}
+                            failures[url] = exc
+                    if url not in failures:
                         continue
-                    try:
-                        target = fetch(["api", f"repos/{reference['repo']}/issues/{reference['number']}"])
-                        state = target.get("state") if isinstance(target, dict) else None
-                        if state not in {"open", "closed"}:
-                            raise direction_audit.AuditError("unknown wait reference state")
-                        references[url] = {**reference, "state": state, "closed_at": target.get("closed_at"),
-                                           "state_reason": target.get("state_reason")}
-                    except direction_audit.AuditError as exc:
-                        references[url] = {**reference, "state": "unknown"}
-                        if direction_audit.bare_reference_missing(exc, not reference.get("bare")):
-                            # Absent here, so read; the wait stays pending on its unknown state.
-                            unresolved_row = {"repo": repo, "number": item["number"], "source": "wait_reference",
-                                              "reason": "unresolved_reference", "reference": f"#{reference['number']}"}
-                            if unresolved_row not in unresolved:
-                                unresolved.append(unresolved_row)
-                            continue
-                        unavailable.append({"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"})
-                        complete = False
+                    # The read is shared; whether it leaves this issue unread depends on how it was written.
+                    if direction_audit.bare_reference_missing(failures[url], not reference.get("bare")):
+                        # Absent here, so read; the wait stays pending on its unknown state.
+                        gap = {"repo": repo, "number": item["number"], "source": "wait_reference",
+                               "reason": "unresolved_reference", "reference": f"#{reference['number']}"}
+                        if gap not in unresolved:
+                            unresolved.append(gap)
+                        continue
+                    gap = {"repo": repo, "number": item["number"], "source": "wait_reference", "url": url, "reason": "unavailable"}
+                    if gap not in unavailable:
+                        unavailable.append(gap)
+                    complete = False
     return {"read_only": True, "complete": complete, "checked": checked, "items": reports,
             "repositories": repositories, "frozen_issues": frozen_issues,
             "unavailable": unavailable, "unresolved_references": unresolved, "references": references,
