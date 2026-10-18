@@ -296,6 +296,12 @@ active issue labels and continuing background jobs do not lift a hold.
    Planning: Claim for the exact released multi-branch handoff proof; all
    retained artifacts and their recorded waits are checked. This claim does
    not lift a product hold or authorize changing the retained PRs.
+   A native child in the same repository may use its parent's released claim
+   and handoff IDs for that source slice; the helper verifies the native link
+   and parent ownership on both readbacks and preserves the parent's waits.
+   Ownership checks traverse the recorded source family across generations;
+   releasing an intermediate or closing a child does not hide another holder.
+   Read Planning: Claim before using this cross-record route.
 
 For a global invalid-wait finding, read the
 [supported wait correction procedure](references/global-next.md#correct-an-invalid-wait-before-claiming)
