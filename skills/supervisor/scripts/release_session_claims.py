@@ -616,8 +616,10 @@ def discover_handoff(reader, entry, actor):
             return ((not opened or release.stamp(opened) - slack <= created)
                     and (not closed or created <= release.stamp(closed) + slack))
         def sent_to_url(call_id):
-            # The body must have been sent by a write aimed at this comment's own thread.
-            return any(sent_body == body and number == match[2] and (repo is None or repo.lower() == match[1].lower())
+            # The body must have been sent by a write that named this comment's own thread.
+            # Without -R/--repo the helper uses GH_REPO or the cwd's remote, which the
+            # transcript cannot prove; such a write binds only through its JSON receipt.
+            return any(sent_body == body and number == match[2] and repo is not None and repo.lower() == match[1].lower()
                        for sent_body, repo, number in sent.get(call_id, ()))
         sent_here = release.related_sessions_match(text, entry["session_id"]) and any(
             u == url and during(call_id) and sent_to_url(call_id) for u, call_id in printed)
