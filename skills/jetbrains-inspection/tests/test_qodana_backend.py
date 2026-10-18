@@ -83,8 +83,7 @@ class QodanaTests(unittest.TestCase):
         profiles = self.repo / ".idea/inspectionProfiles"
         profiles.mkdir(parents=True)
         (profiles / "Project_Default.xml").write_text('<component><profile><option name="myName" value="Test Profile"/>'
-                    '<inspection_tool class="PyUnresolvedReferencesInspection" enabled="true"/>'
-                    '<inspection_tool class="DuplicatedCode" enabled="true"/></profile></component>')
+                    '<inspection_tool class="PyUnresolvedReferencesInspection" enabled="true"/></profile></component>')
         (self.repo / ".github").mkdir()
         (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {"inspection": {
             "prepare": {"python": {"version": "3.12", "moduleName": "fixture"}}}}}))
@@ -140,6 +139,7 @@ class QodanaTests(unittest.TestCase):
             return backend.run(self.args, host)
 
     def test_completed_red_has_only_requested_current_findings_and_full_artifact(self):
+        self.enable_duplicated_code()
         result = self.run_backend()
         self.assertEqual(result["agent_result"]["verdict"], "RED")
         self.assertEqual(result["helper_exit_code"], host.classify_run_exit({"verdict": result["agent_result"]["verdict"]}))
@@ -168,14 +168,31 @@ class QodanaTests(unittest.TestCase):
             (args[2] / "results/qodana.sarif.json").write_text(json.dumps(sarif(results)))
         return attempt
 
-    def test_clean_python_run_with_canary_proof_is_green_and_names_uncovered(self):
+    def enable_duplicated_code(self):
+        profile = self.repo / ".idea/inspectionProfiles/Project_Default.xml"
+        profile.write_text(profile.read_text().replace(
+            "</profile>", '<inspection_tool class="DuplicatedCode" enabled="true"/></profile>'))
+
+    def test_clean_python_run_with_canary_proof_is_green(self):
         result = self.run_backend(self.clean_with_canary())
         self.assertEqual(result["agent_result"]["verdict"], "GREEN")
         self.assertEqual(result["helper_exit_code"], 0)
         self.assertEqual(result["proof_failures"], [])
-        self.assertEqual(result["uncovered_inspections"], ["DuplicatedCode"])
+        self.assertEqual(result["uncovered_inspections"], [])
         self.assertEqual(result["finding_count"], 0)
         self.assertEqual(sorted(p.name for p in (self.repo / "src").iterdir()), ["a.py", "b.py"])
+
+    def test_community_uncovered_inspection_blocks_green_until_accepted(self):
+        # Q481 pending: the result names DuplicatedCode and stays UNKNOWN on clean code.
+        self.enable_duplicated_code()
+        pending = self.run_backend(self.clean_with_canary())
+        self.assertEqual(pending["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(pending["uncovered_inspections"], ["DuplicatedCode"])
+        self.assertIn("effective_profile_missing:DuplicatedCode", pending["proof_failures"])
+        with patch.object(backend, "PYTHON_ACCEPTED_UNCOVERED", frozenset({"DuplicatedCode"})):
+            accepted = self.run_backend(self.clean_with_canary())
+        self.assertEqual(accepted["agent_result"]["verdict"], "GREEN")
+        self.assertEqual(accepted["uncovered_inspections"], ["DuplicatedCode"])
 
     def test_zero_findings_without_canary_finding_never_green(self):
         result = self.run_backend(self.clean_with_canary(proven=()))

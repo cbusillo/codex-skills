@@ -120,8 +120,9 @@ envelope. Existing local IDE/plugin license files may be copied read-only into
 that profile, never printed, logged or archived, and deleted after the run.
 Stop on trial start, activation or purchase. Run one capped, niced Qodana
 worker at a time and pause above load1 64. Coverage that cannot be proved
-remains UNKNOWN. A Python GREEN names the profile inspections the engine does
-not run in `uncovered_inspections`; report them with the verdict.
+remains UNKNOWN. Results name profile inspections the engine does not run in
+`uncovered_inspections`; report them with the verdict. While the Director's
+Q481 is open, they keep a clean result UNKNOWN.
 
 When IDE configuration appears in the change set, use
 `../references/ide-configuration-policy.md` before deciding whether to keep,

@@ -163,8 +163,11 @@ every canary proved execution, every selected file is Python, and every enabled
 profile inspection is in the effective profile. Inspections for other file
 types do not apply to a Python-only selection. `DuplicatedCode` and
 `HttpUrlsUsage`, which the Community image does not run, are listed in
-`uncovered_inspections` rather than blocking GREEN; any other missing enabled
-inspection, such as a renamed ID, keeps the result UNKNOWN. JVM and other
+`uncovered_inspections`. When the profile enables them, they block GREEN
+until the Director accepts a GREEN without them
+([Q481](https://github.com/cbusillo/codex-skills/issues/1833)); a yes moves
+them into `PYTHON_ACCEPTED_UNCOVERED`. RED still works. Any other missing
+enabled inspection, such as a renamed ID, keeps the result UNKNOWN. JVM and other
 languages report UNKNOWN on zero findings. Unsupported filters,
 unavailable/malformed SARIF, changed inputs and cleanup failures remain
 UNKNOWN; no automatic retry is authorized.
