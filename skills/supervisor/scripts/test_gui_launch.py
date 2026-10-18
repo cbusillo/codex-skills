@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import plistlib
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -30,17 +31,22 @@ import tmux_terminal
 
 class GuiLaunchTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(prefix="gui-", dir="/tmp")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.home = self.root / "owner"
         self.account = self.root / "account with spaces"
         self.account.mkdir()
+        endpoint = iterm_tab.codex_daemon_endpoint(self.account)
+        endpoint.parent.mkdir()
+        native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+        native_socket.bind(str(endpoint))
+        endpoint.chmod(0o600)
         self.source = self.home / ".codex" / gui_launch.BUNDLED_MARKETPLACE
         self.source.mkdir(parents=True)
         self.state = self.root / "private/gui.json"
         self.addCleanup(patch.stopall)
-        patch.dict(os.environ, {"ZDOTDIR": str(self.root)}).start()
+        patch.dict(os.environ, {"ZDOTDIR": str(self.root), "HOME": str(self.home)}).start()
         patch.object(Path, "home", return_value=self.home).start()
         patch.object(gui_launch, "state_path", return_value=self.state).start()
         patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent-opt-in").start()
@@ -65,6 +71,12 @@ class GuiLaunchTests(unittest.TestCase):
                                        account_provider="openai", account_config=None, account=None)
         patch.object(account_choice, "select", return_value=self.choice).start()
         self.daemon = patch.object(iterm_tab, "check_codex_daemon").start()
+        code = self.root / "code"
+        (code / "skill-data").mkdir(parents=True)
+        (code / "skill-data/supervisor.toml").write_text(
+            '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+            + 'env={CODEX_HOME=' + json.dumps(str(self.account)) + '}\n')
+        patch.dict(os.environ, {"CODE_HOME": str(code)}).start()
 
     def test_desktop_only_gui_does_not_require_browser_plugins(self):
         with patch.object(agent_tools, "codex_plugins", return_value=[{
@@ -102,6 +114,7 @@ class GuiLaunchTests(unittest.TestCase):
                 gui_launch.main()
         self.assertEqual(exited.exception.code, 0)
         argv, home = json.loads(output.read_text())
+        self.assertFalse(any(arg == "--remote" or arg.startswith("--remote=") for arg in argv))
         self.assertEqual(home, str(self.account))
         source = Path(home) / self.source.relative_to(self.home / ".codex")
         overrides = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-c"]
@@ -113,6 +126,52 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertEqual((self.account / "config.toml").read_bytes(), self.config_before)
         self.assertEqual((self.account / "auth.json").read_text(), "opaque fixture")
 
+    def test_source_local_launch_reaches_native_client_without_managed_wrapper(self):
+        fake = self.root / "codex"
+        fake.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                        "print(json.dumps([sys.argv[1:], os.getenv('CODEX_HOME')]))\n")
+        fake.chmod(0o755)
+        self.brief.write_text("Implement source changes only.")
+        for opt_in in (False, True):
+            with self.subTest(chrome_opt_in=opt_in):
+                if opt_in:
+                    iterm_tab.CHROME_OPT_IN.touch()
+                self.command.write_text("exec " + shlex.quote(str(fake)) + " --no-daemon -C "
+                                        + shlex.quote(str(self.repo)))
+                commands, choices = iterm_tab.prepare_launches(self.args)
+                result = subprocess.run(["/bin/sh", "-c", commands[0]], capture_output=True,
+                                        text=True, check=True)
+                argv, home = json.loads(result.stdout)
+                self.assertEqual(home, str(self.account))
+                self.assertEqual(argv.count("--no-daemon"), 1)
+                self.assertFalse(any(a == "--remote" or a.startswith("--remote=") for a in argv))
+                self.assertEqual(argv[-2:], ["--", self.brief.read_text()])
+                self.assertEqual(choices[0]["tools"]["route"], "local")
+                self.assertNotIn("gui", choices[0])
+                self.daemon.assert_not_called()
+                self.unlocked.assert_not_called()
+
+    def test_foreign_remote_refuses_before_daemon_receipt_or_terminal(self):
+        self.brief.write_text("Implement source changes only.")
+        self.command.write_text("codex --remote unix:///foreign/daemon.sock -C " + shlex.quote(str(self.repo)))
+        with patch.object(account_choice, "prepare_launch") as receipt:
+            with self.assertRaises(ValueError):
+                iterm_tab.prepare_launches(self.args)
+        self.daemon.assert_not_called()
+        receipt.assert_not_called()
+
+    def test_selected_remote_through_home_symlink_is_normalized_before_launch(self):
+        self.brief.write_text("Implement source changes only.")
+        alias = self.root / "account-alias"
+        alias.symlink_to(self.account, target_is_directory=True)
+        self.choice["env"]["CODEX_HOME"] = str(alias)
+        endpoint = "unix://" + str(iterm_tab.codex_daemon_endpoint(alias))
+        self.command.write_text("codex --remote " + shlex.quote(endpoint) + " -C " + shlex.quote(str(self.repo)))
+        commands, _ = iterm_tab.prepare_launches(self.args)
+        words = shlex.split(commands[0])
+        native = words[words.index("--") + 1:]
+        self.assertEqual(native[native.index("--remote") + 1], "unix://" + str(iterm_tab.codex_daemon_endpoint(self.account)))
+
     def test_nongui_launch_does_not_probe_or_create_gui_paths(self):
         self.brief.write_text("Implement source changes only.")
         with patch.object(gui_launch, "marketplace") as marketplace:
@@ -123,7 +182,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertFalse((self.account / ".tmp").exists())
         self.assertFalse(self.state.exists())
         self.assertEqual(commands[0], iterm_tab.with_account(self.command.read_text(), self.choice,
-                                                            self.brief.read_text()))
+                                                            self.brief.read_text(), coordinate=True))
         self.assertNotIn("gui", json.loads(account_choice.record_launch(self.choice).read_text()))
 
     def test_source_brief_quoting_gui_header_does_not_opt_in(self):

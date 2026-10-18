@@ -4,17 +4,370 @@
 # ///
 """Fake native daemon evidence, including refusal and read-only transport."""
 import copy
+import asyncio
+from contextlib import ExitStack
 import json
+import inspect
 import os
 import socket
+import sys
 from pathlib import Path
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from aiohttp import web
 import github_plan_sessions as SESSIONS
+import github_plan_closure as CLOSURE
+
+
+class ReceiptFixture:
+    """A real read-only Unix daemon plus an actual shared closure receipt."""
+    def __init__(self, session="holder", *, archived=False):
+        self.session = session
+        self.archived = archived
+        self.native_state = "idle"
+        self.process_rows = []
+        self.commands = ""
+        self.execution_items = []
+        self.incomplete = False
+        self.failure = None
+        self.mutations = []
+        self.rpc_results = {}
+        self.parallel = False
+        self.queue_items = []
+        self.approval_target = None
+        self.approval_results = []
+        self.approval_on_resume = False
+
+    def __enter__(self):
+        self.stack = ExitStack()
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory(prefix="lease-", dir="/tmp"))).resolve()
+        self.home = self.root / "account"
+        self.homes = [self.home]
+        self.transcript = self.home / ("archived_sessions" if self.archived else "sessions") / ("rollout-" + self.session + ".jsonl")
+        self.transcript.parent.mkdir(parents=True)
+        self.transcript.write_text("\n".join(json.dumps(row) for row in [
+            {"type": "session_meta", "payload": {"id": self.session}},
+            {"type": "event_msg", "timestamp": "2026-10-01T02:00:00Z", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
+            {"type": "event_msg", "timestamp": "2026-10-01T02:00:01Z", "payload": {"type": "task_complete"}},
+        ]) + "\n")
+        self.log = self.root / ".code/skill-data/supervisor-closed-sessions.json"
+        self.stack.enter_context(patch.dict(os.environ, {"HOME": str(self.root), "CODE_HOME": str(self.log.parent.parent)}))
+        self.stack.enter_context(patch.object(CLOSURE, "closed_log", return_value=self.log))
+        self.stack.enter_context(patch.object(CLOSURE, "host_identity", return_value={"boot": "fixture-boot", "uid": os.getuid()}))
+        self.stack.enter_context(patch.object(SESSIONS, "codex_homes", side_effect=lambda **_kw: sorted(self.homes)))
+        SESSIONS.native_helpers()
+        import release_session_claims
+        self.release = release_session_claims
+        self.stack.enter_context(patch.object(self.release, "inventory", side_effect=lambda: list(self.process_rows)))
+        self.entry = {"session_id": self.session, "harness": "codex", "transcript": str(self.transcript),
+                      "pid": 123, "tty": "fixture-tty", "supervisor_owned": True, "codex_home": str(self.home),
+                      "launch_pid": 123, "launch_generation": "source-generation", "launch_started_at": "2026-10-01T01:00:00Z"}
+        self.release.record_closure(self.log, self.entry, "supervisor")
+        real_run = SESSIONS.subprocess.run
+        self.stack.enter_context(patch.object(SESSIONS.subprocess, "run", side_effect=lambda argv, **kw:
+            SimpleNamespace(returncode=0, stdout=self.commands) if argv[:2] == ["ps", "-axo"] or argv[:3] == ["ps", "-ww", "-axo"] else real_run(argv, **kw)))
+        ready = threading.Event()
+
+        async def serve():
+            self.loop = asyncio.get_running_loop()
+            self.stop = self.loop.create_future()
+            async def handler(request):
+                ws = web.WebSocketResponse()
+                await ws.prepare(request)
+                async def respond(request):
+                    if "method" not in request:
+                        self.approval_results.append(request)
+                        return
+                    method = request["method"]
+                    if method == "initialized": return
+                    if method == "initialize": result = {}
+                    elif method in self.rpc_results:
+                        reply = self.rpc_results[method]
+                        result = reply(request) if callable(reply) else reply
+                        if inspect.isawaitable(result):
+                            result = await result
+                    elif method == "thread/loaded/list": result = {"data": [self.session], "nextCursor": "more" if self.incomplete else None}
+                    elif method == "thread/items/list": result = {"data": [{"item": item, "turnId": "source-turn"} for item in self.execution_items], "nextCursor": None}
+                    elif method == "thread/queue/list": result = {"data": self.queue_items, "nextCursor": None}
+                    elif method == "thread/read": result = {"thread": {
+                        "id": self.session, "cwd": "/retained/source", "path": str(self.transcript), "status": {"type": self.native_state}}}
+                    elif method in {"thread/resume", "thread/fork", "turn/start", "thread/archive", "thread/queue/add"}:
+                        self.mutations.append(request)
+                        target = request["params"]["threadId"]
+                        if self.approval_on_resume:
+                            await ws.send_json({"id": request["id"], "method": "execCommandApproval",
+                                                "params": {"conversationId": target}})
+                        result = {"thread": {"id": target, "path": str(self.transcript if target == self.session else self.home / "sessions" / (target + ".jsonl"))}}
+                    else: raise AssertionError("unexpected native mutation: " + method)
+                    if isinstance(result, Exception):
+                        await ws.send_json({"id": request["id"], "error": {"code": -32600, "message": str(result)}})
+                        return
+                    await ws.send_json({"id": request["id"], "result": result})
+                    if method == "initialize" and self.approval_target:
+                        await ws.send_json({"id": "approval", "method": "execCommandApproval",
+                                            "params": {"conversationId": self.approval_target}})
+                tasks = []
+                try:
+                    async for frame in ws:
+                        if self.parallel:
+                            tasks.append(asyncio.create_task(respond(frame.json())))
+                        else:
+                            await respond(frame.json())
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                return ws
+            app = web.Application()
+            app.router.add_get("/", handler)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            path = CLOSURE.daemon_endpoint(self.home)
+            path.parent.mkdir()
+            await web.UnixSite(runner, str(path)).start()
+            os.chmod(path, 0o600)
+            ready.set()
+            try: await self.stop
+            finally: await runner.cleanup()
+
+        def start():
+            try: asyncio.run(serve())
+            except BaseException as error:
+                self.failure = error
+                ready.set()
+        self.thread = threading.Thread(target=start)
+        self.thread.start()
+        if not ready.wait(3) or self.failure:
+            raise RuntimeError("fixture daemon failed") from self.failure
+        return self
+
+    def __exit__(self, *_):
+        self.loop.call_soon_threadsafe(self.stop.set_result, None)
+        self.thread.join(3)
+        self.stack.close()
+        if self.thread.is_alive() or self.failure:
+            raise RuntimeError("fixture daemon did not stop") from self.failure
+
+    def observe(self, proof_sessions=None):
+        return SESSIONS.observe({self.session}, set() if proof_sessions is None else proof_sessions)
+
+    def managed(self, native):
+        """Registry-coordinate fixture; the ingress's wire behavior has its own tests."""
+        binding = self.root / "fixture-ingress.sock"
+        sock = socket.socket(socket.AF_UNIX)
+        self.stack.callback(sock.close)
+        sock.bind(str(binding))
+        binding.chmod(0o600)
+        proxy = CLOSURE.register_proxy(str(self.home), str(binding))
+        native[native.index("--remote") + 1] = "unix://" + str(binding)
+        with patch.object(CLOSURE.os, "getpid", return_value=456):
+            CLOSURE.register_launch(native, str(self.home), proxy=proxy)
+
+
+class IdleReceiptIntegrationTests(unittest.TestCase):
+    def test_short_mutation_contention_waits_without_failing_the_second_launch(self):
+        import fcntl
+        with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
+            held, release = threading.Event(), threading.Event()
+            def writer():
+                with CLOSURE.store_lock(f.log):
+                    held.set()
+                    release.wait(3)
+            future = pool.submit(writer)
+            self.assertTrue(held.wait(3))
+            original = fcntl.flock
+            def contend(stream, operation):
+                try:
+                    return original(stream, operation)
+                except BlockingIOError:
+                    release.set()
+                    raise
+            try:
+                with patch.object(fcntl, "flock", side_effect=contend):
+                    CLOSURE.register_launch(["codex", "--", "task"], str(f.home))
+            finally:
+                release.set()
+                future.result(timeout=3)
+            self.assertTrue(any(r.get("launch_pid") == os.getpid() for r in CLOSURE.log_rows()))
+
+    def test_registration_prunes_only_confirmed_dead_runtime_rows(self):
+        with ReceiptFixture() as f:
+            with SESSIONS.subprocess.Popen([sys.executable, "-c", "pass"]) as child:
+                child.wait()
+            dead = {"record_kind": "managed_launch", "launch_pid": child.pid}
+            with CLOSURE.store_lock(f.log):
+                CLOSURE.replace_rows([*CLOSURE.log_rows(), dead])
+            CLOSURE.register_launch(["codex", "--", "task"], str(f.home))
+            rows = CLOSURE.log_rows()
+            self.assertNotIn(dead, rows)
+            self.assertTrue(any(r.get("session_id") == f.session for r in rows))
+
+    def test_registration_without_guarded_attachment_is_not_process_coverage(self):
+        with ReceiptFixture() as f:
+            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "task"]
+            born = datetime(2026, 10, 1, tzinfo=timezone.utc)
+            with patch.object(CLOSURE.os, "getpid", return_value=456), patch.object(CLOSURE, "process_started_at", return_value=born):
+                CLOSURE.register_launch(native, str(f.home))
+                f.commands = "456 " + " ".join(native)
+                self.assert_live(f)
+
+    def test_managed_unrelated_interactive_client_has_exact_process_birth_and_observed_home(self):
+        with ReceiptFixture() as f:
+            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "unrelated task"]
+            born = datetime(2026, 10, 1, tzinfo=timezone.utc)
+            with patch.object(CLOSURE, "process_started_at", return_value=born):
+                f.managed(native)
+                f.commands = "456 " + " ".join(native)
+                self.assert_ended(f)
+                f.commands = "456 python3 /fixture/codex " + " ".join(native[1:])
+                self.assert_ended(f)
+                f.release.record_closure(f.log, f.entry, "supervisor")
+                self.assert_ended(f)
+                with patch.object(CLOSURE, "process_started_at", return_value=datetime(2026, 10, 2, tzinfo=timezone.utc)):
+                    self.assert_live(f)
+                f.commands = "456 codex --remote unix:///changed -- task"
+                self.assert_live(f)
+            self.assertNotIn("unrelated task", f.log.read_text())
+
+    def assert_ended(self, fixture):
+        peers, states, _ = fixture.observe()
+        self.assertFalse(peers)
+        self.assertEqual(states[fixture.session]["state"], "ended")
+
+    def assert_live(self, fixture):
+        peers, states, _ = fixture.observe()
+        self.assertTrue(any(peer["sessionId"] == fixture.session for peer in peers))
+        self.assertEqual(states[fixture.session]["state"], "live")
+
+    def test_real_idle_receipt_allows_fresh_exec_but_refuses_unknown_clients(self):
+        with ReceiptFixture() as f:
+            f.commands = "codex exec fresh-unrelated-work"
+            self.assert_ended(f)
+            for command in ("codex --remote unix:///unobserved", "codex -C /fixture/gui -- GUI task", "codex resume --last", "codex resume", "codex app-server"):
+                f.commands = command
+                self.assert_live(f)
+
+    def test_active_process_pid_reuse_and_surviving_worker_defeat_idle_receipt(self):
+        with ReceiptFixture() as f:
+            self.assert_ended(f)
+            f.native_state = "active"
+            self.assert_live(f)
+            f.native_state = "idle"
+            for rows in ([(123, "new-tty", "unrelated-reused-pid")], [(456, "fixture-tty", "surviving-worker")]):
+                f.process_rows = rows
+                with patch.object(CLOSURE, "process_started_at", return_value=datetime(2026, 10, 1, tzinfo=timezone.utc)):
+                    self.assert_live(f)
+
+    def test_running_native_execution_or_incomplete_inventory_keeps_source_live(self):
+        with ReceiptFixture() as f:
+            self.assert_ended(f)
+            f.execution_items = [{"type": "commandExecution", "status": "inProgress", "processId": "worker", "exitCode": None}]
+            self.assert_live(f)
+            f.execution_items = []
+            f.incomplete = True
+            self.assert_live(f)
+
+    def test_new_tty_occupant_after_closure_does_not_own_the_old_generation(self):
+        with ReceiptFixture() as f:
+            ended = datetime.now(timezone.utc) - timedelta(minutes=1)
+            rows = json.loads(f.log.read_text())
+            rows[0]["ended_at"] = ended.isoformat()
+            f.log.write_text(json.dumps(rows))
+            self.assert_ended(f)
+            f.process_rows = [(456, "fixture-tty", "new-unrelated-worker")]
+            with patch.object(CLOSURE, "process_started_at", return_value=ended + timedelta(seconds=1)):
+                self.assert_ended(f)
+            with patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) + timedelta(days=1)):
+                self.assert_live(f)
+
+    def test_newer_generation_or_malformed_receipt_keeps_idle_live(self):
+        with ReceiptFixture() as f:
+            self.assert_ended(f)
+            original = f.log.read_text()
+            rows = json.loads(original)
+            rows[0]["launch_generation"] = "new-generation"
+            f.log.write_text(json.dumps(rows))
+            self.assert_live(f)
+            f.log.write_text("{malformed")
+            self.assert_live(f)
+
+    def test_cross_account_copy_and_new_transcript_activity_defeat_idle_receipt(self):
+        with ReceiptFixture() as f:
+            self.assert_ended(f)
+            other = f.root / "other-account"
+            copy = other / "archived_sessions" / f.transcript.name
+            copy.parent.mkdir(parents=True)
+            copy.write_bytes(f.transcript.read_bytes())
+            f.homes.append(other)
+            self.assert_live(f)
+            f.homes.remove(other)
+            with f.transcript.open("a") as stream:
+                stream.write(json.dumps({"type": "event_msg", "timestamp": "2099-01-01T00:00:00Z", "payload": {"type": "task_started"}}) + "\n")
+            self.assert_live(f)
+
+    def test_missing_ownership_lease_never_creates_one_during_observation(self):
+        with ReceiptFixture() as f:
+            self.assert_ended(f)
+            path = CLOSURE.lease_path(f.session)
+            path.unlink()
+            self.assert_live(f)
+            self.assertFalse(path.exists())
+
+    def test_resume_invalidates_the_receipt_before_any_transcript_write(self):
+        with ReceiptFixture() as f:
+            self.assert_ended(f)
+            with CLOSURE.resume_guard(f.session):
+                self.assert_live(f)
+            self.assert_live(f)
+
+    def test_recorded_live_worker_is_not_leased_through_claim_round_trips(self):
+        with ReceiptFixture() as f:
+            f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex worker")]
+            with CLOSURE.admission():
+                self.assert_live(f)
+                def own_action():
+                    with CLOSURE.resume_guard(f.session):
+                        pass
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pool.submit(own_action).result(timeout=3)
+
+    def test_device_prefixed_tty_blocks_exit_without_leasing_the_live_worker(self):
+        with ReceiptFixture() as f:
+            rows = CLOSURE.log_rows()
+            row = next(r for r in rows if r.get("session_id") == f.session)
+            row["tty"] = "/dev/" + f.entry["tty"]
+            CLOSURE.replace_rows(rows)
+            f.process_rows = [(456, f.entry["tty"], "codex worker")]
+            from github_plan_release import stamp
+            with patch.object(CLOSURE, "process_started_at", return_value=stamp(f.entry["launch_started_at"])):
+                with self.assertRaises(ValueError):
+                    f.release.verify_process_exit(row, ended_at=stamp(row["ended_at"]))
+                with CLOSURE.admission():
+                    self.assert_live(f)
+                    def own_action():
+                        with CLOSURE.resume_guard(f.session):
+                            pass
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(own_action).result(timeout=3)
+
+    def test_resume_and_admission_share_a_lease_and_handoff_disables_old_resume(self):
+        with ReceiptFixture() as f:
+            with CLOSURE.admission():
+                self.assert_ended(f)
+                def competing_resume():
+                    with CLOSURE.resume_guard(f.session): pass
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    with self.assertRaises(CLOSURE.LeaseBusy):
+                        pool.submit(competing_resume).result(timeout=3)
+                CLOSURE.admit_sources({f.session})
+            with self.assertRaises(ValueError):
+                with CLOSURE.resume_guard(f.session): pass
 
 
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
@@ -24,7 +377,8 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         for command in ("rg resume holder", "rg codex resume holder", "codex exec please resume holder", "codex please resume holder"):
             self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
 
-    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False):
+    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False,
+                      receipt=None, proof_sessions=None, receipt_changed=False):
         thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "status": {"type": state}}
         if mismatch: thread["id"] = "another-session"
         reads, calls, unexpected, observed_ids = 0, 0, [], set()
@@ -37,6 +391,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                 method = request["method"]
                 if method == "initialized": continue
                 if method == "initialize": result = {}
+                elif method in {"thread/items/list", "thread/queue/list"}: result = {"data": [], "nextCursor": None}
                 elif method == "thread/loaded/list": result = {"data": ["holder", "peer"] if with_peer else ["holder"], "nextCursor": None}
                 elif method == "thread/read":
                     reads += 1
@@ -55,11 +410,12 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             nonlocal calls
             calls += 1
             if with_peer: self.assertIn("peer", observed_ids)
-            return {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z", "size": calls if changed else 1}}
+            return {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z",
+                                             "size": calls + int(bool(receipt)) if changed else 1}}
         # AF_UNIX paths are short on macOS; /var/folders can exceed that limit.
         with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
             home = Path(folder)
-            socket_path = home / "app-server-control/app-server-control.sock"
+            socket_path = CLOSURE.daemon_endpoint(home)
             socket_path.parent.mkdir()
             app = web.Application()
             app.router.add_get("/", handler)
@@ -67,10 +423,21 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             await runner.setup()
             await web.UnixSite(runner, str(socket_path)).start()
             os.chmod(socket_path, 0o666 if unsafe else 0o600)
+            token = None
             try:
-                with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)):
-                    peers, states, coverage = await SESSIONS.observe_home(home, {"holder"})
+                fingerprint = {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z", "size": 1}}
+                record = {"session_id": "holder", "transcript": thread["path"], "launch_pid": 123,
+                          "launch_generation": "fixture-generation", "launch_started_at": "2026-10-01T01:00:00Z",
+                          "ended_at": "2026-10-01T02:01:00Z", "closure_evidence": {
+                              "codex_home": str(home.resolve()), "transcripts": fingerprint}} if receipt else None
+                token = CLOSURE.RECEIPTS.set({"holder": record} if record else {})
+                with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)), \
+                        patch.object(CLOSURE, "transcripts", side_effect=lambda *_args: status(None)), \
+                        patch.object(CLOSURE, "verified_record", return_value=record), \
+                        patch.object(CLOSURE, "receipt_current", return_value=not receipt_changed):
+                    peers, states, coverage = await SESSIONS.observe_home(home, {"holder"}, proof_sessions)
             finally:
+                if token is not None: CLOSURE.RECEIPTS.reset(token)
                 await runner.cleanup()
         self.assertEqual(unexpected, [])
         self.assertEqual(coverage["peer_complete"], not (mismatch or unsafe))
@@ -82,6 +449,26 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(peers, [])
         self.assertEqual(states["holder"]["state"], "ended")
 
+    async def test_released_idle_session_with_verified_closure_is_ended(self):
+        peers, states = await self.observe("idle", receipt=True, proof_sessions=set())
+        self.assertFalse(peers)
+        self.assertEqual(states["holder"]["state"], "ended")
+
+    async def test_idle_admission_requires_released_claim_and_unchanged_closure(self):
+        for kwargs in ({}, {"receipt": True}, {"receipt": True, "proof_sessions": set(), "receipt_changed": True},
+                       {"receipt": True, "proof_sessions": set(), "changed": True}):
+            with self.subTest(kwargs=kwargs):
+                peers, states = await self.observe("idle", **kwargs)
+                self.assertTrue(peers)
+                self.assertNotEqual(states.get("holder", {}).get("state"), "ended")
+
+    async def test_idle_closure_cannot_override_active_or_resumed_status(self):
+        for state, after in (("active", None), ("systemError", None), ("idle", "active")):
+            with self.subTest(state=state, after=after):
+                peers, states = await self.observe(state, receipt=True, proof_sessions=set(), after=after)
+                self.assertTrue(peers)
+                self.assertEqual(states["holder"]["state"], "live")
+
     async def test_active_session_overrides_completion(self):
         for state in ("active", "idle", "systemError"):
             peers, states = await self.observe(state)
@@ -92,7 +479,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         for kwargs in ({"safe": False}, {"changed": True}, {"mismatch": True}):
             with self.subTest(kwargs=kwargs):
                 _, states = await self.observe("notLoaded", **kwargs)
-                self.assertNotIn("holder", states)
+                self.assertNotEqual(states.get("holder", {}).get("state"), "ended")
 
     async def test_resumed_while_reading_is_live(self):
         peers, states = await self.observe("notLoaded", after="active")
@@ -116,7 +503,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_listening_stale_socket_is_unavailable(self):
         with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
             home = Path(folder)
-            path = home / "app-server-control/app-server-control.sock"
+            path = CLOSURE.daemon_endpoint(home)
             path.parent.mkdir()
             with socket.socket(socket.AF_UNIX) as stale:
                 stale.bind(str(path))
@@ -127,6 +514,95 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+    def test_malformed_action_barrier_blocks_native_end_proof_without_writing(self):
+        with ReceiptFixture() as f:
+            f.native_state = "notLoaded"
+            path = CLOSURE.lease_path(f.session)
+            path.write_text("incomplete action evidence")
+            before = {p: p.read_bytes() for p in f.log.parent.rglob("*") if p.is_file()}
+            _, states, _ = f.observe({f.session})
+            self.assertEqual(states[f.session]["state"], "live")
+            self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
+            self.assertEqual({p: p.read_bytes() for p in f.log.parent.rglob("*") if p.is_file()}, before)
+
+    def test_nonempty_or_missing_queue_evidence_blocks_even_authored_release_fallback(self):
+        for native in ("idle", "notLoaded"):
+            for queued in ({"data": [{"id": "pending"}], "nextCursor": None},
+                           {"data": [], "nextCursor": "more"}, {}):
+                with self.subTest(native=native, queued=queued), ReceiptFixture() as f:
+                    f.native_state = native
+                    f.rpc_results["thread/queue/list"] = queued
+                    _, states, _ = f.observe()
+                    self.assertEqual(states[f.session]["state"], "live")
+
+    def test_runtime_and_account_overrides_cannot_hide_a_frozen_source(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODE_HOME": str(Path(folder) / ".code")}):
+            path = CLOSURE.closed_log()
+            path.parent.mkdir(parents=True)
+            CLOSURE.replace_rows([{"session_id": "handed-off", "closure_evidence": {}}])
+            with CLOSURE.ownership("handed-off", create=True):
+                CLOSURE.admit_sources({"handed-off"})
+            with patch.dict(os.environ, {"CODE_HOME": str(Path(folder) / "other-runtime"), "CODEX_HOME": str(Path(folder) / "other-account")}):
+                with self.assertRaises(ValueError):
+                    with CLOSURE.resume_guard("handed-off"):
+                        self.fail("a divergent runtime bypassed predecessor freeze")
+            self.assertTrue(CLOSURE.log_rows()[0]["successor_admitted"])
+
+    def test_receipt_account_inventory_ignores_runtime_and_account_configs(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):
+            root = Path(folder)
+            canonical_home = root / "canonical-account"
+            configs = [(CLOSURE.closed_log().with_name("supervisor.toml"), canonical_home),
+                       (root / "other-runtime/skill-data/supervisor.toml", root / "runtime-account"),
+                       (root / "other-account/skill-data/supervisor.toml", root / "account-local")]
+            for path, home in configs:
+                path.parent.mkdir(parents=True)
+                path.write_text('[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                                + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
+            expected = [canonical_home.resolve()]
+            with patch.dict(os.environ, {"CODE_HOME": str(root / "other-runtime"), "CODEX_HOME": str(root / "other-account")}):
+                self.assertEqual(SESSIONS.codex_homes(strict=True, configured_only=True), expected)
+
+    def test_configured_receipt_homes_do_not_depend_on_caller_account_or_order(self):
+        config = {"accounts": [{"provider": "openai", "env": {"CODEX_HOME": "/fixture/b"}},
+                               {"provider": "openai", "env": {"CODEX_HOME": "/fixture/a"}}]}
+        helpers = SimpleNamespace(load_config=lambda **_kw: config)
+        results = []
+        for current in ("/fixture/a", "/fixture/b", "/fixture/unconfigured"):
+            with patch.dict(os.environ, {"CODEX_HOME": current}), \
+                    patch.object(SESSIONS, "native_helpers", return_value=(helpers, None)):
+                results.append(SESSIONS.codex_homes(strict=True, configured_only=True))
+        self.assertTrue(all(homes == results[0] for homes in results))
+        self.assertEqual(set(results[0]), {Path(a["env"]["CODEX_HOME"]).resolve() for a in config["accounts"]})
+
+    def test_receipt_proofs_require_available_account_inventory(self):
+        config = SimpleNamespace(load_config=lambda: (_ for _ in ()).throw(ValueError("missing account inventory")))
+        with patch.object(SESSIONS, "native_helpers", return_value=(config, None)):
+            self.assertTrue(SESSIONS.codex_homes())
+            with self.assertRaisesRegex(ValueError, "missing account inventory"):
+                SESSIONS.codex_homes(strict=True)
+
+    def test_shared_log_is_independent_of_provider_account_home(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):
+            first = CLOSURE.closed_log()
+            with patch.dict(os.environ, {"CODE_HOME": str(Path(folder) / "other-runtime"), "CODEX_HOME": str(Path(folder) / "other-account")}):
+                self.assertEqual(CLOSURE.closed_log(), first)
+            self.assertTrue(first.is_relative_to(folder))
+            self.assertFalse(first.exists())
+
+    def test_session_specific_closure_allows_unrelated_clients_but_requires_process_read(self):
+        async def read(_home, _sessions, _proof):
+            return [], {"holder": {"state": "ended"}}, {
+                "status": "available", "peer_complete": True, "socket": "/fixture/socket"}
+        for returncode in (0, 1):
+            with self.subTest(returncode=returncode), \
+                    patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+                    patch.object(SESSIONS, "observe_home", side_effect=read), \
+                    patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=returncode, stdout="codex exec fresh-unrelated-work")):
+                _, states, _ = SESSIONS.observe({"holder"})
+            self.assertEqual(states.get("holder", {}).get("state") == "ended", returncode == 0)
+
     def test_daemon_reads_do_not_require_codex_on_path(self):
         async def read(_home, _sessions, _proof):
             return [{"sessionId": "holder", "source": "codex_session"}], {"holder": {"state": "live"}}, {"status": "available", "peer_complete": True, "socket": "/fixture/socket"}

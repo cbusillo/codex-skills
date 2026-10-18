@@ -12,6 +12,7 @@ import itertools
 import fcntl
 import importlib
 from types import SimpleNamespace
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import subprocess
@@ -32,6 +33,15 @@ def comment(number, body, author=ACTOR):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_optional_admission_proof_is_not_a_dependency_of_release_retry(self):
+        log = self.root / "closed.json"
+        saved = {**self.entry, "closure_evidence": {"host": "old-boot"}}
+        log.write_text(json.dumps([saved]))
+        for unavailable in (ValueError("account set changed"), TimeoutError("scan budget"), OSError("config unreadable")):
+            with self.subTest(unavailable=type(unavailable).__name__), patch.object(helper.closure, "evidence", side_effect=unavailable):
+                result = helper.record_closure(log, self.entry, "supervisor")
+                self.assertEqual(result["ended_at"], saved["ended_at"])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -735,6 +745,125 @@ else:
         self.assertEqual(helper.record_closure(log, self.entry, "supervisor", persist=False)["ended_at"], first["ended_at"])
         with self.assertRaisesRegex(ValueError, "identity changed"):
             helper.record_closure(log, {**self.entry, "pid": 789}, "supervisor")
+
+    def test_optional_admission_proof_failure_does_not_stop_verified_closure(self):
+        log = self.root / "closed.json"
+        entry = {**self.entry, "codex_home": str(self.root)}
+        with patch.object(helper.closure, "evidence", side_effect=ValueError("account inventory unavailable")):
+            closed = helper.record_closure(log, entry, "supervisor")
+        self.assertTrue(helper.validate_closure(closed, "supervisor")["safe_verdict"])
+        self.assertIsNone(closed.get("closure_evidence"))
+
+    def test_adding_account_home_does_not_rewrite_or_block_a_legacy_receipt(self):
+        log = self.root / "closed.json"
+        original = helper.record_closure(log, self.entry, "supervisor")
+        result = helper.record_closure(log, {**self.entry, "codex_home": str(self.root)}, "supervisor")
+        self.assertEqual(result["ended_at"], original["ended_at"])
+        self.assertIsNone(result.get("closure_evidence"))
+
+    def test_resumed_source_requires_its_new_launch_generation_before_reclosing(self):
+        log = self.shared_closure()
+        metadata = {"launch_pid": 789, "launch_generation": "resumed-generation",
+                    "launch_started_at": "2026-01-01T00:01:40Z", "codex_home": str(self.root.resolve())}
+        with helper.closure.resume_guard(SOURCE["session"]):
+            helper.closure.resumed_launch(SOURCE["session"], metadata, str(self.transcript), self.entry["tty"])
+        with self.transcript.open("a") as stream:
+            for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
+        with self.assertRaises(ValueError):
+            helper.record_closure(log, self.entry, "supervisor")
+        replacement = {**self.entry, **metadata, "pid": metadata["launch_pid"]}
+        closed = helper.record_closure(log, replacement, "supervisor")
+        self.assertTrue(helper.closure.idle_eligible(closed))
+        self.assertEqual(closed["launch_generation"], metadata["launch_generation"])
+
+    def test_finish_uses_shared_default_and_preview_creates_nothing(self):
+        ledger, log = self.root / "ledger.json", self.root / "shared/closed.json"
+        ledger.write_text(json.dumps([self.entry]))
+        for apply in (False, True):
+            argv = ["helper", "finish", "--ledger", str(ledger), "--session-id", SOURCE["session"],
+                    "--supervisor-session", "supervisor", "--owner", "test", "--checkout-root", str(self.root),
+                    "--confirm-session-ended", "--verified-handoff", "--transcript-root", str(self.root)]
+            if apply:
+                argv.append("--apply")
+            with patch.object(helper.sys, "argv", argv), \
+                    patch.object(helper.closure, "closed_log", return_value=log), \
+                    patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                    patch.object(helper, "GitHubReader", return_value=self.reader), \
+                    patch.object(helper, "discover", return_value=([("test/a", 1)], ["test/a"])), \
+                    patch.object(helper, "release_session", return_value={}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(helper.main(), 0)
+            self.assertEqual(log.exists(), apply)
+            if apply:
+                self.assertEqual(json.loads(log.read_text())[0]["session_id"], SOURCE["session"])
+            else:
+                self.assertFalse(log.parent.exists())
+
+    def shared_closure(self):
+        import github_plan_sessions
+        sessions = self.root / "sessions"
+        sessions.mkdir()
+        self.transcript.rename(sessions / self.transcript.name)
+        self.transcript = sessions / self.transcript.name
+        self.entry.update(transcript=str(self.transcript), codex_home=str(self.root))
+        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve()]))
+        self.enterContext(patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-a", "uid": 1}))
+        log = self.root / "closed.json"
+        self.enterContext(patch.object(helper.closure, "closed_log", return_value=log))
+        helper.record_closure(log, self.entry, "supervisor")
+        return log
+
+    def test_shared_receipt_is_fresh_read_only_evidence(self):
+        log = self.shared_closure()
+        before = log.read_bytes(), log.stat().st_mtime_ns
+        result = helper.closure.verified_record(SOURCE["session"], self.root)
+        self.assertEqual(result["session_id"], SOURCE["session"])
+        self.assertEqual((log.read_bytes(), log.stat().st_mtime_ns), before)
+        with patch.object(helper, "inventory", return_value=[(123, "another-tty", "unrelated-process")]):
+            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        with patch.object(helper, "inventory", return_value=[(456, "other-tty", "codex --remote unix:///other")]):
+            self.assertIsNotNone(helper.closure.verified_record(SOURCE["session"], self.root))
+
+    def test_shared_receipt_refuses_resumed_and_rewritten_transcripts(self):
+        self.shared_closure()
+        original = self.transcript.read_text()
+        self.transcript.write_text(original + json.dumps({"timestamp": "2026-01-01T00:01:30Z",
+            "payload": {"type": "user_message", "message": "resume"}}) + "\n")
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        self.transcript.write_text(original)
+        # Even a rewrite restoring the old final verdict invalidates the receipt.
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+
+    def test_new_transcript_copy_invalidates_shared_receipt(self):
+        import github_plan_sessions
+        self.shared_closure()
+        other = self.root / "other-account"
+        archived = other / "archived_sessions"
+        archived.mkdir(parents=True)
+        (archived / self.transcript.name).write_bytes(self.transcript.read_bytes())
+        with patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve(), other.resolve()]):
+            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+
+    def test_shared_receipt_refuses_home_boot_malformed_and_missing_evidence(self):
+        log = self.shared_closure()
+        original = log.read_text()
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root / "another-home"))
+        with patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-b", "uid": 1}):
+            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        saved = json.loads(original)[0]
+        malformed = [json.dumps([{**saved, "closure_evidence": value}]) for value in (None, "invalid", [])]
+        malformed.append(json.dumps([{**saved, "pid": None, "_inventory": True,
+                                      "safe_exit_yes": True, "still_running": False}]))
+        for value in ("{", "{}", "[null]", "[]", json.dumps([saved, saved]), *malformed):
+            log.write_text(value)
+            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        log.write_text(original)
+        log.chmod(0o644)
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        log.unlink()
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        self.assertFalse(log.exists())
 
     def test_cross_repository_discovery_includes_closed_issue_comments(self):
         def paged(path, **kwargs):

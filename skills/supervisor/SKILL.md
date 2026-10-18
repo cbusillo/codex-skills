@@ -49,6 +49,12 @@ resources:
   - path: scripts/release_session_claims.py
     kind: script
     description: Record verified closure, discover remaining claims across Director repositories and release them through the planning helper; includes closed-log backfill.
+  - path: scripts/codex-session.py
+    kind: script
+    description: Register a fresh managed native launch, resume or queue an exact thread under the closure/admission ownership lease, or read its new launch metadata.
+  - path: scripts/codex_session_proxy.py
+    kind: script
+    description: Private per-client native RPC ingress that holds source ownership for attachments and actions; imported by codex-session.py.
   - path: references/helpers.md
     kind: reference
     description: Local state, session registry schema, goal board, helper usage and shutdown stages.
@@ -111,13 +117,33 @@ commands:
   - name: supervisor-release-session-claims
     source: skill
     resource_path: scripts/release_session_claims.py
-    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--closed-log", "<closed.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
+    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
     purpose: Preview remaining claims after transcript, issue handoff and actual process exit verification.
   - name: supervisor-close-ttys
     source: skill
     resource_path: scripts/close_ttys.py
     example_argv: ["uv", "run", "scripts/close_ttys.py", "--ledger", "<ledger.json>", "--session-id", "<id>", "--verified-handoff", "--verified-input"]
     purpose: Preview closing a tab after its agent process exited.
+  - name: supervisor-codex-session-queue
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "queue", "--session-id", "<native-id>", "--codex-home", "<source-home>", "--message", "<text>"]
+    purpose: Queue exact-thread input after invalidating its closure under the ownership lease.
+  - name: supervisor-codex-session-launch
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "launch", "--codex-home", "<selected-home>", "--", "codex", "-C", "<worktree>", "--", "<brief>"]
+    purpose: Register a fresh managed client before executing it on the selected account's observed daemon.
+  - name: supervisor-codex-session-resume
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "resume", "--session-id", "<native-id>", "--codex-home", "<source-home>"]
+    purpose: Resume a native thread through the same lease as closure and successor admission.
+  - name: supervisor-codex-session-status
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "status", "--session-id", "<native-id>"]
+    purpose: Read the resumed generation's launch metadata for the native ledger.
   - name: supervisor-iterm-close
     source: skill
     resource_path: scripts/iterm_tab.py
@@ -125,6 +151,24 @@ commands:
     purpose: Close one Supervisor-owned tab after current process and empty-input proof.
 policy:
   command_policies:
+    - id: prefer-coordinated-codex-resume
+      match:
+        shell_regex: >-
+          (?x)^\s*(?:\S*/)?codex\s+
+          (?:(?:(?:--(?:remote|cd|config|profile|model|sandbox|ask-for-approval|enable|disable|add-dir|image)|-[cCpmsai])
+          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--[\w-]+|exec)\s+)*
+          (?:resume\b|queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
+      action: require_preferred
+      message: Native resume and queue mutations must invalidate closure evidence under the same ownership lease as successor admission. Use the exact-thread helper with the source account home.
+      preferred:
+        - kind: script
+          path: scripts/codex-session.py
+          example_argv: ["uv", "run", "scripts/codex-session.py", "queue", "--session-id", "<native-id>", "--codex-home", "<source-home>", "--message", "<text>"]
+          purpose: Queue input through the supported ownership-coordinated route.
+        - kind: script
+          path: scripts/codex-session.py
+          example_argv: ["uv", "run", "scripts/codex-session.py", "resume", "--session-id", "<native-id>", "--codex-home", "<source-home>"]
+          purpose: Resume an exact native thread through the supported ownership-coordinated route.
     - id: reject-system-events-keyboard-synthesis
       match:
         shell_regex: >-
@@ -259,9 +303,9 @@ whether any lesson was new.
 ## Harnesses
 
 Verified on Claude Code as the Supervisor. From there it reaches Codex sessions
-with `codex queue --thread <id> --message "<text>"`, run under the account
-home the session launched with, as [helper setup](references/helpers.md)
-says (another home silently drops the message), and Claude Code sessions in
+with `codex-session.py queue --session-id <id> --codex-home <source-home> --message "<text>"`,
+run with `uv run` from this skill's scripts directory, as [helper setup](references/helpers.md)
+says. This invalidates the old closure before sending. It reaches Claude Code sessions in
 terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
 `--session-id` from its `list` output. Launch Codex sessions with "keep working
 through compaction" and Keep instructions naming the brief, issue and current
@@ -724,7 +768,7 @@ others. A missed target remains visible in the next check and handoff.
 5. After verified process exit, run `release_session_claims.py finish` as
    [finished-session shutdown stages](references/helpers.md#finished-session-shutdown-stages)
    describes, before closing the tab. It records the observed exit in the
-   private closed-session log, discovers the session's claims across accessible
+   shared host-local closed-session log, discovers the session's claims across accessible
    repositories under `--owner` and the configured automation identity, posts the
    closed-session attestation, and previews then
    applies `gh-plan.py release-claim --role supervisor`, naming retained PRs.
