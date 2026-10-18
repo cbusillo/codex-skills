@@ -2,7 +2,8 @@
 
 Read before diagnosing a Qodana result or changing the runner. `agent-inspect`
 selects this backend by default for a selection of only Python files when the
-pinned image is local, outside Odoo repositories and PyCharm-only lanes
+pinned image is local and `qualityGate.inspection.prepare.python` is declared,
+outside Odoo repositories and PyCharm-only lanes
 ([#2155](https://github.com/cbusillo/codex-skills/issues/2155)); other
 selections keep the API. The envelope's `backend_selection` names the reason.
 `--backend api|qodana` or `JB_INSPECT_DEFAULT_BACKEND=api|qodana` overrides it.
@@ -131,15 +132,22 @@ line, coverage gaps and separate cleanup receipts. It does not feed Qodana
 observations into the API-only strict deployment qualification log. A current
 finding from a completed run can prove RED with coverage gaps preserved.
 
-Python proves execution with a canary planted in the private snapshot beside
-the first selected Python file. Its unresolved name must be reported by
-`PyUnresolvedReferencesInspection`, and its valid 3.10+ annotations must not be
-reported by `PyTypeHintsInspection`; such a report means the wrong language
-level, and no finding from that run is decisive. `canary_rules` in the receipt
-lists the rule IDs seen on it. Zero findings are GREEN only when the run
-completed, the canary proved execution, every selected file is Python, and
-every enabled profile inspection is in the effective profile. Inspections for
-other file types do not apply to a Python-only selection. `DuplicatedCode` and
+Python proves execution with a canary planted in the private snapshot in every
+directory that holds a selected Python file. Each canary's unresolved name must
+be reported by `PyUnresolvedReferencesInspection`. Its valid 3.10+ annotations
+must not be reported by `PyTypeHintsInspection`, which is what a module without
+the attached interpreter reports; then no finding from that run is decisive.
+Both inspections must be enabled in the effective profile. Qodana's results
+show neither stub version gates nor version-specific syntax, so the requested
+version is proved by the prepared `.venv`, which `QODANA_PYTHON_PATH` names:
+its version must equal `prepare.python.version`. A repository without
+structured Python preparation never gets GREEN and is not auto-selected. A
+tracked module file with an `excludePattern` blocks GREEN, since no directory
+canary detects a per-file exclusion. `canary_rules` in the receipt lists the
+rule IDs seen on canaries. Zero findings are GREEN only when the run completed,
+every canary proved execution, every selected file is Python, and every enabled
+profile inspection is in the effective profile. Inspections for other file
+types do not apply to a Python-only selection. `DuplicatedCode` and
 `HttpUrlsUsage`, which the Community image does not run, are listed in
 `uncovered_inspections` rather than blocking GREEN; any other missing enabled
 inspection, such as a renamed ID, keeps the result UNKNOWN. JVM and other

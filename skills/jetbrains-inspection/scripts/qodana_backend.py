@@ -45,13 +45,17 @@ PARITY_GAPS = {
     "python": [],
     "jvm": ["jvm_module_source_roots_parity_unproven", "jvm_intended_feature_coverage_unproven"],
 }
-# Planted in the private snapshot next to the selected Python files. Its
-# unresolved name must be reported, which proves the engine inspected files in
-# scope with a loaded Python model; a type-hint finding on its valid 3.10+
-# annotations means the module was analyzed at the wrong language level.
+# A canary is planted in the private snapshot in every directory holding a
+# selected Python file. Its unresolved name must be reported, which proves the
+# engine inspected that directory with a loaded Python model. A type-hint
+# finding on its valid 3.10+ annotations is what a module without the attached
+# interpreter reports. Qodana's results show neither stub version gates nor
+# version-specific syntax, so the requested version itself is proved by the
+# prepared venv that QODANA_PYTHON_PATH names.
 CANARY_SOURCE = ("def _jb_qodana_canary(value: int | None = None) -> dict[str, int] | None:\n"
                  "    unused_probe = 1\n"
                  "    return {\"value\": value or 0, \"probe\": _jb_qodana_unresolved_probe}\n")
+CANARY_UNRESOLVED_LINE = 3
 CANARY_REQUIRED_RULE = "PyUnresolvedReferencesInspection"
 CANARY_LANGUAGE_LEVEL_RULE = "PyTypeHintsInspection"
 # Enabled in common profiles but not run by the Python Community image
@@ -368,6 +372,7 @@ def uv_requirement(repo):
 
 
 def preparation(config, private, language, repo=None, uv_supplied=False):
+    """Bootstrap commands in order, and a directory to put first on PATH."""
     prepare = config.get("prepare")
     if not prepare:
         return None
@@ -395,12 +400,21 @@ def preparation(config, private, language, repo=None, uv_supplied=False):
     for extra in py.get("extras", []):
         argv += ["--extra", extra]
     if uv_supplied:
-        return shlex.join(argv)
+        return {"commands": [argv], "path": None}
     # The image ships no uv: install the declared range into the disposable
     # profile so a run needs no host-supplied Linux binary.
     install = ["python3", "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--quiet",
                "--target", "/private/tools/uv", "uv" + uv_requirement(repo)]
-    return shlex.join(install) + " && export PATH=/private/tools/uv/bin:$PATH && " + shlex.join(argv)
+    return {"commands": [install, argv], "path": "/private/tools/uv/bin"}
+
+
+def bootstrap_script(prepared):
+    first, *rest = prepared["commands"]
+    steps = [shlex.join(first)]
+    if prepared["path"]:
+        steps.append("export PATH=" + shlex.quote(prepared["path"]) + ":$PATH")
+    return " && ".join(steps + [shlex.join(step) for step in rest])
+
 
 
 def interpreter_version(project):
@@ -427,22 +441,32 @@ def result_uri(result):
     return uri
 
 
-def canary_gaps(results, canary, expected_effective):
-    """Execution proof from the planted canary; observed rule IDs are safe receipts."""
+def canary_gaps(results, canaries, effective):
+    """Execution and interpreter proof from the planted canaries.
+
+    Returns blocking gaps, the rule IDs seen on canaries (safe receipts) and
+    whether the module was analyzed without the attached interpreter.
+    """
     reports = list(results.rglob("qodana.sarif.json"))
     if len(reports) != 1 or reports[0].is_symlink():
-        return ["python_canary_execution_unproven"], []
+        return ["python_canary_execution_unproven"], [], False
     runs = json.loads(reports[0].read_text()).get("runs") or [{}]
-    rules = sorted({safe_text(r.get("ruleId")) for r in runs[0].get("results") or []
-                    if isinstance(r, dict) and result_uri(r) == canary})
+    seen = {canary: set() for canary in canaries}
+    for result in runs[0].get("results") or []:
+        uri = result_uri(result) if isinstance(result, dict) else None
+        if uri in seen:
+            line = result["locations"][0].get("physicalLocation", {}).get("region", {}).get("startLine")
+            seen[uri].add((safe_text(result.get("ruleId")), line))
+    rules = sorted({rule for hits in seen.values() for rule, _line in hits})
+    missing = [rule for rule in (CANARY_REQUIRED_RULE, CANARY_LANGUAGE_LEVEL_RULE) if rule not in effective]
+    if missing:
+        # Without both, a missing finding cannot tell clean code from an engine that skipped it.
+        return ["python_canary_rule_not_enabled:" + rule for rule in missing], rules, False
     gaps = []
-    if CANARY_REQUIRED_RULE not in expected_effective:
-        gaps.append("python_canary_rule_not_enabled:" + CANARY_REQUIRED_RULE)
-    elif CANARY_REQUIRED_RULE not in rules:
+    if not canaries or any((CANARY_REQUIRED_RULE, CANARY_UNRESOLVED_LINE) not in hits for hits in seen.values()):
         gaps.append("python_canary_execution_unproven")
-    if CANARY_LANGUAGE_LEVEL_RULE in rules:
-        gaps.append("python_language_level_mismatch")
-    return gaps, rules
+    wrong_level = any(rule == CANARY_LANGUAGE_LEVEL_RULE for hits in seen.values() for rule, _line in hits)
+    return gaps, rules, wrong_level
 
 
 def collect_findings(results, selected, args):
@@ -775,6 +799,46 @@ def envelope(host, receipt, findings, reason, gaps, artifact, uncovered=()):
             "diagnostic": {"error_reason": reason, "qodana": receipt}}
 
 
+def requested_python_version(config):
+    """The structured preparation's Python version, the only declared interpreter."""
+    prepare = config.get("prepare")
+    python = prepare.get("python") if isinstance(prepare, dict) else None
+    return python.get("version") if isinstance(python, dict) and "projectPath" not in python else None
+
+
+def plant_canaries(project, selected, language, receipt):
+    """Snapshot-only canaries, one per directory holding a selected Python file."""
+    if language != "python":
+        return []
+    stem = "_jb_qodana_canary_" + str(receipt["run_id"]).replace("-", "")[:12] + ".py"
+    canaries = sorted({(Path(f).parent / stem).as_posix() for f in selected if f.endswith(".py")})
+    for canary in canaries:
+        (project / canary).write_text(CANARY_SOURCE)
+    if canaries:
+        checked(["git", "-C", str(project), "add", "--", *canaries])
+    return canaries
+
+
+def python_proof_gaps(private, hashes, canaries, requested, receipt):
+    """Blocking gaps for a Python GREEN; raises when findings cannot be decisive."""
+    gaps = []
+    version = interpreter_version(private / "project")
+    receipt["python_interpreter_version"] = version
+    if requested is None:
+        gaps.append("python_interpreter_unprepared")
+    elif version != requested:
+        raise Blocked("qodana_python_interpreter_mismatch")
+    # A tracked module can exclude files by pattern, which no directory canary detects.
+    if any(f.endswith(".iml") and "excludePattern" in (private / "project" / f).read_text(errors="replace") for f in hashes):
+        gaps.append("qodana_tracked_module_exclusions_unproven")
+    failures, receipt["canary_rules"], wrong_level = canary_gaps(
+        private / "results", canaries, effective_rules(private / "results") or set())
+    if wrong_level:
+        # Findings from a model at the wrong language level are not decisive.
+        raise Blocked("qodana_python_language_level_mismatch")
+    return gaps + failures
+
+
 def scope_selection(args, host):
     repo = Path(host.git_root(Path(args.repo).expanduser().resolve()) or args.repo).resolve()
     repository_config = host.read_repo_config(repo)
@@ -805,6 +869,8 @@ def select_backend(args, host, host_default=None):
         repo, config, _scope, selected = scope_selection(args, host)
         if not selected or any(not f.endswith(".py") for f in selected):
             return "api", "selection_not_python_only"
+        if requested_python_version(config) is None:
+            return "api", "python_preparation_not_declared"
         tracked = checked(["git", "-C", str(repo), "ls-files", "-z", "--", "*__manifest__.py", "__manifest__.py"])
         if tracked.strip(b"\0"):
             return "api", "odoo_not_yet_qualified"
@@ -896,22 +962,16 @@ def run(args, host):
         if not selected <= hashes.keys():
             raise Blocked("qodana_scope_snapshot_incomplete")
         receipt["source_manifest_sha256"] = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
-        canary = None
-        python_files = sorted(f for f in selected if f.endswith(".py"))
-        if language == "python" and python_files:
-            # Snapshot-only; never written to the source worktree.
-            canary_id = str(receipt["run_id"]).replace("-", "")[:12]
-            canary = (Path(python_files[0]).parent / f"_jb_qodana_canary_{canary_id}.py").as_posix()
-            (private / "project" / canary).write_text(CANARY_SOURCE)
-            checked(["git", "-C", str(private / "project"), "add", "--", canary])
+        requested_python = requested_python_version(config)
+        canaries = plant_canaries(private / "project", selected, language, receipt)
         shutil.copyfile(profile, private / "profile.xml")
         ignored = sorted(set(hashes) - selected)
         yaml = {"version": "1.0", "profile": {"base": {"path": "/private/profile.xml"},
                 "inspections": [{"group": "ALL", "ignore": ignored}] if ignored else []}}
-        bootstrap = preparation(config, private, language, repo, bool(args.qodana_uv))
-        receipt["uv_source"] = None if not bootstrap else "supplied" if args.qodana_uv else "provisioned"
-        if bootstrap:
-            yaml["bootstrap"] = bootstrap
+        prepared = preparation(config, private, language, repo, bool(args.qodana_uv))
+        receipt["uv_source"] = None if not prepared else "supplied" if args.qodana_uv else "provisioned"
+        if prepared:
+            yaml["bootstrap"] = bootstrap_script(prepared)
         uv_binary = args.qodana_uv
         if uv_binary:
             shutil.copyfile(Path(uv_binary).expanduser(), private / "bin/uv")
@@ -931,18 +991,10 @@ def run(args, host):
         receipt["container_removed"] = False
         argv += ["--timeout", str(max(1, args.timeout_ms))]
         guardian = execute(argv, name, private, env, max(1, args.timeout_ms / 1000), receipt, lock_fd=lock.fileno())
-        receipt["python_interpreter_version"] = interpreter_version(private / "project")
         gaps, uncovered = coverage_gaps(language, selected, expected, private / "results", any(Path(f).name == "__manifest__.py" for f in hashes))
         gaps += lane_gaps(host, config, selected)
-        if canary is None:
-            if language == "python":
-                gaps.append("python_canary_execution_unproven")
-        else:
-            canary_failures, receipt["canary_rules"] = canary_gaps(private / "results", canary, expected & (effective_rules(private / "results") or set()))
-            gaps += canary_failures
-            if "python_language_level_mismatch" in canary_failures:
-                # Findings from a model without the right interpreter are not decisive.
-                raise Blocked("qodana_python_language_level_mismatch")
+        if language == "python":
+            gaps += python_proof_gaps(private, hashes, canaries, requested_python, receipt)
         findings = collect_findings(private / "results", selected, args)
         if any(digest(private / "project" / f) != hashes[f] for f in selected):
             raise Blocked("qodana_snapshot_inputs_changed")

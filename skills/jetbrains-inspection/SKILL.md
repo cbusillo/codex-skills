@@ -109,8 +109,9 @@ inspection plugin HTTP API. The script-backed helper is the primary agent
 interface; prefer it over direct curl or MCP tool calls.
 
 `agent-inspect` runs a selection of only Python files through headless local
-Qodana when its pinned image is in local Docker, with no desktop IDE; Odoo
-repositories, other languages and non-PyCharm lanes keep the Inspection API.
+Qodana when its pinned image is in local Docker and the repository declares
+structured Python preparation, with no desktop IDE; Odoo repositories, other
+languages and non-PyCharm lanes keep the Inspection API.
 `--backend api|qodana` chooses explicitly, and the host setting
 `JB_INSPECT_DEFAULT_BACKEND=api|qodana` pins the default. Read
 [local Qodana](references/qodana-backend.md) before diagnosing a Qodana result

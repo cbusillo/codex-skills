@@ -8,7 +8,6 @@ import importlib.util
 import io
 import json
 import os
-import shlex
 import signal
 import subprocess
 import sys
@@ -85,6 +84,11 @@ class QodanaTests(unittest.TestCase):
         (profiles / "Project_Default.xml").write_text('<component><profile><option name="myName" value="Test Profile"/>'
                     '<inspection_tool class="PyUnresolvedReferencesInspection" enabled="true"/>'
                     '<inspection_tool class="DuplicatedCode" enabled="true"/></profile></component>')
+        (self.repo / ".github").mkdir()
+        (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {"inspection": {
+            "prepare": {"python": {"version": "3.12", "moduleName": "fixture"}}}}}))
+        self.venv_version = "3.12.2"
+        self.type_hints_enabled = "true"
         self.cache = self.root / "cache"
         self.env = patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": str(self.cache), "JB_INSPECT_OUTCOME_LOG": "0", "JB_INSPECT_UNKNOWN_LOG": "0"})
         self.env.start()
@@ -117,7 +121,10 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual((private / "project/src/a.py").read_bytes(), (self.repo / "src/a.py").read_bytes())
         self.assertTrue((private / "project/.git/index").is_file())
         (private / "results/qodana.sarif.json").write_text(json.dumps(sarif([finding(), finding("src/b.py")])) )
-        (private / "results/effective.profile.xml").write_text('<profile><inspection_tool class="PyUnresolvedReferencesInspection" enabled="true"/></profile>')
+        (private / "results/effective.profile.xml").write_text('<profile><inspection_tool class="PyUnresolvedReferencesInspection" enabled="true"/>'
+                                                               f'<inspection_tool class="PyTypeHintsInspection" enabled="{self.type_hints_enabled}"/></profile>')
+        (private / "project/.venv").mkdir(exist_ok=True)
+        (private / "project/.venv/pyvenv.cfg").write_text(f"home = /usr/bin\nversion = {self.venv_version}\n")
         receipt["container_removed"] = True
 
     def run_backend(self, execute: Callable[..., Any] | None = None):
@@ -139,20 +146,25 @@ class QodanaTests(unittest.TestCase):
         self.assertTrue(all(not p.exists() for p in self.seen))
 
     @staticmethod
-    def canary(private):
-        [path] = (private / "project").rglob("_jb_qodana_canary_*.py")
-        return path.relative_to(private / "project").as_posix()
+    def canaries(private):
+        return sorted(p.relative_to(private / "project").as_posix()
+                      for p in (private / "project").rglob("_jb_qodana_canary_*.py"))
 
-    def clean_with_canary(self, *canary_rules, extra=()):
+    def clean_with_canary(self, *, proven=("src",), modern_hint_flagged=False, extra=()):
+        """Engine results that report the canary's unresolved name in the proven directories."""
         def attempt(*args):
             self.completed(*args)
-            canary = self.canary(args[2])
-            results = [finding(canary, rule=rule) for rule in canary_rules] + list(extra)
+            results = list(extra)
+            for canary in self.canaries(args[2]):
+                if canary.rpartition("/")[0] in proven:
+                    results.append(finding(canary, line=backend.CANARY_UNRESOLVED_LINE))
+                    if modern_hint_flagged:
+                        results.append(finding(canary, line=1, rule="PyTypeHintsInspection"))
             (args[2] / "results/qodana.sarif.json").write_text(json.dumps(sarif(results)))
         return attempt
 
     def test_clean_python_run_with_canary_proof_is_green_and_names_uncovered(self):
-        result = self.run_backend(self.clean_with_canary("PyUnresolvedReferencesInspection"))
+        result = self.run_backend(self.clean_with_canary())
         self.assertEqual(result["agent_result"]["verdict"], "GREEN")
         self.assertEqual(result["helper_exit_code"], 0)
         self.assertEqual(result["proof_failures"], [])
@@ -161,25 +173,57 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.repo / "src").iterdir()), ["a.py", "b.py"])
 
     def test_zero_findings_without_canary_finding_never_green(self):
-        result = self.run_backend(self.clean_with_canary())
+        result = self.run_backend(self.clean_with_canary(proven=()))
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertIn("python_canary_execution_unproven", result["proof_failures"])
         self.assertFalse(result["agent_result"]["retry_policy"]["retry"])
 
-    def test_wrong_language_level_makes_findings_not_decisive(self):
+    def test_every_selected_directory_needs_its_own_canary_finding(self):
+        # A module excluding src/ lets a generated/ canary pass while src/a.py goes unread.
+        (self.repo / "generated").mkdir()
+        (self.repo / "generated/c.py").write_text("print('generated')\n")
+        self.args.files = ["src/a.py", "generated/c.py"]
+        result = self.run_backend(self.clean_with_canary(proven=("generated",)))
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("python_canary_execution_unproven", result["proof_failures"])
+
+    def test_module_without_attached_interpreter_makes_findings_not_decisive(self):
         # A model without the prepared interpreter flags valid `X | None` hints.
-        result = self.run_backend(self.clean_with_canary(
-            "PyUnresolvedReferencesInspection", "PyTypeHintsInspection", extra=[finding()]))
+        result = self.run_backend(self.clean_with_canary(modern_hint_flagged=True, extra=[finding()]))
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(result["diagnostic"]["error_reason"], "qodana_python_language_level_mismatch")
         self.assertEqual(result["finding_count"], 0)
+
+    def test_disabled_type_hint_inspection_cannot_vouch_for_the_interpreter(self):
+        self.type_hints_enabled = "false"
+        result = self.run_backend(self.clean_with_canary())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("python_canary_rule_not_enabled:PyTypeHintsInspection", result["proof_failures"])
+
+    def test_prepared_interpreter_must_match_the_requested_version(self):
+        self.venv_version = "3.11.9"
+        result = self.run_backend(self.clean_with_canary(extra=[finding()]))
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["diagnostic"]["error_reason"], "qodana_python_interpreter_mismatch")
+
+    def test_no_declared_interpreter_never_green(self):
+        (self.repo / ".github/github.json").write_text("{}")
+        result = self.run_backend(self.clean_with_canary())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("python_interpreter_unprepared", result["proof_failures"])
+
+    def test_tracked_module_exclude_pattern_blocks_green(self):
+        (self.repo / ".idea/fixture.iml").write_text('<module><component><content><excludePattern pattern="*_gen.py"/></content></component></module>')
+        result = self.run_backend(self.clean_with_canary())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("qodana_tracked_module_exclusions_unproven", result["proof_failures"])
 
     def test_enabled_python_inspection_missing_from_engine_blocks_green(self):
         profile = self.repo / ".idea/inspectionProfiles/Project_Default.xml"
         profile.write_text(profile.read_text().replace(
             "</profile>", '<inspection_tool class="PyUnusedLocalVariableInspection" enabled="true"/>'
                           '<inspection_tool class="CssUnknownProperty" enabled="true"/></profile>'))
-        result = self.run_backend(self.clean_with_canary("PyUnresolvedReferencesInspection"))
+        result = self.run_backend(self.clean_with_canary())
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(result["proof_failures"], ["effective_profile_missing:PyUnusedLocalVariableInspection"])
 
@@ -197,10 +241,11 @@ class QodanaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as private:
             provisioned = backend.preparation(config, Path(private), "python", self.repo)
             supplied = backend.preparation(config, Path(private), "python", self.repo, uv_supplied=True)
-        install, _, generator = provisioned.partition(" && export PATH=/private/tools/uv/bin:$PATH && ")
-        self.assertEqual(shlex.split(install)[-1], "uv>=0.11.29,<1")
-        self.assertIn("--no-project-model", shlex.split(generator))
-        self.assertEqual(supplied, generator)
+        install, generator = provisioned["commands"]
+        self.assertEqual(install[-1], "uv>=0.11.29,<1")
+        self.assertIn("--no-project-model", generator)
+        self.assertEqual(supplied["commands"], [generator])
+        self.assertIsNone(supplied["path"])
 
     def test_uv_requirement_rejects_shell_text(self):
         (self.repo / "uv.toml").write_text('required-version = ">=0.11; touch /tmp/x"\n')
@@ -453,6 +498,10 @@ os.kill(os.getpid(), signal.SIGKILL)
         self.assertEqual(self.select(*python), ("qodana", "python_qualified"))
         self.assertEqual(self.select(*python, image_present=False), ("api", "qodana_image_unavailable"))
         self.assertEqual(self.select(*python, host_default="api"), ("api", "host_default"))
+        (self.repo / ".github/github.json").write_text("{}")
+        self.assertEqual(self.select(*python), ("api", "python_preparation_not_declared"))
+        (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {"inspection": {
+            "prepare": {"python": {"version": "3.12", "moduleName": "fixture"}}}}}))
         (self.repo / "src/App.kt").write_text("fun main() {}\n")
         self.assertEqual(self.select("--scope", "files", "--file", "src/a.py", "--file", "src/App.kt"),
                          ("api", "selection_not_python_only"))
@@ -527,7 +576,6 @@ b.execute([sys.executable, "-c", "import time; time.sleep(20)"], "owned", Path(s
         self.assertEqual(result["diagnostic"]["qodana"]["license_copy_count"], 0)
 
     def test_scope_modes_and_legacy_config_fallback_resolve_real_file_sets(self):
-        (self.repo / ".github").mkdir()
         (self.repo / ".github/github.json").write_text(json.dumps({"jetbrains": {"scopePreference": "whole_project"}}))
         self.args.scope = None
         broad = self.run_backend()
