@@ -2077,3 +2077,284 @@ normal caching and avoid repeated dependency downloads. Direct service commands
 must use the documented temporary-cache watch launcher when they run a watch.
 Apply updated service definitions only at the owning Supervisor's normal
 restart boundary; do not interrupt another session to make cache maintenance run.
+
+## Pending reviews of record
+
+Read this when workers ask the Supervisor to run a review from its authorized
+terminal, including the receipt-store route in [#2069](https://github.com/cbusillo/codex-skills/issues/2069).
+Use `pending_reviews.py` there to discover and dispatch requests across the
+explicit Supervisor-owned repositories in the run's ledger. It does not alter
+the ledger, transcripts, launch files or account configuration. Run it once
+without `--apply` to see pending requests, refused bindings and blocked prior launches:
+
+```sh
+uv run skills/supervisor/scripts/pending_reviews.py \
+  --ledger /absolute/private/run/ledger.json \
+  --checkout OWNER/REPO=/absolute/repository \
+  --checkout OWNER/OTHER=/absolute/other-repository \
+  --evidence-dir /absolute/private/review-evidence
+```
+
+Add `--apply` to run the pending reviews serially and post completed nonempty
+results. Use the same evidence directory for every invocation for this run:
+its launch journal prevents replay after interruption, failure or an uncertain
+comment write. This directory is durable operational state, not disposable
+task evidence. Keep it in a private run-state directory without automatic
+expiry, or an appropriate private directory on Retained-Artifacts. Never put
+it under the auto-pruned Developer-Artifacts/task-evidence root, a temporary
+directory or any cleanup policy that can remove journals while requests remain
+open. Keep journals and results through handoffs and until every request is
+resolved; a denied/spent request needs its journal for as long as that request
+could be discovered again. If state is lost, reconstruct it from retained
+evidence and reconcile remote delivery before apply; absence of a journal is
+not permission to replay a known failure or denial. The helper never changes
+storage roots or silently restores state.
+
+The ledger and evidence directories must be on a local POSIX filesystem that
+supports hard links, flock and directory fsync. exFAT and some network mounts
+cannot supply these semantics. Unsupported-operation errors refuse before
+continuing and name this requirement. Select a supported location before use;
+when relocating existing state, preserve its journals/results and reconcile
+spent launches first. A permission or authorization denial remains a denial,
+not a filesystem fallback. No alternate directory is tried automatically.
+
+A read-only advisory lock on the ledger's containing directory
+also serializes passes using that private run directory, even after an atomic
+ledger replacement or with different evidence directories. It changes no ledger
+or directory contents. Only `--apply` takes these locks; read-only discovery
+remains available during an active review and creates no evidence files. A held
+apply lock means wait for that sweep, never select another ledger directory to
+evade it. Distinct runs use their own private run directories. The evidence lock
+also protects shared output from different runs. During a Supervisor handoff,
+pass the same `--evidence-dir` to the successor even if its ledger moves to another run directory. Keep that directory and its journals;
+a new evidence path cannot deduplicate concurrent copies of one session in
+different run directories. The shared GitHub reader owns pagination and
+transport retries; the comment helper owns write reconciliation. This helper never retries inference or an uncertain write.
+Journals retain `review_failed` for failed/empty inference, `post_failed` for
+confirmed non-applied writes, and `post_unknown` for uncertain delivery or
+invalid transport metadata, including their errors and structured post outcome
+when available. A failed model-review call also retains its structured
+`review_failure` metadata; discovery exposes its declared `review_phase` and
+`review_outcome`. A selection failure remains spent and does not authorize
+retry, a new provider or another identity. Inspect the error before deciding
+whether a new request is permitted; a policy/permission denial is never evaded. `post_attempted` records entry into the write call; an interrupted
+call is uncertain, never permission to retry. Read a refused outcome and its
+journal; a real permission or authorization refusal stops that action. Do not
+renew a request to evade a denial. A completed review whose final input check
+fails keeps its result and records `post_blocked` with the diagnostic. No write
+was attempted. Discovery reads existing journals and reports `blocked`, their
+phase and error instead of promising another pending launch. It writes nothing.
+Completion and acknowledgement reports also expose an existing `journal`,
+`journal_phase`, canonical `evidence`, `response_evidence` and `prompt_evidence`
+paths. A weighed note or explicit queue acknowledgement cannot hide an
+uncertain write or a paid result retained locally; reconcile it before
+deciding how to settle the queue item. These diagnostics do not themselves
+prove publication, provider completion or readiness.
+
+For a retained `review_completed` or `post_blocked` result, revalidate the exact
+head, clean worktree and original request/prompt scope before manually posting
+that result through the existing GitHub helper, with the manual report heading
+and head described below. If a newer request exists at the same head, do not
+post the superseded scope as an unbound manual report: retain it as historical
+evidence and resolve the current scope with the author. Preserve the original
+raw receipt when manually reconciling a generated report; its request id and
+head cannot settle a different request. Keep the original evidence directory. Its successful
+inference metadata and nonempty report can confirm the requested provider on
+that manual post without buying another review. Changed inputs require the
+author to resolve the scope; never post against guessed bindings. Uncertain
+writes still require remote readback and the GitHub helper's existing manual
+reconciliation, never automatic replay. Remote receipts let a later sweep skip
+confirmed posts without replaying them.
+
+A request comes from a configured automation identity and uses the shared
+Supervisor-specific delegation predicate. Generic worker-run review requests
+and readiness status notes do not delegate, trigger or supersede this work.
+Quoted, fenced and indented examples and HTML comments are not delegations.
+Head-bound weighed dispositions are outcomes even when their text repeats the
+Supervisor directive; they cannot supersede a real delegation. Write `Supervisor runs the review` on its own
+line, a head SHA (a matching abbreviated SHA is accepted), and an explicit
+prompt. Quoted Supervisor phrases and incidental prose do not create requests.
+Requests are ordered by creation time; editing an older request does not
+supersede a newer one. A served or failed request id/head never launches again
+because it was edited. Post a new request comment for a new review or scope;
+never use that to evade a denial. Use this format for new requests. Copy the
+contents without the example's outer fence; a fully quoted or fenced request
+is an example and does not delegate work or hold readiness:
+
+```text
+Supervisor runs the review.
+Head: FULL_CURRENT_SHA
+Author session: NATIVE_SESSION_ID
+
+Prompt:
+Review the change and the surrounding files. Give a realistic trigger and
+severity for each finding, or none. Does this PR add a test that pins a literal,
+version, wording or config text? Your access is read-only; read whatever files
+you need, and do not modify anything.
+```
+
+A fenced or inline `Prompt:`, `Review prompt:` heading or quoted prompt is
+also accepted. Prompt fences close only with the same character and at least
+the opening length, so a longer outer fence preserves nested code examples.
+An empty or unclosed fence refuses; supply a scope and matching close, or use
+a plain Prompt section. Plain heading text may start on the same line after
+the colon. Existing direct read-only requests that explicitly say what
+to read and check are prompts themselves, regardless of capitalization. A request without an
+inline prompt may link one same-repository GitHub issue comment; the helper
+follows the chain and refuses missing, untrusted, ambiguous or cyclic links.
+A Prompt section containing only comment links also follows the linked prompt;
+it never sends a bare URL as the review scope.
+It rechecks every prompt comment, the latest request, PR state/head and worktree
+before posting. After inference it also rereads the trusted author claims,
+bypassing and refreshing the per-sweep claim cache. A released or changed
+session/provider binding blocks posting, keeps the completed report and
+requires resolving the current author before manual reconciliation. Prompt identity compares the comment id, authored body, edit time
+and author login; reactions and endpoint-specific fields do not invalidate it.
+Every completed report and its metadata are retained before that final check,
+even when a moved head or edited prompt prevents posting. The existing model
+review helper owns the review timeout from standing policy; dispatch adds no
+outer time limit that could interrupt its cleanup. An unserved obsolete request
+still refuses: renew it with the current head and prompt when another review is
+needed. A served request instead reports `completed_stale` after the head moves,
+with `reviewed_head`, `current_head`, its original completion status/link and
+notification fields. Abbreviations resolve only through unique full heads in
+trusted evidence. Weigh the completed review at its actual head through the
+existing disposition helper to acknowledge it without buying another review.
+That historical result cannot satisfy a new request or readiness at the new
+head. Never run against a guessed commit or missing prompt.
+
+The authoring session must match a trusted structured branch claim on an
+issue recorded for that repository in the ledger or referenced by the PR.
+This supports briefs that name a parent before the worker creates its own issue.
+Claim history uses the shared effective-release and exact-source release checks;
+only a valid same-author, later release ends the original claim. Handoffs do not
+leave released sessions competing as live authors. Untrusted, premature or invalid
+release evidence preserves ownership. A missing current issue/claim binding still
+refuses, rather than silently treating a released historical session as another run.
+`Author session:` resolves multiple recorded authors on the same branch;
+otherwise exactly one must match. A trusted claim matching the PR branch but
+belonging only to sessions outside this ledger reports `not_owned` without
+requiring a local checkout or failing the sweep. When a checkout is supplied,
+registered branches at this exact head are also checked for this run's claims
+before skipping: an owned successor requires explicit `Author session:` and
+normal worktree binding, rather than silently becoming `not_owned`. A branch
+at another head supplies no ownership evidence. An explicit author matching an
+outside-run claim remains `not_owned` despite unrelated same-head branches. Missing or ambiguous ownership
+still refuses; it cannot prove another run owns the item. The supported
+correction is to link the issue containing the trusted branch claim in the
+PR body, and supply `Author session:` when needed to distinguish authors.
+A verified outside-run claim then reports `not_owned`, including without a
+checkout. For owned work, also pass the repository's `--checkout` mapping.
+Do not mark unresolved ownership as covered or guess it is foreign. Overlapping claims
+from this and other runs require an explicit matching `Author session:`.
+Malformed claims are ignored only when a parseable branch explicitly differs
+from the reviewed branches, whether their issue is in the ledger or referenced
+by the PR. An unrelated session's malformed record cannot block other branches. A matching/unknown malformed claim or an unavailable
+claim read still blocks pending inference. When the selected worktree is on a successor
+branch rather than the PR branch, `Author session:` is required. A branch that
+happens to share the commit must not become the inferred author or provider. The ledger's `author_provider`, when present, records the actual
+provider; otherwise the native `codex`/`claude` harness family records
+OpenAI/Anthropic, as enforced by the launcher. The existing review helper
+checks the standing policy and selects the other provider; there is no Google
+fallback. Worktree matching requires the exact same-repository head, a matching origin
+and a clean checkout. Tracked changes and untracked project files refuse;
+the same shared predicate as `review_with_model` permits only its untracked
+`.model-review-*` scratch files. Existing helper scratch does not trigger a
+false dirty refusal, and no worktree contents are deleted or cleaned. It prefers the
+PR branch, otherwise requires one candidate or an explicit absolute `Worktree:`
+path among the registered candidates. A successor branch at the same commit
+is valid; its branch claim can identify the authoring session too.
+It never fetches, creates, cleans or changes a worktree.
+
+Confirmed writes, including the GitHub helper's `reconciled_applied` outcome,
+report `status: posted`. Later sweeps return `already_completed`, including the
+recorded author identity even if posting ended before updating its journal.
+`requested_provider_confirmed` requires the matching local journal's successful
+other-provider metadata and retained nonempty report at completion or a post
+phase. A copied receipt from the shared automation login alone cannot attest
+inference. Missing local evidence leaves provider completion unconfirmed.
+
+An edit to a served request sets `request_edited_after_review`; the completion
+link is preserved and inference never reruns. Weigh the original scope and
+record whether a separate request is needed for changed scope. The Supervisor
+uses `completion_comment` together with `completion_updated_at` to route each
+report version once. A corrected edit to the same comment can need a fresh
+notification; a disposition must follow its latest edit.
+`notification_needed` means the result still lacks a later trusted weighed
+disposition, not a history of terminal input. That history remains the
+Supervisor's responsibility. Older receipts without identity metadata attempt
+the same trusted branch-claim binding. Malformed claims or failed GitHub reads
+become `notification_error`, preserving the already-posted completion link.
+The Supervisor sends that authoring session the result through its normal
+exact session route. This helper sends no terminal input, weighs no findings
+and never calls `ready`. Posting removes the inherited per-command own-user
+opt-in before invoking the GitHub helper. An earlier personal-identity approval
+cannot carry into this write; the existing automation App or its refusal remains
+the supported route. Its raw receipt cannot serve as the author's
+head-bound weighed disposition required by readiness.
+
+A manual report explicitly headed `Review of record, run by the Supervisor`,
+bound to this head after the request, is returned as `reported_review`. Its
+heading alone does not attest provider completion. Pending/awaiting/waiting/not-run
+headings remain status prose. Echoing the original request inside a report cannot
+launch another paid review. The latest raw or manual report is the result to
+route; an earlier disposition cannot acknowledge a newer corrected report.
+
+Provider-unconfirmed reports, served-request edits and notification binding
+failures set `needs_attention`, appear in top-level `attention`, and make the
+sweep exit nonzero until a later trusted head-bound weighed disposition
+acknowledges that report. It must also follow the request's last edit. Verify
+the report and provenance, then post that disposition through
+`gh-pr.py comment --reviewed-head FULL_SHA`. Attention clears without creating
+provider proof. A weighed disposition after a manual report is reported as
+`already_weighed`; the author remains responsible for the provider-specific
+review of record and readiness gates.
+
+Without a Supervisor report, weighing an unrelated review is instead
+`weighed_without_review` and needs attention. It neither silently drops the
+request nor automatically purchases another review. If the Supervisor confirms
+this delegation was intentionally already handled, include the exact line
+`Supervisor request acknowledged: REQUEST_COMMENT_ID` in a trusted disposition
+at that request's head through the same `--reviewed-head` helper. It must follow
+the request's last edit. This clears only the queue warning as
+`request_acknowledged`, without provider proof, new readiness evidence or
+inference. Quoted/fenced examples, another request ID and a different head do
+not acknowledge the request. The same rules apply to historical heads;
+acknowledging a request at A never satisfies a new request at B.
+
+Shared paths keep their existing authority: the account reader's policy,
+capacity snapshot and launch-receipt store, the model review policy and the
+GitHub transport's private caches. A refusal there still stops the affected
+review; this helper cannot make workers' receipt-store problem disappear.
+Its own writable state lives only in the caller's private evidence directory.
+Apply requires that directory to have no group/other permissions (0700); a new
+directory is created privately. If an existing directory is too open, restrict
+that exact directory to 0700 while retaining its journals, then rerun. The
+helper never chooses a fresh location to evade a spent launch or denial.
+Persistent prompt, report and journal files are created with private permissions
+(0600). Journal updates and retained artifacts use synced temporary files and
+atomic publication; the first journal reservation remains exclusive. A crash
+during replacement preserves the previous complete record.
+
+The exact resolved prompt remains in `<key>.prompt.txt`. Model-review writes
+directly to a private `<key>.response.txt`, retained even if metadata parsing
+fails or the caller is interrupted during helper exit. This raw candidate is
+not completion/provider proof and is never posted without successful metadata
+validation; the validated canonical report remains `<key>.md`. A response file
+alone cannot authorize replay or publication. Each journal keeps
+its source comment bindings (repository, id, authored body, edit time and login).
+Use these originals to resolve scope when a linked prompt is edited after
+inference. Confirmed/applied transport metadata combined with a failed process
+exit is `post_unknown`, never described as confirmed non-applied. An unavailable
+evidence directory or held lock blocks apply; no alternate path, account,
+credential or terminal is chosen automatically.
+
+Malformed owned ledger entries are excluded from authorization and reported
+in `ledger_errors`; every copy of a duplicate session identity is excluded.
+Discovery continues for the remaining valid entries, with a nonzero exit to
+signal partial coverage. The Supervisor corrects those registry records before
+claiming complete coverage. Unparseable JSON or a malformed root collection
+cannot establish run scope and stops the sweep; supply a corrected ledger or
+a labeled valid derivative in the same private run directory. The helper never
+rewrites its input. Repository names and checkout mapping keys compare without
+case, and duplicate mappings differing only in case refuse.
