@@ -43,8 +43,8 @@ fails loudly when a reviewer could not read or returned nothing.
   is required; the criteria above still own that decision.
 - Also ask: "Read the Director's overall DIRECTION.md and the repository's
   own, if it has one. Does this work fit them, and would they prefer a simpler
-  way?" Reviewers have no network, so name both by local path, the overall one
-  from a checkout current with its remote. A finding that the work should stop
+  way?" Reviewers have no network. Pass the overall file, from a checkout
+  current with its remote, with the helper's `--input`. A finding that the work should stop
   or change course is weighed under the escalation rule below.
 - When commits carry
   [Client-impact trailers](../github/references/repo-workflow.md#client-impact-trailers),
@@ -58,8 +58,8 @@ fails loudly when a reviewer could not read or returned nothing.
 A review can cover a pending decision instead of a change. When the Director
 asks whether a choice is aligned, ask for this review even when the criteria
 above would not. Put the question on its issue first. Save the issue's body
-and comments to a file outside the checkout and give the reviewer that path,
-not your recommendation. Run it from a clean checkout of the default branch,
+and comments, without your recommendation, to a file outside the checkout and
+pass it with `--input`. Run it from a clean checkout of the default branch,
 so the helper names no diff. Post the weighed result on the issue; the
 Director decides. The reviewer is not the direction agent, so this needs no
 direction session.

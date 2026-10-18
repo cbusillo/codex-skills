@@ -55,7 +55,7 @@ budget, and put both results in the PR's review note.
 1. Commit the change and leave the worktree clean. Write a prompt file that
    names the change, the paths to read, and what the change is for. For a
    [pending decision](../references/model-review.md#before-a-decision), there
-   is no change: name the saved issue file instead. Never ask
+   is no change: describe the saved issue instead. Never ask
    the reviewer to run a command or tests, and do not forbid commands either:
    the OpenAI reviewer reads files through its read-only shell. Say, for example,
    "Your access is read-only; read whatever files you need, and do not modify anything."
@@ -77,6 +77,12 @@ budget, and put both results in the PR's review note.
    the reviewed repository's own tool settings, which could start hooks. The
    `openai` reviewer also ignores `~/.codex/config.toml`, so settings there,
    such as its default model, do not apply.
+
+   Reviewers have no network, and some read only granted roots. Pass each
+   file outside the repository that the review needs, such as a saved issue
+   or the overall DIRECTION.md, with a repeated `--input FILE`. The helper
+   copies it next to the diff, names it in the preamble and removes it after
+   the run.
 
    All reviews select their provider's Context Panel use-next
    account at launch through the [Supervisor account reader](../supervisor/scripts/account_choice.py).
