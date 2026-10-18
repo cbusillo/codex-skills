@@ -57,9 +57,9 @@ fails loudly when a reviewer could not read or returned nothing.
 A review can cover a pending decision instead of a change. When the Director
 asks whether a choice is aligned, ask for this review even when the criteria
 above would not. Put the question on its issue first, and give the reviewer
-that issue, not your recommendation. Run it from a clean checkout with no
-committed change; the helper then names no diff. Post the weighed result on the issue; the
-Director decides. The reviewer is not the direction agent, so this needs no
+that issue, not your recommendation. Run it from a clean checkout of the
+default branch, so the helper names no diff. Post the weighed result on the
+issue; the Director decides. The reviewer is not the direction agent, so this needs no
 direction session.
 
 ## Weighing Findings

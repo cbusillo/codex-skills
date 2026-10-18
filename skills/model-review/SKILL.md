@@ -53,7 +53,9 @@ before running any allowed supplementary review, serially with its recorded
 budget, and put both results in the PR's review note.
 
 1. Commit the change and leave the worktree clean. Write a prompt file that
-   names the change, the paths to read, and what the change is for. Never ask
+   names the change, the paths to read, and what the change is for. For a
+   [pending decision](../references/model-review.md#before-a-decision), there
+   is no change: name the issue instead. Never ask
    the reviewer to run a command or tests, and do not forbid commands either:
    the OpenAI reviewer reads files through its read-only shell. Say, for example,
    "Your access is read-only; read whatever files you need, and do not modify anything."
