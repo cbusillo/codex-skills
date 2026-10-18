@@ -932,9 +932,11 @@ PRs from the same batch landing. Run this step for the latest unverified landing
 even when SessionStart catch-up has already updated the runtime. With no prior
 verification record, start at the latest catalog landing and record the earlier
 interval as unverified. If several landings accumulated, report each missed
-earlier SHA as failed verification under step 4, then check the latest landing;
-a later runtime passing does not prove an earlier revision passed. Keep a link
-to the latest verification in the next handoff so takeover can repeat this check.
+earlier SHA on its owning issue and in the Supervisor report as
+**Catalog landing verification NOT VERIFIED: `<skipped-sha>`**, naming the later
+landing that superseded it, then check the latest landing. A later runtime
+passing does not prove an earlier revision passed. Keep a link to the latest
+verification in the next handoff so takeover can repeat this check.
 
 1. Take the full landing SHA from the merged PR or terminal train result, as
    defined in [After A Merge](../../github/SKILL.md#after-a-merge). Resolve the
@@ -964,17 +966,22 @@ to the latest verification in the next handoff so takeover can repeat this check
    Resume, `--version`, and noninteractive reviewer runs do not exercise that
    path. Never restart a daemon or server to make the check pass.
 3. Anchor each brief on the owning catalog issue without claiming it. Name the
-   landing SHA, ask for a short acknowledgement and normal safe closeout, and
-   authorize just one final issue handoff comment naming that SHA and the
-   smoke's native session ID. Request no file changes, claims or product work.
+   landing SHA and request a short acknowledgement as its own first reply,
+   without tools, file changes, claims or product work. Leave the session idle
+   afterward for the Supervisor's closeout message.
    Record both exact terminal identities and native session/transcript
-   identities in the private registry, and set each entry's `handoff_url` to
-   that smoke session's own issue comment before shutdown. Read each first screen
+   identities in the private registry. Read each first screen
    for startup failures or blocking prompts, then require a completed assistant
    turn acknowledging this landing in each native transcript. An echoed brief,
    live pane or successful launcher return alone is not a pass. Use a bounded
    observation of at most two minutes per harness; an unfinished turn at that
    point is a failed smoke, with its session preserved for inspection.
+   After a passing acknowledgement, nudge that exact idle session through the
+   existing targeted send/queue route to post one final issue handoff comment
+   naming the landing SHA and its native session ID, then complete normal safe
+   closeout. Set its ledger `handoff_url` to its own comment before shutdown.
+   Handoff and shutdown use the normal finished-session timing; a delay there
+   keeps the terminal open without turning a passed launch into a failed smoke.
 4. Record the landing SHA, actual runtime SHA, reconciliation receipt and each
    harness's pass/fail on the owning issue, linking the smoke handoffs.
    If reconciliation or either launch fails, post
