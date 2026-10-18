@@ -126,6 +126,9 @@ class QodanaTests(unittest.TestCase):
         (private / "results/effective.profile.xml").write_text('<profile><inspection_tool class="PyUnresolvedReferencesInspection" enabled="true"/>'
                                                                f'<inspection_tool class="PyTypeHintsInspection" enabled="{self.type_hints_enabled}"/></profile>')
         (private / "pyvenv.cfg").write_text(f"home = /usr/bin\nversion = {self.venv_version}\n")
+        (private / "inspected-sha256.json").write_text(json.dumps({
+            str(path.relative_to(private / "project")): backend.digest(path)
+            for path in (private / "project").rglob("*") if path.is_file() and ".git" not in path.parts}))
         receipt["container_removed"] = True
 
     def run_backend(self, execute: Callable[..., Any] | None = None):
@@ -304,6 +307,17 @@ class QodanaTests(unittest.TestCase):
                 self.assertTrue(all(not p.exists() for p in self.seen))
                 if error:
                     self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+
+    def test_preparation_rewriting_a_selected_source_in_the_container_is_not_decisive(self):
+        def rewritten(*args):
+            self.completed(*args)
+            inspected = args[2] / "inspected-sha256.json"
+            hashes = json.loads(inspected.read_text())
+            hashes["src/a.py"] = "0" * 64
+            inspected.write_text(json.dumps(hashes))
+        result = self.run_backend(rewritten)
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["diagnostic"]["error_reason"], "qodana_snapshot_inputs_changed")
 
     def test_input_change_invalidates_decisive_findings(self):
         def mutate(*args):
@@ -570,8 +584,9 @@ def command(argv, **kwargs):
     if argv[1] == "pause": paused.write_text("paused")
     return subprocess.CompletedProcess(argv, 0, b"", b"")
 b.command = command
+b.start_argv = lambda _name: [sys.executable, "-c", "import time; time.sleep(20)"]
 receipt = {"run_id": sys.argv[4], "load_pause_count": 0, "container_removed": False}
-b.execute([sys.executable, "-c", "import time; time.sleep(20)"], "owned", Path(sys.argv[3]), b.safe_env(), 10, receipt)
+b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, receipt)
 '''
         parent = subprocess.Popen([sys.executable, "-c", child_code, str(SCRIPTS / "qodana_backend.py"),
                                    str(state), str(private), run_id, str(paused)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -650,7 +665,13 @@ b.execute([sys.executable, "-c", "import time; time.sleep(20)"], "owned", Path(s
         # after exit (shiny-infra-ops#320); cache, SDK, venv and project stay inside.
         def inspect_launch(argv, name, private, *rest):
             self.assertNotIn(str(self.repo), " ".join(argv))
-            shared = [argv[i + 1].split(":")[0] for i, value in enumerate(argv) if value in {"-v", "--volume", "--mount"}]
+            shared = []
+            for i, value in enumerate(argv[:-1]):
+                if value in {"-v", "--volume"}:
+                    shared.append(argv[i + 1].split(":")[0])
+                elif value == "--mount":
+                    fields = dict(field.partition("=")[::2] for field in argv[i + 1].split(","))
+                    shared.append(fields.get("source") or fields.get("src", ""))
             self.assertEqual(shared, [str(private / "logs")])
             self.assertEqual((private / "config" / source.name).stat().st_mode & 0o777, 0o400)
             receipt = rest[-1]
@@ -767,12 +788,15 @@ def docker_vm_descriptors():
     list_descriptors, descriptor_record_size = 1, 8  # libproc's descriptor-list flavor and record size
     pids = subprocess.run(["pgrep", "-f", "com.apple.Virtualization.VirtualMachine"],
                           capture_output=True, text=True).stdout.split()
-    total = 0
+    counts = {}
     for pid in map(int, pids):
         size = libproc.proc_pidinfo(pid, list_descriptors, 0, None, 0)
         buffer = ctypes.create_string_buffer(max(size, 0) * 2 + 8)
-        total += max(libproc.proc_pidinfo(pid, list_descriptors, 0, buffer, len(buffer)), 0) // descriptor_record_size
-    return total
+        used = libproc.proc_pidinfo(pid, list_descriptors, 0, buffer, len(buffer))
+        if size <= 0 or used <= 0:
+            raise AssertionError(f"descriptor query failed for Docker VM process {pid}")
+        counts[pid] = used // descriptor_record_size
+    return counts
 
 
 @unittest.skipUnless(os.environ.get("JB_QODANA_LIVE") == "1" and sys.platform == "darwin",
@@ -783,7 +807,7 @@ class LiveDescriptorTests(unittest.TestCase):
     def test_completed_runs_do_not_accumulate_docker_vm_descriptors(self):
         repo = SCRIPTS.parents[2]
         before = docker_vm_descriptors()
-        self.assertGreater(before, 0, "Docker Desktop's VM is not running")
+        self.assertTrue(before, "Docker Desktop's VM is not running")
         for _ in range(2):
             result = subprocess.run(["uv", "run", str(SCRIPTS / "jb-inspect.py"), "agent-inspect", "--backend", "qodana",
                                      "--repo", str(repo), "--scope", "files", "--file",
@@ -793,7 +817,10 @@ class LiveDescriptorTests(unittest.TestCase):
             self.assertIn(envelope["agent_result"]["verdict"], {"GREEN", "RED"})
             self.assertEqual(envelope["cleanup"]["status"], "closed")
         # Only the small shared log directory may remain held, a few handles per run.
-        self.assertLess(docker_vm_descriptors() - before, 100)
+        after = docker_vm_descriptors()
+        # A restarted VM would reset the count and hide retention.
+        self.assertEqual(after.keys(), before.keys())
+        self.assertLess(sum(after.values()) - sum(before.values()), 100)
 
 
 if __name__ == "__main__":

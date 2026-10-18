@@ -352,10 +352,31 @@ def start_argv(name):
 
 
 def copy_out(name, private, env):
-    """Results and the prepared interpreter's version come back after exit."""
+    """Results, the prepared interpreter's version and inspected-source hashes come back after exit."""
     checked(["docker", "cp", f"{name}:{WORK}/results", str(private / "results")], env=env, timeout=600)
     # Absent when no preparation ran; interpreter_version then reports None.
     command(["docker", "cp", f"{name}:{WORK}/project/.venv/pyvenv.cfg", str(private / "pyvenv.cfg")], env=env, timeout=60)
+    # Preparation runs inside the container and can rewrite sources; hash what
+    # the engine saw, streamed as a tar, so findings are checked against it.
+    (private / "inspected-sha256.json").write_text(json.dumps(container_project_hashes(name, env)))
+
+
+def container_project_hashes(name, env):
+    import tarfile
+    hashes = {}
+    with subprocess.Popen(["docker", "cp", f"{name}:{WORK}/project", "-"], stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, env=env) as process:
+        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+            for member in archive:
+                relative = member.name.partition("/")[2]
+                if not member.isfile() or relative.split("/", 1)[0] in {".venv", ".git"}:
+                    continue
+                stream = archive.extractfile(member)
+                if stream is not None:
+                    hashes[relative] = hashlib.sha256(stream.read()).hexdigest()
+        if process.wait(timeout=600):
+            raise Blocked("qodana_inspected_sources_unavailable")
+    return hashes
 
 
 def snapshot(repo, project):
@@ -1029,7 +1050,9 @@ def run(args, host):
         if language == "python":
             gaps += python_proof_gaps(private, hashes, selected, canaries, requested_python, receipt)
         findings = collect_findings(private / "results", selected, args)
-        if any(digest(private / "project" / f) != hashes[f] for f in selected):
+        inspected = private / "inspected-sha256.json"
+        seen = json.loads(inspected.read_text()) if inspected.is_file() else {}
+        if any(seen.get(f) != hashes[f] for f in selected):
             raise Blocked("qodana_snapshot_inputs_changed")
         after_paths = host.inspection_scope_paths(args, repo, scope)
         after_selected = {p.relative_to(repo).as_posix() for raw in after_paths
