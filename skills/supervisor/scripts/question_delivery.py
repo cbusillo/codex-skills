@@ -255,7 +255,7 @@ def reconcile(args, fetch):
     if args.ack:
         validate_receipt(args.delivery_url)
         question = next((q for q in report["questions"] if q["url"] == args.ack), None)
-        if not question or not question["registration_url"]:
+        if question is None or not question["registration_url"]:
             raise ValueError("acknowledgement requires a registered unresolved question")
         if not question["question_id"]:
             raise ValueError(f"Question has no heading Q ID; number the original comment before delivery: {args.ack}")
