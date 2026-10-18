@@ -20,6 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 from test_github_plan_sessions import ReceiptFixture
 import github_plan_closure as closure
+import github_plan_sessions
 import codex_session_proxy as proxy
 
 
@@ -84,7 +85,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             args = SimpleNamespace(command="queue", session_id=f.session, codex_home=f.home,
                                    message="status?", message_file=None)
             with patch.dict(os.environ, {"PATH": str(queue_bin) + os.pathsep + os.environ["PATH"]}), \
-                    patch.object(SESSION, "codex_homes", return_value=[f.home]):
+                    patch.object(github_plan_sessions, "codex_homes", return_value=[f.home]):
                 self.assertEqual(await asyncio.to_thread(SESSION.run, args), 1)
             self.assertFalse(f.queue_items)
             self.assertFalse(f.mutations)
@@ -179,7 +180,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.send(task, request, response, "turn/start", f.session)
                 self.assertIn("result", result)
                 with patch.dict(os.environ, {"PATH": str(queue_bin) + os.pathsep + os.environ["PATH"]}), \
-                        patch.object(SESSION, "codex_homes", return_value=[f.home]):
+                        patch.object(github_plan_sessions, "codex_homes", return_value=[f.home]):
                     self.assertEqual(await asyncio.to_thread(SESSION.run, args), 0)
                     # Capacity target validation is covered by its full module;
                     # exercise its real queue guard and child against this live ingress.

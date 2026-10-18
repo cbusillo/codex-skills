@@ -9,9 +9,12 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
+import stat
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
@@ -31,6 +34,41 @@ HOUSEKEEPING = {"thread/unarchive", "thread/name/set", "thread/metadata/update",
 # JSON Schema payloads (dynamic tools, turn output, elicitation) describe
 # fields such as threadId; they never name a thread.
 SCHEMAS = {"inputSchema", "outputSchema", "requestedSchema"}
+
+
+def stopped_daemon_remedy(home):
+    """Name the existing native start route without performing daemon lifecycle work."""
+    command = shlex.join(["env", f"CODEX_HOME={home}", "codex", "app-server", "daemon", "start"])
+    return (f"keep this source account; verify whether its daemon is stopped; only if stopped, "
+            f"run {command}, then retry; never stop or restart a live daemon")
+
+
+def source_endpoint(session, home, *, transcript=None):
+    """Validate native recovery identity without taking a lease or changing state."""
+    from github_plan_sessions import codex_homes
+    import session_record
+    if str(uuid.UUID(session)) != session:
+        raise ValueError("use the canonical native thread UUID")
+    if home not in codex_homes(strict=True, configured_only=True):
+        raise ValueError("resume requires the source's configured account home")
+    paths = [p for root in ("sessions", "archived_sessions") for p in (home / root).rglob(f"*{session}*.jsonl")]
+    if not paths:
+        raise ValueError("source native transcript is unavailable")
+    if transcript is not None:
+        paths.append(transcript)
+    for path in dict.fromkeys(paths):
+        session_record.session_status({"session_id": session, "harness": "codex", "transcript": str(path)})
+    if closure.closed_log().exists():
+        closure.resume_record(session, closure.log_rows())
+    endpoint = closure.daemon_endpoint(home)
+    try:
+        info = endpoint.stat()
+    except FileNotFoundError as error:
+        raise ValueError(f"source daemon socket unavailable for CODEX_HOME={home}; "
+                         + stopped_daemon_remedy(home)) from error
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ValueError("source daemon socket identity is unavailable")
+    return endpoint
 
 
 def thread_targets(value):
