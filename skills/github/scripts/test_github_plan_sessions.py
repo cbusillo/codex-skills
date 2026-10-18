@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from aiohttp import web
 import github_plan_sessions as SESSIONS
+import github_plan_closure as CLOSURE
 
 
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
@@ -24,7 +25,8 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         for command in ("rg resume holder", "rg codex resume holder", "codex exec please resume holder", "codex please resume holder"):
             self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
 
-    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False):
+    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False,
+                      receipt=None, proof_sessions=None):
         thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "status": {"type": state}}
         if mismatch: thread["id"] = "another-session"
         reads, calls, unexpected, observed_ids = 0, 0, [], set()
@@ -68,8 +70,10 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             await web.UnixSite(runner, str(socket_path)).start()
             os.chmod(socket_path, 0o666 if unsafe else 0o600)
             try:
-                with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)):
-                    peers, states, coverage = await SESSIONS.observe_home(home, {"holder"})
+                with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)), \
+                        patch.object(CLOSURE, "verified_record", side_effect=receipt if isinstance(receipt, list) else None,
+                                     return_value=None if isinstance(receipt, list) else receipt):
+                    peers, states, coverage = await SESSIONS.observe_home(home, {"holder"}, proof_sessions)
             finally:
                 await runner.cleanup()
         self.assertEqual(unexpected, [])
@@ -81,6 +85,17 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         peers, states = await self.observe("notLoaded")
         self.assertEqual(peers, [])
         self.assertEqual(states["holder"]["state"], "ended")
+
+    async def test_released_unloaded_session_can_use_fresh_shared_closure(self):
+        peers, states = await self.observe("notLoaded", receipt={"session_id": "holder"}, proof_sessions=set())
+        self.assertFalse(peers)
+        self.assertEqual(states["holder"]["source"], "supervisor_closure")
+        _, states = await self.observe("notLoaded", proof_sessions=set())
+        self.assertNotIn("holder", states)
+
+    async def test_changed_closure_cannot_prove_an_unloaded_session_ended(self):
+        _, states = await self.observe("notLoaded", receipt=[{"session_id": "holder"}, None])
+        self.assertNotIn("holder", states)
 
     async def test_active_session_overrides_completion(self):
         for state in ("active", "idle", "systemError"):
@@ -127,6 +142,34 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+    def test_receipt_proofs_require_available_account_inventory(self):
+        config = SimpleNamespace(load_config=lambda: (_ for _ in ()).throw(ValueError("missing account inventory")))
+        with patch.object(SESSIONS, "native_helpers", return_value=(config, None)):
+            self.assertTrue(SESSIONS.codex_homes())
+            with self.assertRaisesRegex(ValueError, "missing account inventory"):
+                SESSIONS.codex_homes(strict=True)
+
+    def test_shared_log_is_independent_of_provider_account_home(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"CODE_HOME": folder}):
+            first = CLOSURE.closed_log()
+            with patch.dict(os.environ, {"CODEX_HOME": str(Path(folder) / "other-account")}):
+                self.assertEqual(CLOSURE.closed_log(), first)
+            self.assertTrue(first.is_relative_to(folder))
+            self.assertFalse(first.exists())
+
+    def test_session_specific_closure_allows_unrelated_clients_but_requires_process_read(self):
+        async def read(_home, _sessions, _proof):
+            return [], {"holder": {"state": "ended", "source": "supervisor_closure"}}, {
+                "status": "available", "peer_complete": True, "socket": "/fixture/socket"}
+        for returncode in (0, 1):
+            with self.subTest(returncode=returncode), \
+                    patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+                    patch.object(SESSIONS, "observe_home", side_effect=read), \
+                    patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=returncode, stdout="codex --remote unix:///unrelated/socket")):
+                _, states, _ = SESSIONS.observe({"holder"})
+            self.assertEqual(states.get("holder", {}).get("state") == "ended", returncode == 0)
+
     def test_daemon_reads_do_not_require_codex_on_path(self):
         async def read(_home, _sessions, _proof):
             return [{"sessionId": "holder", "source": "codex_session"}], {"holder": {"state": "live"}}, {"status": "available", "peer_complete": True, "socket": "/fixture/socket"}

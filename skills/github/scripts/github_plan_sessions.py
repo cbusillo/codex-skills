@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import github_plan_closure
+
 
 def native_helpers():
     directory = str(Path(__file__).resolve().parents[2] / "supervisor/scripts")
@@ -21,12 +23,14 @@ def native_helpers():
     return account_choice, session_record
 
 
-def codex_homes() -> list[Path]:
+def codex_homes(*, strict: bool = False) -> list[Path]:
     homes = [Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))]
     try:
         config = native_helpers()[0].load_config()
         homes.extend(Path(a["env"]["CODEX_HOME"]) for a in config["accounts"] if a["provider"] == "openai")
     except (ValueError, OSError, ImportError):
+        if strict:
+            raise
         pass  # Missing optional account configuration never establishes absence.
     return list(dict.fromkeys(p.expanduser().resolve() for p in homes))
 
@@ -79,15 +83,20 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
         if state in {"active", "idle", "systemError"}:
             peers.append({"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "codex_session"})
             states[session] = {"state": "live", "source": "codex_app_server"}
-        elif prove and session in proof_sessions and state == "notLoaded" and thread.get("path"):
+        elif prove and state == "notLoaded" and thread.get("path"):
+            receipt = github_plan_closure.verified_record(session, home)
+            if session not in proof_sessions and receipt is None:
+                return
             before = transcript_snapshot(session, thread["path"])
             # A final turn is insufficient: the thread must be unloaded, every
             # known native transcript stable, and process absence checked below.
             after = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
             verified = transcript_snapshot(session, thread["path"])
+            receipt_verified = receipt is not None and github_plan_closure.verified_record(session, home) == receipt
             if (before == verified and all(s["safe_verdict"] for s in before.values()) and after.get("id") == session
-                    and after.get("status", {}).get("type") == "notLoaded"):
-                states[session] = {"state": "ended", "source": "codex_app_server",
+                    and after.get("status", {}).get("type") == "notLoaded"
+                    and (receipt is None or receipt_verified)):
+                states[session] = {"state": "ended", "source": "supervisor_closure" if receipt_verified else "codex_app_server",
                                    "ended_at": max(s["timestamp"] for s in before.values())}
             elif after.get("status", {}).get("type") in {"active", "idle", "systemError"}:
                 peers.append({"sessionId": session, "cwd": after["cwd"], "state": "active", "source": "codex_session"})
@@ -210,8 +219,9 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
     peer_complete = bool(observed_sources) and all(s["peer_complete"] for s in observed_sources)
     observed_sockets = {s["socket"] for s in sources if s["peer_complete"]}
     process_coverage = "unavailable" if process_text is None else "complete" if process_absence_known(process_text, observed_sockets) else "unidentified_interactive_processes"
-    if not peer_complete or process_coverage != "complete":
-        states = {session: state for session, state in states.items() if state["state"] != "ended"}
+    states = {session: state for session, state in states.items()
+              if state["state"] != "ended" or (peer_complete and process_text is not None and (
+                  process_coverage == "complete" or state.get("source") == "supervisor_closure"))}
     return peers, states, {"status": "available" if peer_complete else "incomplete" if observed_sources else "unavailable",
                            "peer_complete": peer_complete, "process_coverage": process_coverage,
                            "source_count": len(observed_sources), "unavailable_source_count": len(sources) - len(observed_sources),

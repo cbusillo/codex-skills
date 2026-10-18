@@ -111,7 +111,7 @@ commands:
   - name: supervisor-release-session-claims
     source: skill
     resource_path: scripts/release_session_claims.py
-    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--closed-log", "<closed.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
+    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
     purpose: Preview remaining claims after transcript, issue handoff and actual process exit verification.
   - name: supervisor-close-ttys
     source: skill
@@ -679,7 +679,7 @@ and its terminal, transcript and account readbacks before sending input.
 5. After verified process exit, run `release_session_claims.py finish` as
    [finished-session shutdown stages](references/helpers.md#finished-session-shutdown-stages)
    describes, before closing the tab. It records the observed exit in the
-   private closed-session log, discovers the session's claims across accessible
+   shared host-local closed-session log, discovers the session's claims across accessible
    repositories under `--owner` and the configured automation identity, posts the
    closed-session attestation, and previews then
    applies `gh-plan.py release-claim --role supervisor`, naming retained PRs.
