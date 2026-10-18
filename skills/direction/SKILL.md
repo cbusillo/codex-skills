@@ -272,8 +272,9 @@ uv run <skill-dir>/scripts/direction_mark.py turn --repo OWNER/REPO
 
 It writes the local marker, then keeps the shared turn record current: one
 open issue titled "Daily direction turns" in the covered repository account's
-`OWNER/direction`, written through the automation helpers. Exit 2 means the
-local turn was recorded but the shared record was not, so other machines keep
+`OWNER/direction`, written through the automation helpers. Exit 2 with the
+local-turn JSON receipt described below means the local turn was recorded but
+the shared record was not, so other machines keep
 reminding; report its `shared.error` to the Director. Exit 1 reports a local
 write failure with the destination and error; no shared write is attempted.
 Only the direction agent runs that, at the end of a turn the Director took part
