@@ -793,8 +793,9 @@ to retrieve the complete saved Client reason; add `--decision-id ID` for a
 historical decision. This narrow read uses the existing private admin config
 and the product's `product_profile.read` permission. It is a bounded local
 extension of `/v1/product-review`, separate from the public-safe context output.
-The output contains Client prose: keep it in task-private evidence unless its
-publication is authorized. A failed read means unavailable, not no feedback.
+The output contains Client prose: unless its publication is authorized, keep
+it only where [task artifacts](../references/repo-cleanup.md#task-artifacts-and-retention)
+go, the session scratchpad or the host's named task-evidence location. A failed read means unavailable, not no feedback.
 The PR watcher uses this reader to verify its GitHub projection and receipt.
 
 ## Stable Deploy Identity

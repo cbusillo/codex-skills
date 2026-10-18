@@ -76,8 +76,11 @@ runs with the caller's UID/GID to keep generated state removable; native Linux
 runtime qualification is separate from this Mac's measured run.
 
 `JETBRAINS_INSPECTION_CACHE_DIR` selects the existing helper cache root; on
-hosts that require external task storage, set it to the task-private directory
-on that volume. Each run uses a fresh `qodana/private-*` directory with
+hosts that require external task storage, set it to the task's folder in the
+location the host names for task output, such as the evidence folder its
+worktree helper prints (see
+[task artifacts](../../references/repo-cleanup.md#task-artifacts-and-retention)).
+Never create a folder of your own at the volume root. Each run uses a fresh `qodana/private-*` directory with
 owner-only permissions. Raw console output is never returned or archived;
 private engine logs/config/home/cache/results are removed with the profile.
 Only sanitized findings and safe count/hash/resource/deletion receipts survive.
