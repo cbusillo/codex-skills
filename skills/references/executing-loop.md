@@ -86,5 +86,9 @@ asynchronous question or issue update does not replace that handoff.
 Preserve unsafe or active worktrees and runtime checkouts under their owning
 skills rather than forcing cleanup. Preserve dirty or divergent default
 checkouts too; report when they cannot be safely fast-forwarded.
+Before a safe-exit all-clear, complete work-closeout's
+[claim disposition](../work-closeout/SKILL.md#claim-disposition): release this
+session's claims and verify retained PR handoffs, or report conditional/no.
+Keep ownership while an assigned review is pending and the session must resume.
 For a finding that would change `DIRECTION.md` itself, follow the
 [direction skill](../direction/SKILL.md) escalation procedure.
