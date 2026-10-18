@@ -2529,6 +2529,7 @@ def claim_once(args: argparse.Namespace) -> None:
     def check_handoff_successors(
         source_number: int, source_inventory: dict[str, Any], *,
         source_claim_id: int | None = None, source_handoff_url: str | None = None,
+        source_comments: list[dict[str, Any]] | None = None,
     ) -> None:
         """A native child keeps its claim locally; siblings must still see it."""
         _, children = collect_paged_rest_items(
@@ -2547,10 +2548,18 @@ def claim_once(args: argparse.Namespace) -> None:
             source_claim_id = args.resume_from
         if source_handoff_url is None and handoff_id is not None:
             source_handoff_url = f"https://github.com/{issue_repo}/issues/{source_number}#issuecomment-{handoff_id}"
+        source_ids = {str(source_claim_id)} | {
+            str(comment["id"]) for comment in source_comments or []
+            if type(comment.get("id")) is int and comment["id"] > 0
+            and github_plan_claim.records(comment.get("body") or "")}
+        parent_handoff = re.compile(
+            rf"https://github\.com/{re.escape(issue_repo)}/issues/{source_number}#issuecomment-[1-9]\d*", re.IGNORECASE)
 
         def uses_source(record: dict[str, str]) -> bool:
-            return (record.get("resume_from") == str(source_claim_id)
-                    or source_handoff_url is not None and record.get("retained_handoff") == source_handoff_url)
+            source_id, handoff_url = record.get("resume_from"), record.get("retained_handoff")
+            return (isinstance(source_id, str) and source_id in source_ids
+                    or isinstance(handoff_url, str) and (
+                        handoff_url == source_handoff_url or parent_handoff.fullmatch(handoff_url) is not None))
 
         seen_children = set()
         for child in children:
@@ -2615,7 +2624,7 @@ def claim_once(args: argparse.Namespace) -> None:
             _, parent_status, parent_comments, _ = claim_snapshot(str(parent_number), parent_repo, allow_closed=True)
             check_peer_ownership(parent_repo, parent_number, parent_status, parent_comments, family_inventory)
             check_handoff_successors(parent_number, family_inventory, source_claim_id=int(source_id),
-                                     source_handoff_url=handoff_url)
+                                     source_handoff_url=handoff_url, source_comments=parent_comments)
 
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str) -> set[str]:
         nonlocal retained_waits
@@ -2623,7 +2632,7 @@ def claim_once(args: argparse.Namespace) -> None:
             if record_kind == "issue":
                 check_inherited_sources(current_comments, current_status)
             if args.resume_from and record_kind == "issue":
-                check_handoff_successors(number, inventory)
+                check_handoff_successors(number, inventory, source_comments=current_comments)
             return set()
         source_number, source_comments, source_status = resume_source(current_comments, current_status)
         _, target_pulls = collect_paged_rest_items(
@@ -2726,9 +2735,8 @@ def claim_once(args: argparse.Namespace) -> None:
         if live_sources:
             owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]
             refuse(live_sources, owner_comments=owner_comments, owner_repo=owner_repo, owner_number=owner_number)
-        if issue_repo.casefold() == target_repo.casefold():
-            check_inherited_sources(current_comments, current_status)
-        check_handoff_successors(source_number, target_inventory)
+        check_inherited_sources(current_comments, current_status, source_inventory=target_inventory)
+        check_handoff_successors(source_number, target_inventory, source_comments=source_comments)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)
         for checked_number, checked_repo in dict.fromkeys(
                 ((target_number, target_repo), (number, issue_repo), (source_number, issue_repo))):
@@ -2755,6 +2763,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
             planning_inventory = github_plan_claim.local_inventory(issue_repo, number, cwd=planning_path)
             check_inherited_sources(current_comments, current_status, source_inventory=planning_inventory)
+            check_handoff_successors(source_number, planning_inventory, source_comments=source_comments)
             _, planning_pulls = collect_paged_rest_items(
                 f"/repos/{issue_repo}/pulls", query={"state": "open"},
                 bucket="rest_core", step_prefix="refresh_planning_prs",

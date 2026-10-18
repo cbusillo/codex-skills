@@ -1254,7 +1254,10 @@ The child's own waits and blockers and the retained PRs' holds still apply.
 Without `--handoff-comment`, resume stays on the claimed record.
 Both same-record and child successors also read the source issue's current
 native children and native child history from its timeline. A detached or
-reparented child remains visible through that history. Once a child records
+reparented child remains visible through that history. The parent's structured
+claim history and every handoff naming that exact parent identify one ownership
+family. Resuming a different claim in the parent's own chain does not hide an
+earlier child holder. Once a child records
 that source or handoff, its full ownership is checked, including later plain
 resumes that omit handoff metadata or change branch. Its claims refuse until
 exact authored releases or verified native session completion account for
@@ -1274,8 +1277,9 @@ and fresh branch without the retained source. A fresh parent claim does not
 itself transfer a child's retained source.
 Cross-record source inference applies only to ordinary successors.
 Conflict-only refresh continues to use the source's canonical issue and checks
-the lineage already recorded there. Cross-repository refresh checks that family
-with the verified planning repository's inventory.
+the lineage already recorded there. Cross-repository refresh checks both that
+family and the source's own successors with the runtime inventory and the
+verified planning repository's inventory.
 The resume-source, handoff-author and native-parent guards retain their human
 explanations and expose stable `claim_resume_*`, `claim_handoff_*` or
 `claim_native_parent_*` codes. Native blocker and malformed child-history
@@ -1288,6 +1292,10 @@ same positive immutable issue ID as the current snapshot; number or title
 agreement alone proves nothing. Missing, changed or unreadable identity cannot
 supply that proof. Other inherited-parent lineage remains subject to the
 same-repository and source-reference checks above.
+If an old self-reference cannot be read, an ordinary fresh claim on the current
+issue can still support independently authorized work on a new branch, without
+`--resume-from`, `--handoff-comment` or retained source assets. Its own ownership,
+waits and blockers must be clear; malformed lineage metadata still refuses.
 
 Unreadable current or historical children (including a 403 or ambiguous 404),
 and malformed child history (`claim_child_history_invalid`), block both
