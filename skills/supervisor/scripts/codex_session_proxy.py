@@ -19,7 +19,8 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
 
-READS = {"thread/read", "thread/list", "thread/loaded/list", "thread/items/list",
+# App thread IDs select effective configuration, not execution ownership.
+READS = {"app/installed", "app/list", "app/read", "thread/read", "thread/list", "thread/loaded/list", "thread/items/list",
          "thread/goal/get", "thread/queue/list", "thread/attachment/list", "thread/attachmentOwner/list",
          "thread/turns/list", "thread/items/read", "thread/timeline/list", "thread/searchOccurrences",
          "thread/backgroundTerminals/list", "thread/search", "thread/realtime/listVoices"}

@@ -1861,6 +1861,12 @@ verdict: their `threadId` identifies the clock's source, not an execution
 attachment. Authentication-refresh and attestation housekeeping retain the
 same non-action treatment. These requests, `/quit`'s `thread/unsubscribe`,
 and disconnect never clear an earlier queue, resume, turn or approval barrier.
+Client `app/installed`, `app/list` and `app/read` also preserve the verdict:
+their optional `threadId` selects effective app configuration, not execution.
+They take no source lease and cannot move an action barrier when a metadata
+reply arrives after a queued turn completes. Refreshing the app snapshot or
+requesting display-only tool summaries does not invoke an app; starting a
+turn or answering an approval remains guarded.
 
 A fresh `thread/start` names no thread. The ingress takes the returned thread's
 ownership lease and durable action barrier before the client sees its ID; a
