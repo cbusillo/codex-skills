@@ -1257,11 +1257,17 @@ native children and native child history from its timeline. A detached or
 reparented child remains visible through that history. The parent's structured
 claim history and every handoff naming that exact parent identify one ownership
 family. Resuming a different claim in the parent's own chain does not hide an
-earlier child holder. Once a child records
+earlier child holder. These checks follow recorded source lineage upward and
+related native current/former children downward across every generation, with
+cycle protection. A released intermediate still connects the family; a
+grandchild holder blocks the grandparent and its other children, and the reverse
+claim order checks those same holders. Once a child records
 that source or handoff, its full ownership is checked, including later plain
 resumes that omit handoff metadata or change branch. Its claims refuse until
 exact authored releases or verified native session completion account for
-them; positive live-session evidence still refuses. A child with no record of
+them; positive live-session evidence still refuses. Closing a child does not
+release its ownership; use its exact authored release or verified native session
+completion before retrying. A child with no record of
 that source remains unrelated and does not block it. Later claims on a child,
 including plain resume, retained handoff and fresh claims, also recheck the
 original source family recorded in its claim history, so they cannot race a

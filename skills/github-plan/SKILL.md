@@ -299,6 +299,8 @@ active issue labels and continuing background jobs do not lift a hold.
    A native child in the same repository may use its parent's released claim
    and handoff IDs for that source slice; the helper verifies the native link
    and parent ownership on both readbacks and preserves the parent's waits.
+   Ownership checks traverse the recorded source family across generations;
+   releasing an intermediate or closing a child does not hide another holder.
    Read Planning: Claim before using this cross-record route.
 
 For a global invalid-wait finding, read the

@@ -97,7 +97,7 @@ class ClaimTests(unittest.TestCase):
         self.target_comments = {}
         self.comments: list[dict[str, Any]] = []
         self.comment_id_offset = 0
-        self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": [],
+        self.inventory: dict[str, Any] = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": [],
                           "session_coverage": {"codex": {"status": "unavailable"}, "claude": {"status": "available"}}}
         self.pulls = []
         self.blockers = []
@@ -1061,6 +1061,232 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertEqual(len(self.comments), 1)  # Same-session recovery reuses its claim.
 
+    def nested_handoff_fixture(self):
+        self.parent_handoff_fixture()
+        middle = {**OTHER, "session": "middle-session", "branch": "work/middle",
+                  "resume_from": str(self.args.resume_from),
+                  "retained_handoff": f"{self.parent['html_url']}#issuecomment-{self.args.handoff_comment}"}
+        self.targets["43"] = {**copy.deepcopy(self.issue), "number": 43, "id": 543,
+                              "body": "## Current Status\n\n" + CLAIM.marker(middle)}
+        self.target_comments["/repos/owner/repo/issues/43/comments"] = [
+            {"id": 88, "body": CLAIM.marker(middle), "user": {"login": TEST_BOT},
+             "created_at": middle["claimed_at"]},
+            {"id": 89, "body": "Released claim 88\nRetained PRs: #99 #100",
+             "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
+        self.children["/repos/owner/repo/issues/41/sub_issues"] = [self.targets["43"]]
+        self.children["/repos/owner/repo/issues/43/sub_issues"] = [copy.deepcopy(self.issue)]
+        self.parent = {"number": 43, "state": "open", "html_url": "https://github.com/owner/repo/issues/43"}
+        self.args.resume_from, self.args.handoff_comment = 88, 89
+        for pull in [*self.pulls, *self.closed_pulls.values()]:
+            pull["body"] = "Refs #41 and #43"
+        self.comment_id_offset = 89
+
+    def test_transitive_family_refuses_holders_in_both_directions_at_every_phase(self):
+        for claimant, phase in product(("root", "uncle", "leaf_root_holder", "leaf_uncle_holder"),
+                                      ("preflight", "after_post", "after_status")):
+            with self.subTest(claimant=claimant, phase=phase):
+                self.setUp()
+                self.nested_handoff_fixture()
+                holder = {**OTHER, "session": "family-holder", "branch": "work/family-holder"}
+                holder_number = 42 if claimant in {"root", "uncle"} else (41 if claimant == "leaf_root_holder" else 45)
+                if holder_number != 41:
+                    holder.update(resume_from="88" if holder_number == 42 else "1",
+                                  retained_handoff=f"https://github.com/owner/repo/issues/{43 if holder_number == 42 else 41}#issuecomment-{89 if holder_number == 42 else 3}")
+                if claimant in {"root", "uncle"}:
+                    self.targets["42"] = copy.deepcopy(self.issue)
+                    self.target_comments["/repos/owner/repo/issues/42/comments"] = []
+                    if claimant == "root":
+                        self.issue = self.targets.pop("41")
+                        self.comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
+                        self.args.issue, self.args.resume_from, self.args.handoff_comment = "41", 1, None
+                        self.args.wait_resolved = "Separate source work; preserve qualification wait"
+                        source_branch = CLAIM.records(self.comments[0]["body"])[0]["branch"]
+                        self.pulls[0]["head"]["ref"] = source_branch
+                        self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
+                    else:
+                        self.issue = {**copy.deepcopy(self.issue), "number": 45}
+                        self.args.issue, self.args.resume_from, self.args.handoff_comment = "45", 1, 3
+                        self.parent = {"number": 41, "state": "open", "html_url": "https://github.com/owner/repo/issues/41"}
+                if holder_number == 45:
+                    self.targets["45"] = {**copy.deepcopy(self.issue), "number": 45, "body": "## Current Status\n\nState: Unclaimed"}
+                    self.children["/repos/owner/repo/issues/41/sub_issues"].append(self.targets["45"])
+                def activate():
+                    self.targets[str(holder_number)]["body"] = "## Current Status\n\n" + CLAIM.marker(holder)
+                    self.target_comments.setdefault(f"/repos/owner/repo/issues/{holder_number}/comments", []).append(
+                        {"id": 90, "body": CLAIM.marker(holder), "user": {"login": TEST_BOT},
+                         "created_at": holder["claimed_at"]})
+                if phase == "preflight": activate()
+                else: setattr(self, phase, activate)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                                 f"https://github.com/owner/repo/issues/{holder_number}#issuecomment-90")
+                if phase == "preflight": self.assert_no_writes()
+                else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_transitive_family_clear_chain_and_same_session_recovery(self):
+        self.nested_handoff_fixture()
+        before = copy.deepcopy((self.targets, self.target_comments, self.children))
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.inventory["worktrees"].append({"branch": self.args.branch, "path": "/leaf"})
+        self.inventory["local_branches"].append(self.args.branch)
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(len(self.comments), 1)
+        self.assertEqual(before, (self.targets, self.target_comments, self.children))
+
+    def test_transitive_family_follows_later_plain_claims_and_native_history(self):
+        for state in ("active", "released", "native_ended", "released_live", "incomplete"):
+            with self.subTest(state=state):
+                self.setUp()
+                self.nested_handoff_fixture()
+                inherited = {**OTHER, "session": "leaf-old", "branch": "work/leaf-old",
+                             "resume_from": "88", "retained_handoff": "https://github.com/owner/repo/issues/43#issuecomment-89"}
+                plain = {**OTHER, "session": "leaf-plain", "branch": "work/leaf-plain"}
+                self.targets["44"] = {**copy.deepcopy(self.issue), "number": 44,
+                                      "body": "## Current Status\n\n" + CLAIM.marker(plain)}
+                comments = [
+                    {"id": 90, "body": CLAIM.marker(inherited), "user": {"login": TEST_BOT}, "created_at": inherited["claimed_at"]},
+                    {"id": 91, "body": "Released claim 90", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"},
+                    {"id": 92, "body": CLAIM.marker(plain), "user": {"login": TEST_BOT}, "created_at": plain["claimed_at"]}]
+                if state in {"released", "released_live", "incomplete"}:
+                    comments.append({"id": 93, "body": "Released claim 92", "user": {"login": TEST_BOT},
+                                     "created_at": "2026-10-02T00:00:00Z"})
+                self.target_comments["/repos/owner/repo/issues/44/comments"] = comments
+                self.timelines["/repos/owner/repo/issues/43/timeline"] = [
+                    {"event": "sub_issue_added", "sub_issue": self.targets["44"]}]
+                self.inventory["worktrees"].append({"branch": plain["branch"], "path": "/leaf-peer"})
+                if state == "native_ended":
+                    self.inventory["session_states"] = {plain["session"]: {"state": "ended", "ended_at": "2026-10-02T00:00:00Z"}}
+                if state == "released_live":
+                    self.inventory["sessions"].append({"sessionId": "foreign-peer", "cwd": "/leaf-peer/subdir"})
+                if state == "incomplete":
+                    self.observe_inventory = lambda inv, observed_comments: ({**inv, "session_coverage": {
+                        "codex_claims": {"observed_source_incomplete": True}}}
+                        if any(c.get("id") == 92 for c in observed_comments) else inv)
+                if state in {"released", "native_ended"}:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                else:
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    if state == "incomplete":
+                        self.assertEqual(caught.exception.payload["coordination"][0]["work_record"],
+                                         "https://github.com/owner/repo/issues/44")
+                    else:
+                        self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                                         "https://github.com/owner/repo/issues/44#issuecomment-92")
+                    self.assert_no_writes()
+
+    def test_transitive_family_unreadable_ancestor_and_malformed_intermediate_refuse(self):
+        for failure, phase in product(("unreadable", "lineage", "history"), ("preflight", "after_post", "after_status")):
+            with self.subTest(failure=failure, phase=phase):
+                self.setUp()
+                self.nested_handoff_fixture()
+                failed = False
+                def invalidate():
+                    nonlocal failed
+                    failed = True
+                    if failure == "lineage":
+                        comments = self.target_comments["/repos/owner/repo/issues/43/comments"]
+                        record = CLAIM.records(comments[0]["body"])[0]
+                        comments.extend([
+                            {"id": 80, "body": CLAIM.marker({**record, "resume_from": "unknown", "session": "malformed-history"}),
+                             "user": {"login": TEST_BOT}, "created_at": record["claimed_at"]},
+                            {"id": 81, "body": "Released claim 80", "user": {"login": TEST_BOT},
+                             "created_at": "2026-10-02T00:00:00Z"}])
+                    if failure == "history":
+                        self.timelines["/repos/owner/repo/issues/41/timeline"] = [{"event": "sub_issue_added"}]
+                if phase == "preflight": invalidate()
+                else: setattr(self, phase, invalidate)
+                get_issue = self.get_issue
+                def read(ref, repo):
+                    if failed and failure == "unreadable" and str(ref) == "41":
+                        raise PLAN.PlanError("Ancestor unreadable", api_result={"status": 403})
+                    return get_issue(ref, repo)
+                with patch.object(self, "get_issue", side_effect=read):
+                    with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                if failure == "unreadable": self.assertEqual(caught.exception.api_result["status"], 403)
+                else: self.assertEqual(caught.exception.code, "claim_resume_lineage_invalid" if failure == "lineage" else "claim_child_history_invalid")
+                if phase == "preflight": self.assert_no_writes()
+                else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_transitive_family_cycles_terminate_without_hiding_ownership(self):
+        for active in (False, True):
+            with self.subTest(active=active):
+                self.setUp()
+                self.nested_handoff_fixture()
+                cycle = {**OTHER, "session": "cycle-session", "branch": "work/cycle",
+                         "resume_from": "88", "retained_handoff": "https://github.com/owner/repo/issues/43#issuecomment-89"}
+                root_comments = self.target_comments["/repos/owner/repo/issues/41/comments"]
+                root_comments.extend([
+                    {"id": 70, "body": CLAIM.marker(cycle), "user": {"login": TEST_BOT}, "created_at": cycle["claimed_at"]},
+                    {"id": 71, "body": "Released claim 70", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}])
+                self.timelines["/repos/owner/repo/issues/43/timeline"] = [
+                    {"event": "sub_issue_added", "sub_issue": self.targets["41"]}]
+                if active:
+                    self.inventory["sessions"].append({"sessionId": cycle["session"], "cwd": "/elsewhere"})
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                                     "https://github.com/owner/repo/issues/41#issuecomment-70")
+                    self.assert_no_writes()
+                else:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_transitive_family_self_identity_is_contextual(self):
+        for alias in ("current", "proved", "claimed_issue"):
+            with self.subTest(alias=alias):
+                self.setUp()
+                self.nested_handoff_fixture()
+                self.issue["id"] = 542
+                historic = {**OTHER, "session": "historic-middle", "branch": "work/historic-middle", "resume_from": "obsolete",
+                            "retained_handoff": ("https://github.com/owner/repo/issues/43#issuecomment-10" if alias == "current"
+                                                 else "https://github.com/old/repo/issues/7#issuecomment-10")}
+                self.target_comments["/repos/owner/repo/issues/43/comments"].extend([
+                    {"id": 80, "body": CLAIM.marker(historic), "user": {"login": TEST_BOT}, "created_at": historic["claimed_at"]},
+                    {"id": 81, "body": "Released claim 80", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}])
+                read_api = self.read_api
+                def read(method, path, **kwargs):
+                    if path == "/repos/old/repo/issues/7":
+                        return "bot", {"id": self.targets["43"]["id"] if alias == "proved" else self.issue["id"]}
+                    return read_api(method, path, **kwargs)
+                with patch.object(self, "read_api", side_effect=read):
+                    if alias == "claimed_issue":
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                        self.assertEqual(caught.exception.code, "claim_resume_lineage_invalid")
+                        self.assert_no_writes()
+                    else:
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_transitive_family_traverses_the_claimed_node_to_its_descendants(self):
+        self.nested_handoff_fixture()
+        inherited = {**OTHER, "session": "leaf-old", "branch": "work/leaf-old", "resume_from": "88",
+                     "retained_handoff": "https://github.com/owner/repo/issues/43#issuecomment-89"}
+        self.comments = [
+            {"id": 90, "body": CLAIM.marker(inherited), "user": {"login": TEST_BOT}, "created_at": inherited["claimed_at"]},
+            {"id": 91, "body": "Released claim 90", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
+        self.args.resume_from, self.args.handoff_comment = None, None  # Independent fresh claim still sees inherited family.
+        descendant = {**OTHER, "session": "descendant", "branch": "work/descendant", "resume_from": "90",
+                      "retained_handoff": "https://github.com/owner/repo/issues/42#issuecomment-91"}
+        self.targets["44"] = {**copy.deepcopy(self.issue), "number": 44,
+                              "body": "## Current Status\n\n" + CLAIM.marker(descendant)}
+        self.children["/repos/owner/repo/issues/42/sub_issues"] = [self.targets["44"]]
+        self.target_comments["/repos/owner/repo/issues/44/comments"] = [
+            {"id": 92, "body": CLAIM.marker(descendant), "user": {"login": TEST_BOT}, "created_at": descendant["claimed_at"]}]
+        # No retained artifacts are requested by the fresh claim.
+        self.pulls, self.closed_pulls = [], {}
+        self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                         "https://github.com/owner/repo/issues/44#issuecomment-92")
+        self.assert_no_writes()
+
     def test_parent_handoff_refuses_an_unreleased_native_child_successor(self):
         for claimant in ("sibling", "parent", "parent_without_handoff"):
             with self.subTest(claimant=claimant):
@@ -1378,7 +1604,8 @@ class ClaimTests(unittest.TestCase):
                 else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_cross_repository_refresh_checks_the_planning_source_family(self):
-        for phase, scope, activity in product(("preflight", "after_post", "after_status"), ("root", "child"),
+        for phase, scope, activity in product(("preflight", "after_post", "after_status"),
+                                               ("root", "child", "grandchild", "ancestor"),
                                                ("planning", "runtime", "none", "planning_requester", "runtime_requester")):
             with self.subTest(phase=phase, scope=scope, activity=activity):
                 self.setUp()
@@ -1395,7 +1622,20 @@ class ClaimTests(unittest.TestCase):
                      "created_at": "2026-10-02T00:00:00Z"}]
                 self.children["/repos/other/plans/issues/41/sub_issues"] = [{**copy.deepcopy(self.issue), "repo": "other/plans"}]
                 holder, holder_number, holder_claim = root, 41, 70
-                if scope == "child":
+                if scope == "ancestor":
+                    root.update(resume_from="60", retained_handoff="https://github.com/other/plans/issues/40#issuecomment-61")
+                    self.targets["41"]["repo"] = "other/plans"
+                    self.targets["41"]["body"] = "## Current Status\n\n" + CLAIM.marker(root)
+                    self.target_comments["/repos/other/plans/issues/41/comments"][0]["body"] = CLAIM.marker(root)
+                    holder = {**OTHER, "session": "ancestor-source", "branch": "work/ancestor-source"}
+                    holder_number, holder_claim = 40, 60
+                    self.targets["40"] = {**copy.deepcopy(self.issue), "repo": "other/plans", "number": 40,
+                                          "body": "## Current Status\n\n" + CLAIM.marker(holder)}
+                    self.target_comments["/repos/other/plans/issues/40/comments"] = [
+                        {"id": 60, "body": CLAIM.marker(holder), "user": {"login": TEST_BOT}, "created_at": holder["claimed_at"]},
+                        {"id": 61, "body": "Released claim 60", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
+                    self.children["/repos/other/plans/issues/40/sub_issues"] = [self.targets["41"]]
+                if scope in {"child", "grandchild"}:
                     holder = {**OTHER, "session": "child-source", "branch": "work/child-source",
                               "resume_from": str(self.args.resume_from),
                               "retained_handoff": "https://github.com/other/plans/issues/42#issuecomment-3"}
@@ -1407,6 +1647,16 @@ class ClaimTests(unittest.TestCase):
                         {"id": 88, "body": CLAIM.marker(holder), "user": {"login": TEST_BOT}, "created_at": holder["claimed_at"]},
                         {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT},
                          "created_at": "2026-10-02T00:00:00Z"}]
+                if scope == "grandchild":
+                    holder = {**OTHER, "session": "grandchild-source", "branch": "work/grandchild-source",
+                              "resume_from": "88", "retained_handoff": "https://github.com/other/plans/issues/44#issuecomment-89"}
+                    holder_number, holder_claim = 45, 90
+                    self.targets["45"] = {**copy.deepcopy(self.issue), "repo": "other/plans", "number": 45,
+                                          "body": "## Current Status\n\n" + CLAIM.marker(holder)}
+                    self.children["/repos/other/plans/issues/44/sub_issues"] = [self.targets["45"]]
+                    self.target_comments["/repos/other/plans/issues/45/comments"] = [
+                        {"id": 90, "body": CLAIM.marker(holder), "user": {"login": TEST_BOT}, "created_at": holder["claimed_at"]},
+                        {"id": 91, "body": "Released claim 90", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
                 def live():
                     inv = self.planning_inventory if activity.startswith("planning") else self.inventory
                     if activity != "none":
@@ -1560,7 +1810,8 @@ class ClaimTests(unittest.TestCase):
                 self.assert_no_writes()
 
     def test_parent_handoff_distinguishes_ended_unrelated_and_live_child_work(self):
-        for state in ("released", "native_ended", "unrelated", "released_live", "released_live_tree", "incomplete"):
+        for state in ("released", "native_ended", "unrelated", "released_live", "released_live_tree", "incomplete",
+                      "closed_unreleased", "closed_released"):
             with self.subTest(state=state):
                 self.setUp()
                 self.parent_handoff_fixture()
@@ -1572,11 +1823,13 @@ class ClaimTests(unittest.TestCase):
                     successor["retained_handoff"] = f"https://github.com/owner/repo/issues/{self.parent['number']}0#issuecomment-12346"
                 sibling = {**copy.deepcopy(self.issue), "number": 43,
                            "body": "## Current Status\n\n" + CLAIM.marker(successor)}
+                if state.startswith("closed_"):
+                    sibling["state"] = "closed"
                 self.targets["43"] = sibling
                 self.children["/repos/owner/repo/issues/41/sub_issues"].append(sibling)
                 comments = [{"id": 88, "body": CLAIM.marker(successor), "user": {"login": TEST_BOT},
                              "created_at": successor["claimed_at"]}]
-                if state not in {"native_ended", "unrelated"}:
+                if state not in {"native_ended", "unrelated", "closed_unreleased"}:
                     comments.append({"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT},
                                      "created_at": "2026-10-02T00:00:00Z"})
                 self.target_comments["/repos/owner/repo/issues/43/comments"] = comments
@@ -1588,17 +1841,18 @@ class ClaimTests(unittest.TestCase):
                     self.inventory["sessions"] = [{"sessionId": successor["session"] if state == "released_live" else "peer",
                                                    "cwd": "/elsewhere" if state == "released_live" else "/sibling/subdir"}]
                 if state == "incomplete":
-                    self.observe_inventory = lambda inv, comments: ({**inv, "session_coverage": {
+                    self.observe_inventory = lambda inv, observed_comments: ({**inv, "session_coverage": {
                         "codex_claims": {"observed_source_incomplete": True}}}
-                        if any(c.get("id") == 88 for c in comments) else inv)
-                if state in {"released", "native_ended", "unrelated"}:
+                        if any(c.get("id") == 88 for c in observed_comments) else inv)
+                if state in {"released", "native_ended", "unrelated", "closed_released"}:
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 else:
                     with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                         self.run_claim()
                     self.assertEqual(caught.exception.code, "claim_conflict")
-                    expected = "native_session_inventory" if state == "incomplete" else "native_child_session"
+                    expected = ("native_session_inventory" if state == "incomplete" else
+                                "current_status" if state == "closed_unreleased" else "native_child_session")
                     self.assertIn(expected, [entry["source"] for entry in caught.exception.payload["competing_evidence"]])
                     self.assert_no_writes()
 
@@ -1719,7 +1973,9 @@ class ClaimTests(unittest.TestCase):
                     def race():
                         source = self.target_comments["/repos/owner/repo/issues/41/comments"]
                         if change == "link": self.parent = None
-                        if change == "reparent": self.parent["number"] = 40
+                        if change == "reparent":
+                            assert self.parent is not None
+                            self.parent["number"] = 40
                         if change == "release": source[-1]["body"] = "Source handoff: PR #99 and #100"
                         if change == "parent_claim": source.append({"id": 80, "body": CLAIM.marker({**OTHER, "session": "third"}), "user": {"login": TEST_BOT}})
                         if change == "source_peer": self.inventory["sessions"] = [{"sessionId": OTHER["session"], "cwd": "/elsewhere"}]
