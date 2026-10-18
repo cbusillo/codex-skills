@@ -56,11 +56,67 @@ def ownership(session: str, *, create: bool = False):
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise LeaseBusy("native-session closure, resume or admission is in progress") from error
-        token = _LEASES.set({*(held or set()), session})
+        _LEASES.set({*(held or set()), session})
         try:
             yield True
         finally:
-            _LEASES.reset(token)
+            # Independent RPCs can complete out of order. Resetting an enter
+            # token would erase another held lease or resurrect a released one.
+            _LEASES.set((_LEASES.get() or set()) - {session})
+
+
+def action_time(session: str) -> datetime | None:
+    """Read the durable per-source barrier, including sources with no receipt."""
+    try:
+        fd = os.open(lease_path(session), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("unsafe native-session action evidence")
+        text = stream.read(4096)
+        if not text:
+            return None
+        value = json.loads(text)
+        if (not isinstance(value, dict) or value.get("session_id") != session
+                or value.get("action_pending") is not True or not isinstance(value.get("action_at"), str)):
+            raise ValueError("native-session action evidence is unavailable")
+        timestamp = datetime.fromisoformat(value["action_at"])
+        if timestamp.tzinfo is None:
+            raise ValueError("native action timestamp requires a timezone")
+        return timestamp
+
+
+def action_pending(session: str) -> bool:
+    return action_time(session) is not None
+
+
+def require_fresh_action_verdict(entry: dict) -> None:
+    after = action_time(entry["session_id"])
+    if after is None:
+        return
+    from github_plan_release import stamp
+    from github_plan_sessions import native_helpers
+    records = native_helpers()[1].read_jsonl(Path(entry["transcript"]))
+    tail = [r for r in records if r.get("timestamp") and stamp(r["timestamp"]) > after]
+    if not native_helpers()[1].summarize(tail, entry["harness"])["safe_verdict"]:
+        raise ValueError("native action needs a fresh final safe verdict before verified closure")
+
+
+def set_action_pending(session: str, pending: bool) -> None:
+    if session not in (_LEASES.get() or set()):
+        raise ValueError("native action evidence has no ownership lease")
+    fd = os.open(lease_path(session), os.O_RDWR | os.O_NOFOLLOW)
+    with os.fdopen(fd, "r+") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("unsafe native-session action evidence")
+        stream.write(json.dumps({"session_id": session, "action_pending": True,
+                                 "action_at": datetime.now(timezone.utc).isoformat()}) if pending else "")
+        stream.truncate()
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 @contextmanager
@@ -83,7 +139,7 @@ def observation(sessions: set[str]):
         acquired = set()
         for session in sorted(sessions):
             try:
-                if session in held or stack.enter_context(ownership(session)):
+                if session in held or stack.enter_context(ownership(session, create=group is not None)):
                     held.add(session)
                     acquired.add(session)
             except (OSError, ValueError):
@@ -271,6 +327,9 @@ def resume_guard(session: str):
                     row["closure_evidence"] = None
                     row["resumed_at"] = datetime.now(timezone.utc).isoformat()
                     replace_rows(rows)
+        # Native acknowledgement may precede deferred execution or transcript
+        # persistence. Authored releases must not bypass this invalidation.
+        set_action_pending(session, True)
         yield
 
 
@@ -393,6 +452,8 @@ def evidence(entry: dict) -> dict:
 def verified_record(session: str, home: Path | None = None) -> dict | None:
     """Optional, read-only proof; unavailable evidence never changes native liveness."""
     try:
+        if action_pending(session):
+            return None
         path = closed_log()
         before = path.lstat()
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()

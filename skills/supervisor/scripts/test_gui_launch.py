@@ -151,6 +151,27 @@ class GuiLaunchTests(unittest.TestCase):
                 self.daemon.assert_not_called()
                 self.unlocked.assert_not_called()
 
+    def test_foreign_remote_refuses_before_daemon_receipt_or_terminal(self):
+        self.brief.write_text("Implement source changes only.")
+        self.command.write_text("codex --remote unix:///foreign/daemon.sock -C " + shlex.quote(str(self.repo)))
+        with patch.object(account_choice, "prepare_launch") as receipt:
+            with self.assertRaises(ValueError):
+                iterm_tab.prepare_launches(self.args)
+        self.daemon.assert_not_called()
+        receipt.assert_not_called()
+
+    def test_selected_remote_through_home_symlink_is_normalized_before_launch(self):
+        self.brief.write_text("Implement source changes only.")
+        alias = self.root / "account-alias"
+        alias.symlink_to(self.account, target_is_directory=True)
+        self.choice["env"]["CODEX_HOME"] = str(alias)
+        endpoint = "unix://" + str(iterm_tab.codex_daemon_endpoint(alias))
+        self.command.write_text("codex --remote " + shlex.quote(endpoint) + " -C " + shlex.quote(str(self.repo)))
+        commands, _ = iterm_tab.prepare_launches(self.args)
+        words = shlex.split(commands[0])
+        native = words[words.index("--") + 1:]
+        self.assertEqual(native[native.index("--remote") + 1], "unix://" + str(iterm_tab.codex_daemon_endpoint(self.account)))
+
     def test_nongui_launch_does_not_probe_or_create_gui_paths(self):
         self.brief.write_text("Implement source changes only.")
         with patch.object(gui_launch, "marketplace") as marketplace:

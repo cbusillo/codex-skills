@@ -21,7 +21,7 @@ import github_plan_closure as closure
 from github_plan_sessions import codex_homes
 from iterm_tab import codex_daemon_endpoint
 import session_record
-from codex_session_proxy import run_client
+from codex_session_proxy import run_client, managed_argv
 
 
 def run(args) -> int:
@@ -44,38 +44,7 @@ def run(args) -> int:
         native = args.native_args
         if native[:1] == ["--"]:
             native = native[1:]
-        if not native or Path(native[0]).name != "codex":
-            raise ValueError("launch needs a direct fresh codex invocation")
-        flags = native[1:native.index("--")] if "--" in native else native[1:]
-        valued = {"-c", "--config", "--enable", "--disable", "--remote", "-i", "--image",
-                  "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox",
-                  "-C", "--cd", "--add-dir", "-a", "--ask-for-approval"}
-        switches = {"--strict-config", "--oss", "--approve-for-me", "--search", "--no-alt-screen",
-                    "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"}
-        index = 0
-        while index < len(flags):
-            flag = flags[index]
-            if flag in valued and index + 1 < len(flags):
-                index += 2
-            elif ("=" in flag and flag.split("=", 1)[0] in valued) or flag in switches:
-                index += 1
-            else:
-                raise ValueError("managed launch needs fresh TUI options and a prompt after --; use the exact-thread helper for resume/queue")
-        endpoint = "unix://" + str(codex_daemon_endpoint(home))
-        remotes = [flags[i + 1] for i, a in enumerate(flags[:-1]) if a == "--remote"]
-        remotes += [a.split("=", 1)[1] for a in flags if a.startswith("--remote=")]
-        if remotes == ["unix://"]:
-            for index, flag in enumerate(native[:native.index("--")] if "--" in native else native):
-                if flag == "--remote":
-                    native[index + 1] = endpoint
-                elif flag == "--remote=unix://":
-                    native[index] = "--remote=" + endpoint
-            remotes = [endpoint]
-        if not remotes:
-            native[1:1] = ["--remote", endpoint]
-            remotes = [endpoint]
-        if remotes != [endpoint]:
-            raise ValueError("managed launch needs the selected account's exact --remote endpoint")
+        native = managed_argv(home, native)
         return asyncio.run(run_client(home, native))
     if str(uuid.UUID(args.session_id)) != args.session_id:
         raise ValueError("use the canonical native thread UUID")

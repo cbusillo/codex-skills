@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -47,6 +46,46 @@ def thread_targets(value):
             yield from thread_targets(child)
 
 
+def managed_argv(home: Path, native: list[str]) -> list[str]:
+    """Validate and normalize before launch preflight can create any terminal."""
+    home = home.expanduser().resolve()
+    native = list(native)
+    if not native or Path(native[0]).name != "codex":
+        raise ValueError("launch needs a direct fresh codex invocation")
+    flags = native[1:native.index("--")] if "--" in native else native[1:]
+    valued = {"-c", "--config", "--enable", "--disable", "--remote", "-i", "--image",
+              "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox",
+              "-C", "--cd", "--add-dir", "-a", "--ask-for-approval"}
+    switches = {"--strict-config", "--oss", "--approve-for-me", "--search", "--no-alt-screen",
+                "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"}
+    index = 0
+    while index < len(flags):
+        flag = flags[index]
+        if flag in valued and index + 1 < len(flags):
+            index += 2
+        elif ("=" in flag and flag.split("=", 1)[0] in valued) or flag in switches:
+            index += 1
+        else:
+            raise ValueError("managed launch needs fresh TUI options and a prompt after --; use the exact-thread helper for resume/queue")
+    endpoint = "unix://" + str(closure.daemon_endpoint(home).resolve())
+    remotes = [flags[i + 1] for i, a in enumerate(flags[:-1]) if a == "--remote"]
+    remotes += [a.split("=", 1)[1] for a in flags if a.startswith("--remote=")]
+    if len(remotes) == 1 and (remotes[0] == "unix://" or
+            remotes[0].startswith("unix:///") and "unix://" + str(Path(remotes[0][7:]).resolve()) == endpoint):
+        for index, flag in enumerate(native[:native.index("--")] if "--" in native else native):
+            if flag == "--remote":
+                native[index + 1] = endpoint
+            elif flag.startswith("--remote="):
+                native[index] = "--remote=" + endpoint
+        remotes = [endpoint]
+    if not remotes:
+        native[1:1] = ["--remote", endpoint]
+        remotes = [endpoint]
+    if remotes != [endpoint]:
+        raise ValueError("managed launch needs the selected account's exact --remote endpoint; use that endpoint or a local --no-daemon launch")
+    return native
+
+
 class Ingress:
     def __init__(self, home: Path):
         self.home = home
@@ -65,7 +104,7 @@ class Ingress:
             if not any(path.is_relative_to((self.home / root).resolve()) for root in ("sessions", "archived_sessions")):
                 raise ValueError("resume path is outside the selected native home")
             with path.open() as stream:
-                header = json.loads(stream.readline(65536))
+                header = json.loads(stream.readline())
             if not isinstance(header, dict) or header.get("type") != "session_meta" or not isinstance(header.get("payload"), dict) or header["payload"].get("id") != params["threadId"]:
                 raise ValueError("resume path and native thread ID disagree")
             # Native path overrides can ignore threadId. Use authoritative ID
@@ -76,62 +115,103 @@ class Ingress:
     async def connect(self, client):
         from websockets.asyncio.client import unix_connect
         from websockets.exceptions import ConnectionClosed
-        # One client connection owns its attachments until it disconnects.
-        # All lease enters and exits run in this one task/context.
-        with ExitStack() as leases:
-            owned, pending = set(), {}
-            async with unix_connect(str(self.upstream), max_size=None) as native:
-                reads = {asyncio.create_task(client.recv()): "client", asyncio.create_task(native.recv()): "native"}
-                try:
-                    while reads:
-                        done, _ = await asyncio.wait(reads, return_when=asyncio.FIRST_COMPLETED)
-                        for task in done:
-                            source = reads.pop(task)
-                            raw = task.result()
-                            message = json.loads(raw)
-                            if not isinstance(message, dict):
-                                raise ValueError("native RPC must be an object")
-                            if source == "client":
-                                method = message.get("method")
-                                if method and method not in READS and method not in HOUSEKEEPING:
-                                    try:
-                                        if method in {"thread/resume", "thread/fork"}:
-                                            message = self.exact_resume(message)
-                                            raw = json.dumps(message)
-                                        targets = set(thread_targets(message.get("params", {})))
-                                        if method.startswith(("thread/", "turn/")) and method != "thread/start" and not targets:
-                                            raise ValueError("native thread action requires an exact identity")
-                                        for session in sorted(targets - owned):
-                                            leases.enter_context(closure.resume_guard(session))
-                                            owned.add(session)
-                                    except (OSError, ValueError) as error:
-                                        await client.send(json.dumps({"id": message.get("id"), "error": {
-                                            "code": -32600, "message": str(error)}}))
-                                        reads[asyncio.create_task(client.recv())] = "client"
-                                        continue  # Never forward an unowned action.
-                                if method == "thread/resume" and "id" in message:
-                                    pending[message["id"]] = message["params"]["threadId"]
+        # Each operation owns its targets through acknowledgement. References
+        # keep overlapping operations protected even when replies arrive out of order.
+        leases, requests, approvals = {}, {}, {}
+
+        def release(targets):
+            for target in targets:
+                guard, count = leases[target]
+                if count == 1:
+                    del leases[target]
+                    guard.__exit__(None, None, None)
+                else:
+                    leases[target] = guard, count - 1
+
+        def acquire(targets):
+            entered = set()
+            try:
+                for target in sorted(targets):
+                    if target in leases:
+                        guard, count = leases[target]
+                        closure.set_action_pending(target, True)
+                        leases[target] = guard, count + 1
+                    else:
+                        guard = closure.resume_guard(target)
+                        guard.__enter__()
+                        leases[target] = guard, 1
+                    entered.add(target)
+                return entered
+            except BaseException:
+                release(entered)
+                raise
+
+        async with unix_connect(str(self.upstream), max_size=None) as native:
+            reads = {asyncio.create_task(client.recv()): "client", asyncio.create_task(native.recv()): "native"}
+            try:
+                while reads:
+                    done, _ = await asyncio.wait(reads, return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:
+                        source = reads.pop(task)
+                        raw = task.result()
+                        message = json.loads(raw)
+                        if not isinstance(message, dict):
+                            raise ValueError("native RPC must be an object")
+                        identity, method = message.get("id"), message.get("method")
+                        if source == "client":
+                            if not method:
+                                if identity not in approvals:
+                                    raise ValueError("native approval response has no guarded request")
+                                for target in approvals[identity]:
+                                    closure.set_action_pending(target, True)
                                 await native.send(raw)
+                                release(approvals.pop(identity))
                                 reads[asyncio.create_task(client.recv())] = "client"
-                            else:
-                                # Server approvals can also cause execution.
-                                # Own their source before the client can answer.
-                                if message.get("method") and "id" in message:
-                                    try:
-                                        targets = set(thread_targets(message.get("params", {})))
-                                        if message["method"] not in NON_THREAD_REQUESTS and not targets:
-                                            raise ValueError("native approval source is unavailable")
-                                        for target in sorted(targets - owned):
-                                            leases.enter_context(closure.resume_guard(target))
-                                            owned.add(target)
-                                    except (OSError, ValueError) as error:
-                                        await native.send(json.dumps({"id": message["id"], "error": {"code": -32600, "message": str(error)}}))
-                                        reads[asyncio.create_task(native.recv())] = "native"
-                                        continue
-                                # Bidirectional RPC request IDs have separate
-                                # namespaces. An approval can reuse a pending
-                                # client ID without completing that request.
-                                session = pending.pop(message.get("id"), None) if "method" not in message else None
+                                continue
+                            try:
+                                if identity is not None and identity in requests:
+                                    raise ValueError("native request ID is already pending")
+                                targets, session = set(), None
+                                if method not in READS and method not in HOUSEKEEPING:
+                                    if method in {"thread/resume", "thread/fork"}:
+                                        message = self.exact_resume(message)
+                                        raw = json.dumps(message)
+                                    targets = set(thread_targets(message.get("params", {})))
+                                    if method.startswith(("thread/", "turn/")) and method != "thread/start" and not targets:
+                                        raise ValueError("native thread action requires an exact identity")
+                                    if targets and identity is None:
+                                        raise ValueError("native action needs a request ID for acknowledgement")
+                                if method == "thread/resume":
+                                    session = message["params"]["threadId"]
+                                guarded = acquire(targets)
+                            except (OSError, ValueError) as error:
+                                await client.send(json.dumps({"id": identity, "error": {
+                                    "code": -32600, "message": str(error)}}))
+                                reads[asyncio.create_task(client.recv())] = "client"
+                                continue
+                            if identity is not None:
+                                requests[identity] = guarded, session
+                            await native.send(raw)
+                            reads[asyncio.create_task(client.recv())] = "client"
+                        else:
+                            if method and identity is not None:
+                                try:
+                                    if identity in approvals:
+                                        raise ValueError("native approval ID is already pending")
+                                    targets = set(thread_targets(message.get("params", {})))
+                                    if method not in NON_THREAD_REQUESTS and not targets:
+                                        raise ValueError("native approval source is unavailable")
+                                    approvals[identity] = acquire(targets)
+                                except (OSError, ValueError) as error:
+                                    await native.send(json.dumps({"id": identity, "error": {"code": -32600, "message": str(error)}}))
+                                    reads[asyncio.create_task(native.recv())] = "native"
+                                    continue
+                            # Bidirectional ID namespaces remain independent.
+                            completed = requests.pop(identity, None) if not method else None
+                            guarded, session = completed if completed is not None else (set(), None)
+                            try:
+                                for target in guarded:
+                                    closure.set_action_pending(target, True)
                                 if session and "result" in message and self.child_metadata:
                                     thread = message["result"]["thread"]
                                     path = Path(thread.get("path") or "/").resolve()
@@ -140,19 +220,24 @@ class Ingress:
                                     try:
                                         await asyncio.to_thread(closure.resumed_launch, session, self.child_metadata, str(path), self.child_tty)
                                     except (OSError, ValueError) as error:
-                                        # Resume already happened, with invalidation persisted.
-                                        # Keep the lease and connection, but expose missing
-                                        # metadata so the caller can retry this exact resume.
-                                        raw = json.dumps({"id": message["id"], "error": {"code": -32603,
+                                        # Native resume happened. Durable invalidation
+                                        # remains until verified closure, including when
+                                        # metadata publication needs an exact retry.
+                                        raw = json.dumps({"id": identity, "error": {"code": -32603,
                                             "message": "native resume succeeded but launch metadata was not recorded; preserve this source and retry the exact resume: " + str(error)}})
                                 await client.send(raw)
-                                reads[asyncio.create_task(native.recv())] = "native"
-                except ConnectionClosed:
-                    pass
-                finally:
-                    for task in reads:
-                        task.cancel()
-                    await asyncio.gather(*reads, return_exceptions=True)
+                            finally:
+                                release(guarded)
+                            reads[asyncio.create_task(native.recv())] = "native"
+            except ConnectionClosed:
+                pass
+            finally:
+                for task in reads:
+                    task.cancel()
+                await asyncio.gather(*reads, return_exceptions=True)
+                for guard, _count in list(leases.values()):
+                    guard.__exit__(None, None, None)
+                leases.clear()
 
 
 async def run_client(home: Path, native: list[str], *, session: str | None = None) -> int:
@@ -183,7 +268,7 @@ async def run_client(home: Path, native: list[str], *, session: str | None = Non
             boot = [sys.executable, str(Path(__file__).with_name("codex-session.py")), "native",
                     "--codex-home", str(home), "--proxy", str(endpoint), "--proxy-parent", str(os.getpid()), "--", *command]
             # For exact resume, invalidate before even starting the client.
-            # The ingress reacquires and retains ownership before any RPC acts.
+            # The ingress reacquires ownership for every RPC before it acts.
             try:
                 if session:
                     with closure.resume_guard(session):

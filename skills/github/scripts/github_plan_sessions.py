@@ -80,6 +80,10 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                 return message["result"]
 
     async def executions_ended(session):
+        queued = await request("thread/queue/list", {"threadId": session, "limit": 1})
+        if (not isinstance(queued, dict) or not isinstance(queued.get("data"), list)
+                or queued["data"] or queued.get("nextCursor") is not None):
+            return False
         cursor = None
         for _ in range(100):
             page = await request("thread/items/list", {"threadId": session, "limit": 20,
@@ -117,6 +121,26 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
         state = thread.get("status", {}).get("type")
         if state in {"active", "systemError"}:
             active_seen.add(session)
+        if prove and state == "notLoaded":
+            # Missing/slow queue evidence must also defeat authored-release
+            # fallback, which does not otherwise need an ended receipt.
+            previous = states.get(session)
+            pending_peer = {"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "native_queue"}
+            peers.append(pending_peer)
+            states[session] = {"state": "live", "source": "native_queue"}
+            try:
+                queued = await request("thread/queue/list", {"threadId": session, "limit": 1})
+                empty = (isinstance(queued, dict) and isinstance(queued.get("data"), list)
+                         and not queued["data"] and queued.get("nextCursor") is None)
+            except Exception:
+                empty = False
+            if not empty:
+                return
+            peers.remove(pending_peer)
+            if previous is None:
+                states.pop(session, None)
+            else:
+                states[session] = previous
         receipt = github_plan_closure.RECEIPTS.get().get(session)
         if receipt and (receipt["closure_evidence"].get("codex_home") != str(home.resolve())
                         or not isinstance(receipt.get("transcript"), str)
@@ -267,7 +291,17 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
         receipts = github_plan_closure.candidate_records(leased)
         token = github_plan_closure.RECEIPTS.set(receipts)
         try:
-            return _observe(sessions, proof_sessions)
+            peers, states, coverage = _observe(sessions, proof_sessions)
+            for session in sessions:
+                try:
+                    blocked = (github_plan_closure.action_pending(session)
+                               or session not in leased and github_plan_closure.lease_path(session).exists())
+                except (OSError, ValueError):
+                    blocked = True
+                if blocked:
+                    peers.append({"sessionId": session, "cwd": "/", "state": "active", "source": "native_action"})
+                    states[session] = {"state": "live", "source": "native_action"}
+            return peers, states, coverage
         finally:
             github_plan_closure.RECEIPTS.reset(token)
             github_plan_closure.LOG_CACHE.reset(cache_token)

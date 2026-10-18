@@ -712,6 +712,8 @@ def with_account(command_text, choice, brief=None, *, coordinate=False):
         if directory is not None:
             tokens = tokens[tokens.index("&&") + 1:]
         prefix, words = tokens[:prefix_count], tokens[prefix_count:]
+        from codex_session_proxy import managed_argv
+        words = managed_argv(Path(choice["env"]["CODEX_HOME"]), words)
         wrapper = ["uv", "run", str(Path(__file__).with_name("codex-session.py")), "launch",
                    "--codex-home", choice["env"]["CODEX_HOME"], "--", *words]
         command_text = shlex.join([*prefix, *wrapper])

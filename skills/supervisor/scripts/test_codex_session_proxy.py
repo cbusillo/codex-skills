@@ -13,6 +13,8 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import threading
+import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
@@ -22,6 +24,292 @@ import codex_session_proxy as proxy
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connected_worker_accepts_queue_and_capacity_continue_after_turn_reply(self):
+        from test_codex_session import SESSION
+        import capacity_retry
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            task, request, response, _ = await self.start_client(f)
+            queue_bin = f.root / "queue-bin"
+            queue_bin.mkdir()
+            executable = queue_bin / "codex"
+            executable.write_text(f"#!{sys.executable}\nimport json,sys\n"
+                "from websockets.sync.client import unix_connect\n"
+                "args=sys.argv\n"
+                "with unix_connect(args[args.index('--remote')+1][7:]) as ws:\n"
+                " ws.send(json.dumps({'id':1,'method':'thread/queue/add','params':{"
+                "'threadId':args[args.index('--thread')+1], 'message':args[args.index('--message')+1]}}))\n"
+                " reply=json.loads(ws.recv())\n"
+                " if 'error' in reply: raise SystemExit(1)\n")
+            executable.chmod(0o700)
+            args = SimpleNamespace(command="queue", session_id=f.session, codex_home=f.home,
+                                   message="status?", message_file=None)
+            try:
+                result = await self.send(task, request, response, "turn/start", f.session)
+                self.assertIn("result", result)
+                with patch.dict(os.environ, {"PATH": str(queue_bin) + os.pathsep + os.environ["PATH"]}), \
+                        patch.object(SESSION, "codex_homes", return_value=[f.home]):
+                    self.assertEqual(await asyncio.to_thread(SESSION.run, args), 0)
+                    # Capacity target validation is covered by its full module;
+                    # exercise its real queue guard and child against this live ingress.
+                    with patch.object(capacity_retry, "verified_target", return_value=(f.home, proxy.Ingress(f.home).upstream)):
+                        await asyncio.to_thread(capacity_retry.queue_continue, f.entry, f.home,
+                                                proxy.Ingress(f.home).upstream, {})
+                self.assertEqual([r["params"]["message"] for r in f.mutations if r["method"] == "thread/queue/add"],
+                                 ["status?", "continue"])
+                self.assertFalse(task.done())
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_pending_operations_release_only_their_targets_after_out_of_order_replies(self):
+        from websockets.asyncio.client import unix_connect
+        with ReceiptFixture() as f:
+            f.parallel = True
+            gates = {i: threading.Event() for i in (10, 11, 12)}
+            seen = {i: threading.Event() for i in gates}
+            async def delayed(request):
+                seen[request["id"]].set()
+                await asyncio.to_thread(gates[request["id"]].wait, 8)
+                return {}
+            f.rpc_results["turn/interrupt"] = delayed
+            task, _, _, _ = await self.start_client(f)
+            endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
+            def available(session):
+                try:
+                    with closure.ownership(session, create=True):
+                        return True
+                except closure.LeaseBusy:
+                    return False
+            try:
+                async with unix_connect(endpoint) as ws:
+                    for number, target in ((10, f.session), (11, "other-worker"), (12, f.session)):
+                        await ws.send(json.dumps({"id": number, "method": "turn/interrupt", "params": {"threadId": target}}))
+                    for event in seen.values():
+                        self.assertTrue(await asyncio.to_thread(event.wait, 3))
+                    self.assertFalse(await asyncio.to_thread(available, f.session))
+                    self.assertFalse(await asyncio.to_thread(available, "other-worker"))
+                    gates[11].set()
+                    self.assertEqual(json.loads(await ws.recv())["id"], 11)
+                    self.assertTrue(await asyncio.to_thread(available, "other-worker"))
+                    self.assertFalse(await asyncio.to_thread(available, f.session))
+                    gates[10].set()
+                    self.assertEqual(json.loads(await ws.recv())["id"], 10)
+                    self.assertFalse(await asyncio.to_thread(available, f.session))
+                    gates[12].set()
+                    self.assertEqual(json.loads(await ws.recv())["id"], 12)
+                    self.assertTrue(await asyncio.to_thread(available, f.session))
+            finally:
+                for gate in gates.values(): gate.set()
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_acked_action_blocks_authored_release_recovery_until_verified_closure(self):
+        import github_plan_claim as claim
+        for receipt in (False, True):
+            with self.subTest(receipt=receipt), ReceiptFixture() as f:
+                if not receipt:
+                    closure.replace_rows([])
+                f.native_state = "notLoaded"
+                task, request, response, _ = await self.start_client(f)
+                try:
+                    result = await self.send(task, request, response, "thread/queue/add", f.session, message="later")
+                    self.assertIn("result", result)
+                    record = {"worker": "predecessor", "session": f.session, "branch": "work/source", "claimed_at": "2026-10-01T01:00:00Z"}
+                    comments = [{"id": 1, "body": claim.marker(record), "user": {"login": "fixture-bot"}},
+                                {"id": 2, "body": "Released claim 1", "user": {"login": "fixture-bot"}}]
+                    peers, states, _ = await asyncio.to_thread(f.observe)
+                    self.assertEqual(states[f.session]["state"], "live")
+                    self.assertFalse(claim.ended_ownership(comments, {"sessions": peers, "session_states": states, "worktrees": []}))
+                    if not receipt:
+                        with self.assertRaises(ValueError):
+                            await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                        self.assertTrue(closure.action_pending(f.session))
+                        timestamp = datetime.now(timezone.utc).isoformat()
+                        with f.transcript.open("a") as stream:
+                            for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                                stream.write(json.dumps({"type": "event_msg", "timestamp": timestamp, "payload": payload}) + "\n")
+                        closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                        self.assertTrue(closed["process_exit_verified"])
+                        _, states, _ = await asyncio.to_thread(f.observe, {f.session})
+                        self.assertEqual(states[f.session]["state"], "ended")
+                finally:
+                    (f.root / "stop").touch()
+                    await asyncio.wait_for(task, 8)
+
+    async def test_large_native_header_path_is_checked_then_stripped(self):
+        with ReceiptFixture() as f:
+            lines = f.transcript.read_text().splitlines()
+            header = json.loads(lines[0])
+            header["payload"]["base_instructions"] = {"text": "large native instructions " * 4000}
+            f.transcript.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n")
+            task, request, response, _ = await self.start_client(f)
+            try:
+                for method in ("thread/resume", "thread/fork"):
+                    result = await self.send(task, request, response, method, f.session, path=str(f.transcript))
+                    self.assertIn("result", result)
+                    self.assertNotIn("path", f.mutations[-1]["params"])
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_approval_holds_its_source_until_answer_then_releases_it(self):
+        from websockets.asyncio.client import unix_connect
+        with ReceiptFixture() as f:
+            task, _, _, _ = await self.start_client(f)
+            endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
+            f.approval_target = "other-worker"
+            def available():
+                try:
+                    with closure.ownership(f.approval_target, create=True):
+                        return True
+                except closure.LeaseBusy:
+                    return False
+            try:
+                async with unix_connect(endpoint) as ws:
+                    await ws.send(json.dumps({"id": "approval", "method": "initialize", "params": {}}))
+                    self.assertIn("result", json.loads(await ws.recv()))
+                    approval = json.loads(await ws.recv())
+                    self.assertEqual(approval["id"], "approval")
+                    self.assertFalse(await asyncio.to_thread(available))
+                    await ws.send(json.dumps({"id": "approval", "result": {"decision": "denied"}}))
+                    async with asyncio.timeout(3):
+                        while not f.approval_results:
+                            await asyncio.sleep(.01)
+                    self.assertTrue(await asyncio.to_thread(available))
+                    self.assertTrue(closure.action_pending(f.approval_target))
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_an_earlier_target_reply_does_not_lose_later_resume_ownership(self):
+        from websockets.asyncio.client import unix_connect
+        with ReceiptFixture() as f:
+            f.parallel = True
+            gates = {i: threading.Event() for i in (10, 11)}
+            seen = {i: threading.Event() for i in gates}
+            async def delayed(request):
+                seen[request["id"]].set()
+                await asyncio.to_thread(gates[request["id"]].wait, 8)
+                return {"thread": {"id": request["params"]["threadId"],
+                                   "path": str(f.home / "sessions/other-worker.jsonl")}}
+            f.rpc_results.update({"turn/interrupt": delayed, "thread/resume": delayed})
+            task, _, _, _ = await self.start_client(f)
+            endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
+            try:
+                async with unix_connect(endpoint) as ws:
+                    for identity, method, target in ((10, "turn/interrupt", f.session), (11, "thread/resume", "other-worker")):
+                        await ws.send(json.dumps({"id": identity, "method": method, "params": {"threadId": target}}))
+                    for event in seen.values():
+                        self.assertTrue(await asyncio.to_thread(event.wait, 3))
+                    gates[10].set()
+                    self.assertIn("result", json.loads(await ws.recv()))
+                    gates[11].set()
+                    self.assertIn("result", json.loads(await ws.recv()))
+                    row = next(r for r in closure.log_rows() if r.get("session_id") == "other-worker")
+                    self.assertTrue(row["resumed_generation"]["launch_generation"])
+            finally:
+                for gate in gates.values(): gate.set()
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_native_error_releases_operation_and_next_action_rechecks_freeze(self):
+        with ReceiptFixture() as f:
+            seen = []
+            def refuse(request):
+                seen.append(request)
+                return ValueError("fixture native refusal")
+            f.rpc_results["turn/interrupt"] = refuse
+            task, request, response, _ = await self.start_client(f)
+            try:
+                self.assertIn("error", await self.send(task, request, response, "turn/interrupt", f.session))
+                self.assertEqual(len(seen), 1)
+                def freeze():
+                    with closure.ownership(f.session, create=True):
+                        closure.admit_sources({f.session})
+                await asyncio.to_thread(freeze)
+                self.assertIn("error", await self.send(task, request, response, "turn/start", f.session))
+                self.assertFalse(f.mutations)
+                self.assertTrue(closure.action_pending(f.session))
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_disconnect_releases_pending_action_but_keeps_its_durable_barrier(self):
+        from websockets.asyncio.client import unix_connect
+        with ReceiptFixture() as f:
+            f.parallel = True
+            received, gate = threading.Event(), threading.Event()
+            async def delayed(_request):
+                received.set()
+                await asyncio.to_thread(gate.wait, 5)
+                return {}
+            f.rpc_results["turn/interrupt"] = delayed
+            task, _, _, _ = await self.start_client(f)
+            endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
+            try:
+                async with unix_connect(endpoint) as ws:
+                    await ws.send(json.dumps({"id": 10, "method": "turn/interrupt", "params": {"threadId": f.session}}))
+                    self.assertTrue(await asyncio.to_thread(received.wait, 3))
+                    with self.assertRaises(closure.LeaseBusy):
+                        await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                async with asyncio.timeout(3):
+                    while True:
+                        try:
+                            await asyncio.to_thread(self.acquire_source, f.session)
+                            break
+                        except closure.LeaseBusy:
+                            await asyncio.sleep(.01)
+                self.assertTrue(closure.action_pending(f.session))
+                self.assertFalse(task.done())
+            finally:
+                gate.set()
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    async def test_intermediate_verdict_cannot_clear_a_later_overlapping_action(self):
+        from websockets.asyncio.client import unix_connect
+        with ReceiptFixture() as f:
+            closure.replace_rows([])
+            f.parallel = True
+            seen = {i: threading.Event() for i in (10, 11)}
+            gate = threading.Event()
+            async def delayed(request):
+                seen[request["id"]].set()
+                await asyncio.to_thread(gate.wait, 5)
+                return {}
+            f.rpc_results["turn/interrupt"] = delayed
+            task, _, _, _ = await self.start_client(f)
+            endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
+            try:
+                async with unix_connect(endpoint) as ws:
+                    await ws.send(json.dumps({"id": 10, "method": "turn/interrupt", "params": {"threadId": f.session}}))
+                    self.assertTrue(await asyncio.to_thread(seen[10].wait, 3))
+                    timestamp = datetime.now(timezone.utc).isoformat()
+                    with f.transcript.open("a") as stream:
+                        for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                            stream.write(json.dumps({"type": "event_msg", "timestamp": timestamp, "payload": payload}) + "\n")
+                    await ws.send(json.dumps({"id": 11, "method": "turn/interrupt", "params": {"threadId": f.session}}))
+                    self.assertTrue(await asyncio.to_thread(seen[11].wait, 3))
+                async with asyncio.timeout(3):
+                    while True:
+                        try:
+                            await asyncio.to_thread(self.acquire_source, f.session)
+                            break
+                        except closure.LeaseBusy:
+                            await asyncio.sleep(.01)
+                with self.assertRaises(ValueError):
+                    await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                self.assertTrue(closure.action_pending(f.session))
+            finally:
+                gate.set()
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    @staticmethod
+    def acquire_source(session):
+        with closure.ownership(session, create=True):
+            pass
+
     async def test_refused_exact_resume_removes_its_registered_proxy(self):
         with ReceiptFixture() as f:
             with closure.ownership(f.session):

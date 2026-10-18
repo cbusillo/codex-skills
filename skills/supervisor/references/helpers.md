@@ -1071,7 +1071,9 @@ they bypass the managed ingress and receive no managed-client exemption.
 If marketplace setup itself fails, the warning names the fallback to the
 selected-home daemon, or the retained local configuration when `--no-daemon`
 was explicit. Other explicit remote endpoints are
-unverified and cannot satisfy `--require-browser`. Use local `codex -C` for
+unverified and cannot satisfy `--require-browser`. A managed daemon launch also
+refuses an endpoint outside the selected account during preflight; select its
+account or use a supported local `--no-daemon` launch. Use local `codex -C` for
 the supported browser route. Nothing restarts an existing daemon or edits
 shared config. Discovery does not prove a working extension, runtime or OS grant.
 
@@ -1750,14 +1752,23 @@ resume process, unknown client, changed generation or unavailable evidence keeps
 it live. A proven new TTY occupant born after closure is not the old worker.
 Unidentified interactive clients, pickers, stdio servers and unobserved daemons
 still refuse. Fresh noninteractive execs cannot attach to the predecessor.
-The supported fresh and resume launchers run each TUI through a private local
-RPC ingress, connected to the existing selected-home daemon. It holds a thread's
-ownership lease from its first attachment/action until that client disconnects,
-and invalidates closure before forwarding the action. This includes in-TUI
+The supported daemon-routed fresh and resume launchers run each TUI through a
+private local RPC ingress, connected to the existing selected-home daemon. Each
+action holds its targets' ownership leases until its matching native response;
+server approvals hold them until the client's answer has been forwarded.
+Overlapping actions retain each target until all matching operations complete,
+including replies received out of order. Every later action reacquires ownership
+and checks the source freeze before forwarding. This includes in-TUI
 `/resume`, pickers, turn starts and server approval requests with a thread ID.
 A frozen predecessor receives a native RPC error before it can act. Read-only
 thread reads still pass after handoff. No daemon is restarted and no native
 subscriber API is assumed.
+
+Completion releases the operation's lease, so another Supervisor can queue a
+nudge or capacity `continue` while that worker's TUI stays connected. A pending
+operation still refuses those sends; capacity retry defers without spending an
+attempt. Queue never joins or bypasses a busy owner's lease. Native action
+requests need a request ID so ownership can span acknowledgement.
 
 The parent ingress and its native client register PID/birth, selected home,
 private socket identity and a digest of the immutable option prefix before
@@ -1776,8 +1787,20 @@ before its first external write. Slow closure verification holds only its source
 lease, then compares that source's current record under a brief shared-log lock
 before publication. Other launches and new-thread first turns can continue;
 a thread with no receipt does not take the store lock to invalidate nothing.
+Before forwarding any action, the lease file stores a durable invalidation,
+including when no closure record exists yet. Busy leases and invalidations also
+defeat authored-release/unloaded recovery. Native acknowledgement alone cannot
+clear this barrier: a successful verified closure in the shared log needs a
+fresh final safe verdict after the latest guarded action, including overlapping
+actions, acknowledgements (including native errors) and approval answers, and
+clears it while holding source ownership. An older
+safe message followed only by a newer task-complete record is insufficient.
+Pending queued submissions, malformed queue
+pages or missing queue evidence still refuse native end proof, including when
+the daemon says notLoaded. Queued work must drain or be cancelled, then the
+Supervisor verifies closure normally; never clear the lease file by hand.
 If recording generation metadata fails after a native resume, the RPC reports
-that partial outcome and retains the connection, lease and invalidation. Retry
+that partial outcome and retains the connection and durable invalidation. Retry
 the exact resume for metadata, preserving the source in the meantime.
 The release-discovery operation has its own lock. Global observation creates no log,
 directory or lease file, and receipt file work runs off the native RPC event loop
@@ -1794,6 +1817,8 @@ therefore keep refusing idle admission; they do not weaken ordinary verified
 release or the unloaded recovery path.
 The supported fresh launcher adds the selected account's explicit remote
 endpoint when omitted or given as the documented bare `unix://` shorthand,
+and normalizes an equivalent endpoint through a selected-home symlink.
+The launcher validates this before any terminal or account receipt is created,
 and refuses conflicting endpoints or raw resume/fork
 commands, standalone servers, unknown options and `--no-daemon` before native
 execution. Put an initial literal prompt after `--`, as the brief launcher does.

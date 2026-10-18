@@ -102,14 +102,15 @@ class ProviderLaunchTests(unittest.TestCase):
 
     def test_managed_launch_preserves_direct_prefix_directory_and_literal_prompt(self):
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
-        prepared = iterm_tab.with_account("cd /fixture && exec env TERM=fixture codex --remote unix:///fixture", choice,
+        endpoint = "unix://" + str(iterm_tab.codex_daemon_endpoint(Path(choice["env"]["CODEX_HOME"])))
+        prepared = iterm_tab.with_account("cd /fixture && exec env TERM=fixture codex --remote " + shlex.quote(endpoint), choice,
                                          "literal $(touch NEVER)", coordinate=True)
         # Parse the shell sections rather than asserting a rendered command.
         parts = shlex.split(prepared)
         self.assertEqual(parts[parts.index("cd") + 1], "/fixture")
         self.assertIn("TERM=fixture", parts)
         native = parts[parts.index("--") + 1:]
-        self.assertEqual(native, ["codex", "--remote", "unix:///fixture", "--", "literal $(touch NEVER)"])
+        self.assertEqual(native, ["codex", "--remote", endpoint, "--", "literal $(touch NEVER)"])
 
     def test_codex_launch_records_account_and_verified_process_generation(self):
         import github_plan_closure

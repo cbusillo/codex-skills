@@ -7,6 +7,7 @@ import copy
 import asyncio
 from contextlib import ExitStack
 import json
+import inspect
 import os
 import socket
 import sys
@@ -37,6 +38,8 @@ class ReceiptFixture:
         self.failure = None
         self.mutations = []
         self.rpc_results = {}
+        self.parallel = False
+        self.queue_items = []
         self.approval_target = None
         self.approval_results = []
         self.approval_on_resume = False
@@ -77,22 +80,24 @@ class ReceiptFixture:
             async def handler(request):
                 ws = web.WebSocketResponse()
                 await ws.prepare(request)
-                async for frame in ws:
-                    request = frame.json()
+                async def respond(request):
                     if "method" not in request:
                         self.approval_results.append(request)
-                        continue
+                        return
                     method = request["method"]
-                    if method == "initialized": continue
+                    if method == "initialized": return
                     if method == "initialize": result = {}
                     elif method in self.rpc_results:
                         reply = self.rpc_results[method]
                         result = reply(request) if callable(reply) else reply
+                        if inspect.isawaitable(result):
+                            result = await result
                     elif method == "thread/loaded/list": result = {"data": [self.session], "nextCursor": "more" if self.incomplete else None}
                     elif method == "thread/items/list": result = {"data": [{"item": item, "turnId": "source-turn"} for item in self.execution_items], "nextCursor": None}
+                    elif method == "thread/queue/list": result = {"data": self.queue_items, "nextCursor": None}
                     elif method == "thread/read": result = {"thread": {
                         "id": self.session, "cwd": "/retained/source", "path": str(self.transcript), "status": {"type": self.native_state}}}
-                    elif method in {"thread/resume", "thread/fork", "turn/start", "thread/archive"}:
+                    elif method in {"thread/resume", "thread/fork", "turn/start", "thread/archive", "thread/queue/add"}:
                         self.mutations.append(request)
                         target = request["params"]["threadId"]
                         if self.approval_on_resume:
@@ -100,10 +105,24 @@ class ReceiptFixture:
                                                 "params": {"conversationId": target}})
                         result = {"thread": {"id": target, "path": str(self.transcript if target == self.session else self.home / "sessions" / (target + ".jsonl"))}}
                     else: raise AssertionError("unexpected native mutation: " + method)
+                    if isinstance(result, Exception):
+                        await ws.send_json({"id": request["id"], "error": {"code": -32600, "message": str(result)}})
+                        return
                     await ws.send_json({"id": request["id"], "result": result})
                     if method == "initialize" and self.approval_target:
                         await ws.send_json({"id": "approval", "method": "execCommandApproval",
                                             "params": {"conversationId": self.approval_target}})
+                tasks = []
+                try:
+                    async for frame in ws:
+                        if self.parallel:
+                            tasks.append(asyncio.create_task(respond(frame.json())))
+                        else:
+                            await respond(frame.json())
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 return ws
             app = web.Application()
             app.router.add_get("/", handler)
@@ -342,7 +361,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                 method = request["method"]
                 if method == "initialized": continue
                 if method == "initialize": result = {}
-                elif method == "thread/items/list": result = {"data": [], "nextCursor": None}
+                elif method in {"thread/items/list", "thread/queue/list"}: result = {"data": [], "nextCursor": None}
                 elif method == "thread/loaded/list": result = {"data": ["holder", "peer"] if with_peer else ["holder"], "nextCursor": None}
                 elif method == "thread/read":
                     reads += 1
@@ -465,6 +484,27 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+    def test_malformed_action_barrier_blocks_native_end_proof_without_writing(self):
+        with ReceiptFixture() as f:
+            f.native_state = "notLoaded"
+            path = CLOSURE.lease_path(f.session)
+            path.write_text("incomplete action evidence")
+            before = {p: p.read_bytes() for p in f.log.parent.rglob("*") if p.is_file()}
+            _, states, _ = f.observe({f.session})
+            self.assertEqual(states[f.session]["state"], "live")
+            self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
+            self.assertEqual({p: p.read_bytes() for p in f.log.parent.rglob("*") if p.is_file()}, before)
+
+    def test_nonempty_or_missing_queue_evidence_blocks_even_authored_release_fallback(self):
+        for native in ("idle", "notLoaded"):
+            for queued in ({"data": [{"id": "pending"}], "nextCursor": None},
+                           {"data": [], "nextCursor": "more"}, {}):
+                with self.subTest(native=native, queued=queued), ReceiptFixture() as f:
+                    f.native_state = native
+                    f.rpc_results["thread/queue/list"] = queued
+                    _, states, _ = f.observe()
+                    self.assertEqual(states[f.session]["state"], "live")
+
     def test_runtime_and_account_overrides_cannot_hide_a_frozen_source(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODE_HOME": str(Path(folder) / ".code")}):
             path = CLOSURE.closed_log()

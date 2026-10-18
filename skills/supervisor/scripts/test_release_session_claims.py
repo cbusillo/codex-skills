@@ -12,6 +12,7 @@ import itertools
 import fcntl
 import importlib
 from types import SimpleNamespace
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import subprocess
@@ -766,6 +767,9 @@ else:
                     "launch_started_at": "2026-01-01T00:01:40Z", "codex_home": str(self.root.resolve())}
         with helper.closure.resume_guard(SOURCE["session"]):
             helper.closure.resumed_launch(SOURCE["session"], metadata, str(self.transcript), self.entry["tty"])
+        with self.transcript.open("a") as stream:
+            for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
         with self.assertRaises(ValueError):
             helper.record_closure(log, self.entry, "supervisor")
         replacement = {**self.entry, **metadata, "pid": metadata["launch_pid"]}

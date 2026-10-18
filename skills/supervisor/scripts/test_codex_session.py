@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 import socket
 import tempfile
 from types import SimpleNamespace
@@ -129,6 +130,10 @@ class ResumeTests(unittest.TestCase):
             stream.write(json.dumps({"timestamp": "2026-10-01T02:00:01Z", "type": "event_msg", "payload": {"type": "task_complete"}}) + "\n")
         self.args.command, self.args.message = "queue", "continue"
         self.assertEqual(SESSION.run(self.args), 0)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with transcript.open("a") as stream:
+            for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                stream.write(json.dumps({"type": "event_msg", "timestamp": timestamp, "payload": payload}) + "\n")
         worker = {"session_id": self.native, "harness": "codex", "transcript": str(transcript),
                   "pid": 789, "tty": "worker-tty", "supervisor_owned": True,
                   "launch_pid": 789, "launch_generation": "worker-generation", "launch_started_at": "2026-10-01T01:00:00Z"}

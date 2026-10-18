@@ -139,9 +139,15 @@ def transcript_roots(harness, configured, explicit):
 
 
 def record_closure(path, entry, supervisor_session, *, persist=True):
-    coordination = closure.ownership(entry["session_id"], create=persist) if path.resolve() == closure.closed_log().resolve() else nullcontext()
+    shared = path.resolve() == closure.closed_log().resolve()
+    coordination = closure.ownership(entry["session_id"], create=persist) if shared else nullcontext()
     with coordination:
-        return _record_closure(path, entry, supervisor_session, persist=persist)
+        if shared:
+            closure.require_fresh_action_verdict(entry)
+        closed = _record_closure(path, entry, supervisor_session, persist=persist)
+        if shared and persist:
+            closure.set_action_pending(entry["session_id"], False)
+        return closed
 
 
 def _record_closure(path, entry, supervisor_session, *, persist=True):
