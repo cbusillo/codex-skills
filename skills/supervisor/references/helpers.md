@@ -1851,6 +1851,12 @@ A frozen predecessor receives a native RPC error before it can act. Read-only
 thread reads still pass after handoff. No daemon is restarted and no native
 subscriber API is assumed.
 
+Server `currentTime/read` requests and their replies also preserve a final
+verdict: their `threadId` identifies the clock's source, not an execution
+attachment. Authentication-refresh and attestation housekeeping retain the
+same non-action treatment. These requests, `/quit`'s `thread/unsubscribe`,
+and disconnect never clear an earlier queue, resume, turn or approval barrier.
+
 A fresh `thread/start` names no thread. The ingress takes the returned thread's
 ownership lease and durable action barrier before the client sees its ID; a
 reply without a usable ID becomes an RPC error. JSON Schema payloads

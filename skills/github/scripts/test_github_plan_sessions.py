@@ -41,6 +41,7 @@ class ReceiptFixture:
         self.parallel = False
         self.queue_items = []
         self.approval_target = None
+        self.server_request = None
         self.approval_results = []
         self.approval_on_resume = False
 
@@ -109,9 +110,9 @@ class ReceiptFixture:
                         await ws.send_json({"id": request["id"], "error": {"code": -32600, "message": str(result)}})
                         return
                     await ws.send_json({"id": request["id"], "result": result})
-                    if method == "initialize" and self.approval_target:
-                        await ws.send_json({"id": "approval", "method": "execCommandApproval",
-                                            "params": {"conversationId": self.approval_target}})
+                    if method == "initialize" and (self.server_request or self.approval_target):
+                        await ws.send_json(self.server_request or {"id": "approval", "method": "execCommandApproval",
+                                                                  "params": {"conversationId": self.approval_target}})
                 tasks = []
                 try:
                     async for frame in ws:
