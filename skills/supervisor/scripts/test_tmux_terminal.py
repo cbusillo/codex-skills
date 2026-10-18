@@ -731,11 +731,17 @@ class TmuxTests(TmuxFixture):
     def test_codex_uses_shared_daemon_preflight_and_selected_home(self):
         codex = self.root / "codex"
         self.agent.rename(codex)
-        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote unix:// -C {shlex.quote(str(self.root))}")
         self.choice = {**self.choice, "provider": "openai", "account_id": "openai-ab12",
                        "env": {"CODEX_HOME": str(self.root / "codex-account")}}
         home = Path(self.choice["env"]["CODEX_HOME"])
         home.mkdir()
+        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote {shlex.quote('unix://' + str(home.resolve() / 'app-server-control/app-server-control.sock'))} -C {shlex.quote(str(self.root))}")
+        code = self.root / "codex-launch-registry"
+        (code / "skill-data").mkdir(parents=True)
+        (code / "skill-data/supervisor.toml").write_text(
+            '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+            + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
+        self.enterContext(patch.dict(os.environ, {"CODE_HOME": str(code)}))
         (home / "config.toml").write_text(
             f'[projects.{json.dumps(str(self.root.resolve()))}]\ntrust_level = "trusted"\n'
         )
@@ -750,7 +756,7 @@ class TmuxTests(TmuxFixture):
         self.wait_screen(row["session_id"], "READY:")
         history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
         received = json.loads(next(line.split("READY:", 1)[1] for line in history.splitlines() if "READY:" in line))
-        self.assertEqual(received["codex_home"], self.choice["env"]["CODEX_HOME"])
+        self.assertEqual(Path(received["codex_home"]), Path(self.choice["env"]["CODEX_HOME"]).resolve())
         self.assertEqual(received["brief"], self.brief_text)
 
     def test_early_worker_exit_reports_dead_pane_and_last_output(self):

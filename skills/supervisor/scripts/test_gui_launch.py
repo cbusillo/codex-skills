@@ -31,7 +31,7 @@ class GuiLaunchTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.home = self.root / "owner"
         self.account = self.root / "account with spaces"
         self.account.mkdir()
@@ -60,6 +60,12 @@ class GuiLaunchTests(unittest.TestCase):
                                        account_provider="openai", account_config=None, account=None)
         patch.object(account_choice, "select", return_value=self.choice).start()
         self.daemon = patch.object(iterm_tab, "check_codex_daemon").start()
+        code = self.root / "code"
+        (code / "skill-data").mkdir(parents=True)
+        (code / "skill-data/supervisor.toml").write_text(
+            '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+            + 'env={CODEX_HOME=' + json.dumps(str(self.account)) + '}\n')
+        patch.dict(os.environ, {"CODE_HOME": str(code)}).start()
 
     def test_selected_home_override_reaches_agent_and_receipt_without_config_changes(self):
         fake = self.root / "codex"
@@ -103,7 +109,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertFalse((self.account / ".tmp").exists())
         self.assertFalse(self.state.exists())
         self.assertEqual(commands[0], iterm_tab.with_account(self.command.read_text(), self.choice,
-                                                            self.brief.read_text()))
+                                                            self.brief.read_text(), coordinate=True))
         self.assertNotIn("gui", json.loads(account_choice.record_launch(self.choice).read_text()))
 
     def test_source_brief_quoting_gui_header_does_not_opt_in(self):

@@ -719,6 +719,34 @@ else:
         with self.assertRaisesRegex(ValueError, "identity changed"):
             helper.record_closure(log, {**self.entry, "pid": 789}, "supervisor")
 
+    def test_optional_admission_proof_failure_does_not_stop_verified_closure(self):
+        log = self.root / "closed.json"
+        entry = {**self.entry, "codex_home": str(self.root)}
+        with patch.object(helper.closure, "evidence", side_effect=ValueError("account inventory unavailable")):
+            closed = helper.record_closure(log, entry, "supervisor")
+        self.assertTrue(helper.validate_closure(closed, "supervisor")["safe_verdict"])
+        self.assertIsNone(closed.get("closure_evidence"))
+
+    def test_adding_account_home_does_not_rewrite_or_block_a_legacy_receipt(self):
+        log = self.root / "closed.json"
+        original = helper.record_closure(log, self.entry, "supervisor")
+        result = helper.record_closure(log, {**self.entry, "codex_home": str(self.root)}, "supervisor")
+        self.assertEqual(result["ended_at"], original["ended_at"])
+        self.assertIsNone(result.get("closure_evidence"))
+
+    def test_resumed_source_requires_its_new_launch_generation_before_reclosing(self):
+        log = self.shared_closure()
+        metadata = {"launch_pid": 789, "launch_generation": "resumed-generation",
+                    "launch_started_at": "2026-01-01T00:01:40Z", "codex_home": str(self.root.resolve())}
+        with helper.closure.resume_guard(SOURCE["session"]):
+            helper.closure.resumed_launch(SOURCE["session"], metadata, str(self.transcript), self.entry["tty"])
+        with self.assertRaises(ValueError):
+            helper.record_closure(log, self.entry, "supervisor")
+        replacement = {**self.entry, **metadata, "pid": metadata["launch_pid"]}
+        closed = helper.record_closure(log, replacement, "supervisor")
+        self.assertTrue(helper.closure.idle_eligible(closed))
+        self.assertEqual(closed["launch_generation"], metadata["launch_generation"])
+
     def test_finish_uses_shared_default_and_preview_creates_nothing(self):
         ledger, log = self.root / "ledger.json", self.root / "shared/closed.json"
         ledger.write_text(json.dumps([self.entry]))

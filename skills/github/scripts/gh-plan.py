@@ -50,6 +50,7 @@ import github_direction_next
 import github_next_queue
 import github_next_reads
 import github_plan_claim
+import github_plan_closure
 import github_plan_wait
 import github_plan_trigger
 import github_plan_release
@@ -2334,6 +2335,11 @@ def cmd_claim(args: argparse.Namespace) -> None:
 
 
 def claim_once(args: argparse.Namespace) -> None:
+    with github_plan_closure.admission():
+        _claim_once(args)
+
+
+def _claim_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
@@ -2770,6 +2776,10 @@ def claim_once(args: argparse.Namespace) -> None:
             + f"\n\n[Work record](https://github.com/{issue_repo}/"
               f"{'pull' if record_kind == 'pr' else 'issues'}/{number})"
         )
+        # Freeze the source before any external claim write. If publication
+        # fails, the closed source stays frozen for supported claim recovery.
+        github_plan_closure.admit_sources({session for session, state in inventory.get("session_states", {}).items()
+                                          if state.get("state") == "ended" and state.get("leased_closure")})
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,

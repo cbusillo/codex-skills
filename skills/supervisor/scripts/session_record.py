@@ -122,7 +122,7 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def load_ledger(path: Path, *, harness: str | None = None,
-                skipped: list[dict] | None = None) -> list[dict]:
+                skipped: list[dict] | None = None, closed_log: bool = False) -> list[dict]:
     """Resolve ledger-relative paths, validating only the explicitly selected harness.
 
     The default remains strict for readers that decide completion or closure.
@@ -138,6 +138,8 @@ def load_ledger(path: Path, *, harness: str | None = None,
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise TypeError("ledger entry must be an object")
+        if closed_log and entry.get("record_kind") == "managed_launch" and "session_id" not in entry:
+            continue
         if harness is not None and entry.get("harness") != harness:
             if skipped is not None:
                 skipped.append({"ledger_index": index, "session_id": entry.get("session_id"),

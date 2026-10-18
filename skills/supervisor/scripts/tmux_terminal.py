@@ -269,6 +269,7 @@ class Terminal:
         return {**row, "screen": screen, "input_line": iterm_tab.input_line(screen, styles)}
 
     async def send(self, identity, text, submit=True, allow_tabs=False):
+        iterm_tab.validate_resume_input(text)
         iterm_tab.validate_text(text, allow_tabs=allow_tabs)
         row = self.select(identity)
         if row["dead"]:
@@ -440,6 +441,7 @@ async def operate(args):
             result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}
             if choice:
                 result["account"] = account_choice.public(choice)
+            iterm_tab.source_launch_metadata(result, choice)
             results.append(result)
         except Exception as error:
             iterm_tab.cancel_unsubmitted_gui(choice, progress)

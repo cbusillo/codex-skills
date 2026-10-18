@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Behavioral tests for claim ownership, races, and partial recovery."""
 
@@ -818,6 +818,35 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.emitted.call_args.args[0]["retained_artifacts"][0]["evidence"], "native_session_ended")
         self.assertEqual(len(self.comments), 2)  # Only the successor claim was written.
         self.assertIsNone(CLAIM.released_claim_id(self.comments[-1]["body"]))
+
+    def test_idle_loaded_released_source_can_be_claimed_and_cannot_resume_after_handoff(self):
+        from test_github_plan_sessions import ReceiptFixture
+        import github_plan_closure
+        self.ended_holder_fixture()
+        self.observe_inventory = CLAIM.observe_sessions
+        self.args.resume_from = 71
+        with ReceiptFixture(OTHER["session"]) as fixture:
+            native = ["codex", "--remote", "unix://" + str(fixture.home / "app-server-control/app-server-control.sock"), "--", "unrelated task"]
+            from datetime import datetime, timezone
+            born = datetime(2026, 10, 1, tzinfo=timezone.utc)
+            with patch.object(github_plan_closure, "process_started_at", return_value=born):
+                github_plan_closure.register_launch(native, str(fixture.home))
+                fixture.commands = str(os.getpid()) + " " + " ".join(native)
+                self.run_claim()
+            self.assertTrue(self.emitted.call_args.args[0]["ok"])
+            self.assertTrue(self.emitted.call_args.args[0]["retained_artifacts"])
+            with self.assertRaises(ValueError):
+                with github_plan_closure.resume_guard(OTHER["session"]): pass
+
+    def test_idle_loaded_source_with_unidentified_client_still_refuses_claim(self):
+        from test_github_plan_sessions import ReceiptFixture
+        self.ended_holder_fixture()
+        self.observe_inventory = CLAIM.observe_sessions
+        with ReceiptFixture(OTHER["session"]) as fixture:
+            fixture.commands = "codex --remote unix:///unobserved"
+            with self.assertRaises(PLAN.ClassifiedPlanError):
+                self.run_claim()
+        self.assert_no_writes()
 
     def test_live_or_unknown_holder_returns_coordination_before_any_write(self):
         for state in ("unknown", "live", "released_live", "released_other_peer"):

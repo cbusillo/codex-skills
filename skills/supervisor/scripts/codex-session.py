@@ -1,0 +1,122 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Exact-thread Codex resume and queue operations under the ownership lease."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import stat
+import sys
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
+import github_plan_closure as closure
+from github_plan_sessions import codex_homes
+from iterm_tab import codex_daemon_endpoint
+import session_record
+
+
+def run(args) -> int:
+    if args.command == "launch":
+        home = args.codex_home.expanduser().resolve(strict=True)
+        native = args.native_args
+        if native[:1] == ["--"]:
+            native = native[1:]
+        if not native or Path(native[0]).name != "codex":
+            raise ValueError("launch needs a direct fresh codex invocation")
+        flags = native[1:native.index("--")] if "--" in native else native[1:]
+        valued = {"-c", "--config", "--enable", "--disable", "--remote", "-i", "--image",
+                  "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox",
+                  "-C", "--cd", "--add-dir", "-a", "--ask-for-approval"}
+        switches = {"--strict-config", "--oss", "--approve-for-me", "--search", "--no-alt-screen",
+                    "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"}
+        index = 0
+        while index < len(flags):
+            flag = flags[index]
+            if flag in valued and index + 1 < len(flags):
+                index += 2
+            elif ("=" in flag and flag.split("=", 1)[0] in valued) or flag in switches:
+                index += 1
+            else:
+                raise ValueError("managed launch needs fresh TUI options and a prompt after --; use the exact-thread helper for resume/queue")
+        endpoint = "unix://" + str(codex_daemon_endpoint(home))
+        remotes = [flags[i + 1] for i, a in enumerate(flags[:-1]) if a == "--remote"]
+        remotes += [a.split("=", 1)[1] for a in flags if a.startswith("--remote=")]
+        if not remotes:
+            native[1:1] = ["--remote", endpoint]
+            remotes = [endpoint]
+        if remotes != [endpoint]:
+            raise ValueError("managed launch needs the selected account's exact --remote endpoint")
+        closure.register_launch(native, str(home))
+        os.execvpe(native[0], native, {**os.environ, "CODEX_HOME": str(home)})
+        return 0
+    if str(uuid.UUID(args.session_id)) != args.session_id:
+        raise ValueError("use the canonical native thread UUID")
+    if args.command == "status":
+        rows = [r for r in closure.log_rows() if r.get("session_id") == args.session_id]
+        if len(rows) != 1:
+            raise ValueError("native session generation is not unique")
+        print(json.dumps({"session_id": args.session_id, **rows[0].get("resumed_generation", {})}))
+        return 0
+    home = args.codex_home.expanduser().resolve(strict=True)
+    if home not in codex_homes(strict=True, configured_only=True):
+        raise ValueError("resume requires the source's configured account home")
+    paths = [p for root in ("sessions", "archived_sessions") for p in (home / root).rglob(f"*{args.session_id}*.jsonl")]
+    if not paths:
+        raise ValueError("source native transcript is unavailable")
+    session_record.session_status({"session_id": args.session_id, "harness": "codex", "transcript": str(paths[0])})
+    endpoint = codex_daemon_endpoint(home)
+    info = endpoint.stat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ValueError("source daemon socket identity is unavailable")
+    command = ["codex", "--remote", "unix://" + str(endpoint)]
+    if args.command == "queue":
+        message = args.message_file.read_text() if args.message_file else args.message
+        command = ["codex", "queue", "--remote", "unix://" + str(endpoint),
+                   "--thread", args.session_id, "--message", message]
+    else:
+        command += ["resume", args.session_id]
+    with closure.resume_guard(args.session_id):
+        with subprocess.Popen(command, env={**os.environ, "CODEX_HOME": str(home)}) as child:
+            try:
+                metadata = closure.launch_metadata(child.pid, uuid.uuid4().hex, str(home))
+                tty = os.ttyname(0).removeprefix("/dev/") if os.isatty(0) else "?"
+                closure.resumed_launch(args.session_id, metadata, str(paths[0].resolve()), tty)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                # The old receipt is already invalidated. Preserve the live
+                # child and let native/process observations refuse admission.
+                pass
+            return child.wait()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("launch", "resume", "queue", "status"))
+    parser.add_argument("--session-id")
+    parser.add_argument("--codex-home", type=Path)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--message")
+    group.add_argument("--message-file", type=Path)
+    args, native = parser.parse_known_args()
+    args.native_args = native
+    if args.command != "launch" and (native or not args.session_id):
+        parser.error("use --session-id with resume, queue or status; native argv belongs to launch")
+    if args.command != "status" and args.codex_home is None:
+        parser.error("resume and queue require --codex-home")
+    if args.command == "queue" and args.message is None and args.message_file is None:
+        parser.error("queue requires --message or --message-file")
+    try:
+        return run(args)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(json.dumps({"ok": False, "error": str(error)}))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

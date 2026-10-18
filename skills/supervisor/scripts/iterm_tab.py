@@ -338,6 +338,7 @@ def append_brief(command_text, brief):
 
 
 async def send(session, text, submit=True, allow_tabs=False):
+    validate_resume_input(text)
     validate_text(text, allow_tabs=allow_tabs)
     if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
@@ -599,7 +600,7 @@ def scoped_exec(command_text):
     return None
 
 
-def with_account(command_text, choice, brief=None):
+def with_account(command_text, choice, brief=None, *, coordinate=False):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
         raise ValueError("account selection needs a one-line launch command")
@@ -621,8 +622,25 @@ def with_account(command_text, choice, brief=None):
     expected = {"openai": "codex", "anthropic": "claude", "google": "agy"}[choice["provider"]]
     if launch_agent(command_text) != expected:
         raise ValueError(f"{choice['provider']} account selection requires a direct {expected} invocation")
+    original_words, directory = launch_parts(command_text)
+    original_tokens = shlex.split(command_text)
+    if directory is not None:
+        original_tokens = original_tokens[original_tokens.index("&&") + 1:]
+    prefix_count = len(original_tokens) - len(original_words)
     if brief is not None:
         command_text = append_brief(command_text, brief)
+    if coordinate and choice["provider"] == "openai":
+        # Preserve assignments and direct invocation prefixes, while the
+        # wrapper registers its own PID before exec starts the native client.
+        tokens = shlex.split(command_text)
+        if directory is not None:
+            tokens = tokens[tokens.index("&&") + 1:]
+        prefix, words = tokens[:prefix_count], tokens[prefix_count:]
+        wrapper = ["uv", "run", str(Path(__file__).with_name("codex-session.py")), "launch",
+                   "--codex-home", choice["env"]["CODEX_HOME"], "--", *words]
+        command_text = shlex.join([*prefix, *wrapper])
+        if directory is not None:
+            command_text = "cd " + shlex.quote(directory) + " && " + command_text
     settings = " ".join(
         f"{key}={shlex.quote(os.path.expanduser(value))}"
         for key, value in choice["env"].items()
@@ -817,7 +835,7 @@ def prepare_launches(args):
             source_path = home / gui_launch.BUNDLED_MARKETPLACE
             override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
             command_texts[0] += " -c " + shlex.quote(override)
-        command_texts = [with_account(text, choice, brief)
+        command_texts = [with_account(text, choice, brief, coordinate=True)
                          for text, choice, brief in zip(command_texts, choices, briefs)]
     elif getattr(args, "account", None):
         raise ValueError("--account needs --account-provider")
@@ -853,6 +871,37 @@ def prepare_launches(args):
                                  "inspect shared GUI state before release") from error
             raise
     return command_texts, choices
+
+
+def validate_resume_input(text):
+    if any(re.match(r"^\s*/resume(?:\s|$)", line, re.IGNORECASE) for line in text.splitlines()):
+        raise ValueError("Run codex-session.py resume --session-id <native-id> --codex-home <source-home> instead; TUI resume bypasses ownership coordination")
+
+
+def source_launch_metadata(result, choice):
+    if not choice or choice.get("provider") != "openai":
+        return result
+    home = choice["env"]["CODEX_HOME"]
+    result["codex_home"] = str(Path(home).expanduser().resolve())
+    try:
+        from close_ttys import inventory
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        if github not in sys.path:
+            sys.path.append(github)
+        import github_plan_closure
+        from github_plan_sessions import codex_argv_start
+        tty = result.get("tty")
+        if not isinstance(tty, str) or not tty:
+            raise ValueError("launch TTY is unavailable")
+        matches = [pid for pid, terminal, command in inventory()
+                   if terminal == tty.removeprefix("/dev/") and codex_argv_start(command.split()) is not None]
+        if len(matches) != 1:
+            raise ValueError("native client PID is not unique on the launch TTY")
+        result.update(github_plan_closure.launch_metadata(matches[0], result["session_id"], home))
+        result["pid"] = matches[0]
+    except (OSError, ValueError, ImportError, subprocess.SubprocessError):
+        result["launch_identity_unavailable"] = True
+    return result
 
 
 def cancel_unsubmitted_gui(choice, progress):
@@ -1010,6 +1059,12 @@ async def operate(app, args):
                       "tab_id": tab.tab_id, "session_id": session.session_id}
             if choice:
                 result["account"] = account_choice.public(choice)
+            if choice and choice.get("provider") == "openai":
+                try:
+                    result["tty"] = await session.async_get_variable("tty")
+                except (AttributeError, OSError, ValueError):
+                    result["launch_identity_unavailable"] = True
+                source_launch_metadata(result, choice)
             results.append(result)
         return results[0] if len(results) == 1 else results
     if args.command == "window" and previous_tab:

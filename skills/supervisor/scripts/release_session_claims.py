@@ -51,7 +51,7 @@ class ConfirmedIssueRefusal(ValueError):
         self.payload = payload
 
 
-def verify_closed(entry, supervisor_session):
+def verify_closed(entry, supervisor_session, *, ended_at=None):
     historical = entry.get("_inventory") is True
     if entry["session_id"] == supervisor_session or (
         not historical and entry.get("supervisor_owned") is not True
@@ -63,8 +63,13 @@ def verify_closed(entry, supervisor_session):
     if not historical and (type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty):
         raise ValueError("closure requires the matched process PID and TTY")
     rows = inventory()
-    if any(p == pid or (not entry.get("_backfill") and t == tty and not idle_terminal_command(c)) for p, t, c in rows):
-        raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity before the documented manual release-claim route")
+    for process_pid, process_tty, command in rows:
+        if process_pid in {pid, entry.get("launch_pid")}:
+            raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity before the documented manual release-claim route")
+        if not entry.get("_backfill") and process_tty == tty and not idle_terminal_command(command):
+            born = closure.process_started_at(process_pid) if ended_at is not None else None
+            if ended_at is None or not ended_at < born <= datetime.now(timezone.utc):
+                raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity before the documented manual release-claim route")
     for _, process_tty, command in rows:
         # ps does not preserve shell quoting. Inspect only native resume
         # operands; arbitrary quoted prompt text is neither syntax nor identity.
@@ -86,6 +91,8 @@ def verify_closed(entry, supervisor_session):
 
 
 def validate_closure(entry, supervisor_session):
+    if entry.get("resumed_at"):
+        raise ValueError("closed generation has resumed; record the new launch generation")
     if entry.get("process_exit_verified") is not True:
         raise ValueError("closed-session log lacks verified process exit")
     if not isinstance(entry.get("ended_at"), str) or re.search(r"\s", entry["ended_at"]):
@@ -129,13 +136,30 @@ def transcript_roots(harness, configured, explicit):
 
 
 def record_closure(path, entry, supervisor_session, *, persist=True):
+    with closure.store_lock(path, create=persist):
+        if path.resolve() != closure.closed_log().resolve():
+            return _record_closure(path, entry, supervisor_session, persist=persist)
+        with closure.ownership(entry["session_id"], create=persist):
+            return _record_closure(path, entry, supervisor_session, persist=persist)
+
+
+def _record_closure(path, entry, supervisor_session, *, persist=True):
     """Observe exit now; never replace an older actual closure time on retry."""
     records = [{k: v for k, v in e.items() if not k.startswith("_")}
-               for e in session_record.load_ledger(path)] if path.exists() else []
+               for e in session_record.load_ledger(path, closed_log=True)] if path.exists() else []
+    launches = [r for r in json.loads(path.read_text()) if r.get("record_kind") == "managed_launch" and "session_id" not in r] if path.exists() else []
     existing = [r for r in records if r["session_id"] == entry["session_id"]]
+    if existing and existing[0].get("resumed_at"):
+        resumed = existing[0].get("resumed_generation") or {}
+        if not resumed or any(entry.get(k) != resumed.get(k) for k in (
+            "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home"
+        )):
+            raise ValueError("finish needs the new launch metadata from codex-session.py status")
+        records = [r for r in records if r["session_id"] != entry["session_id"]]
+        existing = []
     if existing:
         if any(existing[0].get(k) != entry.get(k) for k in (
-            "pid", "tty", "harness", "handoff_url", "supervisor_owned", "codex_home"
+            "pid", "tty", "harness", "handoff_url", "supervisor_owned"
         )) or Path(existing[0]["transcript"]).resolve() != Path(entry["transcript"]).resolve():
             raise ValueError("closure log identity changed; preserve the original record")
         closed = {**existing[0], **{k: v for k, v in entry.items() if k.startswith("_")}}
@@ -145,14 +169,18 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
               "process_exit_verified": True}
     if entry.get("harness") == "codex" and entry.get("codex_home"):
-        closed["closure_evidence"] = closure.evidence(closed)
+        try:
+            closed["closure_evidence"] = closure.evidence(closed)
+        except (ValueError, OSError, ImportError, subprocess.SubprocessError):
+            # Optional admission proof must not stop the existing release route.
+            closed["closure_proof_unavailable"] = True
     validate_closure(closed, supervisor_session)
     if not persist:
         return closed
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
-        json.dump([*records, {k: v for k, v in closed.items() if not k.startswith("_")}], stream)
+        json.dump([*launches, *records, {k: v for k, v in closed.items() if not k.startswith("_")}], stream)
     try:
         os.replace(temporary, path)
     finally:
@@ -929,7 +957,7 @@ def main():
             args.closed_log = closure.closed_log()
         if args.apply:
             args.closed_log.parent.mkdir(parents=True, exist_ok=True)
-            lock_stream = os.fdopen(os.open(str(args.closed_log) + ".lock", os.O_CREAT | os.O_RDWR, 0o600), "w")
+            lock_stream = os.fdopen(os.open(str(args.closed_log) + ".release.lock", os.O_CREAT | os.O_RDWR, 0o600), "w")
             try:
                 fcntl.flock(lock_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
@@ -971,7 +999,7 @@ def main():
                 entries = owned
             else:
                 entries = [{k: v for k, v in e.items() if not k.startswith("_")}
-                           for e in session_record.load_ledger(args.closed_log)]
+                           for e in session_record.load_ledger(args.closed_log, closed_log=True)]
             entries = [{**e, "_backfill": True} for e in entries]
             if args.session_id:
                 entries = [e for e in entries if e["session_id"] == args.session_id]

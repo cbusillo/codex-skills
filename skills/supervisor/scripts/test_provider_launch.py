@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, Mock, patch
 import account_choice
 import iterm_tab
 import tmux_terminal
+import close_ttys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 
 
 HARNESS_CHOICES = (
@@ -31,6 +33,34 @@ HARNESS_CHOICES = (
 
 
 class ProviderLaunchTests(unittest.TestCase):
+    def test_managed_launch_preserves_direct_prefix_directory_and_literal_prompt(self):
+        choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
+        prepared = iterm_tab.with_account("cd /fixture && exec env TERM=fixture codex --remote unix:///fixture", choice,
+                                         "literal $(touch NEVER)", coordinate=True)
+        # Parse the shell sections rather than asserting a rendered command.
+        parts = shlex.split(prepared)
+        self.assertEqual(parts[parts.index("cd") + 1], "/fixture")
+        self.assertIn("TERM=fixture", parts)
+        native = parts[parts.index("--") + 1:]
+        self.assertEqual(native, ["codex", "--remote", "unix:///fixture", "--", "literal $(touch NEVER)"])
+
+    def test_codex_launch_records_account_and_verified_process_generation(self):
+        import github_plan_closure
+        source = {"session_id": "terminal-generation", "tty": "/dev/fixture-tty"}
+        choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
+        with patch.object(close_ttys, "inventory", return_value=[(456, "fixture-tty", "codex --remote unix:///observed")]), \
+                patch.object(github_plan_closure, "process_started_at") as started:
+            from datetime import datetime, timezone
+            started.return_value = datetime(2026, 10, 1, tzinfo=timezone.utc)
+            result = iterm_tab.source_launch_metadata(source, choice)
+        self.assertEqual(result["pid"], 456)
+        self.assertEqual(result["launch_generation"], source["session_id"])
+        self.assertEqual(result["codex_home"], choice["env"]["CODEX_HOME"])
+
+    def test_terminal_resume_cannot_bypass_coordination(self):
+        with self.assertRaises(ValueError):
+            iterm_tab.validate_resume_input("/resume source")
+
     def test_wrong_harness_refuses_with_or_without_a_brief(self):
         for provider, expected, env in HARNESS_CHOICES:
             for _, agent, _ in HARNESS_CHOICES:
