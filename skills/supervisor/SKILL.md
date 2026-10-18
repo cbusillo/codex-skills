@@ -424,6 +424,9 @@ including non-dim text, establishes neither its author nor approval.
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs);
    a renewed wait follows that contract's withdrawal route, and a push needs
    a fresh `ready` call.
+   When the Supervisor runs the review, every brief points the author to the
+   [worker review request](references/helpers.md#worker-review-request) format
+   and follow-through. Keep the template there rather than copying it into briefs.
    Use closing keywords for the PR completing an issue's work. Briefs must not
    append "then the Supervisor verifies/qualifies/reads back the deployed
    change" after routing. Follow GitHub's
@@ -644,6 +647,9 @@ for recovery or repeat them as fact.
    start without a comment.
    Read [helper setup](references/helpers.md) before rebuilding the session
    registry or running a helper.
+   While workers need the receipt-store route, also schedule the
+   [pending-review dispatcher](references/helpers.md#dispatcher-timer) using
+   its documented cadence and terminal route, and recreate it at takeover.
 6. Read `stale_wait_report` from the existing
    `uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --stale-waits-only` output for
    each Director repository returned in `discovery_context.repositories` by

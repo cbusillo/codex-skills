@@ -2164,7 +2164,35 @@ uv run skills/supervisor/scripts/pending_reviews.py \
 ```
 
 Add `--apply` to run the pending reviews serially and post completed nonempty
-results. Use the same evidence directory for every invocation for this run:
+results.
+
+### Dispatcher timer
+
+While [#2069](https://github.com/cbusillo/codex-skills/issues/2069) keeps workers
+from running their own reviews, use the Supervisor harness's built-in recurring
+timer every three minutes. Each tick runs the command above with `--apply`,
+from the Supervisor's own terminal session that can write Context Panel launch
+receipts, then reads the JSON result. Keep the same ledger, checkout mappings
+and durable evidence directory on every tick. This is the maintained route;
+no private fallback dispatcher is needed. Do not put the timer under the
+launchd-started worker tmux server, which has the same receipt-store refusal.
+
+Reviews run serially and may outlast a tick. A held sweep lock means wait for
+the active pass. Reconcile `refused`, `blocked`, `ledger_errors` and `attention`
+against the diagnostics below; a timer tick never authorizes replay of a
+failed, denied or uncertain action. When `notification_needed` is true, send
+the completion link to the named author through the Supervisor's exact-session
+route, so the author can weigh it and call `ready`.
+
+Record the timer's identity, command and state paths in the Supervisor handoff
+and recreate it on takeover. Stop it when this run ends, or once the installed
+receipt writer from [context-panel#874](https://github.com/cbusillo/context-panel/pull/874)
+and the #2069 integration let these workers run their own reviews. A version
+label or source merge alone does not prove that; #2069 owns the worker proof.
+
+### Dispatcher state and recovery
+
+Use the same evidence directory for every invocation for this run:
 its launch journal prevents replay after interruption, failure or an uncertain
 comment write. This directory is durable operational state, not disposable
 task evidence. Keep it in a private run-state directory without automatic
@@ -2234,14 +2262,24 @@ writes still require remote readback and the GitHub helper's existing manual
 reconciliation, never automatic replay. Remote receipts let a later sweep skip
 confirmed posts without replaying them.
 
+### Worker review request
+
+Read this when writing a worker brief or requesting a Supervisor-run review.
+The author posts the request as a PR comment through `gh-pr.py comment
+--body-file`, with the full current 40-character head SHA and the exact native
+session ID from its branch claim. Keep each field on its own line with no
+extra annotations. Link the claimed implementation issue in the PR body so the
+dispatcher can bind the author. Include the change's purpose and paths to read
+in the prompt; the reviewer reads files itself and is not asked to run tests.
+
 A request comes from a configured automation identity and uses the shared
 Supervisor-specific delegation predicate. Generic worker-run review requests
 and readiness status notes do not delegate, trigger or supersede this work.
 Quoted, fenced and indented examples and HTML comments are not delegations.
 Head-bound weighed dispositions are outcomes even when their text repeats the
-Supervisor directive; they cannot supersede a real delegation. Write `Supervisor runs the review` on its own
-line, a head SHA (a matching abbreviated SHA is accepted), and an explicit
-prompt. Quoted Supervisor phrases and incidental prose do not create requests.
+Supervisor directive; they cannot supersede a real delegation. The dispatcher
+also accepts matching abbreviated heads in existing requests. Quoted Supervisor
+phrases and incidental prose do not create requests.
 Requests are ordered by creation time; editing an older request does not
 supersede a newer one. A served or failed request id/head never launches again
 because it was edited. Post a new request comment for a new review or scope;
@@ -2260,6 +2298,11 @@ severity for each finding, or none. Does this PR add a test that pins a literal,
 version, wording or config text? Your access is read-only; read whatever files
 you need, and do not modify anything.
 ```
+
+The author keeps its session and claim open until the completed report is
+posted, weighs the findings under [reviews by another model](../../references/model-review.md),
+and addresses reproduced defects before calling `gh-pr.py ready` with green
+current-head CI. A posted request or raw report is not a weighed review.
 
 A fenced or inline `Prompt:`, `Review prompt:` heading or quoted prompt is
 also accepted. Prompt fences close only with the same character and at least
