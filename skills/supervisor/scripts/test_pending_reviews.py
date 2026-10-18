@@ -188,6 +188,17 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
         self.assertEqual(next(self.evidence.glob("*.md")).read_text().strip(), self.io.review_text)
 
+    def test_existing_review_prompt_heading_inline_heading_and_direct_request(self):
+        bodies = [
+            f"Supervisor runs the review.\nHead: {SHA}\n\nReview prompt:\nInspect the helper.",
+            f"Review at new head `{SHA[:9]}`. Supervisor runs the review. Prompt:\n\n```text\nInspect the helper.\n```",
+            f"Supervisor runs the review, read-only, on {SHA}. Read the helper and tests. Check concrete failures.",
+        ]
+        for body in bodies:
+            with self.subTest(body=body):
+                self.io.request["body"] = body
+                self.assertEqual(self.dispatch(apply=False)["status"], "pending")
+
     def test_missing_prompt_or_head_refuses_before_launch(self):
         for body in [f"Supervisor runs the review.\nHead: {SHA}", "Supervisor runs the review.\nPrompt:\nRead the diff."]:
             with self.subTest(body=body):

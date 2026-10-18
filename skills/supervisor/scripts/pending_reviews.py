@@ -30,7 +30,7 @@ from ready_handoff import review_receipt_head
 REPO = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
 REQUEST = re.compile(r"supervisor runs the review", re.I)
 COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)#issuecomment-(\d+)")
-HEAD = re.compile(r"\b(?:head(?: SHA)?|commit)\s*[:=]?\s*`?([0-9a-f]{7,40})\b", re.I)
+HEAD = re.compile(r"\b(?:head(?: SHA)?|commit|on|at)\s*[:=]?\s*`?([0-9a-f]{7,40})\b", re.I)
 RECEIPT = re.compile(r"<!-- supervisor-review (.*?) -->")
 
 
@@ -92,17 +92,20 @@ def receipt_for(request, head):
 
 def inline_prompt(body):
     # The surrounding request is context, not a substitute for a missing prompt.
-    match = re.search(r"(?ims)^Prompt:\s*\n+```[^\n]*\n(.*?)^```", body)
+    match = re.search(r"(?ims)(?:^|[ \t])(?:Review )?Prompt:\s*\n+```[^\n]*\n(.*?)^```", body)
     if match and match[1].strip():
         return match[1].strip()
     quoted = "\n".join(line[1:].lstrip() for line in body.splitlines() if line.startswith(">"))
     if quoted.strip():
         return quoted.strip()
-    match = re.search(r"(?ims)^Prompt:\s*\n+(.*)", body)
+    match = re.search(r"(?ims)(?:^|[ \t])(?:Review )?Prompt:\s*\n+(.*)", body)
     if match:
         text = re.sub(r"(?s)<!--.*?-->", "", match[1]).strip()
         if text:
             return text
+    if (re.search(r"\bread.only\b", body, re.I) and re.search(r"\bRead\s+", body)
+            and re.search(r"\bCheck\s+", body)):
+        return re.sub(r"(?s)<!--.*?-->", "", body).strip()
     return None
 
 
@@ -132,7 +135,7 @@ def resolve_prompt(io, repo, request, logins):
 
 
 def bind_head(request, head):
-    context = re.split(r"(?im)^Prompt:|^>|^```", request["body"], maxsplit=1)[0]
+    context = re.split(r"(?im)(?:^|[ \t])(?:Review )?Prompt:|^>|^```", request["body"], maxsplit=1)[0]
     heads = HEAD.findall(context)
     if not heads or any(not head.startswith(value.lower()) for value in heads):
         raise ReviewError("request head missing or moved; renew the request with Head: FULL_SHA")

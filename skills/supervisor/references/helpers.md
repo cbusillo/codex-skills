@@ -1842,7 +1842,9 @@ version, wording or config text? Your access is read-only; read whatever files
 you need, and do not modify anything.
 ```
 
-A fenced `Prompt:` or quoted prompt is also accepted. A request without an
+A fenced or inline `Prompt:`, `Review prompt:` heading or quoted prompt is
+also accepted. Existing direct read-only requests that explicitly say what
+to read and check are prompts themselves. A request without an
 inline prompt may link one same-repository GitHub issue comment; the helper
 follows the chain and refuses missing, untrusted, ambiguous or cyclic links.
 It rechecks every prompt comment, the latest request, PR state/head and worktree
