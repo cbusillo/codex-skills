@@ -342,6 +342,13 @@ COPY_SECONDS = 600
 ENGINE_WRITTEN = frozenset({".idea/inspectionProfiles/profiles_settings.xml"})
 
 
+def check_lifetime(parent_fd, deadline):
+    if parent_gone(parent_fd):
+        raise Blocked("qodana_parent_gone")
+    if time.monotonic() > deadline:
+        raise Blocked("qodana_timeout")
+
+
 def bounded(argv, env, parent_fd=None, stdout=None):
     """One Docker client step, stopped at its deadline or when the parent exits.
 
@@ -352,10 +359,7 @@ def bounded(argv, env, parent_fd=None, stdout=None):
     deadline = time.monotonic() + COPY_SECONDS
     try:
         while process.poll() is None:
-            if parent_gone(parent_fd):
-                raise Blocked("qodana_parent_gone")
-            if time.monotonic() > deadline:
-                raise Blocked("qodana_timeout")
+            check_lifetime(parent_fd, deadline)
             time.sleep(0.05)
     finally:
         if process.poll() is None:
@@ -394,16 +398,22 @@ def copy_out(name, private, env, parent_fd=None):
     archive = private / "inspected-project.tar"
     with archive.open("wb") as output:
         bounded(["docker", "cp", f"{name}:{WORK}/project", "-"], env, parent_fd, stdout=output)
-    (private / "inspected-sha256.json").write_text(json.dumps(archive_hashes(archive)))
+    hashes = archive_hashes(archive, parent_fd, time.monotonic() + COPY_SECONDS)
+    (private / "inspected-sha256.json").write_text(json.dumps(hashes))
     archive.unlink()
 
 
-def archive_hashes(archive):
-    """Hashes of regular files under the exported project, outside .venv and .git."""
+def archive_hashes(archive, parent_fd=None, deadline=float("inf")):
+    """Hashes of regular files under the exported project, outside .venv and .git.
+
+    Large tracked files must not hold the container and license copies past
+    the deadline or the parent's exit, so both are checked between chunks.
+    """
     import tarfile
     hashes = {}
     with tarfile.open(archive) as exported:
         for member in exported:
+            check_lifetime(parent_fd, deadline)
             relative = member.name.partition("/")[2]
             if not member.isfile() or relative.split("/", 1)[0] in {".venv", ".git"}:
                 continue
@@ -412,6 +422,7 @@ def archive_hashes(archive):
                 continue
             content = hashlib.sha256()
             while chunk := stream.read(1 << 20):
+                check_lifetime(parent_fd, deadline)
                 content.update(chunk)
             hashes[relative] = content.hexdigest()
     return hashes

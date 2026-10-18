@@ -345,17 +345,39 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(result["agent_result"]["verdict"], "GREEN")
 
     def test_copy_step_stops_and_reaps_when_parent_exits_or_deadline_passes(self):
-        sleeper = [sys.executable, "-c", "import time; time.sleep(30)"]
+        pid_file = self.root / "copy.pid"
+        sleeper = [sys.executable, "-c", f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(30)"]
+        for variant in ("parent exits", "deadline passes"):
+            with self.subTest(variant=variant):
+                pid_file.unlink(missing_ok=True)
+                if variant == "parent exits":
+                    # The parent's lifetime pipe reads EOF once the copy is running.
+                    with patch.object(backend, "parent_gone", side_effect=lambda _fd: pid_file.exists()), \
+                            self.assertRaisesRegex(backend.Blocked, "qodana_parent_gone"):
+                        backend.bounded(sleeper, backend.safe_env(), parent_fd=0)
+                else:
+                    with patch.object(backend, "COPY_SECONDS", 1.0), self.assertRaisesRegex(backend.Blocked, "qodana_timeout"):
+                        backend.bounded(sleeper, backend.safe_env())
+                # Reaped, not merely abandoned: the copy process no longer exists.
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(pid_file.read_text()), 0)
+
+    def test_export_hashing_stops_when_parent_exits_or_deadline_passes(self):
+        import tarfile
+        archive = self.root / "export.tar"
+        payload = self.root / "big.py"
+        payload.write_bytes(b"x" * (3 << 20))
+        with tarfile.open(archive, "w") as output:
+            output.add(payload, arcname="project/big.py")
+        with self.assertRaisesRegex(backend.Blocked, "qodana_timeout"):
+            backend.archive_hashes(archive, None, time.monotonic() - 1)
         read_end, write_end = os.pipe()
         os.set_blocking(read_end, False)
         os.close(write_end)
-        started = time.monotonic()
         with self.assertRaisesRegex(backend.Blocked, "qodana_parent_gone"):
-            backend.bounded(sleeper, backend.safe_env(), read_end)
+            backend.archive_hashes(archive, read_end)
         os.close(read_end)
-        with patch.object(backend, "COPY_SECONDS", 0.2), self.assertRaisesRegex(backend.Blocked, "qodana_timeout"):
-            backend.bounded(sleeper, backend.safe_env())
-        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(set(backend.archive_hashes(archive)), {"big.py"})
 
     def test_input_change_invalidates_decisive_findings(self):
         def mutate(*args):
