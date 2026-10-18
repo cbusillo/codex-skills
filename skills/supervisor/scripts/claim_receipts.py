@@ -345,6 +345,32 @@ def single_composed_call(value, method):
     return len(calls) == 1 and calls[0][0] == method and not calls[0][2]
 
 
+def mixed_native_results(record, serial):
+    """Match printed calls to native blocks before interpreting their contents."""
+    blocks = (record.get("payload") or {}).get("output")
+    if not isinstance(blocks, list):
+        return None
+    if blocks and isinstance(blocks[0], dict) and str(blocks[0].get("text", "")).startswith("Script completed\nWall time "):
+        blocks = blocks[1:]
+    if len(blocks) != len(serial):
+        return None
+    wrappers = []
+    for (_, _, stdout), block in zip(serial, blocks):
+        if stdout:
+            continue  # Even native-looking JSON here is only read stdout.
+        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+            return None
+        try:
+            value = json.loads(block["text"])
+        except ValueError:
+            return None
+        if (not isinstance(value, dict) or value.get("operation")
+                or not (type(value.get("exit_code")) is int or type(value.get("session_id")) is int)):
+            return None
+        wrappers.append(value)
+    return wrappers
+
+
 def serial_ownership_records(records):
     """Bind visible serial call results before tracking ownership process handles.
 
@@ -579,6 +605,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
     """Bind native outputs and process polls to an actual tool invocation."""
     calls, processes, background, polled, outstanding = {}, {}, set(), {}, {}
     opaque, required, deferred, visible = set(), {}, {}, {}
+    mixed = {}
     parsed = {}
     for index, value in outputs(records, harness) if receipts is None else receipts:
         parsed.setdefault(index, []).append(value)
@@ -614,6 +641,8 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                         opaque.add(source)
                 if name in {"exec", "functions.exec"}:
                     serial = composed_calls(value)
+                    if any(stdout for _, _, stdout in serial):
+                        mixed[source] = serial
                     required[source] = (sum(not stdout for _, _, stdout in serial)
                         if serial and not any(stdout and predicate(method, args) for method, args, stdout in serial)
                         else len(list(shell_texts(name, value))))
@@ -627,6 +656,14 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             raw = json.dumps((record.get("payload") or {}).get("output")) if harness == "codex" else json.dumps([
                 b.get("content") for b in (record.get("message") or {}).get("content", [])
                 if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == result])
+            if source in mixed and result == source:
+                wrappers = mixed_native_results(record, mixed[source])
+                values = [v for wrapper in wrappers or [] for v in envelopes(wrapper)]
+                # Read stdout cannot supply handles or terminal execution proof.
+                # A partial/deferred mixed cell cannot prove the missing writer.
+                raw = ""
+                if wrappers is None:
+                    opaque.add(source)
             handles = {str(v["session_id"]) for v in values if isinstance(v.get("session_id"), int)}
             outer = set(re.findall(r"Script running with cell ID ([\w-]+)", raw))
             handles.update(re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw))

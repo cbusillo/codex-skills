@@ -324,6 +324,9 @@ calls can bind each ownership poll to its own complete native result wrapper.
 Unrelated read output and nested saved JSON cannot complete that writer. A
 cell with hidden, computed, missing or ambiguous results retains the refusal;
 checker acceptance still requires the isolated check and poll forms above.
+Mixed cells with stdout-only reads require a complete printed block for each
+call, matched by position; read stdout cannot supply native execution wrappers
+or process handles. Incomplete or deferred mixed cells retain the refusal.
 Keep ownership results visible: use one foreground shell command or one
 `text(await tools.exec_command(...));` cell. Do not launch ownership commands
 with shell `&` or drop an inner execution result. A detached writer with no

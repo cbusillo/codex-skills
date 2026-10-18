@@ -103,8 +103,28 @@ class ReceiptTests(unittest.TestCase):
         rows[1]["payload"].update(name="functions.exec", arguments=
             'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo example/a claim 1"}));'
             'text((await tools.exec_command({cmd:"cat docs.md"})).output);')
-        rows[2] = output({"exit_code": 0, "output": json.dumps(claim())}, "codex", "tool-0")
+        rows[2] = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "tool-0", "output": [
+            {"type": "input_text", "text": json.dumps({"exit_code": 0, "output": json.dumps(claim())})},
+            {"type": "input_text", "text": "ordinary document text"}]}}
         self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
+
+    def test_stdout_read_cannot_supply_or_poison_a_writers_native_result(self):
+        read = 'text((await tools.exec_command({cmd:"cat saved-exec.json"})).output);'
+        writer = 'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo example/a claim 1"}));'
+        for read_first in (False, True):
+            for state in ("missing", "running", "finished"):
+                for cached in ({"exit_code": 0, "output": json.dumps(proof())},
+                               {"session_id": 987, "output": ""}):
+                    with self.subTest(read_first=read_first, state=state, cached=cached):
+                        rows = history("codex", claim())
+                        rows[1]["payload"].update(name="functions.exec", arguments=read + writer if read_first else writer + read)
+                        native = None if state == "missing" else {"session_id": 123, "output": ""} if state == "running" else {"exit_code": 0, "output": json.dumps(claim())}
+                        blocks = [{"type": "input_text", "text": json.dumps(cached)}]
+                        if native is not None:
+                            blocks.insert(1 if read_first else 0, {"type": "input_text", "text": json.dumps(native)})
+                        blocks.insert(0, {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"})
+                        rows[2] = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "tool-0", "output": blocks}}
+                        self.assertEqual(receipts.ownership_state(rows, "codex")["pending"], state != "finished")
 
     def test_visible_serial_poll_results_bind_only_their_own_native_wrapper(self):
         for writer_finished in (False, True):
