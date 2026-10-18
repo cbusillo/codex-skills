@@ -274,12 +274,29 @@ It writes the local marker, then keeps the shared turn record current: one
 open issue titled "Daily direction turns" in the covered repository account's
 `OWNER/direction`, written through the automation helpers. Exit 2 means the
 local turn was recorded but the shared record was not, so other machines keep
-reminding; report its `shared.error` to the Director.
+reminding; report its `shared.error` to the Director. Exit 1 reports a local
+write failure with the destination and error; no shared write is attempted.
 Only the direction agent runs that, at the end of a turn the Director took part
 in; an executing agent that runs it clears a reminder the Director never acted
 on. Weekly audits are not marked by hand. The audit script stamps its own
 completion for the repository it audited, so an audit stamp means a real
 read-only audit ran; it never updates the daily turn or its coverage.
+
+Before calling a daily turn complete, check the command's exit status and JSON
+receipt for its marker path, timestamp, and covered repository. For a weekly
+audit, completion is recorded only when `run_recorded` is non-null. An archived
+repository instead needs `marked_skipped: "archived"` with a non-null `dropped`
+receipt confirming removal. Any other result means no completion was recorded,
+including a held window with unknown archive state or an unadopted repository.
+Report that receipt in the final response. If the command was omitted, exited 1,
+or returned `marker_error`, say plainly that completion was not recorded and
+include the error or missing step; do not report the turn or audit as complete.
+Daily exit 2 means the turn was recorded locally but not shared. Audit exit 3
+reports findings; use its receipts to determine whether completion was recorded.
+Loading this skill for a wording review or a direction-file change alone does
+not perform the daily procedure or weekly audit. Say which was actually done;
+do not stamp a turn just because direction was discussed.
+
 The marker is per machine. Its `audits` map holds where each repository's next
 audit window starts, and `audit_runs` holds when an audit last ran. An audit
 whose reads were incomplete records its run with a `held` reason and leaves
@@ -337,7 +354,10 @@ uv run <skill-dir>/scripts/direction_audit.py --repo OWNER/REPO
 
 It reads the merged `DIRECTION.md` from the default branch, never a checkout.
 It writes nothing to GitHub; it only stamps this repository's audit in the
-local marker. When the Director explicitly selects `--gh gh` or declares
+local marker. Exit 1 with `marker_error` still carries the audit's findings;
+report them along with the persistence failure. Exit 1 with only `error` means
+the reads failed before producing an audit result.
+When the Director explicitly selects `--gh gh` or declares
 their own login with `--automation`, `limits` names
 `owner_acts_as_automation`: milestone additions by that login are treated as
 Director decisions because the audit cannot tell who used it. This is a known attribution
