@@ -195,6 +195,30 @@ class LocalMergeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.run_git(self.repo, "rev-parse", "HEAD~1"), self.run_git(self.repo, "rev-parse", "origin/main"))
 
+    def test_rebase_merge_backend_flag_takes_no_value(self) -> None:
+        self.run_git(self.repo, "push", "-q", "-u", "origin", "work/task")
+        self.advance_main("other.txt", "main\n")
+        result = self.bot("--git-command", "rebase", "-m", "origin/main")
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_keep_base_rebase_is_not_a_base_refresh(self) -> None:
+        self.advance_main("other.txt", "main\n")
+        result = self.bot("--git-command", "rebase", "--keep-base", "origin/main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(self.run_git(self.repo, "rev-parse", "HEAD~1"), self.run_git(self.repo, "rev-parse", "origin/main"))
+
+    def test_rebase_checks_the_named_branch_rather_than_head(self) -> None:
+        self.advance_main("other.txt", "main\n")
+        self.run_git(self.repo, "branch", "-q", "work/current", "origin/main")
+        self.run_git(self.repo, "switch", "-q", "work/current")
+        result = self.bot("--git-command", "rebase", "origin/main", "work/task")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.run_git(self.repo, "switch", "-q", "work/task")
+        self.run_git(self.repo, "merge", "-q", "--no-edit", "origin/main")
+        self.run_git(self.repo, "switch", "-q", "--detach", "HEAD~1")
+        result = self.bot("--git-command", "rebase", "origin/main", "work/task")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_rebasing_own_commits_is_not_a_base_refresh(self) -> None:
         self.write(self.repo, "task.txt", "task two\n")
         self.run_git(self.repo, "commit", "-q", "-am", "task two")
