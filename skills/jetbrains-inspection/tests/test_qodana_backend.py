@@ -769,7 +769,8 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
         source = self.root / "plugin_TEST.license"
         source.write_bytes(b"synthetic")
         self.args.qodana_license_file = [str(source)]
-        self.run_backend(inspect_launch)
+        result = self.run_backend(inspect_launch)
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
 
     def test_sarif_failure_missing_and_ambiguous_do_not_report_green_or_red(self):
         for kind in ("missing", "failure", "ambiguous"):
