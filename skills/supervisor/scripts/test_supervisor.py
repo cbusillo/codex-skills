@@ -1359,6 +1359,9 @@ class TabCloseTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(self.folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         self.ledger = Path(self.folder.name) / "ledger.json"
         self.entry = {"supervisor_owned": True, "iterm_session_id": "owned",
                       "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}
@@ -1497,6 +1500,13 @@ def write_codex_project_fixture(directory, home):
 
 
 class CodexProjectTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
+
     def test_codex_cannot_skip_preflight_through_another_provider(self):
         for provider in ("anthropic", "google"):
             with self.subTest(provider=provider), self.assertRaises(ValueError):
@@ -1718,6 +1728,7 @@ class ClaudeTrustTests(unittest.TestCase):
                     {"name": "codex", "provider": "openai", "env": {"CODEX_HOME": str(self.root / "codex")}}]
         self.choice = {"provider": "anthropic", "env": accounts[0]["env"]}
         for target in (patch.object(Path, "home", return_value=self.user),
+                       patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent-opt-in"),
                        patch.object(iterm_tab.claude_trust, "worktree_root", return_value=self.worktrees),
                        patch.object(account_choice, "load_config", return_value={"accounts": accounts}),
                        patch.object(account_choice, "select", side_effect=lambda *_: self.choice),
@@ -1866,6 +1877,11 @@ class ClaudeTrustTests(unittest.TestCase):
 
 class TerminalTests(unittest.TestCase):
     def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         # These cases exercise selection/input mechanics. Protocol and startup
         # observation have their own fake-adapter regressions.
         daemon = patch.object(iterm_tab, "inspect_codex_daemon")

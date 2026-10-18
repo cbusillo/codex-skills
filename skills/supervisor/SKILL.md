@@ -391,6 +391,12 @@ including non-dim text, establishes neither its author nor approval.
    command file to the agent invocation and settings. The launcher validates
    every brief before launch side effects; read the launching procedure in
    [helpers](references/helpers.md#launching-and-nudging).
+   Page checks run headless. When a GUI brief explicitly names the Agents
+   Chrome profile, use the pinned `mcp__catalog-chrome__*` route on Claude or
+   local Codex on its account-relative bundle. Add `--require-browser` to that
+   launch and read [tool preflight](references/helpers.md#browser-and-computer-use-preflight).
+   Codex is the default for screen work. Claude Computer Use runs only in a
+   visible iTerm tab with the Director's approval for that session.
    Then read each launch's first screen. The launcher reports a visible Codex
    hook-review prompt as `launch_blocked`, retaining the terminal identity and
    screen. Inspect that terminal before acting; do not relaunch or grant trust
