@@ -26,6 +26,16 @@ ADMISSION_OPEN = json.loads((Path(__file__).parent / "fixtures" / "codex-admissi
 
 
 class DaemonTests(unittest.TestCase):
+    def test_captured_native_plugin_inventory_passes_required_browser_check(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures/codex-plugin-list-local.json").read_text())["response"]
+        choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"},
+                  "require_browser": True, "tool_directory": "/fixture/project"}
+        with (patch.object(iterm_tab.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
+              patch.object(iterm_tab.socket, "socket"),
+              patch.object(iterm_tab, "inspect_codex_daemon", return_value=fixture)):
+            iterm_tab.check_codex_daemon(choice)
+        self.assertEqual(choice["tools"]["warnings"], [])
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

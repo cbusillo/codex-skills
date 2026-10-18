@@ -995,7 +995,9 @@ Local Codex launches with this opt-in, or an explicit browser/GUI brief, validat
 the account-relative link and pass its source override plus `--no-daemon`.
 The [native flag](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 ensures the process loads that config even if a daemon already runs. Preflight
-lists enabled, installed bundled plugins from that home. Remote launches keep
+lists enabled, installed bundled plugins from that home. A desktop GUI brief
+requires `computer-use`; `--require-browser` requires `chrome` and `browser`.
+A brief asking for both must have both sets. Remote launches keep
 their endpoint; with the opt-in or `--require-browser`, `--remote unix://` checks
 the selected daemon's `plugin/list` for the launch's `-C` directory. Inventory
 failure or missing plugins warns for source work and refuses required-browser
@@ -1004,13 +1006,14 @@ unverified and cannot satisfy `--require-browser`. Use local `codex -C` for
 the supported browser route. Nothing restarts an existing daemon or edits
 shared config. Discovery does not prove a working extension, runtime or OS grant.
 
-Session start makes static setup checks only and prints one loud line when
-there is a problem. Direct Claude sessions must omit `--chrome` and start with
+Session start makes static Chrome-route checks only and prints one loud line
+on a conflict. Unrequested Computer Use availability is left to launch
+preflight. Direct Claude sessions must omit `--chrome` and start with
 `CLAUDE_CODE_ENABLE_CFC=0`; the hook reports a conflicting saved setting rather
 than changing it. Local launcher Codex sessions carry their source override into the
-hook's diagnostic environment. A different on-disk source produces a static
-verification warning, with the local-launch remedy. Remote sessions may use
-the daemon's own config; this warning cannot establish missing runtime tools.
+hook's diagnostic environment, where it can check that override. Without this
+marker, remote or direct Codex setup is left to launch preflight rather than
+printing unverified marketplace uncertainty on every startup.
 The hook never calls a GUI tool.
 
 **Remote config research, Codex 0.163.0 (#2119):** `thread/start` accepts a

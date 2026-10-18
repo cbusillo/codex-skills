@@ -32,6 +32,14 @@ HARNESS_CHOICES = (
 
 
 class ProviderLaunchTests(unittest.TestCase):
+    def setUp(self):
+        # Generic launch cases must not discover the host's private opt-in.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(temp.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
+
     def test_required_browser_needs_a_supported_provider_before_account_selection(self):
         for provider in (None, "google"):
             with tempfile.TemporaryDirectory() as folder:
@@ -87,13 +95,6 @@ class ProviderLaunchTests(unittest.TestCase):
         self.assertNotIn("fixture-project", result)
         self.assertNotIn(str(Path.home()), result)
 
-    def setUp(self):
-        # Generic launch cases must not discover the host's private opt-in.
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(temp.name) / "absent")
-        opt_in.start()
-        self.addCleanup(opt_in.stop)
     def test_wrong_harness_refuses_with_or_without_a_brief(self):
         for provider, expected, env in HARNESS_CHOICES:
             for _, agent, _ in HARNESS_CHOICES:

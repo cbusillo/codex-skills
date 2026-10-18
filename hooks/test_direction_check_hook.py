@@ -39,6 +39,26 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
 
 
 class AgentToolsReminderTests(unittest.TestCase):
+    def test_tool_checker_exceptions_do_not_escape_startup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".local").mkdir()
+            (root / ".local/chrome.toml").touch()
+            for error in (RecursionError(), SyntaxError(), TypeError()):
+                with mock.patch.object(hook.runpy, "run_path", side_effect=error):
+                    self.assertTrue(hook.agent_tools_warning(root, root, {"CLAUDECODE": "1"}))
+
+    def test_unrequested_desktop_tools_and_unverified_daemon_setup_are_quiet(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".local").mkdir()
+            (root / ".local/chrome.toml").touch()
+            config = root / ".claude.json"
+            config.write_text(json.dumps({"mcpServers": {"catalog-chrome": {"command": "fixture"}}}))
+            env = {"CLAUDECODE": "1", "CLAUDE_CONFIG_DIR": str(root)}
+            self.assertEqual(hook.agent_tools_warning(root, root, env), "")
+            self.assertEqual(hook.agent_tools_warning(root, root, {"CODEX_HOME": str(root)}), "")
+
     def test_claude_startup_reports_tools_once_without_processes_or_setting_writes(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -55,7 +75,7 @@ class AgentToolsReminderTests(unittest.TestCase):
             self.assertEqual(len(warning.splitlines()), 1)
             self.assertTrue(warning)
             self.assertEqual(config.read_bytes(), before)
-            self.assertTrue(hook.agent_tools_warning(root, root, {"CODEX_HOME": str(home)}))
+            self.assertEqual(hook.agent_tools_warning(root, root, {"CODEX_HOME": str(home)}), "")
             (root / ".local/chrome.toml").unlink()
             self.assertEqual(hook.agent_tools_warning(root, root, env), "")
 

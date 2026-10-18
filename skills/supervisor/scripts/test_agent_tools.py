@@ -137,6 +137,19 @@ for line in sys.stdin:
 
 
 class CodexToolTests(unittest.TestCase):
+    def test_captured_cli_inventory_is_read_by_the_native_cli_parser(self):
+        import subprocess
+        fixture = json.loads((Path(__file__).parent / "fixtures/codex-plugin-list-cli.json").read_text())["response"]
+        reply = subprocess.CompletedProcess([], 0, json.dumps(fixture), "")
+        with patch.object(subprocess, "run", return_value=reply):
+            plugins = agent_tools.codex_plugins(Path("/fixture/home"), Path("/fixture/source"))
+        self.assertEqual(agent_tools.missing_codex_plugins(plugins), [])
+
+    def test_existing_daemon_capture_does_not_invent_bundled_plugin_support(self):
+        inventory = json.loads((Path(__file__).parent / "fixtures/codex-plugin-list-daemon.json").read_text())["response"]
+        self.assertEqual(set(agent_tools.missing_codex_plugins(
+            agent_tools.daemon_codex_plugins(inventory))), agent_tools.CODEX_PLUGINS)
+
     def test_only_installed_enabled_bundled_plugins_satisfy_discovery(self):
         plugins = [{"name": name, "installed": True, "enabled": True, "marketplaceName": "openai-bundled"}
                    for name in agent_tools.CODEX_PLUGINS]

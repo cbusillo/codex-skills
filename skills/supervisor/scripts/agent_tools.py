@@ -30,15 +30,23 @@ COMPUTER_USE = "computer-use"
 CHROME_ENV = "CLAUDE_CODE_ENABLE_CFC"
 LIST_TOOL = "list_connected_browsers"
 CODEX_PLUGINS = {"chrome", "browser", "computer-use"}
+CODEX_BROWSER_PLUGINS = CODEX_PLUGINS - {COMPUTER_USE}
 BUNDLED_MARKETPLACE = Path(".tmp/bundled-marketplaces/openai-bundled")
 CODEX_SOURCE_ENV = "CODEX_CATALOG_BUNDLED_SOURCE"
 
 
-def missing_codex_plugins(plugins: list[dict]) -> list[str]:
+def missing_codex_plugins(plugins: list[dict], required: set[str] | None = None) -> list[str]:
     enabled = {plugin.get("name") for plugin in plugins
                if isinstance(plugin, dict) and plugin.get("installed") is True and plugin.get("enabled") is True
                and plugin.get("marketplaceName") == "openai-bundled"}
-    return sorted(CODEX_PLUGINS - enabled)
+    return sorted((CODEX_PLUGINS if required is None else required) - enabled)
+
+
+def daemon_codex_plugins(inventory: dict) -> list[dict]:
+    """The native protocol puts marketplace identity on the containing object."""
+    return [{**plugin, "marketplaceName": marketplace.get("name")}
+            for marketplace in inventory.get("marketplaces", [])
+            for plugin in marketplace.get("plugins", [])]
 
 
 def codex_problems(home: Path, env: Mapping[str, str] | None = None) -> list[str]:
@@ -113,7 +121,8 @@ def builtin_chrome_on(config: dict, project: dict, env: Mapping[str, str]) -> bo
         project, "disabledMcpServers")
 
 
-def claude_problems(home: Path | None, directory: Path, env: Mapping[str, str]) -> list[str]:
+def claude_problems(home: Path | None, directory: Path, env: Mapping[str, str],
+                    *, check_computer_use: bool = True) -> list[str]:
     """Static checks, fast enough for every session start; no process is started."""
     try:
         config = read_claude_config(home)
@@ -132,8 +141,8 @@ def claude_problems(home: Path | None, directory: Path, env: Mapping[str, str]) 
         problems.append(f"the built-in Claude in Chrome server is on and uses this session's own login, "
                         f"which cannot reach the Agents browser; use mcp__{CHROME_SERVER}__* tools, "
                         f"and start sessions with {CHROME_ENV}=0 and without --chrome")
-    if (COMPUTER_USE not in listed(project, "enabledMcpServers")
-            or COMPUTER_USE in listed(project, "disabledMcpServers")):
+    if check_computer_use and (COMPUTER_USE not in listed(project, "enabledMcpServers")
+                              or COMPUTER_USE in listed(project, "disabledMcpServers")):
         problems.append("Computer Use is off for the launch directory in this Claude home "
                         "(projects[...].enabledMcpServers in .claude.json)")
     return problems

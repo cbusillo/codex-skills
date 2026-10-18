@@ -625,9 +625,9 @@ def check_codex_daemon(choice):
             raise ValueError("plugin inventory needs the validated launch directory")
         inventory = inspect_codex_daemon(home, directory=directory)
         if isinstance(inventory, dict) and not choice.get("tools", {}).get("remote_endpoint_unverified"):
-            plugins = [plugin for marketplace in inventory.get("marketplaces", [])
-                       for plugin in marketplace.get("plugins", [])]
-            missing = agent_tools.missing_codex_plugins(plugins)
+            plugins = agent_tools.daemon_codex_plugins(inventory)
+            needed = agent_tools.CODEX_BROWSER_PLUGINS if choice.get("require_browser") else None
+            missing = agent_tools.missing_codex_plugins(plugins, needed)
             tools = choice.setdefault("tools", {"warnings": []})
             if missing or inventory.get("inventory_error"):
                 message = inventory.get("inventory_error") or ("daemon-routed Codex is missing enabled bundled plugins: " + ", ".join(missing) +
@@ -815,7 +815,7 @@ def check_claude_tools(command_text, choice, without_browser=False, probes=None,
     choice["tools"] = tools
 
 
-def prepare_codex_tools(command_text, choice, required=False):
+def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
     """Use native local loading; remote sessions keep the daemon's own inventory."""
     if choice["provider"] != "openai":
         return command_text
@@ -831,21 +831,24 @@ def prepare_codex_tools(command_text, choice, required=False):
         if required:
             raise ValueError(warning)
         choice["tools"] = {"warnings": [warning], "remote_endpoint_unverified": True}
-    if remote or (not required and not CHROME_OPT_IN.is_file()):
+    must_work = required or gui
+    if remote or (not must_work and not CHROME_OPT_IN.is_file()):
         return command_text
+    needed = ((agent_tools.CODEX_BROWSER_PLUGINS if required else set())
+              | ({agent_tools.COMPUTER_USE} if gui else set())) if must_work else None
     home = Path(choice["env"]["CODEX_HOME"]).expanduser()
     try:
         market = gui_launch.marketplace(home, Path.home() / ".codex")
         missing = agent_tools.missing_codex_plugins(
-            agent_tools.codex_plugins(home, Path(market["path"]), codex_directory(words)))
+            agent_tools.codex_plugins(home, Path(market["path"]), codex_directory(words)), needed)
     except ValueError as error:
-        if required:
+        if must_work:
             raise
         choice["tools"] = {"warnings": [str(error)]}
         return command_text
     warnings = ["Codex bundled plugins missing or disabled: " + ", ".join(missing)] if missing else []
-    if required and warnings:
-        raise ValueError(warnings[0] + "; install/enable them through Codex before the browser launch")
+    if must_work and warnings:
+        raise ValueError(warnings[0] + "; install/enable them through Codex before this tool launch")
     choice["tools"] = {"warnings": warnings, "marketplace": market, "route": "local"}
     choice["env"][agent_tools.CODEX_SOURCE_ENV] = market["path"]
     override = "marketplaces.openai-bundled.source=" + json.dumps(market["path"])
@@ -980,7 +983,8 @@ def prepare_launches(args):
             )
         trust_writes = []
         probes = {}
-        # Validate the entire batch before probes or persistent marketplace links.
+        # Validate command/account/trust inputs for the whole batch first.
+        # Live preflight follows; its reusable marketplace links are persistent.
         for text, choice, brief in zip(command_texts, choices, briefs):
             with_account(text, choice, brief)
             check_codex_project(text, choice)
@@ -988,7 +992,7 @@ def prepare_launches(args):
         for text, choice in zip(command_texts, choices):
             check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
                                getattr(args, "require_browser", False))
-        command_texts = [prepare_codex_tools(text, choice, bool(apps[index]) or getattr(args, "require_browser", False))
+        command_texts = [prepare_codex_tools(text, choice, getattr(args, "require_browser", False), gui=bool(apps[index]))
                          for index, (text, choice) in enumerate(zip(command_texts, choices))]
         claude_trust.apply(trust_writes)
         if apps[0]:

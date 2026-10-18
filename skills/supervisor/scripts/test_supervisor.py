@@ -1621,6 +1621,7 @@ class ClaudeTrustTests(unittest.TestCase):
                     {"name": "codex", "provider": "openai", "env": {"CODEX_HOME": str(self.root / "codex")}}]
         self.choice = {"provider": "anthropic", "env": accounts[0]["env"]}
         for target in (patch.object(Path, "home", return_value=self.user),
+                       patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent-opt-in"),
                        patch.object(iterm_tab.claude_trust, "worktree_root", return_value=self.worktrees),
                        patch.object(account_choice, "load_config", return_value={"accounts": accounts}),
                        patch.object(account_choice, "select", side_effect=lambda *_: self.choice),

@@ -70,13 +70,13 @@ def agent_tools_warning(catalog: Path, directory: Path, env: Mapping[str, str]) 
         checker = runpy.run_path(str(helpers))
         if env.get("CLAUDECODE") == "1":
             home = Path(env["CLAUDE_CONFIG_DIR"]).expanduser() if env.get("CLAUDE_CONFIG_DIR") else None
-            problems = checker["claude_problems"](home, directory, env)
-        elif env.get("CODEX_HOME"):
+            problems = checker["claude_problems"](home, directory, env, check_computer_use=False)
+        elif env.get("CODEX_HOME") and env.get(checker["CODEX_SOURCE_ENV"]):
             problems = checker["codex_problems"](Path(env["CODEX_HOME"]).expanduser(), env)
         else:
             return ""
         return "Agent tools setup: " + "; ".join(" ".join(p.split()) for p in problems) if problems else ""
-    except (OSError, ValueError, ImportError):
+    except Exception:
         return "Agent tools check unavailable; verify catalog-chrome and Computer Use through /mcp."
 
 
