@@ -1230,8 +1230,8 @@ class ClaimTests(unittest.TestCase):
     def test_child_resume_rechecks_the_original_source_family(self):
         for phase, holder, route, own_session in product(
                 ("preflight", "after_post", "after_status"),
-                ("parent", "sibling", "none", "foreign_tree", "source_live", "source_unreleased"),
-                ("plain", "handoff", "fresh"),
+                ("parent", "parent_unrelated", "sibling", "none", "foreign_tree", "source_live", "source_unreleased"),
+                ("plain", "handoff", "fresh", "refresh"),
                 ("absent", "requester", "source_requester", "observed_requester")):
             with self.subTest(phase=phase, holder=holder, route=route, own_session=own_session):
                 self.setUp()
@@ -1248,11 +1248,13 @@ class ClaimTests(unittest.TestCase):
                     {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT},
                      "created_at": "2026-10-02T00:00:00Z"}]
                 self.args.resume_from, self.args.handoff_comment = 88, None
-                if route == "handoff":
+                if route in {"handoff", "refresh"}:
                     self.args.handoff_comment = 89
                     self.comments[-1]["body"] += "\n\nSource handoff: PR #99 and #100 are reviewed; work is finished."
                     for pull in [*self.pulls, *self.closed_pulls.values()]:
                         pull["body"] += "\nRefs #43"
+                if route == "refresh":
+                    self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
                 if route == "fresh":
                     self.args.resume_from = None
                 if own_session not in {"absent", "observed_requester"}:
@@ -1270,9 +1272,12 @@ class ClaimTests(unittest.TestCase):
                     self.observe_inventory = observed
                 resumed_elsewhere = {**inherited, "session": "new-source-holder", "branch": "work/source-elsewhere"}
                 def successor():
-                    if holder == "parent":
+                    if holder in {"parent", "parent_unrelated"}:
+                        parent_claim = (resumed_elsewhere if holder == "parent" else
+                                        {key: value for key, value in resumed_elsewhere.items()
+                                         if key not in {"resume_from", "retained_handoff"}})
                         self.target_comments["/repos/owner/repo/issues/41/comments"].append(
-                            {"id": 90, "body": CLAIM.marker(resumed_elsewhere), "user": {"login": TEST_BOT}})
+                            {"id": 90, "body": CLAIM.marker(parent_claim), "user": {"login": TEST_BOT}})
                     elif holder == "sibling":
                         sibling = {**copy.deepcopy(self.issue), "number": 44,
                                    "body": "## Current Status\n\n" + CLAIM.marker(resumed_elsewhere)}
@@ -1307,7 +1312,7 @@ class ClaimTests(unittest.TestCase):
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
-                if holder == "foreign_tree" and route == "handoff" and phase != "preflight":
+                if holder == "foreign_tree" and route in {"handoff", "refresh"} and phase != "preflight":
                     # Existing retained-artifact readback rejects this activity
                     # before the inherited-family check, on the claimed record.
                     self.assertIn("claude_session", [entry["source"] for entry in
@@ -1324,6 +1329,41 @@ class ClaimTests(unittest.TestCase):
                                  f"https://github.com/owner/repo/issues/{record_number}#issuecomment-{claim_id}")
                 if phase == "preflight": self.assert_no_writes()
                 else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_cross_repository_refresh_checks_the_planning_source_family(self):
+        for phase, activity in product(("preflight", "after_post", "after_status"), ("planning", "runtime", "none")):
+            with self.subTest(phase=phase, activity=activity):
+                self.setUp()
+                self.cross_repository_fixture()
+                source = CLAIM.records(self.comments[0]["body"])[0]
+                source.update(resume_from="70", retained_handoff="https://github.com/other/plans/issues/41#issuecomment-71")
+                self.comments[0]["body"] = CLAIM.marker(source)
+                root = {**OTHER, "session": "planning-source", "branch": "work/planning-source"}
+                self.targets["41"] = {**copy.deepcopy(self.issue), "number": 41,
+                                      "body": "## Current Status\n\n" + CLAIM.marker(root)}
+                self.target_comments["/repos/other/plans/issues/41/comments"] = [
+                    {"id": 70, "body": CLAIM.marker(root), "user": {"login": TEST_BOT}, "created_at": root["claimed_at"]},
+                    {"id": 71, "body": "Released claim 70", "user": {"login": TEST_BOT},
+                     "created_at": "2026-10-02T00:00:00Z"}]
+                self.children["/repos/other/plans/issues/41/sub_issues"] = [{**copy.deepcopy(self.issue), "repo": "other/plans"}]
+                def live():
+                    inv = self.planning_inventory if activity == "planning" else self.inventory
+                    if activity != "none":
+                        inv["worktrees"].append({"branch": root["branch"], "path": "/source-tree"})
+                        inv["sessions"].append({"sessionId": "foreign-peer", "cwd": "/source-tree"})
+                if phase == "preflight": live()
+                else: setattr(self, phase, live)
+                if activity != "planning":
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                else:
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                                     "https://github.com/other/plans/issues/41#issuecomment-70")
+                    if phase == "preflight": self.assert_no_writes()
+                    else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_plain_resume_refuses_malformed_inherited_lineage(self):
         for malformed in ({"retained_handoff": 7}, {"resume_from": "unknown"},
@@ -1342,6 +1382,54 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_resume_lineage_invalid")
                 self.assert_no_writes()
+
+    def test_same_record_handoff_history_uses_issue_identity_before_lineage(self):
+        for route, identity, phase in product(
+                ("plain", "handoff"),
+                ("current", "renamed", "transferred", "other_issue", "missing_id", "both_ids_missing", "unreadable"),
+                ("preflight", "after_post", "after_status")):
+            with self.subTest(route=route, identity=identity, phase=phase):
+                self.setUp()
+                if route == "handoff": self.ordinary_handoff_fixture()
+                else: self.released_status_fixture()
+                self.issue["id"] = 500
+                source = CLAIM.records(self.comments[0]["body"])[0]
+                source.update(resume_from="obsolete", retained_handoff=(
+                    "https://github.com/owner/repo/issues/42#issuecomment-2" if identity == "current" else
+                    f"https://github.com/old/repo/issues/{7 if identity == 'transferred' else 42}#issuecomment-2"))
+                self.comments[0]["body"] = CLAIM.marker(source)
+                self.issue["body"] = self.issue["body"].replace(CLAIM.marker(OTHER), CLAIM.marker(source))
+                alias = {"id": self.issue["id"], "number": self.issue["number"]}
+                failed = False
+                def invalidate():
+                    nonlocal failed
+                    failed = True
+                    if identity == "both_ids_missing":
+                        self.issue.pop("id", None)
+                        alias.pop("id", None)
+                if identity in {"other_issue", "missing_id", "both_ids_missing", "unreadable"}:
+                    if phase == "preflight": invalidate()
+                    else: setattr(self, phase, invalidate)
+                read_api = self.read_api
+                def read_alias(method, path, **kwargs):
+                    if path.startswith("/repos/old/repo/issues/"):
+                        if failed and identity == "unreadable":
+                            raise PLAN.PlanError("Alias unreadable", api_result={"status": 403})
+                        if failed and identity == "other_issue": return "bot", {**alias, "id": alias["id"] + 1}
+                        if failed and identity == "missing_id": return "bot", {"number": alias["number"]}
+                        return "bot", copy.deepcopy(alias)
+                    return read_api(method, path, **kwargs)
+                with patch.object(self, "read_api", side_effect=read_alias):
+                    if identity in {"current", "renamed", "transferred"}:
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    else:
+                        with self.assertRaises(PLAN.PlanError) as caught:
+                            self.run_claim()
+                        if identity == "unreadable": self.assertEqual(caught.exception.api_result["status"], 403)
+                        else: self.assertEqual(caught.exception.code, "claim_resume_lineage_invalid")
+                        if phase == "preflight": self.assert_no_writes()
+                        else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_native_child_history_errors_refuse_before_writing(self):
         for failure in ("malformed", "unreadable"):

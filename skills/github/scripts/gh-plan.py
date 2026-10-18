@@ -2572,8 +2572,12 @@ def claim_once(args: argparse.Namespace) -> None:
             # its full ownership must end before a sibling can take the source.
             check_peer_ownership(peer_repo, peer_number, peer_status, peer_comments, source_inventory)
 
-    def check_inherited_sources(current_comments: list[dict[str, Any]], current_status: str) -> None:
+    def check_inherited_sources(
+        current_comments: list[dict[str, Any]], current_status: str, *,
+        source_inventory: dict[str, Any] | None = None,
+    ) -> None:
         """Later work on a child cannot race a holder of its original source."""
+        family_inventory = inventory if source_inventory is None else source_inventory
         checked = set()
         for record in github_plan_claim.records(current_status) + [
                 record for c in current_comments for record in github_plan_claim.records(c.get("body") or "")]:
@@ -2583,10 +2587,21 @@ def claim_once(args: argparse.Namespace) -> None:
             match = (re.fullmatch(
                 r"https://github\.com/([^/\s]+/[^/\s]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", handoff_url)
                 if isinstance(handoff_url, str) else None)
-            source_id = record.get("resume_from")
-            if not match or not isinstance(source_id, str) or not source_id.isdecimal() or int(source_id) <= 0:
+            if not match:
                 raise ClassifiedPlanError("claim_resume_lineage_invalid", "Retained source lineage is malformed; preserve its ownership evidence")
             parent_repo, parent_number = match.group(1), int(match.group(2))
+            if parent_repo.casefold() == issue_repo.casefold() and parent_number == number:
+                continue  # Same-record metadata is not inherited-parent proof.
+            if parent_repo.casefold() != issue_repo.casefold() and (args.resume_from or handoff_id):
+                current_id = issue.get("id")
+                if type(current_id) is int and current_id > 0:
+                    _, candidate = api_json("GET", f"/repos/{parent_repo}/issues/{parent_number}",
+                                            bucket="rest_core", failed_step="claim_lineage_identity")
+                    if type(candidate.get("id")) is int and candidate["id"] == current_id:
+                        continue  # Renamed/transferred self-reference, proved by immutable issue ID.
+            source_id = record.get("resume_from")
+            if not isinstance(source_id, str) or not source_id.isdecimal() or int(source_id) <= 0:
+                raise ClassifiedPlanError("claim_resume_lineage_invalid", "Retained source lineage is malformed; preserve its ownership evidence")
             if parent_repo.casefold() != issue_repo.casefold():
                 if not args.resume_from and not handoff_id:
                     # Foreign historical handoffs cannot supply native lineage
@@ -2594,12 +2609,12 @@ def claim_once(args: argparse.Namespace) -> None:
                     continue
                 raise ClassifiedPlanError("claim_resume_lineage_invalid", "Retained source lineage must stay in the claimed issue's repository")
             key = (parent_number, source_id, handoff_url)
-            if parent_number == number or key in checked:
+            if key in checked:
                 continue
             checked.add(key)
             _, parent_status, parent_comments, _ = claim_snapshot(str(parent_number), parent_repo, allow_closed=True)
-            check_peer_ownership(parent_repo, parent_number, parent_status, parent_comments, inventory)
-            check_handoff_successors(parent_number, inventory, source_claim_id=int(source_id),
+            check_peer_ownership(parent_repo, parent_number, parent_status, parent_comments, family_inventory)
+            check_handoff_successors(parent_number, family_inventory, source_claim_id=int(source_id),
                                      source_handoff_url=handoff_url)
 
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str) -> set[str]:
@@ -2711,7 +2726,7 @@ def claim_once(args: argparse.Namespace) -> None:
         if live_sources:
             owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]
             refuse(live_sources, owner_comments=owner_comments, owner_repo=owner_repo, owner_number=owner_number)
-        if not refresh_pr:
+        if issue_repo.casefold() == target_repo.casefold():
             check_inherited_sources(current_comments, current_status)
         check_handoff_successors(source_number, target_inventory)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)
@@ -2739,6 +2754,7 @@ def claim_once(args: argparse.Namespace) -> None:
             if planning_path is None:
                 raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
             planning_inventory = github_plan_claim.local_inventory(issue_repo, number, cwd=planning_path)
+            check_inherited_sources(current_comments, current_status, source_inventory=planning_inventory)
             _, planning_pulls = collect_paged_rest_items(
                 f"/repos/{issue_repo}/pulls", query={"state": "open"},
                 bucket="rest_core", step_prefix="refresh_planning_prs",

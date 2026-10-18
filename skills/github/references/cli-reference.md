@@ -1267,12 +1267,27 @@ may occupy a released source worktree; foreign sessions and unreleased
 ownership still refuse. Malformed lineage
 refuses with `claim_resume_lineage_invalid`. These checks read ownership only;
 they do not transfer authority or change the original parent's holds.
-Cross-record inference applies only to ordinary
-successors. Conflict-only refresh continues to use the source's canonical issue.
+The parent's full ownership is conservative: an unreleased parent claim also
+blocks the child when that claim describes unrelated work. Coordinate its
+exact release, or continue independently authorized work on a separate issue
+and fresh branch without the retained source. A fresh parent claim does not
+itself transfer a child's retained source.
+Cross-record source inference applies only to ordinary successors.
+Conflict-only refresh continues to use the source's canonical issue and checks
+the lineage already recorded there. Cross-repository refresh checks that family
+with the verified planning repository's inventory.
 The resume-source, handoff-author and native-parent guards retain their human
 explanations and expose stable `claim_resume_*`, `claim_handoff_*` or
 `claim_native_parent_*` codes. Native blocker and malformed child-history
 refusals also have specific codes.
+
+Same-record handoff history is not parent lineage. A URL naming the current
+repository and issue is recognized before checking its historical `resume_from`.
+For an old URL after a rename or transfer, a fresh issue read must return the
+same positive immutable issue ID as the current snapshot; number or title
+agreement alone proves nothing. Missing, changed or unreadable identity cannot
+supply that proof. Other inherited-parent lineage remains subject to the
+same-repository and source-reference checks above.
 
 Unreadable current or historical children (including a 403 or ambiguous 404),
 and malformed child history (`claim_child_history_invalid`), block both
