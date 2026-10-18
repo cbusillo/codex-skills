@@ -1,6 +1,6 @@
 ---
 name: repo-readiness
-description: Use when the user asks whether a change, branch, PR, or workstream is ready to review, merge, ship, pause, or hand off, or asks to run gates, validate changes, check CI/PR readiness, inspect IDE warnings, verify UI, or identify blockers. Orchestrates local, GitHub, inspection, and browser evidence into a concise readiness report.
+description: Use when building or installing an installed or packaged app, when the user asks whether a change, branch, PR, or workstream is ready to review, merge, ship, pause, or hand off, or asks to run gates, validate changes, check CI/PR readiness, inspect IDE warnings, verify UI, or identify blockers. Orchestrates local, GitHub, inspection, and browser evidence into a concise readiness report.
 metadata:
   short-description: Check repo readiness to ship
 ---
@@ -142,9 +142,11 @@ inspection, browser, CI, deployment, or security gates.
 
 ## Installed And Packaged Builds
 
-In every repository that ships an installed or packaged app, build it only from
-a clean, committed tree. If a messy tree mixes workstreams, split them into
-separate branches yourself as ordinary engineering, preserving everyone's work.
+In every repository that ships an installed or packaged app, make installed or
+packaged builds only from a clean, committed tree. If a messy tree mixes
+workstreams, split them into separate branches in new linked worktrees yourself
+as ordinary engineering, leaving the original checkout and active sessions'
+files in place. Follow [repository cleanup and preservation](../references/repo-cleanup.md).
 A scratch build from a messy tree happens only when the Director asks for one.
 
 ## Readiness To Closeout Handoff
