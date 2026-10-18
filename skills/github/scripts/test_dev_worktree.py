@@ -220,7 +220,9 @@ class WorktreeTests(unittest.TestCase):
             "deadline = time.monotonic() + 10\n"
             f"while not Path({str(proceed)!r}).exists() and time.monotonic() < deadline:\n    time.sleep(0.01)\n"
             f"result = subprocess.run([{sys.executable!r}, {str(SCRIPT)!r}, {"first" if same_request else "later"!r}], capture_output=True, text=True, timeout=5)\n"
-            f"Path({str(receipt)!r}).write_text(json.dumps([result.returncode, result.stderr]))\n"
+            # Publish by rename so the waiting reader never sees a partly written receipt.
+            f"receipt = Path({str(receipt)!r}); pending = receipt.with_suffix('.next')\n"
+            "pending.write_text(json.dumps([result.returncode, result.stderr])); pending.replace(receipt)\n"
         )
         self.settings({"root": str(self.base / "tasks"), "hostHelper": str(host)})
         result = self.run_helper("first")
