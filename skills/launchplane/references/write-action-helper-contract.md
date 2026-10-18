@@ -385,6 +385,62 @@ local extensions until the vendored artifact is refreshed.
   other unlisted field is dropped and counted under
   `bindings[].<unlisted field>`, and a binding without a usable key, context
   or scope is omitted and counted.
+- `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
+  --reason` reads the native preflight through
+  `POST /v1/drivers/odoo/target-replacement-plan`. It records no artifact,
+  allocation, lease or provider effect. Its bounded receipt identifies the
+  testing lane's address origin, build/source, observation time and pending
+  candidate verification. It does not attest a healthy successor or completed
+  restore. Save the JSON output outside the repository and inspect it.
+
+  `testing-rebuild-submit` with those same intent arguments plus
+  `--idempotency-key --reviewed-dry-run --expected-plan-digest
+  --dry-run-evidence-file` queues one testing rebuild through
+  `POST /v1/drivers/odoo/target-replacement-apply`. It fixes the instance to
+  `testing`, strategy to `replace-and-cutover` and health verification on.
+  `--copy-source` is `empty`, `production` (sanitized production copy) or
+  `upstream` (the lane's configured upstream). The build/source pair must use
+  an immutable 40- or 64-character lowercase hexadecimal source commit. A concrete
+  reason is required and retained by the service; public helper output carries
+  only its request digest. Empty allows
+  initialization of independent empty storage. No target, host, credential,
+  arbitrary payload or health-bypass argument is accepted.
+
+  Use the saved receipt's `result.plan_sha256` as `--expected-plan-digest`.
+  The existing reviewed-evidence loader checks the exact intent, reason and
+  returned preflight digest before loading admin configuration. A fingerprint
+  also binds the evidence to the configured service before any submit call.
+  A changed intent or service needs a new dry run. This is the ordinary
+  preflight for one native queued action; it does not allocate/bootstrap/restore
+  or repair routing through separate manual writes. The service rechecks current
+  authority and copy safety before effects.
+
+  Use the configured service identity and existing service authorization.
+  These commands add no grant and never invoke a provider or local live-target
+  CLI. They require a deployed service with native testing rebuild and preflight/
+  reason support (Launchplane #3997 and #4002 source); a source PR is not activation.
+  A 400 can mean the service predates this capability, while 404 means the
+  route is absent; confirm deployed support before use. A denial retains its
+  code and trace and stops the action. There is no legacy rebuild,
+  alternate identity or workflow fallback.
+
+  The receipt must agree with the submitted product, testing instance,
+  original key and build/source intent. Output reuses the bounded operation
+  projection below, retaining the operation ID and service trace while dropping
+  raw authorization, poll URLs and request/provider evidence. Acceptance is not
+  completion. Poll `target-replacement-operation-read --operation-id ID` using
+  that original ID until the service reports its outcome; a failure or pending
+  reconciliation does not authorize a different rebuild.
+
+  The helper sends once. A timeout, unsafe redirect, malformed/misaligned receipt,
+  interrupted exchange or server error reports `outcome_unknown`. Keep the
+  original key and arguments. Read the original operation if its ID is known;
+  an ID is retained only after the receipt agrees with the original key and
+  complete intent, even if later output projection fails. A mismatched receipt's
+  ID cannot identify this request's outcome. With no aligned ID,
+  the service's identical-key submission can recover its existing
+  admission receipt. Do not choose a new key or replay a denied action. The
+  helper does not retry, poll automatically, rotate secrets or retire storage.
 - `target-replacement-operation-read --operation-id` calls
   `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}` with no
   query. The service authorizes it as `operations.read` on product
