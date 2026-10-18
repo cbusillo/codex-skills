@@ -26,7 +26,14 @@ QUESTION_HEADING = re.compile(r"^\s*\**(?:Owner|Director) question:[ \t*]*")
 def heading_id(body: str) -> str | None:
     heading = QUESTION_HEADING.match(body)
     match = QUESTION.match(body, heading.end()) if heading else None
-    return match[0] if match else None
+    if not match:
+        return None
+    # Preserve legacy bare question IDs. Q1 through Q4 also name calendar
+    # quarters, so those labels need a separator before question text.
+    if int(match[1]) > 4:
+        return match[0]
+    suffix = body[match.end():].lstrip(" *\t")
+    return match[0] if not suffix or suffix[0] in ".:=—–-\r\n" else None
 
 
 def number_heading(body: str, question: str) -> str:

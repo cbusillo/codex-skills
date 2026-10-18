@@ -154,8 +154,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
         url = question["url"]
         if question_urls is not None and url not in question_urls:
             continue
-        if not question_id(question["question"]):
-            raise ValueError(f"Question has no heading Q ID; number the original comment before delivery: {url}")
+        number = question_id(question["question"])
         source_item(url)
         created = question.get("created_at")
         age = None
@@ -165,12 +164,15 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
                 raise ValueError("question timestamp needs a timezone")
             age = max(0, (now - parsed).total_seconds())
         receipt = acknowledgements.get(url)
-        rows.append({**question, "question_id": question_id(question["question"]),
+        rows.append({**question, "question_id": number,
+                     "question": question["question"] if number else None,
+                     "status": question["status"] if number else "needs_number",
+                     "needs_repair": number is None, "deliverable": number is not None,
                      "candidate_answers": candidates[url],
                      "source_author": source_authors[url],
                      "author_trusted": source_authors[url].casefold() in trusted,
                      "registration_url": registrations.get(url),
-                     "delivery": "acknowledged" if receipt else "unacknowledged",
+                     "delivery": "needs_number" if not number else "acknowledged" if receipt else "unacknowledged",
                      "delivery_url": receipt["delivery_url"] if receipt else None,
                      "resurface": receipt is None, "age_seconds": age})
     known = {row["url"] for row in found}
@@ -185,7 +187,9 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     for position, row in enumerate(rows, 1):
         row["position"] = position
     untrusted = [q["url"] for q in rows if q.get("author_trusted") is False]
-    return {"complete": not (missing or untrusted), "queue_length": len(rows), "questions": rows,
+    unnumbered = [q["url"] for q in rows if q.get("needs_repair")]
+    return {"complete": not (missing or untrusted or unnumbered), "queue_length": len(rows), "questions": rows,
+            "unnumbered_sources": unnumbered,
             "missing_sources": missing, "untrusted_sources": untrusted,
             "untrusted_records": untrusted_records,
             "coverage": "Configured trusted queue authors; untrusted queue records are warnings only",
@@ -240,6 +244,8 @@ def reconcile(args, fetch):
             source = comments_by_url.get(target)
             if not source or not oq.questions([source], args.owner, args.decision_author):
                 raise ValueError(f"registration source is not an explicit question: {target}")
+            if not question_id(source.get("body") or ""):
+                raise ValueError(f"Question has no heading Q ID; number the original comment before delivery: {target}")
             if (source.get("author") or "").casefold() not in trusted:
                 raise ValueError(f"question author needs review: {target}")
         for question in report["questions"]:
@@ -250,6 +256,8 @@ def reconcile(args, fetch):
         question = next((q for q in report["questions"] if q["url"] == args.ack), None)
         if not question or not question["registration_url"]:
             raise ValueError("acknowledgement requires a registered unresolved question")
+        if not question["question_id"]:
+            raise ValueError(f"Question has no heading Q ID; number the original comment before delivery: {args.ack}")
         if args.delivery_url in {args.ack, question["registration_url"]}:
             raise ValueError("source/registration is not a presentation receipt")
         if not question["delivery_url"]:

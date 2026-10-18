@@ -72,11 +72,22 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual({q["question_id"] for q in first["questions"] if q["question_id"]},
                          {delivery.question_id(q["body"]) for q in self.questions})
 
-    def test_unnumbered_source_refuses_reads_registration_and_ack_without_writes(self):
+    def test_unnumbered_source_preserves_readable_queue_but_refuses_its_registration_and_ack(self):
         original = next(q for q in self.fixture["questions"] if not delivery.question_id(q["body"]))
         # A reference to another question in the context is not this one's ID.
         self.sources[delivery.source_item(original["url"])] = [{**original, "body": original["body"] + " See Q327."}]
-        for options in ({}, {"register": True}, {"ack": original["url"],
+        report = self.run_queue()
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["unnumbered_sources"], [original["url"]])
+        bad = next(q for q in report["questions"] if q["url"] == original["url"])
+        self.assertTrue(bad["needs_repair"])
+        self.assertFalse(bad["deliverable"])
+        self.assertIsNone(bad["question"])
+        self.assertIsNone(bad["question_id"])
+        good = next(q for q in report["questions"] if q["url"] != original["url"])
+        self.assertTrue(good["deliverable"])
+        self.assertIsNotNone(good["question"])
+        for options in ({"register": True}, {"ack": original["url"],
                          "delivery_url": "https://discord.com/channels/1/2/3"}):
             self.comments.clear()
             if options.get("ack"):
@@ -85,6 +96,13 @@ class DeliveryTests(unittest.TestCase):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.run_queue(**options)
             self.assertEqual(self.comments, before)
+
+        # A legacy bad registration must not prevent presenting a numbered peer.
+        self.post(self.queue, delivery.marker_body("registered", good["url"]))
+        accepted = self.run_queue(ack=good["url"], delivery_url="https://discord.com/channels/1/2/4")
+        peer = next(q for q in accepted["questions"] if q["url"] == good["url"])
+        self.assertEqual(peer["delivery_url"], "https://discord.com/channels/1/2/4")
+        self.assertFalse(accepted["complete"])
 
     def test_original_timestamps_expose_four_hour_delay_and_utc_conversion(self):
         report = delivery.inventory(self.questions, [], self.owner, self.authors,

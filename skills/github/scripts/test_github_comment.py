@@ -1147,6 +1147,11 @@ def test_question_numbering_follows_confirmed_write_and_repairs_same_assignment(
                 github_comment.comment("pr", 42, text, repo="owner/repo", gh_cmd="fake-gh")
             except github_comment.CommentError as error:
                 assert error.payload["url"] == saved["html_url"]
+                assert error.failure.write_outcome == "applied"
+                terminal = github_comment._terminal_failure(error, "github.comment.pr", expected_actor="fixture-automation")
+                assert terminal["write_outcome"] == "applied", terminal
+                assert terminal["outcome_certainty"] == "confirmed_partially_applied", terminal
+                assert terminal["failed_request"]["failure"]["write_outcome"] == "rejected", terminal
                 assigned = error.payload["question_id"]
             else:
                 raise AssertionError("failed numbering must report the saved question")
@@ -1185,9 +1190,43 @@ def test_numbered_questions_are_unchanged_without_counter_access() -> None:
             with_call_stub(callback, run)
 
 
+def test_personal_question_uses_chat_id_before_exact_text_approval() -> None:
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}):
+        path = question_counter.counter_path()
+        question_counter.update(path, seed=(100, ["fixture"]), allocate=False)
+        chat_id = f"Q{question_counter.update(path)}"
+        approved = f"Owner question: {chat_id}. Continue?"
+
+        def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if endpoint == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "GET":
+                return success([])
+            assert method == "POST", method
+            assert github_comment._canonical_comment_body(body["body"]) == approved
+            return success(comment_body(1001, body=body["body"]))
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            with patch.object(github_comment.github_identity, "acts_as_own_user", return_value=True):
+                try:
+                    github_comment.comment("issue", 42, "Owner question: Continue?", repo="owner/repo", gh_cmd="fake-gh")
+                except github_comment.CommentError as error:
+                    assert error.failure.write_outcome == "not_started"
+                else:
+                    raise AssertionError("unapproved numbering must not publish personal-identity text")
+                assert not calls, calls
+                github_comment.comment("issue", 42, approved, repo="owner/repo", gh_cmd="fake-gh")
+            assert sum(call["method"] == "POST" for call in calls) == 1
+            assert not any(call["method"] == "PATCH" for call in calls)
+            assert json.loads(path.read_text())["last_id"] == int(chat_id[1:])
+
+        with_call_stub(callback, run)
+
+
 TESTS: list[Callable[[], None]] = [
     test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
     test_numbered_questions_are_unchanged_without_counter_access,
+    test_personal_question_uses_chat_id_before_exact_text_approval,
     test_recent_reconciliation_includes_clock_skew_boundary_and_paginates,
     test_append_filters_old_pages_but_dedupe_and_edit_last_keep_full_history,
     test_own_user_actor_is_resolved_before_edit_selection_and_dedupe,

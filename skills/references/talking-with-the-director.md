@@ -58,14 +58,23 @@ changes on yes.
   GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
   bodies starting with `Owner question:` or `Director question:` automatically;
   an existing heading ID stays unchanged, including on edits and repeat delivery.
-  A Q ID mentioned only in the context is not the question's own ID.
+  Write the heading ID as `Q300.` or `Q300 —` so it is distinct from question
+  content such as `Q4 budget`. A Q ID mentioned only in the context is not the
+  question's own ID.
   The helpers allocate only after GitHub confirms the comment was saved, then
   add the ID through an exact-comment edit. The locked counter stores the
   comment URL and its assignment together. Failed creation consumes no number;
   interrupted numbering reports the saved URL and any assigned ID. Read that
   comment, then repair through `gh-comment ... --edit-comment ID` with its full
-  body, rather than creating another comment or allocating another ID. Delivery
-  refuses an unnumbered original; repair it before registering or presenting it.
+  body, rather than creating another comment or allocating another ID. If it
+  already has a chat ID, include that same ID in the original heading when
+  posting or repairing it; do not allocate another. Delivery refuses to register
+  or acknowledge an unnumbered original. Its read view keeps numbered peers
+  usable and marks the original as needing repair, without presenting its text.
+  For an exact-text personal-identity write, include the ID before asking for
+  approval. If this is a new question, allocate it with the chat command below,
+  show that numbered text for approval, then post it unchanged. The personal
+  write path refuses an unnumbered heading before publishing anything.
   Briefs link this reference instead of repeating numbering instructions.
   In chat, get each new question's short ID from the
   [shared question counter](../direction/scripts/question_id.py):

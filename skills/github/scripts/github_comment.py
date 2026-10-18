@@ -757,6 +757,14 @@ def _comment_impl(
         )
 
     resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
+    if (question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body)
+            and github_identity.acts_as_own_user(resolved_repo)):
+        raise _local_error(
+            "Personal-identity question writes need the existing Q ID in the heading before exact-text approval; "
+            "allocate with question_id.py next before requesting approval, then post that numbered text",
+            operation=operation, cause="validation_error", expected_actor=expected_actor,
+            failed_step="input_validation",
+        )
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     actor = authenticated_actor(
         gh_cmd=gh_cmd,
@@ -1133,12 +1141,22 @@ def _number_saved_question(payload: dict[str, Any], requested_body: str, *, gh_c
             actor=payload["actor"], expected_actor=payload["expected_actor"],
             completed_steps=steps, failed_step="number_saved_question",
             write_outcome="applied", payload={"url": payload["url"], "question_id": assigned,
+                "outcome_certainty": "confirmed_partially_applied",
                 "reconciliation": {"strategy": "read_saved_question_before_exact_edit"}},
         ) from error
     except CommentError as error:
+        failed_request = dict(error.api_result or {})
+        certainty = "unknown" if error.failure.write_outcome == "unknown" else "confirmed_partially_applied"
         error.payload.update({"url": payload["url"], "question_id": assigned,
-                              "saved_question": True})
+                              "saved_question": True, "failed_request": failed_request,
+                              "outcome_certainty": certainty,
+                              "recommended_next_action": "read_saved_question_before_exact_edit"})
+        error.failure.write_outcome = "applied"
         error.failure.completed_steps = list(dict.fromkeys([*steps, *error.failure.completed_steps]))
+        if error.api_result is not None:
+            error.api_result.update({"write_outcome": "applied", "outcome_certainty": certainty,
+                                     "completed_steps": error.failure.completed_steps,
+                                     "failure": error.failure.as_dict()})
         raise
 
 
