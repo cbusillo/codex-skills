@@ -385,20 +385,41 @@ local extensions until the vendored artifact is refreshed.
   other unlisted field is dropped and counted under
   `bindings[].<unlisted field>`, and a binding without a usable key, context
   or scope is omitted and counted.
-- `testing-rebuild-submit --product --copy-source --artifact-id --source-git-ref
-  --idempotency-key` queues one testing rebuild through
+- `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
+  --reason` reads the native preflight through
+  `POST /v1/drivers/odoo/target-replacement-plan`. It records no artifact,
+  allocation, lease or provider effect. Its bounded receipt identifies the
+  testing lane's address origin, build/source, observation time and pending
+  candidate verification. It does not attest a healthy successor or completed
+  restore. Save the JSON output outside the repository and inspect it.
+
+  `testing-rebuild-submit` with those same intent arguments plus
+  `--idempotency-key --reviewed-dry-run --expected-plan-digest
+  --dry-run-evidence-file` queues one testing rebuild through
   `POST /v1/drivers/odoo/target-replacement-apply`. It fixes the instance to
   `testing`, strategy to `replace-and-cutover` and health verification on.
   `--copy-source` is `empty`, `production` (sanitized production copy) or
   `upstream` (the lane's configured upstream). The build/source pair must use
-  an immutable 40- or 64-character hexadecimal source commit. Empty allows
+  an immutable 40- or 64-character hexadecimal source commit. A concrete
+  reason is required and retained by the service; public helper output carries
+  only its request digest. Empty allows
   initialization of independent empty storage. No target, host, credential,
   arbitrary payload or health-bypass argument is accepted.
 
+  Use the saved receipt's `result.plan_sha256` as `--expected-plan-digest`.
+  The existing reviewed-evidence loader checks the exact intent, reason and
+  returned preflight digest before loading admin configuration. A fingerprint
+  also binds the evidence to the configured service before any submit call.
+  A changed intent or service needs a new dry run. This is the ordinary
+  preflight for one native queued action; it does not allocate/bootstrap/restore
+  or repair routing through separate manual writes. The service rechecks current
+  authority and copy safety before effects.
+
   Use the configured service identity and existing service authorization.
-  This command adds no grant and never invokes a provider or local live-target
-  CLI. It requires a deployed service that supports native testing rebuilds;
-  missing capability or a denial is reported, with no legacy rebuild,
+  These commands add no grant and never invoke a provider or local live-target
+  CLI. They require a deployed service with native testing rebuild and preflight/
+  reason support (Launchplane #3997 and #4002 source); a source PR is not activation.
+  Missing capability or a denial is reported, with no legacy rebuild,
   alternate identity or workflow fallback.
 
   The receipt must agree with the submitted product, testing instance,

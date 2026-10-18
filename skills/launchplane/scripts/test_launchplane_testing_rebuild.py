@@ -9,19 +9,24 @@ import io
 import json
 import urllib.error
 from contextlib import redirect_stdout
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
 
 from test_launchplane_helpers import contract, write_action as helper
+import launchplane_testing_rebuild as rebuild
+
+SERVICE_URL = "https://plane.example.invalid"
 
 
-def arguments(source="empty"):
+def arguments(source="empty", command=rebuild.COMMAND):
     return [
-        "testing-rebuild-submit", "--product", "example", "--copy-source", source,
+        command, "--product", "example", "--copy-source", source,
         "--artifact-id", "current-build", "--source-git-ref", "a" * 40,
-        "--idempotency-key", "original-rebuild",
-    ]
+        "--reason", "Rebuild the disposable testing copy",
+    ] + (["--idempotency-key", "original-rebuild"] if command == rebuild.COMMAND else [])
 
 
 def receipt(source="empty"):
@@ -40,23 +45,52 @@ def receipt(source="empty"):
                 }[source],
                 "artifact_id": "current-build", "source_git_ref": "a" * 40,
                 "allow_empty_data": source == "empty", "verify_health": True,
+                "reason": "Rebuild the disposable testing copy",
             },
             "poll_url": "https://PRIVATE_SENTINEL.invalid/read",
         },
     }
 
 
-def invoke(body=None, *, args=None, error=None):
+def plan_receipt(source="empty"):
+    original = receipt(source)["result"]["request"]
+    return {"status": "accepted", "trace_id": "launchplane_req_plan", "records": {}, "result": {
+        **{key: original[key] for key in ("product", "instance", "artifact_id", "source_git_ref", "data_source_mode")},
+        "status": "pass", "candidate_verification": "pending", "context": "example-testing",
+        "base_url": "https://testing.example.invalid", "observed_at": "2026-10-17T00:00:00Z",
+        "authorization": {"private": "PRIVATE_SENTINEL"},
+    }}
+
+
+def review_evidence(source="empty"):
+    request, body = rebuild.intent(helper, helper.parse_args(arguments(source)))
+    return {"status": "ok", "operation": rebuild.PLAN_COMMAND, "request": request,
+        "result": rebuild.project_plan(helper, plan_receipt(source), body, service_url=SERVICE_URL)}
+
+
+def invoke(body=None, *, args=None, error=None, reviewed=True, change_evidence=None, service_url=SERVICE_URL):
     output = io.StringIO()
     with (
+        TemporaryDirectory() as directory,
+        patch.object(helper, "active_repo_root", return_value=Path(directory) / "repo"),
         patch.object(helper, "prepare_operator_settings", return_value={
-            "service_url": "https://plane.example.invalid",
+            "service_url": service_url,
         }) as settings,
         patch.object(helper, "request_launchplane", return_value=body, side_effect=error) as post,
         patch.object(helper, "request_launchplane_read") as read,
         redirect_stdout(output),
     ):
-        code = helper.main(arguments() if args is None else args)
+        (Path(directory) / "repo").mkdir()
+        args = list(arguments() if args is None else args)
+        if reviewed and args[0] == rebuild.COMMAND:
+            evidence = review_evidence(args[args.index("--copy-source") + 1])
+            if change_evidence:
+                change_evidence(evidence)
+            path = Path(directory) / "review.json"
+            path.write_text(json.dumps(evidence))
+            args += ["--reviewed-dry-run", "--expected-plan-digest", evidence["result"]["plan_sha256"],
+                "--dry-run-evidence-file", str(path)]
+        code = helper.main(args)
     return code, json.loads(output.getvalue()), post, read, settings
 
 
@@ -76,6 +110,89 @@ def test_submit_uses_the_service_testing_action_and_original_key(source):
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
     assert "authorization" not in output["result"]["operation"]
     read.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ["empty", "production", "upstream"])
+def test_native_dry_run_reads_preflight_without_queueing_or_an_operation_key(source):
+    response = plan_receipt(source)
+    code, output, post, read, _ = invoke(response, args=arguments(source, rebuild.PLAN_COMMAND))
+    assert code == 0
+    post.assert_called_once()
+    sent = post.call_args.kwargs
+    assert sent["path"] == contract.helper_command_path(rebuild.PLAN_COMMAND)
+    assert "idempotency_key" not in sent
+    assert "verify_health" not in sent["body"]["replacement"]
+    assert output["result"]["artifact_id"] == response["result"]["artifact_id"]
+    assert output["result"]["candidate_verification"] == response["result"]["candidate_verification"]
+    assert output["summary"]["trace_id"] == response["trace_id"]
+    assert "operation" not in output["result"]
+    assert "reason" not in output["request"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+    read.assert_not_called()
+
+
+def test_submit_requires_reviewed_evidence_before_configuration_or_transport():
+    code, _, post, read, settings = invoke(receipt(), reviewed=False)
+    assert code != 0
+    settings.assert_not_called()
+    post.assert_not_called()
+    read.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("--product", "other"), ("--artifact-id", "other-build"),
+    ("--source-git-ref", "b" * 40), ("--reason", "A different reason"),
+])
+def test_changed_intent_cannot_reuse_reviewed_evidence(field, value):
+    args = arguments()
+    args[args.index(field) + 1] = value
+    code, _, post, _, settings = invoke(receipt(), args=args)
+    assert code != 0
+    settings.assert_not_called()
+    post.assert_not_called()
+
+
+def test_dry_run_from_another_service_cannot_authorize_submit():
+    code, _, post, read, settings = invoke(receipt(), service_url="https://other.example.invalid")
+    assert code != 0
+    settings.assert_called_once()
+    post.assert_not_called()
+    read.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("candidate_verification", "verified"), ("product", "other"),
+    ("data_source_mode", "existing"), ("instance", "prod"),
+])
+def test_dry_run_does_not_claim_a_completed_or_different_copy(field, value):
+    response = plan_receipt()
+    response["result"][field] = value
+    code, output, post, read, _ = invoke(response, args=arguments(command=rebuild.PLAN_COMMAND))
+    assert code != 0
+    assert output["status"] != "ok"
+    post.assert_called_once()
+    read.assert_not_called()
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+def test_a_dry_run_timeout_is_a_read_failure_without_an_unknown_write():
+    code, output, post, read, _ = invoke(error=TimeoutError("PRIVATE_SENTINEL"),
+        args=arguments(command=rebuild.PLAN_COMMAND))
+    assert code != 0
+    assert output["status"] == "unavailable"
+    post.assert_called_once()
+    read.assert_not_called()
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("reason", ["", " " * 4, "x" * 1001])
+def test_reason_is_validated_before_configuration_or_transport(reason):
+    args = arguments()
+    args[args.index("--reason") + 1] = reason
+    code, _, post, _, settings = invoke(receipt(), args=args)
+    assert code != 0
+    settings.assert_not_called()
+    post.assert_not_called()
 
 
 @pytest.mark.parametrize("field,value", [

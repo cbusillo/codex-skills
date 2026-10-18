@@ -10321,8 +10321,8 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
-        from launchplane_testing_rebuild import COMMAND as testing_rebuild_command, execute as execute_testing_rebuild
-        if args.command == testing_rebuild_command:
+        from launchplane_testing_rebuild import COMMANDS as testing_rebuild_commands, execute as execute_testing_rebuild
+        if args.command in testing_rebuild_commands:
             return execute_testing_rebuild(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
