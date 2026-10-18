@@ -559,10 +559,16 @@ scope, never source code or a mixed scope containing source code.
 - Existing broad noise is not invisible. Fix straightforward findings in the
   affected area or track a cleanup item.
 
-Do not hide findings casually. Suppressions, disabled inspections, inspection
-profile changes, or baseline changes require explicit approval unless the repo
-already has an established approved convention. Prefer fixing code or narrowing
-the scope first.
+## Suppressions And Inspection Configuration
+
+Prefer fixing code or narrowing the scope first. In every repository, an agent
+may add a suppression only when it covers one line or one rule, never a whole
+file, carries a written reason on the same line, and is named in the PR body
+so the second-model review sees it. Reviewers may still reject it.
+
+Disabling inspections, changing inspection profiles, or changing baselines
+requires explicit approval unless the repo already has an established approved
+convention.
 
 ## Reporting
 
