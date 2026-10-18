@@ -165,6 +165,19 @@ def test_later_reply_skips_planning_records_and_follows_the_latest_edit() -> Non
     assert answered["later_reply_url"] == reply.url
 
 
+def test_planning_record_linking_a_comment_does_not_answer_it() -> None:
+    external = comment(comment_id=1, author="outside-user", body="Can I send a corrected sheet?",
+                       created_at="2026-07-25T14:59:27Z")
+    record = comment(comment_id=2, author="fixture-automation",
+                     body=f"Structured wait review for {external.url}\n\n<!-- github-plan:wait {{\"state\": \"clear\"}} -->",
+                     created_at="2026-07-25T16:00:00Z")
+
+    [result] = classify([external, record], [external])
+
+    assert result["publicly_addressed"] is False
+    assert result["later_reply_url"] is None
+
+
 def test_unrelated_owner_comment_does_not_clear_external_comment() -> None:
     external = comment(
         comment_id=1,

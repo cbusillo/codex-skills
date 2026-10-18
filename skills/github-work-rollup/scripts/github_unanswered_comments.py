@@ -843,6 +843,11 @@ def is_director_record(comment: Comment) -> bool:
     return comment.kind == "issue_comment" and comment.body.strip().lstrip("*").startswith(prefixes)
 
 
+def is_bookkeeping(comment: Comment) -> bool:
+    """Director questions, decisions and planning records are awareness or state, not replies."""
+    return is_director_record(comment) or PLAN_RECORD_MARKER in comment.body
+
+
 def targeted_response_for(
     external: Comment,
     comments: list[Comment],
@@ -854,8 +859,8 @@ def targeted_response_for(
 ) -> Comment | None:
     responses = sorted(comments, key=lambda comment: (comment_activity_through(comment, until), comment.comment_id))
     for response in responses:
-        if is_director_record(response):
-            continue  # A question or recorded decision is awareness, not an answer to the commenter.
+        if is_bookkeeping(response):
+            continue
         if normalize_login(response.author) not in actor_logins or not response.body.strip():
             continue
         if not response_is_after(response, external, until):
@@ -884,8 +889,7 @@ def later_reply_for(
     responses = sorted(comments, key=lambda comment: (comment_activity_through(comment, until), comment.comment_id))
     for response in responses:
         if (
-            is_director_record(response)
-            or PLAN_RECORD_MARKER in response.body
+            is_bookkeeping(response)
             or normalize_login(response.author) not in actor_logins
             or not response.body.strip()
         ):

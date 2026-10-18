@@ -1385,7 +1385,9 @@ competitor's record.
   naming each comment, when an outside person's comment has no Director or agent
   reply after its latest version and no targeted response, even on a closed
   thread, or when coverage is degraded. Planning records and Director question
-  or decision records are not replies. Answer each on its thread and rerun. Only the Director overrides:
+  or decision records are not replies or targeted responses, even when they
+  link the comment. Answer each on its thread and rerun. Only the Director
+  overrides:
   `--unanswered-decision COMMENT_URL` names a repository owner comment on
   this issue after the newest such comment, or an unedited `Director decision:`
   record there that the repository owner approved with `+1`. `gh-issue close`
