@@ -90,7 +90,7 @@ def linked_threads(reader: GitHubReader, repo: str, number: int, issue: dict[str
 
 def run_radar(threads: list[str], gh_cmd: str | None = None,
               run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> dict[str, Any]:
-    command = ["uv", "run", "--quiet", str(HELPER), "--format", "json"]
+    command = ["uv", "run", "--quiet", str(HELPER), "--format", "json", "--include-handled"]
     for thread in threads:
         command += ["--thread", thread]
     # The radar reads through the same gh route as the close it guards.
@@ -108,10 +108,11 @@ def run_radar(threads: list[str], gh_cmd: str | None = None,
 
 
 def unanswered_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    # The radar counts a comment on a closed thread as handled; closing over it still needs a reply.
     return [
         {key: row.get(key) for key in ("repo", "number", "author", "comment_url", "created_at",
                                         "updated_at", "body_excerpt")}
-        for row in payload.get("attention") or []
+        for row in [*(payload.get("attention") or []), *(payload.get("handled") or [])]
         if isinstance(row, dict)
         and row.get("author_class") != "automation"
         and not row.get("publicly_addressed")
@@ -137,6 +138,9 @@ def verify_decision(reader: GitHubReader, repo: str, number: int, url: str,
         raise ValueError(f"--unanswered-decision must link a comment on {thread_ref(repo, number)}")
     comment_id = int(match[1])
     comment = reader.get_json(f"repos/{repo}/issues/comments/{comment_id}", step="close_attention_decision")
+    commented_on = API_ISSUE_URL.search(str(comment.get("issue_url") or ""))
+    if not commented_on or (commented_on[1].casefold(), int(commented_on[2])) != (repo.casefold(), number):
+        raise ValueError(f"{url} is not a comment on {thread_ref(repo, number)}")
     owner = repo.split("/", 1)[0].casefold()
     created = timestamp(comment.get("created_at"))
     newest = max((moment for row in rows for moment in (timestamp(row.get("created_at")),

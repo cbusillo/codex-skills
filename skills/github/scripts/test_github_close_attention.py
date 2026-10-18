@@ -48,11 +48,12 @@ def row(number: int = 7, *, author: str = "client", author_class: str = "person"
             "publicly_addressed": addressed, "later_reply_url": later_reply}
 
 
-def radar(*rows: dict[str, Any], status: str = "attention", seen: list[list[str]] | None = None):
+def radar(*rows: dict[str, Any], status: str = "attention", seen: list[list[str]] | None = None,
+          handled: tuple[dict[str, Any], ...] = ()):
     def run(threads: list[str], _gh_cmd: str | None = None) -> dict[str, Any]:
         if seen is not None:
             seen.append(threads)
-        return {"status": status, "attention": list(rows), "coverage": {"errors": []}}
+        return {"status": status, "attention": list(rows), "handled": list(handled), "coverage": {"errors": []}}
     return run
 
 
@@ -76,6 +77,14 @@ class CloseAttentionTests(unittest.TestCase):
             gate.check(REPO, 7, reader=reader, radar=radar(row(9), seen=seen))
         self.assertEqual(seen, [[f"{REPO}#7", f"{REPO}#9", f"{REPO}#10", f"{REPO}#2"]])
         self.assertIn(f"client on {REPO}#9", str(refused.exception))
+
+    def test_closing_a_linked_thread_does_not_answer_its_comment(self) -> None:
+        reader = FakeReader(pages={f"repos/{REPO}/issues/7/sub_issues": [{"html_url": f"https://github.com/{REPO}/issues/9"}]})
+        with self.assertRaises(gate.CloseAttentionError) as refused:
+            gate.check(REPO, 7, reader=reader, radar=radar(status="clear", handled=(row(9),)))
+        self.assertIn(f"client on {REPO}#9", str(refused.exception))
+        answered = gate.check(REPO, 7, reader=reader, radar=radar(status="clear", handled=(row(9, addressed=True),)))
+        self.assertEqual(answered["result"], "passed")
 
     def test_replied_targeted_and_automation_comments_pass(self) -> None:
         result = gate.check(REPO, 7, reader=FakeReader(), radar=radar(
@@ -107,9 +116,11 @@ class CloseAttentionTests(unittest.TestCase):
 
     def test_only_a_later_director_comment_or_approved_record_overrides(self) -> None:
         after, before = "2026-10-17T18:00:00Z", "2026-10-17T17:00:00Z"
-        director = {"user": {"login": "director"}, "body": "Close it.", "created_at": after, "updated_at": after}
+        on_issue = f"https://api.github.com/repos/{REPO}/issues/7"
+        director = {"user": {"login": "director"}, "body": "Close it.", "created_at": after, "updated_at": after,
+                    "issue_url": on_issue}
         record = {"user": {"login": "agent[bot]"}, "body": "Director decision: close #7 now.",
-                  "created_at": after, "updated_at": after}
+                  "created_at": after, "updated_at": after, "issue_url": on_issue}
         thumbs = [{"content": "+1", "user": {"login": "director"}, "created_at": "2026-10-17T18:05:00Z"}]
         self.assertEqual(self.decide(director)["decision"]["approval"], "director_comment")
         self.assertEqual(self.decide(record, thumbs)["decision"]["approval"], "director_reaction")
@@ -118,6 +129,7 @@ class CloseAttentionTests(unittest.TestCase):
             "agent record without the Director's approval": (record, None),
             "edited record": ({**record, "updated_at": "2026-10-17T18:10:00Z"}, thumbs),
             "someone else's thumbs-up": (record, [{**thumbs[0], "user": {"login": "agent[bot]"}}]),
+            "the Director's comment on another issue": ({**director, "issue_url": on_issue[:-1] + "8"}, None),
         }
         for case, (comment, reactions) in refused.items():
             with self.subTest(case), self.assertRaises(gate.CloseAttentionError):
@@ -136,6 +148,7 @@ class CloseAttentionTests(unittest.TestCase):
         payload = gate.run_radar([f"{REPO}#7", f"{REPO}#9"], "fake-gh", run)
         self.assertEqual(payload["status"], "degraded")
         self.assertEqual(commands[0][-4:], ["--thread", f"{REPO}#7", "--thread", f"{REPO}#9"])
+        self.assertIn("--include-handled", commands[0])
         self.assertEqual(routes, ["fake-gh"])
 
 

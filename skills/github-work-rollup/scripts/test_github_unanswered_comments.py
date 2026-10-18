@@ -1300,6 +1300,28 @@ def test_closed_after_comment_uses_latest_version_and_scan_end(closed_at, update
     assert result["owner_seen"] is False
 
 
+def test_include_handled_lists_closed_thread_comments_apart_from_attention(monkeypatch) -> None:
+    external = comment(comment_id=1, author="outside-user", body="Corrected sheet attached.",
+                       created_at="2026-07-25T10:00:00Z")
+    closed = {**thread(), "state": "closed", "closed_at": "2026-07-25T12:00:00Z"}
+    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
+    monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (closed, [external], []))
+    monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
+                        lambda comments: ({external.global_key: []}, {}, []))
+
+    def payload(**overrides: object) -> dict[str, object]:
+        settings = github_unanswered_comments.resolve_settings(
+            args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z", **overrides), {},
+            now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc))
+        return github_unanswered_comments.collect_payload(settings)
+
+    included = payload(include_handled=True)
+    assert included["attention"] == []
+    assert [row["comment_url"] for row in included["handled"]] == [external.url]
+    assert included["handled"][0]["handled_reason"] == "closed_after_comment"
+    assert "handled" not in payload()
+
+
 def test_closed_bot_answer_is_handled_without_personal_awareness(app_ready_discussion):
     external, reply, *_ = app_ready_discussion
     [result] = github_unanswered_comments.comment_states_for_thread(

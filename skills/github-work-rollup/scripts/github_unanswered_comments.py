@@ -151,6 +151,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--until", help="UTC ISO timestamp for the scan end.")
     parser.add_argument("--limit-repos", type=int, default=1000)
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    parser.add_argument(
+        "--include-handled",
+        action="store_true",
+        help="Also list handled comments in the JSON report, for callers that apply their own rule.",
+    )
     parser.add_argument("--output", type=Path, help="Write the report to this path.")
     args = parser.parse_args()
     if args.limit_repos < 1:
@@ -212,6 +217,7 @@ def resolve_settings(
         "window_label": window_label,
         "limit_repos": args.limit_repos,
         "include_archived": bool(getattr(args, "include_archived", False)),
+        "include_handled": bool(getattr(args, "include_handled", False)),
         "people_index": args.people_index or (Path(str(config["people_index"])) if config.get("people_index") else None),
     }
 
@@ -1522,6 +1528,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             },
         },
         "attention": attention,
+        **({"handled": [item for item in comment_states if item["attention_state"] == "handled"]}
+           if settings.get("include_handled") else {}),
         "unasked_director_waits": unasked_waits,
         "director_mentions": mention_rows,
         "people_index": {
