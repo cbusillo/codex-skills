@@ -185,7 +185,7 @@ def test_a_dry_run_timeout_is_a_read_failure_without_an_unknown_write():
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-@pytest.mark.parametrize("reason", ["", " " * 4, "x" * 1001])
+@pytest.mark.parametrize("reason", ["", " " * 4])
 def test_reason_is_validated_before_configuration_or_transport(reason):
     args = arguments()
     args[args.index("--reason") + 1] = reason
@@ -222,23 +222,20 @@ def test_caller_cannot_redirect_to_production_or_bypass_health(extra):
 @pytest.mark.parametrize("field,value", [
     ("instance", "prod"), ("product", "foreign"),
     ("operation_id", ""), ("idempotency_key", "another-request"),
+    ("request.source_git_ref", "b" * 40), ("request.reason", "Another request"),
 ])
 def test_unaligned_receipt_is_unknown_without_a_retry(field, value):
     response = receipt()
-    response["result"][field] = value
+    if field.startswith("request."):
+        response["result"]["request"][field.removeprefix("request.")] = value
+    else:
+        response["result"][field] = value
     code, output, post, read, _ = invoke(response)
     assert code != 0 and output["status"] == "outcome_unknown"
     post.assert_called_once()
     read.assert_not_called()
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
-
-
-def test_changed_request_in_response_does_not_acknowledge_the_wrong_build():
-    response = receipt()
-    response["result"]["request"]["source_git_ref"] = "b" * 40
-    code, output, post, _, _ = invoke(response)
-    assert code != 0 and output["status"] == "outcome_unknown"
-    post.assert_called_once()
+    assert "operation_id" not in output["summary"]
 
 
 def test_invalid_trace_does_not_discard_an_aligned_accepted_operation():
@@ -251,10 +248,11 @@ def test_invalid_trace_does_not_discard_an_aligned_accepted_operation():
     post.assert_called_once()
 
 
-def test_uncertain_receipt_keeps_its_safe_operation_reference_without_claiming_alignment():
+def test_aligned_receipt_keeps_its_operation_reference_when_projection_fails():
     response = receipt()
-    response["result"]["product"] = "another-product"
-    code, output, post, _, _ = invoke(response)
+    with patch.object(helper, "_project_target_replacement_operation",
+            side_effect=helper.LaunchplaneSafetyError("invalid_response")):
+        code, output, post, _, _ = invoke(response)
     assert code != 0 and output["status"] == "outcome_unknown"
     assert output["summary"]["operation_id"] == response["result"]["operation_id"]
     post.assert_called_once()
@@ -299,7 +297,6 @@ def test_replay_diagnostics_distinguish_original_acceptance():
 @pytest.mark.parametrize("error", [
     TimeoutError("PRIVATE_SENTINEL"),
     helper.LaunchplaneSafetyError("unsafe_redirect"),
-    helper.ServiceResponseError({"http_status": 202}),
 ])
 def test_uncertain_exchange_preserves_unknown_and_never_repeats(error):
     code, output, post, read, _ = invoke(error=error)

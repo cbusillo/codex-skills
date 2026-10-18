@@ -435,7 +435,10 @@ local extensions until the vendored artifact is refreshed.
   The helper sends once. A timeout, unsafe redirect, malformed/misaligned receipt,
   interrupted exchange or server error reports `outcome_unknown`. Keep the
   original key and arguments. Read the original operation if its ID is known;
-  otherwise the service's identical-key submission can recover its existing
+  an ID is retained only after the receipt agrees with the original key and
+  complete intent, even if later output projection fails. A mismatched receipt's
+  ID cannot identify this request's outcome. With no aligned ID,
+  the service's identical-key submission can recover its existing
   admission receipt. Do not choose a new key or replay a denied action. The
   helper does not retry, poll automatically, rotate secrets or retire storage.
 - `target-replacement-operation-read --operation-id` calls

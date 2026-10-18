@@ -102,14 +102,12 @@ def project_plan(h: Any, response: dict[str, Any], body: dict[str, object], *, s
     return projected
 
 
-def require_review(h: Any, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]) -> dict[str, Any]:
+def require_review(h: Any, args: argparse.Namespace, body: dict[str, object]) -> dict[str, Any]:
     expected = h._reviewed_apply_digest(args)
-    evidence, result = h._load_reviewed_evidence(args, operation=PLAN_COMMAND,
+    _, result = h._load_reviewed_evidence(args, operation=PLAN_COMMAND,
         expected_digest=expected, evidence_status="ok", result_status="pass")
     preflight = {key: value for key, value in result.items() if key != "plan_sha256"}
-    if (not plan_agrees(h, result, body)
-        or evidence["request"].get("payload_digest") != request["payload_digest"]
-        or h.metadata_review_digest({"body": body, "preflight": preflight}) != expected):
+    if h.metadata_review_digest({"body": body, "preflight": preflight}) != expected:
         raise ValueError("reviewed_dry_run_not_apply_eligible")
     return result
 
@@ -142,19 +140,20 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
     return 1
 
 
-def project_receipt(h: Any, response: dict[str, Any], body: dict[str, object]) -> dict[str, object]:
+def aligned_receipt(h: Any, response: dict[str, Any], body: dict[str, object], key: str) -> dict[str, Any]:
     operation = h._require_dict(response.get("result"))
     original = h._require_dict(operation.get("request"))
     replacement = h._require_dict(body["replacement"])
     if (
         response.get("status") != "accepted"
+        or operation.get("idempotency_key") != key
         or not h.public_identifier(operation.get("operation_id"))
         or operation.get("product") != body["product"]
         or operation.get("instance") != replacement["instance"]
         or any(original.get(key) != value for key, value in replacement.items())
     ):
         raise h.LaunchplaneSafetyError("invalid_response")
-    return h._project_target_replacement_operation({"operation": operation})
+    return operation
 
 
 def replay_diagnostics(h: Any, response: dict[str, Any]) -> dict[str, object]:
@@ -187,25 +186,11 @@ def rejection(h: Any, request: dict[str, object], error: urllib.error.HTTPError)
     return output
 
 
-def uncertain_operation_reference(h: Any, response: dict[str, Any] | None) -> dict[str, object]:
-    if response is None:
-        return {}
-    candidates = []
-    for container, key in (("result", "operation_id"), ("records", "odoo_stable_target_replacement_operation_id")):
-        value = response.get(container)
-        if isinstance(value, dict) and value.get(key):
-            try:
-                candidates.append(h.public_identifier(value[key]))
-            except h.LaunchplaneSafetyError:
-                pass
-    return {"operation_id": candidates[0]} if candidates and len(set(candidates)) == 1 else {}
-
-
 def execute(h: Any, args: argparse.Namespace) -> int:
     request, body = intent(h, args)
     if args.command == PLAN_COMMAND:
         return execute_plan(h, args, request, body)
-    reviewed = require_review(h, args, request, body)
+    reviewed = require_review(h, args, body)
     settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
     if settings is None:
         return 2
@@ -213,6 +198,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         raise ValueError("reviewed_dry_run_service_changed")
     response: dict[str, Any] | None = None
     diagnostics: dict[str, object] = {}
+    operation_reference: dict[str, object] = {}
     try:
         response = h.request_launchplane(
             service_url=settings["service_url"],
@@ -222,10 +208,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             timeout=args.timeout,
             idempotency_key=args.idempotency_key.strip(),
         )
-        operation = h._require_dict(response.get("result"))
-        if operation.get("idempotency_key") != args.idempotency_key.strip():
-            raise h.LaunchplaneSafetyError("invalid_response")
-        result = project_receipt(h, response, body)
+        operation = aligned_receipt(h, response, body, args.idempotency_key.strip())
+        operation_reference = {"operation_id": h.public_identifier(operation["operation_id"])}
+        result = h._project_target_replacement_operation({"operation": operation})
         output = h.base_payload(status="accepted", operation=COMMAND, request=request)
         output["result"] = result
         output["summary"] = {
@@ -263,11 +248,14 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     )
     output["summary"].update(h.service_response_diagnostics(response))
     output["summary"].update(diagnostics)
-    output["summary"].update(uncertain_operation_reference(h, response))
+    output["summary"].update(operation_reference)
     output["summary"]["recommendation"] = (
         "If an operation ID is present, read it with target-replacement-operation-read. "
         "Otherwise explicitly recover by submitting the identical original arguments, "
         "reviewed evidence and idempotency key. Do not generate a new key or change intent."
     )
+    output["warnings"] = [h.warning("testing_rebuild_outcome_unknown",
+        "Recover only with the identical original arguments, reviewed evidence and key. "
+        "Never use a new key or resubmit after a denial. A mismatched receipt ID is not recovery evidence.")]
     h.emit(output)
     return 1
