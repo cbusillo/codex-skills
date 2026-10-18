@@ -1345,7 +1345,7 @@ grep -q '/repos/owner/repo/issues/42/comments?per_page=100&page=1' "$log"
 grep -q -- '--method PATCH' "$log"
 grep -q '/repos/owner/repo/issues/comments/7' "$log"
 printf 'Updated PR comment.\n' >"$tmpdir/expected-pr-comment-body"
-cmp "$tmpdir/expected-pr-comment-body" "$env_log"
+assert_marked_body "$tmpdir/expected-pr-comment-body" "$env_log"
 assert_helper_envelope "$stdout_log" github.comment.pr 'https://github.com/owner/repo/issues/42#issuecomment-7'
 jq -e '.comment_action == "updated" and .comment.id == 7' "$stdout_log" >/dev/null
 

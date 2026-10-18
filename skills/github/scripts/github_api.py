@@ -63,10 +63,10 @@ PRIMARY_RATE_LIMIT_CAUSES = frozenset(
     {"graphql_primary_rate_limited", "rest_primary_rate_limited", "rate_limited_unknown_bucket"}
 )
 OPERATION_MARKER_PREFIX = "<!-- github-skill-operation:"
-# The comment helper adds digests of the writing session's native IDs to its own
-# marker; a digest keeps the raw ID out of text that readers search for session IDs.
-# Caller text never carries one: the helper removes any it finds before writing.
-ANY_WRITER_MARKER = re.compile(rf"{re.escape(OPERATION_MARKER_PREFIX)}[^<>]*?\bwriter=[^<>]*?-->")
+# The comment helper appends its own marker as the final line of every comment it
+# creates or edits, with digests of the writing session's native IDs; a digest keeps
+# the raw ID out of text that readers search for session IDs. Only that final line
+# is a record, so no caller text, whatever it contains, can stand for one.
 REQUIRED_STATUS_CHECKS_EXPECTED_PATTERN = re.compile(
     r'(?:\d+\s+of\s+\d+\s+)?required status checks?'
     r'(?:\s+"[^"\r\n]{1,100}")?\s+(?:is|are)\s+expected\.?',
@@ -313,24 +313,17 @@ def body_has_operation_marker(body: Any, operation_id: str) -> bool:
         rf"{re.escape(OPERATION_MARKER_PREFIX + operation_id)}(?: writer=[0-9a-f,]+)? -->", body) is not None
 
 
-def without_writer_markers(body: str) -> str:
-    return ANY_WRITER_MARKER.sub("", body)
-
-
 def recorded_writer(body: Any, session: str) -> bool | None:
     """Whether the comment helper recorded this session as the body's writer; None without a record.
 
-    The helper writes the record as its own final marker and strips any from
-    caller text, so a record anywhere else, or more than one, is never this
-    session's.
+    Only the final line counts: the helper appends it after the caller's text on
+    every write, so a marker anywhere else is caller text.
     """
-    if not isinstance(body, str) or not ANY_WRITER_MARKER.search(body):
+    final = isinstance(body, str) and re.search(
+        rf"\n{re.escape(OPERATION_MARKER_PREFIX)}[0-9a-f]+ writer=((?:[0-9a-f]{{32}},)*[0-9a-f]{{32}}) -->\s*\Z", body)
+    if not final:
         return None
-    final = re.search(
-        rf"(?:\A|\n){re.escape(OPERATION_MARKER_PREFIX)}[0-9a-f]+ writer=((?:[0-9a-f]{{32}},)*[0-9a-f]{{32}}) -->\s*\Z",
-        body)
-    return (len(ANY_WRITER_MARKER.findall(body)) == 1 and final is not None
-            and session_digest(session) in final[1].split(","))
+    return session_digest(session) in final[1].split(",")
 
 
 class ArgumentParsingError(Exception):

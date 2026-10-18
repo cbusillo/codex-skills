@@ -52,9 +52,14 @@ class CommentError(Exception):
 
 
 def writing_sessions() -> tuple[str, ...]:
-    """This harness session's own native IDs, recorded in a created comment's marker."""
+    """This harness session's own native IDs, recorded in the marker of each comment it writes."""
     agent = github_agent.running_agent(environ=os.environ)
     return tuple(dict.fromkeys(github_agent.native_sessions(agent, environ=os.environ).values()))
+
+
+def edited_body(body: str) -> str:
+    # An edit replaces the whole body, so the helper's own final marker records its writer too.
+    return github_api_core.body_with_operation_marker(body, github_api_core.new_operation_id(), writing_sessions())
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
@@ -721,8 +726,6 @@ def _comment_impl(
             expected_actor=expected_actor,
             failed_step="input_validation",
         )
-    # Only the helper records a writing session; caller text never carries one.
-    body = github_api_core.without_writer_markers(body)
     if not body:
         raise _local_error(
             "Comment body is empty",
@@ -825,7 +828,7 @@ def _comment_impl(
         steps.append("validate_exact_comment")
         update_step = failed_step or "update_comment"
         result = _call_api(
-            "PATCH", path, {"body": body},
+            "PATCH", path, {"body": edited_body(body)},
             gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=expected_actor,
             completed_steps=steps, failed_step=update_step, is_write=True,
             failure_payload={**target, "reconciliation": {"strategy": "selected_comment_lookup", "creation_skipped": True}},
@@ -871,7 +874,7 @@ def _comment_impl(
             result = _call_api(
                 "PATCH",
                 f"/repos/{resolved_repo}/issues/comments/{selected_id}",
-                {"body": body},
+                {"body": edited_body(body)},
                 gh_cmd=gh_cmd,
                 operation=operation,
                 actor=actor,

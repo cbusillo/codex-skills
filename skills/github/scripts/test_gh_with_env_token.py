@@ -717,7 +717,7 @@ def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
               "else:\n"
               "    assert method == 'PATCH' and path.endswith('/comments/20')\n"
               "    assert not os.environ.get('GH_TOKEN')\n"
-              "    assert json.load(sys.stdin)['body'] == 'replacement'\n"
+              "    assert json.load(sys.stdin)['body'].startswith('replacement\\n')\n"
               "    result = item\n"
               "print('HTTP/2.0 200\\r\\n' + 'content-type: application/json\\r\\n\\r\\n' + json.dumps(result))\n")
         body_file = root / "body.md"

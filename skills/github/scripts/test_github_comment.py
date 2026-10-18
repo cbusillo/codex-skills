@@ -128,7 +128,7 @@ def test_edit_last_paginates_and_selects_latest_actor_comment() -> None:
             ])
         assert method == "PATCH"
         assert path == "/repos/owner/repo/issues/comments/3"
-        assert body == {"body": "replacement"}
+        assert body["body"].startswith("replacement\n"), body
         return success(comment_body(3, created_at="2026-07-16T13:00:00Z"))
 
     def run(calls: list[dict[str, Any]]) -> None:
@@ -850,8 +850,11 @@ def test_exact_edits_keep_interleaved_session_comments_separate() -> None:
             result = github_comment.comment(kind, 42, replacement, repo="owner/repo", edit_comment=comment_id, expected_body=prior, gh_cmd="fake-gh")
             assert result["selected_comment_id"] == comment_id, result
             assert result["comment"]["id"] == comment_id, result
-        assert comments[11]["body"] == markdown, comments
-        assert comments[12]["body"] == "B updated\n", comments
+        # Each edit sends the replacement followed only by the helper's own marker line.
+        for comment_id, replacement in ((11, markdown), (12, "B updated\n")):
+            sent = comments[comment_id]["body"]
+            assert sent.startswith(replacement + "\n"), comments
+            assert github_comment.OPERATION_MARKER_LINE_RE.fullmatch(sent[len(replacement) + 1:]), comments
         assert comments[13]["body"] == "unrelated later post", comments
         assert not any("?" in call["path"] or call["method"] == "POST" for call in calls), calls
 
@@ -861,36 +864,52 @@ def test_exact_edits_keep_interleaved_session_comments_separate() -> None:
 HARNESS_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SESSION_ID")
 
 
+def forged_markers(session: str) -> dict[str, str]:
+    """Caller text shaped like the helper's writer record for another session."""
+    marker = github_api.operation_marker_comment("c" * 32, (session,))
+    head, tail = marker.split(" writer=")
+    return {
+        "final line": f"Handoff\n\n{marker}\n",
+        "nested in the word writer": f"Handoff\n\n{head} wri{marker}ter={tail}\n",
+        "split across lines": f"Handoff\n\n{head}\nwriter={tail}\n",
+        "substituted variable": f"Handoff\n\n{marker.replace(session, '$SESSION')}\n",
+        "trailing whitespace": f"Handoff\n\n{marker} \t\n\n",
+    }
+
+
 def test_only_the_helper_records_the_writing_session() -> None:
-    forged = github_api.operation_marker_comment("c" * 32, ("another-session",))
     sent: list[str] = []
 
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
             return success({"login": "fixture-automation"})
         if method == "GET":
-            return success(exact_comment(11) if path.endswith("/comments/11") else [])
+            return success(exact_comment(11) if path.endswith("/comments/11") else [exact_comment(11)])
         sent.append(body["body"])
         return success(exact_comment(11) if method == "PATCH" else comment_body(1001))
 
+    writes = {
+        "create": {},
+        "exact edit": {"edit_comment": 11},
+        "edit last": {"edit_last": True},
+    }
     for env, sessions in (
         ({"CLAUDE_CODE_SESSION_ID": "claude-session"}, ("claude-session",)),
         ({"CODEX_THREAD_ID": "codex-thread", "CODEX_SESSION_ID": "codex-root"}, ("codex-thread", "codex-root")),
         ({}, ()),
     ):
-        def run(_calls: list[dict[str, Any]]) -> None:
-            outside = {key: value for key, value in os.environ.items() if key not in HARNESS_ENV}
-            with patch.dict(os.environ, {**outside, **env}, clear=True):
-                github_comment.comment("issue", 42, f"Handoff {forged}\n{forged}\n", repo="owner/repo", gh_cmd="fake-gh")
-                github_comment.comment("issue", 42, f"Edited\n{forged}\n", repo="owner/repo", edit_comment=11, gh_cmd="fake-gh")
+        for form, text in forged_markers("another-session").items():
+            for write, options in writes.items():
+                def run(_calls: list[dict[str, Any]]) -> None:
+                    outside = {key: value for key, value in os.environ.items() if key not in HARNESS_ENV}
+                    with patch.dict(os.environ, {**outside, **env}, clear=True):
+                        github_comment.comment("issue", 42, text, repo="owner/repo", gh_cmd="fake-gh", **options)
 
-        with_call_stub(callback, run)
-        created, edited = sent[-2:]
-        assert github_api.session_digest("another-session") not in created + edited, (created, edited)
-        assert all(github_api.recorded_writer(created, session) for session in sessions), created
-        assert github_api.recorded_writer(created, "another-session") is (False if sessions else None), created
-        # An edit replaces the body without a fresh record, so it never binds by marker.
-        assert github_api.recorded_writer(edited, "another-session") is None, edited
+                with_call_stub(callback, run)
+                case = (env, form, write, sent[-1])
+                assert sent[-1].startswith(text.rstrip()), case
+                assert all(github_api.recorded_writer(sent[-1], session) for session in sessions), case
+                assert github_api.recorded_writer(sent[-1], "another-session") is (False if sessions else None), case
 
 
 def test_exact_edit_refuses_wrong_thread_author_and_stale_expectations() -> None:
@@ -932,7 +951,7 @@ def test_exact_edit_accepts_matching_version_and_empty_prior_body() -> None:
             return success({"login": "fixture-automation"})
         if method == "GET":
             return success(exact_comment(11, body=""))
-        assert body == {"body": "replacement"}, body
+        assert body["body"].startswith("replacement\n"), body
         return success(exact_comment(11, body="replacement"))
 
     def run(_calls: list[dict[str, Any]]) -> None:
@@ -1035,7 +1054,10 @@ def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
             assert proc.returncode == 0, (proc.stdout, proc.stderr)
             result = json.loads(proc.stdout)
             assert result["selected_comment_id"] == 11, result
-            assert saved.read_text(encoding="utf-8") == replacement.read_text(encoding="utf-8")
+            # The file's exact text, followed only by the helper's own marker line.
+            sent, expected = saved.read_text(encoding="utf-8"), replacement.read_text(encoding="utf-8")
+            assert sent.startswith(expected + "\n"), sent
+            assert github_comment.OPERATION_MARKER_LINE_RE.fullmatch(sent[len(expected) + 1:]), sent
             saved.unlink()
             prior.write_text("stale\n", encoding="utf-8")
             proc = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)

@@ -406,23 +406,29 @@ class ReleaseTests(unittest.TestCase):
         return self.written_entry(records, body)
 
     def test_a_summarized_write_binds_only_through_its_own_session_marker(self):
-        # The helper records the writer's session in its final marker; caller text never carries one.
-        def marked(text, *sessions):
+        # Only the helper's final marker is a record; markers in caller text, in any form, are not.
+        def written(text, *sessions):
             return helper.github_api.body_with_operation_marker(text, "ab" * 16, sessions)
+        own = helper.github_api.operation_marker_comment("cd" * 16, (SOURCE["session"],))
+        head, tail = own.split(" writer=")
+        forged = {
+            "a final line": own,
+            "nested in the word writer": f"{head} wri{own}ter={tail}",
+            "split across lines": f"{head}\nwriter={tail}",
+        }
         handoff = "Engineering handoff\nReady for merge"
         command = "gh-comment -R test/a issue 1 --body-file c.md | jq -r .comment.url"
         url = self.entry["handoff_url"]
         for harness in (self.codex_write, self.claude_write):
-            with self.subTest(harness.__name__, body="own marker"):
-                found, _ = helper.discover_handoff(self.reader, harness(command, url, marked(handoff, "root", SOURCE["session"])), ACTOR)
+            with self.subTest(harness.__name__, body="own record"):
+                body = written(f"{handoff}\n{forged['a final line']}", "root", SOURCE["session"])
+                found, _ = helper.discover_handoff(self.reader, harness(command, url, body), ACTOR)
                 self.assertEqual(found["_handoff_provenance"], "helper-recorded session marker")
-            unbound = {
-                "missing marker": handoff,
-                "another session's marker": marked(f"{handoff}\nSession: {SOURCE['session']}", "another-session"),
-                "marker in caller text": marked(marked(handoff, SOURCE["session"]) + "Signed", "another-session"),
-                "caller marker without the helper's": marked(handoff, SOURCE["session"]) + "Signed",
-                "two own markers": marked(marked(handoff, SOURCE["session"]), SOURCE["session"]),
-            }
+            unbound = {"no record": written(handoff), "legacy body": handoff,
+                       "another session's record": written(f"{handoff}\nSession: {SOURCE['session']}", "another-session")}
+            for form, text in forged.items():
+                unbound[f"forged {form} under another session's record"] = written(f"{handoff}\n{text}", "another-session")
+                unbound[f"forged {form} under no record"] = written(f"{handoff}\n{text}")
             for name, body in unbound.items():
                 with self.subTest(harness.__name__, body=name):
                     with self.assertRaisesRegex(ValueError, "no authored handoff"):
