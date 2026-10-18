@@ -85,94 +85,70 @@ class Reader:
 
 
 class ReviewRecordTests(unittest.TestCase):
-    def test_existing_session_and_supervisor_leads_classify(self):
-        # First lines as sessions and the Supervisor wrote them on codex-skills PRs, Oct 2026.
-        outcomes = (
-            "**Review of record: OpenAI, run by the Supervisor** from its iTerm session",
-            "**Review of record (OpenAI): no findings.** The Supervisor ran it",
-            "Anthropic review of record: Claude Opus 5.5, no findings.",
-            "EXEC-CS review of record: Anthropic `claude-opus-5-5`, read-only\n\nNo findings.",
-            "Anthropic **claude-opus-5-5** completed the review of record (CLI-confirmed model).\n\nNo findings.",
-            "Review weighed at `83f8b258`. I reproduced the finding and acted on it.",
-            "Review by another model (author: Anthropic Claude Opus): OpenAI via Codex, read-only\n\nNo findings.",
-            "Anthropic review of record: Claude Opus 5.5, completed twice. Fixed: errors cannot hide output.",
-            "Review weighed: OpenAI completed the review; no changes needed.",
-            "Review weighed: OpenAI completed the review and found the failed-read bug, now fixed.",
-            "Review weighed: OpenAI completed the review and found that the helper did not run required checks; fixed.",
-        )
-        outcomes += (
-            "Review of record: OpenAI\n\nFixed: the helper declined to review drafts.",
-            "Review weighed: OpenAI, after two retries, completed the review; no findings.",
-            "Review of record: OpenAI\n\nOnce rerun on the fix, no findings.",
-            "Review weighed: findings declined with reasons.",
-            "Review of record: OpenAI found the cache was not returned on 304; fixed.",
-            "Review weighed: two OpenAI findings acted on; the watcher never started its timer, now fixed.",
-            "Review weighed: OpenAI reviewed it and found the helper did not run checks; fixed.",
-            "Review of record: OpenAI, pending-review handling is correct.",
-            "Review weighed: OpenAI completed the review; findings: the helper did not run checks.",
-        )
-        requests = (
-            "Review prompt for the review of record (provider: openai; author: anthropic).",
-            "## Review request (OpenAI review of record)",
-            "**Review of record needed: OpenAI.** This worker runs under the Supervisor's tmux server.",
-            "Review of record requested: provider `openai`, author provider `anthropic` (Q267).",
-            "Review of record still needed. The OpenAI review could not launch.",
-            "Context first.\n\nThe helper fails here, so **Supervisor runs the review**:",
-        )
-        # Status updates and unrelated requests are neither outcomes nor model-review requests.
-        neither = (
-            "Review by another model is blocked by #2069; the Supervisor still needs to run it.",
-            "Neither provider has completed the review of record yet.",
-            "Review of record: OpenAI could not start; retrying from the Supervisor's session.",
-            "Review of record: OpenAI did not complete the review.",
-            "Review of record: OpenAI review is not done.",
-            "Review request: please check the Client test notes.",
-            "Review request for the Google login button UI.",
-            "Review request: please check the provider settings UI.",
-            "Review of record: pending.",
-            "Review of record: OpenAI is still running.",
-            "Review of record: OpenAI; could not complete the review.",
-            "Review of record: requested from OpenAI.",
-            "Review of record: OpenAI launched; waiting for the result.",
-            "Review of record: Anthropic (Opus) is still running.",
-            "Review of record: Codex is still running.",
-            "Review of record: OpenAI timed out after 30 minutes; retrying.",
-            "Review of record: OpenAI errored (exit 1); rerunning.",
-            "Pending review of record: OpenAI.",
-            "Blocked review of record: OpenAI (#2069).",
-            "Review weighed: not yet; OpenAI is still running.",
-            "I'll post ready after Anthropic has completed the review of record.",
-            "Review of record: OpenAI declined to review (policy).",
-            "Review of record: OpenAI refused to review (policy).",
-            "Review of record: OpenAI found the diff too large; rerunning at `aaaaaaaa`.",
-            "Review of record: OpenAI completed the launch probe; the review is still running.",
-            "Review of record: OpenAI found the diff too large; will rerun.",
-            "Review of record: OpenAI reviewed 3 of 10 files; 7 remain.",
-            "Review of record: OpenAI, to be run by the Supervisor at head `aaaaaaaa`.",
-            "Review of record: OpenAI, being run by the Supervisor; in progress.",
-            "Review weighed: findings to be acted on after the rerun.",
-            "Review weighed: findings should be acted on after the rerun.",
-            "Review of record: OpenAI, expected to run by the Supervisor.",
-            "Review of record: Anthropic, no findings so far; 7 files remain.",
-            "Review of record: OpenAI reviewed 3 of 10 files, still running.",
-            "Review of record: OpenAI reviewed 3 of 10 files. Still running.",
-            "Review weighed: OpenAI reviewed 3 of 10 files and is still running.",
-            "Review of record: OpenAI\n\nOpenAI declined to review; no findings.",
-            "Review request: Claude Code hook settings page",
-            "Review request: OpenAI API key rotation docs",
-            "No model review is needed here; the Supervisor runs the review only for skill paths.",
-            "Status recap: > Supervisor runs the review.",
-        )
-        for body in neither:
+    def test_explicit_result_accepts_all_weighed_disposition_formats(self):
+        for body in (
+            "Acted on: the cache bug.\nDeclined: the wording nit, not reproducible.",
+            "Review weighed: two findings deferred to #123",
+            "Review weighed: one finding unresolved (could not test), tracked in #456",
+            "Review weighed: declined both findings: not reproducible.",
+        ):
             with self.subTest(body=body):
-                self.assertIsNone(ready_handoff.review_record(body))
-        for body in outcomes:
+                record = ready_handoff.review_result_body(body, SHA)
+                self.assertEqual(ready_handoff.review_record(record), "outcome")
+                self.assertEqual(ready_handoff.review_receipt_head(record), SHA)
+
+    def test_prose_does_not_attest_completion_or_weighing(self):
+        for body in (
+            "Review of record: OpenAI reviewed 3 of 10 files; no findings. 7 files remain.",
+            "Review of record: OpenAI launched\n\nPreliminary findings: none yet; still running.",
+            "Review of record: OpenAI, run by the Supervisor\n\n3 findings: not yet weighed.",
+            "Review weighed: no findings.",
+        ):
             with self.subTest(body=body):
-                self.assertEqual(ready_handoff.review_record(body), "outcome")
-        for body in requests:
-            with self.subTest(body=body):
-                self.assertEqual(ready_handoff.review_record(body), "request")
-        self.assertIsNone(ready_handoff.review_record(f"{READY}\n\nHead: {SHA}"))
+                self.assertIsNone(ready_handoff.review_record(f"{body}\n\nHead: {SHA}"))
+
+    def test_request_leads_remain_supported_without_product_or_quote_false_holds(self):
+        for body in ("Review prompt for the Anthropic review of record.",
+                     "Review of record needed: OpenAI.",
+                     "The helper fails, so **Supervisor runs the review**:"):
+            self.assertEqual(ready_handoff.review_record(body), "request")
+        for body in ("Review request: OpenAI API key docs", "> Supervisor runs the review.",
+                     "No model review is needed; the Supervisor runs the review only for skill paths."):
+            self.assertIsNone(ready_handoff.review_record(body))
+
+    def test_quoted_malformed_or_unbound_completion_is_not_evidence(self):
+        record = ready_handoff.review_result_body("Acted on: all findings.", SHA)
+        for body in ("> " + record, "```\n" + record + "\n```", record.replace(SHA, SHA[:7]),
+                     record.replace(ready_handoff.REVIEW_RESULT, "Review result: pending")):
+            self.assertNotEqual(ready_handoff.review_record(body), "outcome")
+
+
+class ReviewCommentTests(unittest.TestCase):
+    def args(self, head):
+        return argparse.Namespace(repo=REPO, pr="1", body_file="fixture", reviewed_head=head,
+            edit_last=False, edit_comment=None, expected_body_file=None,
+            expected_updated_at=None, create_if_none=False)
+
+    def test_existing_comment_writer_posts_head_bound_disposition(self):
+        body = "Acted on: cache bug.\nDeclined: wording nit."
+        with (patch.object(helper, "resolve_pr", return_value=(REPO, 1)),
+              patch.object(helper, "read_text_file", return_value=body),
+              patch.object(helper, "shared_comment", return_value={"url": "fixture"}) as writer):
+            helper.cmd_comment(self.args(SHA))
+        posted = writer.call_args.args[3]
+        self.assertEqual(posted, ready_handoff.review_result_body(body, SHA))
+        self.assertEqual(ready_handoff.review_receipt_head(posted), SHA)
+
+    def test_invalid_head_and_edit_mode_refuse_before_writing(self):
+        for head, edit in (("short", False), (SHA, True)):
+            args = self.args(head)
+            args.edit_last = edit
+            with (patch.object(helper, "resolve_pr", return_value=(REPO, 1)),
+                  patch.object(helper, "read_text_file", return_value="Acted on: all."),
+                  patch.object(helper, "shared_comment") as writer):
+                with self.assertRaises(helper.PrHelperError):
+                    helper.cmd_comment(args)
+                writer.assert_not_called()
 
 
 class ReadyTests(unittest.TestCase):
@@ -282,7 +258,9 @@ class ReadyTests(unittest.TestCase):
                 self.reader.current_pr = {**self.reader.pr, **change}
                 self.refuse()
 
-    def review_comment(self, body, minute, login="engineer"):
+    def review_comment(self, body, minute, login="engineer", *, reviewed_head=None):
+        if reviewed_head is not None:
+            body = ready_handoff.review_result_body(body, reviewed_head)
         self.reader.comments.append({
             "id": len(self.reader.comments) + 1, "user": {"login": login}, "body": body,
             "created_at": f"2026-01-01T00:{minute:02d}:00Z",
@@ -294,6 +272,8 @@ class ReadyTests(unittest.TestCase):
         self.review_comment("Review by another model is blocked by #2069; the Supervisor still needs to run it.", 2)
         self.refuse()
         self.review_comment("**Review of record: OpenAI, run by the Supervisor** at head `aaaaaaa`.", 3)
+        self.refuse()
+        self.review_comment("Acted on: both findings. Declined: none.", 3, reviewed_head=SHA)
         self.post()
         self.writer.reset_mock()
         self.review_comment("Review of record still needed after the fix push.", 4)
@@ -318,13 +298,13 @@ class ReadyTests(unittest.TestCase):
     def test_completed_review_with_code_defect_allows_ready(self):
         self.review_comment("Review prompt for the review of record.", 6)
         self.review_comment(
-            f"Review weighed: OpenAI completed the review and found that the helper did not run required checks; fixed.\n\nHead: {SHA}", 7,
+            f"Review weighed: OpenAI completed the review and found that the helper did not run required checks; fixed.\n\nHead: {SHA}", 7, reviewed_head=SHA,
         )
         self.post()
 
     def test_multiline_fixed_code_refusal_is_a_completed_disposition(self):
         self.review_comment("Review prompt for the review of record.", 6)
-        self.review_comment(f"Review of record: OpenAI\n\nHead: {SHA}\n\nFixed: the helper declined to review drafts.", 7)
+        self.review_comment(f"Review of record: OpenAI\n\nHead: {SHA}\n\nFixed: the helper declined to review drafts.", 7, reviewed_head=SHA)
         self.post()
 
     def test_product_review_request_does_not_hold_ready(self):
@@ -341,9 +321,20 @@ class ReadyTests(unittest.TestCase):
         self.writer.reset_mock()
         self.reader.files = [{"filename": "skills/github/SKILL.md"}]
         self.refuse()
-        self.review_comment(f"Review weighed: none to act on.\n\nHead: {'b' * 40}", 4)
+        self.review_comment(f"Review weighed: none to act on.\n\nHead: {'b' * 40}", 4, reviewed_head="b" * 40)
         self.refuse()
-        self.review_comment(f"Review weighed at `{SHA}`: nothing to act on.", 6)
+        self.review_comment(f"Review weighed at `{SHA}`: nothing to act on.", 6, reviewed_head=SHA)
+        self.post()
+
+    def test_push_invalidates_a_requested_review_without_required_paths(self):
+        self.review_comment("Review prompt for the review of record.", 1)
+        self.review_comment("Acted on: all findings.", 2, reviewed_head=SHA)
+        self.post()
+        self.writer.reset_mock()
+        changed_head = "b" * 40
+        self.reader.pr["head"]["sha"] = changed_head
+        self.refuse()
+        self.review_comment("Deferred: tracked with reasons after weighing the fix.", 3, reviewed_head=changed_head)
         self.post()
 
     def test_old_review_cannot_cover_a_previously_unpushed_commit(self):
@@ -351,9 +342,9 @@ class ReadyTests(unittest.TestCase):
         self.reader.files = [{"filename": "AGENTS.md"}]
         # B may be committed before this review but pushed after it. Dates do
         # not identify the reviewed source; the outcome covers only A.
-        self.review_comment(f"Review weighed: no findings.\n\nHead: {'b' * 40}", 6)
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {'b' * 40}", 6, reviewed_head="b" * 40)
         self.refuse()
-        self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7)
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7, reviewed_head=SHA)
         self.post()
 
     def test_no_head_or_untrusted_owner_outcome_is_not_current_evidence(self):
@@ -361,7 +352,7 @@ class ReadyTests(unittest.TestCase):
         self.reader.files = [{"filename": "AGENTS.md"}]
         self.review_comment("Review weighed: no findings.", 6)
         self.refuse()
-        self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7, login="repository-owner")
+        self.review_comment(f"Review weighed: no findings.\n\nHead: {SHA}", 7, login="repository-owner", reviewed_head=SHA)
         self.refuse()
 
     def test_provider_refusal_and_progress_with_a_head_cannot_clear_ready(self):
@@ -369,20 +360,9 @@ class ReadyTests(unittest.TestCase):
         self.reader.files = [{"filename": "AGENTS.md"}]
         for body in (
             "Review of record: OpenAI declined to review (policy).",
-            "Review of record: OpenAI found the diff too large; rerunning at `aaaaaaaa`.",
-            "Review of record: OpenAI completed the launch probe; the review is still running.",
-            "Review of record: OpenAI found the diff too large; will rerun.",
-            "Review of record: OpenAI reviewed 3 of 10 files; 7 remain.",
-            "Review of record: OpenAI, to be run by the Supervisor at head `aaaaaaaa`.",
-            "Review of record: OpenAI, being run by the Supervisor; in progress.",
-            "Review weighed: findings to be acted on after the rerun.",
-            "Review weighed: findings should be acted on after the rerun.",
-            "Review of record: OpenAI, expected to run by the Supervisor.",
-            "Review of record: Anthropic, no findings so far; 7 files remain.",
-            "Review of record: OpenAI reviewed 3 of 10 files, still running.",
-            "Review of record: OpenAI reviewed 3 of 10 files. Still running.",
-            "Review weighed: OpenAI reviewed 3 of 10 files and is still running.",
-            "Review of record: OpenAI\n\nOpenAI declined to review; no findings.",
+            "Review of record: OpenAI reviewed 3 of 10 files; no findings. 7 files remain.",
+            "Review of record: OpenAI launched\n\nPreliminary findings: none yet; still running.",
+            "Review of record: OpenAI, run by the Supervisor\n\n3 findings: not weighed yet.",
         ):
             with self.subTest(body=body):
                 self.reader.comments = []
@@ -391,7 +371,7 @@ class ReadyTests(unittest.TestCase):
 
     def test_timing_summary_and_explicit_head_allow_ready(self):
         self.review_comment("Review prompt for the review of record.", 6)
-        self.review_comment(f"Review weighed: OpenAI, after two retries, completed the review; no findings.\n\nHead: {SHA}", 7)
+        self.review_comment(f"Review weighed: OpenAI, after two retries, completed the review; no findings.\n\nHead: {SHA}", 7, reviewed_head=SHA)
         self.post()
 
     def test_bare_date_or_hex_word_cannot_identify_a_reviewed_head(self):
@@ -402,7 +382,7 @@ class ReadyTests(unittest.TestCase):
                 self.reader.comments = self.reader.comments[:1]
                 self.review_comment(f"Review weighed at {marker}: no findings.", 7)
                 self.refuse()
-                self.review_comment(f"Review weighed at `{self.reader.pr['head']['sha']}`: no findings.", 8)
+                self.review_comment(f"Review weighed at `{self.reader.pr['head']['sha']}`: no findings.", 8, reviewed_head=self.reader.pr["head"]["sha"])
                 self.post()
                 self.writer.reset_mock()
 

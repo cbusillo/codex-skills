@@ -822,6 +822,11 @@ and say why.
   `--abort`, and `--quit` remain available because they create no commits.
 - **Issue bodies and close comments**: `scripts/gh-issue`; from the catalog
   root (`skills/`), `github/scripts/gh-issue create "Title" --repo OWNER/REPO < body.md`.
+- **Weighed model reviews**: use `scripts/gh-pr.py comment --body-file FILE
+  --reviewed-head FULL_SHA` after weighing the completed review. It posts the
+  free-text disposition and explicit completion metadata in one comment; see
+  [ready handoffs](references/cli-reference.md#ready-handoffs). Ordinary progress
+  comments and raw Supervisor reports do not attest completion.
 - **Comments and reviews**: `scripts/gh-pr.py comment --body-file` or
   `scripts/gh-comment` for timeline comments;
   `scripts/gh-with-env-token pr review --body-file` for review feedback.

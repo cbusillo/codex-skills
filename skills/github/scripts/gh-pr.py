@@ -29,6 +29,7 @@ from ready_handoff import (
     handoff_body,
     requires_client_acceptance,
     review_evidence_gap,
+    review_result_body,
 )
 
 
@@ -271,6 +272,7 @@ def parse_args() -> argparse.Namespace:
     p = sub.add_parser("comment", help="Add a PR timeline comment through the shared REST path.")
     p.add_argument("pr", help="PR number, URL, or branch.")
     p.add_argument("--body-file", required=True, help="Read comment Markdown from this file. Use '-' to read from stdin.")
+    p.add_argument("--reviewed-head", help="Attest that this disposition weighs the completed review for this full head SHA.")
     p.add_argument("--edit-last", action="store_true", help="Edit the authenticated actor's latest comment.")
     p.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID.")
     p.add_argument("--expected-body-file", help="Require this exact prior comment body.")
@@ -570,6 +572,14 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
     body = read_text_file(args.body_file, operation="comment", repo=repo, pr=number)
     if not body:
         raise PrHelperError("PR comment body is empty", operation="comment", repo=repo, pr=number)
+    reviewed_head = getattr(args, "reviewed_head", None)
+    if reviewed_head is not None:
+        if args.edit_last or args.edit_comment is not None or args.create_if_none:
+            raise PrHelperError("Post a new review disposition comment; do not edit an earlier result", operation="comment", repo=repo, pr=number)
+        try:
+            body = review_result_body(body, reviewed_head)
+        except ValueError as exc:
+            raise PrHelperError(str(exc), operation="comment", repo=repo, pr=number) from exc
     result = shared_comment(
         "pr",
         repo,

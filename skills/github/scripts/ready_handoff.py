@@ -42,31 +42,11 @@ UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE = (
 REVIEW_CONFIG_PATH = ".github/github.json"
 # Leads sessions and the Supervisor already write; see model-review Reporting.
 REVIEW_LEAD = re.compile(r"^[\s#>*_]+")
-REVIEW_OUTCOME = re.compile(
-    r"(?i)^(?:[\w-]+ )?review of record(?: \([^)]*\))?:"
-    r"|^review weighed\b|^review by another model\b"
-    r"|^(?:openai|anthropic|google|gemini|claude)\b.*?\bcompleted the review of record\b"
-)
-# An outcome needs an affirmative result. Examine only the text preceding
-# that result for unfinished review status; the findings describe the code.
-REVIEW_RESULT = re.compile(
-    r"(?i)\b(?:found|reviewed)\b[^\n]*[;,]\s*(?:now )?fixed\b"
-    r"|,\s*run by (?:the )?supervisor\b"
-    r"|\b(?:no findings|none(?: to act on)?|nothing to act on|no changes needed)\b(?=[ \t*_`]*(?:[.,;!]|$|\n))"
-    r"|\bfindings?\s*:(?=\s|$)|\bfindings? (?:were |have been )?(?:acted on|fixed|addressed|declined)\b"
-    r"|\band acted on\b|\bis correct\b|\bfixed\s*:"
-)
-REVIEW_UNFINISHED = re.compile(
-    r"(?i)\b(?:not|never|neither|cannot|unable|pending|blocked|requested|needed|waiting"
-    r"|outstanding|incomplete|unavailable|queued|running|errored|failed|retrying|rerunning|declined|refused"
-    r"|will|would|until)\b(?![-\w])|\b(?:timed out|to be|being|in progress)\b"
-)
-# A provider refusal or a continuation explicitly saying this review is still
-# running overrides result words from partial file coverage or launch probes.
-REVIEW_PROGRESS = re.compile(
-    r"(?i)\b(?:declined|refused) to review\b"
-    r"|(?:[.;,]\s*|\band (?:is )?)(?:still running|waiting for (?:the )?result)\b"
-    r"|[.;,]\s*(?:rerunning|retrying)(?=\s+(?:at|review)\b|[.!]|$)"
+# Explicit attestation emitted by gh-pr.py comment --reviewed-head. The
+# disposition below it is free text; progress prose is never completion proof.
+REVIEW_RESULT = "Review result: weighed"
+REVIEW_RECEIPT = re.compile(
+    r"\A" + re.escape(REVIEW_RESULT) + r"\nHead: (?P<sha>[0-9a-f]{40})\n\n(?=\S)",
 )
 REVIEW_REQUEST = re.compile(
     r"(?i)^review (?:prompt|request)\b|^review of record (?:still )?(?:needed|requested)\b"
@@ -77,9 +57,6 @@ REVIEW_REQUEST_CONTEXT = re.compile(
 )
 SUPERVISOR_RUNS_REVIEW = re.compile(
     r"(?i)^(?:.*?\bso\s+)?supervisor runs the review[.:]?\s*$"
-)
-REVIEW_HEAD = re.compile(
-    r"(?i)(?:\bhead(?: SHA)?\s*:?\s*[`*]*|\bat\s+`)(?P<sha>[0-9a-f]{7,40})\b"
 )
 
 
@@ -355,25 +332,26 @@ def latest_ready(pr, comments, trusted):
     ] == [pr["head"]["sha"]]
 
 
+def review_result_body(body, head):
+    """Record the author's weighed disposition for exactly one reviewed head."""
+    if not re.fullmatch(r"[0-9a-f]{40}", head or ""):
+        raise ValueError("Review result requires a full 40-character reviewed head SHA")
+    if not body or not body.strip():
+        raise ValueError("Review result requires a disposition body")
+    return f"{REVIEW_RESULT}\nHead: {head}\n\n{body.strip()}"
+
+
+def review_receipt_head(body):
+    match = REVIEW_RECEIPT.match(body or "")
+    return match.group("sha") if match else None
+
+
 def review_record(body):
-    """Classify a review-of-record comment by the leads already in use."""
+    """Read explicit completion evidence; prose leads only detect requests."""
+    if review_receipt_head(body):
+        return "outcome"
     lines = (body or "").strip().splitlines()
     first = REVIEW_LEAD.sub("", lines[0]) if lines else ""
-    result_text = first
-    result = REVIEW_RESULT.search(result_text)
-    # Some existing records put the actual result in a following section.
-    if not result and REVIEW_OUTCOME.search(first):
-        result_text = "\n".join(lines)
-        result = REVIEW_RESULT.search(result_text)
-        prefix = result_text[:result.start()] if result else ""
-    else:
-        prefix = first[:result.start()] if result else ""
-    if (
-        REVIEW_OUTCOME.search(first) and result
-        and not REVIEW_UNFINISHED.search(prefix)
-        and not REVIEW_PROGRESS.search(prefix + "\n" + first)
-    ):
-        return "outcome"
     explicit_request = REVIEW_REQUEST.search(first) and REVIEW_REQUEST_CONTEXT.search(first)
     supervisor_request = any(
         SUPERVISOR_RUNS_REVIEW.fullmatch(line.strip().replace("**", ""))
@@ -421,15 +399,8 @@ def review_of_record_gap(comments, trusted, *, required_files=(), head=None):
         if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
             continue
         kind = review_record(comment.get("body"))
-        if kind == "outcome" and head:
-            body = comment.get("body") or ""
-            declared = [match.group("sha").lower() for match in HEAD.finditer(body)]
-            reviewed_heads = declared or [
-                match.group("sha").lower()
-                for match in REVIEW_HEAD.finditer(body.splitlines()[0])
-            ]
-            if not reviewed_heads or not all(head.lower().startswith(sha) for sha in reviewed_heads):
-                continue
+        if kind == "outcome" and head and review_receipt_head(comment.get("body")) != head:
+            continue
         if kind:
             key = (timestamp(comment["created_at"]), comment["id"])
             if kind not in latest or latest[kind][0] < key:
@@ -439,15 +410,15 @@ def review_of_record_gap(comments, trusted, *, required_files=(), head=None):
         where = request[1].get("html_url") or f"comment {request[1]['id']}"
         return (
             f"A review of record was requested ({where}) with no later recorded outcome; "
-            'post the weighed result (for example "Review weighed: ..." or '
-            f'"Review of record: <provider> ...") naming Head: {head}; accepted identities: {", ".join(sorted(trusted))}'
+            f"post the disposition with gh-pr.py comment --reviewed-head {head}; "
+            f"accepted identities: {', '.join(sorted(trusted))}"
         )
     if required_files and not outcome:
         shown = ", ".join(required_files[:3]) + (" ..." if len(required_files) > 3 else "")
         return (
             f"This PR changes review-required paths ({shown}) and has no review-of-record "
-            f"outcome naming Head: {head}; accepted identities: {', '.join(sorted(trusted))}. Run the review under model-review and "
-            'post the weighed result (for example "Review weighed: ...") before ready'
+            f"weighed outcome for {head}; post the disposition with gh-pr.py comment "
+            f"--reviewed-head {head}; accepted identities: {', '.join(sorted(trusted))}"
         )
     return ""
 

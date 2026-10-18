@@ -1569,7 +1569,7 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(gap(), "")
         self.comments.append(comment("Supervisor runs the review.", 2))
         self.assertTrue(gap())
-        self.comments.append(comment(f"Review weighed: none.\n\nHead: {SHA}", 3))
+        self.comments.append(comment(ready_handoff.review_result_body("Review weighed: none.", SHA), 3))
         self.assertEqual(gap(), "")
         config = {"qualityGate": {"modelReview": {"requiredPaths": ["skills/*"]}}}
         self.assertEqual(gap(), "")
