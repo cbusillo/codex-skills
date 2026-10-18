@@ -99,6 +99,8 @@ def test_new_ruleset_does_not_replace_existing_protection_and_retry_writes_nothi
     client = CheckClient(classic=False, rulesets=[response_ruleset(rules.standard_specs(77)[1], 2)])
     before = copy.deepcopy(client.repos)
     reviewed = plan(client, "new", [{"context": "new", "app_id": None}])
+    wire_checks = reviewed["payload"]["rules"][0]["parameters"]["required_status_checks"]
+    assert wire_checks == [{"context": "new"}]
     assert rules.run_check_plan(client, reviewed, apply=True)["verified"]
     assert client.repos["owner/repo"][:-1] == before["owner/repo"]
     assert client.repos["owner/repo"][-1]["bypass_actors"] == []

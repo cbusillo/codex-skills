@@ -777,6 +777,13 @@ def build_check_plan(repo: str, target: str, checks: Any, before: dict[str, Any]
                 added.append(item)
         parameters["required_status_checks"] = _checks(existing, binding="integration_id")
         payload = {key: copy.deepcopy(current[key]) for key in RULESET_FIELDS}
+        # The ruleset write schema accepts an optional integer integration_id;
+        # omission means any App. Keep null only in our normalized snapshot.
+        for rule in payload["rules"]:
+            if rule["type"] == "required_status_checks":
+                for check in rule["parameters"]["required_status_checks"]:
+                    if check["integration_id"] is None:
+                        del check["integration_id"]
     return {"version": 1, "repo": repo, "target": target, "checks": additions,
             "before": before, "after": after, "payload": payload, "added": added,
             "changed": bool(added)}
