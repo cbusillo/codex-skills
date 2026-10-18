@@ -98,7 +98,9 @@ the requested name (case insensitive). This covers already-absent labels and
 a retry after a successful deletion whose response was lost. Other 404s,
 authorization failures, unreadable/malformed readbacks and labels still
 present remain failures. Reconciliation adds one REST read per absent-label
-404; a failed read stops the edit before later mutations. A normal successful
+404; a failed read stops the edit before later mutations. Failure diagnostics
+include reconciliation reads in the operation attempt and wait totals while
+preserving the failed request's certainty. A normal successful
 deletion adds no read beyond the final issue readback. Stdout remains one JSON
 terminal envelope on the first invocation and on a rerun.
 Parse stdout separately from stderr diagnostics; merging them with `2>&1`

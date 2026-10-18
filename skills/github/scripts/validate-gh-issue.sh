@@ -1254,6 +1254,12 @@ case "$*" in
     *'/user'*) printf '{"login":"fixture-automation"}\n' ;;
     *'--method POST'*'/issues/42/labels'*) cat >/dev/null; printf '[{"name":"plan:active"}]\n' ;;
     *'--method DELETE'*'/issues/42/labels/plan%3Awaiting'*)
+        if [[ ! -f "$GH_ISSUE_LABEL_REMOVED" ]]; then
+            : >"$GH_ISSUE_LABEL_REMOVED"
+            printf '[{"name":"plan:active"}]\n'
+            printf 'fixture: successful label deletion\n' >&2
+            exit 0
+        fi
         printf 'HTTP/2.0 404 Not Found\r\ncontent-type: application/json\r\n\r\n{"message":"Label does not exist"}\n'
         printf 'gh: Label does not exist (HTTP 404)\n' >&2
         exit 1 ;;
@@ -1264,12 +1270,17 @@ esac
 EOF
 chmod +x "$tmpdir/absent-label-gh"
 for edit_pass in first rerun; do
-    GH_ISSUE_GH="$tmpdir/absent-label-gh" \
+    GH_ISSUE_GH="$tmpdir/absent-label-gh" GH_ISSUE_LABEL_REMOVED="$tmpdir/label-removed" \
         "$repo_root/github/scripts/gh-issue" edit 42 --repo owner/repo \
         --add-label plan:active --remove-label plan:waiting \
         >"$stdout_log" 2>"$stderr_log"
     assert_helper_envelope "$stdout_log" github.issue.edit 'https://github.com/owner/repo/issues/42'
     jq -e '.disposition == "complete" and .outcome_certainty == "confirmed" and .recommended_next_action == "none" and .labels == ["plan:active"]' "$stdout_log" >/dev/null
+    if [[ "$edit_pass" == first ]]; then
+        jq -e '.completed_steps | index("reconcile_remove_label") == null' "$stdout_log" >/dev/null
+    else
+        jq -e '.completed_steps | index("reconcile_remove_label") != null' "$stdout_log" >/dev/null
+    fi
 done
 
 cat >"$tmpdir/record-comment-helper-gh" <<'EOF'

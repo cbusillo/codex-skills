@@ -735,6 +735,11 @@ def test_edit_label_removal_requires_readable_absence() -> None:
             except github_issue.IssueError as exc:
                 assert "remove_label" not in exc.failure.completed_steps, exc.failure
                 assert exc.failure.failed_step in {"remove_label", "reconcile_remove_label"}, exc.failure
+                envelope = github_issue._terminal_failure(
+                    exc, "github.issue.edit", expected_actor="fixture-automation",
+                )
+                assert envelope["attempts"] == len(calls), (envelope, calls)
+                assert exc.api_result["attempts"] == len(calls), (exc.api_result, calls)
             else:
                 raise AssertionError(f"unconfirmed absence reported as success: {readback}")
             assert [call["method"] for call in calls] == ["GET", "DELETE", "GET"], calls

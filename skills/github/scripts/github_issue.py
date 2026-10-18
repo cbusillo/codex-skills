@@ -110,9 +110,14 @@ def _enrich_error_with_retry_summaries(
     if summary is None:
         return
     retry_fields = summary.as_dict()
-    error.payload = github_api_core.redact_body({**retry_fields, **error.payload})
+    # Keep the failed request's certainty/reconciliation, but count later
+    # reconciliation reads in the operation's diagnostics.
+    diagnostics = {key: retry_fields[key] for key in (
+        "attempts", "elapsed_wait", "effective_deadline", "last_actor", "last_bucket",
+    )}
+    error.payload = github_api_core.redact_body({**retry_fields, **error.payload, **diagnostics})
     if error.api_result is not None:
-        error.api_result = github_api_core.redact_body({**retry_fields, **error.api_result})
+        error.api_result = github_api_core.redact_body({**retry_fields, **error.api_result, **diagnostics})
 
 
 def _from_comment_error(exc: github_comment.CommentError) -> IssueError:
@@ -1129,15 +1134,13 @@ def _edit_issue_impl(
     for label in normalized_remove_labels:
         encoded = urllib.parse.quote(label, safe="")
         removal_summary_index = len(retry_summaries)
-        api_kwargs = dict(
-            gh_cmd=gh_cmd, operation=operation, actor=actor,
-            expected_actor=expected_actor, completed_steps=steps,
-            failure_payload=failure_payload, retry_summaries=retry_summaries,
-        )
         try:
             _call_api(
                 "DELETE", f"/repos/{resolved_repo}/issues/{number}/labels/{encoded}",
-                None, failed_step="remove_label", is_write=True, **api_kwargs,
+                None, failed_step="remove_label", is_write=True,
+                gh_cmd=gh_cmd, operation=operation, actor=actor,
+                expected_actor=expected_actor, completed_steps=steps,
+                failure_payload=failure_payload, retry_summaries=retry_summaries,
             )
         except IssueError as error:
             # A replay can get 404 after an earlier DELETE succeeded unseen.
@@ -1150,7 +1153,10 @@ def _edit_issue_impl(
                 raise
             readback = _call_api(
                 "GET", f"/repos/{resolved_repo}/issues/{number}", None,
-                failed_step="reconcile_remove_label", is_write=False, **api_kwargs,
+                failed_step="reconcile_remove_label", is_write=False,
+                gh_cmd=gh_cmd, operation=operation, actor=actor,
+                expected_actor=expected_actor, completed_steps=steps,
+                failure_payload=failure_payload, retry_summaries=retry_summaries,
             ).body
             labels = readback.get("labels") if isinstance(readback, dict) else None
             if not (
@@ -1165,7 +1171,6 @@ def _edit_issue_impl(
             removal_summary.outcome_certainty = "confirmed"
             removal_summary.recommended_next_action = "none"
             removal_summary.exhausted_reason = None
-            removal_summary.retry_eligible = True
             steps.append("reconcile_remove_label")
         steps.append("remove_label")
     if normalized_add_assignees:
