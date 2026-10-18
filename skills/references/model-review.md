@@ -70,8 +70,9 @@ the author verifies it.
   parked issue.
 - Decline a non-defect, or a finding no realistic situation produces or the
   evidence refutes, with one line where the change is reviewed and no issue.
-  Declined with a reason is an accounted-for outcome, the same as fixed,
-  deferred, or tracked, and does not block readiness or closeout.
+  Fixed or declined with a reason is accounted for and does not block
+  readiness or closeout. Deferred or tracked accounts only for an unresolved
+  finding (below), never for a reproduced defect.
 - Could not test is not refuted. When you lack the platform, access, or harness
   to check a plausible finding, record it as unresolved with what is missing,
   and defer or track it like any other open item. Do not decline it.
