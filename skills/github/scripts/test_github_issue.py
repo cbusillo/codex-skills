@@ -638,7 +638,7 @@ def test_edit_partial_failure_preserves_completed_steps_and_guidance() -> None:
     with_call_stub(callback, run)
 
 
-def test_edit_absent_label_failure_reports_partial_writes_and_remaining_work() -> None:
+def test_edit_absent_label_removal_completes_requested_edit() -> None:
     labels = {"plan", "plan:blocked"}
 
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
@@ -659,50 +659,152 @@ def test_edit_absent_label_failure_reports_partial_writes_and_remaining_work() -
         return success([])
 
     def run(calls: list[dict[str, Any]]) -> None:
-        try:
-            github_issue.edit_issue(
-                42,
-                repo="owner/repo",
-                add_labels=["plan:waiting"],
-                remove_labels=["plan:blocked", "plan:active", "later"],
-                gh_cmd="fake-gh",
-            )
-        except github_issue.IssueError as exc:
-            envelope = github_issue._terminal_failure(
-                exc, "github.issue.edit", expected_actor="fixture-automation"
-            )
-        else:
-            raise AssertionError("absent-label removal should remain a terminal failure")
+        payload = github_issue.edit_issue(
+            42,
+            repo="owner/repo",
+            add_labels=["plan:waiting"],
+            remove_labels=["plan:blocked", "plan:active", "later"],
+            gh_cmd="fake-gh",
+        )
         assert labels == {"plan", "plan:waiting"}, labels
-        assert envelope["write_outcome"] == "partially_applied", envelope
-        assert envelope["outcome_certainty"] == "confirmed_partially_applied", envelope
-        assert envelope["failure"]["write_outcome"] == "partially_applied", envelope
-        assert envelope["completed_steps"] == ["resolve_actor", "add_labels", "remove_label"], envelope
-        assert envelope["failed_step"] == "remove_label", envelope
-        assert envelope["failed_request"]["write_outcome"] == "not_started", envelope
-        assert envelope["failed_request"]["outcome_certainty"] == "confirmed_not_applied", envelope
-        assert envelope["retryable"] is False and envelope["fallback_eligible"] is False, envelope
-        recovery = envelope["reconciliation"]
-        assert recovery["completed"]["add_labels"] == ["plan:waiting"], recovery
-        assert recovery["completed"]["remove_labels"] == ["plan:blocked"], recovery
-        assert recovery["remaining"]["add_labels"] == [], recovery
-        assert recovery["remaining"]["remove_labels"] == ["plan:active", "later"], recovery
-        assert recovery["required_before_retry"] is True, recovery
-        assert [call["method"] for call in calls] == ["GET", "POST", "DELETE", "DELETE"], calls
-        # The caller's readback uses the supplied endpoint; no completed write is replayed.
-        readback = github_issue.github_api_core.call_gh("GET", recovery["endpoint"])
-        actual = {label["name"] for label in readback.body["labels"]}
-        remaining_removals = [label for label in recovery["remaining"]["remove_labels"] if label in actual]
-        assert remaining_removals == [], remaining_removals
+        assert payload["outcome_certainty"] == "confirmed", payload
+        assert payload["completed_steps"].count("remove_label") == 3, payload
+        assert [call["method"] for call in calls] == [
+            "GET", "POST", "DELETE", "DELETE", "GET", "DELETE", "GET", "GET",
+        ], calls
 
     with_call_stub(callback, run, allow_retry=True)
+
+
+def test_edit_retried_label_removal_confirms_unseen_success() -> None:
+    deletes = 0
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        nonlocal deletes
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "DELETE":
+            assert path.endswith("/labels/plan%3Awaiting%2Ftest"), path
+            deletes += 1
+            if deletes == 1:
+                # GitHub applied the deletion, but its response was lost.
+                return failure(503, "Lost response", is_write=True)
+            return failure(404, {"message": "Label does not exist"}, is_write=True)
+        assert method == "GET" and path == "/repos/owner/repo/issues/42", path
+        return success(issue_body())
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        payload = github_issue.edit_issue(
+            42, repo="owner/repo", remove_labels=["plan:waiting/test"], gh_cmd="fake-gh",
+        )
+        assert payload["outcome_certainty"] == "confirmed", payload
+        assert payload["recommended_next_action"] == "none", payload
+        assert payload["retry_exhausted_reason"] is None, payload
+        assert payload["completed_steps"] == [
+            "resolve_actor", "reconcile_remove_label", "remove_label", "read_after_write",
+        ], payload
+        assert payload["attempts"] == len(calls) == 5, (payload, calls)
+        assert [call["method"] for call in calls] == ["GET", "DELETE", "DELETE", "GET", "GET"], calls
+
+    with_call_stub(callback, run, allow_retry=True)
+
+
+def test_edit_label_removal_requires_readable_absence() -> None:
+    for readback in (
+        failure(403, {"message": "Resource not accessible by integration"}, is_write=False),
+        failure(404, {"message": "Not Found"}, is_write=False),
+        success({"number": 42}),
+        success({"number": 42, "labels": [None]}),
+        success({"number": 42, "labels": [{"name": ""}]}),
+        success({"number": 99, "labels": []}),
+        success({"number": 42, "labels": [{"name": "PLAN:WAITING"}]}),
+    ):
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "DELETE":
+                return failure(404, {"message": "Label does not exist"}, is_write=True)
+            assert method == "GET" and path == "/repos/owner/repo/issues/42", path
+            return readback
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_issue.edit_issue(
+                    42, repo="owner/repo", remove_labels=["plan:waiting"], gh_cmd="fake-gh",
+                )
+            except github_issue.IssueError as exc:
+                assert "remove_label" not in exc.failure.completed_steps, exc.failure
+                assert exc.failure.failed_step in {"remove_label", "reconcile_remove_label"}, exc.failure
+                envelope = github_issue._terminal_failure(
+                    exc, "github.issue.edit", expected_actor="fixture-automation",
+                )
+                assert envelope["attempts"] == len(calls), (envelope, calls)
+                assert exc.api_result["attempts"] == len(calls), (exc.api_result, calls)
+            else:
+                raise AssertionError(f"unconfirmed absence reported as success: {readback}")
+            assert [call["method"] for call in calls] == ["GET", "DELETE", "GET"], calls
+
+        with_call_stub(callback, run)
+
+
+def test_edit_label_removal_does_not_reconcile_denials_or_unrelated_404() -> None:
+    for status, message in ((401, "Bad credentials"), (403, "Resource not accessible by integration"), (404, "Not Found")):
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            assert method == "DELETE", (method, path)
+            return failure(status, {"message": message}, is_write=True)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_issue.edit_issue(42, repo="owner/repo", remove_labels=["absent"], gh_cmd="fake-gh")
+            except github_issue.IssueError as exc:
+                assert exc.api_result["status"] == status, exc.api_result
+            else:
+                raise AssertionError(f"unexpected success after {status}")
+            assert [call["method"] for call in calls] == ["GET", "DELETE"], calls
+
+        with_call_stub(callback, run)
+
+
+def test_edit_failure_after_reconciled_removal_preserves_remaining_intent() -> None:
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success(issue_body())
+        if method == "DELETE":
+            return failure(404, {"message": "Label does not exist"}, is_write=True)
+        assert method == "POST" and path.endswith("/assignees"), (method, path)
+        return failure(403, {"message": "Resource not accessible by integration"}, is_write=True)
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        try:
+            github_issue.edit_issue(
+                42, repo="owner/repo", remove_labels=["absent"],
+                add_assignees=["octocat"], gh_cmd="fake-gh",
+            )
+        except github_issue.IssueError as exc:
+            payload = github_issue._terminal_failure(
+                exc, "github.issue.edit", expected_actor="fixture-automation",
+            )
+        else:
+            raise AssertionError("assignee denial should stop the edit")
+        assert payload["failed_step"] == "add_assignees", payload
+        assert payload["write_outcome"] == "partially_applied", payload
+        assert payload["outcome_certainty"] == "confirmed_partially_applied", payload
+        assert payload["reconciliation"]["completed"]["remove_labels"] == ["absent"], payload
+        assert payload["reconciliation"]["remaining"]["add_assignees"] == ["octocat"], payload
+        assert [call["method"] for call in calls] == ["GET", "DELETE", "GET", "POST"], calls
+
+    with_call_stub(callback, run)
 
 
 def test_edit_first_mutation_failure_is_not_partial() -> None:
     def callback(_method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":
             return success({"login": "fixture-automation"})
-        return failure(404, {"message": "Label does not exist"}, is_write=True)
+        return failure(404, {"message": "Not Found"}, is_write=True)
 
     def run(calls: list[dict[str, Any]]) -> None:
         try:
@@ -1304,7 +1406,11 @@ TESTS = [
     test_rejected_retry_enabled_issue_create_can_retry,
     test_edit_uses_rest_membership_endpoints_and_reads_after_write,
     test_edit_partial_failure_preserves_completed_steps_and_guidance,
-    test_edit_absent_label_failure_reports_partial_writes_and_remaining_work,
+    test_edit_absent_label_removal_completes_requested_edit,
+    test_edit_retried_label_removal_confirms_unseen_success,
+    test_edit_label_removal_requires_readable_absence,
+    test_edit_label_removal_does_not_reconcile_denials_or_unrelated_404,
+    test_edit_failure_after_reconciled_removal_preserves_remaining_intent,
     test_edit_first_mutation_failure_is_not_partial,
     test_edit_failed_readback_preserves_confirmed_writes,
     test_edit_malformed_readback_preserves_confirmed_writes,
