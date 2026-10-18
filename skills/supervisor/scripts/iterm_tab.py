@@ -629,10 +629,11 @@ def check_codex_daemon(choice):
             missing = agent_tools.missing_codex_plugins(plugins, agent_tools.CODEX_BROWSER_PLUGINS)
             choice.setdefault("tools", {"warnings": []})
             if missing or inventory.get("inventory_error"):
-                message = inventory.get("inventory_error") or ("daemon-routed Codex is missing enabled bundled plugins: " + ", ".join(missing) +
-                           "; use local codex --no-daemon -C with the launcher's account-relative override; "
-                           "-c and -p do not forward marketplace settings through --remote")
-                raise ValueError(message)
+                message = inventory.get("inventory_error") or (
+                    "daemon-routed Codex is missing enabled bundled plugins: " + ", ".join(missing))
+                raise ValueError(message +
+                                 "; use local codex --no-daemon -C with the launcher's account-relative override; "
+                                 "-c and -p do not forward marketplace settings through --remote")
     except Exception as error:
         detail = str(error) if isinstance(error, ValueError) else type(error).__name__
         raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
@@ -786,6 +787,12 @@ def check_claude_tools(command_text, choice, without_browser=False, probes=None,
         home, directory, {agent_tools.CHROME_ENV: "0"}, check_computer_use=False)}
     if without_browser:
         tools["browsers"] = "not checked (--without-browser)"
+    elif tools["warnings"]:
+        # Static Chrome failures already explain why this route cannot work.
+        # Do not spawn a server or repeat the same diagnostic.
+        if require_browser:
+            raise ValueError("Chrome check failed: " + "; ".join(tools["warnings"]) +
+                             "; no terminal was launched")
     else:
         try:
             server = agent_tools.chrome_server(home)
@@ -802,10 +809,6 @@ def check_claude_tools(command_text, choice, without_browser=False, probes=None,
                 raise ValueError("no Chrome browser is connected to the pinned account; "
                                  "ask Chris to open the Agents profile")
             tools["browsers"] = len(probes[key])
-            config = agent_tools.read_claude_config(home)
-            if agent_tools.CHROME_SERVER in agent_tools.listed(
-                    agent_tools.project_entry(config, directory), "disabledMcpServers"):
-                raise ValueError("catalog-chrome is disabled for the launch directory; enable it through /mcp")
         except ValueError as error:
             if require_browser:
                 raise ValueError(f"Chrome check failed: {error}; no terminal was launched") from None

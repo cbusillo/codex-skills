@@ -79,10 +79,13 @@ class ProviderLaunchTests(unittest.TestCase):
                 "projects": {str(repo): {"disabledMcpServers": [agent_tools.CHROME_SERVER]}}}))
             choice = {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(home)}}
             with (patch.object(iterm_tab, "CHROME_OPT_IN", opt),
-                  patch.object(agent_tools, "connected_browsers", return_value=[{}])):
-                with self.assertRaisesRegex(ValueError, "disabled"):
+                  patch.object(agent_tools, "connected_browsers", return_value=[{}]) as probe):
+                with self.assertRaises(ValueError):
                     iterm_tab.check_claude_tools(f"cd {shlex.quote(str(alias))} && exec claude",
                                                 choice, require_browser=True)
+                iterm_tab.check_claude_tools(f"cd {shlex.quote(str(alias))} && exec claude", choice)
+                self.assertEqual(len(choice["tools"]["warnings"]), 1)
+                probe.assert_not_called()
                 for command in ("claude", "cd relative && claude"):
                     with self.assertRaises(ValueError):
                         iterm_tab.check_claude_tools(command, choice, require_browser=True)
@@ -300,7 +303,7 @@ class ProviderLaunchTests(unittest.TestCase):
                 with patch.object(iterm_tab.gui_launch, "marketplace", side_effect=ValueError("fixture setup unavailable")):
                     command = iterm_tab.prepare_codex_tools("codex -C /fixture/repo", fallback)
                 self.assertNotIn("--no-daemon", shlex.split(command))
-                self.assertIn("daemon", " ".join(fallback["tools"]["warnings"]))
+                self.assertEqual(fallback["tools"]["route"], "daemon")
                 with patch.object(iterm_tab.gui_launch, "marketplace", side_effect=ValueError("fixture setup unavailable")):
                     command = iterm_tab.prepare_codex_tools("codex --no-daemon -C /fixture/repo", fallback)
                 self.assertEqual(fallback["tools"]["route"], "local")
