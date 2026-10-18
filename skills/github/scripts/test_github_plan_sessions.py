@@ -361,7 +361,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         # AF_UNIX paths are short on macOS; /var/folders can exceed that limit.
         with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
             home = Path(folder)
-            socket_path = home / "app-server-control/app-server-control.sock"
+            socket_path = CLOSURE.daemon_endpoint(home)
             socket_path.parent.mkdir()
             app = web.Application()
             app.router.add_get("/", handler)
@@ -449,7 +449,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_listening_stale_socket_is_unavailable(self):
         with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
             home = Path(folder)
-            path = home / "app-server-control/app-server-control.sock"
+            path = CLOSURE.daemon_endpoint(home)
             path.parent.mkdir()
             with socket.socket(socket.AF_UNIX) as stale:
                 stale.bind(str(path))

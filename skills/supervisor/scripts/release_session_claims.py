@@ -144,10 +144,11 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
 
 def _record_closure(path, entry, supervisor_session, *, persist=True):
     """Observe exit now; never replace an older actual closure time on retry."""
-    records = [{k: v for k, v in e.items() if not k.startswith("_")}
-               for e in session_record.load_ledger(path, closed_log=True)] if path.exists() else []
-    existing = [r for r in records if r["session_id"] == entry["session_id"]]
-    original = [r for r in json.loads(path.read_text()) if r.get("session_id") == entry["session_id"]] if path.exists() else []
+    with closure.store_lock(path, create=persist):
+        records = [{k: v for k, v in e.items() if not k.startswith("_")}
+                   for e in session_record.load_ledger(path, closed_log=True)] if path.exists() else []
+        existing = [r for r in records if r["session_id"] == entry["session_id"]]
+        original = [r for r in json.loads(path.read_text()) if r.get("session_id") == entry["session_id"]] if path.exists() else []
     if existing and existing[0].get("resumed_at"):
         resumed = existing[0].get("resumed_generation") or {}
         if not resumed or any(entry.get(k) != resumed.get(k) for k in (
