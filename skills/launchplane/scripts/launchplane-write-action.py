@@ -4629,7 +4629,7 @@ def emit_invalid_response(
         code="invalid_response",
         message="Launchplane returned an invalid response.",
     )
-    payload["summary"].update(diagnostics or {})
+    cast(dict[str, object], payload["summary"]).update(diagnostics or {})
     assert_public_safe_shape(payload["summary"])
     emit(payload)
 
