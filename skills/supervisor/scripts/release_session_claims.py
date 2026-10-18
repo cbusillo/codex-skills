@@ -11,6 +11,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import json
 import fcntl
+import itertools
 import os
 from pathlib import Path
 from typing import Any
@@ -289,12 +290,38 @@ def discover_handoff(reader, entry, actor):
     outputs = []
     writes = set()
     # Heredoc bodies are data (often a comment body with apostrophes), not commands.
-    heredoc = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1([^\n]*)\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+    heredoc = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([\w.-]+)\1([^\n]*)\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+    temporary = itertools.count()
     def shell_text(command):
         if isinstance(command, list) and all(isinstance(part, str) for part in command):
             command = command[-1] if len(command) >= 3 and command[-2] in {"-c", "-lc"} and Path(command[0]).name in {"bash", "sh", "zsh"} else shlex.join(command)
         return command if isinstance(command, str) else ""
+    def quoting(shell):
+        # shlex removes quotes, so mark a single-quoted or escaped dollar as never
+        # expanded, and blank quoted text so that only real operators are seen.
+        marked, bare, quote, index = [], [], None, 0
+        while index < len(shell):
+            char = shell[index]
+            if quote != "'" and char == "\\" and index + 1 < len(shell):
+                marked.append(char + ("\0" if shell[index + 1] == "$" else shell[index + 1]))
+                bare.append("  ")
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            elif quote is None and char in "'\"":
+                quote = char
+            elif quote is None:
+                bare.append(char)
+                marked.append(char)
+                index += 1
+                continue
+            marked.append("\0" if quote == "'" and char == "$" else char)
+            bare.append(" ")
+            index += 1
+        return "".join(marked), "".join(bare)
     def shell_parts(command):
+        """Return the command's parts, its heredoc bodies, and whether all of it was parsed."""
         bodies = {}
         def replace(match):
             key = f"__handoff_stdin_{len(bodies)}__"
@@ -303,11 +330,18 @@ def discover_handoff(reader, entry, actor):
                 return f" __handoff_fd__ {key}{match[3]}\n"
             return f" < {key}{match[3]}\n"
         header = heredoc.sub(replace, command)
-        # Explicit file descriptors are not the helper's default stdin/stdout.
+        # A here-string's bytes are not recorded; explicit file descriptors are
+        # not the helper's default stdin/stdout.
+        header = header.replace("<<<", " __handoff_fd__ ")
         header = re.sub(r"(?<!\w)\d+(>>?|<)", " __handoff_fd__ ", header)
-        # Multiple/unsupported heredoc syntax is not evidence of bytes sent.
-        if "<<" in header:
-            return [], {}
+        header, bare = quoting(header)
+        # Text after an unsupported heredoc may be its body, so it is never read as
+        # commands, and the call's bodies are not evidence of bytes sent.
+        complete = "<<" not in bare
+        if not complete:
+            header = header[:bare.index("<<")]
+        # Each mktemp result is a new file, distinct from every other call's.
+        header = re.sub(r"\$\(mktemp(?:[ \t][^()$`'\"\0\n]*)?\)", lambda _: f"/\x01mktemp/{next(temporary)}", header)
         try:
             lexer = shlex.shlex(header, posix=True, punctuation_chars=";&|\n<>")
             lexer.whitespace_split = True
@@ -322,26 +356,55 @@ def discover_handoff(reader, entry, actor):
                     tokens.append(token)
             if tokens:
                 parts.append(tokens)
-            return parts, bodies
+            return parts, bodies, complete
         except ValueError:
-            return [], {}
-    def is_comment_write(tokens):
+            return [], {}, False
+    def comment_target(tokens):
+        """Return the (repository, number) a comment write targets; either may be unknown."""
         for index, token in enumerate(tokens):
             name = Path(token).name
             if name in {"uv", "run", "python", "python3", "env"} or token.startswith("-") or re.match(r"\w+=", token):
                 continue
             tail = tokens[index + 1:]
             if name in {"gh-comment", "github_comment.py"}:
-                if any(t in {"issue", "pr"} and i + 1 < len(tail) and tail[i + 1].isdigit() for i, t in enumerate(tail)):
-                    return True
+                numbers = [tail[i + 1] for i, t in enumerate(tail) if t in {"issue", "pr"} and i + 1 < len(tail) and tail[i + 1].isdigit()]
+                if numbers:
+                    repos = [tail[i + 1] for i, t in enumerate(tail) if t in {"-R", "--repo"} and i + 1 < len(tail)]
+                    repos += [t.split("=", 1)[1] for t in tail if t.startswith("--repo=")]
+                    return (repos[-1] if repos else None), numbers[0]
             if name == "gh-pr.py":
                 # The documented form puts the global --repo before the subcommand.
+                repo = None
                 while tail[:1] in (["--repo"], ["-R"]) or (tail and tail[0].startswith("--repo=")):
+                    repo = tail[0].split("=", 1)[1] if "=" in tail[0] else (tail[1:2] or [None])[0]
                     tail = tail[1 if "=" in tail[0] else 2:]
                 if tail[:1] == ["comment"]:
-                    return True
-            return False
-        return False
+                    pr = tail[1] if len(tail) > 1 else ""
+                    if pr_url := re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?", pr):
+                        return pr_url[1], pr_url[2]
+                    # A branch name leaves the number, and so any printed URL, unmatched.
+                    return repo, pr if pr.isdigit() else None
+            return None
+        return None
+    def note_patch(patch, cwd):
+        # A Codex apply_patch added file is its "+" lines; any other change leaves the text unknown.
+        lines = patch.splitlines()
+        index = 0
+        while index < len(lines):
+            heading = re.fullmatch(r"\*\*\* (Add|Update|Delete) File: (.+)|\*\*\* Move to: (.+)", lines[index])
+            index += 1
+            if not heading:
+                continue
+            content = []
+            while index < len(lines) and not lines[index].startswith("*** "):
+                content.append(lines[index])
+                index += 1
+            name = file_identity((heading[2] or heading[3]).strip(), cwd)
+            if name is None:
+                continue
+            files.pop(name, None)
+            if heading[1] == "Add" and all(line.startswith("+") for line in content):
+                files[name] = "\n".join(line[1:] for line in content)
     # A write's output is often summarized or chained with other commands, so any
     # URL it prints is a candidate. Only a comment whose body is exactly what that
     # call sent binds: a stdin heredoc, or the --body-file the session wrote itself.
@@ -371,16 +434,14 @@ def discover_handoff(reader, entry, actor):
             if name in files and isinstance(edit, dict) and isinstance(edit.get("old_string"), str) and isinstance(edit.get("new_string"), str):
                 files[name] = files[name].replace(edit["old_string"], edit["new_string"], -1 if edit.get("replace_all") else 1)
     def sent_bodies(command, cwd):
-        command = shell_text(command)
-        parts, heredocs = shell_parts(command)
-        bodies, variables = set(), {}
-        # shlex removes quotes. Do not expand a dollar that was single-quoted.
-        expand = not re.search(r"'[^']*\$[^']*'", command)
+        """Return the (body, repository, number) each comment write sent, and whether any write ran."""
+        parts, heredocs, complete = shell_parts(shell_text(command))
+        bodies, variables, wrote = set(), {}, False
         def literal(value, values):
-            if expand:
-                value = re.sub(r"\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))",
-                               lambda m: values.get(m[1] or m[2], m[0]), value)
-            return value if not any(c in value for c in "$`~*?[") else None
+            # A dollar marked by quoting() was single-quoted or escaped, and is never expanded.
+            value = re.sub(r"\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))",
+                           lambda m: values.get(m[1] or m[2], m[0]), value)
+            return value if not any(c in value for c in "$`~*?[\0") else None
         for tokens in parts:
             local = dict(variables)
             index = 0
@@ -392,8 +453,9 @@ def discover_handoff(reader, entry, actor):
             if not tokens:
                 variables = local
                 continue
-            # Shell cwd changes cannot be inferred from an attempted cd alone.
-            if tokens[0] in {"cd", "pushd", "popd"}:
+            # Shell cwd changes cannot be inferred from an attempted cd alone, or
+            # bounded within a subshell or group.
+            if tokens[0] in {"cd", "pushd", "popd"} or tokens[0].startswith(("(", "{")):
                 cwd = None
             def operand(flag):
                 value = None
@@ -417,10 +479,17 @@ def discover_handoff(reader, entry, actor):
                         i += 1
                 if tokens[0] == "cat" and not args and stdin in heredocs and ">>" not in tokens:
                     files[target] = heredocs[stdin]
-            if not is_comment_write(tokens):
+            if tokens[0] == "apply_patch":
+                # An argv patch is one single-quoted word; quoting() marked its dollars.
+                patch_text = heredocs.get(stdin) if tokens[1:] == ["<", stdin] else (
+                    tokens[1].replace("\0", "$") if len(tokens) == 2 else None)
+                note_patch(patch_text or "", cwd)
+            target_of_write = comment_target(tokens)
+            if target_of_write is None:
                 continue
+            wrote = True
             path = operand("--body-file")
-            if path is None and any(t == "--body-file" or t.startswith("--body-file=") for t in tokens):
+            if not complete or (path is None and any(t == "--body-file" or t.startswith("--body-file=") for t in tokens)):
                 continue
             if path == "-" or path is None:
                 body = heredocs.get(stdin)
@@ -429,24 +498,27 @@ def discover_handoff(reader, entry, actor):
             else:
                 body = files.get(file_identity(path, cwd))
             if body and flat(body):
-                bodies.add(flat(body))
-        return bodies
-    started = {}
+                bodies.add((flat(body), *target_of_write))
+        return bodies, wrote
+    started, finished = {}, {}
     sent = {}
     printed = []
-    def add_printed(call_id, finished_at, value):
+    def add_printed(call_id, timestamp, value):
+        # Native records may be duplicated without timestamps; keep the first known bound.
+        if timestamp:
+            finished.setdefault(call_id, timestamp)
         for repo, number, comment_id in re.findall(HANDOFF.pattern, "\n".join(strings(value))):
-            printed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}",
-                            started.get(call_id), finished_at, sent.get(call_id, set())))
+            printed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}", call_id))
     def start_write(call_id, timestamp, commands):
-        if call_id in sent:
-            return
-        sent[call_id] = set()
-        for command, cwd in commands:
-            sent[call_id].update(sent_bodies(command, cwd))
-            if any(is_comment_write(tokens) for tokens in shell_parts(shell_text(command))[0]):
-                writes.add(call_id)
-                started[call_id] = started.get(call_id) or timestamp
+        if call_id not in sent:
+            sent[call_id] = set()
+            for command, cwd in commands:
+                bodies, wrote = sent_bodies(command, cwd)
+                sent[call_id].update(bodies)
+                if wrote:
+                    writes.add(call_id)
+        if call_id in writes and timestamp:
+            started.setdefault(call_id, timestamp)
     for record in records:
         payload = record.get("payload") or {}
         arguments = payload.get("arguments") or payload.get("input") or ""
@@ -458,7 +530,11 @@ def discover_handoff(reader, entry, actor):
         code = structured.get("code", "") if isinstance(structured, dict) else arguments
         cwd = (structured.get("workdir") or structured.get("cwd") or session_cwd) if isinstance(structured, dict) else session_cwd
         commands = [(command, cwd)] if command else []
-        if not command and isinstance(code, str):
+        if payload.get("name") == "apply_patch":
+            # A patch is file data; text it adds is never a command.
+            patch_text = structured.get("input") if isinstance(structured, dict) else arguments
+            note_patch(patch_text if isinstance(patch_text, str) else "", session_cwd)
+        elif not command and isinstance(code, str):
             # Decode each invocation separately so its workdir is not lost when
             # one orchestration call contains several exec_command invocations.
             objects = re.findall(r'\btools\.exec_command\(\s*\{((?:"(?:\\.|[^"\\])*"|[^{}"])*)\}', code)
@@ -468,8 +544,11 @@ def discover_handoff(reader, entry, actor):
                         r'\b(cmd|workdir|cwd)\s*:\s*("(?:\\.|[^"\\])*")', obj)}
                 except ValueError:
                     continue  # malformed historic tool text is not a write receipt
+                # A working directory the recorder wrote in a form we cannot decode is unknown.
+                keys = set(re.findall(r"\b(workdir|cwd)\s*:", re.sub(r'"(?:\\.|[^"\\])*"', '""', obj)))
                 if values.get("cmd"):
-                    commands.append((values["cmd"], values.get("workdir") or values.get("cwd") or cwd))
+                    commands.append((values["cmd"], None if keys - values.keys()
+                                     else values.get("workdir") or values.get("cwd") or cwd))
         # Historical fixtures/native direct calls may contain the shell command itself.
         if not command and not isinstance(structured, dict) and payload.get("name") in {"exec_command", "functions.exec_command"}:
             commands = [(str(arguments), cwd)]
@@ -513,7 +592,7 @@ def discover_handoff(reader, entry, actor):
     final_urls = [f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
                   for repo, number, comment_id in re.findall(HANDOFF.pattern, final_text)]
     candidates = [*entry.get("_handoffs", []),
-                  *reversed(receipt_urls), *(url for url, _, _, _ in reversed(printed)), *reversed(final_urls)]
+                  *reversed(receipt_urls), *(url for url, _ in reversed(printed)), *reversed(final_urls)]
     for url in dict.fromkeys(candidates):
         match = HANDOFF.fullmatch(url)
         if not match:
@@ -531,10 +610,17 @@ def discover_handoff(reader, entry, actor):
         created = release.stamp(evidence.get("created_at") or "1970-01-01T00:00:00Z")
         slack = timedelta(seconds=2)
         body = flat(OPERATION_MARKER_LINE_RE.sub("", text))
+        def during(call_id):
+            # Each recorded bound applies on its own; a missing copy never lifts the other.
+            opened, closed = started.get(call_id), finished.get(call_id)
+            return ((not opened or release.stamp(opened) - slack <= created)
+                    and (not closed or created <= release.stamp(closed) + slack))
+        def sent_to_url(call_id):
+            # The body must have been sent by a write aimed at this comment's own thread.
+            return any(sent_body == body and number == match[2] and (repo is None or repo.lower() == match[1].lower())
+                       for sent_body, repo, number in sent.get(call_id, ()))
         sent_here = release.related_sessions_match(text, entry["session_id"]) and any(
-            u == url and body in bodies and (not start or not end
-                                             or release.stamp(start) - slack <= created <= release.stamp(end) + slack)
-            for u, start, end, bodies in printed)
+            u == url and during(call_id) and sent_to_url(call_id) for u, call_id in printed)
         if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
                 and not text.startswith("Claimed by ") and not claim.records(text)
                 and (url in entry.get("_handoffs", []) or url in receipt_urls or sent_here or entry["session_id"] in text)):
