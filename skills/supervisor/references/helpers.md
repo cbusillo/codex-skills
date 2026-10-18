@@ -131,6 +131,10 @@ repository context can be inventoried with additive `--repository`; an opaque
 command without its own scope evidence still refuses, even if that inventory
 contains an older matching release. Do not guess scope or drop a child. The source worker coordinates any
 child-owned release through that child; the parent does not impersonate it.
+An `ownership_activity_incomplete` refusal means a claim/PR command still lacks
+its terminal native result. Have the worker collect that result, then launch
+a new check. A process handle or an overlapping checker result does not clear
+the obligation; Claude tools sharing one API message are treated as concurrent.
 
 For no-GitHub exploration, local readable child histories with no ownership
 activity satisfy the N/A path. The reader uses Claude's native child files and

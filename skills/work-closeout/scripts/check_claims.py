@@ -156,6 +156,8 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
     # into an all-clear. Use the existing paged, non-search inventory.
     histories = entry.get("_claim_histories") or [{"session_id": entry["session_id"], "harness": entry["harness"],
                                                 "records": entry.get("_transcript_records", [])}]
+    if any(claim_receipts.ownership_state(node["records"], node["harness"])["pending"] for node in histories):
+        raise ValueError("ownership command has no terminal native result; wait for it to finish, then launch a new check")
     native_sessions = {node["session_id"] for node in histories}
     expected, errors = [], []
     for node in histories:

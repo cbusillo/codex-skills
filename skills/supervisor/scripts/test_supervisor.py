@@ -188,6 +188,7 @@ class TranscriptTests(unittest.TestCase):
         for name, middle, running in (
             ("live watcher", [], ["bosltstxv", "bmon"]),
             ("monitor event is not an end", [notice("bmon")], ["bosltstxv", "bmon"]),
+            ("running status is not an end", [notice("bmon", "running")], ["bosltstxv", "bmon"]),
             ("terminal notices", [notice("bosltstxv", "completed"), notice("bmon", "killed")], []),
             ("task stopped", [stop, notice("bmon", "completed")], []),
             ("an event notice never borrows the next notice's status", [

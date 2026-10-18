@@ -26,7 +26,7 @@ NO_DIRECTOR_ACTION = re.compile(r"^No Director (?:action|decision) needed\.\s+")
 # A terminal Claude Code task notice carries <status>; Monitor event notices do not.
 TASK_NOTICE = re.compile(r"<task-notification>(.*?)</task-notification>", re.DOTALL)
 TASK_NOTICE_ID = re.compile(r"<task-id>([^<]+)</task-id>")
-TASK_NOTICE_STATUS = re.compile(r"<status>[^<]+</status>")
+TASK_NOTICE_STATUS = re.compile(r"<status>(?:completed|failed|killed|stopped)</status>")
 
 
 def validate_record(record: dict) -> None:

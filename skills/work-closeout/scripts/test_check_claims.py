@@ -74,6 +74,17 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.assertTrue(report["claims_clear"], report)
             self.assertTrue(report["coverage"]["complete"])
 
+    def test_pending_ownership_is_refused_before_remote_inventory(self):
+        from test_claim_receipts import history, SESSION as native_session
+        rows = history("codex", {"operation": helper.claim_receipts.CLAIM_OPERATION})
+        rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run scripts/gh-plan.py --repo test/a claim 1 > claim.json"})
+        rows[2]["payload"]["output"] = "Process running with session ID 123"
+        entry = {"session_id": native_session, "harness": "codex", "_transcript_records": rows}
+        with self.assertRaises(ValueError):
+            helper.check(self.reader, [], entry, ACTOR)
+        self.reader.get_json.assert_not_called()
+        self.reader.paged_json.assert_not_called()
+
     def test_held_claim_blocks_even_when_hygiene_and_transcript_say_safe(self):
         for harness in ("claude", "codex"):
             with self.subTest(harness=harness):

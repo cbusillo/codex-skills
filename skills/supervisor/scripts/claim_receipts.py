@@ -187,15 +187,47 @@ def isolated_command(name, value, helper):
 
 def ownership_activity(records, harness):
     """Missing/redirected ownership writes still require readback."""
+    yield from ownership_state(records, harness)["indices"]
+
+
+def ownership_state(records, harness):
+    """Track launches through their terminal native result, including process polls."""
     no_writes = no_write_claims(records, harness)
+    def owning(name, value):
+        return any(script(argv) == "gh-plan.py" and "claim" in argv
+                   or script(argv) == "gh-pr.py" and "create" in argv
+                   or argv[:3] == ["gh", "pr", "create"] for argv in shell_commands(name, value))
+    indices, pending, events = [], set(), {}
+    for index, source, value in bound_outputs(records, harness, owning, isolated_polls=True):
+        if source in no_writes:
+            continue
+        events.setdefault(index, []).append((source, value))
+    tasks, running = {}, {}
     for index, record in enumerate(records):
-        calls, results = calls_and_results(record, harness)
-        for identifier, name, value in calls:
-            for argv in shell_commands(name, value):
-                if (script(argv) == "gh-plan.py" and "claim" in argv and identifier not in no_writes
-                        or script(argv) == "gh-pr.py" and "create" in argv
-                        or argv[:3] == ["gh", "pr", "create"]):
-                    yield index
+        for source, value in events.get(index, []):
+            if value.get("_attempt"):
+                pending.add(source)
+                indices.append(index)
+            elif value.get("_result"):
+                indices.append(index)
+                task = value.get("_background_task")
+                if task:
+                    tasks.setdefault(task, set()).add(source)
+                if not value.get("_pending"):
+                    pending.discard(source)
+        if harness == "claude" and record.get("type") != "assistant":
+            # Reuse the native terminal-notice reader. A TaskStop invocation
+            # alone does not establish that a writer actually stopped.
+            import session_record
+            before = set(running)
+            session_record.track_claude_background_tasks(record, running)
+            for ended in before - running.keys():
+                finished = tasks.pop(ended, set())
+                for source in finished:
+                    if not any(source in owners for owners in tasks.values()):
+                        pending.discard(source)
+                        indices.append(index)
+    return {"indices": indices, "pending": bool(pending)}
 
 
 def target_repositories(records, harness):
@@ -287,7 +319,7 @@ def claim_targets(records, harness):
 
 def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=False):
     """Bind native outputs and process polls to an actual tool invocation."""
-    calls, processes = {}, {}
+    calls, processes, background = {}, {}, set()
     parsed = {}
     for index, value in outputs(records, harness) if receipts is None else receipts:
         parsed.setdefault(index, []).append(value)
@@ -306,38 +338,47 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                 polls.clear()
             source = call_id if invoked else next((processes[p] for p in polls if p in processes), None)
             calls[call_id] = source
+            if invoked and name == "Bash" and isinstance(value, dict) and value.get("run_in_background"):
+                background.add(source)
             if invoked:
                 yield index, source, {"_attempt": True}
         for result in results:
             source = calls.get(result)
             if source is None:
                 continue
-            yield index, source, {"_result": True}
-            for value in parsed.get(index, []):
-                if value.get("_tool_call_id") != result:
-                    continue
-                if isinstance(value.get("session_id"), int):
-                    processes[str(value["session_id"])] = source
-                yield index, source, value
+            values = [v for v in parsed.get(index, []) if v.get("_tool_call_id") == result]
             # Stock shell/orchestration tools may expose their handle as text.
             raw = json.dumps((record.get("payload") or {}).get("output")) if harness == "codex" else json.dumps([
                 b.get("content") for b in (record.get("message") or {}).get("content", [])
                 if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == result])
-            for handle in re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw):
+            handles = {str(v["session_id"]) for v in values if isinstance(v.get("session_id"), int)}
+            handles.update(re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw))
+            for handle in handles:
                 processes[handle] = source
+            native_task = record.get("toolUseResult")
+            task = (native_task.get("backgroundTaskId") or native_task.get("taskId")) if harness == "claude" and isinstance(native_task, dict) else None
+            yield index, source, {"_result": True, "_pending": bool(handles) or bool(task) or source in background,
+                                  "_background_task": task}
+            for value in values:
+                yield index, source, value
 
 
 def check_outputs(records, harness, *, receipts=None):
     """A saved report or tool prompt cannot attest a fresh executing check."""
     predicate = lambda name, value: any(script(argv) == "check_claims.py" for argv in shell_commands(name, value))
-    isolated = set()
-    for record in records:
+    first, boundaries, candidates, totals = {}, {}, {}, {}
+    for index, record in enumerate(records):
+        # Claude splits one API message across native JSONL records. Calls in
+        # that message share a launch boundary even if results are interleaved.
+        message = (record.get("message") or {}).get("id") if harness == "claude" and record.get("type") == "assistant" else None
+        group = ("message", message) if message else ("record", index)
+        boundaries[index] = first.setdefault(group, index)
         calls, _ = calls_and_results(record, harness)
-        if sum(bool(predicate(name, value)) for _, name, value in calls) != 1:
-            continue  # Parallel checks share one snapshot-order boundary.
         for identifier, name, value in calls:
+            totals[group] = totals.get(group, 0) + bool(predicate(name, value))
             if isolated_command(name, value, "check_claims.py"):
-                isolated.add(identifier)
+                candidates[identifier] = group
+    isolated = {identifier for identifier, group in candidates.items() if totals[group] == 1}
     parsed = list(outputs(records, harness)) if receipts is None else receipts
     counts = {}
     for index, value in parsed:
@@ -346,8 +387,8 @@ def check_outputs(records, harness, *, receipts=None):
     starts = {}
     for index, source, value in bound_outputs(records, harness, predicate, receipts=parsed, isolated_polls=True):
         if value.get("_attempt"):
-            starts[source] = index
-            yield index, {"operation": CHECK_OPERATION, "_attempt": True}
+            starts[source] = boundaries[index]
+            yield starts[source], {"operation": CHECK_OPERATION, "_attempt": True}
         elif (source in isolated and counts.get(index) == 1
               and value.get("operation") == CHECK_OPERATION and not value.get("_tool_error")):
             yield index, {**value, "_invoked_at": starts[source]}
@@ -421,7 +462,7 @@ def _acceptance(records, harness, session, histories):
     sessions = {h["session_id"] for h in histories}
     expected, errors = [], []
     root_expected = []
-    child_activity = False
+    child_activity, pending = False, False
     for node in histories:
         for native in sessions:
             found, missing = sources(node["records"], node["harness"], native)
@@ -429,9 +470,13 @@ def _acceptance(records, harness, session, histories):
             errors.extend(missing)
             if node is histories[0]:
                 root_expected.extend(found)
-        if node is not histories[0] and list(ownership_activity(node["records"], node["harness"])):
+        state = ownership_state(node["records"], node["harness"])
+        pending = pending or state["pending"]
+        if node is not histories[0] and state["indices"]:
             child_activity = True
-    activity = list(ownership_activity(records, harness))
+    if pending:
+        return {"clear": False, "reason": "ownership_activity_incomplete"}
+    activity = ownership_state(records, harness)["indices"]
     if not expected and not errors and not activity and not child_activity:
         return {"clear": True, "reason": "no_claim_receipts"}
     keys = {(r["repository"], r["record"], r["claim_comment"]) for r in expected}

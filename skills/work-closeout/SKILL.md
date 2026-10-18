@@ -315,9 +315,17 @@ on Claude Bash), or Codex's process handle and `write_stdin` polls. Keep all res
 JSON visible; do not background Claude Bash checks. Quiet no-GitHub child
 histories keep the existing exit path.
 Freshness is measured at the check's bound launch, including long-running
-checks collected by later polls. Any later ownership activity requires a new
-check after it; receiving an older result afterward cannot cover that activity.
-Run one checker at a time rather than parallel checks in the same native record.
+checks collected by later polls. Every ownership command must have a terminal
+native result before the check launches; a process handle is still pending.
+Claude background ownership waits for its native terminal task notice; a
+progress notice or a `TaskStop` invocation alone does not prove completion.
+Any later ownership activity requires a new check after its terminal result;
+receiving an older result afterward cannot cover that activity.
+Claude splits one API message across multiple native records. Its shared
+`message.id` is one launch boundary even when tool results interleave: a check
+in the same API message as ownership cannot prove it ran afterward. Finish
+ownership first and launch a separate check. Run one checker at a time rather
+than parallel checks in the same API message or native record.
 
 An open PR need not merge before a session exits. Its exact authored release
 must name the retained PR, and the check verifies the same repository, source

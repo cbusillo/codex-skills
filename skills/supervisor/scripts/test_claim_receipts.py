@@ -64,6 +64,78 @@ def history(harness, *values):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_claude_background_ownership_needs_terminal_notice_before_a_new_check(self):
+        checked = {**proof(), "harness": "claude"}
+        rows = history("claude", claim(), checked)
+        rows[1]["message"]["content"][0]["input"] = {"command": "gh pr create --title x", "run_in_background": True}
+        rows[2]["toolUseResult"] = {"backgroundTaskId": "owned-task", "stdout": ""}
+        rows[2]["message"]["content"][0]["content"] = "Command running in background with ID: owned-task."
+        self.assertFalse(session_record.summarize(rows, "claude")["safe_verdict"])
+        def notice(status):
+            return {"type": "user", "sessionId": SESSION, "message": {"content":
+                    f"<task-notification><task-id>owned-task</task-id><status>{status}</status></task-notification>"}}
+        rows.insert(3, notice("running"))
+        self.assertFalse(session_record.summarize(rows, "claude")["safe_verdict"])
+        stop = {"type": "assistant", "sessionId": SESSION, "message": {"content": [
+                {"type": "tool_use", "id": "stop", "name": "TaskStop", "input": {"task_id": "owned-task"}}]}}
+        rows.insert(4, stop)
+        self.assertFalse(session_record.summarize(rows, "claude")["safe_verdict"])
+        rows[-1:-1] = [notice("completed")]
+        self.assertFalse(session_record.summarize(rows, "claude")["safe_verdict"])
+        fresh = history("claude", checked)[1:-1]
+        fresh[0]["message"]["content"][0]["id"] = "fresh"
+        fresh[1]["message"]["content"][0]["tool_use_id"] = "fresh"
+        rows[-1:-1] = fresh
+        self.assertTrue(session_record.summarize(rows, "claude")["safe_verdict"])
+
+    def test_ownership_launched_before_the_check_must_finish_before_its_launch(self):
+        for command, result in (("uv run scripts/gh-plan.py --repo example/a claim 5 > claim.json", {}),
+                                ("gh pr create --title x", "https://github.com/example/a/pull/5")):
+            rows = history("codex", claim(), proof())
+            rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            # Codex writes both calls before either tool result.
+            rows[2] = output(result, "codex", "tool-0")
+            rows[2:4] = [rows[3], rows[2]]
+            self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+            missing = rows[:3] + rows[4:]
+            self.assertFalse(session_record.summarize(missing, "codex")["safe_verdict"])
+            # A new check after the terminal ownership result can clear.
+            fresh = history("codex", proof())[1:-2]
+            fresh[0]["payload"]["call_id"] = "fresh"
+            fresh[1]["payload"]["call_id"] = "fresh"
+            rows[-2:-2] = fresh
+            self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
+
+    def test_an_ownership_process_handle_stays_pending_until_its_terminal_poll(self):
+        rows = history("codex", claim(), proof())
+        rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run scripts/gh-plan.py --repo example/a claim 5 > claim.json"})
+        rows[2]["payload"]["output"] = "Process running with session ID 123"
+        self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+        poll = {"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin", "call_id": "poll-own", "arguments": '{"session_id":123}'}}
+        rows[-2:-2] = [poll, output({}, "codex", "poll-own")]
+        self.assertFalse(session_record.summarize(rows, "codex")["safe_verdict"])
+        fresh = history("codex", proof())[1:-2]
+        fresh[0]["payload"]["call_id"] = "fresh"
+        fresh[1]["payload"]["call_id"] = "fresh"
+        rows[-2:-2] = fresh
+        self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
+
+    def test_claude_split_records_share_the_api_message_launch_boundary(self):
+        rows = history("claude", claim(), {**proof(), "harness": "claude"})
+        rows[1]["message"].update(id="shared-api-message")
+        rows[1]["message"]["content"][0]["input"] = {"command": "uv run scripts/gh-plan.py --repo example/a claim 5 > claim.json"}
+        rows[2] = output({}, "claude", "tool-0")
+        rows[3]["message"].update(id="shared-api-message")
+        # Native shape: use A, result A, use B, result B; both use records
+        # share the same API message even though their results interleave.
+        self.assertFalse(session_record.summarize(rows, "claude")["safe_verdict"])
+        rows[3]["message"]["id"] = "later-api-message"
+        self.assertTrue(session_record.summarize(rows, "claude")["safe_verdict"])
+        # Launch B before result A: the terminal ownership boundary protects
+        # the session independently of message grouping.
+        rows[2:4] = [rows[3], rows[2]]
+        self.assertFalse(session_record.summarize(rows, "claude")["safe_verdict"])
+
     def test_delayed_check_cannot_cover_ownership_or_newer_attempts_after_launch(self):
         for harness in ("codex", "claude"):
             checked = {**proof(("example/a", 1, 10)), "harness": harness}
