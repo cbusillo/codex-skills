@@ -2571,6 +2571,30 @@ def test_active_post_merge_read_gaps_remain_visible_on_selection_candidates() ->
     assert candidates[0]["post_merge_evidence_complete"] is False
 
 
+def test_bare_reference_missing_here_keeps_post_merge_evidence_complete() -> None:
+    # A bare #104 written for another repository is absent here: read, not unread.
+    module = load_module()
+    row = global_issue("someone/product", 10, body="## Current Status\nNext action: Website agents finish #104 company identity.\n")
+    def fetch(cause: str) -> Any:
+        def read(_method: str, path: str, **_kwargs: Any) -> Any:
+            if path == "/repos/someone/product":
+                return "automation-gh", {"default_branch": "main", "archived": False}
+            failure = module.github_api_core.FailureDetail(cause=cause, message="cannot read", retryable=False,
+                                                           fallback_eligible=False, disposition="stop")
+            raise module.PlanError("cannot read", failure=failure)
+        return read
+    with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG, api_json=fetch("not_found")):
+        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
+    candidates = [module.compact_list_issue(row["repo"], row)]
+    module.exclude_landed_candidates(candidates, [], report)
+    assert report["complete"] and not report["unavailable"]
+    assert [ref["reference"] for ref in report["unresolved_references"]] == ["#104"]
+    assert "post_merge_evidence_complete" not in candidates[0]
+    with patch.multiple(module, load_config=lambda *_: module.DEFAULT_CONFIG, api_json=fetch("permission_denied")):
+        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
+    assert not report["complete"] and report["unavailable"] and not report["unresolved_references"]
+
+
 def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output() -> None:
     module = load_module()
     row = global_issue("someone/product", 10, labels=["plan", "custom-active"],
@@ -2605,6 +2629,7 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
 
 TESTS = [
     test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output,
+    test_bare_reference_missing_here_keeps_post_merge_evidence_complete,
     test_active_post_merge_read_gaps_remain_visible_on_selection_candidates,
     test_local_and_global_next_exclude_stale_landing_but_keep_split_work,
     test_global_adjacent_notes_preserve_absence_and_pending_clauses,

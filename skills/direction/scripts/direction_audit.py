@@ -75,6 +75,10 @@ class AuditError(Exception):
     pass
 
 
+class ReferenceNotFound(AuditError):
+    """GitHub answered 404: the record is absent, so it was read, not unread."""
+
+
 def parse_direction(text: str) -> dict[str, Any]:
     """Return headings and owner-approved milestone lines."""
     headings: list[str] = []
@@ -329,14 +333,27 @@ def _parse_time(value: Any) -> dt.datetime | None:
         return None
 
 
+NOT_FOUND_RE = re.compile(r"\bHTTP 404\b")
+
+
 def gh_json(args: list[str], *, gh: str) -> Any:
     proc = subprocess.run([gh, *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode != 0:
-        raise AuditError(f"{gh} {' '.join(args)} failed: {proc.stderr.strip()[:400]}")
+        error = ReferenceNotFound if NOT_FOUND_RE.search(proc.stderr) else AuditError
+        raise error(f"{gh} {' '.join(args)} failed: {proc.stderr.strip()[:400]}")
     try:
         return json.loads(proc.stdout or "null")
     except json.JSONDecodeError as exc:
         raise AuditError(f"non-JSON output from {gh} {' '.join(args[:3])}") from exc
+
+
+# A bare #N names the issue's own repository by default; prose often means another one.
+UNRESOLVED = object()
+
+
+def bare_reference_missing(exc: AuditError, explicit: bool) -> bool:
+    """Only an unqualified reference may be left unresolved; named repositories stay errors."""
+    return not explicit and isinstance(exc, ReferenceNotFound)
 
 
 # GitHub Free refuses rulesets on private repositories with this 403; other 403s stay errors.
@@ -663,20 +680,37 @@ def agent_delivery_wait(status: str, repo: str, number: int) -> str | None:
 
 
 def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
-                         read: Callable[[str], Any]) -> dict[str, Any] | None:
+                         read: Callable[[str], Any],
+                         unresolved: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
     """A merge makes an old status suspect, never proves the finish line."""
     # Normalize field emphasis without rewriting reference URLs or body text.
     status = re.sub(rf"(?m)^(\s*(?:[-*]\s+)?)(?:\*\*|__)({STATUS_FIELD})(?::(?:\*\*|__)|(?:\*\*|__):)", r"\1\2:", status)
     next_action = re.search(
         rf"(?ims)^\s*(?:[-*]\s+)?Next action:\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     )
+    explicit: set[tuple[str, int]] = set()
+
     def references(reference_text: str) -> dict[tuple[str, int], str | None]:
         found: dict[tuple[str, int], str | None] = {}
         for ref in WAIT_REFERENCE.finditer(reference_text):
             key = ((ref.group(1) or ref.group(4) or repo).casefold(), int(ref.group(3) or ref.group(5)))
+            if ref.group(1) or ref.group(4):
+                explicit.add(key)
             if found.get(key) != "pull":
                 found[key] = ref.group(2)
         return found
+
+    def read_reference(ref_repo: str, ref_number: int) -> Any:
+        """Read a referenced issue; a bare #N that is not here is recorded, not fatal."""
+        try:
+            return read(f"repos/{ref_repo}/issues/{ref_number}")
+        except AuditError as exc:
+            if not bare_reference_missing(exc, (ref_repo, ref_number) in explicit):
+                raise
+            if unresolved is not None and not any(row["reference"] == f"#{ref_number}" for row in unresolved):
+                unresolved.append({"number": issue["number"], "source": "active_linked_pr",
+                                   "reason": "unresolved_reference", "reference": f"#{ref_number}"})
+            return UNRESOLVED
 
     def issue_associations(source_pull: dict[str, Any], source_repo: str) -> set[tuple[str, int]]:
         return {
@@ -693,7 +727,9 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     agent_wait = agent_delivery_wait(status, repo, issue["number"])
     if agent_wait and ";" in agent_wait:
         for (target_repo, number) in references(agent_wait):
-            target = read(f"repos/{target_repo}/issues/{number}")
+            target = read_reference(target_repo, number)
+            if target is UNRESOLVED:
+                continue
             if not isinstance(target, dict) or target.get("state") not in {"open", "closed"}:
                 raise AuditError("unreadable delegated acceptance issue")
             if "pull_request" in target:
@@ -701,12 +737,17 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     # Delivery targets own the stack guard and implementation association;
     # historical PRs elsewhere in status cannot cancel or authorize selection.
     refs = references(next_action[1]) if next_action else {}
-    if not refs:
+    # A PR named only elsewhere in status (often the PR a follow-up came from)
+    # counts only when it implements this issue.
+    status_only = not refs
+    if status_only:
         refs = references(status)
     pulls: dict[tuple[str, int], dict[str, Any]] = {}
     for (target_repo, number), kind in refs.items():
         if kind != "pull":
-            target = read(f"repos/{target_repo}/issues/{number}")
+            target = read_reference(target_repo, number)
+            if target is UNRESOLVED:
+                continue
             if not isinstance(target, dict):
                 raise AuditError("unreadable linked issue")
             if "pull_request" not in target:
@@ -730,7 +771,9 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
             if kind != "pull":
                 if target_repo.casefold() == repo.casefold() and number == issue["number"]:
                     continue
-                target = read(f"repos/{target_repo}/issues/{number}")
+                target = read_reference(target_repo, number)
+                if target is UNRESOLVED:
+                    continue
                 if not isinstance(target, dict):
                     raise AuditError("unreadable handoff issue")
                 if "pull_request" not in target:
@@ -751,6 +794,8 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     for (target_repo, number), pull in pulls.items():
         if not isinstance(pull, dict) or "merged_at" not in pull:
             raise AuditError("unreadable linked pull")
+        if status_only and not implements_issue(pull, target_repo):
+            continue
         merged = _parse_time(pull.get("merged_at"))
         if merged is None:
             return None  # A partially landed stack still needs engineering.
@@ -833,6 +878,7 @@ def stale_wait_report(
     """
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
     cache: dict[str, Any] = {}
 
     def read(path: str) -> Any:
@@ -859,7 +905,7 @@ def stale_wait_report(
                   for issue in issues if "pull_request" not in issue and issue.get("state", "open") == "open"]
         return {"read_only": True, "complete": inventory_complete,
                 "repository": repository, "frozen_issues": frozen,
-                "checked": 0, "checked_issues": [], "items": [], "unavailable": [],
+                "checked": 0, "checked_issues": [], "items": [], "unavailable": [], "unresolved_references": [],
                 "inventory_complete": inventory_complete}
     for issue in issues:
         labels = {label.casefold() for label in github_direction_next.normalize_labels(issue.get("labels"))}
@@ -878,7 +924,9 @@ def stale_wait_report(
         normalized_status = re.sub(r"\*\*(Waiting for)(:?)\*\*(:?)", r"\1\2\3", status, flags=re.I)
         if (active and not parked_issue(issue)) or agent_delivery_wait(normalized_status, repo, number):
             try:
-                row = active_merged_status(issue, repo, status, read=read)
+                issue_unresolved: list[dict[str, Any]] = []
+                row = active_merged_status(issue, repo, status, read=read, unresolved=issue_unresolved)
+                unresolved.extend(issue_unresolved)
                 if row and parked_issue(issue) and row["recorded_hold_pending"]:
                     row = None
                 if row:
@@ -953,11 +1001,14 @@ def stale_wait_report(
                 normalized, re.I,
             ))
             refs: dict[tuple[str, int], str] = {}
+            explicit_refs: set[tuple[str, int]] = set()
             if mechanical:
                 for ref in WAIT_REFERENCE.finditer(plain):
                     target_repo = ref.group(1) or ref.group(4) or repo
                     target_number = int(ref.group(3) or ref.group(5))
                     refs[(target_repo, target_number)] = ref.group(2) or "issues"
+                    if ref.group(1) or ref.group(4):
+                        explicit_refs.add((target_repo, target_number))
             if not refs:
                 pending = True
                 continue
@@ -987,7 +1038,12 @@ def stale_wait_report(
                         completed.append({"kind": "completed_wait_issue", "field": field, "recorded": reason,
                                           "url": f"https://github.com/{target_repo}/issues/{target_number}",
                                           "closed_at": target.get("closed_at"), "state_reason": target.get("state_reason")})
-                except AuditError:
+                except AuditError as exc:
+                    if bare_reference_missing(exc, (target_repo, target_number) in explicit_refs):
+                        # The hold names something we cannot find, so it stays a hold.
+                        unresolved.append({"number": number, "source": "wait_reference",
+                                           "reason": "unresolved_reference", "reference": f"#{target_number}"})
+                        continue
                     unread = True
                     errors.append({"number": number, "source": "wait_reference",
                                    "url": f"https://github.com/{target_repo}/{kind}/{target_number}",
@@ -1003,6 +1059,7 @@ def stale_wait_report(
     return {"read_only": True, "complete": inventory_complete and not errors,
             "repository": repository, "frozen_issues": [],
             "checked": checked, "checked_issues": checked_issues, "items": rows, "unavailable": errors,
+            "unresolved_references": unresolved,
             "inventory_complete": inventory_complete}
 
 
