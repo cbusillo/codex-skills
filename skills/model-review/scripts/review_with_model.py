@@ -25,6 +25,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
 from contextlib import closing
 from datetime import UTC, datetime
@@ -106,7 +107,8 @@ def completed_review(result: dict[str, Any]) -> dict[str, Any]:
         payload = None
     status = payload.get("status") if isinstance(payload, dict) else None
     if status in ("refused", "incomplete"):
-        return {**result, "ok": False, "outcome": status, "error": f"review {status}"}
+        return {**result, "ok": False, "outcome": status, "error": f"review {status}",
+                "completion_shape": f"reviewer declared {status}"}
     report = payload.get("review") if isinstance(payload, dict) else None
     if status == "completed" and isinstance(report, str) and report.strip():
         return {**result, "response": report}
@@ -183,6 +185,44 @@ def openai_error_detail(message: str) -> str:
     return message[-400:]
 
 
+def openai_execution(stdout: str | bytes | None, response: str, elapsed: float,
+                     returncode: int | None) -> dict[str, Any]:
+    """Report execution evidence without quoting commands, source, or unfinished reviews."""
+    if isinstance(stdout, bytes):  # TimeoutExpired may retain bytes even in text mode.
+        stdout = stdout.decode(errors="replace")
+    events = []
+    valid = True
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                raise ValueError("event is not an object")
+        except ValueError:
+            valid = False
+            break
+        events.append(event)
+    known = {"thread.started", "turn.started", "turn.completed", "turn.failed",
+             "item.started", "item.updated", "item.completed", "error"}
+    types = [event.get("type") if isinstance(event.get("type"), str) else "unknown" for event in events]
+    terminal = [kind for kind in types if kind in {"turn.completed", "turn.failed"}]
+    commands = [event["item"] for event in events if event.get("type") == "item.completed"
+                and isinstance(event.get("item"), dict) and event["item"].get("type") == "command_execution"]
+    # A shell chain can finish successfully after an earlier GitHub read failed (#2199).
+    # Recognize the CLI's diagnostic line, never excerpt arbitrary aggregated source output.
+    github_failed = any(isinstance(item.get("aggregated_output"), str)
+                        and "error connecting to api.github.com" in item["aggregated_output"].splitlines()
+                        for item in commands)
+    return {"elapsed_seconds": round(elapsed, 3), "exit_code": returncode,
+            "jsonl_state": "malformed" if not valid else "valid" if events else "missing",
+            "last_event": (types[-1] if types[-1] in known else "unknown") if types else None,
+            "terminal_event": terminal[-1] if terminal else None,
+            "final_answer_produced": bool(response.strip()),
+            "failed_commands": sum(item.get("status") in ("failed", "declined")
+                                   or (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
+                                   for item in commands),
+            "command_diagnostics": ["github_connection_failed"] if github_failed else []}
+
+
 def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path,
                   env: Mapping[str, str] | None = None) -> dict[str, Any]:
     answer = scratch / "answer.md"
@@ -195,10 +235,17 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     argv += ["--json", "-C", str(repo), "-s", "read-only", "-o", str(answer), "--output-schema", str(schema)]
     if model:
         argv += ["-m", model]
-    proc = run_cli([*argv, prompt], repo, timeout, env)
-    response = answer.read_text() if answer.is_file() else ""
     # JSON mode does not include the model banner; a request is not proof of the model used.
     metadata = {"model": model, "model_source": "requested, not reported by the CLI" if model else "unknown"}
+    started = time.monotonic()
+    try:
+        proc = run_cli([*argv, prompt], repo, timeout, env)
+    except subprocess.TimeoutExpired as exc:
+        response = answer.read_text() if answer.is_file() else ""
+        return failed("openai", f"no answer within {timeout} seconds", **metadata,
+                      execution=openai_execution(exc.stdout, response, time.monotonic() - started, None))
+    response = answer.read_text() if answer.is_file() else ""
+    metadata["execution"] = openai_execution(proc.stdout, response, time.monotonic() - started, proc.returncode)
     try:
         events = [json.loads(line) for line in proc.stdout.splitlines()]
         if any(not isinstance(event, dict) for event in events):
@@ -214,7 +261,7 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
         if event.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "error":
             reroute = re.fullmatch(r"model rerouted: \S+ -> (\S+) \(.+\)", str(item.get("message")))
             if reroute:
-                metadata = {"model": reroute.group(1), "model_source": "reported by the CLI (rerouted)"}
+                metadata.update(model=reroute.group(1), model_source="reported by the CLI (rerouted)")
         if event.get("type") == "error":
             errors.append(str(event.get("message") or "codex reported an error"))
         elif event.get("type") == "turn.failed":
