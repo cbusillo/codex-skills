@@ -1276,6 +1276,9 @@ may occupy a released source worktree; foreign sessions and unreleased
 ownership still refuse. Malformed lineage
 refuses with `claim_resume_lineage_invalid`. These checks read ownership only;
 they do not transfer authority or change the original parent's holds.
+Taking a parent's handoff also checks the claimed child's existing native
+descendants before posting, even if they inherited an earlier unrelated claim
+on that child. The same full-ownership rule applies before and after the write.
 The parent's full ownership is conservative: an unreleased parent claim also
 blocks the child when that claim describes unrelated work. Coordinate its
 exact release, or continue independently authorized work on a separate issue
@@ -1298,6 +1301,15 @@ same positive immutable issue ID as the current snapshot; number or title
 agreement alone proves nothing. Missing, changed or unreadable identity cannot
 supply that proof. Other inherited-parent lineage remains subject to the
 same-repository and source-reference checks above.
+A historical inherited-parent URL using an old repository name can therefore
+refuse with `claim_resume_lineage_invalid` even after that child's exact release.
+An identity match to the parent does not prove a self-reference on the child.
+This also blocks retained-source resume by that parent or a sibling once the
+family traversal reaches the old URL. That refusal preserves the current
+same-repository proof boundary. Independent work can continue on a separately
+authorized issue and fresh branch without resume/handoff flags or retained
+source assets; do not rewrite claim history or treat a redirect alone as
+cross-repository source authority.
 If an old self-reference cannot be read, an ordinary fresh claim on the current
 issue can still support independently authorized work on a new branch, without
 `--resume-from`, `--handoff-comment` or retained source assets. Its own ownership,

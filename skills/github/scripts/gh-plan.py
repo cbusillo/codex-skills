@@ -2572,7 +2572,7 @@ def claim_once(args: argparse.Namespace) -> None:
         parent_handoff = re.compile(
             rf"https://github\.com/{re.escape(source_repo)}/issues/{source_number}#issuecomment-[1-9]\d*", re.IGNORECASE)
 
-        def uses_source(record: dict[str, str]) -> bool:
+        def uses_source(record: dict[str, Any]) -> bool:
             source_id, handoff_url = record.get("resume_from"), record.get("retained_handoff")
             if isinstance(source_id, str) and source_id in source_ids:
                 return True
@@ -2593,12 +2593,15 @@ def claim_once(args: argparse.Namespace) -> None:
             peer_issue, peer_status, peer_comments, _ = claim_snapshot(str(peer_number), peer_repo, allow_closed=True)
             peer_records = github_plan_claim.records(peer_status) + [
                 record for c in peer_comments for record in github_plan_claim.records(c.get("body") or "")]
-            if not any(uses_source(record) for record in peer_records):
+            claimed_node = child_key == (issue_repo.casefold(), number)
+            # Taking this source will connect the claimed node after posting.
+            # Inspect its existing descendants now, before any claim write.
+            if not claimed_node and not any(uses_source(record) for record in peer_records):
                 continue
             # Same-record resumes need not repeat the original handoff metadata,
             # and can move to a fresh branch. Once this issue holds the source,
             # its full ownership must end before a sibling can take the source.
-            if child_key != (issue_repo.casefold(), number):
+            if not claimed_node:
                 check_peer_ownership(peer_repo, peer_number, peer_status, peer_comments, source_inventory)
             # The claimed record has independent ownership checks, but may itself
             # have successors that must remain visible through this ancestor.
