@@ -498,6 +498,7 @@ def test_api_write_checks_read_arguments_as_gh_does() -> None:
             (repo, "-i=false"): False,
             (repo, "--allow-escape-sequences"): False,
             (repo, "--input", "body.json", "--input="): False,
+            (repo, "--method=", "-f", "name=x"): False,
         }
         for args, is_write in cases.items():
             result = run_wrapper(env_file, unused, identity, "api", *args, gh_command=fake_gh)
@@ -627,6 +628,7 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
             ("api", "https://api.github.com/user/repos"),
             ("api", "user/repos", "-i=false"),
             ("api", "user/repos", "--input="),
+            ("api", "user/repos", "-X", ""),
         ):
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)

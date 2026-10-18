@@ -1372,6 +1372,8 @@ def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
         ["api", "user/repos", "-i=true", "--allow-escape-sequences"],
         ["api", "user/repos", "--input="],
         ["api", "user/repos", "--input", "body.json", "--input="],
+        ["api", "user/repos", "--method="],
+        ["api", "user/repos", "-X", "", "-f", "name=example"],
     ):
         assert _api.infer_gh_command_context(args).is_write is False, args
     mutation = _api.infer_gh_command_context(["api", "graphql", "-fquery=mutation { x }"])

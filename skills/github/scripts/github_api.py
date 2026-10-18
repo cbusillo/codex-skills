@@ -917,9 +917,13 @@ class GhApiCommand:
 
     @property
     def sent_method(self) -> str:
-        """The HTTP method gh sends: the last --method, else POST with a body."""
+        """The HTTP method gh sends: the last --method, else POST with a body.
+
+        An explicitly empty method still counts as given; Go's HTTP client
+        sends it as GET.
+        """
         if self.method is not None:
-            return self.method.upper()
+            return self.method.upper() or "GET"
         return "POST" if self.fields or self.has_input else "GET"
 
     @property

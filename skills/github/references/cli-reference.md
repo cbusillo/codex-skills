@@ -2075,7 +2075,7 @@ one reading of `gh api` arguments, `parse_gh_api_args`, which follows `gh`'s
 flag parser. Short flags group (`-fname=x` is `-f name=x`, `-iXPOST` is
 `-i -X POST`, `-i=false` sets only `-i`), every option consumes its value, and
 the last `--method` and `--input` win. Fields, or a nonempty `--input`, without
-a method send POST. A command counts as a write
+a method send POST; an explicitly empty method sends GET. A command counts as a write
 unless the method `gh` sends is GET or HEAD, so `-X GET -f per_page=100` stays
 a read. Arguments `gh` rejects, such as an unknown flag or a second endpoint,
 count as a write. A `gh` usage error, which `gh`
