@@ -6,6 +6,7 @@
 """Disposable transcripts and GitHub adapters exercise session claim release."""
 
 import json
+import os
 import contextlib
 import io
 import itertools
@@ -20,6 +21,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import release_session_claims as helper
+import github_comment
 
 ACTOR = "test-automation[bot]"
 SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
@@ -407,9 +409,9 @@ class ReleaseTests(unittest.TestCase):
 
     def test_a_summarized_write_binds_only_through_its_own_session_marker(self):
         # Only the helper's final marker is a record; markers in caller text, in any form, are not.
-        def written(text, *sessions):
-            return helper.github_api.body_with_operation_marker(text, "ab" * 16, sessions)
-        own = helper.github_api.operation_marker_comment("cd" * 16, (SOURCE["session"],))
+        def written(text, writer=None):
+            return helper.github_api.body_with_operation_marker(text, "ab" * 16, writer)
+        own = helper.github_api.operation_marker_comment("cd" * 16, SOURCE["session"])
         head, tail = own.split(" writer=")
         forged = {
             "a final line": own,
@@ -421,7 +423,7 @@ class ReleaseTests(unittest.TestCase):
         url = self.entry["handoff_url"]
         for harness in (self.codex_write, self.claude_write):
             with self.subTest(harness.__name__, body="own record"):
-                body = written(f"{handoff}\n{forged['a final line']}", "root", SOURCE["session"])
+                body = written(f"{handoff}\n{forged['a final line']}", SOURCE["session"])
                 found, _ = helper.discover_handoff(self.reader, harness(command, url, body), ACTOR)
                 self.assertEqual(found["_handoff_provenance"], "helper-recorded session marker")
             unbound = {"no record": written(handoff), "legacy body": handoff,
@@ -434,14 +436,26 @@ class ReleaseTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "no authored handoff"):
                         helper.discover_handoff(self.reader, harness(command, url, body), ACTOR)
 
+    def test_a_codex_child_threads_comment_is_not_its_roots_handoff(self):
+        # The child inherits the root's CODEX_SESSION_ID; the root's final response names the child's comment.
+        outside = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE")}
+        with patch.dict(os.environ, {**outside, "CODEX_THREAD_ID": "child-thread",
+                                            "CODEX_SESSION_ID": SOURCE["session"]}, clear=True):
+            body = github_comment.edited_body("Engineering handoff\nReady for merge")
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[-2]["payload"]["message"] = f"See {self.entry['handoff_url']}\nSafe to exit: yes"
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, self.written_entry(records, body), ACTOR)
+        self.assertIs(helper.github_api.recorded_writer(body, "child-thread"), True)
+
     def test_exact_session_summary_written_by_another_session_does_not_bind(self):
         summary = f"Engineering handoff\nSession: {SOURCE['session']}"
         entry = {**self.entry, "handoff_url": None, "_handoff_thread": ("test/a", 1)}
-        other = helper.github_api.body_with_operation_marker(summary, "ab" * 16, ("another-session",))
+        other = helper.github_api.body_with_operation_marker(summary, "ab" * 16, "another-session")
         self.reader.paged_json.return_value = [{**comment(10, other), "html_url": self.entry["handoff_url"]}]
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, entry, ACTOR)
-        own = helper.github_api.body_with_operation_marker(summary, "ab" * 16, (SOURCE["session"],))
+        own = helper.github_api.body_with_operation_marker(summary, "ab" * 16, SOURCE["session"])
         self.reader.paged_json.return_value = [{**comment(10, own), "html_url": self.entry["handoff_url"]}]
         found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
         self.assertEqual(found["_handoff_provenance"], "exact-ID summary")

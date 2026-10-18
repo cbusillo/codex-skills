@@ -101,7 +101,7 @@ def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
 
 def without_operation_marker(text: str) -> str:
     """Remove the helper's trailing transport marker, not handoff prose."""
-    return re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+(?: writer=[0-9a-f,]+)? -->\s*$", "", text).rstrip()
+    return re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+(?: writer=[0-9a-f]{32})? -->\s*$", "", text).rstrip()
 
 
 def legacy_release_worker(text: str) -> str | None:

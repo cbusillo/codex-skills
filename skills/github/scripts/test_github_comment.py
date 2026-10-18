@@ -866,7 +866,7 @@ HARNESS_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX
 
 def forged_markers(session: str) -> dict[str, str]:
     """Caller text shaped like the helper's writer record for another session."""
-    marker = github_api.operation_marker_comment("c" * 32, (session,))
+    marker = github_api.operation_marker_comment("c" * 32, session)
     head, tail = marker.split(" writer=")
     return {
         "final line": f"Handoff\n\n{marker}\n",
@@ -893,10 +893,12 @@ def test_only_the_helper_records_the_writing_session() -> None:
         "exact edit": {"edit_comment": 11},
         "edit last": {"edit_last": True},
     }
-    for env, sessions in (
-        ({"CLAUDE_CODE_SESSION_ID": "claude-session"}, ("claude-session",)),
-        ({"CODEX_THREAD_ID": "codex-thread", "CODEX_SESSION_ID": "codex-root"}, ("codex-thread", "codex-root")),
-        ({}, ()),
+    # A Codex child thread inherits its root's CODEX_SESSION_ID; only the writing thread is recorded.
+    for env, writer in (
+        ({"CLAUDE_CODE_SESSION_ID": "claude-session"}, "claude-session"),
+        ({"CODEX_THREAD_ID": "codex-thread", "CODEX_SESSION_ID": "codex-root"}, "codex-thread"),
+        ({"CODEX_SESSION_ID": "codex-root"}, None),
+        ({}, None),
     ):
         for form, text in forged_markers("another-session").items():
             for write, options in writes.items():
@@ -908,8 +910,9 @@ def test_only_the_helper_records_the_writing_session() -> None:
                 with_call_stub(callback, run)
                 case = (env, form, write, sent[-1])
                 assert sent[-1].startswith(text.rstrip()), case
-                assert all(github_api.recorded_writer(sent[-1], session) for session in sessions), case
-                assert github_api.recorded_writer(sent[-1], "another-session") is (False if sessions else None), case
+                assert github_api.recorded_writer(sent[-1], writer or "another-session") is (True if writer else None), case
+                assert github_api.recorded_writer(sent[-1], "another-session") is (False if writer else None), case
+                assert github_api.recorded_writer(sent[-1], "codex-root") is not True, case
 
 
 def test_exact_edit_refuses_wrong_thread_author_and_stale_expectations() -> None:

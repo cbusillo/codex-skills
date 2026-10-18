@@ -64,7 +64,7 @@ PRIMARY_RATE_LIMIT_CAUSES = frozenset(
 )
 OPERATION_MARKER_PREFIX = "<!-- github-skill-operation:"
 # The comment helper appends its own marker as the final line of every comment it
-# creates or edits, with digests of the writing session's native IDs; a digest keeps
+# creates or edits, with a digest of the writing thread's native ID; a digest keeps
 # the raw ID out of text that readers search for session IDs. Only that final line
 # is a record, so no caller text, whatever it contains, can stand for one.
 REQUIRED_STATUS_CHECKS_EXPECTED_PATTERN = re.compile(
@@ -298,19 +298,19 @@ def session_digest(session: str) -> str:
     return hashlib.sha256(f"github-skill-session:{session}".encode()).hexdigest()[:32]
 
 
-def operation_marker_comment(operation_id: str, sessions: tuple[str, ...] = ()) -> str:
-    suffix = f" writer={','.join(session_digest(s) for s in sessions)}" if sessions else ""
+def operation_marker_comment(operation_id: str, writer: str | None = None) -> str:
+    suffix = f" writer={session_digest(writer)}" if writer else ""
     return f"{OPERATION_MARKER_PREFIX}{operation_id}{suffix} -->"
 
 
-def body_with_operation_marker(body: str, operation_id: str, sessions: tuple[str, ...] = ()) -> str:
+def body_with_operation_marker(body: str, operation_id: str, writer: str | None = None) -> str:
     separator = "" if body.endswith("\n") else "\n"
-    return f"{body}{separator}\n{operation_marker_comment(operation_id, sessions)}\n"
+    return f"{body}{separator}\n{operation_marker_comment(operation_id, writer)}\n"
 
 
 def body_has_operation_marker(body: Any, operation_id: str) -> bool:
     return isinstance(body, str) and re.search(
-        rf"{re.escape(OPERATION_MARKER_PREFIX + operation_id)}(?: writer=[0-9a-f,]+)? -->", body) is not None
+        rf"{re.escape(OPERATION_MARKER_PREFIX + operation_id)}(?: writer=[0-9a-f]{{32}})? -->", body) is not None
 
 
 def recorded_writer(body: Any, session: str) -> bool | None:
@@ -320,10 +320,10 @@ def recorded_writer(body: Any, session: str) -> bool | None:
     every write, so a marker anywhere else is caller text.
     """
     final = isinstance(body, str) and re.search(
-        rf"\n{re.escape(OPERATION_MARKER_PREFIX)}[0-9a-f]+ writer=((?:[0-9a-f]{{32}},)*[0-9a-f]{{32}}) -->\s*\Z", body)
+        rf"\n{re.escape(OPERATION_MARKER_PREFIX)}[0-9a-f]+ writer=([0-9a-f]{{32}}) -->\s*\Z", body)
     if not final:
         return None
-    return session_digest(session) in final[1].split(",")
+    return final[1] == session_digest(session)
 
 
 class ArgumentParsingError(Exception):

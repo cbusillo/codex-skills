@@ -1679,9 +1679,10 @@ GitHub: the writer marker the comment helper records, the helper's full JSON
 receipt printed by a recognized comment-write call, or a comment that names the
 exact native session ID. On every comment it creates or edits, the helper
 appends its own operation marker as the final line, after the caller's text, with
-digests of the writing session's native IDs (`CLAUDE_CODE_SESSION_ID`, or Codex's
-`CODEX_THREAD_ID` and `CODEX_SESSION_ID`). Only that final line is a record; a
-marker anywhere else is caller text. A comment URL that a write call prints,
+a digest of the writing thread's own native ID: `CLAUDE_CODE_SESSION_ID`, or
+Codex's `CODEX_THREAD_ID`. A Codex child's inherited `CODEX_SESSION_ID` is never
+recorded, so a root never becomes the author of its child's comment. Only that
+final line is a record; a marker anywhere else is caller text. A comment URL that a write call prints,
 alone or summarized (for example through `jq -r .comment.url`), binds when the
 comment's final marker records this session, or when the comment names the exact
 session. A comment whose final marker records another session never binds to this

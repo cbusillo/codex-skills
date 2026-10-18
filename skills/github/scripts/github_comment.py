@@ -32,7 +32,7 @@ PER_PAGE = 100
 MAX_PAGES = 1000
 RECONCILIATION_CLOCK_SKEW_SECONDS = 5
 OPERATION_MARKER_LINE_RE = re.compile(
-    rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+(?: writer=[0-9a-f,]+)? -->[ \t]*(?:\r?\n)?"
+    rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+(?: writer=[0-9a-f]{{32}})? -->[ \t]*(?:\r?\n)?"
 )
 
 
@@ -51,15 +51,20 @@ class CommentError(Exception):
         self.payload = github_api_core.redact_body(payload or {})
 
 
-def writing_sessions() -> tuple[str, ...]:
-    """This harness session's own native IDs, recorded in the marker of each comment it writes."""
-    agent = github_agent.running_agent(environ=os.environ)
-    return tuple(dict.fromkeys(github_agent.native_sessions(agent, environ=os.environ).values()))
+# Only the writing thread itself: a Codex child inherits its root's CODEX_SESSION_ID,
+# which must never make the root the author of the child's comment.
+WRITER_SESSION_VARS = {"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID"}
+
+
+def writing_session() -> Optional[str]:
+    """The writing thread's own native ID, recorded in the marker of each comment it writes."""
+    name = WRITER_SESSION_VARS.get(github_agent.running_agent(environ=os.environ) or "")
+    return (os.environ.get(name) or None) if name else None
 
 
 def edited_body(body: str) -> str:
     # An edit replaces the whole body, so the helper's own final marker records its writer too.
-    return github_api_core.body_with_operation_marker(body, github_api_core.new_operation_id(), writing_sessions())
+    return github_api_core.body_with_operation_marker(body, github_api_core.new_operation_id(), writing_session())
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
@@ -971,7 +976,7 @@ def _comment_impl(
     create_step = failed_step or "create_comment"
     fingerprint = _comment_fingerprint(resolved_repo, number, actor, body)
     operation_id = github_api_core.new_operation_id()
-    provider_body = github_api_core.body_with_operation_marker(body, operation_id, writing_sessions())
+    provider_body = github_api_core.body_with_operation_marker(body, operation_id, writing_session())
     marker = {
         "kind": "request_fingerprint",
         "value": fingerprint,
