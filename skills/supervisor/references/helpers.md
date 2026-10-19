@@ -107,6 +107,15 @@ new closure condition. Review notifications may reach an idle empty Claude
 prompt with scheduled jobs, while an active firing turn or Bash/Monitor task
 still prevents the notification.
 
+For an unknown `cron-create:<tool-id>` placeholder or a scheduled job that
+native CronDelete reports absent, ask that worker to run native CronList.
+A successful matched list result replaces the recorded schedule inventory,
+including clearing placeholders; a failed, replay-only or ambiguous result
+does not. Stop only jobs the worker confirms are obsolete, then request a
+fresh verdict. Native schedule-error, recurring-job expiry, restart and
+durable-job receipt shapes have not been observed; do not infer them from time
+or transcript age.
+
 For tmux entries, replace `iterm_session_id` with `tmux_session_id` from launch
 output and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
 and the verified harness `pid`. Keep the native `session_id` and transcript
@@ -1717,6 +1726,13 @@ The record has this shape (values are illustrative):
 }
 ```
 
+When the original launch ledger includes `supervisor_owned`, `window_id` and
+`tab_id`, copy those fields unchanged into this private record too, along with
+`launch_started_at` when available. They bind the original dead pane so the
+shared process check can use its native exit time to distinguish a later TTY
+occupant. Do not invent these fields. A minimal historical record, a missing
+pane or a mismatched identity uses the stricter path without that cutoff.
+
 Supply all known source-account transcript directories on that host, including
 resumed and archived transcripts. Unavailable original identity, host,
 transcripts, or terminal evidence is a refusal, not proof of termination.
@@ -1852,6 +1868,15 @@ still refuse. Fresh noninteractive execs cannot attach to the predecessor;
 native invocation classifier. Put free-form prompts after the CLI's explicit
 `--` separator so prompt words cannot be mistaken for native resume arguments.
 Unseparated ambiguous text conservatively preserves the source.
+Only a UUID-shaped different native id or a guarded launch binding supplies
+unrelated-session proof; an arbitrary word after `resume` does not. Claude
+`--continue`/`-c` and ID-less resume pickers leave the native target unknown.
+On the source TTY, a replacement pane's ancestry alone does not establish a
+different native session. Use the guarded launcher or verify the native target
+through the documented manual release route. Unknown-ID clients on other TTYs
+remain part of the caller's `--confirm-session-ended` responsibility described
+above; they do not identify this source. Unattended native observation has no
+such manual attestation and remains conservative.
 The supported daemon-routed fresh and resume launchers run each TUI through a
 private local RPC ingress, connected to the existing selected-home daemon. Each
 action holds its targets' ownership leases until its matching native response;

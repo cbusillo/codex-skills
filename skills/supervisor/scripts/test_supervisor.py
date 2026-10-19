@@ -7,6 +7,7 @@
 
 import argparse
 import asyncio
+from contextlib import chdir
 import errno
 import json
 import subprocess
@@ -277,6 +278,30 @@ class TranscriptTests(unittest.TestCase):
                 self.assertFalse(
                     session_record.summarize([claude(text)], "claude")["safe_verdict"]
                 )
+
+    def test_cron_list_reconciles_unknown_placeholder_and_finished_candidacy(self):
+        records = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "create", "name": "CronCreate", "input": {}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "create", "content": "replayed text"}]}},
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            transcript, ledger = root / "native.jsonl", root / "ledger.json"
+            ledger.write_text(json.dumps([{"session_id": "source", "harness": "claude", "supervisor_owned": True, "transcript": "native.jsonl"}]))
+            def candidate():
+                transcript.write_text("".join(json.dumps({**r, "sessionId": "source"}) + "\n" for r in [*records, claude("Safe to exit: yes")]))
+                return finished_map.candidates(ledger)[0]
+            before = candidate()
+            self.assertFalse(before["candidate"])
+            self.assertIsNone(before["closeout_request"])
+            self.assertEqual([task["task_id"] for task in before["closeout_blockers"]], ["cron-create:create"])
+            records += [
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "list", "name": "CronList", "input": {}}]}},
+                {"type": "user", "toolUseResult": {"jobs": []}, "message": {"content": [{"type": "tool_result", "tool_use_id": "list", "content": "No jobs"}]}},
+            ]
+            after = candidate()
+            self.assertEqual(after["background_tasks"], [])
+            self.assertTrue(after["candidate"])
 
     def test_standard_closeout_bullets_and_bold_labels(self):
         for text in (
@@ -1383,12 +1408,80 @@ class TabCloseTests(unittest.TestCase):
         self.assertEqual(self.api.async_get_last_prompt.await_count, 2)
 
     def test_transcript_change_between_native_close_probes_keeps_tab(self):
-        self.ledger.write_text(json.dumps([{**self.entry, "transcript": "/fixture", "session_id": "source", "harness": "claude"}]))
+        transcript = self.ledger.parent / "native.jsonl"
+        transcript.write_text("fixture")
+        self.ledger.write_text(json.dumps([{**self.entry, "transcript": str(transcript), "session_id": "source", "harness": "claude"}]))
         with patch.object(session_record, "session_status", side_effect=[
             {"safe_verdict": True}, {"safe_verdict": False}
         ]), self.assertRaises(ValueError):
             self.close()
         self.session.async_close.assert_not_awaited()
+
+    def test_safe_transcript_change_between_native_close_probes_keeps_tab(self):
+        transcript = self.ledger.parent / "native.jsonl"
+        transcript.write_text("fixture")
+        self.ledger.write_text(json.dumps([{**self.entry, "transcript": str(transcript), "session_id": "source", "harness": "claude"}]))
+        with patch.object(session_record, "session_status", side_effect=[
+            {"safe_verdict": True, "last_text": "First.\nSafe to exit: yes"},
+            {"safe_verdict": True, "last_text": "New turn.\nSafe to exit: yes"},
+        ]), self.assertRaisesRegex(ValueError, "changed"):
+            self.close()
+        self.session.async_close.assert_not_awaited()
+
+    def test_transcript_replacement_with_identical_content_and_time_keeps_tab(self):
+        transcript = self.ledger.parent / "native.jsonl"
+        transcript.write_text(json.dumps({**claude("Safe to exit: yes"), "sessionId": "source"}) + "\n")
+        self.ledger.write_text(json.dumps([{**self.entry, "transcript": str(transcript), "session_id": "source", "harness": "claude"}]))
+        original = session_record.session_status
+        def replaced(entry):
+            result = original(entry)
+            at = transcript.stat()
+            replacement = transcript.with_suffix(".replacement")
+            replacement.write_bytes(transcript.read_bytes())
+            os.utime(replacement, ns=(at.st_atime_ns, at.st_mtime_ns))
+            replacement.replace(transcript)
+            return result
+        with patch.object(session_record, "session_status", side_effect=replaced), self.assertRaisesRegex(ValueError, "changed"):
+            self.close()
+        self.session.async_close.assert_not_awaited()
+
+    def test_relative_transcript_uses_ledger_directory_not_competing_cwd(self):
+        root = self.ledger.parent
+        other = root / "other"
+        other.mkdir()
+        entry = {**self.entry, "transcript": "native.jsonl", "session_id": "source", "harness": "claude"}
+        self.ledger.write_text(json.dumps([entry]))
+        for safe in (False, True):
+            with self.subTest(safe=safe):
+                for folder, verdict in ((root, safe), (other, not safe)):
+                    (folder / "native.jsonl").write_text(json.dumps({**claude("Safe to exit: yes" if verdict else "Still working"), "sessionId": "source"}) + "\n")
+                with chdir(other):
+                    if safe:
+                        self.assertTrue(self.close()["close_requested"])
+                    else:
+                        with self.assertRaisesRegex(ValueError, "unqualified"):
+                            self.close()
+
+    def test_resume_candidates_do_not_prove_an_unrelated_session(self):
+        entry = {**self.entry, "pid": 123, "session_id": "source", "harness": "codex"}
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for command in ("codex please resume notes", "codex resume --last", "claude --continue", "claude -c"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(
+                    {**entry, "harness": "claude" if command.startswith("claude") else "codex"},
+                    rows=[(456, entry["tty"], command)], ended_at=cutoff,
+                    started_at=lambda _pid: cutoff + timedelta(seconds=1), replacement_owner=lambda _pid: True)
+        for command in ("codex-aarch64-apple-darwin resume source", "codex-aarch64-apple-darwin exec resume source"):
+            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+
+    def test_unknown_peers_on_other_ttys_remain_the_callers_confirmation(self):
+        entry = {**self.entry, "pid": 123, "session_id": "source"}
+        for command, harness in (("codex resume --last", "codex"), ("claude --continue", "claude")):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit({**entry, "harness": harness}, rows=[(456, "other", command)])
+        self.assertEqual(session_liveness.invocation(["claude", "--continue"]), ([], "resume"))
+        self.assertEqual(session_liveness.invocation(["claude", "-c"]), ([], "resume"))
 
     def test_resume_identity_is_read_only_from_harness_operands(self):
         entry = {**self.entry, "session_id": "source", "pid": 123}
@@ -1419,14 +1512,11 @@ class TabCloseTests(unittest.TestCase):
                 session_liveness.verify_process_exit(entry, rows=[(456, self.entry["tty"], command)],
                                                      ended_at=cutoff, started_at=lambda _pid: born)
 
-    def test_jobs_block_pre_exit_candidates_but_do_not_redefine_verified_exit(self):
+    def test_verified_exit_uses_final_verdict_independently_of_recorded_jobs(self):
         status = {"safe_verdict": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}
+        session_liveness.require_safe_status(status)
         with self.assertRaises(ValueError):
-            session_liveness.require_safe_status(status)
-        session_liveness.require_safe_status(status, exited=True)
-        for exited in (False, True):
-            with self.subTest(exited=exited), self.assertRaises(ValueError):
-                session_liveness.require_safe_status({**status, "safe_verdict": False}, exited=exited)
+            session_liveness.require_safe_status({**status, "safe_verdict": False})
 
     def test_refuses_missing_duplicate_director_or_moved_identity(self):
         for entries in ([], [self.entry, self.entry],

@@ -242,7 +242,7 @@ class ReleaseTests(unittest.TestCase):
     def test_finish_retry_uses_original_closure_to_distinguish_tty_reuse(self):
         ended = helper.release.stamp(self.entry["ended_at"])
         for apply in (False, True):
-            for command in ("python gh_pr_watch.py", "codex exec fresh-job", "codex resume different-session", "claude -c",
+            for command in ("python gh_pr_watch.py", "codex exec fresh-job", "codex resume 11111111-1111-4111-8111-111111111111", "claude -c",
                             "python codex-session.py launch -- codex --remote unix:///new-client"):
                 for born, expected in ((ended - timedelta(seconds=1), 1), (ended, 1),
                                        (ended + timedelta(seconds=22), 0),
@@ -1035,7 +1035,7 @@ else:
 
     def test_backfill_reused_tty_is_not_source_identity_but_pid_still_refuses(self):
         old = {**self.entry, "_backfill": True}
-        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex resume different-session")]):
+        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex resume 11111111-1111-4111-8111-111111111111")]):
             self.assertTrue(helper.validate_closure(old, "supervisor")["safe_verdict"])
             with self.assertRaises(ValueError):
                 helper.validate_closure(self.entry, "supervisor")

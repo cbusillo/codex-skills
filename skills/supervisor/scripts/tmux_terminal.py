@@ -328,7 +328,6 @@ class Terminal:
 
     def verify_closed(self, identity, entry):
         import session_liveness
-        import session_record
 
         panes = self.list()
         row = self.dead_pane(identity, entry, panes=panes)
@@ -347,20 +346,15 @@ class Terminal:
             {**entry, "_terminal_pid": row["pid"]}, rows=rows,
             ended_at=datetime.fromisoformat(row["exited_at"]) if row["exited_at"] else None,
             replacement_owner=replacement)
-        if entry.get("transcript"):
-            session_liveness.require_safe_status(session_record.session_status(entry), exited=True)
+        row = {**row, "transcript_snapshot": session_liveness.closed_transcript(entry)}
         # A dead pane has no input consumer. Never kill a live shell to clear it.
         return row
 
     def close(self, identity, ledger):
-        entries = json.loads(ledger.read_text(encoding="utf-8"))
-        if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-            raise ValueError("ledger must contain session objects")
-        matches = [e for e in entries if e.get("tmux_session_id") == identity]
-        if len(matches) != 1:
-            raise ValueError("terminal is not unique in the launch ledger")
-        before = self.verify_closed(identity, matches[0])
-        if self.verify_closed(identity, matches[0]) != before:
+        import session_record
+        entry = session_record.terminal_entry(ledger, "tmux_session_id", identity)
+        before = self.verify_closed(identity, entry)
+        if self.verify_closed(identity, entry) != before:
             raise ValueError("terminal state changed; terminal kept")
         marker = identity.removeprefix(f"tmux:{self.socket_name}:")
         if not re.fullmatch(r"[0-9a-f]{32}", marker):

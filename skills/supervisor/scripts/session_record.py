@@ -121,6 +121,27 @@ def read_jsonl(path: Path) -> list[dict]:
     return records
 
 
+def normalize_ledger_entry(path: Path, entry: dict) -> dict:
+    """Use the ledger's directory for native paths, including launch-only rows."""
+    entry = dict(entry)
+    if isinstance(entry.get("tty"), str):
+        entry["tty"] = entry["tty"].removeprefix("/dev/")
+    if isinstance(entry.get("transcript"), str) and entry["transcript"]:
+        entry["transcript"] = str((path.parent / Path(entry["transcript"]).expanduser()).resolve())
+    return entry
+
+
+def terminal_entry(path: Path, key: str, identity: str) -> dict:
+    """Select one owned launch without requiring native fields not yet bound."""
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise ValueError("ledger must contain session objects")
+    matches = [entry for entry in entries if entry.get(key) == identity]
+    if len(matches) != 1 or matches[0].get("supervisor_owned") is not True:
+        raise ValueError("terminal is not uniquely Supervisor-owned in the launch ledger")
+    return normalize_ledger_entry(path, matches[0])
+
+
 def load_ledger(path: Path, *, harness: str | None = None,
                 skipped: list[dict] | None = None, closed_log: bool = False) -> list[dict]:
     """Resolve ledger-relative paths, validating only the explicitly selected harness.
@@ -154,11 +175,7 @@ def load_ledger(path: Path, *, harness: str | None = None,
         if entry["session_id"] in seen:
             raise ValueError("duplicate session_id")
         seen.add(entry["session_id"])
-        if isinstance(entry.get("tty"), str):
-            entry["tty"] = entry["tty"].removeprefix("/dev/")
-        transcript = Path(entry["transcript"]).expanduser()
-        entry["transcript"] = str((path.parent / transcript).resolve())
-        selected.append(entry)
+        selected.append(normalize_ledger_entry(path, entry))
     return selected
 
 

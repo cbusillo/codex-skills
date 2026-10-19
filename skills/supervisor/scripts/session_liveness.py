@@ -48,6 +48,15 @@ def idle_terminal_command(command):
         arg in {"-l", "-i", "-il", "-li", "--login", "--interactive"} for arg in argv[1:])
 
 
+def harness_family(executable):
+    name = Path(executable).name.casefold()
+    if name in {"codex-session.py", "codex_session_proxy.py"}:
+        return None  # Managed wrappers need their own launch binding.
+    if name.startswith("codex"):
+        return "codex"
+    return "claude" if name in {"claude", "claude.js"} else None
+
+
 def harness_arguments(command):
     # ps loses quoting. Only actual executable positions and operands before
     # the prompt separator establish identity; arbitrary prompt text does not.
@@ -57,7 +66,7 @@ def harness_arguments(command):
                   or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name)):
         positions = words[:2]
     index = next((i for i, arg in enumerate(positions)
-                  if Path(arg).name.casefold().startswith("codex") or Path(arg).name in {"claude", "claude.js"}), None)
+                  if harness_family(arg) is not None or Path(arg).name in {"codex-session.py", "codex_session_proxy.py"}), None)
     if index is None:
         return []
     argv = words[index:]
@@ -71,15 +80,16 @@ def invocation(argv):
     # prompt separator was already removed by harness_arguments.
     if not argv:
         return [], None
-    codex = Path(argv[0]).name in {"codex", "codex.js"}
-    if not codex and Path(argv[0]).name not in {"claude", "claude.js"}:
+    family = harness_family(argv[0])
+    codex = family == "codex"
+    if family is None:
         return [], None  # Wrappers require their own guarded launch receipt.
     markers = [i for i, arg in enumerate(argv)
                if arg in {"--resume", "-r"} or codex and arg == "resume"]
     resumed = [argv[i + 1] for i in markers if i + 1 < len(argv) and not argv[i + 1].startswith("-")]
     options = [arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume=")]
     resumed.extend(value for value in options if value and not value.startswith("-"))
-    if markers or options:
+    if markers or options or family == "claude" and any(arg in {"-c", "--continue"} for arg in argv[1:]):
         return resumed, "resume"
     return [], "exec" if codex and len(argv) > 1 and argv[1] in {"exec", "e"} else None
 
@@ -123,21 +133,36 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         owner_known = replacement_owner is not None and replacement_owner(pid)
         if replacement_owner is not None and not owner_known:
             raise ValueError("process belongs to no verified new TTY owner; terminal kept")
-        source_names = {"codex": {"codex", "codex.js"}, "claude": {"claude", "claude.js"}}.get(entry.get("harness"), {"codex", "codex.js", "claude", "claude.js"})
-        if argv and Path(argv[0]).name in source_names:
-            explicit_other = len(resumed) == 1 and resumed[0] and not resumed[0].startswith("-")
+        if argv and harness_family(argv[0]) in ({entry["harness"]} if entry.get("harness") else {"codex", "claude"}):
+            explicit_other = len(resumed) == 1 and re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", resumed[0]) is not None
             noninteractive = command_kind == "exec"
             guarded = independent_harness is not None and independent_harness(pid, argv)
-            if not (explicit_other or noninteractive or guarded or owner_known):
+            if not (explicit_other or noninteractive or guarded):
                 raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity")
     return rows
 
 
-def require_safe_status(status, *, exited=False):
+def require_safe_status(status):
+    """Check the declaration only after the caller independently proves exit."""
     if not status["safe_verdict"]:
         raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")
-    if not exited and status.get("background_tasks"):
-        raise ValueError("native background tasks or scheduled jobs remain; preserve the session")
+
+
+def closed_transcript(entry):
+    """Keep native transcript changes visible across terminal-close probes."""
+    if not entry.get("transcript"):
+        return None
+    import session_record
+    path = Path(entry["transcript"])
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    before = identity(path.stat())
+    status = session_record.session_status(entry)
+    require_safe_status(status)
+    if identity(path.stat()) != before:
+        raise ValueError("native transcript changed during terminal verification; terminal kept")
+    return before, tuple(status.get(key) for key in (
+        "session_id", "transcript", "timestamp", "last_text", "at_turn_end", "turn_end"))
 
 
 def native_exit_cutoff(entry):

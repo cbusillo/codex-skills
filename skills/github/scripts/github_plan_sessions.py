@@ -238,7 +238,7 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
         fields = line.split(None, 1)
         command = fields[1] if fields and fields[0].isdigit() and len(fields) == 2 else line
         argv = shared.harness_arguments(command)
-        if not argv or Path(argv[0]).name not in {"codex", "codex.js"}:
+        if not argv or shared.harness_family(argv[0]) != "codex":
             continue
         resumed, _kind = shared.invocation(argv)
         for session in set(resumed) & sessions:

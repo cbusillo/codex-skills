@@ -94,7 +94,7 @@ def verify_closed(entry, supervisor_session, *, ended_at):
     verify_process_exit(entry, ended_at=cutoff)
     closure.require_fresh_action_verdict(entry)
     status = session_record.session_status(entry)
-    session_liveness.require_safe_status(status, exited=True)
+    session_liveness.require_safe_status(status)
     return status
 
 

@@ -713,7 +713,9 @@ launch receipt before retrying; never guess or skip identity checks.
 Before exit, when `closeout_blockers` lists background tasks or scheduled jobs,
 report their ids and keep the session open. Nudge that exact worker to check
 each task's completion condition and stop an obsolete task through its native
-TaskStop or CronDelete route, then give a fresh close-out verdict. A still-needed
+TaskStop or CronDelete route, then give a fresh close-out verdict. For an unknown
+schedule id or a job that is already absent, have the worker run native CronList
+to reconcile the list before deciding what to delete. A still-needed
 task remains a wait. A missing terminal
 notice is uncertainty, not proof that a task ended; never send exit keys or
 stop another session's tasks to clear the list.

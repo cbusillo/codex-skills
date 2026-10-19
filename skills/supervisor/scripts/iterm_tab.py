@@ -1260,13 +1260,7 @@ async def close_session(app, session_id, ledger):
     import session_record
     import iterm2
 
-    entries = json.loads(ledger.read_text(encoding="utf-8"))
-    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-        raise ValueError("ledger must contain session objects")
-    matches = [e for e in entries if e.get("iterm_session_id") == session_id]
-    if len(matches) != 1 or matches[0].get("supervisor_owned") is not True:
-        raise ValueError("exact session is not uniquely Supervisor-owned in the launch ledger")
-    entry = matches[0]
+    entry = session_record.terminal_entry(ledger, "iterm_session_id", session_id)
 
     async def verify():
         await app.async_refresh()
@@ -1289,14 +1283,13 @@ async def close_session(app, session_id, ledger):
         rows = session_liveness.inventory()
         jobs = [row for row in rows if row[1] == tty]
         session_liveness.verify_process_exit(entry, rows=rows, require_tty=True)
-        if entry.get("transcript"):
-            session_liveness.require_safe_status(session_record.session_status(entry), exited=True)
+        transcript = session_liveness.closed_transcript(entry)
         prompt = await iterm2.async_get_last_prompt(app.connection, session_id)
         if prompt is None or prompt.state != iterm2.PromptState.EDITING:
             raise ValueError("empty input cannot be proved; shell integration must report an editing prompt")
         if prompt.command != "":
             raise ValueError("input line is not empty; tab kept")
-        return session, (window.window_id, tab.tab_id, tty, jobs, prompt.unique_id)
+        return session, (window.window_id, tab.tab_id, tty, jobs, prompt.unique_id, transcript)
 
     _, before = await verify()
     closing_session, after = await verify()

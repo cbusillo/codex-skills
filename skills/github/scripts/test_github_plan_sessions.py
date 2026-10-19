@@ -416,6 +416,11 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
 
 
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
+    def test_release_binary_resume_identifies_the_source(self):
+        command = "456 /opt/bin/codex-aarch64-apple-darwin exec resume holder"
+        self.assertEqual([row["sessionId"] for row in SESSIONS.process_sessions(command, {"holder"})], ["holder"])
+        self.assertFalse(SESSIONS.process_absence_known(command))
+
     def test_resumed_cli_session_is_live_even_without_a_daemon(self):
         for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder", "codex exec resume holder", "codex e resume holder",
                         'codex -c notify=["terminal-notifier", "-message", "hello"] resume holder'):
