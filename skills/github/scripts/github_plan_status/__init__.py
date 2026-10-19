@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from . import waits as wait_records
 from .waits import validate as validate_wait
 
 DEFAULT_STATUS_LABELS = {key: f"plan:{key}" for key in
@@ -32,31 +33,40 @@ def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str,
                   and not any(label_names.get(key, "").casefold() in names
                               for key in ("active", "blocked", "waiting", "stale", "done")))
     scope_hold = state == "open" and bool(held or unassigned)
+    wait_review = wait["state"] == "review"
+    scope_status = (held[0] if held else "unstatused") if scope_hold else None
     if state == "closed":
         status, labels = "done", ["done", *(["waiting"] if waits else [])]
-    elif scope_hold:
-        status, labels = "review", held + (["blocked"] if blockers else []) + (["waiting"] if waits else [])
-    elif wait["state"] == "review":
+    elif wait_review:
         status, labels = "review", ["blocked"] if blockers else []
+    elif scope_hold:
+        status, labels = "hold", held + (["blocked"] if blockers else []) + (["waiting"] if waits else [])
     else:
         status = "blocked" if blockers else "waiting" if waits else "active"
         labels = [status]
         if blockers and waits:
             labels.append("waiting")
     return {"status": status, "blocked_by": blockers, "waits": waits, "labels": labels,
-            "structured_wait": wait, "scope_hold": scope_hold}
+            "structured_wait": wait, "scope_hold": scope_hold, "scope_status": scope_status,
+            "wait_review_required": wait_review, "labels_writable": not (scope_hold or wait_review)}
 
 
 def render_status(text: str, derived: dict[str, Any]) -> str:
     """A read projection; the original issue and human prose remain unchanged."""
     lines = []
     dropping = False
-    for line in text.splitlines(keepends=True):
-        if re.match(r"^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:State|Blocked by|Waiting for)"
-                    r"(?:\*\*)?:(?:\*\*)?", line, re.I):
+    live = {index for index, _ in wait_records.live_lines(text, prefix="")}
+    field = r"(?:[-*][ \t]+)?(?:\*\*)?[A-Za-z][A-Za-z /_-]*?(?:\*\*)?:(?:\*\*)?"
+    for index, line in enumerate(text.splitlines(keepends=True)):
+        # Fences, quoted HTML and markers are authored context, not status.
+        boundary = (index not in live or not line.strip()
+                    or re.match(r"^[ \t]*(?:" + field + r"|#{1,6}[ \t]|<!--)", line))
+        if index in live and re.match(
+                r"^ {0,3}(?:[-*][ \t]+)?(?:\*\*)?(?:State|Blocked by|Waiting for|Parked until|Waiting since)"
+                r"(?:\*\*)?:(?:\*\*)?", line, re.I):
             dropping = True
             continue
-        if dropping and line.strip() and line[:1].isspace():
+        if dropping and not boundary:
             continue
         dropping = False
         lines.append(line)
@@ -65,12 +75,14 @@ def render_status(text: str, derived: dict[str, Any]) -> str:
     if not blockers:
         blockers = "Unknown; native relationships need review." if derived.get("relationships_complete") is False else "None."
     waits = "; ".join(item["waiting_for"] for item in derived["waits"]) or (
-        "Review the structured wait record." if derived["status"] == "review" else "None.")
+        "Review the structured wait record." if derived.get("wait_review_required", derived["status"] == "review") else "None.")
     return f"State: {derived['status']}.\nBlocked by: {blockers}\nWaiting for: {waits}\n" + prose
 
 
 def label_changes(recorded: list[str], names: dict[str, str], derived: dict[str, Any]) -> dict[str, list[str]]:
     """One status-label diff for catalog and native train consumers."""
+    if not derived.get("labels_writable", False):
+        return {"add": [], "remove": [], "result": list(recorded)}
     statuses = {names[key].casefold() for key in ("active", "blocked", "waiting", "stale", "done") if key in names}
     wanted = {names[key] for key in derived["labels"] if key in names}
     remove = {name for name in recorded if name.casefold() in statuses

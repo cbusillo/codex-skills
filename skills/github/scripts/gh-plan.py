@@ -2079,10 +2079,7 @@ def wait_authors(repo: str) -> set[str]:
 
 
 def current_wait(issue: dict[str, Any], comments: list[dict[str, Any]], repo: str) -> dict[str, Any]:
-    # Original contributor text is immutable history, like claim history.
-    managed = contributor_plan_body(issue)
-    source = {**issue, "body": managed} if managed is not None else issue
-    return github_plan_wait.current(source, comments, wait_authors(repo))
+    return github_plan_wait.current(issue, comments, wait_authors(repo))
 
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:

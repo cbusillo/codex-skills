@@ -3,10 +3,25 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
+from .body import contributor_plan_body
+
 PREFIX = "<!-- github-plan:wait "
+
+
+def trusted_authors(owner: str, *, configured_bots: Iterable[str] = (),
+                    automation: str | None = None, expected_actor: str | None = None) -> set[str]:
+    """Compose existing author authority; adapters discover identities, never this package."""
+    return {name.casefold() for name in (*configured_bots, owner, automation, expected_actor) if name}
+
+
+def author_is_trusted(source: dict[str, Any], owner: str, *,
+                      author_logins: Iterable[str] = (), author_ids: Iterable[int] = ()) -> bool:
+    user = source.get("user") or {}
+    return (str(user.get("login", "")).casefold() in trusted_authors(owner, configured_bots=author_logins)
+            or (type(user.get("id")) is int and user["id"] in author_ids))
 
 
 def marker(record: dict[str, Any]) -> str:
@@ -102,7 +117,9 @@ def current_record(issue: dict[str, Any], comments: list[dict[str, Any]], truste
 
 
 def current(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str] | Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
-    return current_record(issue, comments, trusted, prefix=PREFIX, validator=validate) or {
+    managed = contributor_plan_body(issue)
+    source = {**issue, "body": managed} if managed is not None else issue
+    return current_record(source, comments, trusted, prefix=PREFIX, validator=validate) or {
         "version": 1, "state": "review", "evidence": "", "waits": []}
 
 

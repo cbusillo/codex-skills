@@ -91,14 +91,17 @@ class AgentTests(unittest.TestCase):
         for family, other, scan in (("codex", "claude", 1), ("claude", "codex", 1),
                                     ("codex", "claude", 50), ("claude", "codex", 50)):
             module = next_tests.load_module()
-            items = [next_tests.issue(1, labels=["plan", f"agent:{other}"]),
-                     next_tests.issue(2, labels=["plan", f"agent:{family}"]),
+            items = [next_tests.issue(1, labels=["plan", "plan:active", f"agent:{other}"]),
+                     next_tests.issue(2, labels=["plan", "plan:active", f"agent:{family}"]),
                      next_tests.issue(3)]
             result = {}
             with patch.multiple(module, default_repo=lambda _: "owner/repo",
                                 load_config=lambda _: module.DEFAULT_CONFIG,
                                 load_direction=lambda _: None,
-                                collect_paged_rest_items=lambda *_a, **_k: ("bot", items),
+                                collect_paged_rest_items=lambda path, **_k: ("bot", [{
+                                    "user": {"login": "owner"}, "body": module.github_plan_wait.marker(
+                                        module.github_plan_wait.reviewed(evidence="Routing fixture has no person/event holds"))}]
+                                    if path.endswith("/comments") else items),
                                 next_focus_context=lambda *_: ("bot", {}, {"available": True}),
                                 read_next_issue_relationships=lambda *_: ("bot", next_tests.relationships(), []),
                                 emit=result.update):
@@ -205,7 +208,8 @@ class AgentTests(unittest.TestCase):
         for family, other in (("codex", "claude"), ("claude", "codex")):
             roots = [next_tests.track("someone/direction", 1, "First"),
                      next_tests.track("someone/direction", 2, "Second")]
-            leaves = [next_tests.global_issue("someone/business", n, labels=[f"agent:{assigned}", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+            leaves = [next_tests.global_issue("someone/business", n, labels=[f"agent:{assigned}", "plan:waiting"], waiting_for="Customer testing",
+                                              body="## Current Status\nWaiting for: Customer testing.")
                       for n, assigned in ((10, other), (11, family))]
             tool = next_tests.global_issue("someone/tools", 20, labels=[f"agent:{family}"])
             edges = {(root["repo"], root["number"]): next_tests.relationships(sub_issues=[leaf])

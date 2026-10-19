@@ -327,6 +327,9 @@ def evaluate_next_plan(
         }
     if status == "waiting":
         return "excluded", {**base, "exclusion": "waiting", "evidence": []}
+    if status == "hold":
+        return "excluded", {**base, "exclusion": "scope_review_required", "evidence": [],
+                            "scope_status": derived["scope_status"]}
     if status == "review":
         return "excluded", {**base, "exclusion": "wait_review_required", "evidence": [], "wait_review_required": True}
     open_sub_issues = summary["open_sub_issues"]
@@ -1213,7 +1216,7 @@ def evaluate_direction_node(
     )
     if truncated_relationships:
         item["truncated_relationships"] = truncated_relationships
-    if item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies"}:
+    if item.get("exclusion") in {"completed", "stale_needs_review", "scope_review_required", "unknown_dependencies"}:
         return {"item": item}
     if issue.get("pull_request") is not None:
         return {"item": {**item, "exclusion": "pull_request"}}

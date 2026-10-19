@@ -392,15 +392,13 @@ Size implementation issues and record event waits under GitHub's
 Keep Current Status concise:
 
 ```text
-State:
 Next action:
-Blocked by:
-Waiting for:
 Last verified:
 ```
 
-Record decisive evidence and links needed to resume. Keep raw logs and lengthy
-validation details in the PR or linked evidence. Completed prerequisites belong
+Maintain dependencies with `link`/`unlink` and person/event holds with `wait`;
+`show` projects their current state and blockers. Record decisive evidence and
+links needed to resume. Keep raw logs and lengthy validation details in the PR or linked evidence. Completed prerequisites belong
 in Relationships, not the current blocker list.
 
 ### Broad Workstreams
@@ -462,14 +460,16 @@ closed issue retains `waiting` when its structured person/event wait remains.
 
 - `plan:active`: actionable now, including work whose next actor is any agent.
   Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
-  handoffs active. Put the agent's next step in `Next action:`; record
-  `Waiting for: None` only when no person, decision or external-event wait
-  remains. Ordinary delivery awaiting agent or automated QA, review,
+  handoffs active. Put the agent's next step in `Next action:`; record verified
+  absence of person/event waits through `wait --clear --evidence ...`. Ordinary
+  delivery awaiting agent or automated QA, review,
   merge-train routing, or deployment stays active too.
 - `plan:blocked`: a current dependency on an open issue linked by native
   `blocked-by`.
 - `plan:waiting`: a durable plan parked on a named person, decision, or external
-  event. Name who acts and on what in `Waiting for:` or `Parked until:`.
+  event. Record each actor/event and ending condition through
+  `wait --waiting-for ... --ends-when ... --evidence ...`, preserving unresolved
+  entries.
 - `plan:stale`: needs review before guiding work.
 - `plan:done`: completed or deliberately superseded.
 

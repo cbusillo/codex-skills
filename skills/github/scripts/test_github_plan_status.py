@@ -80,10 +80,35 @@ class DerivedStatusTests(unittest.TestCase):
                     *([{ "name": names[hold]}] if hold else [])]}
                 before = copy.deepcopy(issue)
                 result = github_plan_status.derive(issue, {"blocked_by": []}, self.clear, label_names=names)
-                self.assertEqual(result["status"], "review")
+                self.assertEqual(result["status"], "hold")
+                self.assertEqual(result["scope_status"], hold or "unstatused")
                 self.assertTrue(result["scope_hold"])
+                self.assertFalse(result["wait_review_required"])
+                self.assertFalse(result["labels_writable"])
                 self.assertNotIn("active", result["labels"])
                 self.assertEqual(issue, before)
+
+    def test_package_prohibits_label_changes_for_unread_waits_and_scope_holds(self) -> None:
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        review = waits.current({}, [], set())
+        cases = [
+            ("open", [names["plan"], names["waiting"]], review),
+            ("open", [names["plan"], names["stale"], names["active"]], self.clear),
+            ("open", [names["plan"], names["done"], names["active"]], self.clear),
+            ("open", [names["plan"]], self.clear),
+            ("closed", [names["waiting"], names["plan"]], review),
+        ]
+        for state, statuses, record in cases:
+            with self.subTest(state=state, labels=statuses):
+                recorded = ["z:preserved", *statuses, "a:preserved"]
+                issue = {**self.issue, "state": state, "labels": recorded}
+                derived = github_plan_status.derive(issue, {"blocked_by": [self.open]}, record)
+                changes = github_plan_status.label_changes(recorded, names, derived)
+                self.assertEqual(changes["add"], [])
+                self.assertEqual(changes["remove"], [])
+                self.assertEqual(changes["result"], recorded)
+                self.assertEqual(github_plan_status.project_labels(recorded, names, derived), recorded)
+                self.assertFalse(derived["labels_writable"])
 
     def test_closed_issue_keeps_its_actual_person_wait_view(self) -> None:
         self.issue["state"] = "closed"
@@ -95,7 +120,9 @@ class DerivedStatusTests(unittest.TestCase):
         self.assertEqual(set(result["labels"]), {"done", "waiting"})
 
     def test_formatted_old_fields_cannot_contradict_the_derived_view(self) -> None:
-        original = "**State:** Blocked.\n- Blocked by: fixture/product#99\nNext action: Implement export.\n"
+        original = ("**State:** Blocked.\n- Blocked by: fixture/product#99\n"
+                    "Waiting since: superseded timestamp\nParked until: superseded request\n"
+                    "Next action: Implement export.\n")
         derived = self.derive([])
         result = github_plan_status.render_status(original, derived)
         fields = dict(line.split(":", 1) for line in result.splitlines() if ":" in line)
@@ -103,6 +130,7 @@ class DerivedStatusTests(unittest.TestCase):
         self.assertEqual(derived["blocked_by"], [])
         self.assertNotIn("Blocked.", result)
         self.assertNotIn("fixture/product#99", result)
+        self.assertNotIn("superseded", result)
         self.assertIn("Next action: Implement export.", result)
 
     def test_packaged_wait_resolver_accepts_numeric_identity_authority(self) -> None:
@@ -145,6 +173,38 @@ class DerivedStatusTests(unittest.TestCase):
             self.assertNotIn(obsolete, rendered)
         self.assertIn(action, rendered)
         self.assertIn("Keep this request context.", rendered)
+
+    def test_render_field_boundaries_preserve_independent_context(self) -> None:
+        action = "Implement export without replacing retained evidence."
+        obsolete = "retired provider sign-off"
+        marker = waits.marker(self.clear)
+        boundaries = {
+            "next action": f"Next action: {action}\n",
+            "evidence": "Evidence: Retain the original capture.\n",
+            "heading": "### Recovery\nPreserve the retained artifact.\n",
+            "marker": marker + "\n",
+            "blank": "\nPreserve this separate recovery paragraph.\n",
+        }
+        for indentation in ("", "  "):
+            for kind, boundary in boundaries.items():
+                with self.subTest(indentation=indentation, boundary=kind):
+                    retained = "\n".join(indentation + line if line else ""
+                                         for line in boundary.split("\n"))
+                    original = "Waiting for: superseded request\n" + indentation + obsolete + "\n" + retained
+                    rendered = github_plan_status.render_status(original, self.derive([]))
+                    self.assertNotIn(obsolete, rendered)
+                    self.assertIn(retained, rendered)
+
+    def test_render_preserves_fenced_status_examples_as_authored_context(self) -> None:
+        for fence in ("```text", "~~~text"):
+            with self.subTest(fence=fence):
+                closing = fence[:3]
+                example = fence + "\nState: Historical example\nBlocked by: example/product#91\n" + closing
+                action = "Next action: Implement export."
+                original = example + "\n" + action
+                rendered = github_plan_status.render_status(original, self.derive([]))
+                self.assertIn(example, rendered)
+                self.assertIn(action, rendered)
 
 
 if __name__ == "__main__":

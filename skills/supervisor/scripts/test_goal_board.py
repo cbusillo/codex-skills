@@ -7,12 +7,13 @@
 
 from contextlib import redirect_stdout
 import io
+import json
 import unittest
 from unittest.mock import Mock, patch
 
 import goal_board
 from skills.github.scripts.github_api import ApiResult
-from skills.github.scripts import github_plan_wait, github_plan_status
+from skills.github.scripts import github_plan_body, github_plan_wait, github_plan_status
 
 BOT = {"__typename": "Bot", "login": "shiny-code-app"}
 TRUSTED = {"owner", "shiny-code-app[bot]"}
@@ -80,7 +81,7 @@ class GoalBoardTests(unittest.TestCase):
     def replay(self, *bodies):
         self.reader.graphql_json.side_effect = [
             body if isinstance(body, ApiResult) else ApiResult(ok=True, status=200, body=body) for body in bodies]
-        return goal_board.goal_board(self.reader, "owner", trusted=TRUSTED)
+        return goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
 
     def test_native_blockers_and_structured_wait_override_stale_label_and_prose(self):
         clear = github_plan_wait.reviewed(evidence="No person wait remains")
@@ -125,8 +126,8 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(observed["labels"], ["blocked", "waiting"])
         self.assertEqual(row["body"], original)
         text = goal_board.markdown({**board, "checked_at": "now"})
-        self.assertIn("blocked by: https://github.com/owner/other/issues/2", text)
-        self.assertIn("waiting for: Owner's test", text)
+        self.assertIn(observed["blocked_by"][0]["html_url"], text)
+        self.assertIn(held["waits"][0]["waiting_for"], text)
 
     def test_incomplete_native_graph_or_wait_authority_never_displays_active(self):
         truncated_blockers = child(10)
@@ -148,6 +149,73 @@ class GoalBoardTests(unittest.TestCase):
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
                             details(t1=track(1, children=[truncated_comments])))
         self.assertEqual(board["tracks"][0]["children"][0]["status"], goal_board.UNKNOWN)
+
+    def test_truncated_labels_cannot_hide_a_scope_review_hold(self):
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        row = child(10, label=names["active"])
+        visible = [{"name": names["plan"]}, {"name": names["active"]},
+                   *({"name": f"area:{index}"} for index in range(goal_board.LABEL_LIMIT - 2))]
+        # A stale scope hold may be just beyond the bounded label connection,
+        # even when an old active label is visible in that connection.
+        row["labels"] = {"totalCount": len(visible) + 1, "nodes": visible}
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[row])))
+        self.assertFalse(board["coverage"]["complete"])
+        self.assertEqual(board["tracks"][0]["children"][0]["status"], goal_board.UNKNOWN)
+        complete_labels = [*visible, {"name": names["stale"]}]
+        complete = {**row, "labels": {"totalCount": len(complete_labels), "nodes": complete_labels}}
+        observed = goal_board.derived_status(complete, TRUSTED, [])
+        self.assertTrue(observed["scope_hold"])
+        self.assertEqual(observed["status"], names["stale"])
+
+    def test_known_scope_hold_is_readable_and_does_not_become_a_wait_review(self):
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        row = child(10, label=names["stale"])
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertTrue(board["coverage"]["complete"])
+        self.assertEqual(observed["status"], names["stale"])
+        self.assertEqual(observed["scope_status"], "stale")
+        self.assertFalse(observed["wait_review_required"])
+        self.assertFalse(observed["unread"])
+
+    def test_contributor_original_marker_cannot_release_the_managed_wait(self):
+        held = github_plan_wait.reviewed(evidence="Managed plan keeps the current device wait",
+            waiting_for="Owner's device test", ends_when="Owner records the result")
+        original = {"body": github_plan_wait.marker(github_plan_wait.reviewed(
+            evidence="Original request contains historical clear evidence"))}
+        row = child(10)
+        row["body"] = github_plan_body.wrap_contributor_plan(original,
+            status("Resume after acceptance.") + "\n" + github_plan_wait.marker(held))
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertEqual(observed["waits"], held["waits"])
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["waiting"])
+
+    def test_cli_wait_authority_includes_historical_bot_but_not_decision_override(self):
+        held = github_plan_wait.reviewed(evidence="Historical automation records the current owner hold",
+            waiting_for="Owner's device test", ends_when="Owner records the result")
+        clear = github_plan_wait.reviewed(evidence="Decision author claims the hold is released")
+        historical = {"__typename": "Bot", "login": "historical-code-app"}
+        decision_author = {"__typename": "User", "login": "decision-reader"}
+        row = child(10, comments=[comment(github_plan_wait.marker(held), author=historical),
+            comment(github_plan_wait.marker(clear), author=decision_author, ident=2)])
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))]
+        output = io.StringIO()
+        with (patch.object(goal_board.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(goal_board.github_read, "automation_only_gh_prefix_args", return_value=[]),
+              patch.object(goal_board, "automation_login", return_value="shiny-code-app[bot]"),
+              patch.object(goal_board.github_plan_wait.github_identity, "configured_bot_logins",
+                           return_value=("shiny-code-app[bot]", "historical-code-app[bot]")),
+              patch("sys.argv", ["goal_board.py", "--owner", "owner", "--decision-author", "decision-reader"]),
+              redirect_stdout(output)):
+            self.assertEqual(goal_board.main(), 0)
+        observed = json.loads(output.getvalue())["tracks"][0]["children"][0]
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["waiting"])
+        self.assertEqual(observed["waits"], held["waits"])
 
     def test_every_open_track_across_pages_is_read_with_children_decisions_and_prs(self):
         ready = comment(f"Ready for the merge train\n\nHead: {HEAD}", ident=2)
@@ -203,7 +271,7 @@ class GoalBoardTests(unittest.TestCase):
                             details(t1=track(1, children=[many_labels, child(12, prs=[long_pr])])))
         self.assertFalse(board["coverage"]["complete"])
         rows = board["tracks"][0]["children"]
-        self.assertEqual(rows[0]["status"], github_plan_status.DEFAULT_STATUS_LABELS["active"])
+        self.assertEqual(rows[0]["status"], goal_board.UNKNOWN)
         self.assertEqual(rows[1]["open_prs"][0]["handoff"], goal_board.UNKNOWN)
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=long_track))
         self.assertFalse(board["coverage"]["complete"])
@@ -303,8 +371,9 @@ class GoalBoardTests(unittest.TestCase):
         newer_body["lastEditedAt"] = "2026-10-16T12:00:00Z"
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[newer_body])))
         row = board["tracks"][0]["children"][0]
-        self.assertEqual((row["next_action"], row["unread"]),
-                         ("Child 10 step.", ["structured wait", "older decisions"]))
+        self.assertEqual(row["next_action"], "Child 10 step.")
+        self.assertEqual(row["status"], goal_board.UNKNOWN)
+        self.assertFalse(board["coverage"]["complete"])
 
 
 if __name__ == "__main__":

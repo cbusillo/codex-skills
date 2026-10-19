@@ -1495,7 +1495,11 @@ competitor's record.
   Closed related plans get `done` labels and retain `waiting` for an actual
   structured wait, without changing their state or body. Deliberate `stale`,
   `done` and unstatused open planning scopes require finish-line review and are
-  preserved. Reviewed `active`, `blocked` and `waiting` views are recomputed.
+  preserved. Scope holds have a separate derived `hold` status and do not count
+  as unread waits. `next` excludes an unstatused planning scope with
+  `scope_review_required`; deliberate stale/done exclusions remain intact.
+  Reviewed `active`, `blocked` and `waiting` views are recomputed. The canonical
+  package prohibits label changes for scope holds or unread waits itself.
   Unverified target planning configuration refuses writes.
   Cross-repository source closures, another account's
   records and source reporter acceptance remain owning-agent review work. Each outcome
@@ -1508,7 +1512,9 @@ competitor's record.
   finish-line review even when they are also native parents or dependents.
   Unavailable reads and uncertain writes remain failures. Receipts list every
   discovered target, including `not_attempted` targets after a stopped write
-  sequence, with partial coverage. A posting denial preserves its exact classified
+  sequence. Unread configuration/graph/wait evidence, a failed write, a posting
+  denial or an unattempted target makes coverage partial; a verified deliberate
+  scope hold is preserved without a write. A posting denial preserves its exact classified
   failure and leaves that repository to an existing authorized owning session;
   independent authorized repositories can still be reconciled. Never repeat a
   denied write through another identity or a new grant.

@@ -144,12 +144,8 @@ def snapshot(plan: Any, repo: str, number: int) -> tuple[dict[str, Any], dict[st
         f"/repos/{repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="landing_comments")
     try:
         wait = plan.current_wait(issue, comments, repo)
-    except (ValueError, plan.PlanError):
-        if issue.get("state") != "closed":
-            raise
-        # A closed native state cannot be activated by unknown wait evidence.
-        # Preserve the record; only its label view is derived here.
-        wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
+    except (ValueError, plan.PlanError) as error:
+        wait = {"version": 1, "state": "review", "evidence": str(error), "waits": []}
     return issue, plan.load_config(repo), wait
 
 
@@ -183,9 +179,6 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     if issue.get("state") not in {"open", "closed"}:
         entry["status"] = "review_related_finish_line"
         return
-    if wait["state"] == "review":
-        entry.update(status="review_wait_record", next_action="Review full discussion and record actual waits or verified absence through gh-plan.py wait, then rerun")
-        return
     _, relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
     derived = github_plan_status.derive(issue, relationships, wait, label_names=config["labels"])
     blockers = derived["blocked_by"]
@@ -193,15 +186,17 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     entry.update(derived_status=key, wait=wait, open_blockers=blockers,
                  blocked_by=blockers, derived=derived,
                  finish_line="preserved; related landing does not prove completion")
-    if derived["scope_hold"]:
-        entry["status"] = "review_related_finish_line"
+    if not derived["labels_writable"]:
+        entry.update(status="review_wait_record" if derived["wait_review_required"] else "review_related_finish_line",
+                     verified=not derived["wait_review_required"],
+                     next_action="Review the missing wait evidence" if derived["wait_review_required"] else "Preserve the deliberate scope hold")
         return
     names = set(plan.normalize_labels(issue.get("labels")))
     changes = github_plan_status.label_changes(sorted(names), config["labels"], derived)
     wanted = {config["labels"][key] for key in derived["labels"]}
     entry["derived_labels"] = sorted(wanted)
     remove = changes["remove"]
-    if wanted <= names and not remove:
+    if not changes["add"] and not remove:
         entry["status"] = "unchanged"
         return
     if not apply:
@@ -225,7 +220,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
         raise plan.plan_error_from_issue(exc) from exc
     verified, _, verified_wait = snapshot(plan, repo, number)
     _, verified_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    expected_names = (names - set(remove)) | wanted
+    expected_names = set(changes["result"])
     if (set(plan.normalize_labels(verified.get("labels"))) != expected_names
             or verified.get("state") != issue["state"] or verified.get("body") != issue.get("body")
             or verified_wait != wait or verified_relationships != relationships):
@@ -240,7 +235,7 @@ def reconciliation_error(entry: dict[str, Any], error: Exception) -> tuple[bool,
                  error={"message": str(error), **getattr(error, "payload", {})})
     if failure is not None:
         entry["error"]["failure"] = failure.as_dict()
-        if failure.cause in {"permission_denied", "not_installed", "repository_access_denied"}:
+        if entry.get("writes_started") and failure.cause in {"permission_denied", "not_installed", "repository_access_denied"}:
             entry.update(status="review_posting_authority", informational=True,
                          next_action="Existing target authority must reconcile; do not retry with another identity or grant")
             return True, False
@@ -251,39 +246,56 @@ def reconciliation_error(entry: dict[str, Any], error: Exception) -> tuple[bool,
     return False, bool(entry.get("writes_started") and not isinstance(error, ValueError))
 
 
-def reconcile_dependents(plan: Any, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
-    """The same native neighborhood refresh for issue closes and train landings."""
-    outcomes = []
+def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: bool,
+                             pull: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One partial-success/denial contract for close and landing adapters."""
     stopped = None
-    denied = {}
-    for target_repo, target_number in neighborhood(plan, repo, [(repo, number)]):
-        entry = {"repo": target_repo, "number": target_number, "role": "related"}
-        outcomes.append(entry)
+    denied: dict[str, Any] = {}
+    for entry in tasks:
+        if "status" in entry:
+            continue
+        repo, number = entry["repo"], entry["number"]
         if stopped is not None:
             entry.update(status="not_attempted", reason=stopped)
             continue
-        if target_repo.casefold() in denied:
-            entry.update(status="not_attempted", reason=denied[target_repo.casefold()], informational=True,
+        if repo.casefold() in denied:
+            entry.update(status="not_attempted", reason=denied[repo.casefold()], informational=True,
                          next_action="Existing target authority must reconcile; this session will not repeat the denied write")
             continue
-        if target_repo.split("/")[0].casefold() != repo.split("/")[0].casefold():
-            entry.update(status="review_cross_repository", informational=True)
-            continue
         try:
-            reconcile_related(plan, target_repo, target_number, apply=apply, entry=entry)
+            if entry["role"] == "source":
+                assert pull is not None
+                reconcile_issue(plan, repo, number, pull, apply=apply, entry=entry)
+            else:
+                reconcile_related(plan, repo, number, apply=apply, entry=entry)
         except (plan.PlanError, ValueError, TypeError, OSError, subprocess.SubprocessError) as error:
             repo_denied, stop = reconciliation_error(entry, error)
-            reason = {"repo": target_repo, "number": target_number, "error": entry["error"]}
+            reason = {"repo": repo, "number": number, "error": entry["error"]}
             if repo_denied:
-                denied[target_repo.casefold()] = reason
+                denied[repo.casefold()] = reason
             if stop:
                 stopped = reason
-        if entry["status"].startswith("review_"):
+        if entry["role"] == "source" and not entry["closing_reference"] and entry["status"] in {
+                "review_open_finish_line", "review_cross_repository", "review_reporter_acceptance"}:
             entry["informational"] = True
-    return {"ok": all(item["status"] in {"reconciled", "unchanged", "not_planning_issue", "would_reconcile"} or item.get("informational")
-                      for item in outcomes), "issues": outcomes,
-            "coverage": "partial" if any(item["status"] == "not_attempted" for item in outcomes) else "complete",
-            "review_required": any(item["status"].startswith(("review_", "not_attempted", "reconciliation_")) for item in outcomes)}
+        if entry["role"] == "related" and entry["status"].startswith("review_"):
+            entry["informational"] = True
+    verified = {"reconciled", "unchanged", "would_reconcile", "not_planning_issue"}
+    return {"ok": all(item.get("informational") or item["status"] in verified for item in tasks),
+            "coverage": "complete" if all(item.get("verified") or item["status"] in verified for item in tasks) else "partial",
+            "review_required": any(item["status"].startswith(("review_", "not_attempted", "reconciliation_")) for item in tasks),
+            "issues": tasks}
+
+
+def reconcile_dependents(plan: Any, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
+    """The same direct native neighborhood refresh for issue closes and landings."""
+    tasks = []
+    for target_repo, target_number in neighborhood(plan, repo, [(repo, number)]):
+        entry = {"repo": target_repo, "number": target_number, "role": "related"}
+        if target_repo.split("/")[0].casefold() != repo.split("/")[0].casefold():
+            entry.update(status="review_cross_repository", informational=True)
+        tasks.append(entry)
+    return run_reconciliation_tasks(plan, tasks, apply=apply)
 
 
 def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
@@ -292,60 +304,22 @@ def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: in
     roots = list(dict.fromkeys([*references, *explicit]))
     sources = list(dict.fromkeys([*roots, *timeline]))
     related = neighborhood(plan, repo, roots)
-    outcomes: list[dict[str, Any]] = []
-    tasks = [(key, True) for key in sources if key in roots or key not in related]
-    tasks.extend((key, False) for key in related)
-    stopped = None
-    denied = {}
-    for (issue_repo, issue_number), is_source in tasks:
-        # Explicit roots retain source review alongside independent native
-        # label work; timeline-only neighbors need only their related outcome.
-        entry: dict[str, Any] = {"repo": issue_repo, "number": issue_number,
-                                 "role": "source" if is_source else "related",
-                                 "closing_reference": (issue_repo, issue_number) in references}
-        outcomes.append(entry)
-        if stopped is not None:
-            entry.update(status="not_attempted", reason=stopped)
-            continue
-        if issue_repo.casefold() in denied:
-            entry.update(status="not_attempted", reason=denied[issue_repo.casefold()], informational=True,
-                         next_action="Existing target authority must reconcile; this session will not repeat the denied write")
-            continue
+    tasks = []
+    roles = [(key, True) for key in sources if key in roots or key not in related]
+    roles.extend((key, False) for key in related)
+    for (issue_repo, issue_number), is_source in roles:
+        entry = {"repo": issue_repo, "number": issue_number,
+                 "role": "source" if is_source else "related",
+                 "closing_reference": (issue_repo, issue_number) in references}
         if (issue_repo, issue_number) not in roots and (issue_repo, issue_number) not in related:
             entry.update(status="review_reference_only", informational=True,
-                         next_action="Timeline mention is context only; owning agent reviews its relevance. No finish line or neighborhood inferred.")
-            continue
-        # Cross-repository references require their own owning session.
-        if (is_source and issue_repo.casefold() != repo.casefold()
+                         next_action="Timeline mention is context only; owning agent reviews its relevance")
+        elif (is_source and issue_repo.casefold() != repo.casefold()
                 or issue_repo.split("/")[0].casefold() != repo.split("/")[0].casefold()):
-            entry["status"] = "review_cross_repository"
-            entry["informational"] = not entry["closing_reference"]
-            continue
-        try:
-            if is_source:
-                reconcile_issue(plan, issue_repo, issue_number, pull, apply=apply, entry=entry)
-            else:
-                reconcile_related(plan, issue_repo, issue_number, apply=apply, entry=entry)
-        except (plan.PlanError, ValueError, TypeError, OSError, subprocess.SubprocessError) as error:
-            repo_denied, stop = reconciliation_error(entry, error)
-            reason = {"repo": issue_repo, "number": issue_number, "error": entry["error"]}
-            if repo_denied:
-                denied[issue_repo.casefold()] = reason
-            if stop:
-                stopped = reason
-        # Informational open references need an owning-agent review but are
-        # not failed metadata writes. Closing links and related drift still fail.
-        if is_source and not entry["closing_reference"] and entry["status"] in {
-                "review_open_finish_line", "review_cross_repository", "review_reporter_acceptance"}:
-            entry["informational"] = True
-        if not is_source and entry["status"].startswith("review_"):
-            # Report preserved, unmodified review work without turning every
-            # child landing into a failed write receipt on a human-owned epic.
-            entry["informational"] = True
-    return {"ok": all(item.get("informational") or item["status"] in {"reconciled", "would_reconcile", "not_planning_issue", "unchanged"} for item in outcomes),
-            "coverage": "partial" if any(item["status"] == "not_attempted" for item in outcomes) else "complete",
-            "review_required": any(item["status"].startswith(("review_", "reconciliation_", "not_attempted")) for item in outcomes),
-            "pr": number, "landing_sha": pull["mergeCommit"]["oid"], "apply": apply, "issues": outcomes}
+            entry.update(status="review_cross_repository", informational=not entry["closing_reference"])
+        tasks.append(entry)
+    return {**run_reconciliation_tasks(plan, tasks, apply=apply, pull=pull),
+            "pr": number, "landing_sha": pull["mergeCommit"]["oid"], "apply": apply}
 
 
 def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any], *,

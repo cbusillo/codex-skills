@@ -409,6 +409,32 @@ class LandingTests(unittest.TestCase):
                 self.assertFalse(receipt["ok"])
                 self.assertEqual(receipt["coverage"], "partial")
 
+    def test_single_read_denial_fails_but_write_denial_is_a_partial_authority_review(self) -> None:
+        targets = [("fixture/restricted", 8)]
+        failure = PLAN.github_api_core.FailureDetail(cause="permission_denied",
+            message="Fixture endpoint denies the current request", retryable=False,
+            fallback_eligible=False, disposition="stop", write_outcome="rejected")
+        for mode in ("close", "landing"):
+            for phase in ("read", "write"):
+                with self.subTest(mode=mode, phase=phase):
+                    attempted = []
+                    def reconcile_target(_plan, repo, number, *, apply, entry):
+                        attempted.append((repo, number))
+                        if phase == "write":
+                            entry["writes_started"] = True
+                        raise PLAN.PlanError("Fixture request denied", failure=failure,
+                                             payload={"trace_id": "single-target-denial"})
+                    receipt = self.native_receipt(mode, targets, reconcile_target)
+                    rows = [row for row in receipt["issues"] if row["role"] == "related"]
+                    self.assertEqual(attempted, targets)
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]["status"], "review_posting_authority" if phase == "write"
+                                     else "reconciliation_failed")
+                    self.assertEqual(rows[0]["error"]["failure"], failure.as_dict())
+                    self.assertEqual(rows[0]["error"]["trace_id"], "single-target-denial")
+                    self.assertEqual(receipt["ok"], phase == "write")
+                    self.assertEqual(receipt["coverage"], "partial")
+
     def test_readback_conflict_is_local_to_its_target(self) -> None:
         targets = [(REPO, 8), (REPO, 9), ("fixture/authorized", 10)]
         for mode in ("close", "landing"):
@@ -426,7 +452,7 @@ class LandingTests(unittest.TestCase):
                 self.assertEqual(rows[targets[0]]["status"], "reconciliation_failed")
                 self.assertTrue(all(rows[target]["status"] == "unchanged" for target in targets[1:]))
                 self.assertFalse(receipt["ok"])
-                self.assertEqual(receipt["coverage"], "complete")
+                self.assertEqual(receipt["coverage"], "partial")
 
     def test_remaining_blocker_is_the_only_derived_blocker(self) -> None:
         self.issue["state"] = "open"

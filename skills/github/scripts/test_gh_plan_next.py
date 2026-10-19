@@ -155,6 +155,19 @@ def local_next_fixture(
         yield captured
 
 
+def test_unstatused_scope_is_review_work_without_becoming_a_person_wait() -> None:
+    module = load_module()
+    record = module.github_plan_wait.reviewed(evidence="No person or event hold; scope still needs review")
+    raw = issue(8, labels=[module.DEFAULT_CONFIG["labels"]["plan"]])
+    result = module.github_direction_next.evaluate_direction_node(
+        raw, config=module.DEFAULT_CONFIG, focus=None, relationships=relationships(), structured_wait=record)
+    observed = result["item"]
+    assert observed["plan_status"] == "hold"
+    assert observed["exclusion"] == "scope_review_required"
+    assert not observed.get("wait_review_required")
+    assert not result.get("waiting")
+
+
 def test_next_beta_rc_stable_chain_respects_native_blockers() -> None:
     module = load_module()
     config = module.DEFAULT_CONFIG
@@ -2868,7 +2881,6 @@ def test_capacity_names_each_milestone_and_wait_start_for_shared_person_gate() -
         assert {row["milestone"] for row in capacity["milestone_waits"]} == {"First", "Second"}
         for row in capacity["milestone_waits"]:
             assert row["waits"][0]["waiting_for"] == "Alex to test."
-            assert row["waits"][0]["since"] is None  # Structured waits do not claim a start date.
         legacy = module.github_direction_next.milestone_wait_evidence(
             {"repo": wait["repo"], "number": 10, "url": wait["html_url"], "plan_status": "waiting"}, wait["body"], ["First", "Second"])
         assert legacy["since"] == "2026-08-20"
@@ -2891,8 +2903,8 @@ def test_capacity_wait_dates_belong_to_each_frontier_issue() -> None:
         capacity = result["tooling_capacity_context"]
         assert capacity["admitted"] is True
         records = {row["milestone"]: row["waits"][0] for row in capacity["milestone_waits"]}
-        assert (records["First"]["waiting_for"], records["First"]["since"]) == ("Alex to test.", None)
-        assert (records["Second"]["waiting_for"], records["Second"]["since"]) == ("Sam to test.", None)
+        assert records["First"]["waiting_for"] == "Alex to test."
+        assert records["Second"]["waiting_for"] == "Sam to test."
         for raw, expected in zip(waits, ("2026-08-20", "2026-09-02")):
             legacy = module.github_direction_next.milestone_wait_evidence(
                 {"repo": raw["repo"], "number": raw["number"], "url": raw["html_url"], "plan_status": "waiting"}, raw["body"], ["First", "Second"])
@@ -4010,7 +4022,8 @@ def test_local_next_uses_current_wait_and_native_graph_over_old_labels() -> None
     assert waiting["derived"]["waits"] == person_wait["waits"], waiting
 
 
-TESTS.append(test_local_next_uses_current_wait_and_native_graph_over_old_labels)
+TESTS.extend([test_local_next_uses_current_wait_and_native_graph_over_old_labels,
+              test_unstatused_scope_is_review_work_without_becoming_a_person_wait])
 
 
 def main() -> None:

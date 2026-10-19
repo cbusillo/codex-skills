@@ -34,7 +34,7 @@ PR_LIMIT = 5
 PR_COMMENTS = 30
 TRACKS_PER_QUERY = 10
 NEXT_ACTION_CHARS = 200
-OPEN_LABELS = ("plan:active", "plan:blocked", "plan:waiting", "plan:stale")
+OPEN_LABELS = tuple(github_plan_status.DEFAULT_STATUS_LABELS[key] for key in ("active", "blocked", "waiting", "stale"))
 
 LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -128,9 +128,17 @@ def derived_status(node, trusted, unread):
     except (ValueError, KeyError, TypeError, AttributeError):
         unread.append("structured wait or native blockers")
         return unknown
-    if derived["status"] == "review":
+    if truncated(node["labels"]):
+        # Labels carry deliberate stale/done scope holds. An omitted label can
+        # prevent activation even when blockers and waits were read completely.
+        unread.append("status labels")
+        return {**derived, "status": UNKNOWN}
+    if derived["wait_review_required"]:
         unread.append("structured wait")
-    return {**derived, "status": f"plan:{derived['status']}" if derived["status"] != "review" else UNKNOWN}
+        return {**derived, "status": UNKNOWN}
+    if derived["scope_hold"]:
+        return {**derived, "status": github_plan_status.DEFAULT_STATUS_LABELS.get(derived["scope_status"], "scope review")}
+    return {**derived, "status": github_plan_status.DEFAULT_STATUS_LABELS[derived["status"]]}
 
 
 def latest_decision(comments, trusted, unread):
@@ -203,14 +211,14 @@ def handoff(pr, trusted, unread):
     return "ready" if heads == [pr["headRefOid"]] else "ready for an older head"
 
 
-def child_row(node, trusted):
+def child_row(node, trusted, wait_trusted=None):
     unread = []
     prs = node["closedByPullRequestsReferences"]
     if truncated(prs):
         unread.append(f"closing PRs beyond {PR_LIMIT}")
     return {"repository": node["repository"]["nameWithOwner"], "number": node["number"],
         "title": node["title"], "url": node["url"], "state": node["state"].lower(),
-        **derived_status(node, trusted, unread), "recorded_status": status_label(node["labels"], []),
+        **derived_status(node, wait_trusted if wait_trusted is not None else trusted, unread), "recorded_status": status_label(node["labels"], []),
         "sub_issues": node["subIssuesSummary"],
         "next_action": next_action(node, trusted, unread),
         "latest_decision": latest_decision(node["comments"], trusted, unread),
@@ -220,17 +228,17 @@ def child_row(node, trusted):
         "unread": unread}
 
 
-def track_row(node, trusted):
+def track_row(node, trusted, wait_trusted=None):
     unread = []
     children = node["subIssues"]
     if truncated(children):
         unread.append(f"children beyond {CHILD_LIMIT}")
     return {"number": node["number"], "title": node["title"], "url": node["url"],
         "milestone": (node.get("milestone") or {}).get("title"),
-        **derived_status(node, trusted, unread),
+        **derived_status(node, wait_trusted if wait_trusted is not None else trusted, unread),
         "next_action": next_action(node, trusted, unread),
         "latest_decision": latest_decision(node["comments"], trusted, unread),
-        "children": [child_row(child, trusted) for child in children["nodes"]],
+        "children": [child_row(child, trusted, wait_trusted) for child in children["nodes"]],
         "unread": unread}
 
 
@@ -266,8 +274,10 @@ def discover(reader, owner, name, max_pages):
     raise ValueError("open issue pagination exceeded page bound")
 
 
-def goal_board(reader, owner, *, repo="direction", trusted, max_pages=10):
+def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, max_pages=10):
     """Never carry an old status: an unread Track or part of one says unknown."""
+    if wait_trusted is None:
+        wait_trusted = github_plan_wait.authors(f"{owner}/{repo}")
     tracks = discover(reader, owner, repo, max_pages)
     rows, errors = [], []
     for start in range(0, len(tracks), TRACKS_PER_QUERY):
@@ -284,7 +294,7 @@ def goal_board(reader, owner, *, repo="direction", trusted, max_pages=10):
             try:
                 if not isinstance(node, dict) or node.get("state") != "OPEN":
                     raise ValueError("missing or no longer open")
-                rows.append({**track_row(node, trusted), "read": True})
+                rows.append({**track_row(node, trusted, wait_trusted), "read": True})
             except (KeyError, TypeError, ValueError, AttributeError):
                 rows.append({**track, "url": f"https://github.com/{owner}/{repo}/issues/{track['number']}",
                     "read": False, "status": UNKNOWN})
