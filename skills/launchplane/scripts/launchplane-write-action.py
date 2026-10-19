@@ -83,6 +83,8 @@ READ_ONLY_OPERATIONS = {
     "production-backup-authority-read",
     "private-health-endpoint-read",
     "product-promotion-status-read",
+    "workflow-rule-retirement-inspect",
+    "workflow-rule-retirement-plan",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -10227,6 +10229,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_testing_rebuild_parser(subparsers)
     from launchplane_testing_private_ingress import add_parser as add_private_ingress_parser
     add_private_ingress_parser(subparsers)
+    from launchplane_workflow_rule_retirement import add_parser as add_workflow_rule_retirement_parser
+    add_workflow_rule_retirement_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -11084,6 +11088,11 @@ def main(argv: list[str]) -> int:
         from launchplane_testing_private_ingress import COMMANDS as private_ingress_commands, execute as execute_private_ingress
         if args.command in private_ingress_commands:
             return execute_private_ingress(sys.modules[__name__], args)
+        from launchplane_workflow_rule_retirement import (
+            COMMANDS as workflow_rule_retirement_commands, execute as execute_workflow_rule_retirement,
+        )
+        if args.command in workflow_rule_retirement_commands:
+            return execute_workflow_rule_retirement(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
             instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""

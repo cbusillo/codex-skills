@@ -1881,6 +1881,52 @@ described under [Generic-Web Deploy Recovery](#generic-web-deploy-recovery).
 `deploy_key_sha256` identifies a key but cannot reconstruct it. If the service
 cannot supply exact evidence, leave recovery held.
 
+## Workflow-rule retirement inspection
+
+`workflow-rule-retirement-inspect --payload-file <private-file>` and
+`workflow-rule-retirement-plan --payload-file <private-file>` are bounded local
+extensions of `POST /v1/authz-policies/workflow-rule-retirement-plan`. They are
+reads. The service writes nothing, and the helper sends no idempotency key.
+There is no apply mode. Retiring a rule needs a separate reviewed policy change.
+
+The private JSON file holds exactly `policy_record_id`, `policy_revision`,
+`policy_sha256` and `selection`. Take them from the active policy. `selection`
+lists 1 to 50 unique rules. Each has `rule_sha256` and both `managed_set_id`
+and `managed_rule_id`: both `null` for an unmanaged rule, both set for a
+managed one. Do not put `mode` in the file; the subcommand sets it. Keep the
+file outside the repository. The helper refuses a bad file before any call.
+The echoed request shows only the mode, `payload_source` and the selection
+count, never the path or a digest.
+
+Each selected rule returns its fingerprint, management, managed ids,
+`broad_or_shared_scope` and `scope`. Scope keeps the repository, its numeric
+ids, and the workflow ref, job workflow ref, event, ref, environment, product,
+context, instance and action selectors. Selectors may hold glob characters.
+A value the helper cannot verify is dropped, its path is listed in
+`dropped_field_paths`, and that rule's `scope_complete` is `false`. Unlisted
+fields are dropped the same way. A token-like value anywhere in scope makes
+the whole read `invalid`. The result also keeps `blockers` (for example
+`last_administrator_protection`) and `apply_supported`, which is always
+`false`. The plan adds `candidate_policy_sha256`,
+`surviving_workflow_rule_count`, `survivor_rules_sha256`,
+`other_principal_collections_preserved` and `plan_sha256`.
+
+`dependency_verification: unknown_requires_source_review` means Launchplane
+does not know which workflows use these rules. Read the workflow sources
+before you propose a retirement.
+
+The helper checks the response against the request. A different policy
+record, revision or digest, a missing or extra rule, a wrong management value,
+`apply_supported` other than `false`, plan fields on the wrong mode, a missing
+or mistyped repository or selector field in a scope (only null managed ids may
+be absent), or any `dependency_verification` other than
+`unknown_requires_source_review` return `invalid`. A 409
+`workflow_rule_selection_changed` or `active_authz_policy_ambiguous` returns
+`stale`: re-read the active policy and the rules, then rerun. A 400 returns
+`invalid_request`, and a 403 returns `denied` with its trace. A client timeout
+returns `unavailable` with the error code `client_timeout`. The service
+needs service-wide policy read authority to show full scopes.
+
 ## Policy Proposals
 
 `privileged-policy-propose --payload-file <private-envelope>` is a bounded local
