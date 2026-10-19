@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["websockets==17.2"]
+# dependencies = ["websockets==17.2", "aiohttp==3.14.5"]
 # ///
 """Exact-thread Codex resume and queue operations under the ownership lease."""
 from __future__ import annotations
@@ -17,6 +17,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
+from github_plan_native import queue_input
 from codex_session_proxy import run_client, managed_argv, source_endpoint
 
 
@@ -51,20 +52,14 @@ def run(args) -> int:
         print(json.dumps({"session_id": args.session_id, **rows[0].get("resumed_generation", {})}))
         return 0
     home = args.codex_home.expanduser().resolve(strict=True)
-    endpoint = source_endpoint(args.session_id, home)
-    command = ["codex", "--remote", "unix://" + str(endpoint)]
     if args.command == "queue":
         message = args.message_file.read_text() if args.message_file else args.message
-        command = ["codex", "queue", "--remote", "unix://" + str(endpoint),
-                   "--thread", args.session_id, "--message", message]
-    else:
-        command += ["resume", args.session_id]
-        with closure.resume_guard(args.session_id):
-            pass
-        return asyncio.run(run_client(home, command, session=args.session_id))
-    with closure.resume_guard(args.session_id):
-        with subprocess.Popen(command, env={**os.environ, "CODEX_HOME": str(home)}) as child:
-            return child.wait()  # A nudge is not the worker's launch generation.
+        receipt = asyncio.run(queue_input(home, args.session_id, message))
+        print(json.dumps({"ok": True, **receipt}))
+        return 0
+    endpoint = source_endpoint(args.session_id, home)
+    command = ["codex", "--remote", "unix://" + str(endpoint), "resume", args.session_id]
+    return asyncio.run(run_client(home, command, session=args.session_id))
 
 
 def main() -> int:

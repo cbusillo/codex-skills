@@ -316,10 +316,18 @@ def summarize(records: list[dict], harness: str) -> dict:
         "at_turn_end": False,
         "safe_verdict": False,
         "capacity_stop": None,
+        "turn_id": None,
+        "turn_started_at": None,
+        "turn_completed_at": None,
+        "message_at": None,
+        "actual_turn_ids": [],
+        "active_realtime_sessions": [],
+        "realtime_coverage": True,
     }
     running_tasks: dict = {}
     scheduled_jobs: dict = {}
     scheduled_tools: dict = {}
+    active_realtime: set[str] = set()
     if harness == "claude":
         records = strip_claude_exit_tail(records)
     previous: dict = {}
@@ -360,6 +368,28 @@ def summarize(records: list[dict], harness: str) -> dict:
                     at_turn_end=message.get("stop_reason") == "end_turn" and not tool_use,
                 )
         else:
+            if record.get("type") == "realtime_item":
+                identity = payload.get("realtime_session_id")
+                if (not isinstance(payload.get("id"), str) or not payload["id"]
+                        or not isinstance(identity, str) or not identity
+                        or kind not in {"realtime_session_started", "realtime_session_closed", "transcript_segment", "bem_item_promoted"}
+                        or kind == "realtime_session_closed" and payload.get("outcome") not in {"ended", "failed"}):
+                    result["realtime_coverage"] = False
+                elif kind == "realtime_session_started":
+                    active_realtime.add(identity)
+                elif kind == "realtime_session_closed":
+                    active_realtime.discard(identity)
+            if kind in {"task_started", "task_complete", "turn_aborted"}:
+                turn_id = payload.get("turn_id")
+                if isinstance(turn_id, str) and turn_id:
+                    result["turn_id"] = turn_id
+                    if turn_id not in result["actual_turn_ids"]:
+                        result["actual_turn_ids"].append(turn_id)
+                if kind == "task_started":
+                    result.update(turn_id=turn_id if isinstance(turn_id, str) and turn_id else None,
+                                  turn_started_at=record.get("timestamp"), turn_completed_at=None)
+                elif kind == "task_complete":
+                    result["turn_completed_at"] = record.get("timestamp")
             if kind == "token_count":
                 info = payload.get("info") or {}
                 result["context_tokens"] = (info.get("last_token_usage") or {}).get(
@@ -374,16 +404,18 @@ def summarize(records: list[dict], harness: str) -> dict:
                 "function_call",
                 "custom_tool_call",
             }:
-                result.update(at_turn_end=False, last_text="", turn_end=None, capacity_stop=None)
+                result.update(at_turn_end=False, last_text="", turn_end=None, capacity_stop=None, message_at=None)
             if kind == "agent_message":
                 result.update(
                     last_text=payload.get("message", ""),
                     timestamp=record.get("timestamp"),
+                    message_at=record.get("timestamp"),
                 )
             if kind == "message" and payload.get("role") == "assistant":
                 result.update(
                     last_text=text_content(payload.get("content")),
                     timestamp=record.get("timestamp"),
+                    message_at=record.get("timestamp"),
                 )
             if kind in {"task_complete", "turn_aborted"}:
                 result.update(
@@ -400,6 +432,9 @@ def summarize(records: list[dict], harness: str) -> dict:
                         "timestamp": record.get("timestamp"),
                         "turn_id": payload.get("turn_id"),
                     }
+    # Historical RTC can survive a crash. Only loaded native proof interprets
+    # this canonical lifecycle as current work; it is not a background-task veto.
+    result["active_realtime_sessions"] = sorted(active_realtime)
     # Citation metadata may follow the verdict; retain the raw response for readers.
     verdict_text = MEMORY_CITATION_TAIL.sub("", result["last_text"])
     lines = verdict_text.rstrip().splitlines()

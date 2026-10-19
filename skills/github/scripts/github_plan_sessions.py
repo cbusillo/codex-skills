@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import github_plan_closure
+import github_plan_native
 
 
 def native_helpers():
@@ -66,59 +67,39 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
     peers, states = [], {}
     coverage = {"status": "incomplete", "peer_complete": False, "socket": str(socket_path)}
     proof_sessions = sessions if proof_sessions is None else proof_sessions
-    sequence = 0
-
-    async def request(method, params):
-        nonlocal sequence
-        sequence += 1
-        await ws.send_json({"id": sequence, "method": method, "params": params})
-        while True:
-            message = await ws.receive_json()
-            if message.get("id") == sequence and "method" not in message:
-                if "error" in message:
-                    raise ValueError("native session read rejected")
-                return message["result"]
-
-    async def executions_ended(session):
-        queued = await request("thread/queue/list", {"threadId": session, "limit": 1})
-        if (not isinstance(queued, dict) or not isinstance(queued.get("data"), list)
-                or queued["data"] or queued.get("nextCursor") is not None):
-            return False
-        cursor = None
-        for _ in range(100):
-            page = await request("thread/items/list", {"threadId": session, "limit": 20,
-                                                       "sortDirection": "desc", "cursor": cursor})
-            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
-                raise ValueError("native execution coverage is unavailable")
-            for entry in page["data"]:
-                item = entry["item"]
-                if not isinstance(item, dict) or not isinstance(item.get("type"), str):
-                    raise ValueError("native execution identity is unavailable")
-                if item.get("status") == "inProgress":
-                    return False
-                if item.get("type") in {"commandExecution", "dynamicToolCall", "mcpToolCall", "collabAgentToolCall"}:
-                    if item.get("status") not in {"completed", "failed", "declined"}:
-                        return False
-                    if item["type"] == "commandExecution" and item.get("processId") is not None and type(item.get("exitCode")) is not int:
-                        return False
-            cursor = page["nextCursor"]
-            if cursor is None:
-                return True
-            if not isinstance(cursor, str) or not cursor:
-                raise ValueError("native execution continuation is unavailable")
-        return False  # Truncated execution evidence never proves closure.
-
     active_seen = set()
 
     def live(session, thread):
-        peers.append({"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "codex_session"})
+        peers.append({"sessionId": session, "cwd": thread["cwd"], "state": "active", "source": "codex_session",
+                      "home": str(home.resolve()), "native_state": thread.get("status", {}).get("type")})
         states[session] = {"state": "live", "source": "codex_app_server"}
 
     async def inspect(session, *, prove=False):
         thread = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
         if thread.get("id") != session:
             raise ValueError("native session identity mismatch")
+        if isinstance(thread.get("path"), str) and Path(thread["path"]).is_absolute():
+            thread = {**thread, "path": str(Path(thread["path"]).resolve())}
         state = thread.get("status", {}).get("type")
+        source = github_plan_closure.RECEIPTS.get().get(session)
+        recovering = source and (github_plan_closure.action_pending(session) or source.get("resumed_at"))
+        if prove and recovering and Path(source["codex_home"]).resolve() == home.resolve():
+            if state not in {"idle", "notLoaded"}:
+                live(session, thread)
+                return
+            process = await asyncio.to_thread(github_plan_native.verify_source_process, source)
+            with github_plan_closure.pending_observation(session) as acquired:
+                if not acquired:
+                    return
+                proof = await github_plan_native.prove_end(source, request, process=process)
+                # This write stays in the async lease owner, after all worker reads.
+                github_plan_native.resolve_pending(session, proof)
+                peers[:] = [peer for peer in peers if peer["sessionId"] != session]
+                states[session] = {"state": "ended", "source": "native_resolution", "resolved_native": True,
+                                   "ended_at": source.get("ended_at"), "native_state": proof["facts"]["state"],
+                                   "covered_homes": sorted(proof["homes"]),
+                                   "cwd": thread["cwd"], "leased_closure": False}
+            return
         if state in {"active", "systemError"}:
             active_seen.add(session)
         if prove and state == "notLoaded":
@@ -141,7 +122,16 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                 states.pop(session, None)
             else:
                 states[session] = previous
+            if session not in proof_sessions:
+                # The exact authored release owns the handoff. This positive
+                # native observation supplies only physical quiescence and its
+                # lease; it needs neither a second verdict nor an idle receipt.
+                states[session] = {"state": "ended", "source": "codex_app_server",
+                                   "native_state": state, "cwd": thread["cwd"], "leased_closure": False}
+                return
         receipt = github_plan_closure.RECEIPTS.get().get(session)
+        if receipt and not isinstance(receipt.get("closure_evidence"), dict):
+            receipt = None
         if receipt and (receipt["closure_evidence"].get("codex_home") != str(home.resolve())
                         or not isinstance(receipt.get("transcript"), str)
                         or Path(thread.get("path") or "/").resolve() != Path(receipt["transcript"]).resolve()):
@@ -150,7 +140,8 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                       and github_plan_closure.idle_eligible(receipt) and session not in active_seen)
         if idle_proof and prove:
             receipt = await asyncio.to_thread(github_plan_closure.verified_record, session, home)
-            idle_proof = receipt is not None and await executions_ended(session)
+            idle_proof = receipt is not None
+            initial_facts = await github_plan_native.read_thread_facts(request, session) if idle_proof else None
             if not idle_proof:
                 receipt = None
         else:
@@ -168,11 +159,21 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
         # the other daemons' native reads. The source lease spans this sandwich.
         snapshot = github_plan_closure.transcripts if receipt else transcript_snapshot
         before = receipt["closure_evidence"]["transcripts"] if receipt else await asyncio.to_thread(snapshot, session, thread["path"])
-        after = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
-        verified = await asyncio.to_thread(snapshot, session, thread["path"])
-        same = before == verified and after.get("id") == session and after.get("path") == thread.get("path")
+        final_facts = await github_plan_native.read_thread_facts(request, session) if receipt else None
+        after = ({"id": final_facts["id"], "path": final_facts["path"], "status": {"type": final_facts["state"]}}
+                 if receipt else (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"])
+        verified = await asyncio.to_thread(snapshot, session, thread["path"], **({"include_status": True} if receipt else {}))
+        # Status is transient metadata from this same authenticated parse. The
+        # persisted receipt still binds every source byte through its hash.
+        fingerprints = {path: {key: value for key, value in item.items() if key != "status"}
+                        for path, item in verified.items()} if receipt else verified
+        same = before == fingerprints and after.get("id") == session and after.get("path") == thread.get("path")
         final_state = after.get("status", {}).get("type")
         if receipt:
+            source = {"path": thread["path"], "transcripts": verified}
+            github_plan_native.require_quiet(initial_facts, source, {})
+            github_plan_native.require_quiet(final_facts, source, {})
+            same = same and github_plan_native.current_facts(initial_facts) == github_plan_native.current_facts(final_facts)
             current = await asyncio.to_thread(github_plan_closure.receipt_current, receipt)
             valid = same and before == receipt["closure_evidence"]["transcripts"] and current
             ended_at = receipt["ended_at"]
@@ -189,34 +190,30 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
 
     try:
         async with asyncio.timeout(5):
-            async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(socket_path))) as client:
-                async with client.ws_connect("http://localhost/", max_msg_size=1024 * 1024) as ws:
-                    await request("initialize", {"clientInfo": {"name": "codex_skills_claim", "version": "1"},
-                                                 "capabilities": {"experimentalApi": True}})
-                    await ws.send_json({"method": "initialized"})
-                    cursor, loaded = None, set()
-                    for _ in range(10):
-                        page = await request("thread/loaded/list", {"cursor": cursor, "limit": 100})
-                        loaded.update(page["data"])
-                        cursor = page.get("nextCursor")
-                        if not cursor:
-                            break
-                    loaded_ok = not cursor
-                    # Observe every loaded peer before any potentially large
-                    # transcript scan. Released claims need metadata only.
-                    for session in sorted(loaded):
-                        try:
-                            await inspect(session)
-                        except (KeyError, TypeError, ValueError, AttributeError, OSError, ImportError):
-                            loaded_ok = False
-                            peers.append({"sessionId": session, "cwd": "", "state": "unknown", "source": "codex_session"})
-                            states[session] = {"state": "live", "source": "codex_session"}
-                    coverage.update(status="available" if loaded_ok else "incomplete", peer_complete=loaded_ok)
-                    for session in sorted(sessions):
-                        try:
-                            await inspect(session, prove=coverage["peer_complete"])
-                        except (KeyError, TypeError, ValueError, AttributeError, OSError, ImportError):
-                            continue  # No successful observation means unknown, never ended.
+            async with github_plan_native.connection(home) as request:
+                cursor, loaded = None, set()
+                for _ in range(10):
+                    page = await request("thread/loaded/list", {"cursor": cursor, "limit": 100})
+                    loaded.update(page["data"])
+                    cursor = page.get("nextCursor")
+                    if not cursor:
+                        break
+                loaded_ok = not cursor
+                # Observe every loaded peer before any potentially large
+                # transcript scan. Released claims need metadata only.
+                for session in sorted(loaded):
+                    try:
+                        await inspect(session)
+                    except (KeyError, TypeError, ValueError, AttributeError, OSError, ImportError):
+                        loaded_ok = False
+                        peers.append({"sessionId": session, "cwd": "", "state": "unknown", "source": "codex_session"})
+                        states[session] = {"state": "live", "source": "codex_session"}
+                coverage.update(status="available" if loaded_ok else "incomplete", peer_complete=loaded_ok)
+                for session in sorted(sessions):
+                    try:
+                        await inspect(session, prove=coverage["peer_complete"])
+                    except (KeyError, TypeError, ValueError, AttributeError, OSError, ImportError):
+                        continue  # No successful observation means unknown, never ended.
     except aiohttp.ClientConnectorError as error:
         if isinstance(error.os_error, (ConnectionRefusedError, FileNotFoundError)):
             coverage.update(status="unavailable", reason="socket_not_listening")
@@ -278,12 +275,20 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None) -
 
 
 def observe(sessions: set[str], proof_sessions: set[str] | None = None):
-    with github_plan_closure.observation(sessions) as leased:
+    retained = set()
+    with github_plan_closure.observation(sessions, retain=retained) as leased:
         cache_token = github_plan_closure.LOG_CACHE.set(None)
-        receipts = github_plan_closure.candidate_records(leased)
+        receipts = {}
+        for session, row in github_plan_closure.source_records(sessions).items():
+            try:
+                if session in leased or row.get("resumed_at") or github_plan_closure.action_pending(session):
+                    receipts[session] = row
+            except (OSError, ValueError):
+                continue
         token = github_plan_closure.RECEIPTS.set(receipts)
         try:
             peers, states, coverage = _observe(sessions, proof_sessions)
+            github_plan_closure.inherit_observed_leases()
             for session in sessions:
                 try:
                     github_plan_closure.require_canonical_identity(session)
@@ -301,6 +306,9 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
                 if blocked:
                     peers.append({"sessionId": session, "cwd": "/", "state": "active", "source": "native_action"})
                     states[session] = {"state": "live", "source": "native_action"}
+            unreleased = sessions if proof_sessions is None else proof_sessions
+            retained.update(session for session, state in states.items()
+                            if state.get("state") == "ended" and session not in unreleased)
             return peers, states, coverage
         finally:
             github_plan_closure.RECEIPTS.reset(token)
@@ -309,9 +317,18 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
 
 def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
     async def run():
-        return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in codex_homes()), return_exceptions=True)
+        homes = set(codex_homes())
+        # Historical source homes are read through exact retained ownership;
+        # this does not change configured-only resume or idle admission.
+        for row in github_plan_closure.RECEIPTS.get().values():
+            try:
+                if row.get("codex_home") and (row.get("resumed_at") or github_plan_closure.action_pending(row["session_id"])):
+                    homes.add(Path(row["codex_home"]).resolve())
+            except (OSError, ValueError):
+                continue
+        return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in sorted(homes)), return_exceptions=True)
 
-    peers, states = [], {}
+    peers, states, resolutions = [], {}, {}
     process_text = None
     sources = []
     try:
@@ -321,7 +338,9 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
             process_text = process_read.stdout
     except (OSError, subprocess.SubprocessError):
         pass
-    for result in asyncio.run(run()):
+    results = asyncio.run(run())
+    github_plan_closure.inherit_observed_leases()
+    for result in results:
         if isinstance(result, BaseException):
             sources.append({"status": "incomplete", "peer_complete": False, "socket": ""})
             continue
@@ -329,8 +348,14 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
         sources.append(coverage)
         peers.extend(observed)
         for session, outcome in outcomes.items():
+            if outcome.get("resolved_native"):
+                resolutions[session] = outcome
             if states.get(session, {}).get("state") != "live":
                 states[session] = outcome
+    peers = [peer for peer in peers if not (peer.get("native_state") == "idle"
+             and peer.get("home") in resolutions.get(peer["sessionId"], {}).get("covered_homes", []))]
+    for session, outcome in resolutions.items():
+        states[session] = outcome
     for peer in peers:
         states[peer["sessionId"]] = {"state": "live", "source": peer["source"]}
     try:
@@ -351,6 +376,8 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
     process_coverage = "unavailable" if process_text is None else "complete" if process_absence_known(process_text, observed_sockets) else "unidentified_interactive_processes"
     for session, outcome in list(states.items()):
         if outcome.get("state") != "ended" or outcome.get("native_state") != "idle":
+            continue
+        if outcome.get("resolved_native"):
             continue
         entry = github_plan_closure.RECEIPTS.get().get(session)
         valid = peer_complete and process_coverage == "complete" and entry is not None

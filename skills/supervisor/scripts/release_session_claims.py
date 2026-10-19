@@ -1,13 +1,14 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Record verified session closure and release its automation claims. Dry run by default."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import json
@@ -54,6 +55,13 @@ class ConfirmedIssueRefusal(ValueError):
 
 
 def verify_process_exit(entry, *, ended_at=None):
+    def source_record():
+        records = closure.log_rows() if closure.closed_log().exists() else []
+        return next((row for row in records if row.get("session_id") == entry["session_id"]), None)
+    return _verify_process_exit(entry, ended_at, source_record)
+
+
+def _verify_process_exit(entry, ended_at, source_record):
     if not entry.get("_inventory") and (
         type(entry.get("pid")) is not int or entry["pid"] <= 0
         or not isinstance(entry.get("tty"), str) or not entry["tty"]
@@ -68,12 +76,11 @@ def verify_process_exit(entry, *, ended_at=None):
             return False
         # Retain the existing saved-generation identity check. A first or
         # resumed generation instead gets its cutoff from the native pane.
-        records = closure.log_rows() if closure.closed_log().exists() else []
-        source = next((row for row in records if row.get("session_id") == entry["session_id"]), None)
-        if source is not None and not source.get("resumed_at") and source.get("process_exit_verified"):
+        saved = source_record()
+        if saved is not None and not saved.get("resumed_at") and saved.get("process_exit_verified"):
             identity = lambda row: {key: value for key, value in session_record.normalize_ledger_entry(
                 closure.closed_log(), row).items() if not key.startswith("_") and key != "handoff_url"}
-            return identity(source) == identity(entry)
+            return identity(saved) == identity(entry)
         return True
 
     return session_liveness.verify_process_exit(
@@ -81,7 +88,7 @@ def verify_process_exit(entry, *, ended_at=None):
         independent_harness=independent)
 
 
-def verify_closed(entry, supervisor_session, *, ended_at):
+def verify_closed(entry, supervisor_session, *, ended_at, native=None, process=None):
     historical = entry.get("_inventory") is True
     if entry["session_id"] == supervisor_session or (
         not historical and entry.get("supervisor_owned") is not True
@@ -92,14 +99,22 @@ def verify_closed(entry, supervisor_session, *, ended_at):
     cutoff = release.stamp(entry["tty_exited_at"]) if entry.get("tty_exited_at") else ended_at
     if cutoff is not None and ended_at is not None and cutoff > ended_at:
         raise ValueError("native TTY exit cutoff is newer than closure")
-    verify_process_exit(entry, ended_at=cutoff)
-    closure.require_fresh_action_verdict(entry)
+    if process is None:
+        verify_process_exit(entry, ended_at=cutoff)
+    else:
+        import github_plan_native
+        github_plan_native.recheck_source_process(process)
+    if native is None:
+        closure.require_fresh_action_verdict(entry)
+    else:
+        import github_plan_native
+        github_plan_native.require_proof_quiet(native)
     status = session_record.session_status(entry)
     session_liveness.require_safe_status(status)
     return status
 
 
-def validate_closure(entry, supervisor_session):
+def validate_closure(entry, supervisor_session, *, native=None, process=None):
     if entry.get("resumed_at"):
         raise ValueError("closed generation has resumed; record the new launch generation")
     if entry.get("process_exit_verified") is not True:
@@ -109,7 +124,7 @@ def validate_closure(entry, supervisor_session):
     ended = release.stamp(entry["ended_at"])
     if ended > datetime.now(timezone.utc):
         raise ValueError("closure timestamp is in the future")
-    status = verify_closed(entry, supervisor_session, ended_at=ended)
+    status = verify_closed(entry, supervisor_session, ended_at=ended, native=native, process=process)
     if not status["timestamp"] or release.stamp(status["timestamp"]) > ended:
         raise ValueError("transcript resumed after the recorded closure")
     if "verdict_at" in entry and entry["verdict_at"] != status["timestamp"]:
@@ -150,19 +165,68 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
     shared = path.resolve() == closure.closed_log().resolve()
     coordination = closure.ownership(entry["session_id"], create=persist) if shared else nullcontext()
     with coordination:
-        closed = _record_closure(path, entry, supervisor_session, persist=persist)
-        if shared and persist:
-            closure.set_action_pending(entry["session_id"], False)
-        return closed
+        native = None
+        saved = closure.source_records({entry["session_id"]}).get(entry["session_id"]) if shared else None
+        if saved and saved.get("resumed_generation"):
+            generation = saved["resumed_generation"]
+            if any(entry.get(key) != generation.get(key) for key in (
+                    "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")):
+                raise ValueError("finish needs the new launch metadata from codex-session.py status")
+        if shared and entry.get("harness") == "codex" and (closure.action_pending(entry["session_id"])
+                or saved and saved.get("resumed_at") and not saved.get("resumed_generation")):
+            import github_plan_native
+            native = asyncio.run(github_plan_native.prove_end(entry))
+            if persist:
+                github_plan_native.resolve_pending(entry["session_id"], native)
+        return _record_closure(path, entry, supervisor_session, persist=persist, native=native)
 
 
-def _record_closure(path, entry, supervisor_session, *, persist=True):
+def _closure_identity(entry):
+    identity = {key: entry.get(key) for key in (
+        "pid", "tty", "harness", "supervisor_owned", "handoff_url", "transcript", "codex_home",
+        "launch_pid", "launch_generation", "launch_started_at",
+        "tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id")}
+    for key in ("transcript", "codex_home"):
+        if identity[key]:
+            identity[key] = str(Path(identity[key]).expanduser().resolve())
+    if isinstance(identity["tty"], str):
+        identity["tty"] = identity["tty"].removeprefix("/dev/")
+    return identity
+
+
+def _record_closure(path, entry, supervisor_session, *, persist=True, native=None):
     """Observe exit now; never replace an older actual closure time on retry."""
     with closure.store_lock(path, create=persist):
         records = [{k: v for k, v in e.items() if not k.startswith("_")}
                    for e in session_record.load_ledger(path, closed_log=True)] if path.exists() else []
         existing = [r for r in records if r["session_id"] == entry["session_id"]]
         original = [r for r in json.loads(path.read_text()) if r.get("session_id") == entry["session_id"]] if path.exists() else []
+    import github_plan_native
+    saved = session_record.normalize_ledger_entry(path, original[0]) if len(original) == 1 else None
+    if native is not None:
+        process = native["snapshot"]["process"]
+        if saved != process.saved:
+            raise ValueError("source generation changed before recording closure")
+    else:
+        process = github_plan_native._source_process(entry, saved)
+        github_plan_native.recheck_source_process(process)
+    recovered = False
+    if existing and existing[0].get("resumed_at") and not existing[0].get("resumed_generation") and native:
+        # An invalidation is not a launch. Full current native/source proof can
+        # recover an aborted prelaunch without inventing a process generation.
+        later = any(status["status"]["turn_completed_at"] and
+                    release.stamp(status["status"]["turn_completed_at"]) > release.stamp(existing[0]["ended_at"])
+                    for status in native["snapshot"]["transcripts"].values())
+        if later:
+            if _closure_identity(entry) != _closure_identity(existing[0]):
+                raise ValueError("finish needs the new launch metadata from codex-session.py status")
+            entry = {**existing[0], **entry}
+            for key in ("ended_at", "verdict_at", "resumed_at", "closure_evidence"):
+                entry.pop(key, None)
+            existing = []
+        else:
+            existing[0] = {k: v for k, v in existing[0].items() if k != "resumed_at"}
+            recovered = True
     if existing and existing[0].get("resumed_at"):
         resumed = existing[0].get("resumed_generation") or {}
         if not resumed or any(entry.get(k) != resumed.get(k) for k in (
@@ -172,24 +236,29 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
         records = [r for r in records if r["session_id"] != entry["session_id"]]
         existing = []
     if existing:
-        if any(existing[0].get(k) != entry.get(k) for k in (
-            "pid", "tty", "harness", "handoff_url", "supervisor_owned"
-        )) or Path(existing[0]["transcript"]).resolve() != Path(entry["transcript"]).resolve():
+        saved_identity, current_identity = _closure_identity(existing[0]), _closure_identity(entry)
+        if any(saved_identity[key] != current_identity[key] for key in (
+                "pid", "tty", "harness", "handoff_url", "supervisor_owned", "transcript")):
             raise ValueError("closure log identity changed; preserve the original record")
         closed = {**existing[0], **{k: v for k, v in entry.items() if k.startswith("_")}}
-        validate_closure(closed, supervisor_session)
+        validate_closure(closed, supervisor_session, native=native, process=process)
         with closure.store_lock(path):
             current = json.loads(path.read_text())
             if [r for r in current if r.get("session_id") == entry["session_id"]] != original:
                 raise ValueError("source closure changed during verification; preserve the current generation")
+            if recovered and persist:
+                # Preserve the actual original end time. An optional admission
+                # fingerprint can be recomputed later; never restore the stale one.
+                durable = {key: value for key, value in closed.items() if not key.startswith("_")}
+                closure.replace_rows([durable if row.get("session_id") == entry["session_id"] else row for row in current])
         return closed
-    # Only the native dead-pane observation can excuse a new TTY occupant on
-    # first finish. Caller-provided closure/cutoff fields are not observations.
+    # Keep the generation's verified process cutoff even when a later turn
+    # replaces its closure time. Native proof may have outlived the dead pane.
     entry = {k: v for k, v in entry.items() if k != "tty_exited_at"}
-    cutoff = session_liveness.native_exit_cutoff(entry)
+    cutoff = process.cutoff
     if cutoff is not None:
         entry = {**entry, "tty_exited_at": cutoff.isoformat()}
-    status = verify_closed(entry, supervisor_session, ended_at=cutoff)
+    status = session_record.session_status(entry)
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
               "verdict_at": status["timestamp"], "process_exit_verified": True}
     if entry.get("harness") == "codex" and entry.get("codex_home"):
@@ -198,7 +267,7 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
         except (ValueError, OSError, ImportError, subprocess.SubprocessError):
             # Optional admission proof must not stop the existing release route.
             closed["closure_proof_unavailable"] = True
-    validate_closure(closed, supervisor_session)
+    validate_closure(closed, supervisor_session, native=native, process=process)
     if not persist:
         return closed
     # Slow native/process/transcript verification owns only this source. The
