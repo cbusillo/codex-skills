@@ -262,17 +262,32 @@ def inbox_records(inbox: Path) -> tuple[list[dict], dict[str, int]]:
         except (OSError, ValueError):
             counts["malformed"] += 1
             continue
-        if record.get("producerID") != PRODUCER:
-            counts["ignored"] += 1
-        elif (tuple(record) != FIELDS or type(record["schemaVersion"]) is not int
-              or record["schemaVersion"] != 1 or record["harness"] not in ("codex", "claude")
-              or not account_id(record["accountID"], record["harness"]) or record["state"] not in STATES
-              or not all(native_id(record[name]) for name in ("eventID", "sessionID", "runID"))
-              or not moment(record["observedAt"]) or not moment(record["leaseExpiresAt"])):
-            counts["malformed"] += 1
-        else:
+        producer = record.get("producerID")
+        if isinstance(producer, str) and producer != PRODUCER:
+            counts["ignored"] += 1  # Another producer's record; a wrongly typed one is malformed below.
+        elif valid_record(record):
             records.append(record)
+        else:
+            counts["malformed"] += 1
     return records, counts
+
+
+def valid_record(record: dict) -> bool:
+    """Type-check every v1 field before any membership test, so wrong types are malformed, never a crash."""
+    def text(name: str, allowed: set[str] | tuple[str, ...]) -> bool:
+        return isinstance(record[name], str) and record[name] in allowed
+
+    def optional_id(name: str) -> bool:
+        return record[name] is None or native_id(record[name]) is not None
+
+    return (tuple(record) == FIELDS and type(record["schemaVersion"]) is int and record["schemaVersion"] == 1
+            and text("producerID", (PRODUCER,)) and text("harness", ("codex", "claude"))
+            and account_id(record["accountID"], record["harness"]) and text("state", STATES)
+            and all(native_id(record[name]) for name in ("eventID", "sessionID", "runID"))
+            and optional_id("parentSessionID") and optional_id("agentID")
+            and (record["attentionKind"] is None or text("attentionKind", ("approval", "input")))
+            and text("outcomeSource", SOURCES)
+            and moment(record["observedAt"]) is not None and moment(record["leaseExpiresAt"]) is not None)
 
 
 def renewal_verdict(counts: dict) -> str:
@@ -285,18 +300,22 @@ def renewal_report(records: list[dict], now: dt.datetime, window: int, harnesses
     """Count-only proof that live leases were renewed before they lapsed. No IDs leave it."""
     start, lease = now - dt.timedelta(seconds=window), dt.timedelta(seconds=LEASE_SECONDS)
     runs: dict[tuple, list] = {}
+    # The last record before the window, per run: compared at the boundary only, never counted.
+    boundary: dict[tuple, tuple] = {}
     seen, out_of_window = set(), 0
     for record in records:
         observed = moment(record["observedAt"])
-        if not start <= observed <= now:
-            out_of_window += 1
-            continue
-        if record["harness"] not in harnesses or record["eventID"] in seen:
+        inside = start <= observed <= now
+        out_of_window += not inside
+        if observed > now or record["harness"] not in harnesses or record["eventID"] in seen:
             continue
         seen.add(record["eventID"])
         key = (record["harness"], record["accountID"], record["sessionID"], record["runID"])
-        runs.setdefault(key, []).append((observed, record["eventID"], moment(record["leaseExpiresAt"]),
-                                         record["state"] in LIVE))
+        event = (observed, record["eventID"], moment(record["leaseExpiresAt"]), record["state"] in LIVE)
+        if inside:
+            runs.setdefault(key, []).append(event)
+        elif key not in boundary or event[:2] > boundary[key][:2]:
+            boundary[key] = event
     report = {harness: {"runs": 0, "liveRecords": 0, "qualifyingRuns": 0, "lapses": 0, "leaseMismatches": 0,
                         "maxGapSeconds": 0.0, "maxLiveSpanSeconds": 0.0, "expiredOpen": 0}
               for harness in harnesses}
@@ -304,7 +323,7 @@ def renewal_report(records: list[dict], now: dt.datetime, window: int, harnesses
         counts = report[key[0]]
         counts["runs"] += 1
         events.sort(key=lambda event: event[:2])
-        previous = chain_start = None
+        previous, chain_start = boundary.get(key), None
         qualifying = False
         for observed, event, expires, live in events:
             if expires - observed != lease:

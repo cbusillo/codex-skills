@@ -561,11 +561,11 @@ class RenewalCheckTests(unittest.TestCase):
         self.store = ActivityStore(self.code)
         self.now = dt.datetime.now(dt.timezone.utc)
 
-    def renewals(self, start, seconds, *, harness='claude', session=None):
+    def renewals(self, start, seconds, *, harness='claude', session=None, new_run=True):
         """A run renewed every CADENCE seconds for the given span."""
         account, source = (ACCOUNT, 'claude-inventory') if harness == 'claude' else (self.CODEX, 'codex-status')
         session = session or str(uuid.uuid4())
-        records = [self.store.emit(account, harness, session, 'working', source, start=offset == 0,
+        records = [self.store.emit(account, harness, session, 'working', source, start=new_run and offset == 0,
                                    now=start + dt.timedelta(seconds=offset))
                    for offset in range(0, seconds + 1, self.CADENCE)]
         self.assertTrue(all(records))
@@ -580,6 +580,11 @@ class RenewalCheckTests(unittest.TestCase):
     def report(self, harnesses=('claude',)):
         records, _files = inbox_records(self.store.events)
         return renewal_report(records, self.now, RETENTION_SECONDS, harnesses)
+
+    def check_process(self, *arguments):
+        script = Path(__file__).resolve().with_name('observe_agent_activity.py')
+        return subprocess.run([sys.executable, str(script), 'renewal-check', '--state-root', str(self.code), *arguments],
+                              capture_output=True, text=True, timeout=30)
 
     def check(self, *arguments):
         stdout = io.StringIO()
@@ -608,6 +613,60 @@ class RenewalCheckTests(unittest.TestCase):
         code, report = self.check('--harness', 'claude')
         self.assertEqual((code, report['verdict']), (3, 'fail'))
         self.assertEqual(report['harnesses']['claude']['lapses'], 1)
+
+    def boundary_run(self, window, renewal_delay, span):
+        """One live record just before the window, then the same run renewed inside it after renewal_delay."""
+        before = self.now - dt.timedelta(seconds=window + self.CADENCE // 3)
+        first = self.store.emit(ACCOUNT, 'claude', str(uuid.uuid4()), 'working', 'claude-inventory', start=True,
+                                now=before)
+        return self.renewals(before + dt.timedelta(seconds=renewal_delay), span,
+                             session=first['sessionID'], new_run=False)
+
+    def test_a_lapse_across_the_window_start_fails(self):
+        window = 2 * LEASE_SECONDS + 3 * self.CADENCE
+        inside = self.boundary_run(window, LEASE_SECONDS + self.CADENCE // 3, LEASE_SECONDS + self.CADENCE)
+        code, report = self.check('--window', str(window), '--harness', 'claude')
+        self.assertEqual((code, report['verdict']), (3, 'fail'))
+        counts = report['harnesses']['claude']
+        self.assertEqual((counts['runs'], counts['lapses'], counts['liveRecords']), (1, 1, len(inside)))
+
+    def test_a_covered_window_start_is_not_a_lapse_and_does_not_lengthen_the_chain(self):
+        window = 2 * LEASE_SECONDS + 3 * self.CADENCE
+        inside = self.boundary_run(window, self.CADENCE, LEASE_SECONDS)
+        code, report = self.check('--window', str(window), '--harness', 'claude')
+        counts = report['harnesses']['claude']
+        self.assertEqual((code, counts['lapses'], counts['runs'], counts['liveRecords']), (4, 0, 1, len(inside)))
+        # Counting the record before the window would stretch this chain past the lease and qualify it.
+        self.assertEqual((counts['qualifyingRuns'], counts['maxLiveSpanSeconds']), (0, LEASE_SECONDS))
+
+    def test_wrongly_typed_fields_are_malformed_not_a_crash(self):
+        template = self.store.emit(ACCOUNT, 'claude', SESSION, 'working', 'claude-inventory', start=True, now=self.now)
+        (self.store.events / f"codex-skills-{template['eventID']}.json").unlink()
+        changes = [{'state': []}, {'state': {}}, {'state': 5}, {'harness': []}, {'observedAt': 5}, {'eventID': {}},
+                   {'producerID': []}, {'schemaVersion': True}]
+        for change in changes:
+            atomic_json(self.store.events / f'codex-skills-{uuid.uuid4()}.json', {**template, **change})
+        result = self.check_process()
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertNotIn(str(self.code), result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual((report['verdict'], report['files']['malformed']), ('inconclusive', len(changes)))
+
+    def test_duplicate_event_ids_count_once(self):
+        records = self.renewals(self.now - dt.timedelta(seconds=3 * LEASE_SECONDS), 2 * LEASE_SECONDS)
+        atomic_json(self.store.events / f'codex-skills-{uuid.uuid4()}.json', records[-1])
+        counts = self.report()['harnesses']['claude']
+        self.assertEqual((counts['runs'], counts['liveRecords']), (1, len(records)))
+
+    def test_a_future_record_is_out_of_window(self):
+        records = self.renewals(self.now - dt.timedelta(seconds=3 * LEASE_SECONDS), 2 * LEASE_SECONDS)
+        later = self.now + dt.timedelta(seconds=self.CADENCE)
+        self.forge(records[-1], observedAt=timestamp(later),
+                   leaseExpiresAt=timestamp(later + dt.timedelta(seconds=LEASE_SECONDS)))
+        report = self.report()
+        self.assertEqual(report['files']['outOfWindow'], 1)
+        self.assertEqual(report['harnesses']['claude']['liveRecords'], len(records))
 
     def test_empty_inbox_and_short_runs_are_inconclusive(self):
         code, report = self.check()
@@ -651,9 +710,7 @@ class RenewalCheckTests(unittest.TestCase):
         records = self.renewals(self.now - dt.timedelta(seconds=3 * LEASE_SECONDS), 2 * LEASE_SECONDS, session=SESSION)
         (self.store.events / f'codex-skills-{uuid.uuid4()}.json').write_text(SECRET)
         (self.store.events / 'foreign.json').write_text(json.dumps({'note': SECRET}))
-        script = Path(__file__).resolve().with_name('observe_agent_activity.py')
-        result = subprocess.run([sys.executable, str(script), 'renewal-check', '--harness', 'claude',
-                                 '--state-root', str(self.code)], capture_output=True, text=True, timeout=30)
+        result = self.check_process('--harness', 'claude')
         self.assertEqual(result.returncode, 0, result.stderr)
         output = result.stdout + result.stderr
         identities = {SECRET, ACCOUNT, str(self.code)}
