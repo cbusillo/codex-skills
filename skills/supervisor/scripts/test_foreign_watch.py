@@ -219,9 +219,13 @@ class MentionTests(unittest.TestCase):
         reader = Mock()
         reader.get_json.return_value = {
             "id": 99, "user": {"login": "director"}, "created_at": SINCE,
-            "body": f"{foreign_watch.director_mentions.APPROVAL_QUESTION} yes",
+            "body": "Q100 yes",
             "issue_url": "https://api.github.com/repos/director/meta/issues/7"}
-        reader.paged_json.return_value = []
+        reader.paged_json.return_value = [{
+            "id": 98, "user": {"login": "agent[bot]"}, "created_at": "2026-10-08T00:00:00Z",
+            "body": "Owner question: **Q100** — may the watcher search GitHub for mentions "
+                    "of you under your own login, unattended?",
+            "issue_url": "https://api.github.com/repos/director/meta/issues/7"}]
         args = argparse.Namespace(director_login="director", mention_approval=approval)
         get = get or director_get([mention("client/private", 4), mention(REPO, 1)])
         with patch.object(foreign_watch.director_mentions, "director_get", get):

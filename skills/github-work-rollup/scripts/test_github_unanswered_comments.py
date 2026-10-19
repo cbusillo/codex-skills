@@ -1350,7 +1350,11 @@ def outbound_fixture():
         "repos/cbusillo/codex-skills/issues/comments/99": {
             "id": 99, "user": {"login": "cbusillo"}, "created_at": "2026-07-20T00:00:00Z",
             "issue_url": "https://api.github.com/repos/cbusillo/codex-skills/issues/2073",
-            "body": f"{github_unanswered_comments.director_mentions.APPROVAL_QUESTION} yes"},
+            "body": "Q100 yes"},
+        "repos/cbusillo/codex-skills/issues/2073/comments": [{
+            "id": 98, "user": {"login": "fixture-automation"}, "created_at": "2026-07-19T00:00:00Z",
+            "body": "Owner question: **Q100** — may the radar search GitHub for mentions "
+                    "of you under your own login, unattended?"}],
     }
     for number in (1, 2, 33):
         for item in routes[f"repos/outside/project/issues/{number}/comments"]:
@@ -1388,8 +1392,8 @@ def test_outbound_lists_mentions_outside_scope_including_private_and_mention_onl
 
 
 def test_outbound_withdrawn_mention_approval_reports_the_gap(monkeypatch, outbound_fixture, director_search):
-    question = github_unanswered_comments.director_mentions.APPROVAL_QUESTION
-    outbound_fixture["repos/cbusillo/codex-skills/issues/2073/comments"] = [
+    question = "Q100"
+    outbound_fixture["repos/cbusillo/codex-skills/issues/2073/comments"] += [
         {"id": 100, "user": {"login": "cbusillo"}, "created_at": "2026-07-21T00:00:00Z", "body": f"{question} no"}]
     monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
     payload = github_unanswered_comments.collect_payload(outbound_settings())
