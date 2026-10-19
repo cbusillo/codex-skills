@@ -483,6 +483,16 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/drivers/odoo/target-replacement-plan",
         "mode": "read",
     },
+    "workflow-rule-retirement-inspect": {
+        "method": "POST",
+        "path": "/v1/authz-policies/workflow-rule-retirement-plan",
+        "mode": "read",
+    },
+    "workflow-rule-retirement-plan": {
+        "method": "POST",
+        "path": "/v1/authz-policies/workflow-rule-retirement-plan",
+        "mode": "read",
+    },
     "product-repository-identity-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/repository-identity/apply",

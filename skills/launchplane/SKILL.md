@@ -295,6 +295,32 @@ commands:
         "<instance>",
       ]
     purpose: Reads an Odoo lane's replacement plan status, blocker codes and env-key names.
+  - name: launchplane-workflow-rule-retirement-inspect
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "workflow-rule-retirement-inspect",
+        "--payload-file",
+        "<private-file>",
+      ]
+    purpose: Inspects selected workflow authz rules' scope, management and broad flag without changing policy.
+  - name: launchplane-workflow-rule-retirement-plan
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "workflow-rule-retirement-plan",
+        "--payload-file",
+        "<private-file>",
+      ]
+    purpose: Builds an inert plan for retiring selected workflow authz rules; it has no apply mode.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1204,6 +1230,15 @@ verification.
   Blocker, step and warning text, domains, target names and ids, and volume
   values are dropped and listed by path. The service authorizes it as
   `odoo_target_replacement_plan.read` on the lane.
+- `POST /v1/authz-policies/workflow-rule-retirement-plan`: Bounded
+  local-extension read (`workflow-rule-retirement-inspect` /
+  `workflow-rule-retirement-plan --payload-file`) for workflow authz rules you
+  may retire. The private file names the active policy record, revision and
+  digest and up to 50 rule fingerprints. It returns each rule's scope,
+  management and broad flag, plus blockers. The plan adds inert candidate
+  digests. Nothing is written and there is no apply mode. Launchplane does not
+  know which workflows use a rule; review workflow sources first. Read the
+  [helper contract](references/write-action-helper-contract.md#workflow-rule-retirement-inspection).
 - `POST /v1/product-profiles/{product}/owner`: Bounded local-extension path
   that records or clears a product's Client (`product-owner-dry-run` /
   `-apply`, with `--product`, `--github-login` or `--clear`, and `--reason`).
