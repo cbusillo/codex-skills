@@ -66,6 +66,33 @@ def linked_worktree(checkout: Path, linked: Path) -> Path:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_pattern_process_kills_are_refused_without_running_them(self) -> None:
+        for line in (
+            "pkill sleep", "pkill -f 'sleep 10|sleep 15'", "killall sleep",
+            "command /usr/bin/pkill -f watcher", "env MODE=test killall sleep",
+            "bash -lc 'pkill -f watcher'", "sudo pkill -f watcher",
+            "timeout 5 killall sleep", "pgrep sleep | xargs /bin/kill",
+            "ps -axo pid,command | awk '/sleep/ {print $1}' | xargs -r kill -9",
+            "kill $(pgrep -f 'sleep 10')", 'kill "$(pgrep sleep)"',
+            "kill -TERM `pgrep sleep`", "builtin kill $(pgrep sleep)",
+            "kill $(ps -axo pid,command | awk '/sleep/ {print $1}')",
+            "bash <<'EOF'\nkill $(pgrep sleep)\nEOF",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+
+    def test_recorded_pid_kills_and_process_reads_remain_allowed(self) -> None:
+        for line in (
+            "kill 12345", "kill -TERM 12345", "/bin/kill -s TERM 12345",
+            'kill "$task_pid"', 'task_pid=$!; kill "$task_pid"',
+            "pgrep -f 'sleep 10'", "ps -axo pid,command", "kill -l",
+            "git status", "rg 'pkill|killall' skills/",
+            "printf '%s' 'kill $(pgrep sleep)'",
+            "cat <<'EOF'\npkill sleep\nkill $(pgrep sleep)\nEOF",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 0)
+
     def test_global_keyboard_synthesis_is_refused_without_sending_keys(self) -> None:
         apple = 'tell application "System Events" to tell process "Google Chrome"\nkeystroke "/path/proposal.json"\nkey code 36'
         commands = (

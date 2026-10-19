@@ -43,6 +43,26 @@ commands:
     resource_path: scripts/repo_cleanup.py
     example_argv: ["uv", "run", "work-closeout/scripts/repo_cleanup.py", "forks", "--owner", "OWNER"]
     purpose: Reports the cleanup policy's keep, archive, or delete disposition for each fork without changing any repository.
+policy:
+  command_policies:
+    - id: reject-pkill
+      match:
+        argv_prefix: ["pkill"]
+      action: reject
+      message: &process_stop_route Pattern kills can stop other sessions on a shared host. Stop your own background task through the harness's task stop (TaskStop or Codex's task stop), or use kill <pid> with the exact PID you recorded when you started it.
+    - id: reject-killall
+      match:
+        argv_prefix: ["killall"]
+      action: reject
+      message: *process_stop_route
+    - id: reject-pattern-kill-equivalents
+      match:
+        shell_regex: >-
+          (?x)(?:(?:\S*/)?kill\s[\s\S]*(?:\$(?:\(|['"]?(?:\s|$))|`)
+          |(?:\S*/)?xargs\s[\s\S]*\b(?:\S*/)?kill(?:\s|$)
+          |(?:\S*/)?(?:sudo|timeout|xargs)\s[\s\S]*\b(?:pkill|killall)(?:\s|$))
+      action: reject
+      message: *process_stop_route
 ---
 
 # Work Closeout
@@ -201,6 +221,7 @@ preserved, or intentionally left in place.
    the issue/plan/docs state or report safe-to-exit as conditional/no with the
    mismatch named.
 6. Classify this task's artifacts under the shared repository cleanup policy.
+   For processes, follow this skill's command policies: use the harness's task stop for your own task, or kill only an exact PID recorded when you started it; never kill by pattern.
    Clean only task-owned disposable output whose purpose is complete: transient logs,
    screenshots, temp scripts, generated scratch files, generated caches, stopped
    test containers, or other consumed temporary files.
