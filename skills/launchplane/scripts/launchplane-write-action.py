@@ -85,6 +85,8 @@ READ_ONLY_OPERATIONS = {
     "product-promotion-status-read",
     "workflow-rule-retirement-inspect",
     "workflow-rule-retirement-plan",
+    "runtime-setting-removal-dry-run",
+    "runtime-setting-removal-readback",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -10231,6 +10233,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_private_ingress_parser(subparsers)
     from launchplane_workflow_rule_retirement import add_parser as add_workflow_rule_retirement_parser
     add_workflow_rule_retirement_parser(subparsers)
+    from launchplane_runtime_setting_removal import add_parser as add_runtime_setting_removal_parser
+    add_runtime_setting_removal_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -11093,6 +11097,11 @@ def main(argv: list[str]) -> int:
         )
         if args.command in workflow_rule_retirement_commands:
             return execute_workflow_rule_retirement(sys.modules[__name__], args)
+        from launchplane_runtime_setting_removal import (
+            COMMANDS as runtime_setting_removal_commands, execute as execute_runtime_setting_removal,
+        )
+        if args.command in runtime_setting_removal_commands:
+            return execute_runtime_setting_removal(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
             instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""

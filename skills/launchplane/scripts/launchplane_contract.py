@@ -493,6 +493,16 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/authz-policies/workflow-rule-retirement-plan",
         "mode": "read",
     },
+    "runtime-setting-removal-dry-run": {
+        "method": "POST",
+        "path": "/v1/admin/runtime-settings/removal",
+        "mode": "read",
+    },
+    "runtime-setting-removal-readback": {
+        "method": "POST",
+        "path": "/v1/admin/runtime-settings/removal",
+        "mode": "read",
+    },
     "product-repository-identity-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/repository-identity/apply",

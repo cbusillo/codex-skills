@@ -1927,6 +1927,69 @@ be absent), or any `dependency_verification` other than
 returns `unavailable` with the error code `client_timeout`. The service
 needs service-wide policy read authority to show full scopes.
 
+## Runtime-setting removal review
+
+`runtime-setting-removal-dry-run` and `runtime-setting-removal-readback` are
+bounded local extensions of `POST /v1/admin/runtime-settings/removal`. They
+let the Director agent review removing stored plain runtime settings and read
+back the result. There is no apply command. Apply belongs to the signed-in
+admin in Launchplane, and a dry-run digest does not authorize it.
+
+Inputs are flags, not a file: `--product`, `--scope` (`global`, `context` or
+`instance`), `--context`, `--instance`, one `--key` per stored setting name,
+and `--reason`. Readback also needs `--review-id` and `--plan-sha256`. Global
+scope needs product `launchplane` and no context or instance. Context scope
+needs a context and no instance. Instance scope needs both. Keys must be
+unique printable setting names, not token-shaped, at most 256. The reason is
+required, at most 1,000 characters, and sent to the service but never printed.
+The helper refuses a bad request before any call. Neither mode sends an
+idempotency key.
+
+The echoed request shows the mode, product, scope, context, instance, keys,
+`payload_source: operator_argument`, and on readback the review id. It never
+shows the reason or the digest.
+
+A dry run saves a private service-owned review, including the original record
+for rollback, and returns a fresh `review_id` and `plan_sha256` on every call.
+The result keeps the scope fields, `removed_keys`, `surviving_keys` (capped at
+500, with `surviving_keys_truncated`), `unprintable_survivor_count`,
+`surviving_value_count`, `retirement_intent_count`, `record_deleted`,
+`requires_compatible_readers_and_rollback`, `record_sha256`,
+`authority_sha256`, `plan_sha256`, `review_id`, `updated_at`, `applied`
+(always `false`) and `apply_supported` (always `false`). Readback adds
+`readback_matches` and `current_record_present`. An odd surviving name or a
+malformed `updated_at` is dropped and listed in `dropped_field_paths`, as are
+unlisted fields.
+
+The helper checks the response against the request. A different product,
+scope, context or instance, removed keys that differ from the requested keys,
+`applied` other than `false`, any apply-only field (`applied_at`,
+`audit_review_id`, `replayed`), a malformed digest, a `review_id` other than
+`runtime-removal-` plus `plan_sha256`, a mistyped flag or count, a
+`surviving_value_count` below the number of surviving names, readback fields
+on a dry run or missing ones on readback, or a token-shaped surviving name
+returns `invalid`. On readback the review id and digest must also equal the
+ones sent.
+
+Readback must reuse the dry run's exact keys, reason, review id and digest;
+the service compares the saved review's intent with the request.
+`readback_matches: false` means drift or the removal is not applied yet. It
+is not success.
+
+`requires_compatible_readers_and_rollback: true` means the removal takes the
+last stored value from a record that keeps provider-retirement intent, so the
+record survives with no values. Before any admin apply, deploy readers that
+accept such records everywhere and keep a rollback build with that support.
+The flag reports the requirement; it does not attest deployment or approve it.
+
+A 409 `runtime_setting_removal_unverified` returns `stale`: refresh the
+names-only runtime-settings read and run a fresh dry run, or for readback
+reuse the dry run's exact keys, reason, review id and digest. A 403
+`authorization_denied` returns `denied`, a 401 `unauthorized`, a 503
+`database_storage_required` `unavailable`, and a 400 `invalid_request`, each
+with its trace. A client timeout is `unavailable` with the error code
+`client_timeout`.
+
 ## Policy Proposals
 
 `privileged-policy-propose --payload-file <private-envelope>` is a bounded local
