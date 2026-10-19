@@ -39,6 +39,7 @@ class ReceiptFixture:
         self.mutations = []
         self.rpc_results = {}
         self.rpc_requests = []
+        self.home_requests = []
         self.parallel = False
         self.queue_items = []
         self.home_queues = {}
@@ -96,10 +97,11 @@ class ReceiptFixture:
                         return
                     method = request["method"]
                     self.rpc_requests.append(method)
+                    self.home_requests.append((str(native_home), method))
                     if method == "initialized": return
                     if method == "initialize": result = self.rpc_results.get(method, {"codexHome": str(native_home)})
-                    elif method in self.rpc_results:
-                        reply = self.rpc_results[method]
+                    elif method in self.rpc_results or (str(native_home), method) in self.rpc_results:
+                        reply = self.rpc_results.get((str(native_home), method), self.rpc_results.get(method))
                         result = reply(request) if callable(reply) else reply
                         if inspect.isawaitable(result):
                             result = await result
@@ -172,11 +174,13 @@ class ReceiptFixture:
             raise RuntimeError("fixture daemon failed") from self.failure
         return self
 
-    def add_home(self, home):
+    def add_home(self, home, *, copy_transcript=True):
         home = home.resolve()
         copy = home / "sessions" / self.transcript.name
-        copy.parent.mkdir(parents=True)
-        copy.write_bytes(self.transcript.read_bytes())
+        home.mkdir(parents=True)
+        if copy_transcript:
+            copy.parent.mkdir()
+            copy.write_bytes(self.transcript.read_bytes())
         endpoint = CLOSURE.daemon_endpoint(home)
         endpoint.parent.mkdir()
         self.socket_homes[str(endpoint)] = home
@@ -211,6 +215,24 @@ class ReceiptFixture:
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
+    def test_owned_recovery_ignores_absent_thread_in_unassociated_daemon(self):
+        with ReceiptFixture() as f:
+            other = f.root / "unassociated"
+            f.add_home(other, copy_transcript=False)
+            f.rpc_results[(str(other), "thread/loaded/list")] = {"data": [], "nextCursor": None}
+            f.rpc_results[(str(other), "thread/read")] = ValueError("thread not found")
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home): pass
+            f.native_state = "notLoaded"
+            before = CLOSURE.source_records({f.session})[f.session]
+            with CLOSURE.admission():
+                _, states, coverage = f.observe()
+                self.assertTrue(coverage["peer_complete"])
+                self.assertEqual(states[f.session]["state"], "ended")
+            self.assertFalse(list(other.rglob("*.jsonl")))
+            self.assertIn((str(other), "thread/read"), f.home_requests)
+            self.assertFalse(CLOSURE.action_pending(f.session))
+            self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+
     def test_ordinary_observation_authenticates_initialize_home_despite_shared_transcripts(self):
         for mismatch in (False, True):
             with self.subTest(mismatch=mismatch), ReceiptFixture() as f:
@@ -321,6 +343,68 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                     self.assertNotEqual(f.observe()[1].get(f.session, {}).get("state"), "ended")
                     self.assertTrue(pool.submit(available, f.session).result(2))
                     self.assertFalse(pool.submit(available, "preowned").result(2))
+
+    def test_observation_borrows_only_the_live_direct_guard_lifetime(self):
+        with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
+            f.native_state = "notLoaded"
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home): pass
+            held, release = threading.Event(), threading.Event()
+            def foreign_owner():
+                with CLOSURE.ownership(f.session) as acquired:
+                    held.set()
+                    release.wait(3)
+                    return acquired
+            with CLOSURE.admission():
+                with CLOSURE.ownership(f.session):
+                    self.assertEqual(f.observe()[1][f.session]["state"], "ended")
+                    self.assertEqual(f.observe()[1][f.session]["state"], "ended")
+                future = pool.submit(foreign_owner)
+                try:
+                    self.assertTrue(held.wait(2))
+                    self.assertEqual(f.observe()[1][f.session]["state"], "live")
+                finally:
+                    release.set()
+                self.assertTrue(future.result(2))
+
+    def test_recovering_moved_account_observes_original_unconfigured_daemon(self):
+        with ReceiptFixture() as f:
+            resumed_home = f.root / "resumed-account"
+            resumed_transcript = f.add_home(resumed_home)
+            metadata = {"codex_home": str(resumed_home), "launch_pid": 456,
+                        "launch_generation": "moved-account", "launch_started_at": f.entry["launch_started_at"]}
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=resumed_home):
+                CLOSURE.resumed_launch(f.session, metadata, str(resumed_transcript), "resumed-tty")
+            before = CLOSURE.source_records({f.session})[f.session]
+            f.native_state = "notLoaded"
+            f.commands = "789 codex app-server --listen unix://" + str(CLOSURE.daemon_endpoint(f.home))
+            with patch.object(SESSIONS, "codex_homes", return_value=[resumed_home]), CLOSURE.admission():
+                for _ in range(2):
+                    _, states, coverage = f.observe()
+                    self.assertEqual(coverage["process_coverage"], "complete")
+                    self.assertEqual(coverage["source_count"], 2)
+                    self.assertEqual(states[f.session]["state"], "ended")
+            self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+
+    def test_bad_recovery_home_does_not_hide_the_other_known_home(self):
+        for broken in ("original", "generation"):
+            with self.subTest(broken=broken), ReceiptFixture() as f:
+                resumed_home = f.root / "resumed-account"
+                resumed_transcript = f.add_home(resumed_home)
+                metadata = {"codex_home": str(resumed_home), "launch_pid": 456,
+                            "launch_generation": "moved-account", "launch_started_at": f.entry["launch_started_at"]}
+                with CLOSURE.resume_guard(f.session, method="thread/resume", home=resumed_home):
+                    CLOSURE.resumed_launch(f.session, metadata, str(resumed_transcript), "resumed-tty")
+                rows = CLOSURE.log_rows()
+                if broken == "original": rows[0]["codex_home"] = ["invalid"]
+                else: rows[0]["resumed_generation"]["codex_home"] = ["invalid"]
+                CLOSURE.replace_rows(rows)
+                good_home = resumed_home if broken == "original" else f.home
+                f.native_state = "active"
+                with patch.object(SESSIONS, "codex_homes", return_value=[]):
+                    peers, states, _ = f.observe()
+                self.assertTrue(any(peer.get("home") == str(good_home) for peer in peers))
+                self.assertEqual(states[f.session]["state"], "live")
+                self.assertTrue(CLOSURE.action_pending(f.session))
 
     def test_short_mutation_contention_waits_without_failing_the_second_launch(self):
         import fcntl

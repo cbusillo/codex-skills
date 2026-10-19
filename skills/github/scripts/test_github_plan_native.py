@@ -1253,10 +1253,19 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_live_pending_source_never_scans_transcripts_under_its_action_lease(self):
         import uuid
-        with ReceiptFixture(str(uuid.uuid4())) as f:
+        with ReceiptFixture(str(uuid.uuid4())) as f, ThreadPoolExecutor(max_workers=1) as pool:
             with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
             f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex")]
-            with patch.object(CLOSURE, "transcripts", side_effect=AssertionError("live source must not be scanned")) as scan:
+            actual = f.release._verify_process_exit
+            def available():
+                try:
+                    with CLOSURE.ownership(f.session): return True
+                except CLOSURE.LeaseBusy: return False
+            def process(*args):
+                self.assertTrue(pool.submit(available).result(2))
+                return actual(*args)
+            with patch.object(f.release, "_verify_process_exit", side_effect=process), \
+                    patch.object(CLOSURE, "transcripts", side_effect=AssertionError("live source must not be scanned")) as scan:
                 _, states, _ = f.observe()
             scan.assert_not_called()
             self.assertNotEqual(states.get(f.session, {}).get("state"), "ended")

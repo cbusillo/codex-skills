@@ -590,12 +590,13 @@ def discussion_evidence(
 
 def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
     from github_plan_sessions import observe
+    from github_plan_release import _released_source_contexts
     ids = {r["session"] for c in comments for r in records(c.get("body") or "")}
     released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
     proof_ids = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
     # Ordinary unloaded end proofs exclude released claims. Their exact release
     # is instead a prerequisite for the observer's leased idle-closure proof.
-    peers, states, coverage = observe(ids, proof_ids)
+    peers, states, coverage = observe(ids, proof_ids, _source_contexts=_released_source_contexts(comments))
     return {**inventory, "sessions": [*inventory["sessions"], *peers], "session_states": states,
             "session_coverage": {**inventory.get("session_coverage", {}), "codex_claims": {
                 **coverage,

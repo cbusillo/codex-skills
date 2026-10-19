@@ -291,9 +291,14 @@ class _SourceProcess(NamedTuple):
     saved: dict | None
     effective: dict
     cutoff: datetime | None
+    context: object = None
 
 
-def _source_process(entry, saved):
+class _SourceEndMismatch(ValueError):
+    """This verified End cannot cover the selected generation's actual facts."""
+
+
+def _source_process(entry, saved, context=None):
     """Select one trusted generation/cutoff; the owning route supplies its saved row."""
     from github_plan_sessions import process_liveness
     from github_plan_release import stamp
@@ -301,6 +306,21 @@ def _source_process(entry, saved):
     generation = source.get("resumed_generation")
     if generation is not None and (not isinstance(generation, dict) or not generation):
         raise ValueError("native resumed generation is unavailable")
+    if context is not None:
+        if (saved is None or source.get("session_id") != context.session or source.get("harness") != "codex"
+                or not isinstance(generation, dict)
+                or any(not generation.get(key) for key in (
+                    "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home", "transcript"))
+                or any(not isinstance(generation.get(key), str) or not generation[key].strip() for key in (
+                    "launch_generation", "launch_started_at", "tty", "codex_home", "transcript"))
+                or any(type(generation.get(key)) is not int or generation[key] <= 0 for key in ("pid", "launch_pid"))
+                or generation["pid"] != generation["launch_pid"]
+                or not source.get("resumed_at")
+                or stamp(generation["launch_started_at"]) > stamp(source["resumed_at"])):
+            raise ValueError("canonical release does not cover the retained native generation")
+        if (stamp(generation["launch_started_at"]) > context.ended_at
+                or stamp(source["resumed_at"]) > context.ended_at):
+            raise _SourceEndMismatch("canonical release predates the retained native generation")
     effective = {**source, **(generation or {})}
     effective.pop("tty_exited_at", None)
     effective.pop("_tty_owner", None)
@@ -337,7 +357,14 @@ def _source_process(entry, saved):
                 cutoff = owner[1]
         if cutoff is not None:
             effective["tty_exited_at"] = cutoff.isoformat()
-    return _SourceProcess(source, saved, effective, cutoff)
+    # A canonical closed-session receipt bounds this exact saved generation.
+    # Keep it separate from caller hints and from persisted terminal metadata.
+    if context is not None:
+        if cutoff is not None and cutoff > context.ended_at:
+            raise _SourceEndMismatch("known source exit is newer than the canonical closed-session evidence")
+        if cutoff is None:
+            cutoff = context.ended_at
+    return _SourceProcess(source, saved, effective, cutoff, context)
 
 
 def recheck_source_process(process):
@@ -348,9 +375,10 @@ def recheck_source_process(process):
     release_session_claims._verify_process_exit(process.effective, process.cutoff, lambda: process.saved)
 
 
-def verify_source_process(entry):
+def verify_source_process(entry, *, _context=None):
     """Cheap shared process proof; caller timestamps never supply an exit cutoff."""
-    process = _source_process(entry, closure.source_records({entry["session_id"]}).get(entry["session_id"]))
+    saved = closure.source_records({entry["session_id"]}).get(entry["session_id"])
+    process = _source_process(entry, saved, _context)
     recheck_source_process(process)
     return process
 
@@ -371,15 +399,14 @@ def source_snapshot(entry, process=None):
         if closure.source_records({entry["session_id"]}).get(entry["session_id"]) != process.saved:
             raise ValueError("source generation changed during native proof")
         recheck_source_process(process)
-    source, saved, effective, _cutoff = process
+    source, saved, effective, _cutoff, context = process
     session = entry["session_id"]
-    # A minimal resume row is identity metadata, not ownership. An explicitly
-    # owned caller may supply its original launch provenance; observation cannot.
-    if source.get("harness") != "codex" or source.get("supervisor_owned") is not True:
+    # Minimal resume metadata needs canonical closed-source authority; it never
+    # acquires original launch ownership fields from the observer.
+    if source.get("harness") != "codex" or (source.get("supervisor_owned") is not True and context is None):
         raise ValueError("native end proof requires the original owned source identity")
     generation = source.get("resumed_generation")
     home = Path(effective["codex_home"]).expanduser().resolve(strict=True)
-    original_home = Path(source["codex_home"]).expanduser().resolve(strict=True)
     primary = Path(effective["transcript"]).resolve(strict=True)
     if generation is None and not any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
         raise ValueError("native source home and transcript disagree")
@@ -387,8 +414,18 @@ def source_snapshot(entry, process=None):
     if home not in configured and saved is None:
         raise ValueError("unconfigured native source lacks retained launch identity")
     scope = closure.action_homes(closure.lease_state(session))
-    homes = {home, original_home, *(Path(value) for value in scope["known"])}
+    homes = {home, *(Path(value) for value in scope["known"])}
+    if source.get("codex_home") is not None:
+        homes.add(Path(source["codex_home"]).expanduser().resolve(strict=True))
     snapshots = closure.transcripts(session, str(primary), include_status=True, additional_homes=homes)
+    if context is not None:
+        from github_plan_release import stamp
+        for snapshot in snapshots.values():
+            status = snapshot["status"]
+            # Delivery timestamps are not actual source activity (#2325).
+            if any(status.get(key) and stamp(status[key]) > context.ended_at
+                   for key in ("turn_started_at", "turn_completed_at", "message_at")):
+                raise _SourceEndMismatch("source actual turn is newer than the canonical closed-session evidence")
     paths = _authenticated_paths(snapshots, homes | configured)
     # Relevant authenticated copies remain current-work coverage even if an old
     # buggy finish already cleared the marker that originally touched that home.
@@ -486,7 +523,12 @@ async def prove_end(entry, request=None, *, process=None):
             final[home] = facts
         # The last native persistence read can commit buffered events. Read the
         # canonical source after that fence, never accept an earlier snapshot.
-        after = await asyncio.to_thread(source_snapshot, entry, before["process"])
+        try:
+            after = await asyncio.to_thread(source_snapshot, entry, before["process"])
+        except _SourceEndMismatch as error:
+            # Qualification was already complete before the RPC sandwich.
+            # New activity during it is a changed source, not another candidate.
+            raise ValueError("native source changed during end proof") from error
         for home, facts in final.items():
             require_quiet(facts, local_snapshot(after, facts, home), home_action(action, home))
         if before != after:

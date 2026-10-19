@@ -989,6 +989,22 @@ An absent or non-listening socket is unavailable, not an active peer. Incomplete
 handoff coverage is scoped to retained branches still present locally/remotely;
 the refusal names those branches and the source session for coordination.
 
+A confirmed canonical Supervisor or direction release can also identify a
+minimal saved resume generation. The helper binds its actual launch identity,
+home and transcript to the verified source and closure time, then checks all
+relevant native homes and physical processes. It rereads the canonical release
+authority before clearing a pending action; it adds no ownership fields to the
+saved row. Each claim readback first reads its existing native source family and
+retained PR discussions once. A verified End for the same native session can
+support physical completion across those records; each record still needs its
+own exact ownership release. The authority read after native verification stays
+fresh. Pending, legacy, worker-only and termination releases cannot supply
+this alternative. A recovering generation still needs its native proof after
+the pending marker clears and on every claim readback; another account's
+unloaded thread cannot replace a failed proof. Source activity is measured by
+actual turns, so a passive delivery alone does not require a new final verdict.
+The same-record no-PR resume route below keeps its original branch exception.
+
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;
 the result names them in `retained_artifacts` and leaves them intact. Positive
