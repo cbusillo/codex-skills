@@ -211,6 +211,11 @@ def observation(sessions: set[str], *, retain: set[str] | None = None):
             LOG_CACHE.reset(token)
         for session in sorted(sessions):
             try:
+                if session in (_LEASES.get() or set()):
+                    # Borrow only the currently live guard. Its owner controls
+                    # its lifetime; admission must not retain fictitious holds.
+                    acquired.add(session)
+                    continue
                 if session in held:
                     acquired.add(session)
                     continue

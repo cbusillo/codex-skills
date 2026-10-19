@@ -610,6 +610,9 @@ class ReleaseTests(ReleaseHarness):
                 released = self.f.comments[-1]
                 receipt = release.receipt_for(released)
                 self.assertEqual(receipt["termination"]["retained_artifacts"], self.termination_record["retained_artifacts"])
+                canonical = release.verified_comments(self.f.comments, lambda *_: self.evidence)
+                self.assertTrue(any(release.receipt_for(c) for c in canonical))
+                self.assertEqual(release._released_source_contexts(canonical), ())
                 self.assertIn(self.termination_record["retained_artifacts"][0]["worktree"], released["body"])
                 self.successor()
                 artifact = self.termination_record["retained_artifacts"][0]
@@ -1454,6 +1457,9 @@ class LegacyReleaseTests(ReleaseHarness):
                 self.assertEqual([c['id'] for c in conflicts], [other['id']])
                 receipt = release.receipt_for(self.f.comments[-1])
                 self.assertEqual(receipt['source']['legacy_reason'], self.args.legacy_reason)
+                canonical = release.verified_comments(self.f.comments, lambda *_: self.evidence)
+                self.assertTrue(any(release.receipt_for(c) for c in canonical))
+                self.assertEqual(release._released_source_contexts(canonical), ())
                 # An ordinary successor needs no fabricated resume session.
                 self.f.comments.pop(-2)
                 with patch.object(self.f, "read_api", side_effect=self.api): self.f.run_claim()

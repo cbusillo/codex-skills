@@ -2124,6 +2124,17 @@ def current_wait(issue: dict[str, Any], comments: list[dict[str, Any]], repo: st
     return github_plan_wait.current(issue, comments, wait_authors(repo))
 
 
+def _claim_release_evidence(evidence_repo, _number, evidence_id):
+    try:
+        _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}",
+                               bucket="rest_core", failed_step="claim_release_evidence")
+        return evidence
+    except PlanError as error:
+        if plan_error_status(error) not in {403, 404}:
+            raise
+        return None
+
+
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
     if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
@@ -2133,16 +2144,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
         f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
         query={}, bucket="rest_core", step_prefix="claim_comments",
     )
-    def release_evidence(evidence_repo, _number, evidence_id):
-        try:
-            _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}",
-                                   bucket="rest_core", failed_step="claim_release_evidence")
-            return evidence
-        except PlanError as error:
-            if plan_error_status(error) not in {403, 404}:
-                raise
-            return None
-    comments = github_plan_release.verified_comments(comments, release_evidence)
+    comments = github_plan_release.verified_comments(comments, _claim_release_evidence)
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
     status = sections.get("Current Status", "")
     if "pull_request" in issue:
@@ -2485,10 +2487,26 @@ def _claim_once(args: argparse.Namespace) -> None:
         retained_ended_sources.update(session for session in sessions if session != claim["session"]
             and observed.get("session_states", {}).get(session, {}).get("state") == "ended")
 
+    def observe_claim_sources(source_inventory, source_comments, owners):
+        import github_plan_sessions
+        def readback(context):
+            owner = next((item for item in owners if any(c.get("id") == context.source_id for c in item[2])), None)
+            if owner is None:
+                raise PlanError("Released source has no canonical ownership record")
+            owner_repo, owner_number, _ = owner
+            current_record = owner_repo.casefold() == issue_repo.casefold() and owner_number == number
+            _, _, fresh, _ = claim_snapshot(str(owner_number), owner_repo, allow_closed=not current_record)
+            if context not in github_plan_release._released_source_contexts(fresh):
+                raise ClassifiedPlanError("claim_conflict", "Released source authority changed during native verification",
+                    payload={"competing_evidence": [{"source": "released_source_changed", "id": context.source_id,
+                                                      "session": context.session}]})
+        with github_plan_sessions._source_readback(readback):
+            return github_plan_claim.observe_sessions(source_inventory, source_comments)
+
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
         nonlocal inventory, ended_owners
-        inventory = github_plan_claim.observe_sessions(
-            github_plan_claim.local_inventory(target_repo, number), current_comments)
+        inventory = observe_claim_sources(github_plan_claim.local_inventory(target_repo, number), current_comments,
+                                          [(issue_repo, number, current_comments)])
         ended_owners = github_plan_claim.ended_ownership(current_comments, inventory)
         retain_released_sources((entry["session"] for entry in ended_owners), inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
@@ -2497,6 +2515,12 @@ def _claim_once(args: argparse.Namespace) -> None:
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
             ended_claims={entry["claim_id"] for entry in ended_owners})
+        source_sessions = {record["session"] for c in current_comments
+                           for record in github_plan_claim.records(c.get("body") or "")}
+        conflicts.extend({"source": peer.get("source", "native_session"), "session": peer["sessionId"],
+                          "certainty": "visible_in_native_inventory"}
+                         for peer in inventory["sessions"]
+                         if peer.get("sessionId") in source_sessions and peer.get("sessionId") != claim["session"])
         if inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
             conflicts.extend({"source": "native_session_inventory", "branch": entry["branch"], "certainty": "incomplete"}
                              for entry in ended_owners if entry["branch"] in branches)
@@ -2555,7 +2579,8 @@ def _claim_once(args: argparse.Namespace) -> None:
     ) -> None:
         peer_records = github_plan_claim.records(peer_status) + [
             record for c in peer_comments for record in github_plan_claim.records(c.get("body") or "")]
-        peer_inventory: dict[str, Any] = github_plan_claim.observe_sessions(source_inventory, peer_comments)
+        peer_inventory: dict[str, Any] = observe_claim_sources(source_inventory, peer_comments,
+                                                             [(peer_repo, peer_number, peer_comments)])
         # The requester can occupy a released source worktree. Exclude only its
         # native identity, including observations added by observe_sessions;
         # foreign sessions and unreleased discussion ownership still compete.
@@ -2777,8 +2802,10 @@ def _claim_once(args: argparse.Namespace) -> None:
         session_owners = {record["session"]: (source_comments, issue_repo, source_number)
                           for comment in source_comments for record in github_plan_claim.records(comment.get("body") or "")}
         target_session_comments = list(source_comments)
+        context_owners = [(issue_repo, source_number, source_comments)]
         if source_number != number:
             target_session_comments.extend(current_comments)
+            context_owners.append((issue_repo, number, current_comments))
         for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
@@ -2794,6 +2821,11 @@ def _claim_once(args: argparse.Namespace) -> None:
                 f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
                 bucket="rest_core", step_prefix="refresh_comments",
             )
+            target_comments = github_plan_release.verified_comments(target_comments, _claim_release_evidence)
+            context_owners.append((target_repo, pull["number"], target_comments))
+            for comment in target_comments:
+                for record in github_plan_claim.records(comment.get("body") or ""):
+                    session_owners.setdefault(record["session"], (target_comments, target_repo, pull["number"]))
             target_session_comments.extend(target_comments)
             # PR status may name the canonical issue being claimed. Keep its
             # holder prose conservative rather than applying issue exclusions.
@@ -2815,8 +2847,8 @@ def _claim_once(args: argparse.Namespace) -> None:
             if retained_waits is not None and observed_waits != retained_waits:
                 raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
             retained_waits = observed_waits
-        target_inventory = github_plan_claim.observe_sessions(
-            github_plan_claim.local_inventory(target_repo, target_number), target_session_comments)
+        target_inventory = observe_claim_sources(
+            github_plan_claim.local_inventory(target_repo, target_number), target_session_comments, context_owners)
         source_ended = github_plan_claim.ended_ownership(source_comments, target_inventory)
         if source_number != number:
             # The parent's wait remains there; only its ownership is inherited.
@@ -2838,7 +2870,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         live_sources = [{"source": "source_session", "session": peer["sessionId"],
                          "certainty": "visible_in_native_inventory"}
                         for peer in target_inventory["sessions"]
-                        if peer.get("sessionId") in released_target_sessions | {source_session}
+                        if peer.get("sessionId") in session_owners.keys() | {source_session}
                         and peer.get("sessionId") != claim["session"]]
         if live_sources:
             owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]

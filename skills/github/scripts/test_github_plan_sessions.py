@@ -322,6 +322,28 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                     self.assertTrue(pool.submit(available, f.session).result(2))
                     self.assertFalse(pool.submit(available, "preowned").result(2))
 
+    def test_observation_borrows_only_the_live_direct_guard_lifetime(self):
+        with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
+            f.native_state = "notLoaded"
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home): pass
+            held, release = threading.Event(), threading.Event()
+            def foreign_owner():
+                with CLOSURE.ownership(f.session) as acquired:
+                    held.set()
+                    release.wait(3)
+                    return acquired
+            with CLOSURE.admission():
+                with CLOSURE.ownership(f.session):
+                    self.assertEqual(f.observe()[1][f.session]["state"], "ended")
+                    self.assertEqual(f.observe()[1][f.session]["state"], "ended")
+                future = pool.submit(foreign_owner)
+                try:
+                    self.assertTrue(held.wait(2))
+                    self.assertEqual(f.observe()[1][f.session]["state"], "live")
+                finally:
+                    release.set()
+                self.assertTrue(future.result(2))
+
     def test_short_mutation_contention_waits_without_failing_the_second_launch(self):
         import fcntl
         with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
