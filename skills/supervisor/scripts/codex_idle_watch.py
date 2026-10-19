@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Emit turn-end notices for explicit Codex sessions; notices are not completion."""
 

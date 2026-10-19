@@ -327,7 +327,7 @@ class NativeQueueTests(unittest.TestCase):
                 f.release.validate_closure(persisted, "supervisor")
             self.assertFalse(f.mutations)
 
-    def test_pending_observation_carries_cutoff_into_native_proof_when_pane_disappears(self):
+    def test_pending_observation_cannot_borrow_old_pane_for_new_generation_on_reused_tty(self):
         import uuid
         from github_plan_sessions import native_helpers
         native_helpers()
@@ -340,19 +340,20 @@ class NativeQueueTests(unittest.TestCase):
             with patch.object(tmux_terminal.Terminal, "list", return_value=[]):
                 f.release.record_closure(f.log, entry, "supervisor")
             metadata = {key: entry[key] for key in ("codex_home", "launch_pid", "launch_generation", "launch_started_at")}
+            metadata.update(launch_pid=789, launch_generation="new-generation",
+                            launch_started_at=datetime.now(timezone.utc).isoformat())
             with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
                 CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), entry["tty"])
-            pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+            pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": entry["launch_pid"],
                     "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
                     "dead": True, "exited_at": cutoff.isoformat()}
             f.native_state = "notLoaded"
             f.process_rows = [(456, entry["tty"], "unrelated-worker")]
-            panes = iter(([pane], []))
-            with patch.object(tmux_terminal.Terminal, "list", side_effect=lambda: next(panes, [])), \
+            with patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
                     patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
                 _, states, _ = f.observe()
-            self.assertEqual(states.get(f.session, {}).get("state"), "ended")
-            self.assertFalse(CLOSURE.action_pending(f.session))
+            self.assertNotEqual(states.get(f.session, {}).get("state"), "ended")
+            self.assertTrue(CLOSURE.action_pending(f.session))
             self.assertFalse(f.mutations)
 
     def test_pending_canonical_events_committed_by_either_fence_are_rechecked(self):
@@ -745,7 +746,8 @@ class NativeQueueTests(unittest.TestCase):
             result = asyncio.run(NATIVE.queue_input(f.home, f.session, text))
             self.assertEqual(sent[0]["input"][0]["text"], text)
             self.assertEqual(result["queuedSubmissionId"], "queued-one")
-            self.assertEqual(set(result), {"queuedSubmissionId", "clientUserMessageId"})
+            self.assertNotIn("input", result)
+            self.assertNotIn(json.dumps(text), json.dumps(result))
             self.assertEqual(len(sent), 1)
 
     def test_malformed_queue_ack_is_uncertain_without_replay(self):
