@@ -163,11 +163,13 @@ class ReleaseTests(ReleaseHarness):
         self.run_release()
         return copy.deepcopy(self.f.comments)
 
-    def consume_related_release(self, comments, *, ended="2026-10-02T00:00:00Z"):
+    def consume_related_release(self, comments, *, ended="2026-10-02T00:00:00Z", evidence_by_id=None):
         release.termination.native_helpers()
         import release_session_claims as supervisor
         reader = Mock()
-        reader.get_json.side_effect = lambda path, **_kw: self.evidence if "/issues/comments/" in path else {"body": ""}
+        reader.get_json.side_effect = lambda path, **_kw: (
+            evidence_by_id[int(path.rsplit("/", 1)[1])] if evidence_by_id is not None else self.evidence
+        ) if "/issues/comments/" in path else {"body": ""}
         reader.paged_json.return_value = comments
         entry = {"session_id": "session-b", "ended_at": ended, "_finish_scope": "explicit scope"}
         return supervisor.finished_claims(reader, entry, BOT, [("owner/repo", 42)], True)
@@ -183,8 +185,11 @@ class ReleaseTests(ReleaseHarness):
             return [{**c, **fields} if c["id"] == identifier else c for c in produced]
         receipt = release.receipt_for(source_receipt)
         def receipt_fields(**fields):
-            return source_receipt["body"].replace(json.dumps(receipt, sort_keys=True),
-                json.dumps({**receipt, **fields}, sort_keys=True))
+            prefix = "<!-- " + release.RELEASE_MARKER
+            body = "\n".join(prefix + json.dumps({**receipt, **fields}) + " -->"
+                if line.startswith(prefix) else line for line in source_receipt["body"].splitlines())
+            self.assertNotEqual(body, source_receipt["body"])
+            return body
         reordered = [c for c in produced if c["id"] != related_release["id"]]
         reordered.insert(next(i for i, c in enumerate(reordered) if c["id"] == source_receipt["id"]), related_release)
         cases = [
@@ -261,6 +266,79 @@ class ReleaseTests(ReleaseHarness):
                 with patch.object(self, "evidence", changed_evidence):
                     refused = self.consume_related_release(produced)
                 self.assertTrue(refused["issue_refusals"])
+                self.assertFalse(refused["released_claims"])
+
+    def test_finish_exposes_recorded_end_and_accepts_corrected_producer_evidence(self):
+        selected_end = "2026-10-02T00:00:00Z"
+        self.evidence["body"] = self.evidence["body"].replace(selected_end, "2026-10-02T00:30:00Z")
+        bad_evidence = copy.deepcopy(self.evidence)
+        produced = self.produced_related_release()
+        refused = self.consume_related_release(produced, ended=selected_end)
+        self.assertEqual({r["claim_comment"] for r in refused["issue_refusals"]}, {1, 3})
+        self.assertEqual(refused["ended_at"], selected_end)
+        self.assertTrue(all(r.get("next_action") for r in refused["issue_refusals"]))
+        self.evidence = {**bad_evidence, "id": 89,
+            "body": bad_evidence["body"].replace("2026-10-02T00:30:00Z", refused["ended_at"]),
+            "created_at": "2026-10-02T02:00:00Z", "updated_at": "2026-10-02T02:00:00Z"}
+        self.args.evidence_comment = "https://github.com/owner/control/issues/884#issuecomment-89"
+        api = self.api
+        def read(method, path, **kwargs):
+            if path.endswith(f"/issues/comments/{bad_evidence['id']}"):
+                return "bot", copy.deepcopy(bad_evidence)
+            return api(method, path, **kwargs)
+        with patch.object(self, "api", side_effect=read):
+            self.run_release()
+        accepted = self.consume_related_release(self.f.comments, ended=selected_end,
+            evidence_by_id={bad_evidence["id"]: bad_evidence, self.evidence["id"]: self.evidence})
+        self.assertEqual(accepted["ended_at"], selected_end)
+        self.assertFalse(accepted["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in accepted["released_claims"]}, {1, 3})
+
+    def test_finish_reports_partial_related_publication_once_per_exact_unreleased_id(self):
+        self.f.comments.extend([self.comment(identifier, "Claimed by trial-b\nSession: session-b", "2026-10-01T01:00:00Z")
+                                for identifier in (3, 5)])
+        self.args.related_claim_comment = [3, 5]
+        self.f.comment_id_offset = 10
+        post = self.post
+        def partial(kind, number, body, **kwargs):
+            if CLAIM.released_claim_id(body) == 5:
+                raise github_comment.CommentError("Related write rejected", failure=PLAN.github_api_core.FailureDetail(
+                    cause="rejected", message="Related write rejected", retryable=False,
+                    fallback_eligible=False, disposition="stop", write_outcome="rejected"))
+            return post(kind, number, body, **kwargs)
+        with patch.object(self, "post", side_effect=partial), self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        refused = self.consume_related_release(self.f.comments)
+        self.assertEqual({r["claim_comment"] for r in refused["released_claims"]}, {1, 3})
+        self.assertEqual([r.get("claim_comment") for r in refused["issue_refusals"]], [5])
+        self.assertTrue(refused["issue_refusals"][0].get("next_action"))
+        self.run_release()
+        accepted = self.consume_related_release(self.f.comments)
+        self.assertFalse(accepted["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in accepted["released_claims"]}, {1, 3, 5})
+
+    def test_finish_reports_orphan_and_foreign_ownership_once_with_exact_identity(self):
+        orphan = self.comment(7, "Claimed by orphan-worker\nSession: session-b", "2026-10-01T01:00:00Z")
+        foreign = {**self.f.comments[0], "user": {"login": "foreign[bot]"}}
+        for source in (orphan, foreign):
+            with self.subTest(source=source):
+                refused = self.consume_related_release([source])
+                self.assertEqual([r.get("claim_comment") for r in refused["issue_refusals"]], [source["id"]])
+                self.assertTrue(refused["issue_refusals"][0].get("next_action"))
+                self.assertFalse(refused["released_claims"])
+
+    def test_ambiguous_or_different_native_source_needs_identity_reconciliation_before_release(self):
+        for source_body in (
+                CLAIM.marker(fixtures.OTHER) + "\n" + CLAIM.marker({**fixtures.OTHER, "branch": "work/second-source"}),
+                CLAIM.marker({**fixtures.OTHER, "session": "different-session"}) + "\nSession: session-b"):
+            with self.subTest(source_body=source_body):
+                self.setUp()
+                self.f.comments[0]["body"] = source_body
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.f.assert_no_writes()
+                refused = self.consume_related_release(self.f.comments)
+                self.assertEqual([r["claim_comment"] for r in refused["issue_refusals"] if "claim_comment" in r], [1])
                 self.assertFalse(refused["released_claims"])
 
     def test_known_source_refusals_precede_retained_pr_transport_failure(self):

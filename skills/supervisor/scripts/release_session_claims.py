@@ -53,6 +53,14 @@ class ConfirmedIssueRefusal(ValueError):
         self.payload = payload
 
 
+class OwnershipDiagnostic(ValueError):
+    """An ownership refusal already attributable to one canonical comment."""
+    def __init__(self, claim_comment: int, message: str):
+        super().__init__(message)
+        self.claim_comment = claim_comment
+        self.source_groups = []
+
+
 def verify_process_exit(entry, *, ended_at=None):
     def source_record():
         records = closure.log_rows() if closure.closed_log().exists() else []
@@ -380,6 +388,7 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
     })
     active_ids = {c["id"] for c in conflicts if c.get("source") == "comment"}
     sources = []
+    diagnostic = None
     for c in comments:
         records = claim.records(c.get("body") or "")
         if (c["id"] in active_ids and not records
@@ -390,10 +399,13 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
                     for r in claim.records(source.get("body") or ""))):
             # The existing release route requires a structured source. Never
             # invent one or release an older hand-written source by worker alias.
-            raise ValueError(f"hand-written claim {c['id']} needs its authored exact-ID release")
+            if diagnostic is None:
+                diagnostic = OwnershipDiagnostic(c["id"], f"hand-written claim {c['id']} needs its authored exact-ID release")
         if c["id"] in active_ids and any(r["session"] == session for r in records):
             if (c.get("user") or {}).get("login") != actor:
-                raise ValueError("session has a claim held by another identity; report without releasing")
+                if diagnostic is None:
+                    diagnostic = OwnershipDiagnostic(c["id"], "session has a claim held by another identity; report without releasing")
+                continue
             record = release.source_record(c)
             related = [r["id"] for r in comments if r["id"] != c["id"] and r["id"] in active_ids
                        and not claim.records(r.get("body") or "")
@@ -407,6 +419,9 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
                           and (belongs_to_session(r.get("body") or "", session)
                                or not re.search(r"(?im)^Session(?:[ _-]*ID)?:", r.get("body") or ""))]
             sources.append((c, related, unresolved))
+    if diagnostic is not None:
+        diagnostic.source_groups = sources
+        raise diagnostic
     return sources
 
 
@@ -506,6 +521,40 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         raise PartialRelease(error, report) from error
 
 
+def ownership_next_action(source, comments, actor, session, ended):
+    """Describe supported reconciliation without granting release authority."""
+    if (source.get("user") or {}).get("login") != actor:
+        return ("Report this ownership record to its owning identity for reconciliation; "
+                "do not release it as the configured automation actor.")
+    records = claim.records(source.get("body") or "")
+    if records:
+        if len(records) != 1 or records[0]["session"] != session:
+            return ("Resolve this comment's canonical source identity through its author's ownership reconciliation "
+                    "before selecting a release source; do not invent a structured identity.")
+        return ("Inspect the producer's recovery result and reconcile any unknown write outcome before retrying. "
+                "Use this report's ended_at for the verified Ended at evidence. If the cited end is later, "
+                "post a corrected attestation and run release-claim with its corrected --evidence-comment, "
+                "preserving the related IDs; then rerun finish.")
+    for candidate in comments:
+        if (candidate.get("user") or {}).get("login") != actor:
+            continue
+        records = claim.records(candidate.get("body") or "")
+        if len(records) != 1 or records[0]["session"] != session:
+            continue
+        try:
+            release.check_related(records[0], source, actor, ended)
+        except (KeyError, TypeError, ValueError):
+            continue
+        return (f"Inspect the prior release-claim result for structured claim {candidate['id']} and reconcile "
+                "any unknown write outcome before retrying. If the cited end is later than this report's ended_at, "
+                "post corrected evidence using that original time and use its corrected --evidence-comment. "
+                "Otherwise follow the producer's recovery instructions and rerun the same evidence-backed command "
+                "with the original --related-claim-comment IDs. Confirmed receipts are reused and published related "
+                "releases deduplicated; then rerun finish.")
+    return ("Obtain the source author's exact-ID ownership reconciliation; no matching structured source is available. "
+            "Do not invent a source or release the record from another identity.")
+
+
 def finished_claims(reader, entry, actor, issues, apply):
     """Consume one canonical release proof per source; never manufacture a release."""
     released, refused, retained_status = [], [], []
@@ -517,6 +566,9 @@ def finished_claims(reader, entry, actor, issues, apply):
             issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="finished_claim_issue")
             comments = verified_comments(reader, reader.paged_json(
                 f"/repos/{repo}/issues/{number}/comments", step_prefix="finished_claim_history"))
+            def source_refusal(source, message):
+                return {**identity, "claim_comment": source["id"], "error": message,
+                        "next_action": ownership_next_action(source, comments, actor, entry["session_id"], ended)}
             sources = [c for c in comments if belongs_to_session(c.get("body") or "", entry["session_id"])
                        and (claim.records(c.get("body") or "") or re.match(
                            r"Claimed by:?\s+\S+", claim.ownership_text(c.get("body") or "", strip_quotes=False), re.IGNORECASE))]
@@ -540,13 +592,13 @@ def finished_claims(reader, entry, actor, issues, apply):
                         released.append({**source_identity,
                             "handoff_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}"})
                     else:
-                        refused.append({**source_identity, "error": "ownership record needs its authored exact-ID reconciliation"})
+                        refused.append(source_refusal(source, "ownership record has no qualifying exact-ID release"))
                     continue
                 if len(parsed) != 1 or parsed[0]["session"] != entry["session_id"]:
-                    refused.append({**source_identity, "error": "ownership record needs its authored exact-ID reconciliation"})
+                    refused.append(source_refusal(source, "ownership record has no qualifying exact-ID release"))
                     continue
                 if (source.get("user") or {}).get("login") != actor:
-                    refused.append({**source_identity, "error": "source claim belongs to another automation identity"})
+                    refused.append(source_refusal(source, "source claim belongs to another automation identity"))
                     continue
                 evidence = None
                 for candidate in comments:
@@ -565,18 +617,25 @@ def finished_claims(reader, entry, actor, issues, apply):
                     evidence = candidate
                     break
                 if evidence is None:
-                    refused.append({**source_identity, "error": "source claim has no valid exact-ID release for this ended source"})
+                    refused.append(source_refusal(source, "source claim has no valid exact-ID release for this ended source"))
                     continue
                 released.append({**source_identity,
                     "handoff_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}"})
             # Use the same validated discussion, retaining unresolved follow-ups
             # and foreign ownership. A failed read is never an empty history.
-            active = active_claims(reader, repo, number, entry["session_id"], actor, comments=comments, verified=True)
+            try:
+                active = active_claims(reader, repo, number, entry["session_id"], actor, comments=comments, verified=True)
+            except OwnershipDiagnostic as error:
+                active = error.source_groups
+                if not any(r.get("claim_comment") == error.claim_comment and r["repository"] == repo
+                           and r["issue"] == number for r in refused):
+                    source = next(c for c in comments if c["id"] == error.claim_comment)
+                    refused.append(source_refusal(source, str(error)))
             for source, related, unresolved in active:
                 for identifier in [source["id"], *related, *unresolved]:
                     if not any(r.get("claim_comment") == identifier and r["repository"] == repo
                                and r["issue"] == number for r in refused):
-                        refused.append({**identity, "claim_comment": identifier, "error": "ownership remains active"})
+                        refused.append(source_refusal(next(c for c in comments if c["id"] == identifier), "ownership remains active"))
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
                 GitHubReadError, GitHubReadShapeError) as error:
             refused.append({**identity, "error": str(error)})
@@ -584,7 +643,7 @@ def finished_claims(reader, entry, actor, issues, apply):
     result_status = "needs reconciliation" if refused else "already released" if released else "nothing to release"
     if scope == "explicit scope":
         result_status += " in explicit scope"
-    return {"session_id": entry["session_id"], "claims": [], "released_claims": released,
+    return {"session_id": entry["session_id"], "ended_at": entry["ended_at"], "claims": [], "released_claims": released,
             "status": result_status, "coverage": scope,
             "handoff_url": released[-1]["handoff_url"] if released else None,
             "dry_run": not apply, "retained_status_claims": retained_status, "issue_refusals": refused,
