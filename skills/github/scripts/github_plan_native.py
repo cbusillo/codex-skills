@@ -536,12 +536,17 @@ async def prove_end(entry, request=None, *, process=None):
     return {"snapshot": after, "facts": final[after["home"]], "homes": final, "action": action}
 
 
-def resolve_pending(session, proof):
-    """Only the actual lease-owning caller writes, never an off-loop reader."""
+def _require_current_proof(session, proof):
+    """Require the held lease and the source/action identity behind this proof."""
     if session not in (closure._LEASES.get() or set()):
         raise ValueError("native resolution has no ownership lease")
     if closure.lease_state(session) != proof["action"] or closure.source_records({session}).get(session) != proof["snapshot"]["source"]:
         raise ValueError("native action or source identity changed before resolution")
+
+
+def resolve_pending(session, proof):
+    """Only the actual lease-owning caller writes, never an off-loop reader."""
+    _require_current_proof(session, proof)
     require_proof_quiet(proof)
     closure.set_action_pending(session, False)
 

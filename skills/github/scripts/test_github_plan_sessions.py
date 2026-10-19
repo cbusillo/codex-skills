@@ -5,9 +5,10 @@
 """Fake native daemon evidence, including refusal and read-only transport."""
 import copy
 import asyncio
-from contextlib import ExitStack
-import json
+from contextlib import ExitStack, redirect_stdout
+import io
 import inspect
+import json
 import os
 import socket
 import sys
@@ -18,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from aiohttp import web
 import github_plan_sessions as SESSIONS
@@ -212,6 +213,196 @@ class ReceiptFixture:
         native[native.index("--remote") + 1] = "unix://" + str(binding)
         with patch.object(CLOSURE.os, "getpid", return_value=456):
             CLOSURE.register_launch(native, str(self.home), proxy=proxy)
+
+
+class FinishPreviewIntegrationTests(unittest.TestCase):
+    def pending(self, f):
+        with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+            pass
+        f.native_state = "notLoaded"
+
+    def finish(self, f, *, apply=False, discovery=None, history=None):
+        helper = f.release
+        ledger = f.root / "ledger.json"
+        ledger.write_text(json.dumps([f.entry]))
+        source = {"worker": "trial", "session": f.session, "branch": "work/trial",
+                  "claimed_at": "2026-10-01T01:00:00Z"}
+        comments = [{"id": identifier, "body": body, "user": {"login": "fixture-bot"},
+                     "created_at": timestamp, "updated_at": timestamp}
+                    for identifier, body, timestamp in (
+                        (1, "Claimed by trial\n\n" + helper.claim.marker(source), source["claimed_at"]),
+                        (2, "Released claim 1", "2026-10-01T02:00:02Z"))]
+        reader = Mock()
+        reader.get_json.return_value = {"body": "", "number": 42}
+        def read(*_args, **_kwargs):
+            if history:
+                history(f)
+            return comments
+        def discover(*_args, **_kwargs):
+            if discovery:
+                discovery(f)
+            return [("owner/repo", 42)], ["owner/repo"]
+        reader.paged_json.side_effect = read
+        argv = ["helper", "finish", "--ledger", str(ledger), "--session-id", f.session,
+                "--supervisor-session", "supervisor", "--owner", "owner", "--repo", "owner/repo",
+                "--confirm-session-ended", "--transcript-root", str(f.home / "sessions")]
+        if apply:
+            argv.append("--apply")
+        output = io.StringIO()
+        with patch.object(helper.sys, "argv", argv), \
+                patch.object(helper.github_identity, "automation_login", return_value="fixture-bot"), \
+                patch.object(helper, "automation_only_gh_prefix_args", return_value=[]), \
+                patch.object(helper, "GitHubReader", return_value=reader), \
+                patch.object(helper, "discover", side_effect=discover), \
+                patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run, \
+                redirect_stdout(output):
+            code = helper.main()
+        write.assert_not_called()
+        run.assert_not_called()
+        self.assertFalse(f.mutations)
+        return code, json.loads(output.getvalue())
+
+    def test_pending_preview_consumes_release_without_changing_native_or_closure_state(self):
+        with ReceiptFixture() as f:
+            self.pending(f)
+            paths = [f.log, CLOSURE.lease_path(f.session)]
+            before = [path.read_bytes() for path in paths]
+            code, report = self.finish(f)
+            self.assertEqual(code, 0)
+            self.assertTrue(report["ok"])
+            self.assertEqual([row["claim_comment"] for row in report["reports"][0]["released_claims"]], [1])
+            self.assertTrue(CLOSURE.action_pending(f.session))
+            self.assertEqual([path.read_bytes() for path in paths], before)
+
+    def test_pending_preview_refuses_changed_source_action_or_work_at_either_boundary(self):
+        for boundary in ("discovery", "history"):
+            for change in ("generation", "source", "action", "queue", "turn"):
+                with self.subTest(boundary=boundary, change=change), ReceiptFixture() as f:
+                    self.pending(f)
+                    changed = set()
+                    def update(f):
+                        if change in {"generation", "source"}:
+                            with CLOSURE.ownership(f.session), CLOSURE.store_lock(f.log):
+                                rows = CLOSURE.log_rows()
+                                if change == "generation":
+                                    rows[0]["resumed_generation"] = {**f.entry, "launch_generation": "next-generation"}
+                                else:
+                                    rows[0]["resumed_at"] = datetime.now(timezone.utc).isoformat()
+                                CLOSURE.replace_rows(rows)
+                        elif change == "action":
+                            with CLOSURE.ownership(f.session):
+                                CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                        elif change == "queue":
+                            f.queue_items = [{"id": "later-input", "clientUserMessageId": "new-client",
+                                              "input": [{"type": "text", "text": "new work"}]}]
+                        else:
+                            with f.transcript.open("a") as stream:
+                                stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "payload": {"type": "task_started", "turn_id": "new-turn"}}) + "\n")
+                        changed.add(change)
+                    code, report = self.finish(f, **{boundary: update})
+                    self.assertEqual(changed, {change})
+                    self.assertEqual(code, 1)
+                    self.assertFalse(report["ok"])
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+
+    def test_apply_resolves_original_pending_but_preserves_a_later_action(self):
+        for boundary in (None, "discovery", "history"):
+            with self.subTest(boundary=boundary), ReceiptFixture() as f:
+                self.pending(f)
+                changed = set()
+                def update(f):
+                    with CLOSURE.ownership(f.session):
+                        CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                    changed.add(boundary)
+                code, report = self.finish(f, apply=True, **({boundary: update} if boundary else {}))
+                self.assertEqual(changed, {boundary} if boundary else set())
+                self.assertEqual(code, 1 if boundary else 0)
+                self.assertEqual(report["ok"], boundary is None)
+                self.assertEqual(CLOSURE.action_pending(f.session), boundary is not None)
+
+    def test_preview_cannot_acquire_authority_for_an_action_added_after_record(self):
+        for boundary in ("discovery", "history"):
+            with self.subTest(boundary=boundary), ReceiptFixture() as f:
+                f.native_state = "notLoaded"
+                changed = set()
+                def update(f):
+                    with CLOSURE.ownership(f.session):
+                        CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                    changed.add(boundary)
+                code, report = self.finish(f, **{boundary: update})
+                self.assertEqual(changed, {boundary})
+                self.assertEqual(code, 1)
+                self.assertFalse(report["ok"])
+                self.assertTrue(CLOSURE.action_pending(f.session))
+
+    def test_plain_finish_refuses_a_new_turn_at_either_boundary(self):
+        for apply in (False, True):
+            for boundary in ("discovery", "history"):
+                with self.subTest(apply=apply, boundary=boundary), ReceiptFixture() as f:
+                    changed = set()
+                    def update(f):
+                        with f.transcript.open("a") as stream:
+                            stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "payload": {"type": "task_started", "turn_id": "new-turn"}}) + "\n")
+                        changed.add(boundary)
+                    code, report = self.finish(f, apply=apply, **{boundary: update})
+                    self.assertEqual(changed, {boundary})
+                    self.assertEqual(code, 1)
+                    self.assertFalse(report["ok"])
+
+    def test_pending_preview_refuses_source_or_action_changes_during_proof_and_validation(self):
+        import github_plan_native as native
+        for boundary in ("discovery", "history"):
+            for timing in ("snapshot_start", "snapshot_end", "proof_return", "process_recheck"):
+                for kind in ("action", "source", "generation"):
+                    with self.subTest(boundary=boundary, timing=timing, kind=kind), ReceiptFixture() as f, ExitStack() as stack:
+                        self.pending(f)
+                        real_proof = native.prove_end
+                        real_snapshot = native.source_snapshot
+                        real_process = native.recheck_source_process
+                        state = {"changed": False, "proof_complete": False}
+                        def change():
+                            if state["changed"]:
+                                return
+                            with CLOSURE.ownership(f.session):
+                                if kind == "action":
+                                    CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                                else:
+                                    with CLOSURE.store_lock(f.log):
+                                        rows = CLOSURE.log_rows()
+                                        if kind == "generation":
+                                            rows[0]["resumed_generation"] = {**f.entry, "launch_generation": "later-generation"}
+                                        else:
+                                            rows[0]["closure_evidence"] = {"changed": "different selected row"}
+                                        CLOSURE.replace_rows(rows)
+                            state["changed"] = True
+                        def snapshot(*args, **kwargs):
+                            if timing == "snapshot_start":
+                                change()
+                            result = real_snapshot(*args, **kwargs)
+                            if timing == "snapshot_end":
+                                change()
+                            return result
+                        async def prove(*args, **kwargs):
+                            result = await real_proof(*args, **kwargs)
+                            state["proof_complete"] = True
+                            if timing == "proof_return":
+                                change()
+                            return result
+                        def process(*args, **kwargs):
+                            result = real_process(*args, **kwargs)
+                            if timing == "process_recheck" and state["proof_complete"]:
+                                change()
+                            return result
+                        def install(_f):
+                            stack.enter_context(patch.object(native, "prove_end", side_effect=prove))
+                            stack.enter_context(patch.object(native, "source_snapshot", side_effect=snapshot))
+                            stack.enter_context(patch.object(native, "recheck_source_process", side_effect=process))
+                        code, report = self.finish(f, **{boundary: install})
+                        self.assertTrue(state["changed"])
+                        self.assertEqual(code, 1)
+                        self.assertFalse(report["ok"])
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):

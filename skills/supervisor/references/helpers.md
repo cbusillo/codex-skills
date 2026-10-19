@@ -2179,6 +2179,16 @@ with the original actual closure time.
 
 Default is a read-only preview. `finish` consumes canonical claim releases;
 backfill previews claim IDs, retained PRs and attestation bodies.
+A pending Codex source can be previewed with its original Supervisor-owned
+ledger and matching shared source record. Each validation after discovery and
+canonical release reads takes the existing ownership guard and obtains fresh
+native end proof for the same source generation and pending action. Preview
+leaves that action, the shared closure record and lease contents unchanged;
+apply alone can clear the original proved action. A new action or changed source
+requires fresh verification through the existing recovery route above, and
+cannot borrow the preview's earlier proof. Transcript records after the saved
+closure time still refuse; preview does not waive the source's safe verdict,
+process, native work or configured transcript-copy checks.
 For `finish`, discovery checks original claim comments after their release.
 An exact `Released claim <id>` directive binds the release through that source's
 native session, with both comments authored by the automation actor. A worker's

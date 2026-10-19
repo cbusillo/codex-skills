@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 import json
 import fcntl
@@ -191,24 +191,53 @@ def transcript_roots(harness, configured, explicit):
     return list(dict.fromkeys(roots))
 
 
-def record_closure(path, entry, supervisor_session, *, persist=True):
+@contextmanager
+def _closure_guard(path, entry, *, create=False):
     shared = path.resolve() == closure.closed_log().resolve()
-    coordination = closure.ownership(entry["session_id"], create=persist) if shared else nullcontext()
-    with coordination:
-        native = None
+    coordination = closure.ownership(entry["session_id"], create=create) if shared else nullcontext()
+    with coordination as held:
         saved = closure.source_records({entry["session_id"]}).get(entry["session_id"]) if shared else None
         if saved and saved.get("resumed_generation"):
             generation = saved["resumed_generation"]
             if any(entry.get(key) != generation.get(key) for key in (
                     "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")):
                 raise ValueError("finish needs the new launch metadata from codex-session.py status")
+        yield shared, saved, held
+
+
+def record_closure(path, entry, supervisor_session, *, persist=True):
+    with _closure_guard(path, entry, create=persist) as (shared, saved, _held):
+        native = None
         if shared and entry.get("harness") == "codex" and (closure.action_pending(entry["session_id"])
                 or saved and saved.get("resumed_at") and not saved.get("resumed_generation")):
             import github_plan_native
             native = asyncio.run(github_plan_native.prove_end(entry))
             if persist:
                 github_plan_native.resolve_pending(entry["session_id"], native)
-        return _record_closure(path, entry, supervisor_session, persist=persist, native=native)
+        closed = _record_closure(path, entry, supervisor_session, persist=persist, native=native)
+        if native is not None and not persist:
+            # Keep only the source/action identities for this read-only preview.
+            # The native proof itself never leaves the ownership guard.
+            closed["_finish_native"] = {"source": native["snapshot"]["source"], "action": native["action"]}
+        return closed
+
+
+def _validate_finish(entry, supervisor_session, *, apply):
+    anchor = entry.get("_finish_native") if not apply else None
+    if anchor is None:
+        return validate_closure(entry, supervisor_session)
+    with _closure_guard(closure.closed_log(), entry) as (_shared, saved, held):
+        if not held:
+            raise ValueError("native finish preview lost its ownership lease")
+        if saved != anchor["source"] or closure.lease_state(entry["session_id"]) != anchor["action"]:
+            raise ValueError("native action or source identity changed after finish preview")
+        import github_plan_native
+        native = asyncio.run(github_plan_native.prove_end(entry))
+        if native["snapshot"]["source"] != anchor["source"] or native["action"] != anchor["action"]:
+            raise ValueError("native proof belongs to a different finish source or action")
+        status = validate_closure(entry, supervisor_session, native=native, process=native["snapshot"]["process"])
+        github_plan_native._require_current_proof(entry["session_id"], native)
+        return status
 
 
 def _closure_identity(entry):
@@ -506,12 +535,13 @@ def run_release(repo, number, source_id, related, prs, evidence_url, supervisor_
 
 def release_session(reader, entry, actor, supervisor_session, issues, checkout_root, apply):
     reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
-    status = validate_closure(entry, supervisor_session)
     if entry.get("_finish"):
+        status = _validate_finish(entry, supervisor_session, apply=apply)
         completed = finished_claims(reader, entry, actor, issues, apply)
-        if validate_closure(entry, supervisor_session) != status:
+        if _validate_finish(entry, supervisor_session, apply=apply) != status:
             raise ValueError("source transcript changed; preserve claims")
         return completed
+    status = validate_closure(entry, supervisor_session)
     if entry.get("handoff_url"):
         handoff_record = handoff(reader, entry, actor)
     else:
@@ -925,7 +955,8 @@ def main():
         verified = []
         for entry in entries:
             try:
-                validate_closure(entry, args.supervisor_session)
+                if not entry.get("_finish"):
+                    validate_closure(entry, args.supervisor_session)
                 verified.append(entry)
             except (ValueError, KeyError, TypeError, OSError) as error:
                 inventory_rows: list[dict[str, Any]] = entry.get("_inventory_claims", [])
