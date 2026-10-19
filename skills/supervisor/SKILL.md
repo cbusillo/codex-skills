@@ -577,7 +577,7 @@ for products a Client runs business on.
   A no-test reason or explicit engineering marker with release test steps routes
   to ordinary checked `ready`; unmarked steps or anything the Client must approve
   before merge routes to `--waiting-for-client`. Lead briefs link that contract.
-  Bring Chris only real judgment calls; never ask him to repeat
+  Bring the Director only real judgment calls; never ask the Director to repeat
   an engineering classification the notes already settle. Every release still
   needs the Client's acceptance.
 - On a Client's repositories, Discussions are drafts and issues are requests

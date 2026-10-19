@@ -613,9 +613,10 @@ Client's acceptance; engineering classification grants no release authority.
 
 `github/scripts/github_plan_status/client_test_notes.py` owns the marker and body-level parser, exported
 by the existing `codex-skills-plan-status` package alongside planning status.
-`ready_handoff.py` re-exports the contract for producer and watcher callers.
-Launchplane's `control_plane/client_test_notes.py` must import this contract from
-its pinned package dependency so its owner-review check uses the same rule.
+`ready_handoff.py` keeps compatibility exports for its existing notes API.
+Launchplane's `control_plane/client_test_notes.py` must call
+`body_client_test_notes(body, review_override=override)` from its pinned package
+dependency so its owner-review check classifies every section with the same rule.
 
 To withdraw an earlier Ready after a renewed hold, defect or change request
 (including while CI is pending or failing), use
