@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from pathlib import Path
 from argparse import Namespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import unittest
 
 import test_gh_plan_claim as fixtures
@@ -112,6 +112,339 @@ class ReleaseHarness(unittest.TestCase):
 
 
 class ReleaseTests(ReleaseHarness):
+    def test_canonical_evidence_is_attached_once_per_phase_and_invalidated_freshly(self):
+        self.args.dry_run = True
+        self.run_release()
+        body = self.f.emitted.call_args.args[0]["release_body"]
+        first = self.comment(10, body, "2026-10-02T02:00:00Z")
+        second = self.comment(11, body, "2026-10-02T03:00:00Z")
+        comments = [*self.f.comments, first, second]
+        evidence = copy.deepcopy(self.evidence)
+        available = [evidence]
+        def read(_repo, _number, _identifier):
+            if not available:
+                raise RuntimeError("one canonical evidence read is available in this phase")
+            return available.pop()
+        verified = release.verified_comments(comments, read)
+        self.assertEqual([c["_release_evidence"]["id"] for c in verified if release.receipt_for(c)],
+                         [evidence["id"], evidence["id"]])
+        evidence["updated_at"] = "2026-10-03T00:00:00Z"
+        invalidated = release.verified_comments(comments, lambda *_args: evidence)
+        self.assertFalse(any(release.receipt_for(c) for c in invalidated))
+        self.assertTrue(CLAIM.discussion_evidence("", invalidated, fixtures.OWNER)[0])
+
+    def test_malformed_canonical_evidence_shape_propagates_without_hiding_ownership(self):
+        self.run_release()
+        for field, value in (("user", None), ("body", []), ("created_at", None), ("issue_url", None), ("id", "88")):
+            with self.subTest(field=field):
+                malformed = {**self.evidence, field: value}
+                with self.assertRaises(ValueError):
+                    release.verified_comments(self.f.comments, lambda *_args: malformed)
+                before = self.f.events.count("post")
+                with patch.object(self, "evidence", malformed), self.assertRaises(PLAN.PlanError):
+                    self.successor()
+                self.assertEqual(self.f.events.count("post"), before)
+        invalid = {**self.evidence, "user": {"login": "foreign[bot]"}}
+        canonical = release.verified_comments(self.f.comments, lambda *_args: invalid)
+        self.assertFalse(any(release.receipt_for(c) for c in canonical))
+        self.assertTrue(CLAIM.discussion_evidence("", canonical, fixtures.OWNER)[0])
+
+    def produced_related_release(self, *, earlier_hand=False, ordinary_source_release=False):
+        hand = self.comment(3, "Claimed by trial-b\nSession: session-b",
+            "2026-09-30T23:59:00Z" if earlier_hand else "2026-10-01T01:00:00Z")
+        if earlier_hand:
+            self.f.comments.insert(0, hand)
+        else:
+            self.f.comments.append(hand)
+        if ordinary_source_release:
+            self.f.comments.append(self.comment(4, "Released claim 1", "2026-10-01T02:00:00Z"))
+        self.args.related_claim_comment = [3]
+        self.f.comment_id_offset = 10
+        self.run_release()
+        return copy.deepcopy(self.f.comments)
+
+    def consume_related_release(self, comments, *, ended="2026-10-02T00:00:00Z", evidence_by_id=None):
+        release.termination.native_helpers()
+        import release_session_claims as supervisor
+        reader = Mock()
+        reader.get_json.side_effect = lambda path, **_kw: (
+            evidence_by_id[int(path.rsplit("/", 1)[1])] if evidence_by_id is not None else self.evidence
+        ) if "/issues/comments/" in path else {"body": ""}
+        reader.paged_json.return_value = comments
+        entry = {"session_id": "session-b", "ended_at": ended, "_finish_scope": "explicit scope"}
+        return supervisor.finished_claims(reader, entry, BOT, [("owner/repo", 42)], True)
+
+    def test_actual_supervisor_related_release_is_consumed_after_source_end(self):
+        produced = self.produced_related_release()
+        report = self.consume_related_release(produced)
+        self.assertFalse(report["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in report["released_claims"]}, {1, 3})
+        source_receipt = next(c for c in produced if release.receipt_for(c))
+        related_release = next(c for c in produced if CLAIM.released_claim_id(c["body"]) == 3)
+        def alter(identifier, **fields):
+            return [{**c, **fields} if c["id"] == identifier else c for c in produced]
+        receipt = release.receipt_for(source_receipt)
+        def receipt_fields(**fields):
+            prefix = "<!-- " + release.RELEASE_MARKER
+            body = "\n".join(prefix + json.dumps({**receipt, **fields}) + " -->"
+                if line.startswith(prefix) else line for line in source_receipt["body"].splitlines())
+            self.assertNotEqual(body, source_receipt["body"])
+            return body
+        reordered = [c for c in produced if c["id"] != related_release["id"]]
+        reordered.insert(next(i for i, c in enumerate(reordered) if c["id"] == source_receipt["id"]), related_release)
+        cases = [
+            alter(source_receipt["id"], body=receipt_fields(related_ids=[])),
+            alter(source_receipt["id"], created_at=next(c["created_at"] for c in produced if c["id"] == 1)),
+            alter(source_receipt["id"], user={"login": "foreign[bot]"}),
+            alter(source_receipt["id"], body=receipt_fields(source={**receipt["source"], "session": "another-session"})),
+            alter(1, user={"login": "foreign[bot]"}),
+            alter(1, updated_at="2026-10-04T00:00:00Z"),
+            alter(3, user={"login": "foreign[bot]"}),
+            [c for c in produced if c["id"] != related_release["id"]],
+            alter(related_release["id"], user={"login": "foreign[bot]"}),
+            alter(source_receipt["id"], body=release.pending_body(source_receipt["body"])),
+            alter(3, body="Claimed by wrong-worker\nSession: session-b"),
+            alter(3, body="Claimed by trial-b\nSession: other-session", updated_at="2026-10-04T00:00:00Z"),
+            alter(3, updated_at="2026-10-04T00:00:00Z"),
+            reordered,
+        ]
+        for comments in cases:
+            with self.subTest(comments=comments):
+                failed = self.consume_related_release(comments)
+                self.assertTrue(failed["issue_refusals"])
+                self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
+        changed_evidence = {**self.evidence, "updated_at": "2026-10-04T00:00:00Z"}
+        with patch.object(self, "evidence", changed_evidence):
+            failed = self.consume_related_release(produced)
+        self.assertTrue(failed["issue_refusals"])
+        self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
+        failed = self.consume_related_release(produced, ended="2026-10-01T23:00:00Z")
+        self.assertTrue(failed["issue_refusals"])
+        self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
+
+    def test_receipt_related_authority_survives_earlier_hand_worker_release_and_narrative_edits(self):
+        for case in ("earlier-hand", "ordinary-source-release", "narrative", "receipt-edit", "earlier-hand-and-ordinary-release"):
+            with self.subTest(case=case):
+                self.setUp()
+                produced = self.produced_related_release(
+                    earlier_hand=case in {"earlier-hand", "earlier-hand-and-ordinary-release"},
+                    ordinary_source_release=case in {"ordinary-source-release", "earlier-hand-and-ordinary-release"})
+                if case == "narrative":
+                    produced = [{**c, "body": "Released claim 3\n\nReconciled ownership."}
+                        if CLAIM.released_claim_id(c["body"]) == 3 else c for c in produced]
+                if case == "receipt-edit":
+                    produced = [{**c, "body": c["body"] + "\nAdditional explanation.", "updated_at": "2026-10-05T00:00:00Z"}
+                        if release.receipt_for(c) else c for c in produced]
+                report = self.consume_related_release(produced)
+                self.assertFalse(report["issue_refusals"])
+                self.assertEqual({r["claim_comment"] for r in report["released_claims"]}, {1, 3})
+
+    def test_structured_finish_uses_later_valid_receipt_when_first_worker_release_is_ineligible(self):
+        for case in ("posted-after-end", "edited-after-end"):
+            with self.subTest(case=case):
+                self.setUp()
+                first = self.comment(4, "Released claim 1",
+                    "2026-10-02T02:00:00Z" if case == "posted-after-end" else "2026-10-01T02:00:00Z")
+                if case == "edited-after-end":
+                    first["updated_at"] = "2026-10-02T02:00:00Z"
+                self.f.comments.append(first)
+                self.f.comment_id_offset = 10
+                self.run_release()
+                produced = copy.deepcopy(self.f.comments)
+                receipt_comment = next(c for c in produced if release.receipt_for(c))
+                accepted = self.consume_related_release(produced)
+                self.assertFalse(accepted["issue_refusals"])
+                self.assertEqual(accepted["released_claims"][0]["handoff_url"], receipt_comment["html_url"])
+                without = [c for c in produced if c["id"] != receipt_comment["id"]]
+                invalid = [{**c, "body": release.pending_body(c["body"])} if c["id"] == receipt_comment["id"] else c for c in produced]
+                for remaining in (without, invalid):
+                    with self.subTest(remaining=remaining):
+                        refused = self.consume_related_release(remaining)
+                        self.assertTrue(refused["issue_refusals"])
+                        self.assertFalse(refused["released_claims"])
+                changed_evidence = {**self.evidence, "updated_at": "2026-10-04T00:00:00Z"}
+                with patch.object(self, "evidence", changed_evidence):
+                    refused = self.consume_related_release(produced)
+                self.assertTrue(refused["issue_refusals"])
+                self.assertFalse(refused["released_claims"])
+
+    def test_first_finish_facts_can_be_reconciled_through_actual_producer(self):
+        hand = self.comment(3, "Claimed by trial-b\nSession: session-b", "2026-10-01T01:00:00Z")
+        self.f.comments.append(hand)
+        selected_end = "2026-10-02T00:00:00Z"
+        self.evidence["body"] = self.evidence["body"].replace(selected_end, "2026-10-02T00:30:00Z")
+        before = self.consume_related_release(self.f.comments, ended=selected_end)
+        self.assertEqual(before["ended_at"], selected_end)
+        self.assertEqual({r["claim_comment"] for r in before["issue_refusals"]}, {1, hand["id"]})
+        self.assertTrue(before.get("next_action"))
+        # Source and related identity come from canonical records, never advice.
+        self.args.claim_comment = self.f.comments[0]["id"]
+        self.args.related_claim_comment = [hand["id"]]
+        self.evidence["body"] = "\n".join(
+            "Ended at: " + before["ended_at"] if line.startswith("Ended at: ") else
+            "Original ownership context: " + self.f.comments[0]["html_url"] if line.startswith("Handoff: ") else line
+            for line in self.evidence["body"].splitlines())
+        self.f.comment_id_offset = 10
+        self.run_release()
+        after = self.consume_related_release(self.f.comments, ended=selected_end)
+        self.assertFalse(after["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in after["released_claims"]}, {1, hand["id"]})
+
+    def test_finish_exposes_recorded_end_and_accepts_corrected_producer_evidence(self):
+        selected_end = "2026-10-02T00:00:00Z"
+        self.evidence["body"] = self.evidence["body"].replace(selected_end, "2026-10-02T00:30:00Z")
+        bad_evidence = copy.deepcopy(self.evidence)
+        produced = self.produced_related_release()
+        refused = self.consume_related_release(produced, ended=selected_end)
+        self.assertEqual({r["claim_comment"] for r in refused["issue_refusals"]}, {1, 3})
+        self.assertEqual(refused["ended_at"], selected_end)
+        self.assertTrue(refused.get("next_action"))
+        self.evidence = {**bad_evidence, "id": 89,
+            "body": bad_evidence["body"].replace("2026-10-02T00:30:00Z", refused["ended_at"]),
+            "created_at": "2026-10-02T02:00:00Z", "updated_at": "2026-10-02T02:00:00Z"}
+        self.args.evidence_comment = "https://github.com/owner/control/issues/884#issuecomment-89"
+        api = self.api
+        def read(method, path, **kwargs):
+            if path.endswith(f"/issues/comments/{bad_evidence['id']}"):
+                return "bot", copy.deepcopy(bad_evidence)
+            return api(method, path, **kwargs)
+        with patch.object(self, "api", side_effect=read):
+            self.run_release()
+        accepted = self.consume_related_release(self.f.comments, ended=selected_end,
+            evidence_by_id={bad_evidence["id"]: bad_evidence, self.evidence["id"]: self.evidence})
+        self.assertEqual(accepted["ended_at"], selected_end)
+        self.assertFalse(accepted["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in accepted["released_claims"]}, {1, 3})
+
+    def test_finish_reports_partial_related_publication_once_per_exact_unreleased_id(self):
+        self.f.comments.extend([self.comment(identifier, "Claimed by trial-b\nSession: session-b", "2026-10-01T01:00:00Z")
+                                for identifier in (3, 5)])
+        self.args.related_claim_comment = [3, 5]
+        self.f.comment_id_offset = 10
+        post = self.post
+        def partial(kind, number, body, **kwargs):
+            if CLAIM.released_claim_id(body) == 5:
+                raise github_comment.CommentError("Related write rejected", failure=PLAN.github_api_core.FailureDetail(
+                    cause="rejected", message="Related write rejected", retryable=False,
+                    fallback_eligible=False, disposition="stop", write_outcome="rejected"))
+            return post(kind, number, body, **kwargs)
+        with patch.object(self, "post", side_effect=partial), self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        refused = self.consume_related_release(self.f.comments)
+        self.assertEqual({r["claim_comment"] for r in refused["released_claims"]}, {1, 3})
+        self.assertEqual([r.get("claim_comment") for r in refused["issue_refusals"]], [5])
+        self.assertTrue(refused.get("next_action"))
+        self.run_release()
+        accepted = self.consume_related_release(self.f.comments)
+        self.assertFalse(accepted["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in accepted["released_claims"]}, {1, 3, 5})
+
+    def test_finish_reports_orphan_and_foreign_ownership_once_with_exact_identity(self):
+        orphan = self.comment(7, "Claimed by orphan-worker\nSession: session-b", "2026-10-01T01:00:00Z")
+        foreign = {**self.f.comments[0], "user": {"login": "foreign[bot]"}}
+        for source in (orphan, foreign):
+            with self.subTest(source=source):
+                refused = self.consume_related_release([source])
+                self.assertEqual([r.get("claim_comment") for r in refused["issue_refusals"]], [source["id"]])
+                self.assertTrue(refused.get("next_action"))
+                self.assertFalse(refused["released_claims"])
+
+    def test_ambiguous_or_different_native_source_needs_identity_reconciliation_before_release(self):
+        for source_body in (
+                CLAIM.marker(fixtures.OTHER) + "\n" + CLAIM.marker({**fixtures.OTHER, "branch": "work/second-source"}),
+                CLAIM.marker({**fixtures.OTHER, "session": "different-session"}) + "\nSession: session-b"):
+            with self.subTest(source_body=source_body):
+                self.setUp()
+                self.f.comments[0]["body"] = source_body
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.f.assert_no_writes()
+                refused = self.consume_related_release(self.f.comments)
+                self.assertEqual([r["claim_comment"] for r in refused["issue_refusals"] if "claim_comment" in r], [1])
+                self.assertFalse(refused["released_claims"])
+
+    def test_known_source_refusals_precede_retained_pr_transport_failure(self):
+        cases = ("different-peer", "anonymous-peer", "native-session", "source-activity", "related-activity", "related-identity")
+        for case in cases:
+            with self.subTest(case=case):
+                self.setUp()
+                self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
+                if case.endswith("peer"):
+                    self.f.inventory["sessions"] = [{"cwd": "/source/subdir", **({"sessionId": "different-session"} if case == "different-peer" else {})}]
+                elif case == "native-session":
+                    self.f.inventory["sessions"] = [{"cwd": "/elsewhere", "sessionId": fixtures.OTHER["session"]}]
+                elif case == "source-activity":
+                    self.f.comments[0]["updated_at"] = "2026-10-03T00:00:00Z"
+                else:
+                    native = "different-session" if case == "related-identity" else "session-b"
+                    at = "2026-10-03T00:00:00Z" if case == "related-activity" else "2026-10-01T01:00:00Z"
+                    self.f.comments.append(self.comment(2, f"Claimed by trial-b\nSession: {native}", at))
+                    self.args.related_claim_comment = [2]
+                reads = []
+                original = self.f.read_pages
+                def pages(path, **kwargs):
+                    if path.endswith("/pulls"):
+                        reads.append(path)
+                        raise PLAN.PlanError("fixture transport unavailable", api_result={"status": 503})
+                    return original(path, **kwargs)
+                with patch.object(self.f, "read_pages", side_effect=pages), self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.assertFalse(reads)
+                self.f.assert_no_writes()
+
+    def test_unknown_retained_path_peer_does_not_mask_an_earlier_pr_read_failure(self):
+        self.f.inventory["worktrees"] = [{"branch": "repair-branch", "path": "/retained"}]
+        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/retained"}]
+        reads = []
+        original = self.f.read_pages
+        def pages(path, **kwargs):
+            if path.endswith("/pulls"):
+                reads.append(path)
+                raise PLAN.PlanError("fixture transport unavailable", api_result={"status": 503})
+            return original(path, **kwargs)
+        with patch.object(self.f, "read_pages", side_effect=pages), self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        self.assertEqual(PLAN.plan_error_status(caught.exception), 503)
+        self.assertEqual(len(reads), 1)
+        self.f.assert_no_writes()
+
+    def test_attested_termination_artifact_peer_precedes_pr_transport_failure(self):
+        self.termination_setup()
+        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": self.termination_record["retained_artifacts"][0]["worktree"]}]
+        reads = []
+        original = self.f.read_pages
+        def pages(path, **kwargs):
+            if path.endswith("/pulls"):
+                reads.append(path)
+                raise PLAN.PlanError("fixture transport unavailable", api_result={"status": 503})
+            return original(path, **kwargs)
+        with patch.object(self.f, "read_pages", side_effect=pages), self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        self.assertFalse(reads)
+        self.f.assert_no_writes()
+
+    def test_malformed_ended_at_precedes_pr_reads_for_subject_and_legacy_paths(self):
+        for legacy in (False, True):
+            for ended in ("", "Ended at: invalid\n",
+                          "Ended at: 2026-10-01T00:00:00Z\nEnded at: 2026-10-01T00:00:00Z\n"):
+                with self.subTest(legacy=legacy, ended=ended):
+                    self.setUp()
+                    if legacy:
+                        self.f.comments[0]["body"] = "Claimed by old-worker"
+                        self.args.legacy, self.args.legacy_branch, self.args.legacy_reason = True, "old-branch", "no native ID"
+                        self.evidence["body"] = ("Closed legacy claim 1\n" + ended + "Safe to exit: yes\n"
+                            "Worker: old-worker\nSource branch: old-branch\nNative session unavailable: no native ID")
+                    else:
+                        self.f.issue["pull_request"] = {}
+                        self.evidence["body"] = "Closed session session-b\n" + ended + "Safe to exit: yes"
+                    def evidence_only(method, path, **kwargs):
+                        if not path.endswith(f"/issues/comments/{self.evidence['id']}"):
+                            self.fail("malformed closure must refuse before reading retained PRs or source commits")
+                        return ReleaseHarness.api(self, method, path, **kwargs)
+                    with patch.object(self, "api", side_effect=evidence_only), self.assertRaises(PLAN.PlanError):
+                        self.run_release()
+                    self.f.assert_no_writes()
+
     def pr_setup(self):
         self.f.pr_fixture("dependabot[bot]")
         self.f.pulls[0]["head"]["sha"] = "a" * 40

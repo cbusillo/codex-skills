@@ -657,10 +657,7 @@ def verified_record(session: str, home: Path | None = None) -> dict | None:
         release_session_claims.verify_closed(entry, "claim-observer", ended_at=ended)
         if evidence(entry) != entry["closure_evidence"]:
             return None
-        after = path.lstat()
-        if (before.st_ino, before.st_mtime_ns, before.st_size) != (after.st_ino, after.st_mtime_ns, after.st_size):
-            return None
-        return entry
+        return entry if receipt_current(entry) else None
     except (OSError, ValueError, KeyError, TypeError, ImportError, subprocess.SubprocessError):
         return None
 
