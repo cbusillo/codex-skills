@@ -62,9 +62,14 @@ def personal_login(repository: str) -> str:
 
 def attachment_name(url: str) -> str:
     # No alternate authority, query credentials, encoded path separators or traversal.
+    image = re.fullmatch(
+        r"https://github\.com/user-attachments/assets/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})", url,
+    )
+    if image:
+        return f"asset-{image[1]}"
     match = re.fullmatch(r"https://github\.com/user-attachments/files/([0-9]+)/([A-Za-z0-9._%+-]+)", url)
     if not match:
-        raise AttachmentError("expected a github.com/user-attachments/files URL")
+        raise AttachmentError("expected a github.com/user-attachments/files or assets URL")
     name = urllib.parse.unquote(match[2])
     if not name or name in {".", ".."} or any(c in name for c in "/\\\x00\r\n"):
         raise AttachmentError("invalid attachment filename")
@@ -87,7 +92,7 @@ def verify_comment(repository: str, comment: int, url: str):
     if (not isinstance(record, dict) or record.get("id") != comment
             or not re.fullmatch(expected_issue, str(record.get("issue_url", "")), re.IGNORECASE)):
         raise AttachmentError("comment does not belong to the requested repository")
-    links = re.findall(r'https://github\.com/user-attachments/files/[0-9]+/[^\s<>()\]"\']+', str(record.get("body", "")))
+    links = re.findall(r'https://github\.com/user-attachments/(?:files/[0-9]+|assets)/[^\s<>()\]"\']+', str(record.get("body", "")))
     if url not in links:
         raise AttachmentError("attachment URL is absent from the requested comment")
     return reader, record

@@ -209,6 +209,10 @@ class AttachmentTests(unittest.TestCase):
 
     def test_url_and_redirect_restrictions(self):
         for url in ("http://github.com/user-attachments/files/1/a", self.url + "?token=bad",
+                    self.url + "#fragment", self.url + "/extra", self.url + ".other",
+                    "https://github.com/user-attachments/assets/not-an-id",
+                    "https://github.com/user-attachments/assets/../files/1/a",
+                    "https://github.com/user-attachments/assets/%2Ftmp",
                     "https://github.com/user-attachments/files/1/%2Ftmp", "https://evil.invalid/file"):
             with self.subTest(url=url):
                 self.assertEqual(self.invoke(url=url)[0], 1)
@@ -340,6 +344,24 @@ class AttachmentTests(unittest.TestCase):
         (self.root / ".git").mkdir()
         self.assertEqual(self.invoke()[0], 1)
         self.run.assert_not_called()
+
+
+class EmbeddedImageTests(AttachmentTests):
+    """The same authorization, transport and storage boundaries apply to images."""
+
+    def setUp(self):
+        super().setUp()
+        self.url = "https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc"
+        self.comment["body"] = f'<img width="2252" alt="Image" src="{self.url}" />'
+        self.body = b"private-image-fixture"
+
+    def test_markdown_image_downloads_under_standing_approval(self):
+        self.standing_scope()
+        self.comment["body"] = f"![Printer]({self.url})"
+        status, result = self.invoke()
+        self.assertEqual(status, 0)
+        self.assertEqual(pathlib.Path(result["path"]).read_bytes(), self.body)
+        self.assertEqual(result["authority"], "standing_approval")
 
 
 if __name__ == "__main__":
