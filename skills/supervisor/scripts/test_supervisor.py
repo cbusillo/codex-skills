@@ -1414,6 +1414,12 @@ class TabCloseTests(unittest.TestCase):
         self.assertTrue(self.close()["close_requested"])
         self.session.async_close.assert_awaited_once_with(force=False)
 
+    def test_physical_close_does_not_stop_a_source_resumed_on_another_tty(self):
+        self.ledger.write_text(json.dumps([{**self.entry, "session_id": "source", "harness": "codex"}]))
+        self.inventory.return_value = [*self.rows, (456, "another-tty", "codex resume source")]
+        self.assertTrue(self.close()["close_requested"])
+        self.session.async_close.assert_awaited_once_with(force=False)
+
     def test_resume_candidates_do_not_prove_an_unrelated_session(self):
         entry = {**self.entry, "pid": 123, "session_id": "source", "harness": "codex"}
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)

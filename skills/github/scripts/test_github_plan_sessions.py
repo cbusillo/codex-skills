@@ -321,6 +321,57 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     f.release.validate_closure(closed, "supervisor")
 
+    def test_observation_normalizes_saved_paths_without_rewriting_or_weakening_receipt(self):
+        for spelling in ("absolute_alias", "relative"):
+            with self.subTest(spelling=spelling), ReceiptFixture() as f:
+                ended = datetime.now(timezone.utc) - timedelta(minutes=1)
+                rows = CLOSURE.log_rows()
+                source = next(row for row in rows if row.get("session_id") == f.session)
+                source["ended_at"] = ended.isoformat()
+                source["tty"] = "/dev/fixture-tty"
+                alias = f.root / "aliased-account"
+                alias.symlink_to(f.home, target_is_directory=True)
+                source["transcript"] = (str(alias / "sessions" / f.transcript.name) if spelling == "absolute_alias"
+                                        else os.path.relpath(f.transcript, f.log.parent))
+                CLOSURE.replace_rows(rows)
+                native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
+                with patch.object(CLOSURE, "process_started_at", return_value=ended + timedelta(seconds=1)):
+                    f.managed(native)
+                    f.commands = "456 " + " ".join(native)
+                    f.process_rows = [(456, "fixture-tty", " ".join(native))]
+                    saved = f.log.read_bytes()
+                    transcript = f.transcript.read_bytes()
+                    self.assert_ended(f)
+                    verified = CLOSURE.verified_record(f.session, f.home)
+                    self.assertIsNotNone(verified)
+                    self.assertEqual(verified["transcript"], str(f.transcript))
+                    self.assertEqual(verified["tty"], "fixture-tty")
+                    self.assertTrue(CLOSURE.receipt_current(verified))
+                    self.assertEqual(CLOSURE.candidate_records({f.session})[f.session]["transcript"], str(f.transcript))
+                    self.assertEqual(f.log.read_bytes(), saved)
+                    for change in ("generation", "transcript", "pending"):
+                        with self.subTest(change=change):
+                            if change == "generation":
+                                changed = json.loads(saved)
+                                next(row for row in changed if row.get("session_id") == f.session)["launch_generation"] = "changed"
+                                CLOSURE.replace_rows(changed)
+                            elif change == "transcript":
+                                f.transcript.write_bytes(transcript + json.dumps({"type": "event_msg",
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "payload": {"type": "task_started"}}).encode() + b"\n")
+                            else:
+                                with CLOSURE.ownership(f.session):
+                                    CLOSURE.set_action_pending(f.session, True)
+                            before = f.log.read_bytes()
+                            self.assert_live(f)
+                            self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
+                            self.assertEqual(f.log.read_bytes(), before)
+                            f.log.write_bytes(saved)
+                            f.transcript.write_bytes(transcript)
+                            with CLOSURE.ownership(f.session):
+                                CLOSURE.set_action_pending(f.session, False)
+                    self.assertFalse(f.mutations)
+
     def test_observation_uses_saved_native_exit_before_later_closure_record_time(self):
         with ReceiptFixture() as f:
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
@@ -427,6 +478,13 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         with CLOSURE.resume_guard(alias):
                             self.fail("an alias acquired authority over the native source")
+                    self.assertEqual(set(CLOSURE.lease_path(f.session).parent.iterdir()), leases)
+                    self.assertEqual(f.log.read_bytes(), before)
+                    peers, states, _ = SESSIONS.observe({alias})
+                    identity = next(peer for peer in peers if peer["sessionId"] == alias)
+                    self.assertEqual(identity["source"], "native_identity")
+                    self.assertEqual(identity["canonical_session_id"], f.session)
+                    self.assertEqual(states[alias]["source"], "native_identity")
                     self.assertEqual(set(CLOSURE.lease_path(f.session).parent.iterdir()), leases)
                     self.assertEqual(f.log.read_bytes(), before)
 

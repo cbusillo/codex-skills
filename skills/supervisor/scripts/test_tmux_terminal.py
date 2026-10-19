@@ -416,6 +416,43 @@ class PaneParserTests(unittest.TestCase):
                         self.terminal.close(self.identity, ledger)
                     self.assertFalse(any(c.args[0] != "list-panes" for c in calls.call_args_list))
 
+    def test_physical_close_preserves_new_harness_owner_and_resumed_source(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
+        for harness, commands in (
+            ("codex", ["python3 /fixture/codex-session.py launch -- codex", "codex --remote unix:///fixture -- prompt"]),
+            ("claude", ["claude", "node /fixture/claude.js --continue"]),
+            ("codex", ["codex resume " + source, "python3 /fixture/codex_session_proxy.py -- fixture"]),
+        ):
+            with self.subTest(harness=harness, commands=commands), tempfile.TemporaryDirectory() as folder:
+                entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                         "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture",
+                         "session_id": source, "harness": harness}
+                ledger = Path(folder) / "ledger.json"
+                ledger.write_text(json.dumps([entry]))
+                processes = [(456, "ttys987", commands[0]), (999, "ttys987", commands[1]),
+                             (1000, "other-tty", "codex resume " + source)]
+                with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=self.dead + live)) as calls, \
+                        patch.object(session_liveness, "inventory", return_value=processes), \
+                        patch.object(tmux_terminal, "process_parents", return_value={456: 123, 999: 456}):
+                    self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
+                    mutations = [call.args for call in calls.call_args_list if call.args[0] != "list-panes"]
+                    self.assertEqual(len(mutations), 1)
+                    self.assertEqual(mutations[0][-1], "kill-pane -t %1")
+
+    def test_malformed_launch_time_refuses_physical_close_without_traceback(self):
+        for started in (True, 123, {"timestamp": "invalid"}, "2026-01-01T00:00:00"):
+            with self.subTest(started=started), tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                ledger.write_text(json.dumps([{"supervisor_owned": True, "tmux_session_id": self.identity,
+                    "pid": 789, "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture",
+                    "launch_started_at": started}]))
+                with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=self.dead)) as calls, self.assertRaises(ValueError):
+                    self.terminal.close(self.identity, ledger)
+                self.assertTrue(all(call.args[0] == "list-panes" for call in calls.call_args_list))
+
     def test_native_close_never_excuses_unknown_old_equal_or_future_birth(self):
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
                  "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}

@@ -2257,7 +2257,9 @@ Normal completion runs verified finish/release before native close. Interrupted
 work uses the termination-release procedure before physical cleanup. The native
 close command rechecks the exact owned terminal, source PID and TTY, and actual
 empty shell input. Finish owns the native verdict and issue handoff proof;
-termination recovery owns the interrupted-source proof. Only `login` and idle login/interactive
+termination recovery owns the interrupted-source proof. Physical cleanup of an
+old dead pane preserves a verified replacement worker and a source resumed in
+another terminal; source-session closure still checks resumed work. Only `login` and idle login/interactive
 shell processes can remain on an iTerm TTY; prompt helpers and shell scripts
 preserve the tab. Process arguments are inspected privately and never emitted.
 The close command performs one

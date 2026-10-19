@@ -283,6 +283,14 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
             peers, states, coverage = _observe(sessions, proof_sessions)
             for session in sessions:
                 try:
+                    github_plan_closure.require_canonical_identity(session)
+                except ValueError as error:
+                    diagnostic = {"source": "native_identity", "error": str(error),
+                                  "canonical_session_id": process_liveness().native_uuid(session)}
+                    peers.append({"sessionId": session, "cwd": "/", "state": "unknown", **diagnostic})
+                    states[session] = {"state": "live", **diagnostic}
+                    continue
+                try:
                     blocked = (github_plan_closure.action_pending(session)
                                or session not in leased and github_plan_closure.lease_path(session).exists())
                 except (OSError, ValueError):

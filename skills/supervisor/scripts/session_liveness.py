@@ -110,8 +110,11 @@ def invocation(argv):
 
 
 def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
-                        independent_harness=None, replacement_owner=None, require_tty=False):
-    """One inventory per probe; unknown execution or identity always preserves work."""
+                        independent_harness=None, replacement_owner=None, require_tty=False,
+                        scope="session"):
+    """Share process facts; physical terminal cleanup does not establish session closure."""
+    if scope not in {"session", "terminal"}:
+        raise ValueError("unknown process verification scope")
     rows = inventory() if rows is None else rows
     started_at = started_at or process_started_at
     tty = entry.get("tty")
@@ -135,7 +138,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         argv = harness_arguments(command)
         resumed, command_kind = invocation(argv)
         identities = [native_uuid(value) or value for value in resumed]
-        if source in identities:
+        if scope == "session" and source in identities:
             raise ValueError("source native session is visible in a resumed harness process")
         if process_tty != tty or idle_terminal_command(command):
             continue
@@ -150,8 +153,10 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         owner_known = replacement_owner is not None and replacement_owner(pid)
         if replacement_owner is not None and not owner_known:
             raise ValueError("process belongs to no verified new TTY owner; terminal kept")
-        if argv and (harness_family(argv[0]) in ({entry["harness"]} if entry.get("harness") else {"codex", "claude"})
-                     or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}):
+        if scope == "session" and argv and (
+            harness_family(argv[0]) in ({entry["harness"]} if entry.get("harness") else {"codex", "claude"})
+            or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}
+        ):
             explicit_other = len(resumed) == 1 and native_uuid(resumed[0]) is not None
             noninteractive = command_kind == "exec"
             guarded = independent_harness is not None and independent_harness(pid, argv)

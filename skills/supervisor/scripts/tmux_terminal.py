@@ -320,7 +320,10 @@ class Terminal:
             raise ValueError("split or linked tmux window; terminal kept")
         cutoff = datetime.fromisoformat(row["exited_at"]) if row["exited_at"] else None
         if cutoff is not None:
-            started = datetime.fromisoformat(entry["launch_started_at"]) if entry.get("launch_started_at") else None
+            try:
+                started = datetime.fromisoformat(entry["launch_started_at"]) if entry.get("launch_started_at") is not None else None
+            except TypeError as error:
+                raise ValueError("native pane launch time is invalid") from error
             if (cutoff.tzinfo is None or cutoff > datetime.now(timezone.utc)
                     or started is not None and (started.tzinfo is None or started > cutoff)):
                 raise ValueError("native pane exit time differs from this launch generation")
@@ -345,7 +348,7 @@ class Terminal:
         session_liveness.verify_process_exit(
             {**entry, "_terminal_pid": row["pid"]}, rows=rows,
             ended_at=datetime.fromisoformat(row["exited_at"]) if row["exited_at"] else None,
-            replacement_owner=replacement)
+            replacement_owner=replacement, scope="terminal")
         # A dead pane has no input consumer. Never kill a live shell to clear it.
         return row
 

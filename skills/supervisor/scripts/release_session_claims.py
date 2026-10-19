@@ -71,8 +71,8 @@ def verify_process_exit(entry, *, ended_at=None):
         records = closure.log_rows() if closure.closed_log().exists() else []
         source = next((row for row in records if row.get("session_id") == entry["session_id"]), None)
         if source is not None and not source.get("resumed_at") and source.get("process_exit_verified"):
-            source = session_record.normalize_ledger_entry(closure.closed_log(), source)
-            identity = lambda row: {key: value for key, value in row.items() if not key.startswith("_") and key != "handoff_url"}
+            identity = lambda row: {key: value for key, value in session_record.normalize_ledger_entry(
+                closure.closed_log(), row).items() if not key.startswith("_") and key != "handoff_url"}
             return identity(source) == identity(entry)
         return True
 
