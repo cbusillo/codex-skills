@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = [
+#     "aiohttp==3.14.5",
+# ]
 # ///
 """Behavioral tests for claim ownership, races, and partial recovery."""
 

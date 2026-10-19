@@ -1,7 +1,10 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["websockets==17.2", "aiohttp==3.14.5"]
+# dependencies = [
+#     "aiohttp==3.14.5",
+#     "websockets==17.2",
+# ]
 # ///
 """Exact-thread Codex resume and queue operations under the ownership lease."""
 from __future__ import annotations

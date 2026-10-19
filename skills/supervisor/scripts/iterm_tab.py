@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "iterm2==2.25",
+#     "iterm2==2.30",
 #     "websockets==17.2",
 # ]
 # ///

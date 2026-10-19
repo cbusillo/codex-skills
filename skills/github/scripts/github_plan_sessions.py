@@ -1,6 +1,8 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = [
+#     "aiohttp==3.14.5",
+# ]
 # ///
 """Bounded native ownership reads; never start, resume, or interrupt a session."""
 from __future__ import annotations

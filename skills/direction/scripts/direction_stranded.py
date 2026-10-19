@@ -1,6 +1,8 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["PyYAML==6.0.3"]
+# dependencies = [
+#     "PyYAML==6.0.3",
+# ]
 # ///
 """Read-only stranded-work view of the existing direction audit inventory."""
 from __future__ import annotations

@@ -2,8 +2,8 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "PyYAML==6.0.3",
 #     "aiohttp==3.14.5",
+#     "PyYAML==6.0.3",
 # ]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""

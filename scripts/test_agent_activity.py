@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = [
+#     "aiohttp==3.14.5",
+# ]
 # ///
 """Lifecycle/privacy fixtures and a real Unix websocket observer exercise."""
 import asyncio

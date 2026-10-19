@@ -1,7 +1,9 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["PyYAML==6.0.3"]
+# dependencies = [
+#     "PyYAML==6.0.3",
+# ]
 # ///
 """Read every visible open Director wait, independent of labels and questions."""
 

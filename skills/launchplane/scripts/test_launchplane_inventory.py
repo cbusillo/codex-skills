@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pytest==9.1.1"]
+# dependencies = [
+#     "pytest==9.1.1",
+# ]
 # ///
 """Offline request, pagination and value-free inventory regressions."""
 

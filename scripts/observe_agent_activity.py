@@ -1,7 +1,9 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = [
+#     "aiohttp==3.14.5",
+# ]
 # ///
 """Observe existing Codex daemons and Claude's supported session inventory."""
 from __future__ import annotations
