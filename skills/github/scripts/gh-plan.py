@@ -2479,6 +2479,18 @@ def _claim_once(args: argparse.Namespace) -> None:
     retained_ended_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
+    phase_records = {}
+    phase_peers = []
+    phase_lineage_error = None
+
+    def read_record(record_number, record_repo, *, allow_closed=False):
+        key = (record_repo.casefold(), int(record_number))
+        if key not in phase_records:
+            phase_records[key] = claim_snapshot(str(record_number), record_repo, allow_closed=allow_closed)
+        snapshot = phase_records[key]
+        if snapshot[0].get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
+            raise PlanError("Claim requires an open issue or pull request")
+        return snapshot
 
     def retain_released_sources(sessions, observed) -> None:
         # Unknown/non-Codex IDs keep their existing authored-release route.
@@ -2487,8 +2499,12 @@ def _claim_once(args: argparse.Namespace) -> None:
         retained_ended_sources.update(session for session in sessions if session != claim["session"]
             and observed.get("session_states", {}).get(session, {}).get("state") == "ended")
 
-    def observe_claim_sources(source_inventory, source_comments, owners):
+    def observe_claim_sources(source_inventory, source_comments):
         import github_plan_sessions
+        owners = [(snapshot[0].get("repo", owner_repo), owner_number, snapshot[2])
+                  for (owner_repo, owner_number), snapshot in phase_records.items()]
+        contexts = tuple(context for _, _, discussion in owners
+                         for context in github_plan_release._released_source_contexts(discussion))
         def readback(context):
             owner = next((item for item in owners if any(c.get("id") == context.source_id for c in item[2])), None)
             if owner is None:
@@ -2500,13 +2516,12 @@ def _claim_once(args: argparse.Namespace) -> None:
                 raise ClassifiedPlanError("claim_conflict", "Released source authority changed during native verification",
                     payload={"competing_evidence": [{"source": "released_source_changed", "id": context.source_id,
                                                       "session": context.session}]})
-        with github_plan_sessions._source_readback(readback):
+        with github_plan_sessions._source_readback(readback, contexts):
             return github_plan_claim.observe_sessions(source_inventory, source_comments)
 
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
         nonlocal inventory, ended_owners
-        inventory = observe_claim_sources(github_plan_claim.local_inventory(target_repo, number), current_comments,
-                                          [(issue_repo, number, current_comments)])
+        inventory = observe_claim_sources(github_plan_claim.local_inventory(target_repo, number), current_comments)
         ended_owners = github_plan_claim.ended_ownership(current_comments, inventory)
         retain_released_sources((entry["session"] for entry in ended_owners), inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
@@ -2562,7 +2577,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             raise ClassifiedPlanError("claim_native_parent_required", "Cross-record resume requires a native parent in the claimed issue's repository")
         if resume_source_number is not None and parent["number"] != resume_source_number:
             raise ClassifiedPlanError("claim_native_parent_changed", "Native resume parent changed during claim readback")
-        source, source_status, source_comments, _ = claim_snapshot(
+        source, source_status, source_comments, _ = read_record(
             str(parent["number"]), issue_repo, allow_closed=True)
         if "pull_request" in source:
             raise ClassifiedPlanError("claim_native_parent_invalid", "Native resume parent must be an issue")
@@ -2579,8 +2594,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     ) -> None:
         peer_records = github_plan_claim.records(peer_status) + [
             record for c in peer_comments for record in github_plan_claim.records(c.get("body") or "")]
-        peer_inventory: dict[str, Any] = observe_claim_sources(source_inventory, peer_comments,
-                                                             [(peer_repo, peer_number, peer_comments)])
+        peer_inventory: dict[str, Any] = observe_claim_sources(source_inventory, peer_comments)
         # The requester can occupy a released source worktree. Exclude only its
         # native identity, including observations added by observe_sessions;
         # foreign sessions and unreleased discussion ownership still compete.
@@ -2620,7 +2634,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                 payload={"closure_error": str(error)}) from error
 
     def check_handoff_successors(
-        source_number: int, source_inventory: dict[str, Any], *,
+        source_number: int, *,
         source_claim_id: int | None = None, source_handoff_url: str | None = None,
         source_comments: list[dict[str, Any]] | None = None,
         source_repo: str | None = None, source_issue: dict[str, Any] | None = None,
@@ -2640,9 +2654,9 @@ def _claim_once(args: argparse.Namespace) -> None:
             return
         directions.add("children")
         if source_issue is None:
-            source_issue, source_status, source_comments, _ = claim_snapshot(
+            source_issue, source_status, source_comments, _ = read_record(
                 str(source_number), source_repo, allow_closed=True)
-        check_inherited_sources(source_comments or [], source_status or "", source_inventory=source_inventory,
+        check_inherited_sources(source_comments or [], source_status or "",
                                 node_repo=source_repo, node_number=source_number, node_issue=source_issue,
                                 traversal=traversal)
         _, children = collect_paged_rest_items(
@@ -2680,7 +2694,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             if child_key in seen_children:
                 continue
             seen_children.add(child_key)
-            peer_issue, peer_status, peer_comments, _ = claim_snapshot(str(peer_number), peer_repo, allow_closed=True)
+            peer_issue, peer_status, peer_comments, _ = read_record(str(peer_number), peer_repo, allow_closed=True)
             peer_records = github_plan_claim.records(peer_status) + [
                 record for c in peer_comments for record in github_plan_claim.records(c.get("body") or "")]
             claimed_node = child_key == (issue_repo.casefold(), number)
@@ -2692,25 +2706,23 @@ def _claim_once(args: argparse.Namespace) -> None:
             # and can move to a fresh branch. Once this issue holds the source,
             # its full ownership must end before a sibling can take the source.
             if not claimed_node:
-                check_peer_ownership(peer_repo, peer_number, peer_status, peer_comments, source_inventory)
+                phase_peers.append((peer_repo, peer_number, peer_status, peer_comments))
             # The claimed record has independent ownership checks, but may itself
             # have successors that must remain visible through this ancestor.
-            check_handoff_successors(peer_number, source_inventory, source_repo=peer_repo,
+            check_handoff_successors(peer_number, source_repo=peer_repo,
                                      source_issue=peer_issue, source_status=peer_status,
                                      source_comments=peer_comments, traversal=traversal)
 
     def check_inherited_sources(
         current_comments: list[dict[str, Any]], current_status: str, *,
-        source_inventory: dict[str, Any] | None = None,
         node_repo: str | None = None, node_number: int | None = None,
         node_issue: dict[str, Any] | None = None,
         traversal: dict[tuple[str, int], set[str]] | None = None,
     ) -> None:
         """Later work on a child cannot race a holder of its original source."""
-        family_inventory = inventory if source_inventory is None else source_inventory
         node_repo = issue_repo if node_repo is None else node_repo
         node_number = number if node_number is None else node_number
-        node_issue = issue if node_issue is None else node_issue
+        node_issue = read_record(node_number, node_repo, allow_closed=True)[0] if node_issue is None else node_issue
         traversal = {} if traversal is None else traversal
         directions = traversal.setdefault((node_repo.casefold(), node_number), set())
         if "ancestors" in directions:
@@ -2750,23 +2762,18 @@ def _claim_once(args: argparse.Namespace) -> None:
             if key in checked:
                 continue
             checked.add(key)
-            parent_issue, parent_status, parent_comments, _ = claim_snapshot(str(parent_number), parent_repo, allow_closed=True)
+            parent_issue, parent_status, parent_comments, _ = read_record(str(parent_number), parent_repo, allow_closed=True)
             if (parent_repo.casefold(), parent_number) != (issue_repo.casefold(), number):
-                check_peer_ownership(parent_repo, parent_number, parent_status, parent_comments, family_inventory)
-            check_handoff_successors(parent_number, family_inventory, source_claim_id=int(source_id),
+                phase_peers.append((parent_repo, parent_number, parent_status, parent_comments))
+            check_handoff_successors(parent_number, source_claim_id=int(source_id),
                                      source_handoff_url=handoff_url, source_comments=parent_comments,
                                      source_repo=parent_repo, source_issue=parent_issue, source_status=parent_status,
                                      traversal=traversal)
 
-    def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str) -> set[str]:
-        nonlocal retained_waits
+    def prepare_handoff(source_info):
         if not handoff_id:
-            if record_kind == "issue":
-                check_inherited_sources(current_comments, current_status)
-            if args.resume_from and record_kind == "issue":
-                check_handoff_successors(number, inventory, source_comments=current_comments)
-            return set()
-        source_number, source_comments, source_status = resume_source(current_comments, current_status)
+            return None
+        source_number, source_comments, source_status = source_info
         _, target_pulls = collect_paged_rest_items(
             f"/repos/{target_repo}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="refresh_open_prs",
@@ -2786,11 +2793,91 @@ def _claim_once(args: argparse.Namespace) -> None:
                     raise
                 continue
             target_pulls.append(retained_pull)
-        permitted = github_plan_claim.retained_handoff(
-            source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
-            issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
-            allow_resume_only=source_number == number and not completed,
-        )
+        try:
+            permitted = github_plan_claim.retained_handoff(
+                source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
+                issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
+                allow_resume_only=source_number == number and not completed,
+            )
+        except ValueError as error:
+            # Keep the existing current-ownership decision ahead of local
+            # handoff qualification. Unqualified PRs supply no source context.
+            return error
+        source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
+        targets = []
+        for pull in target_pulls:
+            if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
+                    and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
+                # The existing ownership refusal runs later, before using this
+                # record; an unauthorized PR cannot supply closure context.
+                targets.append((pull, None, None, None))
+                continue
+            if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
+                continue
+            key = (target_repo.casefold(), pull["number"])
+            cached = phase_records.get(key)
+            if cached is not None:
+                target, _, target_comments, _ = cached
+            else:
+                _, target = get_issue(str(pull["number"]), target_repo)
+            if target.get("state") != pull.get("state") or "pull_request" not in target:
+                raise PlanError("Refresh handoff PR changed or closed during ownership preflight")
+            sections, _ = read_plan_sections(target)
+            if cached is None:
+                _, target_comments = collect_paged_rest_items(
+                    f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
+                    bucket="rest_core", step_prefix="refresh_comments",
+                )
+                target_comments = github_plan_release.verified_comments(target_comments, _claim_release_evidence)
+                phase_records[key] = (target, sections.get("Current Status", ""), target_comments, False)
+            targets.append((pull, target, sections, target_comments))
+        return source_info, target_pulls, named, permitted, targets
+
+    def prepare_phase(snapshot):
+        nonlocal phase_lineage_error
+        phase_records.clear()
+        phase_peers.clear()
+        phase_lineage_error = None
+        phase_records[(issue_repo.casefold(), number)] = snapshot
+        current_issue, current_status, current_comments, _ = snapshot
+        source_info = resume_source(current_comments, current_status) if args.resume_from else (number, current_comments, current_status)
+        prepared = prepare_handoff(source_info)
+        if record_kind == "issue":
+            traversal = {}
+            try:
+                check_inherited_sources(current_comments, current_status,
+                                        node_issue=current_issue, traversal=traversal)
+                if handoff_id or args.resume_from:
+                    source_number, source_comments, source_status = source_info
+                    source_issue = read_record(source_number, issue_repo, allow_closed=True)[0]
+                    check_handoff_successors(source_number, source_comments=source_comments,
+                                             source_status=source_status, source_issue=source_issue, traversal=traversal)
+            except ClassifiedPlanError as error:
+                if error.code != "claim_resume_lineage_invalid":
+                    raise
+                # Stop at the invalid edge. Already collected peer ownership
+                # still has its original precedence over that local predicate.
+                phase_lineage_error = error
+        return source_info, prepared
+
+    def check_phase_peers(source_inventory):
+        checked = set()
+        for peer_repo, peer_number, peer_status, peer_comments in phase_peers:
+            key = (peer_repo.casefold(), peer_number)
+            if key not in checked:
+                checked.add(key)
+                check_peer_ownership(peer_repo, peer_number, peer_status, peer_comments, source_inventory)
+        if phase_lineage_error is not None:
+            raise phase_lineage_error
+
+    def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str, prepared) -> set[str]:
+        nonlocal retained_waits
+        if prepared is None:
+            check_phase_peers(inventory)
+            return set()
+        if isinstance(prepared, ValueError):
+            raise prepared
+        (source_number, source_comments, source_status), target_pulls, named, permitted, targets = prepared
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
                                       if (p.get("head") or {}).get("ref") == ended["branch"]]
@@ -2802,27 +2889,15 @@ def _claim_once(args: argparse.Namespace) -> None:
         session_owners = {record["session"]: (source_comments, issue_repo, source_number)
                           for comment in source_comments for record in github_plan_claim.records(comment.get("body") or "")}
         target_session_comments = list(source_comments)
-        context_owners = [(issue_repo, source_number, source_comments)]
         if source_number != number:
             target_session_comments.extend(current_comments)
-            context_owners.append((issue_repo, number, current_comments))
-        for pull in target_pulls:
+        for pull, target, sections, target_comments in targets:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
                 refuse([{"source": "open_pr", "number": pull["number"], "branch": pull["head"]["ref"],
                          "certainty": "not_in_source_handoff"}], owner_comments=source_comments, owner_number=source_number)
             if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
                 continue
-            _, target = get_issue(str(pull["number"]), target_repo)
-            if target.get("state") != pull.get("state") or "pull_request" not in target:
-                raise PlanError("Refresh handoff PR changed or closed during ownership preflight")
-            sections, _ = read_plan_sections(target)
-            _, target_comments = collect_paged_rest_items(
-                f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
-                bucket="rest_core", step_prefix="refresh_comments",
-            )
-            target_comments = github_plan_release.verified_comments(target_comments, _claim_release_evidence)
-            context_owners.append((target_repo, pull["number"], target_comments))
             for comment in target_comments:
                 for record in github_plan_claim.records(comment.get("body") or ""):
                     session_owners.setdefault(record["session"], (target_comments, target_repo, pull["number"]))
@@ -2848,7 +2923,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                 raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
             retained_waits = observed_waits
         target_inventory = observe_claim_sources(
-            github_plan_claim.local_inventory(target_repo, target_number), target_session_comments, context_owners)
+            github_plan_claim.local_inventory(target_repo, target_number), target_session_comments)
         source_ended = github_plan_claim.ended_ownership(source_comments, target_inventory)
         if source_number != number:
             # The parent's wait remains there; only its ownership is inherited.
@@ -2876,8 +2951,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]
             refuse(live_sources, owner_comments=owner_comments, owner_repo=owner_repo, owner_number=owner_number)
         retain_released_sources(released_target_sessions, target_inventory)
-        check_inherited_sources(current_comments, current_status, source_inventory=target_inventory)
-        check_handoff_successors(source_number, target_inventory, source_comments=source_comments)
+        check_phase_peers(target_inventory)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)
         for checked_number, checked_repo in dict.fromkeys(
                 ((target_number, target_repo), (number, issue_repo), (source_number, issue_repo))):
@@ -2903,8 +2977,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             if planning_path is None:
                 raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
             planning_inventory = github_plan_claim.local_inventory(issue_repo, number, cwd=planning_path)
-            check_inherited_sources(current_comments, current_status, source_inventory=planning_inventory)
-            check_handoff_successors(source_number, planning_inventory, source_comments=source_comments)
+            check_phase_peers(planning_inventory)
             _, planning_pulls = collect_paged_rest_items(
                 f"/repos/{issue_repo}/pulls", query={"state": "open"},
                 bucket="rest_core", step_prefix="refresh_planning_prs",
@@ -3028,7 +3101,8 @@ def _claim_once(args: argparse.Namespace) -> None:
         previous_wait = github_plan_wait.marker(issue["claim_wait"])
         previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
-        _, resume_comments, _ = resume_source(comments, status) if args.resume_from else (number, comments, status)
+        source_info, prepared_handoff = prepare_phase((issue, status, comments, can_update))
+        _, resume_comments, _ = source_info
         conflicts, owned = ownership_snapshot(status, comments)
         if conflicts:
             refuse_or_route(conflicts, comments)
@@ -3039,7 +3113,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             claim = {key: owned[0][key] for key in claim}
         retained = github_plan_claim.retained_branch(resume_comments, args.resume_from) if args.resume_from else None
         check_native_blockers()
-        retained_branches = handoff_preflight(comments, status)
+        retained_branches = handoff_preflight(comments, status, prepared_handoff)
         _, pulls = collect_paged_rest_items(
             f"/repos/{target_repo}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="claim_open_prs",
@@ -3093,6 +3167,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         # Check the discussion again before touching status or labels.
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         check_agent(issue)
+        _, prepared_handoff = prepare_phase((issue, status, comments, can_update))
         conflicts, observed = ownership_snapshot(status, comments)
         if conflicts:
             refuse(conflicts)
@@ -3100,7 +3175,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         check_wait(issue, status)
         check_issue_holds(issue)
         check_native_blockers()
-        handoff_preflight(comments, status)
+        handoff_preflight(comments, status, prepared_handoff)
         if not any(github_plan_claim.same_owner(record, claim) for record in observed):
             raise PlanError("Claim was not visible on readback; do not create a worktree")
         admit_observed_sources()
@@ -3146,6 +3221,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
         comments = final_comments
         check_agent(final)
+        _, prepared_handoff = prepare_phase((final, final_status, final_comments, can_update))
         conflicts, observed = ownership_snapshot(final_status, final_comments)
         if conflicts:
             refuse(conflicts)
@@ -3153,7 +3229,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         check_wait(final, final_status)
         check_issue_holds(final)
         check_native_blockers()
-        handoff_preflight(final_comments, final_status)
+        handoff_preflight(final_comments, final_status, prepared_handoff)
         if not observed or (record_kind == "issue" and label_map["active"] not in normalize_labels(final.get("labels"))):
             raise PlanError("Claim metadata was not visible on final readback")
         if can_update and not any(github_plan_claim.same_owner(record, claim)

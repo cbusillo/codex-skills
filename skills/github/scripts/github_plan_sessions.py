@@ -22,12 +22,14 @@ _PENDING_PROOFS = ContextVar("pending_native_proofs", default=None)
 
 
 @contextmanager
-def _source_readback(readback):
+def _source_readback(readback, contexts=()):
     """The claim owner supplies canonical reads; native observation never does."""
     token = _SOURCE_READBACK.set(readback)
+    context_token = _SOURCE_CONTEXTS.set(tuple(contexts))
     try:
         yield
     finally:
+        _SOURCE_CONTEXTS.reset(context_token)
         _SOURCE_READBACK.reset(token)
 
 
@@ -348,7 +350,9 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None, *, _sour
             except (OSError, ValueError):
                 continue
         token = github_plan_closure.RECEIPTS.set(receipts)
-        context_token = _SOURCE_CONTEXTS.set(_source_contexts)
+        contexts = list(_SOURCE_CONTEXTS.get())
+        contexts.extend(context for context in _source_contexts if context not in contexts)
+        context_token = _SOURCE_CONTEXTS.set(tuple(contexts))
         candidates = {}
         proof_token = _PENDING_PROOFS.set(candidates)
         try:

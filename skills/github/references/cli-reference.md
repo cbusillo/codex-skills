@@ -994,7 +994,11 @@ minimal saved resume generation. The helper binds its actual launch identity,
 home and transcript to the verified source and closure time, then checks all
 relevant native homes and physical processes. It rereads the canonical release
 authority before clearing a pending action; it adds no ownership fields to the
-saved row. Pending, legacy, worker-only and termination releases cannot supply
+saved row. Each claim readback first reads its existing native source family and
+retained PR discussions once. A verified End for the same native session can
+support physical completion across those records; each record still needs its
+own exact ownership release. The authority read after native verification stays
+fresh. Pending, legacy, worker-only and termination releases cannot supply
 this alternative. A recovering generation still needs its native proof after
 the pending marker clears and on every claim readback; another account's
 unloaded thread cannot replace a failed proof. Source activity is measured by
