@@ -70,13 +70,14 @@ def test_parse_uses_toml_semantics_and_preserves_other_metadata() -> None:
         parsed = MODULE.parse_script(path)
         assert parsed is not None
         assert parsed.dependencies == ("PyYAML>=6.0.0", "pytest")
-        updated = MODULE.render_script(parsed, ["PyYAML==6.0.3", "pytest==9.1.1"])
+        # Fixture pins no real script uses, so they never shadow a tracked version.
+        pins = ["PyYAML==0.0.1", "pytest==0.0.2"]
+        updated = MODULE.render_script(parsed, pins)
         assert '# custom = { owner = "team" }' in updated
-        assert '#     "PyYAML==6.0.3",' in updated
-        assert '#     "pytest==9.1.1",' in updated
+        assert all(f'#     "{pin}",' in updated for pin in pins)
         reparsed = MODULE.parse_script(path, updated)
         assert reparsed is not None
-        assert reparsed.dependencies == ("PyYAML==6.0.3", "pytest==9.1.1")
+        assert reparsed.dependencies == tuple(pins)
 
 
 def test_rewrite_targets_only_canonical_top_level_dependencies() -> None:
