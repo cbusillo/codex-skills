@@ -4306,7 +4306,10 @@ def http_error_recommendation(status: str) -> str:
 def summarize_success(
     *, operation: str, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    records, result = _project_success_output(operation, provider_payload, request=request)
+    try:
+        records, result = _project_success_output(operation, provider_payload, request=request)
+    except TypeError as exc:
+        raise LaunchplaneSafetyError("invalid_response") from exc
     status = public_code(provider_payload.get("status"), default="accepted")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["records"] = records
@@ -4643,7 +4646,12 @@ def emit_read_transport_error(
         isinstance(exc, TimeoutError)
         or (isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError))
     ):
-        emit_provider_unavailable(operation=operation, request=request)
+        payload = unavailable_payload(
+            operation=operation, request=request, status="unavailable",
+            code="provider_unavailable", message="Launchplane service is unavailable.",
+        )
+        cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(exc))
+        emit(payload)
         return
     payload = unavailable_payload(
         operation=operation, request=request, status="unavailable",
@@ -4656,19 +4664,23 @@ def emit_read_transport_error(
             "No response trace was received. Retry the read with a longer --timeout before the subcommand."
         ),
     }
+    cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(exc))
     emit(payload)
 
 
-def emit_invalid_response(*, operation: str, request: dict[str, object]) -> None:
-    emit(
-        unavailable_payload(
-            operation=operation,
-            request=request,
-            status="invalid",
-            code="invalid_response",
-            message="Launchplane returned an invalid response.",
-        )
+def emit_invalid_response(
+    *, operation: str, request: dict[str, object], diagnostics: dict[str, object] | None = None,
+) -> None:
+    payload = unavailable_payload(
+        operation=operation,
+        request=request,
+        status="invalid",
+        code="invalid_response",
+        message="Launchplane returned an invalid response.",
     )
+    cast(dict[str, object], payload["summary"]).update(diagnostics or {})
+    assert_public_safe_shape(payload["summary"])
+    emit(payload)
 
 
 def read_payload_file(path: str) -> dict[str, object]:
@@ -5922,46 +5934,49 @@ def read_health_monitoring(
         service_url=settings["service_url"], settings=settings, query={}, timeout=timeout,
         path=_product_read_path("product-profile-read", product=cast(str, body["product"])),
     )
-    profile = _require_dict(provider.get("profile"))
-    if provider.get("status") != "ok" or profile.get("product") != body["product"]:
-        raise LaunchplaneSafetyError("invalid_response")
-    lanes = profile.get("lanes")
-    if not isinstance(lanes, list):
-        raise LaunchplaneSafetyError("invalid_response")
-    matches = [lane for lane in lanes if isinstance(lane, dict) and all(
-        lane.get(field) == body[field] for field in ("context", "instance")
-    )]
-    if len(matches) != 1:
-        raise LaunchplaneSafetyError("invalid_response")
-    lane = matches[0]
-    policy = _require_dict(lane.get("health_monitoring"))
-    checks = policy.get("checks")
-    if not isinstance(checks, list):
-        raise LaunchplaneSafetyError("invalid_response")
-    matches = [check for check in checks if isinstance(check, dict) and
-               _health_check_token(str(check.get("name", ""))) == _health_check_token(cast(str, body["check_name"]))]
-    if len(matches) > 1:
-        raise LaunchplaneSafetyError("invalid_response")
-    check = matches[0] if matches else {}
-    endpoint = {"url": check.get("url", ""), "health_url": lane.get("health_url", ""),
-                "base_url": lane.get("base_url", ""), "private_endpoint_key": check.get("private_endpoint_key", "")}
-    if not all(isinstance(value, str) for value in endpoint.values()):
-        raise LaunchplaneSafetyError("invalid_response")
-    public = {
-        "monitoring_intent": policy.get("monitoring_intent"), "kind": check.get("kind"),
-        "enabled": check.get("enabled"), "require_runtime_identity": check.get("require_runtime_identity"),
-    }
-    if (
-        public["monitoring_intent"] not in HEALTH_MONITORING_INTENTS
-        or (check and (public["kind"] not in HEALTH_MONITORING_KINDS
-                      or type(public["enabled"]) is not bool
-                      or type(public["require_runtime_identity"]) is not bool))
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    dependency_health = _dependency_health_policy(policy.get("dependency_health"))
-    public["dependency_health"] = _public_dependency_health(dependency_health)
-    assert_public_safe_shape(public)
-    return public, endpoint, dependency_health
+    try:
+        profile = _require_dict(provider.get("profile"))
+        if provider.get("status") != "ok" or profile.get("product") != body["product"]:
+            raise LaunchplaneSafetyError("invalid_response")
+        lanes = profile.get("lanes")
+        if not isinstance(lanes, list):
+            raise LaunchplaneSafetyError("invalid_response")
+        matches = [lane for lane in lanes if isinstance(lane, dict) and all(
+            lane.get(field) == body[field] for field in ("context", "instance")
+        )]
+        if len(matches) != 1:
+            raise LaunchplaneSafetyError("invalid_response")
+        lane = matches[0]
+        policy = _require_dict(lane.get("health_monitoring"))
+        checks = policy.get("checks")
+        if not isinstance(checks, list):
+            raise LaunchplaneSafetyError("invalid_response")
+        matches = [check for check in checks if isinstance(check, dict) and
+                   _health_check_token(str(check.get("name", ""))) == _health_check_token(cast(str, body["check_name"]))]
+        if len(matches) > 1:
+            raise LaunchplaneSafetyError("invalid_response")
+        check = matches[0] if matches else {}
+        endpoint = {"url": check.get("url", ""), "health_url": lane.get("health_url", ""),
+                    "base_url": lane.get("base_url", ""), "private_endpoint_key": check.get("private_endpoint_key", "")}
+        if not all(isinstance(value, str) for value in endpoint.values()):
+            raise LaunchplaneSafetyError("invalid_response")
+        public = {
+            "monitoring_intent": policy.get("monitoring_intent"), "kind": check.get("kind"),
+            "enabled": check.get("enabled"), "require_runtime_identity": check.get("require_runtime_identity"),
+        }
+        if (
+            public["monitoring_intent"] not in HEALTH_MONITORING_INTENTS
+            or (check and (public["kind"] not in HEALTH_MONITORING_KINDS
+                          or type(public["enabled"]) is not bool
+                          or type(public["require_runtime_identity"]) is not bool))
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        dependency_health = _dependency_health_policy(policy.get("dependency_health"))
+        public["dependency_health"] = _public_dependency_health(dependency_health)
+        assert_public_safe_shape(public)
+        return public, endpoint, dependency_health
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
+        raise ServiceResponseError(service_response_diagnostics(provider)) from exc
 
 
 def execute_health_monitoring_apply(
@@ -6707,21 +6722,26 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
     apply_attempted = False
     apply_received = False
     known_trace = ""
+    current_phase = "preflight"
+    current_diagnostics: dict[str, object] = {}
     body = {"schema_version": 1, **{key: request[key] for key in ("product", "context", "instance")}, "deploy": False}
     path = helper_command_path(operation)
 
-    def call(mode: str) -> tuple[dict[str, object], dict[str, Any]]:
-        nonlocal known_trace
+    def call(mode: str, *, phase: str) -> tuple[dict[str, object], dict[str, Any]]:
+        nonlocal known_trace, current_phase, current_diagnostics
+        current_phase = phase
+        current_diagnostics = {}
         try:
             response = request_launchplane(
                 service_url=settings["service_url"], path=path, settings=settings,
                 body={**body, "mode": mode}, timeout=args.timeout,
                 idempotency_key=args.idempotency_key if mode == "apply" else "",
             )
-        except LaunchplaneSafetyError:
+        except (LaunchplaneSafetyError, ServiceResponseError):
             raise
         except ValueError:
             raise LaunchplaneSafetyError("invalid_response") from None
+        current_diagnostics = service_response_diagnostics(response)
         if mode == "apply":
             known_trace = public_trace_id(response.get("trace_id"))
         if response.get("status") != "accepted":
@@ -6732,19 +6752,19 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
         return projected, response
 
     try:
-        plan, raw = call("dry-run")
+        plan, raw = call("dry-run", phase="preflight")
         digest = _runtime_sync_plan_digest(request, plan)
         if applying and digest != reviewed_digest:
             raise ValueError("runtime_sync_plan_changed")
         result = plan
         if applying:
             apply_attempted = True
-            result, raw = call("apply")
+            result, raw = call("apply", phase="apply")
             apply_received = True
             known_trace = public_trace_id(raw.get("trace_id"))
             if _runtime_sync_plan_digest(request, result) != reviewed_digest:
                 raise LaunchplaneSafetyError("invalid_response")
-            observed, observed_raw = call("dry-run")
+            observed, observed_raw = call("dry-run", phase="readback")
             delta = cast(dict[str, object], observed["runtime_environment"])
             matches = observed["target_sha256"] == result["target_sha256"] and delta["changed_keys"] == []
             if not matches or result["persistence_status"] == "fail":
@@ -6774,32 +6794,26 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
                 "recommendation": "Run live-target-runtime-sync-dry-run for the same lane and compare target_sha256; zero changed_keys proves current provider persistence. Inspect the trace before retrying under any key; sync does not restart containers.",
             }
             if isinstance(exc, urllib.error.HTTPError):
-                try:
-                    error_payload = _error_payload_from_http(exc)
-                except (http.client.HTTPException, OSError):
-                    error_payload = {}
-                try:
-                    error_trace = public_trace_id(error_payload.get("trace_id"))
-                    if apply_received:
-                        summary["read_back_trace_id"] = error_trace
-                    elif error_trace:
-                        summary["trace_id"] = error_trace
-                    error = error_payload.get("error")
-                    if isinstance(error, dict):
-                        code_field = "read_back_error_code" if apply_received else "error_code"
-                        summary[code_field] = public_code(error.get("code"))
-                except LaunchplaneSafetyError:
-                    pass
+                diagnostics = service_response_diagnostics(_error_payload_from_http(exc))
+            elif isinstance(exc, LaunchplaneSafetyError):
+                diagnostics = current_diagnostics
+            else:
+                diagnostics = service_response_diagnostics(exc)
+            summary.update({("read_back_" if current_phase == "readback" else "") + key: value
+                            for key, value in diagnostics.items()})
             payload["summary"] = summary
             emit(payload)
         elif isinstance(exc, urllib.error.HTTPError):
             emit_http_error_payload(operation=operation, request=request, exc=exc)
         elif isinstance(exc, LaunchplaneSafetyError):
-            emit_safety_error_payload(operation=operation, request=request, exc=exc)
+            emit_safety_error_payload(operation=operation, request=request, exc=exc,
+                                      provider_payload=ServiceResponseError(current_diagnostics))
+        elif isinstance(exc, ServiceResponseError):
+            emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(exc))
         elif isinstance(exc, ValueError):
             raise
         else:
-            emit_provider_unavailable(operation=operation, request=request)
+            emit_read_transport_error(operation=operation, request=request, timeout=args.timeout, exc=exc)
         return 1
 
 
@@ -6992,6 +7006,61 @@ def _preview_feedback_response_unverified(
     return payload
 
 
+SIMPLE_APPLY_OPERATIONS = frozenset({
+    "odoo-addon-settings-apply", "integration-allowances-apply", "testing-hold-apply",
+    "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
+    "repository-inventory-apply", "product-expected-config-apply",
+})
+
+
+def _simple_apply_response_unverified(
+    *, operation: str, request: dict[str, object], source: object,
+) -> dict[str, object]:
+    payload = base_payload(
+        status="accepted_unverified", operation=operation, request=request
+    )
+    recovery_apply = operation == "generic-web-deploy-recovery-apply"
+    inventory_apply = operation == "repository-inventory-apply"
+    payload["summary"] = {
+        **service_response_diagnostics(source),
+        "recommendation": (
+            "Launchplane accepted the recovery apply, but the response could not be "
+            "verified locally. Inspect the original deploy reservation and normal deploy "
+            "evidence before retrying."
+            if recovery_apply
+            else (
+                "Launchplane accepted the inventory apply, but the response could not be "
+                "verified locally. Read back the current inventory record before retrying."
+                if inventory_apply
+                else (
+                    "Launchplane accepted the apply request, but the response could not be "
+                    "verified locally. Read back the affected record before retrying."
+                )
+            )
+        ),
+    }
+    payload["warnings"] = [
+        warning(
+            "apply_response_unverified",
+            (
+                "The recovery apply response was not safe to project; do not retry before "
+                "reservation verification."
+                if recovery_apply
+                else (
+                    "The inventory apply response was not safe to project; do not retry "
+                    "before read-back."
+                    if inventory_apply
+                    else (
+                        "The apply response was not safe to project; do not retry before "
+                        "read-back."
+                    )
+                )
+            ),
+        )
+    ]
+    return payload
+
+
 def execute_post(
     *,
     args: argparse.Namespace,
@@ -7017,18 +7086,21 @@ def execute_post(
             idempotency_key=args.idempotency_key,
         )
         try:
-            emit(
-                summarize_privileged_policy_proposal(
-                    request=request, provider_payload=provider_payload,
-                    service_url=settings["service_url"],
-                )
-                if operation == "privileged-policy-propose"
-                else summarize_success(
+            if operation == "privileged-policy-propose":
+                try:
+                    payload = summarize_privileged_policy_proposal(
+                        request=request, provider_payload=provider_payload,
+                        service_url=settings["service_url"],
+                    )
+                except TypeError as exc:
+                    raise LaunchplaneSafetyError("invalid_response") from exc
+            else:
+                payload = summarize_success(
                     operation=operation,
                     request=request,
                     provider_payload=provider_payload,
                 )
-            )
+            emit(payload)
         except LaunchplaneSafetyError as exc:
             if operation == "preview-feedback-remediation" and mutating:
                 emit(_preview_feedback_response_unverified(
@@ -7037,11 +7109,7 @@ def execute_post(
                 return 1
             if operation == "privileged-policy-propose":
                 payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be verified; the plan may have been saved.")
-                try:
-                    trace_id = public_trace_id(provider_payload.get("trace_id"))
-                except LaunchplaneSafetyError:
-                    trace_id = ""
-                payload["summary"] = {"trace_id": trace_id, "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+                payload["summary"] = {**service_response_diagnostics(provider_payload), "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
                 emit(payload)
                 return 1
             if operation == "merge-train-controller-run-once":
@@ -7050,6 +7118,7 @@ def execute_post(
                     code=exc.code, message="Launchplane returned an invalid response.",
                 )
                 summary = cast(dict[str, object], payload["summary"])
+                summary.update(service_response_diagnostics(provider_payload))
                 summary.update(_controller_error_diagnostics(provider_payload))
                 summary["projection_error_code"] = exc.code
                 http_status = getattr(provider_payload, "http_status", None)
@@ -7069,68 +7138,22 @@ def execute_post(
                 )
                 emit(payload)
                 return 1
-            if operation not in {
-                "odoo-addon-settings-apply",
-                "integration-allowances-apply",
-                "testing-hold-apply",
-                "product-repository-identity-apply",
-                "generic-web-deploy-recovery-apply",
-                "repository-inventory-apply",
-                "product-expected-config-apply",
-            }:
+            if operation not in SIMPLE_APPLY_OPERATIONS:
                 raise
-            try:
-                trace_id = public_trace_id(provider_payload.get("trace_id"))
-            except LaunchplaneSafetyError:
-                trace_id = ""
-            payload = base_payload(
-                status="accepted_unverified", operation=operation, request=request
-            )
-            recovery_apply = operation == "generic-web-deploy-recovery-apply"
-            inventory_apply = operation == "repository-inventory-apply"
-            payload["summary"] = {
-                "trace_id": trace_id,
-                "recommendation": (
-                    "Launchplane accepted the recovery apply, but the response could not be "
-                    "verified locally. Inspect the original deploy reservation and normal deploy "
-                    "evidence before retrying."
-                    if recovery_apply
-                    else (
-                        "Launchplane accepted the inventory apply, but the response could not be "
-                        "verified locally. Read back the current inventory record before retrying."
-                        if inventory_apply
-                        else (
-                            "Launchplane accepted the apply request, but the response could not be "
-                            "verified locally. Read back the affected record before retrying."
-                        )
-                    )
-                ),
-            }
-            payload["warnings"] = [
-                warning(
-                    "apply_response_unverified",
-                    (
-                        "The recovery apply response was not safe to project; do not retry before "
-                        "reservation verification."
-                        if recovery_apply
-                        else (
-                            "The inventory apply response was not safe to project; do not retry "
-                            "before read-back."
-                            if inventory_apply
-                            else (
-                                "The apply response was not safe to project; do not retry before "
-                                "read-back."
-                            )
-                        )
-                    ),
-                )
-            ]
+            payload = _simple_apply_response_unverified(operation=operation, request=request, source=provider_payload)
             emit(payload)
         return 0
     except urllib.error.HTTPError as exc:
         if mutating and (exc.code >= 500 or exc.code == 408):
             payload = _apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state")
-            _require_dict(payload["summary"]).update(service_response_diagnostics(_error_payload_from_http(exc)))
+            error_payload = _error_payload_from_http(exc)
+            summary = _require_dict(payload["summary"])
+            summary.update(service_response_diagnostics(error_payload))
+            if operation == "merge-train-controller-run-once":
+                summary.update(_controller_error_diagnostics(error_payload))
+                summary["recommendation"] = (
+                    "Read the PR and controller state before any retry; the mutating pass may have completed."
+                )
             emit(payload)
             return 1
         emit_http_error_payload(operation=operation, request=request, exc=exc)
@@ -7142,7 +7165,7 @@ def execute_post(
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="outcome_unknown", code="proposal_transport_uncertain", message="The proposal response was interrupted; this does not prove a service outage or an unsaved plan.")
-            payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+            payload["summary"] = {**service_response_diagnostics(exc), "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
             emit(payload)
             return 1
         if operation == "merge-train-controller-run-once" and (
@@ -7154,6 +7177,7 @@ def execute_post(
                 code="client_timeout", message=f"Controller request timed out after {args.timeout:g} s.",
             )
             payload["summary"] = {
+                **service_response_diagnostics(exc),
                 "error_code": "client_timeout", "timeout_seconds": args.timeout,
                 "recommendation": (
                     "Read the PR and controller state before any retry; the mutating pass may have completed."
@@ -7185,7 +7209,11 @@ def execute_post(
             return 1
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be read; the plan may have been saved.")
-            payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+            payload["summary"] = {**service_response_diagnostics(exc if isinstance(exc, ServiceResponseError) else provider_payload), "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+            emit(payload)
+            return 1
+        if operation in SIMPLE_APPLY_OPERATIONS and isinstance(exc, ServiceResponseError):
+            payload = _simple_apply_response_unverified(operation=operation, request=request, source=exc)
             emit(payload)
             return 1
         emit_safety_error_payload(operation=operation, request=request,
@@ -7213,15 +7241,16 @@ def execute_merge_train_policy_import(
     if not isinstance(record, dict):
         raise AssertionError("validated merge-train policy record is missing")
     post_attempted = False
+    provider_payload = None
     try:
-        policy_targets_payload = request_launchplane_read(
+        provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
             path=internal_helper_path("merge-train-policy-targets-read"),
             settings=settings,
             query={},
             timeout=args.timeout,
         )
-        current_policy = _project_merge_train_policy_targets(policy_targets_payload)
+        current_policy = _project_merge_train_policy_targets(provider_payload)
         if current_policy["policy_sha256"] != expected_current_policy_digest:
             payload = base_payload(
                 status="stale", operation=operation, request=request
@@ -7238,6 +7267,7 @@ def execute_merge_train_policy_import(
             emit(payload)
             return 1
         post_attempted = True
+        provider_payload = None
         provider_payload = request_launchplane(
             service_url=settings["service_url"],
             path=helper_command_path(operation),
@@ -7260,16 +7290,12 @@ def execute_merge_train_policy_import(
         except LaunchplaneSafetyError:
             if operation != "merge-train-policy-import-apply":
                 raise
-            try:
-                trace_id = public_trace_id(provider_payload.get("trace_id"))
-            except LaunchplaneSafetyError:
-                trace_id = ""
             payload = base_payload(
                 status="accepted_unverified", operation=operation, request=request
             )
             payload["result"] = {"current_policy": current_policy}
             payload["summary"] = {
-                "trace_id": trace_id,
+                **service_response_diagnostics(provider_payload),
                 "recommendation": "Launchplane accepted the import apply, but its response could not be verified locally. Read back the active merge-train policy before retrying.",
             }
             payload["warnings"] = [
@@ -7281,6 +7307,11 @@ def execute_merge_train_policy_import(
             emit(payload)
         return 0
     except urllib.error.HTTPError as exc:
+        if operation == "merge-train-policy-import-apply" and post_attempted and (exc.code >= 500 or exc.code == 408):
+            payload = _apply_outcome_unknown(operation=operation, request=request, label="active merge-train policy")
+            _require_dict(payload["summary"]).update(service_response_diagnostics(_error_payload_from_http(exc)))
+            emit(payload)
+            return 1
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
@@ -7303,9 +7334,9 @@ def execute_merge_train_policy_import(
             ]
             emit(payload)
             return 1
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         if operation == "merge-train-policy-import-apply" and post_attempted:
             payload = base_payload(
                 status="outcome_unknown", operation=operation, request=request
@@ -7319,11 +7350,12 @@ def execute_merge_train_policy_import(
                     "Do not retry this merge-train policy import until active-policy read-back resolves the outcome.",
                 )
             ]
+            cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(exc))
             emit(payload)
             return 1
-        emit_provider_unavailable(operation=operation, request=request)
+        emit_read_transport_error(operation=operation, request=request, timeout=args.timeout, exc=exc)
         return 1
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
         if operation == "merge-train-policy-import-apply" and post_attempted:
             payload = base_payload(
                 status="accepted_unverified", operation=operation, request=request
@@ -7337,9 +7369,12 @@ def execute_merge_train_policy_import(
                     "Do not retry this merge-train policy import until active-policy read-back resolves the outcome.",
                 )
             ]
+            cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(
+                exc if isinstance(exc, ServiceResponseError) else provider_payload))
             emit(payload)
             return 0
-        emit_invalid_response(operation=operation, request=request)
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -7388,6 +7423,7 @@ def execute_repository_inventory_read(
     )
     if settings is None:
         return 2
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -7406,15 +7442,16 @@ def execute_repository_inventory_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
-    except (ValueError, json.JSONDecodeError):
-        emit_invalid_response(operation=operation, request=request)
+    except (ValueError, json.JSONDecodeError) as exc:
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -8501,7 +8538,7 @@ def execute_compose_domain_apply(
             public, private = read(settings)
             live = private["live_domains"]
             if not isinstance(live, list) or not all(isinstance(route, dict) and isinstance(route.get("host"), str) for route in live):
-                raise LaunchplaneSafetyError("invalid_response")
+                raise ServiceResponseError(cast(dict[str, object], private["response_diagnostics"]))
             routes = live
             routes_by_host = {
                 domain: [route for route in routes if str(route["host"]).strip().lower() == domain]
@@ -8780,8 +8817,11 @@ def read_product_owner(
         query={},
         timeout=timeout,
     )
-    profile = _require_dict(provider_payload.get("profile"))
-    return _project_owner_identity(_client_or_legacy_owner(profile, "client", "owner"))
+    try:
+        profile = _require_dict(provider_payload.get("profile"))
+        return _project_owner_identity(_client_or_legacy_owner(profile, "client", "owner"))
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
+        raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
 def read_product_image_repository(
@@ -8794,14 +8834,17 @@ def read_product_image_repository(
         query={},
         timeout=timeout,
     )
-    profile = _require_dict(provider_payload.get("profile"))
-    image = _optional_dict(profile.get("image")) or {}
-    repository = image.get("repository") or ""
-    if not isinstance(repository, str):
-        raise LaunchplaneSafetyError("invalid_response")
-    return _project_image_repository(
-        repository.strip().rstrip("/"), pattern=IMAGE_REPOSITORY_RE
-    )
+    try:
+        profile = _require_dict(provider_payload.get("profile"))
+        image = _optional_dict(profile.get("image")) or {}
+        repository = image.get("repository") or ""
+        if not isinstance(repository, str):
+            raise LaunchplaneSafetyError("invalid_response")
+        return _project_image_repository(
+            repository.strip().rstrip("/"), pattern=IMAGE_REPOSITORY_RE
+        )
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
+        raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
 def read_production_backup_authority(
@@ -8814,9 +8857,12 @@ def read_production_backup_authority(
         query=query,
         timeout=timeout,
     )
-    if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    return _project_production_backup_authority_read(provider_payload.get("authority"))
+    try:
+        if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        return _project_production_backup_authority_read(provider_payload.get("authority"))
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
+        raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
 def _domain_set(value: object) -> frozenset[str]:
@@ -8837,33 +8883,40 @@ def read_dokploy_target(
         query={"context": context, "instance": instance},
         timeout=timeout,
     )
-    inspect = _require_dict(provider_payload.get("inspect"))
-    tracked = _require_dict(inspect.get("tracked_target") or {})
-    provider_target = _require_dict(inspect.get("provider_target_record") or {})
-    live_provider = _require_dict(inspect.get("provider") or {})
-    private = {
-        "target_ids": {
-            str(source.get("target_id") or "").strip()
-            for source in (inspect, tracked, provider_target)
-        },
-        "domains": _domain_set(tracked.get("domains")),
-        "healthcheck_path": str(tracked.get("healthcheck_path") or ""),
-        "live_domains": live_provider.get("domains", []),
-        "live_target_id": live_provider.get("id"),
-        "live_target_type": live_provider.get("target_type"),
-        "tracked_source": {field: tracked.get(field) for field in (
-            "source_type", "custom_git_url", "custom_git_branch", "compose_path",
-        )},
-        "live_source": {field: live_provider.get(field) for field in (
-            "source_type", "custom_git_url", "custom_git_branch", "compose_path",
-        )},
-    }
-    public = {
-        "status": public_code(inspect.get("status")),
-        "target_type": public_code(inspect.get("target_type"), default="unknown"),
-        "provider_target_record": public_code(provider_target.get("status"), default="missing"),
-    }
-    return public, private
+    try:
+        inspect = _require_dict(provider_payload.get("inspect"))
+        tracked = _require_dict(inspect.get("tracked_target") or {})
+        provider_target = _require_dict(inspect.get("provider_target_record") or {})
+        live_provider = _require_dict(inspect.get("provider") or {})
+        live_target_id = live_provider.get("id")
+        if live_target_id is not None and not isinstance(live_target_id, str):
+            raise LaunchplaneSafetyError("invalid_response")
+        private = {
+            "target_ids": {
+                str(source.get("target_id") or "").strip()
+                for source in (inspect, tracked, provider_target)
+            },
+            "domains": _domain_set(tracked.get("domains")),
+            "healthcheck_path": str(tracked.get("healthcheck_path") or ""),
+            "live_domains": live_provider.get("domains", []),
+            "response_diagnostics": service_response_diagnostics(provider_payload),
+            "live_target_id": live_target_id,
+            "live_target_type": live_provider.get("target_type"),
+            "tracked_source": {field: tracked.get(field) for field in (
+                "source_type", "custom_git_url", "custom_git_branch", "compose_path",
+            )},
+            "live_source": {field: live_provider.get(field) for field in (
+                "source_type", "custom_git_url", "custom_git_branch", "compose_path",
+            )},
+        }
+        public = {
+            "status": public_code(inspect.get("status")),
+            "target_type": public_code(inspect.get("target_type"), default="unknown"),
+            "provider_target_record": public_code(provider_target.get("status"), default="missing"),
+        }
+        return public, private
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
+        raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
 def attach_read_back(
@@ -8872,7 +8925,10 @@ def attach_read_back(
     """Read the record back after an accepted apply; a failed read is never a success."""
     try:
         observed = read()
-    except (OSError, TimeoutError, http.client.HTTPException, ValueError, LaunchplaneSafetyError):
+    except (OSError, TimeoutError, http.client.HTTPException, ValueError, LaunchplaneSafetyError) as exc:
+        diagnostics_source = _error_payload_from_http(exc) if isinstance(exc, urllib.error.HTTPError) else exc
+        payload["summary"].update({"read_back_" + key: value
+                                   for key, value in service_response_diagnostics(diagnostics_source).items()})
         payload["warnings"].append(
             warning(
                 "read_back_unavailable",
@@ -8911,6 +8967,7 @@ def execute_verified_apply(
     if settings is None:
         return 2
     post_attempted = False
+    provider_payload = None
     try:
         stale_summary = preflight(settings)
         if stale_summary is not None:
@@ -8963,9 +9020,12 @@ def execute_verified_apply(
         # A gateway error after the POST began may follow a write Launchplane completed.
         if post_attempted and (exc.code >= 500 or exc.code == 408):
             unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
+            error_payload = _error_payload_from_http(exc)
+            _require_dict(unknown["summary"]).update(service_response_diagnostics(error_payload))
             if operation.startswith("dokploy-target-"):
                 try:
-                    error = summarize_http_error(operation=operation, request=request, exc=exc)
+                    error = summarize_http_error(operation=operation, request=request, exc=exc,
+                                                 provider_payload=error_payload)
                     unknown_summary = _require_dict(unknown["summary"])
                     error_summary = _require_dict(error["summary"])
                     unknown_summary.update({field: error_summary[field] for field in (
@@ -8987,21 +9047,28 @@ def execute_verified_apply(
             emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
             return 1
         if post_attempted:
-            emit(_apply_response_unverified(operation=operation, request=request, label=label))
+            payload = _apply_response_unverified(operation=operation, request=request, label=label)
+            cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(provider_payload))
+            emit(payload)
             return 1
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=exc)
         return 1
-    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         if post_attempted:
-            emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
+            payload = _apply_outcome_unknown(operation=operation, request=request, label=label)
+            cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(exc))
+            emit(payload)
             return 1
-        emit_provider_unavailable(operation=operation, request=request)
+        emit_read_transport_error(operation=operation, request=request, timeout=args.timeout, exc=exc)
         return 1
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
         if post_attempted:
-            emit(_apply_response_unverified(operation=operation, request=request, label=label))
+            payload = _apply_response_unverified(operation=operation, request=request, label=label)
+            cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(
+                exc if isinstance(exc, ServiceResponseError) else provider_payload))
+            emit(payload)
             return 1
-        emit_invalid_response(operation=operation, request=request)
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(exc))
         return 1
 
 
@@ -9471,6 +9538,7 @@ def execute_production_backup_authority_read(
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -9488,9 +9556,12 @@ def execute_production_backup_authority_read(
             raise LaunchplaneSafetyError("unsafe_response_shape")
         status = public_code(provider_payload.get("status"), default="ok")
         payload = base_payload(status=status, operation=operation, request=request)
-        payload["result"] = _project_production_backup_authority_read(
-            provider_payload.get("authority")
-        )
+        try:
+            payload["result"] = _project_production_backup_authority_read(
+                provider_payload.get("authority")
+            )
+        except TypeError as exc:
+            raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
         payload["summary"] = {
             "launchplane_status": status,
             "trace_id": public_trace_id(provider_payload.get("trace_id")),
@@ -9506,15 +9577,16 @@ def execute_production_backup_authority_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
-    except (ValueError, json.JSONDecodeError):
-        emit_invalid_response(operation=operation, request=request)
+    except (ValueError, json.JSONDecodeError) as exc:
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -9771,10 +9843,13 @@ def read_private_health_endpoint(
         query={field: cast(str, endpoint[field]) for field in ("product", "context", "instance")},
         timeout=timeout,
     )
-    if any(str(key) not in {"status", "trace_id", "record"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    record = provider_payload.get("record")
-    return _project_private_health_endpoint_record(record), _private_health_endpoint_url(record)
+    try:
+        if any(str(key) not in {"status", "trace_id", "record"} for key in provider_payload):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        record = provider_payload.get("record")
+        return _project_private_health_endpoint_record(record), _private_health_endpoint_url(record)
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
+        raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
 def execute_private_health_endpoint_apply(
@@ -9852,6 +9927,7 @@ def execute_private_health_endpoint_read(
     query = {"product": args.product, "context": args.context}
     if args.instance:
         query["instance"] = args.instance
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -9867,10 +9943,13 @@ def execute_private_health_endpoint_read(
             raise LaunchplaneSafetyError("invalid_response")
         status = public_code(provider_payload.get("status"), default="ok")
         payload = base_payload(status=status, operation=operation, request=request)
-        payload["result"] = {
-            "count": len(records),
-            "records": [_project_private_health_endpoint_record(record) for record in records],
-        }
+        try:
+            payload["result"] = {
+                "count": len(records),
+                "records": [_project_private_health_endpoint_record(record) for record in records],
+            }
+        except TypeError as exc:
+            raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
         payload["summary"] = {
             "launchplane_status": status,
             "trace_id": public_trace_id(provider_payload.get("trace_id")),
@@ -9885,15 +9964,16 @@ def execute_private_health_endpoint_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
-    except (ValueError, json.JSONDecodeError):
-        emit_invalid_response(operation=operation, request=request)
+    except (ValueError, json.JSONDecodeError) as exc:
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -10070,6 +10150,7 @@ def execute_product_promotion_status_read(
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -10096,15 +10177,16 @@ def execute_product_promotion_status_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
-    except (ValueError, json.JSONDecodeError):
-        emit_invalid_response(operation=operation, request=request)
+    except (ValueError, json.JSONDecodeError) as exc:
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -10143,6 +10225,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
     add_testing_rebuild_parser(subparsers)
+    from launchplane_testing_private_ingress import add_parser as add_private_ingress_parser
+    add_private_ingress_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -10997,6 +11081,9 @@ def main(argv: list[str]) -> int:
         from launchplane_testing_rebuild import COMMANDS as testing_rebuild_commands, execute as execute_testing_rebuild
         if args.command in testing_rebuild_commands:
             return execute_testing_rebuild(sys.modules[__name__], args)
+        from launchplane_testing_private_ingress import COMMANDS as private_ingress_commands, execute as execute_private_ingress
+        if args.command in private_ingress_commands:
+            return execute_private_ingress(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
             instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""

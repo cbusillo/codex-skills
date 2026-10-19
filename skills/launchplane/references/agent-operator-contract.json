@@ -56,6 +56,36 @@
           "apply",
           "readback"
         ],
+        "operation_id": "prepare_testing_private_ingress",
+        "path": "/v1/products/{product}/testing-private-ingress",
+        "purpose": "Configure only an application testing lane's registered private hostname at its existing access-controlled edge; use its retained wildcard certificate and original-key recovery without deploying.",
+        "response_statuses": [
+          "202",
+          "400",
+          "401",
+          "403",
+          "409",
+          "503"
+        ],
+        "reviewed_evidence": [
+          "reviewed_plan_sha256"
+        ],
+        "schema_fingerprint_sha256": "384f5ce4d4694dc8ecdeabc1c33f50fdd93af15b109a1853e2e85d9f8e23d342",
+        "supported_surfaces": [
+          "service_api"
+        ]
+      },
+      {
+        "idempotency": "apply",
+        "identity_dependencies": [
+          "read_browser_mutation_identity"
+        ],
+        "method": "POST",
+        "modes": [
+          "dry-run",
+          "apply",
+          "readback"
+        ],
         "operation_id": "activate_private_testing_transport_source",
         "path": "/v1/products/{product}/private-testing-transport/activation",
         "purpose": "Install or remove exact reviewed private testing Compose source using immutable product provenance and original-operation recovery; deployment and live TLS proof remain separate.",
@@ -69,11 +99,9 @@
         ],
         "reviewed_evidence": [
           "expected_plan_sha256",
-          "host_review",
-          "custody_review",
-          "trust_review"
+          "host_review"
         ],
-        "schema_fingerprint_sha256": "47f44b2de14827c949b24278aab35d5a8e521d46e0527d256d71d19c735727eb",
+        "schema_fingerprint_sha256": "8595c6f3b9d86f0de87b2d9bcfaa6fbbfbf45974fd635357d80d1b9fe19ce2be",
         "supported_surfaces": [
           "service_api",
           "local_cli"
@@ -162,7 +190,7 @@
         "reviewed_evidence": [
           "expected_plan_sha256"
         ],
-        "schema_fingerprint_sha256": "b59a6d26286942e115d88b89debcc82e3bf198c393df7a6a682d9c6b63835027",
+        "schema_fingerprint_sha256": "2603c2c987506ba6dbce6765ec4793afe0227ecebc1c6b14e926c837e071f81e",
         "supported_surfaces": [
           "service_api",
           "local_cli"
@@ -253,7 +281,7 @@
         "reviewed_evidence": [
           "reviewed_plan_sha256"
         ],
-        "schema_fingerprint_sha256": "9134cab96df9a3cb4e4032fd367a57118aa86252ba051af0212dec862f75c941",
+        "schema_fingerprint_sha256": "c511c140ac67b2921121dc599c8a086983925b6e7edf23daf9c041b437521c6d",
         "supported_surfaces": [
           "service_api"
         ]
@@ -284,7 +312,7 @@
         "reviewed_evidence": [
           "reviewed_plan_sha256"
         ],
-        "schema_fingerprint_sha256": "e276d8778bb63a5a90a42f957fee3c63adb089ad2a5fc3affb737dc2ba8ec52b",
+        "schema_fingerprint_sha256": "57325f6b33cfc755a4dcc4f1f11e6b2dd0e11a315083c3ffe2a70099503595ce",
         "supported_surfaces": [
           "service_api"
         ]
@@ -463,7 +491,7 @@
         "reviewed_evidence": [
           "reviewed_dry_run"
         ],
-        "schema_fingerprint_sha256": "c0a87050dda7a2bda39da470365cd035b85ac9f61cda13e6109a28d43e06d02d",
+        "schema_fingerprint_sha256": "c080710b984c8d6ded4f1d62df55c5f7d875f851426d6527d0a779dea2342aed",
         "supported_surfaces": [
           "agent_helper",
           "operator_ui",
@@ -808,8 +836,8 @@
   },
   "normalization_version": 1,
   "provenance": {
-    "source_commit_sha": "665b357570423ac17fa71b2cd516cb89923a7750"
+    "source_commit_sha": "dc1cff356c561ac36a0fe60a9bc536a2ca16d073"
   },
   "schema_version": 1,
-  "semantic_digest_sha256": "1b99d9c6e2441e0f7d92f71896ff2ffa175120724edcc5c6c85cdab0e9e625e2"
+  "semantic_digest_sha256": "cb9d41b602370f4b71be25aa4fd11ef88328479aeb7d046c76a19e297b9657d0"
 }

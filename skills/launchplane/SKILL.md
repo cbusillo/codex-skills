@@ -1019,6 +1019,12 @@ verification.
 
 ## Tools
 
+- `testing-private-ingress-dry-run` / `-apply` / `-readback` wrap the producer's
+  application testing ingress operation. Read the
+  [private ingress caller contract](references/write-action-helper-contract.md#application-testing-private-ingress)
+  before use, including private files, review, original-key recovery, redaction
+  and readback limits.
+
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,

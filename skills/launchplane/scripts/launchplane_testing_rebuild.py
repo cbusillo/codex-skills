@@ -117,6 +117,7 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
     if settings is None:
         return 2
     replacement = {key: value for key, value in h._require_dict(body["replacement"]).items() if key != "verify_health"}
+    response = None
     try:
         response = h.request_launchplane(service_url=settings["service_url"],
             path=h.helper_command_path(PLAN_COMMAND), settings=settings,
@@ -133,8 +134,11 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
         output = h.unavailable_payload(operation=PLAN_COMMAND, request=request, status="unavailable", code="invalid_response", message="The native preflight response was unavailable.")
         output["summary"] = h.service_response_diagnostics(error)
         h.emit(output)
-    except (h.LaunchplaneSafetyError, ValueError):
-        h.emit_invalid_response(operation=PLAN_COMMAND, request=request)
+    except h.LaunchplaneSafetyError as error:
+        h.emit_safety_error_payload(operation=PLAN_COMMAND, request=request, exc=error, provider_payload=response)
+    except ValueError:
+        h.emit_invalid_response(operation=PLAN_COMMAND, request=request,
+            diagnostics=h.service_response_diagnostics(response))
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
         h.emit_read_transport_error(operation=PLAN_COMMAND, request=request, timeout=args.timeout, exc=error)
     return 1
@@ -241,8 +245,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         diagnostics = h.service_response_diagnostics(error)
     except (h.LaunchplaneSafetyError, ValueError):
         pass
-    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
-        pass
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
+        diagnostics = h.service_response_diagnostics(error)
     output = h._apply_outcome_unknown(
         operation=COMMAND, request=request, label="original testing rebuild operation"
     )

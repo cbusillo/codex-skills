@@ -28,6 +28,70 @@ when their path spellings differ. A repository-local link to an external payload
 and an external link to repository-local data are both refused; an external payload,
 including an external link to another external file, is accepted.
 
+## Application testing private ingress
+
+`testing-private-ingress-dry-run`, `testing-private-ingress-apply` and
+`testing-private-ingress-readback` call the vendored
+`prepare_testing_private_ingress` service API. The producer advertises a
+`service_api` surface, and this installed caller retains that surface and its
+existing Director-agent identity dependency. It adds no permission or provider
+fallback. Source contract agreement does not prove deployed compatibility;
+confirm normal service delivery before operational use.
+`SERVICE_API_HELPER_COMMANDS` validates these explicit bindings against that
+producer surface and its modes without rewriting the vendored advertisement.
+
+Each command requires `--payload-file /absolute/private/request.json`. Its
+exact fields are `product`, `context`, `instance` (only `testing`),
+`endpoint_key`, `edge_endpoint_key`, `access_list_id`, `certificate_id`,
+`operation` (`create` or `disable`) and `reason`. Both numeric IDs must be
+positive integers naming existing resources. Obtain real scope and IDs from
+service records or scoped admin input. Mode, digest, URL, domain, target and
+provider configuration fields are not accepted in this file. The service
+derives the hostname from the lane's active private HTTPS health endpoint and
+checks application ownership, placement, certificate coverage, access list and
+receipt ownership itself. This operation neither deploys nor changes DNS,
+access lists, certificates, credentials or production.
+
+Save the dry-run's JSON output in a private file outside the repository. Apply
+and readback additionally require `--dry-run-evidence-file`,
+`--expected-plan-digest` (the returned `plan_sha256`) and `--reviewed-dry-run`.
+Evidence binds the full normalized request including its reason and resource
+IDs, the configured service, operation and returned plan. Receipts show the
+same product/context/testing instance, endpoint and edge keys, operation and
+digests; they omit the reason, numeric resource IDs, URLs and provider topology.
+The edge key in the receipt comes from the submitted request, not an echoed
+service field. Its verification rests on the service-owned plan digest and
+provider readback; the helper does not independently inspect the edge provider.
+The helper's binding checks are local review consistency checks; the service
+remains authorization and plan authority.
+
+Apply also requires `--idempotency-key`. Retain the exact private request,
+saved evidence and original key on an interrupted exchange. The helper never
+retries automatically or replans before recovery: a fresh plan would describe
+already changed provider state. Explicitly run readback first, then, if still
+unverified, resubmit the exact original apply and key for the service's durable
+recovery. A denied call stays denied; neither another identity nor a raw
+provider route is supported. A successful apply or replay is followed by a
+separate `mode=readback` POST with the same reviewed digest and request, without
+an idempotency header. Only aligned readback yields `read_back_matches=true`.
+Disable requires a fresh review of `operation=disable`; it leaves the
+application hostname and bot state intact.
+
+Transport loss or malformed evidence after apply begins returns
+`outcome_unknown`; failed readback after an aligned applied response returns
+`accepted_unverified` and retains that response's result and trace. Both exit
+nonzero. A service result with `applied=false`, `replan_required=true` and
+`previous_effects_absent=true` is a terminal original-key recovery outcome,
+returned as `replan_required` with nonzero exit and no success/readback claim.
+Only that explicit absence proof permits obtaining a fresh reviewed plan and
+new key. Other ambiguous outcomes preserve the original request and key.
+
+Neither plan nor provider readback verifies actual TLS, WSS, public denial,
+remote tailnet reachability or runtime health. The returned
+`deployment_performed=false` and `transport_verified=false` preserve those
+limits. Actual qualification belongs to the operational issue after supported
+source and caller delivery.
+
 ## Read budgets and timeout diagnostics
 
 `dokploy-inventory-read` and `product-promotion-status-read` default to a bounded 30-second HTTP socket
