@@ -89,7 +89,28 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
     return verified
 
 
-def check_record(reader, repo, number, session, actor, *, pulls_cache=None, created_prs=(), created_heads=(), data_cache=None):
+def predates_creation(pull, repo, number, source, target):
+    key = (repo.casefold(), number, source["id"])
+    if key not in target.get("preceding_sources", set()):
+        return False
+    try:
+        # Both timestamps come from GitHub. Native record order establishes
+        # that this source claim existed before the create command launched.
+        return release.stamp(pull.get("created_at")) < release.stamp(source.get("created_at"))
+    except (TypeError, ValueError):
+        return False
+
+
+def created_head(pull, repo, number, source, targets):
+    head = pull.get("head") or {}
+    head_repo = (head.get("repo") or {}).get("full_name", "")
+    return any(target["repository"] and target["repository"].casefold() == repo.casefold()
+               and target["head"] == head.get("ref") and target.get("head_owner")
+               and target["head_owner"].casefold() == head_repo.split("/")[0].casefold()
+               and not predates_creation(pull, repo, number, source, target) for target in targets)
+
+
+def check_record(reader, repo, number, session, actor, *, pulls_cache=None, created_prs=(), created_targets=(), data_cache=None):
     if data_cache is None:
         data_cache = {}
     if (repo, number) not in data_cache:
@@ -132,7 +153,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, crea
                     named.update(explicit_pr_numbers(c.get("body") or "", repo))
             pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"] or p["number"] in named
                      or (p.get("html_url") in created_prs
-                         or (repo.casefold(), (p.get("head") or {}).get("ref")) in created_heads)
+                         or created_head(p, repo, number, source, created_targets))
                      and claim.pr_issue_reference(p, number, repo=repo, attestation=True)]
         if receipt is not None:
             for pull in pulls:
@@ -168,8 +189,17 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             expected.extend(found)
             errors.extend(missing)
     native_repos = {r["repository"] for r in expected}
-    creations = [target for node in histories
-                 for target in claim_receipts.created_pr_targets(node["records"], node["harness"])]
+    creations = []
+    for node in histories:
+        records = node["records"]
+        if node["harness"] == "codex":
+            records, _ = claim_receipts.serial_ownership_records(records)
+        for target in claim_receipts.created_pr_targets(records, node["harness"]):
+            target["preceding_sources"] = {
+                (source["repository"].casefold(), source["record"], source["claim_comment"])
+                for native in native_sessions
+                for source in claim_receipts.sources(records[:target["index"]], node["harness"], native)[0]}
+            creations.append(target)
     native_issues = {(r["repository"], r["record"]) for r in expected}
     for node in histories:
         # Canonical source receipts and actual claim targets own scope; raw
@@ -219,8 +249,6 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             repos.add(repo)
     released, blocked, pulls_cache, data_cache = [], [], {}, {}
     created = set().union(*(claim_receipts.created_prs(node["records"], node["harness"]) for node in histories))
-    created_heads = {(target["repository"].casefold(), target["head"]) for target in creations
-                     if target["repository"] and target["head"]}
     for repo, number in sorted(issues):
         try:
             selected = readers[repo]
@@ -229,7 +257,7 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
                 raise ValueError("repository's configured automation identity is unknown")
             for native in sorted(native_sessions):
                 released.extend(check_record(selected, repo, number, native, source_actor,
-                                             pulls_cache=pulls_cache, created_prs=created, created_heads=created_heads,
+                                             pulls_cache=pulls_cache, created_prs=created, created_targets=creations,
                                              data_cache=data_cache))
         except ValueError as error:
             blocked.append(str(error))
@@ -247,7 +275,10 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
         candidates = [(record, pull) for record in released
                       if not target["repository"] or target["repository"].casefold() == record["repository"].casefold()
                       for pull in pulls_cache.get(record["repository"], [])
-                      if claim.pr_issue_reference(pull, record["record"], repo=record["repository"], attestation=True)]
+                      if claim.pr_issue_reference(pull, record["record"], repo=record["repository"], attestation=True)
+                      and not predates_creation(pull, record["repository"], record["record"],
+                          next(source for source in data_cache[(record["repository"], record["record"])][1]
+                               if source["id"] == record["claim_comment"]), target)]
         if any(pull["html_url"] not in record["retained_prs"] for record, pull in candidates):
             unresolved_creations.append(target)
     for target in unresolved_creations:

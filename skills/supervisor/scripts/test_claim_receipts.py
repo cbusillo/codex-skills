@@ -7,6 +7,7 @@ import json
 import asyncio
 import argparse
 import shlex
+import subprocess
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -17,10 +18,42 @@ import session_record
 
 SESSION = "native-fixture"
 
+# Recorded option signatures from `uv run --help`; tests never probe host tools.
+UV_RUN_HELP = """Usage: uv run [OPTIONS] [COMMAND]
+Options:
+      --extra <EXTRA>
+      --group <GROUP>
+      --no-group <NO_GROUP>
+      --only-group <ONLY_GROUP>
+      --env-file <ENV_FILE>
+  -w, --with <WITH>
+      --with-editable <WITH_EDITABLE>
+      --with-requirements <WITH_REQUIREMENTS>
+  -s, --script
+      --package <PACKAGE>
+      --index <INDEX>
+      --default-index <DEFAULT_INDEX>
+  -i, --index-url <INDEX_URL>
+  -P, --upgrade-package <UPGRADE_PACKAGE>
+      --exclude-newer <EXCLUDE_NEWER>
+      --cache-dir <CACHE_DIR>
+      --refresh-package <REFRESH_PACKAGE>
+  -p, --python <PYTHON>
+Global options:
+  -q, --quiet...
+      --color <COLOR_CHOICE>
+      --directory <DIRECTORY>
+      --project <PROJECT>
+      --config-file <CONFIG_FILE>
+      --no-config
+  -h, --help
+"""
+
 
 def shortest_parser_option(parser, destination, tail):
     """Choose an abbreviation the maintained parser actually accepts today."""
-    option = next(action.option_strings[0] for action in parser._actions if action.dest == destination)
+    option = next(option for action in parser._actions if action.dest == destination
+                  for option in action.option_strings if option.startswith("--"))
     for length in range(3, len(option) + 1):
         prefix = option[:length]
         try:
@@ -30,6 +63,27 @@ def shortest_parser_option(parser, destination, tail):
         if not unknown:
             return prefix
     raise AssertionError("maintained parser cannot accept its own option")
+
+
+def parser_fixture_value(action):
+    """Use the parser's declared choices, arity and converters as fixture data."""
+    if action.nargs == 0:
+        return []
+    value = str(next(iter(action.choices))) if action.choices else "7"
+    if action.type is not None:
+        action.type(value)
+    count = action.nargs if isinstance(action.nargs, int) else 1
+    return [value] * count
+
+
+def parser_required_arguments(parser):
+    words = []
+    for action in parser._actions:
+        if action.required:
+            if action.option_strings:
+                words.append(next((word for word in action.option_strings if word.startswith("--")), action.option_strings[0]))
+            words.extend(parser_fixture_value(action))
+    return words
 
 
 def claim(repo="example/a", number=1, identifier=10):
@@ -124,7 +178,50 @@ def ordinary_read_history(harness):
     return rows
 
 
+class UvProbeTests(unittest.TestCase):
+    def test_runtime_probe_uses_only_the_trusted_executable_with_a_timeout(self):
+        executable = "/trusted/runtime/uv"
+        with patch.object(receipts.shutil, "which", return_value=executable), patch.object(
+                receipts.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, UV_RUN_HELP)) as run:
+            self.assertEqual(receipts.runtime_uv_help(), UV_RUN_HELP)
+            self.assertEqual(run.call_args.args[0][0], executable)
+            self.assertGreater(run.call_args.kwargs["timeout"], 0)
+            self.assertLess(run.call_args.kwargs["timeout"], 60)
+        with patch.object(receipts.shutil, "which", return_value=None), patch.object(receipts.subprocess, "run") as run:
+            self.assertIsNone(receipts.runtime_uv_help())
+            run.assert_not_called()
+        with patch.object(receipts.shutil, "which", return_value=executable), patch.object(
+                receipts.subprocess, "run", side_effect=subprocess.TimeoutExpired([], 5)):
+            self.assertIsNone(receipts.runtime_uv_help())
+
+
 class ReceiptTests(unittest.TestCase):
+    def setUp(self):
+        receipts.uv_run_options.cache_clear()
+        mocked_help = patch.object(receipts, "runtime_uv_help", return_value=UV_RUN_HELP)
+        mocked_help.start()
+        self.addCleanup(mocked_help.stop)
+        self.addCleanup(receipts.uv_run_options.cache_clear)
+
+    def test_uv_options_follow_runtime_help_without_running_transcript_paths(self):
+        helper = "/catalog/gh-plan.py --repo example/a claim 1"
+        added_help = UV_RUN_HELP + "      --fixture-option <VALUE>\n"
+        with patch.object(receipts, "runtime_uv_help", return_value=added_help) as probe:
+            for command in ("uv run --fixture-option value " + helper,
+                            "/transcript/uv --color=never run -qq -p3.12 " + helper):
+                rows = history("codex", claim())
+                rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                rows[2] = output({"exit_code": 0, "output": json.dumps(claim())}, "codex", "tool-0")
+                self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
+                self.assertEqual(receipts.target_records(rows, "codex"), {("example/a", 1)})
+            self.assertEqual(probe.call_count, 1)
+        receipts.uv_run_options.cache_clear()
+        with patch.object(receipts, "runtime_uv_help", return_value=None):
+            rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run --fixture-option value " + helper})
+            self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+            rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run " + helper})
+            self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
+
     def test_codex_native_shell_surfaces_enforce_and_accept_claim_checks(self):
         for tool in ("shell_command", "shell", "local_shell_call"):
             for owning in (claim(), {"operation": "github.pr.create", "ok": True}):
@@ -291,7 +388,9 @@ class ReceiptTests(unittest.TestCase):
                     rows[1]["message"]["content"][0]["input"] = {"command": command}
                 rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
                 with self.subTest(harness=harness, command=command):
-                    self.assertEqual(receipts.created_pr_targets(rows, harness), [{
+                    relevant = [{key: target[key] for key in ("invocation", "repository", "head", "url")}
+                                for target in receipts.created_pr_targets(rows, harness)]
+                    self.assertEqual(relevant, [{
                         "invocation": "tool-0", "repository": "example/a", "head": head, "url": None}])
             for outcome in ("not_started", "unknown"):
                 report = {"operation": "github.pr.create", "ok": False, "write_outcome": outcome, "completed_steps": []}
@@ -344,6 +443,15 @@ class ReceiptTests(unittest.TestCase):
                             "env -S 'uv run " + helper + "'",
                             "exec -a worker uv run " + helper,
                             "stdbuf -o L uv run " + helper,
+                            "bash -ec 'uv run " + helper + "'",
+                            "bash -euo pipefail -c 'uv run " + helper + "; echo ok'",
+                            "bash --login -c 'uv run " + helper + "'",
+                            "sh -ec 'uv run " + helper + "'",
+                            "uv run --color never " + helper,
+                            "uv run --index https://index.example/simple " + helper,
+                            "uv run -P package " + helper,
+                            "uv run --exclude-newer 2026-01-01 " + helper,
+                            "uv run --native-tls " + helper,
                             "bash -lc 'cd /repo && uv run " + helper + "'",
                             "bash -c 'uv run " + helper + " > claim.json'",
                             "for n in 1 2; do uv run " + helper + "; done",
@@ -576,7 +684,10 @@ class ReceiptTests(unittest.TestCase):
             # process launch in a partial Python edit, including a split call.
             for launch in ('        subprocess.run(["uv", "run", "gh-plan.py", "claim", "1"])',
                            '        subprocess.run(["uv", "run", "gh-plan.py", "claim", "1",',
-                           '                marker = True\n        command = "uv run gh-plan.py claim 1"\n        subprocess.run(command)'):
+                           '                marker = True\n        command = "uv run gh-plan.py claim 1"\n        subprocess.run(command)',
+                           '                marker = True\n        argv = ["uv", "run", "gh-plan.py", "claim", "1"]\n        subprocess.run(argv)',
+                           '                marker = True\n        command = ("uv run gh-plan.py " "claim 1")\n        subprocess.run(command, shell=True)',
+                           '                marker = True\n        argv = shlex.split("uv run gh-plan.py claim 1")\n        subprocess.run(argv)'):
                 fragment = '    def run_claim():\n' + launch
                 if harness == "codex":
                     rows[1]["payload"]["arguments"] = ('*** Begin Patch\n*** Update File: /repo/test_sample.py\n@@\n'
@@ -1503,15 +1614,24 @@ class ReceiptTests(unittest.TestCase):
     def test_abbreviated_claim_options_preserve_the_literal_issue_operand(self):
         parser = receipts.helper_parser("gh-plan.py")
         claim_parser = next(item for item in parser._actions if isinstance(item, argparse._SubParsersAction)).choices["claim"]
-        required = ["--worker", "w", "--session", SESSION, "--branch", "b", "--next-action", "n"]
-        options = []
-        for destination, value in (("next_action", "n"), ("resume_from", "10"), ("planning_checkout", "/repo")):
-            prefix = shortest_parser_option(claim_parser, destination, [value, "7", *required])
-            options.extend(([prefix, value], [prefix + "=" + value]))
+        added_required = "--fixture-required"
+        while added_required in claim_parser._option_string_actions:
+            added_required += "-extra"
+        claim_parser.add_argument(added_required, required=True)
+        self.addCleanup(receipts.helper_parser.cache_clear)
+        positional = next(item for item in claim_parser._actions if not item.option_strings)
+        required = parser_required_arguments(claim_parser)
+        options = [[]]
+        optional = [item for item in claim_parser._actions if item.option_strings
+                    and not item.required and item.nargs is None]
+        for action in optional[:3]:
+            values = parser_fixture_value(action)
+            prefix = shortest_parser_option(claim_parser, action.dest, [*values, *required])
+            options.extend(([prefix, *values], [prefix + "=" + values[0]]))
         repository = shortest_parser_option(parser, "repo", ["example/a", "show", "1"])
         for harness in ("codex", "claude"):
             for option in options:
-                argv = [repository, "example/a", "claim", *option, "7", *required]
+                argv = [repository, "example/a", "claim", *option, *required]
                 namespace, unknown = parser.parse_known_args(argv)
                 self.assertFalse(unknown)
                 with self.subTest(harness=harness, argv=argv):
@@ -1521,9 +1641,9 @@ class ReceiptTests(unittest.TestCase):
                         rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
                     else:
                         rows[1]["message"]["content"][0]["input"] = {"command": command}
-                    self.assertEqual(receipts.target_records(rows, harness), {(namespace.repo, int(namespace.issue))})
+                    self.assertEqual(receipts.target_records(rows, harness), {(namespace.repo, int(getattr(namespace, positional.dest)))})
             for repo_option in ([repository, "example/a"], [repository + "=example/a"]):
-                argv = ["uv", "run", "gh-plan.py", *repo_option, "claim", *options[0], "7", *required]
+                argv = ["uv", "run", "gh-plan.py", *repo_option, "claim", *options[-1], *required]
                 inner = shlex.join(argv)
                 for command in (inner, "bash -c " + shlex.quote(inner),
                                 "python3 -c " + shlex.quote("import subprocess; subprocess.run(" + repr(argv) + ")")):
@@ -1534,7 +1654,8 @@ class ReceiptTests(unittest.TestCase):
                         else:
                             rows[1]["message"]["content"][0]["input"] = {"command": command}
                         rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
-                        self.assertEqual(receipts.target_records(rows, harness), {("example/a", 7)})
+                        namespace, _ = parser.parse_known_args(argv[3:])
+                        self.assertEqual(receipts.target_records(rows, harness), {(namespace.repo, int(getattr(namespace, positional.dest)))})
                         self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
 
 

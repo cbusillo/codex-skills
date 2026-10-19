@@ -38,6 +38,13 @@ def source_parent(source):
     return spawn.get("parent_thread_id")
 
 
+def inline_history(records):
+    """User forks name their source without copying another identity inline."""
+    metadata = [r["payload"] for r in records if r.get("type") == "session_meta"]
+    return bool(metadata and ("subagent_history_start_ordinal" in metadata[0]
+                              or len({meta.get("id") for meta in metadata}) > 1))
+
+
 def child_records(records, harness, session, context=None):
     """Separate a verified native fork's local rows from inherited history.
 
@@ -53,7 +60,7 @@ def child_records(records, harness, session, context=None):
     if not records or records[0].get("type") != "session_meta" or records[0]["payload"].get("id") != session:
         raise ValueError("child rollout lacks its own initial native metadata")
     meta = records[0]["payload"]
-    if "forked_from_id" not in meta and "subagent_history_start_ordinal" not in meta:
+    if not inline_history(records):
         if identities != {session}:
             raise ValueError("native transcript identity is unavailable or differs")
         return records
@@ -160,7 +167,7 @@ def root_records(path, harness, session, records):
     """Read a fork as its own session without trusting copied identity rows."""
     if harness == "codex" and records and records[0].get("type") == "session_meta":
         meta = records[0]["payload"]
-        if "forked_from_id" in meta or "subagent_history_start_ordinal" in meta:
+        if inline_history(records):
             if meta.get("id") != session:
                 raise ValueError("native fork root identity differs")
             return child_records(records, harness, session, root_context(path, session))
@@ -185,9 +192,7 @@ def collect(path, harness, session, records, read, *, homes=None):
     else:
         with native_databases(path, homes) as databases:
             pending, visited, seen_paths = [session], set(), set()
-            root_meta = records[0].get("payload", {}) if records and records[0].get("type") == "session_meta" else {}
-            ancestors = (root_context(path, session)["ancestors"] if "forked_from_id" in root_meta
-                         or "subagent_history_start_ordinal" in root_meta else ())
+            ancestors = root_context(path, session)["ancestors"] if inline_history(records) else ()
             ancestry = {session: ancestors}
             while pending:
                 parent = pending.pop()

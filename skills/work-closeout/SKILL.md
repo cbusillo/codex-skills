@@ -260,7 +260,8 @@ edges. Child-owned claims and claims using the inherited root session ID are
 both included. Missing native graph/schema/rollout evidence refuses coverage.
 Full-history forks use their native child boundary after ancestry validation;
 copied parent activity is evaluated in its parent, and coverage binds the raw
-child artifact.
+child artifact. A user-started fork with only its own native identity follows
+the ordinary identity check; it does not need a spawned-child edge.
 Missing native identity or a different running harness refuses an all-clear.
 Preserve its coverage
 and released-claim links as closeout evidence; it proves claim disposition only,
@@ -316,6 +317,9 @@ checker can inventory the created branch without borrowing a URL from shared
 stdout. If neither that scope nor an isolated URL is available, independently
 verify handoffs for all open PRs linked to the session's claimed issues. Missing
 handoffs keep coverage incomplete; preserve ownership and record conditional/no.
+An older PR is excluded only when its GitHub creation time precedes a source
+claim whose canonical native receipt came before that create invocation. The
+workstation clock cannot exclude a PR from verification.
 A saved report read with `cat`, an earlier proof before another claim or PR was
 created, and final-answer prose do not satisfy shutdown acceptance. Run the
 checker as its own native shell invocation, optionally piped to `tee`, with
@@ -356,6 +360,10 @@ Parsed foreground launchers and compound shell commands retain native completion
 and helper scope. A literal single-command shell body or a single blocking
 Python subprocess call can use the same completion evidence; arbitrary executor
 code and detached descendants remain unresolved.
+Supported uv option arity comes from the trusted runtime's help, with verified
+hidden compatibility options retained. If that metadata cannot be read, a plain
+`uv run HELPER ...` invocation remains supported; unresolved original execution
+still requires conditional/no.
 Use a literal helper path: a whole shell-variable executable leaves its writer
 unresolved and keeps the verdict conditional/no.
 Quoted heredoc bodies are data only when they are not passed to an executor,

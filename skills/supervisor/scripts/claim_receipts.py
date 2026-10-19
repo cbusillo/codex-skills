@@ -13,9 +13,12 @@ import argparse
 import io
 import textwrap
 import tokenize
+import shutil
+import subprocess
 import importlib.util
 import sys
 from functools import lru_cache
+from contextlib import redirect_stdout
 import posixpath
 from pathlib import Path
 
@@ -134,8 +137,8 @@ def shell_texts(name, value):
         texts = [value.get("cmd") or value.get("command") or ""]
         if isinstance(texts[0], list):
             argv = texts[0]
-            texts = ([argv[2]] if len(argv) == 3 and Path(argv[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}
-                     and argv[1] in {"-c", "-lc"} else [shlex.join(argv)])
+            body = shell_c_body(argv)
+            texts = [body] if body is not None else [shlex.join(argv)]
     elif name in {"exec", "functions.exec"} and isinstance(value, str):
         texts = []
         for m in SHELL_FIELD.finditer(value):
@@ -152,9 +155,9 @@ def shell_commands(name, value, *, depth=0):
     """Only shell tools execute commands; tool prompts and echo operands do not."""
     def commands(argv):
         child = unwrapped_command(argv)
-        if (depth < 16 and len(child) == 3 and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}
-                and child[1] in {"-c", "-lc"} and foreground_shell_text(child[2])):
-            yield from shell_commands("exec_command", {"cmd": child[2]}, depth=depth + 1)
+        body = shell_c_body(child)
+        if depth < 16 and body is not None and foreground_shell_text(body):
+            yield from shell_commands("exec_command", {"cmd": body}, depth=depth + 1)
         else:
             yield argv[1:] if argv[0] == "nohup" else argv
     texts = shell_texts(name, value)
@@ -331,9 +334,8 @@ def opaque_ownership(name, value):
                            if Path(word).name in {"gh-plan.py", "gh-pr.py", "gh"}):
                         return True
             if child and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}:
-                if any(executable_content(word) or opaque_ownership("exec_command", {"cmd": word})
-                       for i, word in enumerate(child[1:], 1)
-                       if child[i - 1].startswith("-") and "c" in child[i - 1]):
+                body = shell_c_body(child)
+                if body is not None and (executable_content(body) or opaque_ownership("exec_command", {"cmd": body})):
                     return True
             if child and re.fullmatch(r"python[0-9.]*", Path(child[0]).name):
                 code = child[child.index("-c") + 1:] if "-c" in child else bodies if "-" in child else []
@@ -416,29 +418,106 @@ def unwrapped_command(argv):
             if name == "timeout" and argv:
                 argv = argv[1:]
         elif name == "uv":
-            child = argv[1:]
-            value_options = {"--directory", "--project", "--python", "-p", "--with", "-w", "--group",
-                             "--env-file", "--package", "--with-requirements", "--with-editable", "--extra",
-                             "--cache-dir", "--index-url", "--default-index", "--config-file", "--no-group",
-                             "--only-group", "--python-preference", "--refresh-package"}
-            def options(words):
-                while words and words[0].startswith("-"):
-                    flag = words.pop(0)
-                    if flag in value_options and words:
-                        words.pop(0)
-                return words
-            child = options(child)
-            if child[:1] != ["run"]:
+            child = uv_run_argv(argv)
+            if child is None:
                 break
-            argv = options(child[1:])
-        elif ((name in {"bash", "sh", "zsh", "dash", "ksh"} and len(argv) == 3
-               and argv[1] in {"-c", "-lc"} and (child := foreground_shell_argv(argv[2])))
+            argv = child
+        elif (((body := shell_c_body(argv)) is not None and (child := foreground_shell_argv(body)))
               or (re.fullmatch(r"python[0-9.]*", name) and len(argv) == 3 and argv[1] == "-c"
                   and (child := foreground_python_argv(argv[2])))):
             argv = child
         else:
             break
     return argv
+
+
+def runtime_uv_help():
+    """Probe the trusted runtime once; never execute a transcript's uv path."""
+    executable = shutil.which("uv")
+    if executable is None:
+        return None
+    try:
+        result = subprocess.run([executable, "run", "--help"], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+@lru_cache(maxsize=1)
+def uv_run_options():
+    """Read current uv option arity from its own help rather than a copied table."""
+    help_text = runtime_uv_help()
+    if not isinstance(help_text, str):
+        return None
+    options = {}
+    for line in help_text.splitlines():
+        if not line.lstrip().startswith("-"):
+            continue
+        signature = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
+        takes_value = re.search(r"<[^>]+>", signature) is not None
+        for option in re.findall(r"(?<![\w-])--?[A-Za-z][\w-]*", signature):
+            options[option] = takes_value
+    if "--help" not in options:
+        return None
+    # uv still accepts these deprecated aliases but omits them from help.
+    # Preserve their verified arity without freezing the visible option set.
+    options.setdefault("--python-preference", True)
+    options.setdefault("--native-tls", False)
+    return options
+
+
+def uv_run_argv(argv):
+    """Normalize only options supported by the trusted current uv runtime."""
+    words = list(argv[1:])
+    def consume(words):
+        while words and words[0].startswith("-"):
+            if words[0] == "--":
+                return words[1:]
+            options = uv_run_options()
+            if options is None:
+                return None
+            flag = words.pop(0)
+            option, equal, _ = flag.partition("=")
+            if option in options:
+                takes_value = options[option] and not equal
+            elif flag.startswith("-") and not flag.startswith("--"):
+                takes_value = False
+                for position, character in enumerate(flag[1:], 2):
+                    short = "-" + character
+                    if short not in options:
+                        return None
+                    if options[short]:
+                        takes_value = position == len(flag)
+                        break
+            else:
+                return None
+            if takes_value:
+                if not words:
+                    return None
+                words.pop(0)
+        return words
+    words = consume(words)
+    if words is None or words[:1] != ["run"]:
+        return None
+    return consume(words[1:])
+
+
+def shell_c_body(argv):
+    """Find the command argument after shell option clusters and value options."""
+    if not argv or Path(argv[0]).name not in {"bash", "sh", "zsh", "dash", "ksh"}:
+        return None
+    cursor = 1
+    while cursor < len(argv):
+        option = argv[cursor]
+        if option == "--" or not option.startswith(("-", "+")):
+            return None
+        if not option.startswith("--") and "c" in option[1:]:
+            return argv[cursor + 1] if cursor + 1 < len(argv) else None
+        cursor += 1
+        if option in {"--rcfile", "--init-file"} or not option.startswith("--") and option.endswith("o"):
+            cursor += 1
+    return None
 
 
 def foreground_shell_text(content):
@@ -506,6 +585,14 @@ def python_ownership(content):
     def literal(node, seen=frozenset()):
         if isinstance(node, ast.Name) and node.id in definitions and node.id not in seen:
             return literal(definitions[node.id], seen | {node.id})
+        if (isinstance(node, ast.Call) and ast.unparse(node.func) == "shlex.split"
+                and len(node.args) == 1 and not node.keywords):
+            text = literal(node.args[0], seen)
+            if isinstance(text, str):
+                try:
+                    return shlex.split(text)
+                except ValueError:
+                    return None
         try:
             return ast.literal_eval(node)
         except (ValueError, TypeError):
@@ -538,7 +625,7 @@ def python_fragment_ownership(content):
     tokens = []
     try:
         for token in tokenize.generate_tokens(io.StringIO("\n".join(line.lstrip() for line in content.splitlines())).readline):
-            if token.type not in {tokenize.INDENT, tokenize.DEDENT, tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT}:
+            if token.type not in {tokenize.INDENT, tokenize.DEDENT, tokenize.NL, tokenize.COMMENT}:
                 tokens.append((token.type, token.string))
     except (tokenize.TokenError, IndentationError, SyntaxError):
         pass  # Retain complete tokens before an unfinished call or quote.
@@ -574,9 +661,19 @@ def python_fragment_ownership(content):
                 continue
             if isinstance(argument, ast.Name):
                 for index in range(len(tokens) - 2):
-                    if (tokens[index] == (tokenize.NAME, argument.id) and tokens[index + 1][1] == "="
-                            and tokens[index + 2][0] == tokenize.STRING):
-                        definition = argument.id + "=" + tokens[index + 2][1]
+                    if tokens[index] == (tokenize.NAME, argument.id) and tokens[index + 1][1] == "=":
+                        end_definition, balance = index + 2, 0
+                        while end_definition < len(tokens):
+                            if balance == 0 and (tokens[end_definition][0] == tokenize.NEWLINE
+                                                 or tokens[end_definition][1] == ";"):
+                                break
+                            spelling = tokens[end_definition][1]
+                            if spelling in {"(", "[", "{"}:
+                                balance += 1
+                            elif spelling in {")", "]", "}"}:
+                                balance -= 1
+                            end_definition += 1
+                        definition = tokenize.untokenize(tokens[index:end_definition])
                         if python_ownership(definition + "\n" + expression):
                             return True
             continue
@@ -1045,6 +1142,9 @@ def ownership_command(argv):
     # Only the observed bare action help form is exempt. Elsewhere a flag-like
     # word may be an option value rather than a help request.
     help_only = action[-2:] in ([verb, "--help"], [verb, "-h"]) and action.count(verb) == 1
+    if owning and name in {"gh", "gh-pr.py"} and any(word in {"--help", "-h"} for word in action):
+        parsed = creation_arguments(argv)
+        help_only = help_only or parsed is not None and getattr(parsed, "help_only", False)
     return owning and not help_only
 
 
@@ -1374,7 +1474,7 @@ def creation_arguments(argv):
         aliases = {"-H": "--head", "-R": "--repo", "-t": "--title", "-b": "--body-file",
                    "--body": "--body-file", "-B": "--base", "-d": "--draft", "-f": "--fill",
                    "-l": "--label", "-r": "--reviewer", "-a": "--assignee", "-p": "--project",
-                   "-m": "--milestone", "-T": "--template"}
+                   "-m": "--milestone", "-T": "--template", "-F": "--body-file"}
         words, repository, cursor = [], [], 0
         create_parser = next(item for item in helper_parser("gh-pr.py")._actions
                              if isinstance(item, argparse._SubParsersAction)).choices["create"]
@@ -1396,12 +1496,15 @@ def creation_arguments(argv):
                 continue
             end = option_end(create_parser, [normalized, *tail[cursor + 1:]], 0)
             if end is None:
-                return None
+                break  # Preserve known scope before an unfamiliar gh-only option.
             words.extend([normalized, *tail[cursor + 1:cursor + end]])
             cursor += end
         words = [*repository, "create", *words]
     try:
-        args, _ = helper_parser("gh-pr.py").parse_known_args(words)
+        with redirect_stdout(io.StringIO()):
+            args, _ = helper_parser("gh-pr.py").parse_known_args(words)
+    except SystemExit as error:
+        return argparse.Namespace(help_only=True) if error.code == 0 else None
     except Exception:
         return None
     return args
@@ -1413,7 +1516,7 @@ def created_pr_targets(records, harness):
         records, _ = serial_ownership_records(records)
     urls, no_writes = created_pr_evidence(records, harness)
     targets = []
-    for record in records:
+    for index, record in enumerate(records):
         for identifier, name, value in calls_and_results(record, harness)[0]:
             if identifier in no_writes:
                 continue
@@ -1422,16 +1525,18 @@ def created_pr_targets(records, harness):
             url = next(iter(own)) if len(commands) == 1 and len(own) == 1 else None
             for argv in commands:
                 args = creation_arguments(argv)
-                if args is not None and getattr(args, "dry_run", False):
+                if args is not None and (getattr(args, "dry_run", False) or getattr(args, "help_only", False)):
                     continue
                 repository, head = (getattr(args, "repo", None), getattr(args, "head", None)) if args is not None else (None, None)
                 if not isinstance(repository, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
                     repository = url.split("/")[3] + "/" + url.split("/")[4] if url else None
+                head_owner = repository.split("/")[0] if repository else None
                 if not isinstance(head, str) or any(symbol in head for symbol in "$`\n"):
                     head = None
                 elif ":" in head:
-                    head = head.rsplit(":", 1)[1]  # gh accepts OWNER:branch; GitHub's head.ref is branch.
-                targets.append({"invocation": identifier, "repository": repository, "head": head, "url": url})
+                    head_owner, head = head.split(":", 1)
+                targets.append({"invocation": identifier, "index": index, "repository": repository,
+                                "head": head, "head_owner": head_owner, "url": url})
     return targets
 
 

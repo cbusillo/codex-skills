@@ -34,6 +34,81 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def creation_history(self, harness, command, *, claim_first=True, timestamp="2026-01-01T02:00:00Z"):
+        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
+        rows = history(harness, native_claim(REPO), {})
+        if harness == "codex":
+            rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
+        else:
+            rows[3]["message"]["content"][0]["input"] = {"command": command}
+        rows[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
+        if not claim_first:
+            rows[1:5] = [*rows[3:5], *rows[1:3]]
+        for row in rows:
+            row["timestamp"] = timestamp
+        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
+        return {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+
+    def test_earlier_pr_exclusion_uses_preceding_claim_and_server_timestamps(self):
+        for harness in ("codex", "claude"):
+            for native_time in ("2026-01-01T02:00:00Z", "2025-12-31T22:00:00Z"):
+                for claim_first in (True, False):
+                    for created_at in ("2025-12-31T23:59:00Z", "2026-01-01T00:01:00Z", "2026-01-01T00:01:01Z", None, "malformed"):
+                        with self.subTest(harness=harness, native_time=native_time, claim_first=claim_first, created_at=created_at):
+                            entry = self.creation_history(harness, "git push origin HEAD && gh pr create --fill",
+                                                          claim_first=claim_first, timestamp=native_time)
+                            self.pulls = [pull(3, branch="earlier-worker", created_at=created_at)]
+                            with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                                report = helper.check(self.reader, [], entry, ACTOR)
+                            self.assertEqual(report["claims_clear"], claim_first and created_at == "2025-12-31T23:59:00Z", report)
+
+    def test_creation_scope_keeps_known_flags_and_separates_fork_owners(self):
+        for harness in ("codex", "claude"):
+            for tail in ("-F body.md", "--web", "--editor", "--recover saved.msg"):
+                with self.subTest(harness=harness, tail=tail):
+                    entry = self.creation_history(harness, "git push && gh pr create -R test/a -H feat " + tail)
+                    self.pulls = [pull(3, branch="feat", created_at="2026-01-01T00:01:01Z"),
+                                  pull(4, branch="other-worker", created_at="2025-12-31T23:59:00Z")]
+                    self.comments[-1]["body"] += "\n" + self.pulls[0]["html_url"]
+                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                        self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+            for head in ("feat", "other:feat"):
+                with self.subTest(harness=harness, head=head):
+                    entry = self.creation_history(harness, "git push && gh pr create -R test/a -H " + head)
+                    self.pulls = [pull(3, head={"ref": "feat", "repo": {"full_name": "other/fork"}},
+                                       user={"login": "other[bot]"}, created_at="2026-01-01T00:01:01Z")]
+                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                        self.assertEqual(helper.check(self.reader, [], entry, ACTOR)["claims_clear"], head == "feat")
+
+    def test_argumented_create_help_is_not_a_writer_or_a_checker_exit(self):
+        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
+        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
+        for harness in ("codex", "claude"):
+            for command in ("gh pr create --repo test/a --help",
+                            "uv run gh-pr.py --repo test/a create --head feat --help"):
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, native_claim(REPO), {})
+                    if harness == "codex":
+                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[3]["message"]["content"][0]["input"] = {"command": command}
+                    rows[4] = output({"exit_code": 0, "output": "help"}, harness, "tool-1")
+                    for row in rows:
+                        row["timestamp"] = SOURCE["claimed_at"]
+                    entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout), patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                        report = helper.check(self.reader, [], entry, ACTOR)
+                    self.assertTrue(report["claims_clear"], report)
+                    self.assertEqual(stdout.getvalue(), "")
+            for option in ("--title=--help", "--body --help"):
+                entry = self.creation_history(harness, "gh pr create --repo test/a --head feat " + option)
+                self.pulls = [pull(3, branch="feat", created_at="2026-01-01T00:01:01Z")]
+                with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                    self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+
     def test_compound_pr_creation_requires_split_branch_handoff(self):
         from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
         for harness in ("codex", "claude"):
@@ -158,6 +233,12 @@ class ClaimCloseoutTests(unittest.TestCase):
                 client_comments.pop()
 
     def setUp(self):
+        from test_claim_receipts import UV_RUN_HELP
+        helper.claim_receipts.uv_run_options.cache_clear()
+        uv_help = patch.object(helper.claim_receipts, "runtime_uv_help", return_value=UV_RUN_HELP)
+        uv_help.start()
+        self.addCleanup(uv_help.stop)
+        self.addCleanup(helper.claim_receipts.uv_run_options.cache_clear)
         self.source = comment(10, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
         self.release = comment(11, "Released claim 10\n\nSession: " + SESSION, at="2026-01-01T00:02:00Z")
         self.comments = [self.source]

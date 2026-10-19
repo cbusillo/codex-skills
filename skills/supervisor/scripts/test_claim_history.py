@@ -320,6 +320,27 @@ class NativeHistoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.status(self.child, session='child')
 
+    def test_user_started_fork_without_inline_parent_history_keeps_plain_identity(self):
+        rows = records('codex', 'root')
+        rows[0]['payload'].update(forked_from_id='prior-session', forked_from_ordinal_exclusive=55,
+                                  source='vscode', originator='codex-tui')
+        self.write(self.root, rows)
+        with sqlite3.connect(self.database) as db:
+            db.execute("DELETE FROM thread_spawn_edges")
+            db.execute("DELETE FROM threads WHERE id='child'")
+            db.execute("UPDATE threads SET source='vscode' WHERE id='root'")
+        self.assertEqual(claim_history.root_records(self.root, 'codex', 'root', rows), rows)
+        self.assertEqual(len(self.nodes()), 1)
+        self.assertTrue(self.status()['safe_verdict'])
+        with self.assertRaises(ValueError):
+            claim_history.root_records(self.root, 'codex', 'prior-session', rows)
+        rows.insert(1, {'type': 'session_meta', 'payload': {'id': 'prior-session', 'source': 'vscode'}})
+        self.write(self.root, rows)
+        with self.assertRaises(ValueError):
+            claim_history.root_records(self.root, 'codex', 'root', rows)
+        with self.assertRaises(ValueError):
+            self.status()
+
     def test_malformed_fork_boundary_or_identity_cannot_hide_local_claims(self):
         parent = records('codex', 'root', delegate=True)
         source = claim()
