@@ -11,6 +11,7 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1091,6 +1092,21 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
         self.assertEqual(before, self.inventory)
+        branch = CLAIM.records(self.comments[0]["body"])[0]["branch"]
+        self.assertEqual(self.emitted.call_args.args[0]["retained_branch_heads"], {branch: self.pushed_head})
+
+    def test_pushed_handoff_freezes_head_even_if_author_and_remote_move_together(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.pushed_handoff_fixture()
+                def move():
+                    old = self.pushed_head
+                    self.pushed_head = self.local_head = self.remote_head = "b" * 40
+                    self.comments[2]["body"] = self.comments[2]["body"].replace(old, self.pushed_head)
+                setattr(self, phase, move)
+                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_pushed_handoff_accepts_normal_prose_and_markdown_links(self):
         for style in ("bare", "origin", "autolink", "code"):
@@ -1157,6 +1173,7 @@ class ClaimTests(unittest.TestCase):
         self.local_head = None
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertIn(self.pushed_head, self.emitted.call_args.args[0]["retained_branch_heads"].values())
         self.setUp()
         self.pushed_handoff_fixture()
         self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
@@ -4856,7 +4873,7 @@ class ClaimTests(unittest.TestCase):
 
 class PushedHandoffGitTests(unittest.TestCase):
     def test_live_git_readback_preserves_unpublished_or_changed_source(self):
-        for state in ("pushed", "remote_only", "missing", "moved", "ahead", "behind", "dirty", "untracked", "rebasing"):
+        for state in ("pushed", "remote_only", "missing", "moved", "ahead", "behind", "dirty", "untracked", "rebasing", "stale_detached", "missing_source"):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 checkout, remote = root / "source with space é", root / "remote.git"
@@ -4893,6 +4910,13 @@ class PushedHandoffGitTests(unittest.TestCase):
                 if state == "dirty": path.write_text("uncommitted\n")
                 if state == "untracked": (checkout / "only-copy.txt").write_text("unpublished\n")
                 if state == "rebasing": git("rebase", "--exec", "exit 1", first, check=False)
+                if state in {"stale_detached", "missing_source"}:
+                    stale = root / "missing worktree"
+                    if state == "stale_detached": git("worktree", "add", "--detach", str(stale), "HEAD")
+                    else:
+                        git("checkout", "-b", "independent")
+                        git("worktree", "add", str(stale), "work/source")
+                    shutil.rmtree(stale)
                 original_read = CLAIM.run_read
                 def fixture_origin(argv, **kwargs):
                     if argv[1:4] == ["remote", "get-url", "origin"]:
@@ -4901,7 +4925,7 @@ class PushedHandoffGitTests(unittest.TestCase):
                         return original_read(argv, **kwargs)
                 before = git("status", "--porcelain")
                 with patch.object(CLAIM, "run_read", side_effect=fixture_origin):
-                    if state in {"pushed", "remote_only"}:
+                    if state in {"pushed", "remote_only", "stale_detached"}:
                         CLAIM.verify_pushed_handoff("work/source", head, "owner/repo", cwd=checkout)
                     else:
                         with self.assertRaises(CLAIM.ClaimProofError):

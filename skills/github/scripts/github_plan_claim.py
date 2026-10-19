@@ -778,22 +778,27 @@ def verify_pushed_handoff(branch: str, head: str, repo: str, *, cwd: pathlib.Pat
             name, _, sha = line.partition(" ")
             if name == ref and sha != head:
                 refuse("Retained local branch has unpushed or diverged work; preserve it")
+        common = pathlib.Path(run_read(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd).strip())
+        admin_dirs = [common]
+        if (common / "worktrees").is_dir():
+            admin_dirs.extend(path for path in (common / "worktrees").iterdir() if path.is_dir())
+        for admin in admin_dirs:
+            for state in ("rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"):
+                state_file = admin / state
+                if state_file.is_file() and state_file.read_text().strip() in {branch, ref}:
+                    refuse("Retained source has an unfinished rebase or bisect; preserve its worktree")
         worktrees = run_read(["git", "worktree", "list", "--porcelain", "-z"], cwd=cwd)
         for block in worktrees.split("\0\0"):
             fields = dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
-            if "detached" in block.split("\0"):
-                path = pathlib.Path(fields["worktree"])
-                for state in ("rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"):
-                    git_path = pathlib.Path(run_read(["git", "rev-parse", "--git-path", state], cwd=path).strip())
-                    git_path = git_path if git_path.is_absolute() else path / git_path
-                    if git_path.is_file() and git_path.read_text().strip() in {branch, ref}:
-                        refuse("Retained source has an unfinished rebase or bisect; preserve its worktree")
             if fields.get("branch") != ref:
                 continue
+            path = pathlib.Path(fields["worktree"])
+            if not path.is_dir():
+                refuse("Retained source worktree is unavailable; preserve its artifacts")
             if fields.get("HEAD") != head:
                 refuse("Retained worktree head differs from the handoff; preserve it")
             if run_read(["git", "status", "--porcelain", "--untracked-files=normal"],
-                        cwd=pathlib.Path(fields["worktree"])).strip():
+                        cwd=path).strip():
                 refuse("Retained worktree has unpublished changes; preserve it")
     except ClaimProofError:
         raise
@@ -805,6 +810,7 @@ def retained_handoff(
     comments: list[dict[str, Any]], source_id: int, handoff_id: int,
     pulls: list[dict[str, Any]], target_number: int | None, *, issue_repo: str,
     issue_number: int, target_repo: str,
+    verified_heads: dict[str, str] | None = None,
 ) -> set[str]:
     """Bind retained PRs or a verified pushed source to its author-released handoff."""
     source_branch = retained_branch(comments, source_id)
@@ -883,6 +889,8 @@ def retained_handoff(
             raise ValueError("Retained handoff must attest a same-repository open or merged PR linked to the issue, "
                              "or name its released source branch beside a full same-repository commit link")
         verify_pushed_handoff(source_branch, head, target_repo)
+        if verified_heads is not None:
+            verified_heads[source_branch] = head
     return permitted
 
 

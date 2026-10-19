@@ -1277,7 +1277,11 @@ unreadable, moved, unpushed or diverged state refuses, including on both claim
 readbacks. The source author, exact release, ownership, waits, native blockers,
 peer and other artifact checks remain the same. Open PRs on the source branch
 still need their own attestation. The successor uses a new task branch and
-preserves the source checkout. This branch route cannot authorize a
+preserves the source checkout. The claim result's `retained_branch_heads` maps
+the source branch to its verified SHA, fixed across both readbacks. Start the
+new worktree at that exact SHA. If the object is absent locally, fetch that
+exact SHA from origin first; if unavailable, stop without substituting a moving
+branch tip. This branch route cannot authorize a
 conflict-only PR refresh or cross-repository handoff.
 If an earlier handoff gives only a short SHA or no commit link, its original
 author posts a fresh handoff identifying the released claim and session under
