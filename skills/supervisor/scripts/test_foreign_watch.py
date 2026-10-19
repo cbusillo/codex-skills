@@ -79,6 +79,15 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(path, f"repos/{REPO}/issues/comments")
         self.assertLess(foreign_watch.timestamp(params["since"]), foreign_watch.timestamp(SINCE))
 
+    def test_notice_carries_a_bounded_excerpt_of_the_comment(self):
+        reader = Mock()
+        correction = "If I made a mistake on the csv sheet,\n\ncan I send the corrected one?"
+        reader.paged_json.return_value = [comment(body=correction), comment(body="word " * 200)]
+        short, long = self.scan(reader)[0]
+        self.assertEqual(short["excerpt"], "If I made a mistake on the csv sheet, can I send the corrected one?")
+        self.assertTrue(long["excerpt"].startswith("word word"))
+        self.assertLessEqual(len(long["excerpt"]), foreign_watch.EXCERPT_CHARS)
+
     def test_failure_preserves_only_failed_repository_watermark(self):
         reader = Mock()
         reader.paged_json.side_effect = [foreign_watch.GitHubReadShapeError("partial"), []]

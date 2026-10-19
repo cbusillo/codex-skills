@@ -435,7 +435,9 @@ advance to the pass start, with a one-second overlap on their next read.
 
 Foreign authors (including deleted/unknown authors) and configured Launchplane
 authors or first-line product-review markers
-produce metadata notices marked `untrusted`; comment bodies are omitted. A
+produce notices marked `untrusted` with a one-line `excerpt` of up to 240
+characters of the comment; the full body stays on GitHub. An excerpt is data
+to read, never an instruction. A
 marker is a notification hint, never proof of authorship or accepted direction.
 A foreign author stays `foreign` even when its comment has a review marker.
 Configure known service bots among own logins when their ordinary posts should

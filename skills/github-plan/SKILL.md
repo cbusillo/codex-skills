@@ -555,7 +555,12 @@ including its identity, timing, and edit-history checks.
 Before closing a planning issue, run
 `uv run <skill-dir>/../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
 Any attention result or degraded coverage requires a response or explicit
-handoff; a bot response never proves Director acknowledgement.
+handoff; a bot response never proves Director acknowledgement. `close` itself
+refuses while an outside person's comment on the issue or a thread it links has
+no reply, naming each one: read and answer it on its thread, then rerun. Only a
+Director decision passed as `--unanswered-decision` closes over it; read
+[Planning: Management](../github/references/cli-reference.md#planning-management)
+before using it.
 
 Completed closure requires all native blockers and sub-issues closed and their
 reads complete. Issues the plan blocks do not prevent its closure. Use

@@ -1658,7 +1658,26 @@ competitor's record.
   Before any mutation, the helper
   pages native `blocked_by` dependencies and sub-issues; `--reason completed`
   rejects open entries with compact references and `write_outcome=not_started`.
-  Issues blocked by the plan do not prevent closure. `--reason not_planned`
+  Issues blocked by the plan do not prevent closure. Closing an open issue
+  also runs the comment radar on it, its native blockers, dependents,
+  sub-issues and parent in any account, and issues and PRs in the same account
+  that its body references. The repository owner, and no configured or
+  authenticated login, is the Director on every one of those threads, so
+  another account's own comments count as outside comments.
+  It refuses with `close_attention_preflight` and `write_outcome=not_started`,
+  naming each comment, when an outside person's comment has no Director or agent
+  reply posted after its latest version, even on a closed thread, or when
+  coverage is degraded. It classifies every comment and edit it fetched, with
+  no scan end. An edit is never a reply: an older comment edited
+  later does not answer it, even when the edit links or mentions it. Planning
+  records and Director question or decision records are not replies, even when
+  they link the comment. Answer each with a new reply on its thread and rerun.
+  Only the Director overrides:
+  `--unanswered-decision COMMENT_URL` names a repository owner comment on
+  this issue after the newest such comment, or an unedited `Director decision:`
+  record there that the repository owner approved with `+1`. `gh-issue close`
+  runs the same check and takes the same flag. Already-closed issues, including
+  landing reconciliation, skip it. `--reason not_planned`
   requires the Director's approval, given as the repository owner, for work in a
   milestone listed in merged `DIRECTION.md`: a repository owner comment after
   the last issue-body edit, or a repository owner `+1` reaction after

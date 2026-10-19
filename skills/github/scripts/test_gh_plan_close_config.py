@@ -27,6 +27,15 @@ PLAN: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PLAN)
 
 
+def comment_check(attention: list[dict] | None = None, linked: list[dict] | None = None):
+    """Stub the comment radar and the linked-thread reads behind close's comment check."""
+    reader = Mock()
+    reader.paged_json.side_effect = lambda path, **_: (linked or []) if path.endswith("/sub_issues") else []
+    radar = Mock(return_value={"status": "attention" if attention else "clear", "attention": attention or [],
+                               "coverage": {"errors": []}})
+    return patch.multiple(PLAN.github_close_attention, GitHubReader=Mock(return_value=reader), run_radar=radar), radar
+
+
 class CloseConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         # These routing fixtures have no dependents; native propagation is
@@ -119,6 +128,7 @@ class CloseConfigTests(unittest.TestCase):
                                         find_project_item=Mock(return_value={"id": "item"}),
                                         set_project_field=field), \
                             patch.multiple(PLAN.github_issue_core, set_issue_state=state, edit_issue=labels), \
+                            comment_check()[0], \
                             patch.object(sys, "argv", [str(SCRIPT), "--repo", caller, "close", ref, *overrides]), \
                             contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
                         PLAN.main()
@@ -139,7 +149,8 @@ class CloseConfigTests(unittest.TestCase):
                   workspace: dict | None = None, overrides: tuple[str, ...] = (),
                   fail_labels: bool = False, fail_project: bool = False,
                   blocked: bool = False, already_closed: bool = False, indexed: bool = False, trigger_comments: Mock | None = None,
-                  trigger_readback: Mock | None = None) -> tuple[int, dict, Mock, Mock, Mock]:
+                  trigger_readback: Mock | None = None,
+                  comments: Any = None) -> tuple[int, dict, Mock, Mock, Mock]:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             caller, target = root / "caller", root / "elsewhere" / "target"
@@ -195,6 +206,7 @@ class CloseConfigTests(unittest.TestCase):
                                 find_project_item=Mock(return_value={"id": "item"}), set_project_field=Mock()), \
                     patch.multiple(PLAN.github_issue_core, set_issue_state=state, edit_issue=labels), \
                     patch.object(PLAN.github_comment_core, "comment", trigger_comments or Mock()), \
+                    (comments or comment_check()[0]), \
                     patch.object(sys, "argv", argv), contextlib.redirect_stdout(output), \
                     contextlib.redirect_stderr(io.StringIO()):
                 code = 0
@@ -254,6 +266,24 @@ class CloseConfigTests(unittest.TestCase):
         state.assert_not_called()
         labels.assert_not_called()
         project.assert_not_called()
+
+    def test_unanswered_outside_comment_on_issue_or_sub_issue_refuses_before_any_write(self) -> None:
+        for number in (7, 9):
+            with self.subTest(number=number):
+                unanswered = {"repo": "fixture/target", "number": number, "author": "client",
+                              "author_class": "person", "publicly_addressed": False, "later_reply_url": None,
+                              "created_at": "2026-10-17T17:33:49Z", "updated_at": "2026-10-17T17:33:49Z",
+                              "comment_url": f"https://github.com/fixture/target/issues/{number}#issuecomment-1"}
+                stub, radar = comment_check([unanswered], linked=[
+                    {"html_url": "https://github.com/fixture/target/issues/9"}])
+                code, result, state, labels, project = self.run_close(comments=stub)
+                self.assertNotEqual(code, 0)
+                self.assertEqual(result["failed_step"], "close_attention_preflight")
+                self.assertIn(unanswered["comment_url"], result["error"])
+                self.assertEqual(radar.call_args.args[0], ["fixture/target#7", "fixture/target#9"])
+                state.assert_not_called()
+                labels.assert_not_called()
+                project.assert_not_called()
 
     def test_discovery_evidence_survives_partial_close_and_project_failure(self) -> None:
         code, result, state, labels, _ = self.run_close(fail_labels=True)

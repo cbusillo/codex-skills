@@ -42,6 +42,7 @@ from github_plan_body import (
     PLAN_MANAGED_NOTICE as PLAN_MANAGED_NOTICE,
 )
 import github_repository_scope as repository_scope
+import github_close_attention
 import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
@@ -5621,6 +5622,28 @@ def close_error_with_recovery(
     )
 
 
+def close_attention_preflight(
+    issue_repo: str, number: int, issue: dict[str, Any], decision_url: str | None, gh_cmd: str,
+) -> dict[str, Any]:
+    try:
+        return github_close_attention.check(issue_repo, number, issue=issue, decision_url=decision_url,
+                                            gh_cmd=gh_cmd)
+    except github_close_attention.CloseAttentionError as exc:
+        raise PlanError(
+            str(exc),
+            failure=github_api_core.FailureDetail(
+                cause=exc.cause,
+                message="closure needs every outside comment answered, or the Director's decision",
+                retryable=False,
+                fallback_eligible=False,
+                disposition="stop",
+                write_outcome="not_started",
+                failed_step="close_attention_preflight",
+            ),
+            payload={"close_attention": exc.payload},
+        ) from exc
+
+
 def cmd_close(args: argparse.Namespace) -> None:
     trigger = None
     if getattr(args, "reopen_trigger", None) is not None:
@@ -5657,6 +5680,8 @@ def cmd_close(args: argparse.Namespace) -> None:
     close_comment = read_body(args) if args.body is not None or args.body_file else ""
     plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
+    close_attention = close_attention_preflight(issue_repo, number, issue, getattr(args, "unanswered_decision", None),
+                                                gh_cmd)
     actor = issue_actor
     completed_steps: list[str] = []
     comment_result: dict[str, Any] = {}
@@ -6011,6 +6036,7 @@ def cmd_close(args: argparse.Namespace) -> None:
         "comment": public_comment or None,
         "project": project_result,
         "relationship_preflight": relationship_preflight,
+        "close_attention": close_attention,
         "planning_config": planning_config,
         "completed_steps": completed_steps,
     })
@@ -6598,6 +6624,8 @@ def build_parser() -> argparse.ArgumentParser:
     trigger_options.add_argument("--clear-reopen-trigger", metavar="EVIDENCE", help="Retire a handled reopen trigger and its discovery label")
     p.add_argument("--planning-checkout", help="Target repository checkout for planning metadata outside automatic discovery")
     p.add_argument("--reason", help="Closure reason (default completed; trigger-only updates preserve an already-closed reason)")
+    p.add_argument("--unanswered-decision", metavar="COMMENT_URL",
+                   help="The Director's comment on this issue, or a Director decision record they approved, to close over unanswered outside comments")
     p.add_argument("--comment", dest="body")
     p.add_argument("--comment-file", dest="body_file")
     p.add_argument("--owner")

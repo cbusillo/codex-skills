@@ -16,6 +16,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -140,6 +141,94 @@ def test_generic_bot_closeout_neither_addresses_nor_acknowledges() -> None:
     assert result["attention_state"] == "needs_your_eyes"
     assert result["owner_seen"] is False
     assert result["publicly_addressed"] is False
+
+
+def test_later_reply_skips_planning_records_and_follows_the_latest_edit() -> None:
+    external = comment(
+        comment_id=1,
+        author="outside-user",
+        body="Can I send a corrected sheet?",
+        created_at="2026-07-25T14:59:27Z",
+        updated_at="2026-07-25T16:00:00Z",
+    )
+    before_edit = comment(comment_id=2, author="fixture-automation", body="Thanks, reading it now.",
+                          created_at="2026-07-25T15:30:00Z")
+    record = comment(comment_id=3, author="fixture-automation",
+                     body='Structured wait review\n\n<!-- github-plan:wait {"state": "clear"} -->',
+                     created_at="2026-07-25T17:00:00Z")
+    decision = comment(comment_id=4, author="fixture-automation", body="Director decision: keep going.",
+                       created_at="2026-07-25T17:30:00Z")
+
+    [unanswered] = classify([external, before_edit, record, decision], [external])
+    reply = comment(comment_id=5, author="fixture-automation", body="Yes, please attach it here.",
+                    created_at="2026-07-25T18:00:00Z")
+    [answered] = classify([external, before_edit, record, decision, reply], [external])
+
+    assert unanswered["later_reply_url"] is None
+    assert answered["later_reply_url"] == reply.url
+
+
+REPLY_TIMELINES = {
+    # name: (outside comment created/updated, reply author/body/created/updated, answered)
+    "reply posted after": (("15:00", "15:00"), ("fixture-automation", "Yes, attach it.", "16:00", "16:00"), True),
+    "owner reply posted after": (("15:00", "15:00"), ("cbusillo", "Yes, attach it.", "16:00", "16:00"), True),
+    "older agent comment edited after": (("15:00", "15:00"), ("fixture-automation", "CI: green", "14:00", "16:00"), False),
+    "older mention edited after": (
+        ("15:00", "15:00"), ("fixture-automation", "@outside-user CI: green", "14:00", "16:00"), False),
+    "reply before the outside edit": (("15:00", "17:00"), ("fixture-automation", "Yes, attach it.", "16:00", "16:00"), False),
+    "reply before, edited after the outside edit": (
+        ("15:00", "17:00"), ("fixture-automation", "Yes, attach it.", "16:00", "18:00"), False),
+    "reply after the outside edit": (("15:00", "17:00"), ("fixture-automation", "Yes, attach it.", "18:00", "18:00"), True),
+    "same second, posted second": (("15:00", "15:00"), ("fixture-automation", "Yes, attach it.", "15:00", "15:00"), True),
+    "outside person's own follow-up": (("15:00", "15:00"), ("someone-else", "Me too.", "16:00", "16:00"), False),
+}
+
+
+@pytest.mark.parametrize("name", REPLY_TIMELINES)
+def test_later_reply_counts_only_a_reply_posted_after_the_latest_version(name: str) -> None:
+    (outside_created, outside_updated), (author, body, created, updated), answered = REPLY_TIMELINES[name]
+    external = comment(comment_id=1, author="outside-user", body="Can I send a corrected sheet?",
+                       created_at=f"2026-07-25T{outside_created}:00Z", updated_at=f"2026-07-25T{outside_updated}:00Z")
+    reply = comment(comment_id=2, author=author, body=body,
+                    created_at=f"2026-07-25T{created}:00Z", updated_at=f"2026-07-25T{updated}:00Z")
+
+    [result] = classify([external, reply], [external])
+
+    assert result["later_reply_url"] == (reply.url if answered else None)
+
+
+def test_same_second_ids_of_different_kinds_do_not_order_a_reply() -> None:
+    # Issue comments and inline review comments have separate ID sequences.
+    at = "2026-07-25T17:00:00Z"
+    inline = comment(comment_id=2500, author="outside-user", body="Wrong file?", created_at=at, kind="review_comment")
+    agent = comment(comment_id=3500, author="fixture-automation", body="CI: green", created_at=at)
+    until = datetime(2026, 7, 26, tzinfo=timezone.utc)
+    agents = {"fixture-automation"}
+
+    assert github_unanswered_comments.later_reply_for(inline, [inline, agent], agents, until) is None
+    assert not github_unanswered_comments.response_is_after(agent, inline, until)
+
+
+def test_an_edit_fetched_after_the_scan_cutoff_is_still_the_latest_version() -> None:
+    external = comment(comment_id=1, author="outside-user", body="Corrected: use the new sheet.",
+                       created_at="2026-07-25T16:00:00Z", updated_at="2026-07-25T18:00:01Z")
+    reply = comment(comment_id=2, author="fixture-automation", body="Thanks.", created_at="2026-07-25T17:00:00Z")
+    until = datetime(2026, 7, 25, 18, tzinfo=timezone.utc)
+
+    assert github_unanswered_comments.later_reply_for(external, [external, reply], {"fixture-automation"}, until) is None
+
+
+def test_planning_record_linking_a_comment_does_not_answer_it() -> None:
+    external = comment(comment_id=1, author="outside-user", body="Can I send a corrected sheet?",
+                       created_at="2026-07-25T14:59:27Z")
+    record = comment(comment_id=2, author="fixture-automation",
+                     body=f"Structured wait review for {external.url}\n\n<!-- github-plan:wait {{\"state\": \"clear\"}} -->",
+                     created_at="2026-07-25T16:00:00Z")
+
+    [result] = classify([external, record], [external])
+
+    assert result["publicly_addressed"] is False
+    assert result["later_reply_url"] is None
 
 
 def test_unrelated_owner_comment_does_not_clear_external_comment() -> None:
@@ -689,6 +778,25 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
     payload = github_unanswered_comments.collect_payload(settings)
 
     assert payload["attention"][0]["attention_state"] == "needs_your_eyes"
+
+
+def test_no_cutoff_classifies_comments_fetched_after_the_scan_end(monkeypatch) -> None:
+    def payload(**overrides: object) -> dict[str, Any]:
+        settings = github_unanswered_comments.resolve_settings(
+            args(thread=["example/repo#42"], **overrides), {}, now=datetime(2026, 7, 25, 18, tzinfo=timezone.utc))
+        return github_unanswered_comments.collect_payload(settings)
+    reply = comment(comment_id=1, author="fixture-automation", body="Send it whenever.", created_at="2026-07-25T17:00:00Z")
+    posted = comment(comment_id=2, author="outside-user", body="Correction: use the new sheet.",
+                     created_at="2026-07-25T18:00:01Z")
+    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
+    monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (thread(), [reply, posted], []))
+    monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
+                        lambda comments: ({posted.global_key: []}, {}, []))
+
+    assert payload()["attention"] == []
+    [row] = payload(no_cutoff=True)["attention"]
+    assert row["comment_url"] == posted.url
+    assert row["later_reply_url"] is None
 
 
 def test_reaction_failure_degrades_and_keeps_comment_visible(monkeypatch) -> None:
@@ -1278,6 +1386,53 @@ def test_closed_after_comment_uses_latest_version_and_scan_end(closed_at, update
     )
     assert result["attention_state"] == expected
     assert result["owner_seen"] is False
+
+
+def test_include_handled_lists_closed_thread_comments_apart_from_attention(monkeypatch) -> None:
+    external = comment(comment_id=1, author="outside-user", body="Corrected sheet attached.",
+                       created_at="2026-07-25T10:00:00Z")
+    closed = {**thread(), "state": "closed", "closed_at": "2026-07-25T12:00:00Z"}
+    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
+    monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (closed, [external], []))
+    monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
+                        lambda comments: ({external.global_key: []}, {}, []))
+
+    def payload(**overrides: object) -> dict[str, object]:
+        settings = github_unanswered_comments.resolve_settings(
+            args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z", **overrides), {},
+            now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc))
+        return github_unanswered_comments.collect_payload(settings)
+
+    included = payload(include_handled=True)
+    assert included["attention"] == []
+    assert [row["comment_url"] for row in included["handled"]] == [external.url]
+    assert included["handled"][0]["handled_reason"] == "closed_after_comment"
+    assert "handled" not in payload()
+
+
+@pytest.mark.parametrize("config,authenticated", [
+    ({}, "fixture-automation"),
+    ({"subjects": ["example"]}, "fixture-automation"),
+    ({"comment_self_logins": ["example"]}, "fixture-automation"),
+    ({}, "example"),
+], ids=["repository owner", "subjects", "comment_self_logins", "authenticated login"])
+def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch, config, authenticated) -> None:
+    by_thread_owner = comment(comment_id=1, author="example", body="Corrected sheet attached.",
+                              created_at="2026-07-25T10:00:00Z")
+    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: authenticated)
+    monkeypatch.setattr(github_unanswered_comments, "collect_thread",
+                        lambda repo, number: (thread(), [by_thread_owner], []))
+    monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
+                        lambda comments: ({by_thread_owner.global_key: []}, {}, []))
+
+    def attention(**overrides: object) -> list[object]:
+        settings = github_unanswered_comments.resolve_settings(
+            args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z", **overrides), config,
+            now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc))
+        return [row["comment_url"] for row in github_unanswered_comments.collect_payload(settings)["attention"]]
+
+    assert attention(director_login="cbusillo") == [by_thread_owner.url]
+    assert attention() == []
 
 
 def test_closed_bot_answer_is_handled_without_personal_awareness(app_ready_discussion):
