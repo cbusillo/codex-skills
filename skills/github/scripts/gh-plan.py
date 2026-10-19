@@ -2481,7 +2481,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
     phase_records = {}
     phase_peers = []
-    phase_lineage_error = None
+    phase_family_error = None
 
     def read_record(record_number, record_repo, *, allow_closed=False):
         key = (record_repo.casefold(), int(record_number))
@@ -2770,6 +2770,25 @@ def _claim_once(args: argparse.Namespace) -> None:
                                      source_repo=parent_repo, source_issue=parent_issue, source_status=parent_status,
                                      traversal=traversal)
 
+    def handoff_record(pull):
+        key = (target_repo.casefold(), pull["number"])
+        cached = phase_records.get(key)
+        if cached is not None:
+            target, _, target_comments, _ = cached
+        else:
+            _, target = get_issue(str(pull["number"]), target_repo)
+        if target.get("state") != pull.get("state") or "pull_request" not in target:
+            raise PlanError("Refresh handoff PR changed or closed during ownership preflight")
+        sections, _ = read_plan_sections(target)
+        if cached is None:
+            _, target_comments = collect_paged_rest_items(
+                f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
+                bucket="rest_core", step_prefix="refresh_comments",
+            )
+            target_comments = github_plan_release.verified_comments(target_comments, _claim_release_evidence)
+            phase_records[key] = (target, sections.get("Current Status", ""), target_comments, False)
+        return target, sections, target_comments
+
     def prepare_handoff(source_info):
         if not handoff_id:
             return None
@@ -2799,45 +2818,27 @@ def _claim_once(args: argparse.Namespace) -> None:
                 issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
                 allow_resume_only=source_number == number and not completed,
             )
-        except ValueError as error:
+        except ValueError:
             # Keep the existing current-ownership decision ahead of local
             # handoff qualification. Unqualified PRs supply no source context.
-            return error
+            return source_info, target_pulls, named
         source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
-        targets = []
         for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
                 # The existing ownership refusal runs later, before using this
                 # record; an unauthorized PR cannot supply closure context.
-                targets.append((pull, None, None, None))
                 continue
             if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
                 continue
-            key = (target_repo.casefold(), pull["number"])
-            cached = phase_records.get(key)
-            if cached is not None:
-                target, _, target_comments, _ = cached
-            else:
-                _, target = get_issue(str(pull["number"]), target_repo)
-            if target.get("state") != pull.get("state") or "pull_request" not in target:
-                raise PlanError("Refresh handoff PR changed or closed during ownership preflight")
-            sections, _ = read_plan_sections(target)
-            if cached is None:
-                _, target_comments = collect_paged_rest_items(
-                    f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
-                    bucket="rest_core", step_prefix="refresh_comments",
-                )
-                target_comments = github_plan_release.verified_comments(target_comments, _claim_release_evidence)
-                phase_records[key] = (target, sections.get("Current Status", ""), target_comments, False)
-            targets.append((pull, target, sections, target_comments))
-        return source_info, target_pulls, named, permitted, targets
+            handoff_record(pull)
+        return source_info, target_pulls, named
 
     def prepare_phase(snapshot):
-        nonlocal phase_lineage_error
+        nonlocal phase_family_error
         phase_records.clear()
         phase_peers.clear()
-        phase_lineage_error = None
+        phase_family_error = None
         phase_records[(issue_repo.casefold(), number)] = snapshot
         current_issue, current_status, current_comments, _ = snapshot
         source_info = resume_source(current_comments, current_status) if args.resume_from else (number, current_comments, current_status)
@@ -2853,11 +2854,11 @@ def _claim_once(args: argparse.Namespace) -> None:
                     check_handoff_successors(source_number, source_comments=source_comments,
                                              source_status=source_status, source_issue=source_issue, traversal=traversal)
             except ClassifiedPlanError as error:
-                if error.code != "claim_resume_lineage_invalid":
+                if error.code not in {"claim_resume_lineage_invalid", "claim_child_history_invalid"}:
                     raise
                 # Stop at the invalid edge. Already collected peer ownership
                 # still has its original precedence over that local predicate.
-                phase_lineage_error = error
+                phase_family_error = error
         return source_info, prepared
 
     def check_phase_peers(source_inventory):
@@ -2867,17 +2868,20 @@ def _claim_once(args: argparse.Namespace) -> None:
             if key not in checked:
                 checked.add(key)
                 check_peer_ownership(peer_repo, peer_number, peer_status, peer_comments, source_inventory)
-        if phase_lineage_error is not None:
-            raise phase_lineage_error
+        if phase_family_error is not None:
+            raise phase_family_error
 
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str, prepared) -> set[str]:
         nonlocal retained_waits
         if prepared is None:
             check_phase_peers(inventory)
             return set()
-        if isinstance(prepared, ValueError):
-            raise prepared
-        (source_number, source_comments, source_status), target_pulls, named, permitted, targets = prepared
+        (source_number, source_comments, source_status), target_pulls, named = prepared
+        permitted = github_plan_claim.retained_handoff(
+            source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
+            issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
+            allow_resume_only=source_number == number and not completed,
+        )
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
                                       if (p.get("head") or {}).get("ref") == ended["branch"]]
@@ -2891,13 +2895,14 @@ def _claim_once(args: argparse.Namespace) -> None:
         target_session_comments = list(source_comments)
         if source_number != number:
             target_session_comments.extend(current_comments)
-        for pull, target, sections, target_comments in targets:
+        for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
                 refuse([{"source": "open_pr", "number": pull["number"], "branch": pull["head"]["ref"],
                          "certainty": "not_in_source_handoff"}], owner_comments=source_comments, owner_number=source_number)
             if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
                 continue
+            target, sections, target_comments = handoff_record(pull)
             for comment in target_comments:
                 for record in github_plan_claim.records(comment.get("body") or ""):
                     session_owners.setdefault(record["session"], (target_comments, target_repo, pull["number"]))

@@ -407,7 +407,6 @@ def source_snapshot(entry, process=None):
         raise ValueError("native end proof requires the original owned source identity")
     generation = source.get("resumed_generation")
     home = Path(effective["codex_home"]).expanduser().resolve(strict=True)
-    original_home = Path(source["codex_home"] if context is None else effective["codex_home"]).expanduser().resolve(strict=True)
     primary = Path(effective["transcript"]).resolve(strict=True)
     if generation is None and not any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
         raise ValueError("native source home and transcript disagree")
@@ -415,7 +414,9 @@ def source_snapshot(entry, process=None):
     if home not in configured and saved is None:
         raise ValueError("unconfigured native source lacks retained launch identity")
     scope = closure.action_homes(closure.lease_state(session))
-    homes = {home, original_home, *(Path(value) for value in scope["known"])}
+    homes = {home, *(Path(value) for value in scope["known"])}
+    if source.get("codex_home") is not None:
+        homes.add(Path(source["codex_home"]).expanduser().resolve(strict=True))
     snapshots = closure.transcripts(session, str(primary), include_status=True, additional_homes=homes)
     if context is not None:
         from github_plan_release import stamp

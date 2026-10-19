@@ -39,6 +39,7 @@ class ReceiptFixture:
         self.mutations = []
         self.rpc_results = {}
         self.rpc_requests = []
+        self.home_requests = []
         self.parallel = False
         self.queue_items = []
         self.home_queues = {}
@@ -96,10 +97,11 @@ class ReceiptFixture:
                         return
                     method = request["method"]
                     self.rpc_requests.append(method)
+                    self.home_requests.append((str(native_home), method))
                     if method == "initialized": return
                     if method == "initialize": result = self.rpc_results.get(method, {"codexHome": str(native_home)})
-                    elif method in self.rpc_results:
-                        reply = self.rpc_results[method]
+                    elif method in self.rpc_results or (str(native_home), method) in self.rpc_results:
+                        reply = self.rpc_results.get((str(native_home), method), self.rpc_results.get(method))
                         result = reply(request) if callable(reply) else reply
                         if inspect.isawaitable(result):
                             result = await result
@@ -172,11 +174,13 @@ class ReceiptFixture:
             raise RuntimeError("fixture daemon failed") from self.failure
         return self
 
-    def add_home(self, home):
+    def add_home(self, home, *, copy_transcript=True):
         home = home.resolve()
         copy = home / "sessions" / self.transcript.name
-        copy.parent.mkdir(parents=True)
-        copy.write_bytes(self.transcript.read_bytes())
+        home.mkdir(parents=True)
+        if copy_transcript:
+            copy.parent.mkdir()
+            copy.write_bytes(self.transcript.read_bytes())
         endpoint = CLOSURE.daemon_endpoint(home)
         endpoint.parent.mkdir()
         self.socket_homes[str(endpoint)] = home
@@ -211,6 +215,24 @@ class ReceiptFixture:
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
+    def test_owned_recovery_ignores_absent_thread_in_unassociated_daemon(self):
+        with ReceiptFixture() as f:
+            other = f.root / "unassociated"
+            f.add_home(other, copy_transcript=False)
+            f.rpc_results[(str(other), "thread/loaded/list")] = {"data": [], "nextCursor": None}
+            f.rpc_results[(str(other), "thread/read")] = ValueError("thread not found")
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home): pass
+            f.native_state = "notLoaded"
+            before = CLOSURE.source_records({f.session})[f.session]
+            with CLOSURE.admission():
+                _, states, coverage = f.observe()
+                self.assertTrue(coverage["peer_complete"])
+                self.assertEqual(states[f.session]["state"], "ended")
+            self.assertFalse(list(other.rglob("*.jsonl")))
+            self.assertIn((str(other), "thread/read"), f.home_requests)
+            self.assertFalse(CLOSURE.action_pending(f.session))
+            self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+
     def test_ordinary_observation_authenticates_initialize_home_despite_shared_transcripts(self):
         for mismatch in (False, True):
             with self.subTest(mismatch=mismatch), ReceiptFixture() as f:

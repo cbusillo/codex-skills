@@ -1141,6 +1141,110 @@ class ClaimTests(unittest.TestCase):
             self.assertFalse(closure.action_pending(fixture.session))
             self.assertEqual(closure.source_records({fixture.session})[fixture.session], before)
 
+    def test_canonical_recovery_distinguishes_unassociated_daemon_from_required_homes(self):
+        from datetime import datetime, timezone
+        from test_github_plan_sessions import ReceiptFixture
+        import github_plan_closure as closure
+        cases = [(scope, False) for scope in ("unassociated", "loaded", "source", "copy", "action")]
+        for scope, owned in [*cases, ("unassociated", True)]:
+            with self.subTest(scope=scope, owned=owned):
+                self.setUp()
+                with ReceiptFixture("11111111-2222-4333-8444-555555555555") as fixture:
+                    original = closure.source_records({fixture.session})[fixture.session]
+                    self.released_native_fixture(fixture)
+                    if owned:
+                        closure.replace_rows([original])
+                        class ResumeClock(datetime):
+                            @classmethod
+                            def now(cls, tz=None): return datetime(2026, 10, 1, 1, 1, tzinfo=timezone.utc)
+                        metadata = {key: fixture.entry[key] for key in (
+                            "codex_home", "launch_pid", "launch_generation", "launch_started_at")}
+                        with patch.object(closure, "datetime", ResumeClock):
+                            with closure.resume_guard(fixture.session, method="thread/resume", home=fixture.home):
+                                closure.resumed_launch(fixture.session, metadata, str(fixture.transcript), fixture.entry["tty"])
+                    other = fixture.root / "other-account"
+                    fixture.add_home(other, copy_transcript=scope == "copy")
+                    fixture.rpc_results[(str(other), "thread/loaded/list")] = {
+                        "data": [fixture.session] if scope == "loaded" else [], "nextCursor": None}
+                    failed_home = fixture.home if scope == "source" else other
+                    fixture.rpc_results[(str(failed_home), "thread/read")] = ValueError("thread not found")
+                    if scope == "action":
+                        with closure.ownership(fixture.session):
+                            closure.set_action_pending(fixture.session, True, method="thread/resume", home=other)
+                    before = closure.source_records({fixture.session})[fixture.session]
+                    if scope == "unassociated":
+                        self.run_claim()
+                        output = self.emitted.call_args.args[0]
+                        self.assertTrue(output["ok"])
+                        self.assertIn("metadata_readback", output["completed_steps"])
+                        self.assertFalse(closure.action_pending(fixture.session))
+                    else:
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                        self.assertEqual(caught.exception.code, "claim_conflict")
+                        self.assert_no_writes()
+                        self.assertTrue(closure.action_pending(fixture.session))
+                        if scope == "loaded":
+                            coverage = caught.exception.payload["session_coverage"]["codex_claims"]
+                            self.assertFalse(coverage["peer_complete"])
+                    self.assertEqual(closure.source_records({fixture.session})[fixture.session], before)
+                    if scope != "copy": self.assertFalse(list(other.rglob("*.jsonl")))
+                    self.assertIn((str(failed_home), "thread/read"), fixture.home_requests)
+
+    def test_canonical_recovery_covers_original_home_from_nonowned_inventory_closure(self):
+        from datetime import datetime, timezone
+        from test_github_plan_sessions import ReceiptFixture
+        import github_plan_closure as closure
+        for original_work in ("quiet", "queue", "unreadable", "runtime"):
+            with self.subTest(original_work=original_work):
+                self.setUp()
+                with ReceiptFixture("11111111-2222-4333-8444-555555555555") as fixture:
+                    self.released_native_fixture(fixture)
+                    with closure.ownership(fixture.session): closure.set_action_pending(fixture.session, False)
+                    closure.replace_rows([])
+                    class PriorClock(datetime):
+                        @classmethod
+                        def now(cls, tz=None): return datetime(2026, 10, 1, 2, 0, 2, tzinfo=timezone.utc)
+                    with patch.object(fixture.release, "datetime", PriorClock):
+                        fixture.release.record_closure(fixture.log, {**fixture.entry, "supervisor_owned": False,
+                            "_inventory": True, "safe_exit_yes": True, "still_running": False}, "supervisor")
+                    resumed_home = fixture.root / "resumed-account"
+                    resumed_transcript = fixture.add_home(resumed_home)
+                    class ResumeClock(datetime):
+                        @classmethod
+                        def now(cls, tz=None): return datetime(2026, 10, 1, 2, 0, 3, tzinfo=timezone.utc)
+                    metadata = {"codex_home": str(resumed_home), "launch_pid": 456,
+                                "launch_generation": "resumed-account", "launch_started_at": ResumeClock.now().isoformat()}
+                    with patch.object(closure, "datetime", ResumeClock):
+                        with closure.resume_guard(fixture.session, method="thread/resume", home=resumed_home):
+                            closure.resumed_launch(fixture.session, metadata, str(resumed_transcript), "resumed-tty")
+                    fixture.homes = [resumed_home]
+                    fixture.rpc_results[(str(fixture.home), "thread/loaded/list")] = {"data": [], "nextCursor": None}
+                    if original_work == "queue":
+                        fixture.home_queues[str(fixture.home)] = [{"id": "before-end", "createdAt": "2026-10-01T01:00:00Z",
+                                                                 "input": [{"type": "text", "text": "old queued work"}]}]
+                    elif original_work == "unreadable":
+                        fixture.rpc_results[(str(fixture.home), "thread/read")] = ValueError("thread not found")
+                    elif original_work == "runtime":
+                        fixture.home_states[str(fixture.home)] = "idle"
+                        fixture.rpc_results[(str(fixture.home), "thread/goal/get")] = {
+                            "goal": {"threadId": fixture.session, "status": "active"}}
+                    before = closure.source_records({fixture.session})[fixture.session]
+                    self.assertIs(before["supervisor_owned"], False)
+                    self.assertEqual(before["codex_home"], str(fixture.home))
+                    self.assertEqual(before["resumed_generation"]["codex_home"], str(resumed_home))
+                    if original_work == "quiet":
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                        self.assertFalse(closure.action_pending(fixture.session))
+                    else:
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                        self.assertEqual(caught.exception.code, "claim_conflict")
+                        self.assert_no_writes()
+                        self.assertTrue(closure.action_pending(fixture.session))
+                    self.assertEqual(closure.source_records({fixture.session})[fixture.session], before)
+                    if original_work in {"quiet", "queue"}:
+                        self.assertIn((str(fixture.home), "thread/queue/list"), fixture.home_requests)
+
     def test_released_generation_rechecks_canonical_authority_after_native_await(self):
         from test_github_plan_sessions import ReceiptFixture
         import github_plan_closure as closure
@@ -2729,6 +2833,34 @@ class ClaimTests(unittest.TestCase):
                     self.assertNotIn("retained_handoff", self.emitted.call_args.args[0]["claim"])
                     self.assertNotEqual(self.emitted.call_args.args[0]["claim"]["branch"], source["branch"])
                     self.assertFalse(any(call.args[1].startswith("/repos/old/repo/issues/") for call in reads.call_args_list))
+
+    def test_malformed_family_history_preserves_current_ownership_and_hold_refusals(self):
+        for earlier in ("holder", "wait", "blocker", "none"):
+            with self.subTest(earlier=earlier):
+                self.setUp()
+                self.parent_handoff_fixture()
+                self.timelines["/repos/owner/repo/issues/41/timeline"] = [{"event": "sub_issue_added"}]
+                if earlier == "holder":
+                    holder = {"id": 90, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT},
+                              "created_at": OTHER["claimed_at"]}
+                    self.comments.append(holder)
+                    expected = "claim_conflict"
+                elif earlier == "wait":
+                    self.wait = wait_record.reviewed(evidence="Acceptance remains pending",
+                        waiting_for="Chris acceptance", ends_when="Current change accepted")
+                    expected = "claim_wait_unresolved"
+                elif earlier == "blocker":
+                    self.blockers = [{"number": 55, "state": "open"}]
+                    expected = "claim_native_blockers_unresolved"
+                else:
+                    expected = "claim_child_history_invalid"
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, expected)
+                if earlier == "holder":
+                    self.assertEqual(caught.exception.payload["coordination"][0]["claim_url"],
+                                     f"https://github.com/{self.args.repo}/issues/{self.args.issue}#issuecomment-{holder['id']}")
+                self.assert_no_writes()
 
     def test_native_child_history_errors_refuse_before_writing(self):
         for failure in ("malformed", "unreadable"):

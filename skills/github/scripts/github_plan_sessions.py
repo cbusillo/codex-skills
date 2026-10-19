@@ -274,10 +274,7 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                     try:
                         await inspect(session, prove=coverage["peer_complete"])
                     except (KeyError, TypeError, ValueError, AttributeError, OSError, ImportError):
-                        source = github_plan_closure.RECEIPTS.get().get(session)
-                        if source and (source.get("resumed_at") or github_plan_closure.action_pending(session)):
-                            peers.append({"sessionId": session, "cwd": "", "state": "unknown", "source": "native_recovery"})
-                            states[session] = {"state": "live", "source": "native_recovery"}
+                        continue  # The aggregate recovery check owns an unresolved source.
     except aiohttp.ClientConnectorError as error:
         if isinstance(error.os_error, (ConnectionRefusedError, FileNotFoundError)):
             coverage.update(status="unavailable", reason="socket_not_listening")
