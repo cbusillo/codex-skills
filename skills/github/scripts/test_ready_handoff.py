@@ -10,6 +10,8 @@ import base64
 import copy
 import importlib.util
 import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from typing import Any
@@ -643,6 +645,22 @@ class ReadyTests(unittest.TestCase):
             args = helper.parse_args()
         self.assertIs(args.func, helper.cmd_ready)
         self.assertTrue(args.waiting_for_client)
+
+
+class SupervisorReceiptTests(unittest.TestCase):
+    def test_receipt_parses_through_a_package_style_import(self):
+        # Supervisor helpers import this module as skills.github.scripts.ready_handoff
+        # without the scripts directory on their path.
+        root = Path(__file__).resolve().parents[3]
+        body = f"{ready_handoff.SUPERVISOR_REPORT_HEADING}\n\n<!-- supervisor-review {json.dumps({'request': 7, 'head': SHA})} -->"
+        code = ("import json, sys\n"
+                "sys.path.insert(0, sys.argv[2])\n"
+                "from skills.github.scripts import ready_handoff\n"
+                "print(json.dumps(ready_handoff.raw_receipt(sys.argv[1])))")
+        result = subprocess.run([sys.executable, "-I", "-c", code, body, str(root)],
+                                cwd=root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"request": 7, "head": SHA})
 
 
 if __name__ == "__main__":

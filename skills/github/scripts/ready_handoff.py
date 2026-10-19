@@ -55,6 +55,9 @@ REVIEW_REQUEST_CONTEXT = re.compile(
     r"(?i)\breview of record\b|\banother model\b|\bmodel[- ]review\b"
     r"|\bprovider\s*:\s*`?(?:openai|anthropic|google)\b"
 )
+# The Supervisor's posted review of record (pending_reviews --apply).
+SUPERVISOR_REPORT_HEADING = "Review of record, run by the Supervisor"
+SUPERVISOR_RECEIPT = re.compile(r"<!-- supervisor-review (.*?) -->")
 SUPERVISOR_RUNS_REVIEW = re.compile(
     r"(?i)^(?:.*?\bso\s+)?supervisor runs the review[.:]?\s*$"
 )
@@ -366,6 +369,34 @@ def review_prose_lines(body):
 
 def supervisor_review_request(body):
     return any(SUPERVISOR_RUNS_REVIEW.fullmatch(line) for line in review_prose_lines(body))
+
+
+def raw_receipt(body):
+    # gh-pr appends a transport marker. Only the raw report's final marker
+    # is a receipt; source snippets inside the review remain ordinary data.
+    # Imported here, in either import style, so importers need no path setup.
+    try:
+        from github_plan_claim import without_operation_marker
+    except ModuleNotFoundError:
+        from skills.github.scripts.github_plan_claim import without_operation_marker
+    lines = without_operation_marker(body).strip().splitlines()
+    match = SUPERVISOR_RECEIPT.fullmatch(lines[-1]) if lines else None
+    if match:
+        try:
+            value = json.loads(match[1])
+        except json.JSONDecodeError:
+            return None
+        if (isinstance(value, dict) and type(value.get("request")) is int
+                and isinstance(value.get("head"), str) and re.fullmatch(r"[0-9a-f]{40}", value["head"])):
+            return value
+    return None
+
+
+def reported_review(body):
+    """A Supervisor review of record leads with its heading; a receipt alone is not one."""
+    first = body.strip().splitlines()[0].replace("**", "") if body.strip() else ""
+    return (re.match(r"(?i)^Review of record[:,].*\brun by the Supervisor\b", first) is not None
+            and not re.search(r"(?i)\b(?:pending|awaiting|waiting|not run)\b", first))
 
 
 def review_record(body):
