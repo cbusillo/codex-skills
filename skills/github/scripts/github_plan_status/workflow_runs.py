@@ -62,5 +62,3 @@ def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str
             else:
                 superseded.append(candidate)
     return {"current": current, "superseded": superseded}
-
-

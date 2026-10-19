@@ -302,6 +302,42 @@ class EnqueueTests(unittest.TestCase):
         self.assertFalse(any(event == 'skipped' for event, _ in self.events))
         self.assertEqual(fake.writes, [])
 
+    def test_unavailable_skip_inventory_does_not_hold_lock_or_stop_other_trains(self):
+        fake = Fake(count=1)
+        fake.targets.append({**TARGET, 'repo': 'example/other'})
+        self.holds['paused_repositories'] = [REPO]
+        self.save()
+        pages = fake.pages
+        acquired = []
+        def read(path, **params):
+            if path.startswith(f'/repos/{REPO}/'):
+                with watch.hold_lock(self.path):
+                    acquired.append(True)
+                raise github_read.GitHubReadShapeError('invalid observation')
+            return pages(path, **params)
+        fake.pages = read
+        self.run_pass(fake)
+        self.assertTrue(acquired)
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(any(event == 'skip_inventory_unavailable' for event, _ in self.events))
+
+    def test_skip_inventory_distinguishes_existing_and_missing_queue_members(self):
+        fake = Fake(count=3)
+        ready = fake.train(TARGET)
+        ready['result']['dry_run_result']['queue'] = ready['result']['dry_run_result']['queue'][:2]
+        ready['result']['dry_run_result']['queue'][0]['ineligible_reasons'] = []
+        ready['result']['dry_run_result']['queue'][1]['ineligible_reasons'] = [watch.DEPENDENCY_REVIEW]
+        watch.report_ready_skips(
+            fake, TARGET, self.args, lambda event, payload: self.events.append((event, payload)),
+            'controller_ineligible', pulls=list(fake.pulls.values()),
+            queue=ready['result']['dry_run_result']['queue'],
+        )
+        named = {p['pr']: p for event, p in self.events if event == 'skipped'}
+        self.assertNotEqual(named[1]['reason'], named[3]['reason'])
+        self.assertFalse(named[1]['ineligible_reasons'])
+        # A dependency author's own handoff cannot supply the distinct agent review.
+        self.assertNotIn(2, named)
+
     def test_staging_qualifies_next_batch_without_changing_published_candidate(self):
         fake = self.staging_fake()
         candidate = copy.deepcopy(fake.observation)

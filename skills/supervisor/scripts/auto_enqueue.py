@@ -675,25 +675,48 @@ def read_staging_queue(io, target, state, emit):
 
 
 def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=(), **detail):
-    """Account for trusted current-head handoffs even before queue admission.
+    """Observe receipts without changing admission or stopping other repositories."""
+    try:
+        pulls = io.pages(f"/repos/{target['repo']}/pulls", state="open") if pulls is None else pulls
+        dispositions = {row['number']: row for row in queue}
+        for pr in pulls:
+            if pr.get('state') != 'open' or pr['base']['ref'] != target['base']:
+                continue
+            row = dispositions.get(pr['number'])
+            reasons = row.get('ineligible_reasons', []) if row else []
+            trusted = set(args.handoff_login)
+            if DEPENDENCY_REVIEW not in reasons:
+                trusted.add(pr['user']['login'].casefold())
+            comments = io.pages(f"/repos/{target['repo']}/issues/{pr['number']}/comments")
+            if latest_ready(pr, comments, trusted):
+                disposition = reason
+                if reason == 'controller_ineligible':
+                    disposition = ('not_in_controller_queue' if row is None else
+                                   'already_queued' if not reasons else reason)
+                emit('skipped', {
+                    'repository': target['repo'], 'pr': pr['number'],
+                    'head': pr['head']['sha'], 'reason': disposition,
+                    'ineligible_reasons': reasons, **detail,
+                })
+    except (GitHubReadError, GitHubReadShapeError, OSError, ValueError,
+            KeyError, TypeError, subprocess.TimeoutExpired) as error:
+        emit('skip_inventory_unavailable', {
+            'repository': target['repo'], 'reason': reason,
+            'detail': exception_message(error),
+        })
 
-    A ready receipt is diagnostic evidence only. It never substitutes for the
-    qualification, author policy, holds or fresh-state guards before a label.
-    """
-    pulls = io.pages(f"/repos/{target['repo']}/pulls", state="open") if pulls is None else pulls
-    dispositions = {row['number']: row for row in queue}
-    for pr in pulls:
-        if pr.get('state') != 'open' or pr['base']['ref'] != target['base']:
-            continue
-        trusted = {pr['user']['login'].casefold()} | set(args.handoff_login)
-        comments = io.pages(f"/repos/{target['repo']}/issues/{pr['number']}/comments")
-        if latest_ready(pr, comments, trusted):
-            emit('skipped', {
-                'repository': target['repo'], 'pr': pr['number'],
-                'head': pr['head']['sha'], 'reason': reason,
-                'ineligible_reasons': dispositions.get(pr['number'], {}).get('ineligible_reasons', []),
-                **detail,
-            })
+
+@contextmanager
+def deferred_skip_reports(io, target, args, emit):
+    """Run extra diagnostic reads after releasing the enqueue/hold-update lock."""
+    pending = []
+    def report(reason, **kwargs):
+        pending.append((reason, kwargs))
+    try:
+        yield report
+    finally:
+        for reason, kwargs in pending:
+            report_ready_skips(io, target, args, emit, reason, **kwargs)
 
 
 def run_pass(io, args, emit, *, state=None):
@@ -704,10 +727,10 @@ def run_pass(io, args, emit, *, state=None):
         repo = target["repo"]
         if selected and repo.casefold() not in selected:
             continue
-        with hold_lock(args.hold_file):
+        with deferred_skip_reports(io, target, args, emit) as report_skips, hold_lock(args.hold_file):
             if held(read_holds(args.hold_file), repo):
                 emit("held", {"repository": repo})
-                report_ready_skips(io, target, args, emit, 'repository_held')
+                report_skips('repository_held')
                 continue
             response = io.train(target)
             others = [
@@ -731,19 +754,19 @@ def run_pass(io, args, emit, *, state=None):
                         "queue": busy_result.get("dry_run_result", {}).get("queue", []),
                     },
                 )
-                report_ready_skips(io, target, args, emit, 'controller_busy',
+                report_skips('controller_busy',
                                    queue=busy_result.get('dry_run_result', {}).get('queue', []),
                                    action=busy_result.get('controller_action'))
                 continue
             if staging:
                 staged_queue = read_staging_queue(io, target, state, emit)
                 if staged_queue is None:
-                    report_ready_skips(io, target, args, emit, 'queue_read_unavailable')
+                    report_skips('queue_read_unavailable')
                     continue
                 response["result"]["dry_run_result"] = staged_queue
                 if not own_queue(response["result"]["dry_run_result"], staging[3]):
                     emit("busy", {"repository": repo})
-                    report_ready_skips(io, target, args, emit, 'existing_queue', queue=staged_queue['queue'])
+                    report_skips('existing_queue', queue=staged_queue['queue'])
                     continue
             queue = response["result"]["dry_run_result"]["queue"]
             author_allowed = {
@@ -752,7 +775,7 @@ def run_pass(io, args, emit, *, state=None):
                 if needs_ready_handoff(item, target)
             }
             pulls = io.pages(f"/repos/{repo}/pulls", state="open")
-            report_ready_skips(io, target, args, emit, 'controller_ineligible',
+            report_skips('controller_ineligible',
                                pulls=[pr for pr in pulls if pr['number'] not in author_allowed], queue=queue)
             # Active candidates were checked above. Only controller-proven
             # ineligible PRs can be ignored here; absent or stale inventory stays
@@ -785,7 +808,7 @@ def run_pass(io, args, emit, *, state=None):
                         "queue": [item for item in queue if item["number"] in labeled],
                     },
                 )
-                report_ready_skips(io, target, args, emit, 'existing_queue',
+                report_skips('existing_queue',
                                    pulls=[pr for pr in pulls if pr['number'] in author_allowed], queue=queue)
                 continue
             held_labels = {
@@ -805,7 +828,7 @@ def run_pass(io, args, emit, *, state=None):
                 for pr in pulls
             ):
                 emit("busy", {"repository": repo})
-                report_ready_skips(io, target, args, emit, 'existing_queue',
+                report_skips('existing_queue',
                                    pulls=[pr for pr in pulls if pr['number'] in author_allowed], queue=queue)
                 continue
             candidates = []
@@ -820,6 +843,7 @@ def run_pass(io, args, emit, *, state=None):
                     emit("skipped", {
                         "repository": repo,
                         "pr": pr["number"],
+                        "head": pr["head"]["sha"],
                         "reason": "conflicting" if pr.get("mergeable") is False
                         else "mergeability_unknown",
                     })
@@ -836,6 +860,7 @@ def run_pass(io, args, emit, *, state=None):
                             {
                                 "repository": repo,
                                 "pr": pr["number"],
+                        "head": pr["head"]["sha"],
                                 "reason": "file_inventory_changed_or_incomplete",
                             },
                         )
@@ -847,6 +872,7 @@ def run_pass(io, args, emit, *, state=None):
                             {
                                 "repository": repo,
                                 "pr": pr["number"],
+                        "head": pr["head"]["sha"],
                                 "reason": "review_of_record_not_recorded",
                                 "detail": review_gap,
                             },
@@ -868,6 +894,7 @@ def run_pass(io, args, emit, *, state=None):
                         {
                             "repository": repo,
                             "pr": pr["number"],
+                        "head": pr["head"]["sha"],
                             "reason": "current_head_readiness_not_proven",
                         },
                     )
