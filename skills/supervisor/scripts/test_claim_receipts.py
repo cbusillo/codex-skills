@@ -661,6 +661,40 @@ class ReceiptTests(unittest.TestCase):
                 with self.subTest(harness=harness, content=text):
                     self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
 
+    def test_mocked_process_diagnostics_preserve_native_closeout(self):
+        writer = "uv run gh-plan.py --repo example/a claim 1"
+        recorder = "def record(command): return 0\n"
+        forms = (
+            "from unittest.mock import patch\nwith patch('os.system', record):\n    os.system(WRITER)",
+            "from unittest.mock import patch as replace\nwith replace('os.system', record):\n    exec(PROGRAM, {})",
+            "from unittest import mock\nwith mock.patch.object(os, 'system', record):\n    exec(compile(PROGRAM, '<fixture>', 'exec'), {})",
+        )
+        controls = (
+            "from unittest.mock import patch\nwith patch('os.system', record): pass\nos.system(WRITER)",
+            "from os import system\nfrom unittest.mock import patch\nwith patch('os.system', record): system(WRITER)",
+            "from os import system as original\nfrom unittest.mock import patch\ndef writes(command): original(command)\nwith patch('os.system', writes): os.system(WRITER)",
+            "from unittest.mock import patch\nwith patch('os.system', record):\n    exec(PROGRAM, {})\nos.system(WRITER)",
+        )
+        for body, owning in (*((body, False) for body in forms), *((body, True) for body in controls)):
+            program = ("import os\n" + recorder + "WRITER = " + repr(writer)
+                       + "\nPROGRAM = " + repr("import os\nos.system(" + repr(writer) + ")") + "\n" + body)
+            self.assertEqual(receipts.python_ownership(program), owning, body)
+            for harness in ("codex", "claude"):
+                rows = history(harness, {}, {})
+                patch_text = ('*** Begin Patch\n*** Add File: /repo/diagnostic.py\n'
+                              + '\n'.join('+' + line for line in program.splitlines()) + '\n*** End Patch')
+                if harness == "codex":
+                    rows[1]["payload"].update(name="apply_patch", arguments=patch_text)
+                    rows[3]["payload"]["arguments"] = json.dumps({"cmd": "python /repo/diagnostic.py"})
+                else:
+                    rows[1]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/diagnostic.py", "content": program})
+                    rows[3]["message"]["content"][0]["input"] = {"command": "python /repo/diagnostic.py"}
+                rows[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
+                with self.subTest(harness=harness, body=body):
+                    state = receipts.ownership_state(rows, harness)
+                    self.assertEqual(bool(state["indices"]), owning)
+                    self.assertEqual(state["pending"], owning)
+
     def test_partial_python_fixture_edits_do_not_become_shell_writer_files(self):
         # Native apply_patch can contain several independent, indented hunks.
         # Concatenating these fragments is invalid Python, even when each edit
@@ -3060,6 +3094,52 @@ class ReceiptTests(unittest.TestCase):
     def test_python_process_launches_resolve_only_literal_concatenation(self):
         writer = "uv run /catalog/gh-plan.py --repo client/repo claim 12"
         programs = (
+            *[("import os\ndef deco(fn):\n    " + wrapper + "\nclass C:\n    command=" + repr(command) + "\n    def __init__(self,command): self.command=command\n" + descriptor + "    @deco\n    def run(" + parameter + "): os.system(" + parameter + ".command)\n" + consumer, owning)
+              for wrapper in ("def wrapped(*a, **k): return fn(*a, **k)\n    return wrapped", "return lambda *a, **k: fn(*a, **k)", "def wrapped(receiver,*a,**k): return fn(receiver,*a,**k)\n    return wrapped")
+              for descriptor, parameter, consumer in (
+                  ("", "self", "C(" + repr(writer) + ").run()"),
+                  ("    @classmethod\n", "cls", "C.run()"),
+                  ("    @classmethod\n", "cls", "C('echo unused').run()"),
+                  ("    @property\n", "self", "print(C(" + repr(writer) + ").run)"),
+              ) for command, owning in ((writer, True), ("echo safe", False))
+              for consumer in (consumer.replace(repr(writer), repr(command)),)],
+            *[("import os\ndef deco(fn): return lambda *a, **k: fn(*a, **k)\nclass C:\n    @staticmethod\n    @deco\n    def run(command): os.system(command)\n" + consumer + "(" + repr(command) + ")", owning)
+              for consumer in ("C.run", "C().run") for command, owning in ((writer, True), ("echo safe", False))],
+            ("import os\ndef deco(fn): return lambda *a: fn(*a)\nclass C:\n    @property\n    @deco\n    def run(self): os.system(" + repr(writer) + ")\nprint(C.run)", False),
+            ("import os\ndef deco(fn): return lambda *a: fn(*a)\nclass C:\n    @deco\n    def run(self): os.system(" + repr(writer) + ")\nprint(C().run)", False),
+            *[("import os,json\nimport supplied_module as supplied\nd={}\nd.update(" + update + ")\n" + clear + "for key in d: os.system(" + repr(command) + ")", owning)
+              for update, clear, runs in (
+                  ("json.loads(open('cfg').read())", "", True),
+                  ("supplied.load()", "", True),
+                  ("supplied.load(" + repr(writer) + ")", "", True),
+                  ("[]", "", False),
+                  ("()", "", False),
+                  ("{}", "", False),
+                  ("''", "", False),
+                  ("((key,value) for key,value in [])", "", False),
+                  ("[('key', 'value')]", "", True),
+                  ("(('key', 'value'),)", "", True),
+                  ("((key,value) for key,value in [('key','value')])", "", True),
+                  ("json.loads(open('cfg').read())", "d.clear()\n", False),
+              ) for command, is_writer in ((writer, True), ("echo safe", False)) for owning in (runs and is_writer,)],
+            *[("import os,json\ndef deco(fn):\n    d={}\n    d.update(json.loads(open('cfg').read()))\n    for key in d: return fn\n@deco\ndef claim(): os.system(" + repr(command) + ")\nclaim()", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\nd={}\nd.update(" + entries + ")\nos.system(d['key'])", owning)
+              for template in ("[('key',COMMAND)]", "(('key',COMMAND),)")
+              for command, owning in ((writer, True), ("echo safe", False)) for entries in (template.replace("COMMAND", repr(command)),)],
+            *[("import click,os\n@click.group()\ndef cli(): pass\n@cli.group()\ndef sub(): pass\n" + nested + "@" + group + ".command()\ndef claim(): os.system(" + repr(command) + ")\n" + consumer, owning)
+              for nested, group, arguments in (("", "sub", "['sub','claim']"), ("@sub.group()\ndef deep(): pass\n", "deep", "['sub','deep','claim']"))
+              for command, is_writer in ((writer, True), ("echo safe", False))
+              for consumer, invoked in (("cli(" + arguments + ")", True), ("print(cli)", False)) for owning in (is_writer and invoked,)],
+            *[("import os\nfrom builtins import " + kind + " as descriptor\ndef deco(fn): return lambda *a,**k: fn(*a,**k)\nclass C:\n    command=" + repr(command) + "\n    @descriptor\n    @deco\n    def run(receiver): os.system(receiver.command)\n" + consumer, owning)
+              for kind, consumer in (("classmethod", "C.run()"), ("property", "print(C().run)"))
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\ndef deco(fn): return lambda *a,**k: fn(*a,**k)\nclass C:\n    @deco\n    @staticmethod\n    def run(command): os.system(command)\nC.run(" + repr(command) + ")", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\nclass Wrapper:\n    def __call__(self): os.system(" + repr(command) + ")\ndef deco(fn): return Wrapper()\nclass C:\n    @deco\n    def run(self): pass\nC().run()", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\nd={'key':" + repr(writer) + "}\nd.update(" + update + ")\nos.system(d['key'])", False)
+              for update in ("[('key','echo safe')]", "[('key'," + repr(writer) + "),('key','echo safe')]", "{'key':'echo safe'}")],
             *[("import os\ndef deco(fn):\n    " + body + "\n@deco\ndef command(): os.system(" + repr(writer) + ")\ntry: command()\nexcept TypeError: pass", False)
               for body in ("pass", "return None", "yield fn", "return 'data'", "return []")],
             *[("import os\nclass Wrapper:\n    def __init__(self,fn): self.fn=fn\n    def __call__(self): os.system(" + repr(command) + ")\ndef deco(fn): return Wrapper(fn)\n@deco\ndef command(): pass\ncommand()", owning)
