@@ -16,6 +16,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -780,9 +781,9 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
 
 
 def test_no_cutoff_classifies_comments_fetched_after_the_scan_end(monkeypatch) -> None:
-    def payload(**overrides: object) -> dict[str, object]:
+    def payload(**overrides: object) -> dict[str, Any]:
         settings = github_unanswered_comments.resolve_settings(
-            args(thread=["example/repo#42"], **overrides), {}, now=datetime(2026, 7, 25, 18, 0, tzinfo=timezone.utc))
+            args(thread=["example/repo#42"], **overrides), {}, now=datetime(2026, 7, 25, 18, tzinfo=timezone.utc))
         return github_unanswered_comments.collect_payload(settings)
     reply = comment(comment_id=1, author="fixture-automation", body="Send it whenever.", created_at="2026-07-25T17:00:00Z")
     posted = comment(comment_id=2, author="outside-user", body="Correction: use the new sheet.",
