@@ -289,6 +289,9 @@ async def claude_poll(store: ActivityStore, account: dict, *, once: bool = False
     child_env = dict(os.environ)
     child_env.pop("CLAUDE_CONFIG_DIR", None)
     child_env.update(account["env"])
+    if "CLAUDE_CONFIG_DIR" in child_env:
+        # Account homes are configured with "~", which the CLI does not expand.
+        child_env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(child_env["CLAUDE_CONFIG_DIR"])
     while True:
         process = None
         try:
