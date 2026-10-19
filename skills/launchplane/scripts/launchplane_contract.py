@@ -62,12 +62,19 @@ _OPERATION_KEYS = {
 _WORKFLOW_KEYS = {"workflow_file", "reusable_workflow_file", "route"}
 
 EXPECTED_OPERATION_CONTRACTS = {
+    "prepare_testing_private_ingress": {
+        "method": "POST",
+        "supported_surfaces": ["service_api"],
+        "modes": ["dry-run", "apply", "readback"],
+        "idempotency": "apply",
+        "reviewed_evidence": ["reviewed_plan_sha256"],
+    },
     "activate_private_testing_transport_source": {
         "method": "POST",
         "supported_surfaces": ["service_api", "local_cli"],
         "modes": ["dry-run", "apply", "readback"],
         "idempotency": "apply",
-        "reviewed_evidence": ["expected_plan_sha256", "host_review", "custody_review", "trust_review"],
+        "reviewed_evidence": ["expected_plan_sha256", "host_review"],
     },
     "prepare_testing_public_ingress": {
         "method": "POST",
@@ -260,7 +267,34 @@ PROJECTED_HELPER_COMMANDS = {
     ),
 }
 
+# Explicit installed callers of producer service_api surfaces. This does not
+# change the producer's identity dependency or advertise an agent_helper surface.
+SERVICE_API_HELPER_COMMANDS = {
+    **{
+        f"testing-private-ingress-{mode}": ("prepare_testing_private_ingress", (mode,))
+        for mode in ("dry-run", "apply", "readback")
+    },
+    # prepare-rebuild stays producer-owned until a reviewed caller exists. clear
+    # waits until the service enforces the binding and lane ownership itself.
+    **{
+        f"disposable-lane-{mode}": ("record_disposable_lane_safety", (mode,))
+        for mode in ("inspect", "collect", "record")
+    },
+}
+
 LOCAL_EXTENSION_ROUTES = {
+    "context-runtime-settings-read": {
+        "method": "GET", "path": "/v1/contexts/{context}/runtime-settings", "mode": "read",
+    },
+    "instance-runtime-settings-read": {
+        "method": "GET", "path": "/v1/contexts/{context}/instances/{instance}/runtime-settings", "mode": "read",
+    },
+    "context-secrets-read": {
+        "method": "GET", "path": "/v1/contexts/{context}/secrets", "mode": "read",
+    },
+    "instance-secrets-read": {
+        "method": "GET", "path": "/v1/contexts/{context}/instances/{instance}/secrets", "mode": "read",
+    },
     "dokploy-inventory-read": {
         "method": "GET", "path": "/v1/dokploy/inventory", "mode": "read",
     },
@@ -447,6 +481,36 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/drivers/odoo/target-replacement-plan",
         "mode": "read",
     },
+    "testing-rebuild-submit": {
+        "method": "POST",
+        "path": "/v1/drivers/odoo/target-replacement-apply",
+        "mode": "apply",
+    },
+    "testing-rebuild-dry-run": {
+        "method": "POST",
+        "path": "/v1/drivers/odoo/target-replacement-plan",
+        "mode": "read",
+    },
+    "workflow-rule-retirement-inspect": {
+        "method": "POST",
+        "path": "/v1/authz-policies/workflow-rule-retirement-plan",
+        "mode": "read",
+    },
+    "workflow-rule-retirement-plan": {
+        "method": "POST",
+        "path": "/v1/authz-policies/workflow-rule-retirement-plan",
+        "mode": "read",
+    },
+    "runtime-setting-removal-dry-run": {
+        "method": "POST",
+        "path": "/v1/admin/runtime-settings/removal",
+        "mode": "read",
+    },
+    "runtime-setting-removal-readback": {
+        "method": "POST",
+        "path": "/v1/admin/runtime-settings/removal",
+        "mode": "read",
+    },
     "product-repository-identity-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/repository-identity/apply",
@@ -498,6 +562,26 @@ LOCAL_EXTENSION_ROUTES = {
         "mode": "dry-run",
     },
     "dokploy-target-create-compose-apply": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "apply",
+    },
+    "dokploy-target-create-application-dry-run": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "dry-run",
+    },
+    "dokploy-target-create-application-apply": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "apply",
+    },
+    "dokploy-target-create-application-readback": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "readback",
+    },
+    "dokploy-target-create-application-retain": {
         "method": "POST",
         "path": "/v1/dokploy-targets/setup",
         "mode": "apply",
@@ -787,12 +871,14 @@ def _validate_operation_contracts(
 def _validate_helper_bindings(
     operation_map: Mapping[str, Mapping[str, Any]],
 ) -> None:
-    for operation_id, modes in PROJECTED_HELPER_COMMANDS.values():
-        operation = operation_map[operation_id]
-        if "agent_helper" not in operation["supported_surfaces"]:
-            raise ContractError("helper_surface_mismatch")
-        if any(mode not in operation["modes"] for mode in modes):
-            raise ContractError("helper_mode_mismatch")
+    for commands, surface in ((PROJECTED_HELPER_COMMANDS, "agent_helper"),
+                              (SERVICE_API_HELPER_COMMANDS, "service_api")):
+        for operation_id, modes in commands.values():
+            operation = operation_map[operation_id]
+            if surface not in operation["supported_surfaces"]:
+                raise ContractError("helper_surface_mismatch")
+            if any(mode not in operation["modes"] for mode in modes):
+                raise ContractError("helper_mode_mismatch")
     projected_routes = {
         (operation["method"], operation["path"]) for operation in operation_map.values()
     }
@@ -873,7 +959,8 @@ def _validate_operation_coverage(
     operation_map: Mapping[str, Mapping[str, Any]],
 ) -> None:
     helper_operations = {
-        operation_id for operation_id, _modes in PROJECTED_HELPER_COMMANDS.values()
+        operation_id for operation_id, _modes in
+        (*PROJECTED_HELPER_COMMANDS.values(), *SERVICE_API_HELPER_COMMANDS.values())
     }
     workflow_operations = {
         expected["operation_id"] for expected in EXPECTED_PROTECTED_WORKFLOWS.values()
@@ -891,7 +978,6 @@ def _validate_operation_coverage(
         "retire_incomplete_testing_generation",
         "prepare_fresh_testing_bootstrap",
         "prepare_testing_replacement_resources",
-        "record_disposable_lane_safety",
         "update_merge_train_operational_policy",
         "apply_odoo_website_settings",
     }
@@ -977,7 +1063,7 @@ def validate_contract(artifact: Mapping[str, Any]) -> dict[str, object]:
         raise ContractError("semantic_digest_mismatch")
     return {
         **summary,
-        "projected_helper_command_count": len(PROJECTED_HELPER_COMMANDS),
+        "projected_helper_command_count": len(PROJECTED_HELPER_COMMANDS) + len(SERVICE_API_HELPER_COMMANDS),
         "local_extension_count": len(LOCAL_EXTENSION_ROUTES),
         "internal_helper_route_count": len(INTERNAL_HELPER_ROUTES),
         "hermetic_only": True,
@@ -1011,7 +1097,7 @@ def operation_path(operation_id: str) -> str:
 
 
 def helper_command_path(command: str) -> str:
-    projected = PROJECTED_HELPER_COMMANDS.get(command)
+    projected = PROJECTED_HELPER_COMMANDS.get(command) or SERVICE_API_HELPER_COMMANDS.get(command)
     if projected is not None:
         return operation_path(projected[0])
     extension = LOCAL_EXTENSION_ROUTES.get(command)

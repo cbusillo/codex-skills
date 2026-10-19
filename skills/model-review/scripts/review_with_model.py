@@ -25,7 +25,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from skills.supervisor.scripts import account_choice
 import review_policy
+from review_worktree import is_review_scratch
 
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
@@ -49,6 +51,7 @@ PREAMBLE = (
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
     "Do not modify, create, or delete anything.\n\n"
 )
+UNREACHABLE_LINKS_HINT = "The reviewer could not open these; save any content the review needs and pass it with --input."
 OUTPUT_INSTRUCTIONS = (
     '\n\nReturn one JSON object, without Markdown fences, with keys "status" and "review". '
     'Set status to "completed" only when you completed the requested review; review contains your '
@@ -106,7 +109,8 @@ def completed_review(result: dict[str, Any]) -> dict[str, Any]:
         payload = None
     status = payload.get("status") if isinstance(payload, dict) else None
     if status in ("refused", "incomplete"):
-        return {**result, "ok": False, "outcome": status, "error": f"review {status}"}
+        return {**result, "ok": False, "outcome": status, "error": f"review {status}",
+                "completion_shape": f"reviewer declared {status}"}
     report = payload.get("review") if isinstance(payload, dict) else None
     if status == "completed" and isinstance(report, str) and report.strip():
         return {**result, "response": report}
@@ -183,6 +187,44 @@ def openai_error_detail(message: str) -> str:
     return message[-400:]
 
 
+def openai_execution(stdout: str | bytes | None, response: str, elapsed: float,
+                     returncode: int | None) -> dict[str, Any]:
+    """Report execution evidence without quoting commands, source, or unfinished reviews."""
+    if isinstance(stdout, bytes):  # TimeoutExpired may retain bytes even in text mode.
+        stdout = stdout.decode(errors="replace")
+    events = []
+    valid = True
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                raise ValueError("event is not an object")
+        except ValueError:
+            valid = False
+            break
+        events.append(event)
+    known = {"thread.started", "turn.started", "turn.completed", "turn.failed",
+             "item.started", "item.updated", "item.completed", "error"}
+    types = [event.get("type") if isinstance(event.get("type"), str) else "unknown" for event in events]
+    terminal = [kind for kind in types if kind in {"turn.completed", "turn.failed"}]
+    commands = [event["item"] for event in events if event.get("type") == "item.completed"
+                and isinstance(event.get("item"), dict) and event["item"].get("type") == "command_execution"]
+    # A shell chain can finish successfully after an earlier GitHub read failed (#2199).
+    # Recognize the CLI's diagnostic line, never excerpt arbitrary aggregated source output.
+    github_failed = any(isinstance(item.get("aggregated_output"), str)
+                        and "error connecting to api.github.com" in item["aggregated_output"].splitlines()
+                        for item in commands)
+    return {"elapsed_seconds": round(elapsed, 3), "exit_code": returncode,
+            "jsonl_state": "malformed" if not valid else "valid" if events else "missing",
+            "last_event": (types[-1] if types[-1] in known else "unknown") if types else None,
+            "terminal_event": terminal[-1] if terminal else None,
+            "final_answer_produced": bool(response.strip()),
+            "failed_commands": sum(item.get("status") in ("failed", "declined")
+                                   or (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0)
+                                   for item in commands),
+            "command_diagnostics": ["github_connection_failed"] if github_failed else []}
+
+
 def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scratch: Path,
                   env: Mapping[str, str] | None = None) -> dict[str, Any]:
     answer = scratch / "answer.md"
@@ -195,10 +237,17 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
     argv += ["--json", "-C", str(repo), "-s", "read-only", "-o", str(answer), "--output-schema", str(schema)]
     if model:
         argv += ["-m", model]
-    proc = run_cli([*argv, prompt], repo, timeout, env)
-    response = answer.read_text() if answer.is_file() else ""
     # JSON mode does not include the model banner; a request is not proof of the model used.
     metadata = {"model": model, "model_source": "requested, not reported by the CLI" if model else "unknown"}
+    started = time.monotonic()
+    try:
+        proc = run_cli([*argv, prompt], repo, timeout, env)
+    except subprocess.TimeoutExpired as exc:
+        response = answer.read_text() if answer.is_file() else ""
+        return failed("openai", f"no answer within {timeout} seconds", **metadata,
+                      execution=openai_execution(exc.stdout, response, time.monotonic() - started, None))
+    response = answer.read_text() if answer.is_file() else ""
+    metadata["execution"] = openai_execution(proc.stdout, response, time.monotonic() - started, proc.returncode)
     try:
         events = [json.loads(line) for line in proc.stdout.splitlines()]
         if any(not isinstance(event, dict) for event in events):
@@ -214,7 +263,7 @@ def review_openai(prompt: str, repo: Path, model: str | None, timeout: int, scra
         if event.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "error":
             reroute = re.fullmatch(r"model rerouted: \S+ -> (\S+) \(.+\)", str(item.get("message")))
             if reroute:
-                metadata = {"model": reroute.group(1), "model_source": "reported by the CLI (rerouted)"}
+                metadata.update(model=reroute.group(1), model_source="reported by the CLI (rerouted)")
         if event.get("type") == "error":
             errors.append(str(event.get("message") or "codex reported an error"))
         elif event.get("type") == "turn.failed":
@@ -504,9 +553,7 @@ def branch_diff(repo: Path) -> bytes:
         ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
         capture_output=True,
     )
-    project_files = [name for name in untracked.stdout.split(b"\0") if name and not re.fullmatch(
-        rb"\.model-review-[A-Za-z0-9_]+/.*", name,
-    )]
+    project_files = [name for name in untracked.stdout.split(b"\0") if name and not is_review_scratch(name)]
     if tracked.returncode != 0 or untracked.returncode != 0 or project_files:
         raise RuntimeError("review checkout has uncommitted or untracked files; commit the change first")
     base = subprocess.run(
@@ -545,9 +592,11 @@ def reviewer_environment(choice: dict[str, Any]) -> dict[str, str]:
 
 
 def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: int,
-           choice: dict[str, Any] | None = None) -> dict[str, Any]:
+           choice: dict[str, Any] | None = None, inputs: Sequence[Path] = ()) -> dict[str, Any]:
     if shutil.which(PROVIDERS[provider]) is None:
         return failed(provider, f"`{PROVIDERS[provider]}` is not installed", installed=False)
+    links = unreachable_links(prompt)
+    notes = {"unreachable_links": links, "unreachable_links_hint": UNREACHABLE_LINKS_HINT} if links else {}
     # File-tool reviewers need the generated diff under their authorized read root.
     # Do not change TMPDIR: child tools such as uv would leave locks in the checkout.
     scratch_options = {"dir": repo} if provider in {"google", "anthropic"} else {}
@@ -569,6 +618,16 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 diff_path = Path(scratch) / "change.diff"
                 diff_path.write_text(diff.decode(errors="backslashreplace"))
                 preamble += f"The changes to review are in {diff_path}. Read that file with your read-only tools.\n\n"
+            # Reviewers have no network and some read only granted roots, so inputs travel with the diff.
+            for index, source in enumerate(inputs, 1):
+                copied = Path(scratch) / f"input-{index}-{source.name}"
+                shutil.copyfile(source, copied)
+                preamble += f"Supporting file for this review: {copied}. Read it with your read-only tools.\n\n"
+            if links:
+                preamble += (
+                    "You have no network, so the links in this request cannot be opened; treat them as "
+                    "references. If one held content this review needed, report that as a coverage gap.\n\n"
+                )
             if choice is not None or provider in account_choice.ACCOUNT_VARIABLES:
                 choice = choice or account_choice.select(provider)
                 account_choice.prepare_launch(choice)
@@ -598,16 +657,31 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 if refusal.get("command_diagnostic"):
                     result["recovery"]["command_diagnostic"] = refusal["command_diagnostic"]
     except subprocess.TimeoutExpired:
-        return failed(provider, f"no answer within {timeout} seconds", **launch)
+        return failed(provider, f"no answer within {timeout} seconds", **launch, **notes)
     except (OSError, RuntimeError, ValueError) as exc:
-        return failed(provider, str(exc), **launch)
+        return failed(provider, str(exc), **launch, **notes)
     if result["ok"] and not result["response"].strip():
         result = {**result, "ok": False, "error": "the reviewer returned nothing"}
         result.pop("response")
     result = completed_review(result)
     if not result["ok"] and result.get("recovery", {}).get("denied_commands") and not result.get("denied_commands"):
         result["error"] += "; previous refused command: " + "; ".join(result["recovery"]["denied_commands"])
-    return {**result, **launch}
+    return {**result, **launch, **notes}
+
+
+def unreachable_links(prompt: str) -> list[str]:
+    """Web links in the request, in order and without repeats; reviewers have no network to open them."""
+    return list(dict.fromkeys(trim_link(match) for match in re.findall(r"https?://[^\s<>\"`]+", prompt)))
+
+
+def trim_link(link: str) -> str:
+    """Drop prose punctuation after a link, keeping brackets and quotes the link itself opened."""
+    while link and link[-1] in ".,;:!?')]":
+        opener = {")": "(", "]": "["}.get(link[-1])
+        if opener and link.count(opener) >= link.count(link[-1]):
+            break
+        link = link[:-1]
+    return link
 
 
 def fault_marker(source: Mapping[str, str] = os.environ) -> Path:
@@ -670,8 +744,14 @@ def cmd_run(args: argparse.Namespace) -> int:
                 result.update(provider=args.provider, installed=False)
         print(json.dumps(result))
         return 2 if result.get("installed") is False else 1
+    inputs = [Path(name).resolve() for name in args.input or []]
+    missing = [str(path) for path in inputs if not path.is_file()]
+    if missing:
+        print(json.dumps({"ok": False, "provider": selected["provider"], "phase": "inputs", "outcome": "unavailable",
+                          "error": "review input is not a readable file: " + ", ".join(missing)}))
+        return 1
     result = review(selected["provider"], Path(args.prompt_file).read_text(), repo, selected["model"],
-                    selected["timeout"], selected["choice"])
+                    selected["timeout"], selected["choice"], inputs)
     result["selection"] = selected["selection"]
     result["timeout"] = selected["timeout"]
     # Some CLIs include effort in the reported model label; never infer it from a request.
@@ -829,6 +909,8 @@ def main() -> int:
     run.add_argument("--supplementary", action="store_true", help="Run an explicitly allowed supplementary provider, serially after the primary review.")
     run.add_argument("--repo", default=".", help="Repository the reviewer reads (default: current directory).")
     run.add_argument("--prompt-file", required=True, help="What to review and what it is for; name paths, do not paste files.")
+    run.add_argument("--input", action="append",
+                     help="A file outside the repository the reviewer needs, such as a saved issue; repeatable.")
     run.add_argument("--model", help="Model to request; model_source says whether the CLI reported it.")
     run.add_argument("--out", help="Write the review here instead of including it in the JSON.")
     run.add_argument("--timeout", type=int, help="Seconds; default: standing provider setting, otherwise 900.")

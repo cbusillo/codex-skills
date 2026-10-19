@@ -8,6 +8,7 @@
 import json
 import argparse
 from contextlib import redirect_stdout
+from datetime import datetime
 import io
 from pathlib import Path
 import tempfile
@@ -227,9 +228,13 @@ class MentionTests(unittest.TestCase):
         reader = Mock()
         reader.get_json.return_value = {
             "id": 99, "user": {"login": "director"}, "created_at": SINCE,
-            "body": f"{foreign_watch.director_mentions.APPROVAL_QUESTION} yes",
+            "body": "Q100 yes",
             "issue_url": "https://api.github.com/repos/director/meta/issues/7"}
-        reader.paged_json.return_value = []
+        reader.paged_json.return_value = [{
+            "id": 98, "user": {"login": "agent[bot]"}, "created_at": "2026-10-08T00:00:00Z",
+            "body": "Owner question: **Q100** — may the watcher search GitHub for mentions "
+                    "of you under your own login, unattended?",
+            "issue_url": "https://api.github.com/repos/director/meta/issues/7"}]
         args = argparse.Namespace(director_login="director", mention_approval=approval)
         get = get or director_get([mention("client/private", 4), mention(REPO, 1)])
         with patch.object(foreign_watch.director_mentions, "director_get", get):
@@ -253,7 +258,8 @@ class MentionTests(unittest.TestCase):
         (notices, _, _, _, seen), _, _ = self.scan(get=get)
         self.assertEqual([n["number"] for n in notices], [8])
         query = parse_qs(urlparse(get.call_args_list[1].args[0]).query)["q"][0]
-        self.assertIn("updated:>=2026-10-09T11:45:00Z", query)
+        overlap_start = datetime.fromisoformat(SINCE) - foreign_watch.MENTION_OVERLAP
+        self.assertIn(f"updated:>={overlap_start:%Y-%m-%dT%H:%M:%SZ}", query)
         (again, _, _, _, _), _, _ = self.scan(get=director_get([late]), watermark=STARTED, seen=seen)
         self.assertEqual(again, [])
         edited = mention("client/private", 8, updated="2026-10-09T12:04:00Z")
@@ -263,7 +269,7 @@ class MentionTests(unittest.TestCase):
     def test_unapproved_mentions_report_gap_without_searching(self):
         (notices, gaps, errors, watermarks, _), _, get = self.scan(approval=None)
         self.assertEqual((notices, errors), ([], []))
-        self.assertIn("not covered", gaps[0]["gap"])
+        self.assertEqual([gap["lane"] for gap in gaps], [foreign_watch.MENTIONS])
         get.assert_not_called()
         self.assertEqual(watermarks[foreign_watch.MENTIONS], SINCE)
 

@@ -10,6 +10,7 @@
 
 import argparse
 import asyncio
+import errno
 import json
 import os
 import re
@@ -23,11 +24,20 @@ import tomllib
 from pathlib import Path
 
 import account_choice
+import claude_trust
+import agent_tools
 import gui_launch
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
+# Codex draws its first screen seconds after exec (3.3s from an isolated home
+# on Chris-Studio; account and MCP startup add more), so watch for its
+# hook-review prompt until the brief's turn runs, within this bound.
+CODEX_PROMPT_WINDOW = 20.0
+# The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
+CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
+
 
 
 class SendFailure(ValueError):
@@ -142,21 +152,46 @@ class LaunchFailure(ValueError):
                        "next_action": "List and read these tabs before retrying; earlier launches may be running."}
         if isinstance(error, StartupFailure):
             self.detail["failed_launch"]["startup"] = error.snapshot
+            if error.snapshot.get("blocked_prompt"):
+                self.detail["status"] = "launch_blocked"
         super().__init__(reason)
 
 
 class StartupFailure(ValueError):
     def __init__(self, snapshot):
         self.snapshot = snapshot
-        super().__init__("terminal exited during startup; inspect its last output before retrying"
-                         if snapshot["dead"] else
-                         "startup observation unavailable; submitted agent may be running; inspect before retrying")
+        if snapshot.get("blocked_prompt"):
+            reason = f"startup blocked by {snapshot['blocked_prompt']} prompt; inspect the exact terminal; do not relaunch or grant trust automatically"
+        else:
+            reason = ("terminal exited during startup; inspect its last output before retrying"
+                      if snapshot["dead"] else
+                      "startup observation unavailable; submitted agent may be running; inspect before retrying")
+        super().__init__(reason)
 
 
-async def verify_startup(read, timeout=2.0):
-    """Observe immediate exit; this is not full agent readiness."""
+def startup_prompt_window(choice):
+    """Only Codex shows the hook-review prompt; other launches keep the short check."""
+    return CODEX_PROMPT_WINDOW if choice and choice["provider"] == "openai" else 0.0
+
+
+def running_turn(screen, submitted):
+    """A Codex status row such as "• Working (0s • esc to interrupt)".
+
+    The echoed launch command, brief included, is not evidence; an unknown
+    row format only means the full prompt window is used.
+    """
+    return any(re.match(r"\s*[^\w\s]?\s*\w[\w ]*\(\d+[hms].*\besc to interrupt\b", line)
+               and line.strip() not in submitted.casefold()
+               for line in screen.splitlines())
+
+
+async def verify_startup(read, timeout=2.0, prompt_window=0.0, submitted=""):
+    """Observe immediate exit or native trust prompts; not full readiness."""
     deadline = time.monotonic() + timeout
+    # A running turn is past every startup prompt; stop watching there.
+    watch_until = max(deadline, time.monotonic() + prompt_window)
     last_dead = None
+    collect_until = deadline
     while True:
         try:
             snapshot = await read()
@@ -164,20 +199,32 @@ async def verify_startup(read, timeout=2.0):
             if last_dead is not None:
                 raise StartupFailure({**last_dead, "observation_error": type(error).__name__}) from error
             raise
+        if not snapshot["dead"]:
+            screen = "\n".join(snapshot.get("screen", [])).casefold()
+            choice = r"(?m)^[\s│┃|]*[›❯>]?\s*(?:[12][.)]\s*)?"
+            if (re.search(choice + r"trust all and\s+continue\b", screen)
+                    and re.search(choice + r"continue without trusting\b", screen)):
+                raise StartupFailure({**snapshot, "blocked_prompt": "hook_trust"})
+            if running_turn(screen, submitted):
+                watch_until = deadline
         if snapshot["dead"]:
+            if last_dead is None:
+                # A death seen late in the prompt watch gets the same window
+                # to collect its cause as one seen at launch.
+                collect_until = max(deadline, time.monotonic() + timeout)
             last_dead = snapshot
         # tmux can observe PTY EOF before SIGCHLD supplies the exit status.
         # Keep the failure, but use the remaining window to collect its cause.
         awaiting_status = (last_dead is not None and last_dead.get("exit_status") == ""
                            and not last_dead.get("exit_signal"))
-        if last_dead is not None and (not awaiting_status or time.monotonic() >= deadline):
+        if last_dead is not None and (not awaiting_status or time.monotonic() >= collect_until):
             raise StartupFailure(last_dead)
-        if last_dead is None and time.monotonic() >= deadline:
+        if last_dead is None and time.monotonic() >= watch_until:
             return
-        await asyncio.sleep(min(0.2, max(0, deadline - time.monotonic())))
+        await asyncio.sleep(min(0.2, max(0, (collect_until if last_dead else watch_until) - time.monotonic())))
 
 
-async def submit_iterm_launch(app, session, command):
+async def submit_iterm_launch(app, session, command, prompt_window=0.0):
     import iterm2
 
     last_screen = []
@@ -190,7 +237,8 @@ async def submit_iterm_launch(app, session, command):
         try:
             # Replace the interactive shell so any agent exit ends this exact
             # terminal, even when the launch file didn't itself use exec.
-            await send(session, "exec /bin/zsh -c " + shlex.quote(command), allow_tabs=True)
+            submitted = "exec /bin/zsh -c " + shlex.quote(command)
+            await send(session, submitted, allow_tabs=True)
 
             async def read():
                 nonlocal last_screen
@@ -209,7 +257,9 @@ async def submit_iterm_launch(app, session, command):
                 return {"dead": dead, "screen": last_screen}
 
             try:
-                await verify_startup(read)
+                # The shell echoes the quoted text as sent, wrapped at the
+                # terminal width; compare screen rows against that text.
+                await verify_startup(read, prompt_window=prompt_window, submitted=submitted)
             except StartupFailure:
                 raise
             except Exception as error:
@@ -337,6 +387,8 @@ def append_brief(command_text, brief):
 
 
 async def send(session, text, submit=True, allow_tabs=False):
+    if resume_input(text):
+        validate_resume_input(text, tty=await session.async_get_variable("tty"))
     validate_text(text, allow_tabs=allow_tabs)
     if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
@@ -463,21 +515,25 @@ def codex_daemon_endpoint(home):
 
 
 class DaemonRefusal(ValueError):
-    def __init__(self, state, active_threads):
+    def __init__(self, state, active_threads=None, inventory_error=None):
         self.state = state
         self.active_threads = active_threads
-        super().__init__(f"Codex daemon admission {state}; {active_threads} active thread(s). "
+        self.inventory_error = inventory_error
+        inventory = ("active threads unknown" if active_threads is None
+                     else f"{active_threads} active thread(s)")
+        detail = f"; {inventory_error}" if inventory_error else ""
+        super().__init__(f"Codex daemon admission {state}; {inventory}{detail}. "
                          "Do not restart or stop it. Wait for it to exit, or select another "
                          "Context Panel account with --account; inspect active threads before any manual restart")
 
 
-def inspect_codex_daemon(home):
-    """Read loaded thread states and check admission without creating a thread."""
+def inspect_codex_daemon(home, directory=None):
+    """Check admission; inventory only explains a draining refusal, never permits restart."""
     from websockets.sync.client import unix_connect
 
     deadline = time.monotonic() + 10
-    active = 0
-    with unix_connect(str(codex_daemon_endpoint(home)), open_timeout=2, close_timeout=1) as ws:
+    with unix_connect(str(codex_daemon_endpoint(home)), open_timeout=2, close_timeout=1,
+                      max_size=32 * 1024 * 1024) as ws:
         request_id = 0
 
         def request(method, params):
@@ -487,46 +543,69 @@ def inspect_codex_daemon(home):
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("daemon inspection timed out")
-                message = json.loads(ws.recv(timeout=remaining))
+                    raise ValueError(f"daemon {method} timed out")
+                try:
+                    message = json.loads(ws.recv(timeout=remaining))
+                except TimeoutError as error:
+                    raise ValueError(f"daemon {method} timed out") from error
                 if message.get("id") == request_id:
                     return message
 
         def result(method, params):
             response = request(method, params)
             if "error" in response or not isinstance(response.get("result"), dict):
-                raise ValueError(f"daemon {method} read failed; active threads unknown; do not restart")
+                error = response.get("error")
+                code = error.get("code") if isinstance(error, dict) else None
+                raise ValueError(f"daemon {method} read failed (RPC code {code})")
             return response["result"]
 
         result("initialize", {"clientInfo": {"name": "supervisor_launch_preflight", "version": "1"}})
         ws.send(json.dumps({"method": "initialized", "params": {}}))
-        cursor, seen = None, set()
-        while True:
-            page = result("thread/loaded/list", {"cursor": cursor, "limit": 100})
-            if not isinstance(page.get("data"), list):
-                raise ValueError("daemon thread inventory unavailable; do not restart")
-            for thread_id in page["data"]:
-                thread = result("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
-                state = thread["status"]["type"]
-                if state not in {"active", "idle", "systemError", "notLoaded"}:
-                    raise ValueError("daemon thread state unknown; do not restart")
-                active += state == "active"
-            cursor = page.get("nextCursor")
-            if cursor is None:
-                break
-            if not isinstance(cursor, str) or cursor in seen:
-                raise ValueError("daemon thread pagination unavailable; do not restart")
-            seen.add(cursor)
         # The daemon gates thread/resume before parsing the native UUID. An
         # invalid UUID cannot load/create a thread or run its hooks. There is
         # currently no read-only draining flag in the native protocol.
         probe = request("thread/resume", {"threadId": "supervisor-launch-preflight-invalid-id"})
         error = probe.get("error", {})
+        if not isinstance(error, dict):
+            raise DaemonRefusal("unknown")
         message = error.get("message", "")
-        if "Server is draining" in message:
-            raise DaemonRefusal("draining", active)
-        if error.get("code") != -32600 or not message.startswith("invalid session id:"):
-            raise DaemonRefusal("unknown", active)
+        if not isinstance(message, str):
+            raise DaemonRefusal("unknown")
+        if error.get("code") == -32600 and message.startswith("invalid session id:"):
+            if directory is None:
+                return None
+            try:
+                return result("plugin/list", {"cwds": [str(directory)], "marketplaceKinds": ["local"]})
+            except Exception:
+                return {"inventory_error": "Codex plugin inventory unavailable; daemon admission passed"}
+        if "Server is draining" not in message:
+            raise DaemonRefusal("unknown")
+
+        # Admission is already refused. A concurrent thread unload, storage
+        # failure or slow inventory must not obscure that known draining state.
+        active, inventory_error = 0, None
+        cursor, seen = None, set()
+        try:
+            while True:
+                page = result("thread/loaded/list", {"cursor": cursor, "limit": 100})
+                if not isinstance(page.get("data"), list):
+                    raise ValueError("daemon thread inventory unavailable")
+                for thread_id in page["data"]:
+                    thread = result("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
+                    state = thread["status"]["type"]
+                    if state not in {"active", "idle", "systemError", "notLoaded"}:
+                        raise ValueError("daemon thread state unknown")
+                    active += state == "active"
+                cursor = page.get("nextCursor")
+                if cursor is None:
+                    break
+                if not isinstance(cursor, str) or cursor in seen:
+                    raise ValueError("daemon thread pagination unavailable")
+                seen.add(cursor)
+        except Exception as error:
+            active = None
+            inventory_error = str(error) if isinstance(error, ValueError) else type(error).__name__
+        raise DaemonRefusal("draining", active, inventory_error)
 
 
 def check_codex_daemon(choice):
@@ -562,12 +641,45 @@ def check_codex_daemon(choice):
             f"Codex daemon unavailable after start for CODEX_HOME={home} ({type(error).__name__}); "
             f"run {command}, then retry the launch"
         ) from error
+    preflight_codex_daemon(choice)
+
+
+def preflight_codex_daemon(choice, *, exact_source=False):
+    """Inspect without startup, with one error boundary for both launch modes."""
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
     try:
-        inspect_codex_daemon(home)
+        inspect_plugins = choice.get("require_browser", False)
+        directory = choice.get("tool_directory") if inspect_plugins else None
+        if inspect_plugins and directory is None:
+            raise ValueError("plugin inventory needs the validated launch directory")
+        inventory = inspect_codex_daemon(home, directory=directory)
+        if inspect_plugins and isinstance(inventory, dict) and not choice.get("tools", {}).get("remote_endpoint_unverified"):
+            plugins = agent_tools.daemon_codex_plugins(inventory)
+            missing = agent_tools.missing_codex_plugins(plugins, agent_tools.CODEX_BROWSER_PLUGINS)
+            choice.setdefault("tools", {"warnings": []})
+            if missing or inventory.get("inventory_error"):
+                message = inventory.get("inventory_error") or (
+                    "daemon-routed Codex is missing enabled bundled plugins: " + ", ".join(missing))
+                raise ValueError(message +
+                                 "; use local codex --no-daemon -C with the launcher's account-relative override; "
+                                 "-c and -p do not forward marketplace settings through --remote")
     except Exception as error:
         detail = str(error) if isinstance(error, ValueError) else type(error).__name__
+        if exact_source and isinstance(error, DaemonRefusal):
+            active = "unknown" if error.active_threads is None else str(error.active_threads)
+            detail = f"admission {error.state}; active threads: {active}"
+            if error.inventory_error:
+                detail += "; " + error.inventory_error
+        if isinstance(error, TimeoutError):
+            detail = "daemon Unix WebSocket transport timed out; admission unknown"
+        remedy = ("keep this source account and wait for its daemon to admit resumption; "
+                  "do not restart the daemon" if exact_source else
+                  "do not restart the daemon automatically")
+        if exact_source and isinstance(error, OSError) and error.errno in {errno.ENOENT, errno.ECONNREFUSED}:
+            from codex_session_proxy import stopped_daemon_remedy
+            remedy = stopped_daemon_remedy(home)
         raise ValueError(f"Codex daemon preflight refused for CODEX_HOME={home}: {detail}; "
-                         "no terminal was launched; do not restart the daemon automatically") from error
+                         f"no terminal was launched; {remedy}") from error
 
 
 def scoped_exec(command_text):
@@ -598,14 +710,20 @@ def scoped_exec(command_text):
     return None
 
 
-def with_account(command_text, choice, brief=None):
+def with_account(command_text, choice, brief=None, *, coordinate=False):
     """Prefix one agent invocation with the chosen account's environment."""
     if "\n" in command_text:
         raise ValueError("account selection needs a one-line launch command")
     default_claude = choice["provider"] == "anthropic" and "CLAUDE_CONFIG_DIR" not in choice["env"]
     checked_keys = set(choice["env"]) | set(account_choice.ACCOUNT_VARIABLES.values())
+    if choice["provider"] == "openai":
+        checked_keys.add(agent_tools.CODEX_SOURCE_ENV)
     if choice["provider"] == "anthropic":
-        checked_keys.add(CLAUDE_SUGGESTION_ENV)
+        checked_keys.update({CLAUDE_SUGGESTION_ENV, agent_tools.CHROME_ENV})
+        if CHROME_OPT_IN.is_file() and "--chrome" in launch_words(command_text)[1:]:
+            raise ValueError("remove --chrome: it starts the built-in Chrome server on this session's own "
+                             "login, which cannot reach the Agents browser; the catalog-chrome server "
+                             "supplies browser tools on every account")
     google = choice["provider"] == "google"
     if google:
         checked_keys.add("HOME")
@@ -620,8 +738,27 @@ def with_account(command_text, choice, brief=None):
     expected = {"openai": "codex", "anthropic": "claude", "google": "agy"}[choice["provider"]]
     if launch_agent(command_text) != expected:
         raise ValueError(f"{choice['provider']} account selection requires a direct {expected} invocation")
+    original_words, directory = launch_parts(command_text)
+    original_tokens = shlex.split(command_text)
+    if directory is not None:
+        original_tokens = original_tokens[original_tokens.index("&&") + 1:]
+    prefix_count = len(original_tokens) - len(original_words)
     if brief is not None:
         command_text = append_brief(command_text, brief)
+    if coordinate and choice["provider"] == "openai":
+        # Preserve assignments and direct invocation prefixes, while the
+        # wrapper registers its own PID before exec starts the native client.
+        tokens = shlex.split(command_text)
+        if directory is not None:
+            tokens = tokens[tokens.index("&&") + 1:]
+        prefix, words = tokens[:prefix_count], tokens[prefix_count:]
+        from codex_session_proxy import managed_argv
+        words = managed_argv(Path(choice["env"]["CODEX_HOME"]), words)
+        wrapper = ["uv", "run", str(Path(__file__).with_name("codex-session.py")), "launch",
+                   "--codex-home", choice["env"]["CODEX_HOME"], "--", *words]
+        command_text = shlex.join([*prefix, *wrapper])
+        if directory is not None:
+            command_text = "cd " + shlex.quote(directory) + " && " + command_text
     settings = " ".join(
         f"{key}={shlex.quote(os.path.expanduser(value))}"
         for key, value in choice["env"].items()
@@ -632,6 +769,8 @@ def with_account(command_text, choice, brief=None):
         prefixes.append(f"export {settings}")
     if choice["provider"] == "anthropic":
         prefixes.append(f"export {CLAUDE_SUGGESTION_ENV}=false")
+        if CHROME_OPT_IN.is_file():
+            prefixes.append(f"export {agent_tools.CHROME_ENV}=0")
         command_text = scoped_exec(command_text) or (
             "( export CLAUDE_ACCOUNT_MOVE_ENABLED=1; " + command_text + "\n)"
         )
@@ -688,6 +827,125 @@ def codex_git_trust_root(directory):
     return None
 
 
+def check_claude_tools(command_text, choice, without_browser=False, probes=None, require_browser=False):
+    """Check the pinned route; browser briefs require it, ordinary work gets warnings."""
+    if choice["provider"] != "anthropic":
+        return
+    # Validate account setters and conflicting flags before spawning a server.
+    with_account(command_text, choice)
+    if not CHROME_OPT_IN.is_file():
+        if require_browser:
+            raise ValueError("required browser has no catalog Chrome setup; see README: Chrome across Claude account homes")
+        return
+    home_value = choice["env"].get("CLAUDE_CONFIG_DIR")
+    home = Path(home_value).expanduser() if home_value else None
+    directory = launch_parts(command_text)[1]
+    if require_browser and (directory is None or not Path(directory).expanduser().is_absolute()):
+        raise ValueError("required Claude browser needs cd /absolute/repository && exec claude")
+    directory = (Path(directory).expanduser() if directory else Path.cwd()).resolve()
+    # The launch exports CLAUDE_CODE_ENABLE_CFC=0, so the built-in server stays off.
+    tools = {"warnings": agent_tools.claude_problems(
+        home, directory, {agent_tools.CHROME_ENV: "0"}, check_computer_use=False)}
+    if without_browser:
+        tools["browsers"] = "not checked (--without-browser)"
+    elif tools["warnings"]:
+        # Static Chrome failures already explain why this route cannot work.
+        # Do not spawn a server or repeat the same diagnostic.
+        if require_browser:
+            raise ValueError("Chrome check failed: " + "; ".join(tools["warnings"]) +
+                             "; no terminal was launched")
+    else:
+        try:
+            server = agent_tools.chrome_server(home)
+            key = json.dumps(server, sort_keys=True)
+            probes = {} if probes is None else probes
+            if key not in probes:
+                try:
+                    probes[key] = agent_tools.connected_browsers(server)
+                except ValueError as error:
+                    probes[key] = error
+            if isinstance(probes[key], ValueError):
+                raise probes[key]
+            if not probes[key]:
+                raise ValueError("no Chrome browser is connected to the pinned account; "
+                                 "ask Chris to open the Agents profile")
+            tools["browsers"] = len(probes[key])
+        except ValueError as error:
+            if require_browser:
+                raise ValueError(f"Chrome check failed: {error}; no terminal was launched") from None
+            tools["warnings"].append(str(error))
+    choice["tools"] = tools
+
+
+def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
+    """Use native local loading; remote sessions keep the daemon's own inventory."""
+    if choice["provider"] != "openai":
+        return command_text
+    choice["require_browser"] = required
+    words = launch_words(command_text)
+    choice["tool_directory"] = str(codex_directory(words).resolve())
+    endpoints = [words[index + 1] if word == "--remote" and index + 1 < len(words)
+                 else word.partition("=")[2] for index, word in enumerate(words)
+                 if word == "--remote" or word.startswith("--remote=")]
+    remote = bool(endpoints)
+    if remote and endpoints != ["unix://"]:
+        warning = "explicit remote endpoint's plugins are unverified; use local codex -C for a browser brief"
+        if required:
+            raise ValueError(warning)
+        choice["tools"] = {"warnings": [warning], "remote_endpoint_unverified": True}
+    must_work = required or gui
+    if remote:
+        return command_text
+    local_flag = "--no-daemon" in words
+    if not must_work and not CHROME_OPT_IN.is_file():
+        if local_flag:
+            choice["tools"] = {"warnings": [], "route": "local"}
+        return command_text
+    needed = ((agent_tools.CODEX_BROWSER_PLUGINS if required else set())
+              | ({agent_tools.COMPUTER_USE} if gui else set())) if must_work else None
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
+    try:
+        market = gui_launch.marketplace(home, Path.home() / ".codex")
+    except ValueError as error:
+        if must_work:
+            raise
+        route = "local" if local_flag else "daemon"
+        detail = ("source launch keeps its explicit local configuration" if local_flag
+                  else "source launch falls back to the selected-home daemon")
+        choice["tools"] = {"warnings": [str(error) + "; " + detail], "route": route}
+        return command_text
+    try:
+        missing = agent_tools.missing_codex_plugins(
+            agent_tools.codex_plugins(home, Path(market["path"]), codex_directory(words)), needed)
+    except ValueError as error:
+        if must_work:
+            raise
+        # The validated local marketplace route still works for source tasks;
+        # an optional discovery failure must not silently switch transports.
+        warnings = [str(error)]
+    else:
+        warnings = ["Codex bundled plugins missing or disabled: " + ", ".join(missing)] if missing else []
+    if must_work and warnings:
+        raise ValueError(warnings[0] + "; install/enable them through Codex before this tool launch")
+    choice["tools"] = {"warnings": warnings, "marketplace": market, "route": "local"}
+    choice["env"][agent_tools.CODEX_SOURCE_ENV] = market["path"]
+    override = "marketplaces.openai-bundled.source=" + json.dumps(market["path"])
+    return command_text + ("" if local_flag else " --no-daemon") + " -c " + shlex.quote(override)
+
+
+def codex_directory(words):
+    """Parse the one literal workspace used by trust and plugin discovery."""
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("-C", "--cd", action="append")
+    try:
+        options, _ = parser.parse_known_args(words[1:])
+    except argparse.ArgumentError as error:
+        raise ValueError("Codex launches require -C /absolute/repository") from error
+    if not options.cd or len(options.cd) != 1:
+        raise ValueError("Codex launches require exactly one -C /absolute/repository (or --cd)")
+    return Path(options.cd[0])
+
+
 def check_codex_project(command_text, choice):
     """Require an explicit, already-trusted directory in the selected Codex home."""
     if choice["provider"] != "openai":
@@ -697,15 +955,7 @@ def check_codex_project(command_text, choice):
     words, _ = launch_parts(command_text)
     if Path(words[0]).name != "codex":
         raise ValueError("openai account selection requires a direct Codex invocation")
-    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
-    parser.add_argument("-C", "--cd", action="append")
-    try:
-        options, _ = parser.parse_known_args(words[1:])
-    except argparse.ArgumentError as error:
-        raise ValueError("Codex launches require -C /absolute/repository") from error
-    if not options.cd or len(options.cd) != 1:
-        raise ValueError("Codex launches require exactly one -C /absolute/repository (or --cd)")
-    directory = Path(options.cd[0])
+    directory = codex_directory(words)
     if not directory.is_absolute() or not directory.is_dir():
         raise ValueError("Codex -C/--cd must name an existing absolute repository directory")
     home = Path(choice["env"]["CODEX_HOME"]).expanduser()
@@ -752,8 +1002,74 @@ def check_codex_project(command_text, choice):
         )
 
 
+def claude_trust_writes(command_text, choice, config_path):
+    """Plan folder trust in every configured Claude home, so no launch stops at the dialog."""
+    if choice["provider"] != "anthropic":
+        return []
+    directory = launch_parts(command_text)[1]
+    if directory is None:
+        raise ValueError("Claude launches require cd /absolute/repository && exec claude")
+    def homes():
+        return [account for account in account_choice.load_config(config_path)["accounts"]
+                if account["provider"] == "anthropic"]
+    return claude_trust.plan(directory, choice, homes, codex_git_trust_root)
+
+
+def prepare_resume(args):
+    """Build only the maintained exact-source helper, never caller shell text."""
+    import session_record
+    from codex_session_proxy import source_endpoint
+
+    session = args.resume_session_id
+    if (args.account_provider != "openai" or not getattr(args, "ledger", None)
+            or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
+            or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
+        raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser flags")
+    entries = [entry for entry in session_record.load_ledger(args.ledger) if entry["session_id"] == session]
+    if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != "codex":
+        raise ValueError("resume source is not uniquely Supervisor-owned in the ledger")
+    entry = entries[0]
+    if not isinstance(entry.get("codex_home"), str):
+        raise ValueError("resume ledger needs the source's absolute codex_home")
+    home = Path(entry["codex_home"]).expanduser()
+    if not home.is_absolute():
+        raise ValueError("resume ledger needs the source's absolute codex_home")
+    home = home.resolve(strict=True)
+    transcript = Path(entry["transcript"])
+    if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
+        raise ValueError("resume transcript is outside the source account")
+    source_endpoint(session, home, transcript=transcript)
+    config = account_choice.load_config(args.account_config)
+    accounts = [account for account in config["accounts"] if account["provider"] == "openai"
+                and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
+    if len(accounts) != 1 or (args.account is not None and args.account != accounts[0]["name"]):
+        raise ValueError("resume requires the source's unique configured account; account switching is unsupported")
+    choice = account_choice.select("openai", args.account_config, accounts[0]["name"])
+    if Path(choice["env"]["CODEX_HOME"]).expanduser().resolve() != home:
+        raise ValueError("selected resume account differs from the source")
+    # Read the existing daemon only. Recovery never starts or restarts one.
+    preflight_codex_daemon(choice, exact_source=True)
+    account_choice.prepare_launch(choice)
+    choice["resume_session_id"] = session
+    invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),
+                  "resume", "--session-id", session, "--codex-home", str(home)]
+    settings = [f"{key}={os.path.expanduser(value)}" for key, value in choice["env"].items()]
+    return [shlex.join(["exec", "env", *settings, *invocation])], [choice]
+
+
 def prepare_launches(args):
     """Validate the full batch and prepare accounts before creating terminals."""
+    if getattr(args, "resume_session_id", None):
+        return prepare_resume(args)
+    if getattr(args, "ledger", None):
+        raise ValueError("new --ledger requires --resume-session-id")
+    if not getattr(args, "command_file", None):
+        raise ValueError("new launches require --command-file or --resume-session-id")
+    if getattr(args, "require_browser", False) and getattr(args, "without_browser", False):
+        raise ValueError("--require-browser and --without-browser cannot be used together")
+    if (getattr(args, "require_browser", False)
+            and getattr(args, "account_provider", None) not in {"anthropic", "openai"}):
+        raise ValueError("--require-browser needs --account-provider anthropic or openai")
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
     command_texts = [path.read_text(encoding="utf-8").rstrip("\n") for path in files]
     for text in command_texts:
@@ -791,17 +1107,31 @@ def prepare_launches(args):
             choices = account_choice.select_batch(
                 args.account_provider, args.account_config, args.account, count=len(files)
             )
-        for text, choice in zip(command_texts, choices):
+        trust_writes = []
+        probes = {}
+        # Validate command/account/trust inputs for the whole batch first.
+        # Live preflight follows; its reusable marketplace links are persistent.
+        for text, choice, brief in zip(command_texts, choices, briefs):
+            with_account(text, choice, brief)
             check_codex_project(text, choice)
+            trust_writes += claude_trust_writes(text, choice, args.account_config)
+        for text, choice in zip(command_texts, choices):
+            check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
+                               getattr(args, "require_browser", False))
+        command_texts = [prepare_codex_tools(text, choice, getattr(args, "require_browser", False), gui=bool(apps[index]))
+                         for index, (text, choice) in enumerate(zip(command_texts, choices))]
+        claude_trust.apply(trust_writes)
         if apps[0]:
             home = Path(choices[0]["env"]["CODEX_HOME"]).expanduser()
             if not home.is_absolute() or not home.is_dir():
                 raise ValueError("GUI launch needs the selected account's existing absolute CODEX_HOME")
             source_path = home / gui_launch.BUNDLED_MARKETPLACE
             override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
-            command_texts[0] += " -c " + shlex.quote(override)
-        command_texts = [with_account(text, choice, brief)
-                         for text, choice, brief in zip(command_texts, choices, briefs)]
+            if choices[0].get("tools", {}).get("route") != "local":
+                command_texts[0] += " --no-daemon -c " + shlex.quote(override)
+        command_texts = [with_account(text, choice, brief,
+                                     coordinate=not app and choice.get("tools", {}).get("route") != "local")
+                         for text, choice, brief, app in zip(command_texts, choices, briefs, apps)]
     elif getattr(args, "account", None):
         raise ValueError("--account needs --account-provider")
     elif any(account_settings(text, account_choice.ACCOUNT_VARIABLES.values())
@@ -812,12 +1142,13 @@ def prepare_launches(args):
         command_texts = [append_brief(text, brief) for text, brief in zip(command_texts, briefs)]
     if choices[0]:
         for choice in choices:
-            check_codex_daemon(choice)
+            if choice.get("tools", {}).get("route") != "local":
+                check_codex_daemon(choice)
         account_choice.prepare_launch(choices[0])
     if apps[0]:
         reservation = gui_launch.reserve(apps[0])
         try:
-            market = gui_launch.marketplace(home, Path.home() / ".codex")
+            market = choices[0].get("tools", {}).get("marketplace") or gui_launch.marketplace(home, Path.home() / ".codex")
             choices[0]["gui"] = {**reservation, "marketplace": market,
                                   "override": override, "screen": "unlocked"}
             command_file = gui_launch.stage_command(reservation, command_texts[0])
@@ -838,6 +1169,81 @@ def prepare_launches(args):
     return command_texts, choices
 
 
+def resume_input(text):
+    return "\n" not in text and re.match(r"^\s*/resume(?:\s|$)", text, re.IGNORECASE)
+
+
+def validate_resume_input(text, *, tty=None):
+    if resume_input(text):
+        if isinstance(tty, str) and tty:
+            from session_liveness import inventory
+            commands = [command.split() for _, terminal, command in inventory()
+                        if terminal == tty.removeprefix("/dev/")]
+            # A positively identified Claude-only target keeps its own resume
+            # command. Unknown or mixed targets retain the conservative route.
+            claude = any(argv and (Path(argv[0]).name in {"claude", "claude.js"} or
+                         len(argv) > 1 and Path(argv[0]).name in {"node", "nodejs", "bun"} and Path(argv[1]).name in {"claude", "claude.js"}) for argv in commands)
+            codex = any(Path(arg).name.startswith("codex") for argv in commands for arg in argv)
+            if claude and not codex:
+                return
+        raise ValueError("Run codex-session.py resume --session-id <native-id> --codex-home <source-home> instead; TUI resume bypasses ownership coordination")
+
+
+def source_launch_metadata(result, choice):
+    if not choice or choice.get("provider") != "openai":
+        return result
+    home = choice["env"]["CODEX_HOME"]
+    result["codex_home"] = str(Path(home).expanduser().resolve())
+    if choice.get("resume_session_id"):
+        result["native_session_id"] = choice["resume_session_id"]
+    try:
+        from session_liveness import harness_arguments, inventory
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        if github not in sys.path:
+            sys.path.append(github)
+        import github_plan_closure
+        tty = result.get("tty")
+        if not isinstance(tty, str) or not tty:
+            raise ValueError("launch TTY is unavailable")
+        if choice.get("resume_session_id"):
+            session = choice["resume_session_id"]
+            rows = [row for row in github_plan_closure.log_rows() if row.get("session_id") == session]
+            if len(rows) != 1:
+                raise ValueError("resumed native generation is not unique; read codex-session.py status")
+            generation = rows[0].get("resumed_generation")
+            if (not isinstance(generation, dict) or not isinstance(generation.get("tty"), str)
+                    or type(generation.get("pid")) is not int or generation["pid"] <= 0
+                    or not isinstance(generation.get("launch_generation"), str) or not generation["launch_generation"]
+                    or generation.get("codex_home") != result["codex_home"]
+                    or generation["tty"].removeprefix("/dev/") != tty.removeprefix("/dev/")
+                    or generation.get("pid") != generation.get("launch_pid")
+                    or github_plan_closure.process_started_at(generation.get("pid")).isoformat()
+                    != generation.get("launch_started_at")):
+                raise ValueError("resumed generation does not match this terminal")
+            result.update(generation)
+            return result
+        candidates = []
+        for pid, terminal, command in inventory():
+            argv = harness_arguments(command)
+            if terminal == tty.removeprefix("/dev/") and argv and Path(argv[0]).name.casefold().startswith("codex"):
+                candidates.append((pid, command.split()[0] == argv[0]))
+        # The guarded parent is a Python helper on the same TTY. Prefer the
+        # native executable over the wrapper when both are visible.
+        matches = [pid for pid, direct in candidates if direct]
+        if not matches:
+            proxies = {r.get("launch_pid"): r for r in github_plan_closure.log_rows()
+                       if r.get("record_kind") == "managed_proxy" and r.get("codex_home") == result["codex_home"]}
+            matches = [pid for pid, _ in candidates if pid in proxies and
+                       github_plan_closure.process_started_at(pid).isoformat() == proxies[pid].get("launch_started_at")]
+        if len(matches) != 1:
+            raise ValueError("native client PID is not unique on the launch TTY")
+        result.update(github_plan_closure.launch_metadata(matches[0], result["session_id"], home))
+        result["pid"] = matches[0]
+    except (OSError, ValueError, ImportError, subprocess.SubprocessError):
+        result["launch_identity_unavailable"] = True
+    return result
+
+
 def cancel_unsubmitted_gui(choice, progress):
     if choice and "gui" in choice and progress["submission"] == "not_attempted":
         gui = choice["gui"]
@@ -850,17 +1256,11 @@ def cancel_unsubmitted_gui(choice, progress):
 
 async def close_session(app, session_id, ledger):
     """Close one owned, unsplit tab only with current idle-shell/input proof."""
-    # Loaded here because close_ttys also uses this module's exact selector.
-    from close_ttys import inventory, idle_terminal_command
+    import session_liveness
+    import session_record
     import iterm2
 
-    entries = json.loads(ledger.read_text(encoding="utf-8"))
-    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-        raise ValueError("ledger must contain session objects")
-    matches = [e for e in entries if e.get("iterm_session_id") == session_id]
-    if len(matches) != 1 or matches[0].get("supervisor_owned") is not True:
-        raise ValueError("exact session is not uniquely Supervisor-owned in the launch ledger")
-    entry = matches[0]
+    entry = session_record.terminal_entry(ledger, "iterm_session_id", session_id)
 
     async def verify():
         await app.async_refresh()
@@ -880,14 +1280,9 @@ async def close_session(app, session_id, ledger):
         tty = live_tty.removeprefix("/dev/")
         if not tty or tty != expected_tty.removeprefix("/dev/"):
             raise ValueError("terminal TTY differs from launch ledger")
-        rows = inventory()
+        rows = session_liveness.inventory()
         jobs = [row for row in rows if row[1] == tty]
-        if not jobs:
-            raise ValueError("no processes match this TTY; preserve ended or uncertain tab and report its profile setting")
-        if any(not idle_terminal_command(row[2]) for row in jobs):
-            raise ValueError("process remains on this TTY; tab kept")
-        if isinstance(entry.get("pid"), int) and any(row[0] == entry["pid"] for row in rows):
-            raise ValueError("recorded agent PID remains or was reused; tab kept")
+        session_liveness.verify_process_exit(entry, rows=rows, require_tty=True, scope="terminal")
         prompt = await iterm2.async_get_last_prompt(app.connection, session_id)
         if prompt is None or prompt.state != iterm2.PromptState.EDITING:
             raise ValueError("empty input cannot be proved; shell integration must report an editing prompt")
@@ -982,7 +1377,7 @@ async def operate(app, args):
                     account_choice.record_launch(choice)
                     progress["receipt_written"] = True
                 progress.update(submission="unknown", phase="submit_command")
-                await submit_iterm_launch(app, session, command_text)
+                await submit_iterm_launch(app, session, command_text, prompt_window=startup_prompt_window(choice))
                 progress.update(submission="submitted", phase="startup_observed")
             except Exception as error:
                 cancel_unsubmitted_gui(choice, progress)
@@ -993,6 +1388,12 @@ async def operate(app, args):
                       "tab_id": tab.tab_id, "session_id": session.session_id}
             if choice:
                 result["account"] = account_choice.public(choice)
+            if choice and choice.get("provider") == "openai":
+                try:
+                    result["tty"] = await session.async_get_variable("tty")
+                except (AttributeError, OSError, ValueError):
+                    result["launch_identity_unavailable"] = True
+                source_launch_metadata(result, choice)
             results.append(result)
         return results[0] if len(results) == 1 else results
     if args.command == "window" and previous_tab:
@@ -1125,16 +1526,22 @@ def main():
                        help="private Supervisor launch ledger; Director-owned entries refuse")
     new = commands.add_parser("new")
     new.add_argument("--window-id", required=True)
-    new.add_argument("--command-file", type=Path, action="append", required=True,
+    new.add_argument("--command-file", type=Path, action="append",
                      help="one agent invocation and settings, without its prompt; repeat for a batch")
-    new.add_argument("--brief-file", type=Path, action="append", required=True,
+    new.add_argument("--brief-file", type=Path, action="append",
                      help="nonempty prompt to append as one argument; one per command file, in launch order")
+    new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
+    new.add_argument("--ledger", type=Path, help="private source ledger for --resume-session-id")
     new.add_argument(
         "--account-provider",
         required=True,
         choices=account_choice.PROVIDERS,
         help="launch on Context Panel's use-next account or ranked batch order",
     )
+    new.add_argument("--without-browser", action="store_true",
+                     help="launch Claude without the connected-browser check, for briefs that need no browser")
+    new.add_argument("--require-browser", action="store_true",
+                     help="require a working browser route before launching a browser brief")
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)
     for name in ("send", "read", "clear"):

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Emit turn-end notices for explicit Codex sessions; notices are not completion."""
 
@@ -12,6 +12,7 @@ from pathlib import Path
 
 from session_record import load_ledger, session_status
 from capacity_retry import locked_state, resume, retry_status
+from finished_map import closeout_request
 
 
 def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
@@ -48,10 +49,17 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
                 )
                 seen[entry["session_id"]] = key
             continue
-        key = (status["mtime"], status["size"], json.dumps(retry, sort_keys=True))
+        closeout = closeout_request(entry, status)
+        response = ((status["timestamp"], status["last_text"])
+                    if closeout is not None and status["timestamp"] else
+                    (status["mtime"], status["size"]))
+        key = (response, json.dumps(retry, sort_keys=True),
+               json.dumps(closeout, sort_keys=True))
+        if not status["at_turn_end"]:
+            seen.pop(entry["session_id"], None)
         if (
             status["at_turn_end"]
-            and now - status["mtime"] >= idle_seconds
+            and (closeout is not None or now - status["mtime"] >= idle_seconds)
             and seen.get(entry["session_id"]) != key
         ):
             seen[entry["session_id"]] = key
@@ -63,6 +71,7 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
                     "clean": None,
                     "state": status["state"],
                     "capacity_retry": retry,
+                    "closeout_request": closeout,
                 }
             )
     return notices

@@ -4,6 +4,10 @@ description: Use when the user asks for a plan, what's next / what is next in a 
 metadata:
   short-description: Plan durable work in GitHub issues
 commands:
+  - name: github-plan-reconcile-status
+    source: repo
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "reconcile-status", "<issue>", "--apply"]
+    purpose: Recomputes only status labels from native blockers and reviewed waits, including recovery after a confirmed fact write.
   - name: github-plan-wait
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "wait", "<issue>"]
@@ -30,7 +34,7 @@ commands:
     purpose: Searches planning issues with normalized compact output.
   - name: github-plan-create
     source: repo
-    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>", "--wait-clear", "--wait-evidence", "<reviewed-evidence>"]
     purpose: Creates a durable plan issue with helper-owned labels and optional Project enrollment.
   - name: github-plan-update-section
     source: repo
@@ -247,10 +251,13 @@ active issue labels and continuing background jobs do not lift a hold.
    --branch <task-branch> --next-action "<action>"` before creating a
    branch or worktree, adding `--admission <kind>` when the overall Order
    admits the work: live-site breakage, a named `milestone` item (linked into
-   that milestone's Track graph before the claim, or with the reason it cannot
-   be), a `repeat-stop` with both occurrences, or `spare-capacity`. Name the
+   that milestone's Track graph during planning, with the evidence cited), a
+   `repeat-stop` with both occurrences, or `spare-capacity`. Name the
    real kind: work that clears a milestone blocker is milestone work once
-   linked, not spare capacity. Claim using exactly the branch the worktree helper will create
+   linked, not spare capacity. Evidence may cite a decision comment, for example
+   `--admission spare-capacity --admission-link https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
+   The claim retains that exact comment URL; admission grants no authority.
+   Claim using exactly the branch the worktree helper will create
    (`work/<task-slug>` for the catalog's `github/scripts/dev-worktree`). Read
    [task worktrees](../github/references/worktrees.md) for its callable path,
    private per-host root setting and host integration. On a host with a guarded
@@ -288,11 +295,19 @@ active issue labels and continuing background jobs do not lift a hold.
    proof and supported route before using these flags. For PR-only work, use
    [Planning: Claim](../github/references/cli-reference.md#planning-claim).
    Active ownership still refuses.
+   For verified pushed WIP without a PR on this same issue, follow
+   [Planning: Claim's existing resume-only procedure](../github/references/cli-reference.md#planning-claim).
    For ordinary successor work before a retained PR can be refreshed, use
    `--resume-from` with `--handoff-comment` and omit `--refresh-pr`. Read
    Planning: Claim for the exact released multi-branch handoff proof; all
    retained artifacts and their recorded waits are checked. This claim does
    not lift a product hold or authorize changing the retained PRs.
+   A native child in the same repository may use its parent's released claim
+   and handoff IDs for that source slice; the helper verifies the native link
+   and parent ownership on both readbacks and preserves the parent's waits.
+   Ownership checks traverse the recorded source family across generations;
+   releasing an intermediate or closing a child does not hide another holder.
+   Read Planning: Claim before using this cross-record route.
 
 For a global invalid-wait finding, read the
 [supported wait correction procedure](references/global-next.md#correct-an-invalid-wait-before-claiming)
@@ -383,15 +398,13 @@ Size implementation issues and record event waits under GitHub's
 Keep Current Status concise:
 
 ```text
-State:
 Next action:
-Blocked by:
-Waiting for:
 Last verified:
 ```
 
-Record decisive evidence and links needed to resume. Keep raw logs and lengthy
-validation details in the PR or linked evidence. Completed prerequisites belong
+Maintain dependencies with `link`/`unlink` and person/event holds with `wait`;
+`show` projects their current state and blockers. Record decisive evidence and
+links needed to resume. Keep raw logs and lengthy validation details in the PR or linked evidence. Completed prerequisites belong
 in Relationships, not the current blocker list.
 
 ### Broad Workstreams
@@ -440,32 +453,45 @@ new waypoints through `direction`.
 
 Use status labels narrowly:
 
+Status labels are views of native issue state, open `blocked-by` edges and the
+authoritative structured wait record. `show`, `next` and the Supervisor goal
+board derive those values; old prose or hand-applied blocked/waiting labels do
+not override reviewed graph evidence. Maintain waits with `wait` and
+dependencies with `link`/`unlink`, rather than copying blocker lists into
+Current Status. Missing or malformed wait evidence still requires review.
+Landing reconciliation and issue closure refresh native parents and dependents
+without inferring their finish lines or changing human-authored bodies. Open
+`stale`, `done` and unstatused planning scopes retain their review holds; a
+closed issue retains `waiting` when its structured person/event wait remains.
+
 - `plan:active`: actionable now, including work whose next actor is any agent.
   Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
-  handoffs active. Put the agent's next step in `Next action:`; record
-  `Waiting for: None` only when no person, decision or external-event wait
-  remains. Ordinary delivery awaiting agent or automated QA, review,
+  handoffs active. Put the agent's next step in `Next action:`; record verified
+  absence of person/event waits through `wait --clear --evidence ...`. Ordinary
+  delivery awaiting agent or automated QA, review,
   merge-train routing, or deployment stays active too.
 - `plan:blocked`: a current dependency on an open issue linked by native
   `blocked-by`.
 - `plan:waiting`: a durable plan parked on a named person, decision, or external
-  event. Name who acts and on what in `Waiting for:` or `Parked until:`.
+  event. Record each actor/event and ending condition through
+  `wait --waiting-for ... --ends-when ... --evidence ...`, preserving unresolved
+  entries.
 - `plan:stale`: needs review before guiding work.
 - `plan:done`: completed or deliberately superseded.
 
 Separate independent actionable work from an unresolved person or event wait
 into its own issue, so it can be selected and claimed without clearing that wait.
-For `plan:waiting` without a native issue blocker, say `Blocked by: No native
-issue blocker; waiting for ...`.
+For `plan:waiting`, the structured record names the actor/event and ending
+condition; the derived blocker list contains native open issue blockers only.
 
-During an authorized planning update, reconcile `label_blocked_without_native_edge`:
-verify and link an open prerequisite with
+During an authorized planning update, verify and link an open prerequisite with
 `gh-plan.py link <issue> blocked-by <prerequisite>`.
 A prose reference or milestone membership does not create that edge. If the
 prerequisite has closed, reconcile the remaining work under these status labels. If a
 maintainer must identify or create it, follow [Missing Cross-Repository
-Gates](#missing-cross-repository-gates). Choose the status from the actual next
-action or wait; a missing edge alone does not imply `plan:waiting`.
+Gates](#missing-cross-repository-gates). Record actual person/event waits with
+`wait`; the projection chooses the labels. To repair labels after a confirmed
+fact write, use `reconcile-status <issue> --apply` without repeating that write.
 A parent delegated only to open sub-issues stays `plan:active`; native sub-issue
 links express that delegation without a `blocked-by` edge.
 

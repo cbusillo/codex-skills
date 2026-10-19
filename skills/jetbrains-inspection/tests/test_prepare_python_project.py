@@ -266,6 +266,21 @@ class PreparePythonProjectTest(unittest.TestCase):
             self.assertEqual(misc.find("component").get("project-jdk-name"), "uv (fixture)")
             self.assertEqual(module.find("./component/orderEntry").get("jdkName"), "uv (fixture)")
 
+    def test_cli_without_project_model_prepares_only_the_environment(self):
+        # Headless engines register their own SDK; a generated model would name one they never register.
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            (repo / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+            (repo / ".venv").mkdir()
+            with (
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "--repo", str(repo), "--python", "3.12",
+                                           "--module-name", "fixture", "--no-project-model"]),
+                patch.dict(prepare_python_project.__dict__, {"validate_existing_venv": lambda *_: None}),
+            ):
+                self.assertEqual(prepare_python_project.main(), 0)
+            self.assertFalse((repo / ".idea").exists())
+
     def test_sdk_lookup_missing_ambiguous_and_malformed_tables(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

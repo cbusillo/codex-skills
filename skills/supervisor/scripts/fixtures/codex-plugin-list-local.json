@@ -1,0 +1,101 @@
+{
+  "provenance": {
+    "cli": "codex-cli 0.163.0",
+    "route": "isolated native app-server stdio with account-relative source override; plugin/list local filter",
+    "redaction": "Projection retains only marketplace and plugin names plus installed/enabled flags; paths, interface and account data omitted"
+  },
+  "response": {
+    "marketplaces": [
+      {
+        "name": "openai-primary-runtime",
+        "plugins": [
+          {
+            "name": "documents",
+            "installed": true,
+            "enabled": false
+          },
+          {
+            "name": "pdf",
+            "installed": true,
+            "enabled": true
+          },
+          {
+            "name": "spreadsheets",
+            "installed": true,
+            "enabled": false
+          },
+          {
+            "name": "presentations",
+            "installed": true,
+            "enabled": false
+          },
+          {
+            "name": "template-creator",
+            "installed": true,
+            "enabled": true
+          }
+        ]
+      },
+      {
+        "name": "openai-bundled",
+        "plugins": [
+          {
+            "name": "codex-app-tools",
+            "installed": true,
+            "enabled": true
+          },
+          {
+            "name": "browser",
+            "installed": true,
+            "enabled": true
+          },
+          {
+            "name": "unified-computer-use",
+            "installed": true,
+            "enabled": true
+          },
+          {
+            "name": "chrome",
+            "installed": true,
+            "enabled": true
+          },
+          {
+            "name": "computer-use",
+            "installed": true,
+            "enabled": true
+          },
+          {
+            "name": "messages",
+            "installed": false,
+            "enabled": false
+          },
+          {
+            "name": "record-and-replay",
+            "installed": false,
+            "enabled": false
+          },
+          {
+            "name": "computer-history",
+            "installed": false,
+            "enabled": false
+          },
+          {
+            "name": "latex",
+            "installed": false,
+            "enabled": false
+          },
+          {
+            "name": "code-review",
+            "installed": true,
+            "enabled": true
+          },
+          {
+            "name": "visualize",
+            "installed": true,
+            "enabled": true
+          }
+        ]
+      }
+    ]
+  }
+}

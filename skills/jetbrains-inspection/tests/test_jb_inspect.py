@@ -29,6 +29,8 @@ TEST_CACHE = tempfile.TemporaryDirectory(prefix="jetbrains-inspection-tests-")
 os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = TEST_CACHE.name
 os.environ["JB_INSPECT_OUTCOME_LOG"] = "0"
 os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
+# API-route behavior; backend selection has its own tests in test_qodana_backend.
+os.environ["JB_INSPECT_DEFAULT_BACKEND"] = "api"
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "jb-inspect.py"
 ATTRIBUTION_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "attribution" / "cases.json"
 SPEC = importlib.util.spec_from_file_location("jb_inspect", SCRIPT_PATH)
@@ -475,7 +477,192 @@ class ProjectCacheRetirementTests(unittest.TestCase):
                 self.assertEqual(receipts[0]["ide"]["session_id"], identities[0]["session_id"])
 
 
+class OfflineIdeProcessTests(unittest.TestCase):
+    def test_running_ide_is_visible_without_a_plugin_registry(self):
+        process_list = "123 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 /bin/sh\n"
+        with patch.object(jb_inspect.subprocess, "check_output", return_value=process_list):
+            self.assertEqual(jb_inspect.offline_ide_processes(), [123])
+        with patch.object(jb_inspect.subprocess, "check_output", side_effect=OSError("fixture")):
+            with self.assertRaises(jb_inspect.InspectError):
+                jb_inspect.offline_ide_processes()
+
+
 class SdkRetirementTests(unittest.TestCase):
+    def setUp(self):
+        processes = patch.object(jb_inspect, "offline_ide_processes", return_value=[])
+        processes.start()
+        self.addCleanup(processes.stop)
+
+    def test_running_ide_without_identity_holds_offline_retirement(self):
+        with (patch.object(jb_inspect.sys, "platform", "darwin"),
+              patch.object(jb_inspect, "offline_ide_processes", return_value=[123])):
+            with self.assertRaises(jb_inspect.InspectError) as caught:
+                jb_inspect.offline_retirement_records(Path("/fixture/task"))
+            self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
+
+    def test_offline_records_hold_registered_sdks_projects_and_caches(self):
+        for kind in ("jdk.table.xml", jb_inspect.HELPER_SDK_RECORD_FILENAME, "recentProjects.xml", "cache", "finalizing", "idea", "receipt"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                root = home / "task"
+                root.mkdir()
+                with (patch.object(jb_inspect.Path, "home", return_value=home),
+                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                      patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
+                    if kind in {"cache", "finalizing"}:
+                        projects = home / "Library/Caches/JetBrains/PyCharm2026.2/projects"
+                        record = (projects / f"{jb_inspect.HELPER_FINALIZING_CACHE_PREFIX}id.json" if kind == "finalizing" else
+                                  projects / f"{jb_inspect.HELPER_SEALED_CACHE_PREFIX}id" / jb_inspect.HELPER_PROJECT_CACHE_MARKER)
+                        record.parent.mkdir(parents=True)
+                        record.write_text(json.dumps({"worktree_path": str(root)}))
+                    elif kind == "idea":
+                        (root / ".idea").mkdir()
+                        (root / ".idea/workspace.xml").write_text("<project />")
+                    elif kind == "receipt":
+                        record = jb_inspect.repository_preparation_receipt_path({"worktree_root": str(root)})
+                        record.parent.mkdir(parents=True, exist_ok=True)
+                        record.write_text("{}")
+                        self.addCleanup(record.unlink)
+                    else:
+                        record = home / "Library/Application Support/JetBrains/PyCharm2026.2/options" / kind
+                        record.parent.mkdir(parents=True)
+                        record.write_text(f'<application><option value="{root}/.venv/bin/python" /></application>')
+                    args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+                    with (patch.object(jb_inspect, "retirement_worktree", return_value=root),
+                          patch.object(jb_inspect, "discover_identities", return_value=[]),
+                          patch.object(jb_inspect.subprocess, "run") as removal):
+                        with self.assertRaises(jb_inspect.InspectError) as caught:
+                            jb_inspect.command_retire_sdks(args)
+                        self.assertEqual(caught.exception.payload["offline_retirement_record"],
+                                         str(root / ".idea/workspace.xml") if kind == "idea" else str(record))
+                        removal.assert_not_called()
+                        self.assertTrue(root.is_dir())
+
+    def test_offline_record_scan_preserves_scope_and_fails_closed_on_unreadable_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "task"
+            options = home / "Library/Application Support/JetBrains/PyCharm2026.2/options"
+            options.mkdir(parents=True)
+            (home / "another-config").mkdir()
+            table = options / "jdk.table.xml"
+            with (patch.object(jb_inspect.Path, "home", return_value=home),
+                  patch.object(jb_inspect.sys, "platform", "darwin"),
+                  patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": str(home / "another-config")})):
+                table.write_text(f'<application><homePath value="$USER_HOME$/task-other/.venv/bin/python" /></application>')
+                jb_inspect.offline_retirement_records(root)
+                table.write_text(f'<application><homePath value="$USER_HOME$/task/.venv/bin/python" /></application>')
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.offline_retirement_records(root)
+                table.write_text("broken xml")
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.offline_retirement_records(root)
+                with patch.object(jb_inspect.Path, "iterdir", side_effect=PermissionError("fixture")):
+                    with self.assertRaises(jb_inspect.InspectError):
+                        jb_inspect.offline_retirement_records(root)
+
+    def test_custom_storage_and_unresolved_cache_ownership_require_live_cleanup(self):
+        for kind in ("custom-storage", "missing-cache-marker", "bad-cache-marker"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                with (patch.object(jb_inspect.Path, "home", return_value=home),
+                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                      patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
+                    if kind == "custom-storage":
+                        config = home / "Library/Application Support/JetBrains/PyCharm2026.2"
+                        config.mkdir(parents=True)
+                        (config / "idea.properties").write_text("idea.system.path=/custom/cache\n")
+                    else:
+                        cache = home / "Library/Caches/JetBrains/PyCharm2026.2/projects" / f"{jb_inspect.HELPER_SEALED_CACHE_PREFIX}id"
+                        cache.mkdir(parents=True)
+                        if kind == "bad-cache-marker":
+                            (cache / jb_inspect.HELPER_PROJECT_CACHE_MARKER).write_text("{}")
+                    with self.assertRaises(jb_inspect.InspectError) as caught:
+                        jb_inspect.offline_retirement_records(home / "task")
+                    expected = config / "idea.properties" if kind == "custom-storage" else cache / jb_inspect.HELPER_PROJECT_CACHE_MARKER
+                    self.assertEqual(caught.exception.payload["offline_retirement_record"], str(expected))
+
+    def test_offline_cache_inventory_ignores_ordinary_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            projects = home / "Library/Caches/JetBrains/PyCharm2026.2/projects"
+            projects.mkdir(parents=True)
+            (projects / ".DS_Store").write_bytes(b"Finder metadata")
+            (projects / "cache-index").write_text("ordinary cache metadata")
+            with (patch.object(jb_inspect.Path, "home", return_value=home),
+                  patch.object(jb_inspect.sys, "platform", "darwin"),
+                  patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
+                jb_inspect.offline_retirement_records(home / "task")
+
+    def test_offline_apply_rechecks_records_after_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / "task"
+            root.mkdir()
+            calls = []
+            def discover(_port):
+                calls.append(True)
+                if len(calls) == 2:
+                    (root / ".idea").mkdir()
+                    (root / ".idea/workspace.xml").write_text("<project />")
+                return []
+            args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+            with (patch.object(jb_inspect.Path, "home", return_value=home),
+                  patch.object(jb_inspect.sys, "platform", "darwin"),
+                  patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
+                  patch.object(jb_inspect, "retirement_worktree", return_value=root),
+                  patch.object(jb_inspect, "discover_identities", side_effect=discover),
+                  patch.object(jb_inspect.subprocess, "run") as removal):
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.command_retire_sdks(args)
+                removal.assert_not_called()
+
+    def test_unprepared_worktree_retires_without_live_ide_even_with_a_virtualenv(self):
+        for virtualenv, transition in ((False, None), (True, None), (False, "starts"), (False, "stops")):
+            with self.subTest(virtualenv=virtualenv), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp).resolve()
+                primary, root = home / "primary", home / "task"
+                subprocess.run(["git", "init", "-q", str(primary)], check=True)
+                subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
+                                "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "docs"], check=True)
+                (primary / ".idea/inspectionProfiles").mkdir(parents=True)
+                (primary / ".idea/inspectionProfiles/shared.xml").write_text("<component />")
+                (primary / ".idea/vcs.xml").write_text("<project />")
+                subprocess.run(["git", "-C", str(primary), "add", ".idea"], check=True)
+                subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
+                                "user.email=fixture@example.invalid", "commit", "-q", "-m", "shared inspection policy"], check=True)
+                (primary / ".git" / "info" / "exclude").write_text(".venv/\n")
+                subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
+                if virtualenv:
+                    (root / ".venv").mkdir()
+                table = home / "Library/Application Support/JetBrains/PyCharm2026.2/options/jdk.table.xml"
+                table.parent.mkdir(parents=True)
+                table.write_text('<application />')
+                args = Namespace(command="remove-worktree", repo=str(root), dry_run=True, lifecycle_lock_timeout_ms=1000)
+                discoveries = []
+                def discover(_port):
+                    discoveries.append(True)
+                    live = (transition == "starts" and len(discoveries) == 3) or (transition == "stops" and len(discoveries) < 3)
+                    return [self.identity()] if live else []
+                response = self.response(root, True)
+                response.body["sdks"] = []
+                with (patch.object(jb_inspect.Path, "home", return_value=home),
+                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                      patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
+                      patch.object(jb_inspect, "discover_identities", side_effect=discover),
+                      patch.object(jb_inspect, "http_post", return_value=response) as post):
+                    self.assertFalse(jb_inspect.command_retire_sdks(args)["worktree_removed"])
+                    self.assertTrue(root.is_dir())
+                    args.dry_run = False
+                    result = jb_inspect.command_retire_sdks(args)
+                    self.assertTrue(result["worktree_removed"])
+                    self.assertEqual(result["offline_cleanup_proved"], transition != "starts")
+                    self.assertIn(str(table), result["offline_records_checked"])
+                    if transition is None:
+                        post.assert_not_called()
+                self.assertFalse(root.exists())
+                subprocess.run(["git", "-C", str(primary), "show-ref", "--verify", "--quiet", "refs/heads/task"], check=True)
+
     @staticmethod
     def identity():
         return {"port": 63342, "session_id": "session", "helper_sdk_lifecycle_version": 1}
@@ -9975,6 +10162,36 @@ class ClassificationTest(unittest.TestCase):
         self.assertEqual(jb_inspect.classify_status_exit(result), 1)
 
 
+class NestedFieldTest(unittest.TestCase):
+    MALFORMED_VALUES = (None, "text", 1, True, ("tuple",))
+
+    def test_dict_field_returns_the_nested_dict_so_updates_reach_the_payload(self):
+        payload = {"retry_policy": {"retry": True}}
+
+        jb_inspect.dict_field(payload, "retry_policy")["max_attempts"] = 2
+
+        self.assertEqual(payload["retry_policy"], {"retry": True, "max_attempts": 2})
+
+    def test_dict_field_gives_a_fresh_empty_dict_for_missing_or_malformed_values(self):
+        for value in (*self.MALFORMED_VALUES, ["retry"]):
+            with self.subTest(value=value):
+                payload = {"retry_policy": value}
+                jb_inspect.dict_field(payload, "retry_policy")["retry"] = True
+                self.assertEqual(jb_inspect.dict_field(payload, "retry_policy"), {})
+                self.assertEqual(payload, {"retry_policy": value})
+        self.assertEqual(jb_inspect.dict_field({}, "retry_policy"), {})
+
+    def test_list_field_returns_the_nested_list_or_a_fresh_empty_list(self):
+        problems = [{"file": "a.py"}]
+        self.assertIs(jb_inspect.list_field({"problems": problems}, "problems"), problems)
+        for value in (*self.MALFORMED_VALUES, {"file": "a.py"}):
+            with self.subTest(value=value):
+                payload = {"problems": value}
+                jb_inspect.list_field(payload, "problems").append({"file": "b.py"})
+                self.assertEqual(jb_inspect.list_field(payload, "problems"), [])
+        self.assertEqual(jb_inspect.list_field({}, "problems"), [])
+
+
 class EndpointUtilityTest(unittest.TestCase):
     def test_problems_params_passes_include_stale_when_requested(self):
         args = Namespace(
@@ -15214,10 +15431,8 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
                 self.assertEqual(unresolved["reason"], "ownership_route_unavailable")
                 self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
                 self.assertTrue(self.selected_path.exists())
-                if name == "opening":
-                    self.assertIn("already_opening", unresolved["next_action"])
-                if name == "ambiguous_open_request":
-                    self.assertIn("did not acknowledge", unresolved["next_action"])
+                if name in {"opening", "ambiguous_open_request"}:
+                    self.assertEqual(unresolved["open_probe"], {"status": status, "reason": reason})
                 if name == "plugin_without_probe":
                     # An older plugin would treat the probe as a real open request.
                     http_get.assert_not_called()

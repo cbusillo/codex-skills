@@ -66,6 +66,11 @@ pwd > "$FAKE_AGY_CWD_FILE"
   diff_path=$(printf '%s' "$2" | sed -n 's/^The changes to review are in \\([^ ]*\\). Read.*/\\1/p')
   [ -n "$diff_path" ] && cat "$diff_path" > "$FAKE_AGY_DIFF_FILE"
 }
+[ -n "$FAKE_AGY_INPUT_NAME" ] && {
+  input_path=$(printf '%s' "$2" | grep -o "/[^ ]*$FAKE_AGY_INPUT_NAME" | head -1)
+  printf '%s' "$input_path" > "$FAKE_AGY_INPUT_FILE.path"
+  [ -n "$input_path" ] && cat "$input_path" > "$FAKE_AGY_INPUT_FILE"
+}
 echo "jetski: some banner text"
 printf '%s' "$FAKE_AGY_JSON"
 """
@@ -96,6 +101,23 @@ def wire_bytes(field: int, data: bytes) -> bytes:
 
 def completed(report: str) -> str:
     return json.dumps({"status": "completed", "review": report})
+
+
+# Context Panel's agent modes: the snapshot, and --record-launch reading one receipt from stdin.
+FAKE_CONTEXT_PANEL = f"""#!{sys.executable}
+import json, os, sys
+if sys.argv[1:] == ["--account-snapshot"]:
+    sys.stdout.write(open(os.environ["FAKE_SNAPSHOT_FILE"]).read())
+    sys.exit(0)
+name = "20261018T184448Z-supervisor-" + "0" * 32 + ".json"
+with open(os.environ["FAKE_RECORD_FILE"], "w") as record:
+    json.dump({{"argv": sys.argv[1:], "stdin": sys.stdin.read(), "name": name}}, record)
+code = int(os.environ.get("FAKE_RECORD_EXIT", "0"))
+if code:
+    sys.stderr.write(os.environ.get("FAKE_RECORD_STDERR", "") + "\\n")
+    sys.exit(code)
+print(name)
+"""
 
 
 class ReviewWithModelTests(unittest.TestCase):
@@ -413,8 +435,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.snapshot_file.write_text(original)
         (self.home / ".code/skill-data/supervisor.toml").unlink()
         code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
-        self.assertEqual((code, result["ok"]), (1, False))
-        self.assertIn("no [accounts]", result["error"])
+        self.assertEqual((code, result["ok"], result["phase"]), (1, False, "selection"))
         self.assertFalse(capture.exists())
 
     def test_receipt_failure_prevents_launch_and_provider_failure_retains_receipt(self) -> None:
@@ -424,13 +445,45 @@ class ReviewWithModelTests(unittest.TestCase):
         self.storage.write_text("storage is unavailable")
         code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
         self.assertEqual((code, result["ok"]), (1, False))
-        self.assertIn("cannot prepare launch receipt", result["error"])
+        self.assertNotIn("phase", result, "selection succeeded; the receipt step refused the launch")
+        self.assertNotIn("launch_receipt", result)
         self.assertFalse(capture.exists())
         self.storage.unlink()
         self.storage.mkdir()
         code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"is_error": True, "result": "limit"}))
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertTrue(Path(result["launch_receipt"]).is_file())
+
+    def test_app_group_review_receipt_goes_through_the_readers_record_launch(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        app = self.bin / "Context Panel"
+        app.write_text(FAKE_CONTEXT_PANEL)
+        app.chmod(0o700)
+        config = self.home / ".code/skill-data/supervisor.toml"
+        config.write_text(config.read_text().replace(
+            json.dumps([str(self.reader), "--storage-root", str(self.storage)]),
+            json.dumps([str(app), "--account-snapshot"])))
+        capture, received = self.root / "child-env", self.root / "received.json"
+        for exit_code, reason in ((64, "receipt is not current"), (1, "storage unavailable")):
+            with self.subTest(exit_code=exit_code):
+                code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture),
+                                           FAKE_RECORD_FILE=str(received), FAKE_RECORD_EXIT=str(exit_code),
+                                           FAKE_RECORD_STDERR=reason)
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertIn(f"exit {exit_code}: {reason}", result["error"])
+                self.assertNotIn("launch_receipt", result)
+                self.assertFalse(capture.exists())
+        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture), FAKE_RECORD_FILE=str(received),
+                                   FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+        self.assertEqual((code, result["ok"]), (0, True))
+        self.assertTrue(capture.exists())
+        record = json.loads(received.read_text())
+        self.assertEqual(record["argv"], ["--record-launch", "--launcher", "supervisor"])
+        receipt = json.loads(record["stdin"])
+        self.assertEqual(set(receipt), {"schemaVersion", "provider", "accountID", "launchedAt"})
+        self.assertEqual((receipt["provider"], receipt["accountID"]), ("anthropic", result["account"]["account_id"]))
+        self.assertEqual(Path(result["launch_receipt"]).name, record["name"])
+        self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_each_provider_returns_its_review_and_the_model_that_ran(self) -> None:
         self.install("codex", FAKE_CODEX)
@@ -655,13 +708,16 @@ class ReviewWithModelTests(unittest.TestCase):
             ("WITHHELD-REPORT-CONTENT", "no JSON object"),
             (completed(" "), "completed with an empty review"),
         ]
+        shapes = []
         for response, shape in cases:
             with self.subTest(shape=shape):
                 code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"result": response}))
-                self.assertEqual((code, result["error"], result["completion_shape"]),
-                                 (1, "review completion unconfirmed", shape))
+                self.assertEqual((code, result["ok"], result["outcome"]), (1, False, "unavailable"))
+                self.assertTrue(result["completion_shape"])
+                shapes.append(result["completion_shape"])
                 self.assertFalse(result["structured_output"])
                 self.assertNotIn("WITHHELD-REPORT-CONTENT", json.dumps(result))
+        self.assertEqual(len(set(shapes)), len(cases), "each unconfirmed shape is reported distinctly")
 
     def test_claude_structured_output_failure_withholds_its_final_text(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -795,24 +851,73 @@ class ReviewWithModelTests(unittest.TestCase):
             self.assertEqual((code, result["ok"]), (1, False))
             self.assertIn("command_diagnostic", result)
 
-    def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
-        self.install("agy", FAKE_AGY)
+    def commit_base_on_main(self, text: str) -> Path:
+        """Make the reviewed repository one committed file whose HEAD is origin/main."""
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
         source = self.repo / "example.txt"
-        source.write_text("before\n")
+        source.write_text(text)
         subprocess.run(["git", "-C", str(self.repo), "add", "example.txt"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        return source
+
+    def test_inputs_outside_the_repository_are_copied_where_the_reviewer_can_read(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.commit_base_on_main("base\n")
+        issue = self.root / "saved-issue.md"
+        issue.write_text("# The pending question\n")
+        seen = self.root / "agy-input"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+               "FAKE_AGY_INPUT_NAME": issue.name, "FAKE_AGY_INPUT_FILE": str(seen)}
+        code, result = self.run_helper("run", "--provider", "google", "--repo", str(self.repo),
+                                       "--prompt-file", str(self.prompt), "--input", str(issue), **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertEqual(seen.read_text(), "# The pending question\n")
+        named = Path(Path(f"{seen}.path").read_text())
+        self.assertTrue(named.is_relative_to(self.repo.resolve()), "inputs sit under the reviewer's read root")
+        self.assertFalse(list(self.repo.glob(".model-review-*")), "copied inputs are removed with the scratch")
+        code, result = self.run_helper("run", "--provider", "google", "--repo", str(self.repo),
+                                       "--prompt-file", str(self.prompt), "--input", str(self.root / "absent.md"), **env)
+        self.assertEqual((code, result["ok"], result["phase"]), (1, False, "inputs"))
+
+    def test_links_in_the_request_are_reported_to_caller_and_reviewer(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.commit_base_on_main("base\n")
+        sent = self.root / "agy-prompt"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+               "FAKE_AGY_PROMPT_FILE": str(sent)}
+        code, result = self.review("google", **env)
+        self.assertEqual(code, 0)
+        self.assertNotIn("unreachable_links", result)
+        without_links = sent.read_text()
+        link = "https://github.com/OWNER/REPO/issues/1#issuecomment-2"
+        self.prompt.write_text(f"Review skills/x.md. Context: {link}, and again ({link}).\n")
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["unreachable_links"]), (0, [link]))
+        self.assertIn("--input", result["unreachable_links_hint"])
+        told = sent.read_text().replace(f" Context: {link}, and again ({link}).", "")
+        self.assertNotEqual(told, without_links, "the reviewer is told the links cannot be opened")
+
+    def test_links_keep_their_own_brackets_and_lose_surrounding_prose(self) -> None:
+        wiki = "https://en.wikipedia.org/wiki/Capability-based_security_(computing)"
+        quoted = "https://example.com/it's-here"
+        prompt = (f"See {wiki}. Also ({wiki}), [the page]({quoted}), '{quoted}' and "
+                  f"<https://example.com/a>; https://example.com/b?x=1&y=[2].")
+        self.assertEqual(review_with_model.unreachable_links(prompt),
+                         [wiki, quoted, "https://example.com/a", "https://example.com/b?x=1&y=[2]"])
+
+    def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
+        self.install("agy", FAKE_AGY)
+        source = self.commit_base_on_main("before\n")
         subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
         prompt_file, diff_file = self.root / "agy-prompt", self.root / "agy-diff"
         env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
                "FAKE_AGY_PROMPT_FILE": str(prompt_file), "FAKE_AGY_DIFF_FILE": str(diff_file)}
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
-        self.assertNotIn("The changes to review are in", prompt_file.read_text())
-        self.assertFalse(diff_file.exists())
+        self.assertFalse(diff_file.exists(), "no diff file is named when the branch has no changes")
         source.write_text("after\n")
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
@@ -820,7 +925,6 @@ class ReviewWithModelTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "change"], check=True)
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
-        self.assertIn("The changes to review are in", prompt_file.read_text())
         self.assertIn("+after", diff_file.read_text())
         self.assertFalse(list(self.repo.glob(".model-review-*")), "the temporary diff must be removed")
         subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"], check=True)
@@ -971,6 +1075,85 @@ class ReviewWithModelTests(unittest.TestCase):
                 code, result = self.review("openai", FAKE_CODEX_EVENTS=json.dumps(event), FAKE_CODEX_EXIT="1")
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertEqual(result["detail"], event.get("message") or event["error"]["message"])
+
+    def test_recorded_incomplete_review_preserves_the_execution_cause(self) -> None:
+        fixture = json.loads(SCRIPT.with_name("fixtures").joinpath("openai-incomplete-2166.json").read_text())
+        events = fixture["events"]
+        proc = subprocess.CompletedProcess([], fixture["returncode"],
+                                           "\n".join(map(json.dumps, events)), "")
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        (scratch / "answer.md").write_text(fixture["answer"])
+        elapsed = fixture["provenance"]["duration_seconds"]
+        with patch.object(review_with_model, "time") as clock:
+            clock.monotonic.return_value = 10
+
+            def finish(*_args):
+                clock.monotonic.return_value += elapsed
+                return proc
+
+            with patch.object(review_with_model, "run_cli", side_effect=finish) as run:
+                result = review_with_model.completed_review(
+                    review_with_model.review_openai("private prompt", self.repo, None, 1800, scratch))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["outcome"], json.loads(fixture["answer"])["status"])
+        execution = result["execution"]
+        self.assertEqual(execution["terminal_event"], "turn.completed")
+        self.assertEqual(execution["last_event"], events[-1]["type"])
+        self.assertEqual(execution["elapsed_seconds"], elapsed)
+        self.assertEqual(execution["exit_code"], proc.returncode)
+        self.assertTrue(execution["final_answer_produced"])
+        self.assertEqual(execution["command_diagnostics"], ["github_connection_failed"])
+        self.assertEqual(execution["failed_commands"], 0)  # The trailing cat hid gh's exit code.
+        self.assertTrue(result["completion_shape"])
+        self.assertNotIn("response", result)
+        run.assert_called_once()
+
+    def test_failed_command_count_includes_declines_without_an_exit_code(self) -> None:
+        events = [
+            {"type": "item.completed", "item": {"type": "command_execution", "status": status, "exit_code": code}}
+            for status, code in [("completed", 0), ("failed", None), ("declined", None), ("failed", 1)]
+        ]
+        execution = review_with_model.openai_execution("\n".join(map(json.dumps, events)), "", 1, 0)
+        self.assertEqual(execution["failed_commands"], 3)
+
+    def test_incomplete_diagnostics_do_not_expose_command_or_partial_review_text(self) -> None:
+        self.install("codex", FAKE_CODEX)
+        output = self.root / "review.md"
+        events = [
+            {"type": "item.completed", "item": {"type": "command_execution", "status": "completed", "exit_code": 0,
+                "command": "token=PRIVATE-COMMAND", "aggregated_output": "PRIVATE-SOURCE\n" * 1000 +
+                "error connecting to api.github.com\n"}},
+            {"type": "PRIVATE-EVENT-token=private"},
+        ]
+        code, result = self.run_helper(
+            "run", "--provider", "openai", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
+            "--out", str(output), FAKE_CODEX_EVENTS="\n".join(map(json.dumps, events)),
+            FAKE_ANSWER=json.dumps({"status": "incomplete", "review": "PRIVATE-PARTIAL" * 1000}))
+        self.assertEqual(code, 1)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertFalse(output.exists())
+        self.assertEqual(result["execution"]["last_event"], "unknown")
+        self.assertIsNone(result["execution"]["terminal_event"])
+        self.assertLess(len(json.dumps(result["execution"])), 500)
+
+    def test_openai_timeout_keeps_terminal_evidence_without_the_partial_answer(self) -> None:
+        stdout = b'{"type":"turn.started"}\n{"type":"item.started"}\n{"partial'
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        (scratch / "answer.md").write_text("PRIVATE-PARTIAL")
+        with patch.object(review_with_model, "run_cli", side_effect=subprocess.TimeoutExpired(
+                ["codex", "private prompt"], 20, output=stdout, stderr=b"token=PRIVATE-STDERR")) as run:
+            result = review_with_model.review_openai("private prompt", self.repo, None, 20, scratch)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["execution"]["jsonl_state"], "malformed")
+        self.assertEqual(result["execution"]["last_event"], "item.started")
+        self.assertIsNone(result["execution"]["terminal_event"])
+        self.assertIsNone(result["execution"]["exit_code"])
+        self.assertTrue(result["execution"]["final_answer_produced"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertGreaterEqual(result["execution"]["elapsed_seconds"], 0)
+        run.assert_called_once()
 
     def test_openai_interrupted_reconnect_retains_distinct_stderr(self) -> None:
         self.install("codex", FAKE_CODEX)

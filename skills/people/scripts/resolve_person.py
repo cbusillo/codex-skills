@@ -335,6 +335,9 @@ def public_person(
         "trust": compact_trust(person.get("trust")),
     }
     if include_detail:
+        result["communication_style"] = preferences.get("communication_style")
+        result["contact_notes"] = preferences.get("contact_notes")
+        result["notes"] = person.get("notes")
         result["details_file"] = detail_path(
             person.get("details_file"),
             detail_base_label=first_string(person.get(DETAIL_BASE_LABEL_KEY)),
@@ -608,7 +611,7 @@ def main() -> None:
         print(json.dumps(payload, sort_keys=True), file=sys.stdout)
         raise SystemExit(1) from exc
 
-    print(json.dumps(payload, sort_keys=True))
+    print(json.dumps(payload, sort_keys=True, default=str))
     if args.strict and payload.get("status") != "matched":
         raise SystemExit(2)
 

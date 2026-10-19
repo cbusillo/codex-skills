@@ -6,6 +6,7 @@
 """Hermetic evidence for Supervisor enqueue guards and mutation ordering."""
 
 import argparse
+import base64
 import copy
 import io as stdlib_io
 import json
@@ -115,6 +116,7 @@ def candidate_response(
         request={"repository": REPO},
         provider_payload={
             "status": "accepted",
+            "trace_id": "launchplane_req_candidate",
             "records": records
             if records is not None
             else {"merge_train_batch_candidate_record_id": "active"},
@@ -128,6 +130,7 @@ class Fake:
         self.pulls = {number: pr(number) for number in range(1, count + 1)}
         self.writes = []
         self.qualify = True
+        self.review_gaps = {}
         self.active = False
         self.calls = 0
         self.before = lambda _self: None
@@ -179,6 +182,8 @@ class Fake:
         return [self.get(path) for path in paths]
 
     def pages(self, path, **_params):
+        if path.endswith('/comments'):
+            return [comment()]
         if path.endswith("/labels"):
             return self.pulls[int(path.split("/")[-2])]["labels"]
         if path.endswith("/files"):
@@ -188,6 +193,9 @@ class Fake:
 
     def qualified(self, *_args):
         return self.qualify
+
+    def review_gap(self, _target, pull, _trusted, *, file_inventory=None):
+        return self.review_gaps.get(pull["number"], "")
 
     def queue(self, _target):
         dry = response(self.pulls.values(), self.writes)["result"]["dry_run_result"]
@@ -244,6 +252,136 @@ class EnqueueTests(unittest.TestCase):
 
         fake.train = train
         return fake
+
+    def test_ready_handoffs_are_named_when_no_enqueue_is_possible(self):
+        for condition in ('held', 'busy', 'ineligible', 'batch_limit', 'dry_run'):
+            with self.subTest(condition=condition):
+                self.events = []
+                self.holds['paused_repositories'] = [REPO] if condition == 'held' else []
+                self.save()
+                self.args.apply = condition != 'dry_run'
+                fake = Fake()
+                if condition == 'busy':
+                    fake.train = lambda _: {
+                        'status': 'accepted', 'result': {
+                            'mode': 'dry-run', 'controller_action': 'resume_reconciliation',
+                            'dry_run_result': {'queue': [], 'queue_order': []},
+                        },
+                    }
+                if condition == 'ineligible':
+                    fake.ineligible = {n: ['current-head required checks are fail']
+                                       for n in fake.pulls}
+                self.run_pass(fake)
+                named = {payload['pr'] for event, payload in self.events
+                         if event in {'skipped', 'enqueued'}}
+                self.assertEqual(named, set(fake.pulls))
+                skipped = [p for event, p in self.events if event == 'skipped']
+                self.assertTrue(all(p.get('reason') for p in skipped))
+                if condition == 'ineligible':
+                    self.assertTrue(all(p.get('ineligible_reasons') == fake.ineligible[p['pr']]
+                                        for p in skipped))
+                if condition in {'held', 'busy', 'ineligible', 'dry_run'}:
+                    self.assertEqual(fake.writes, [])
+
+    def test_skip_inventory_respects_current_trusted_handoffs(self):
+        fake = Fake(count=3)
+        self.holds['paused_repositories'] = [REPO]
+        self.save()
+        pages = fake.pages
+        def comments(path, **params):
+            if path.endswith('/comments'):
+                number = int(path.split('/')[-2])
+                if number == 1:
+                    return [comment(login='untrusted')]
+                if number == 2:
+                    return [comment(), comment(body=WAITING, number=2)]
+                return [comment(body=f"{READY}\n\nHead: {'b' * 40}.")]
+            return pages(path, **params)
+        fake.pages = comments
+        self.run_pass(fake)
+        self.assertFalse(any(event == 'skipped' for event, _ in self.events))
+        self.assertEqual(fake.writes, [])
+
+    def test_unavailable_skip_inventory_does_not_hold_lock_or_stop_other_trains(self):
+        fake = Fake(count=1)
+        fake.targets.append({**TARGET, 'repo': 'example/other'})
+        self.holds['paused_repositories'] = [REPO]
+        self.save()
+        pages = fake.pages
+        acquired = []
+        def read(path, **params):
+            if path.startswith(f'/repos/{REPO}/'):
+                with watch.hold_lock(self.path):
+                    acquired.append(True)
+                raise github_read.GitHubReadShapeError('invalid observation')
+            return pages(path, **params)
+        fake.pages = read
+        self.run_pass(fake)
+        self.assertTrue(acquired)
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(any(event == 'skip_inventory_unavailable' for event, _ in self.events))
+
+    def test_skip_inventory_classifies_queue_members_for_every_outer_reason(self):
+        for reason in ('repository_held', 'controller_busy', 'queue_read_unavailable',
+                       'existing_queue', 'controller_ineligible'):
+            with self.subTest(reason=reason):
+                fake = Fake(count=4)
+                fake.pulls[4]['labels'] = [{'name': TARGET['label']}]
+                queue = fake.train(TARGET)['result']['dry_run_result']['queue'][:2]
+                queue[0]['ineligible_reasons'] = []
+                queue[1]['ineligible_reasons'] = [watch.DEPENDENCY_REVIEW]
+                self.events = []
+                self.args.handoff_login = ['engineer']
+                watch.report_ready_skips(
+                    fake, TARGET, self.args,
+                    lambda event, payload: self.events.append((event, payload)),
+                    reason, pulls=list(fake.pulls.values()), queue=queue,
+                )
+                named = {p['pr']: p for event, p in self.events if event == 'skipped'}
+                self.assertEqual(set(named), {3})
+                self.assertEqual(named[3]['controller_admission'], 'unknown')
+
+    def test_deferred_inventory_never_delays_or_replaces_a_stop(self):
+        for error in (watch.WatchError('enqueue write uncertain'), PermissionError(),
+                      TimeoutError(), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(watch, 'report_ready_skips') as report:
+                    with self.assertRaises(type(error)) as raised:
+                        with watch.deferred_skip_reports(Fake(), TARGET, self.args, Mock()) as schedule:
+                            schedule('controller_busy')
+                            raise error
+                    self.assertIs(raised.exception, error)
+                    report.assert_not_called()
+
+    def test_bad_pr_inventory_does_not_hide_later_ready_handoffs(self):
+        fake = Fake(count=2)
+        pages = fake.pages
+        def read(path, **params):
+            if path.endswith('/1/comments'):
+                raise github_read.GitHubReadShapeError('unavailable')
+            return pages(path, **params)
+        fake.pages = read
+        watch.report_ready_skips(
+            fake, TARGET, self.args,
+            lambda event, payload: self.events.append((event, payload)), 'controller_busy',
+        )
+        self.assertEqual([p['pr'] for event, p in self.events if event == 'skipped'], [2])
+        self.assertTrue(any(event == 'skip_inventory_unavailable' for event, _ in self.events))
+
+    def test_inventory_stops_after_a_repository_identity_failure(self):
+        fake = Fake(count=2)
+        pages = fake.pages
+        reads = []
+        def read(path, **params):
+            if path.endswith('/comments'):
+                reads.append(path)
+                raise github_read.GitHubReadError(
+                    'identity mismatch', result=Mock(failure=Mock(retryable=False)), diagnostics={},
+                )
+            return pages(path, **params)
+        fake.pages = read
+        watch.report_ready_skips(fake, TARGET, self.args, Mock(), 'controller_busy')
+        self.assertEqual(len(reads), 1)
 
     def test_staging_qualifies_next_batch_without_changing_published_candidate(self):
         fake = self.staging_fake()
@@ -636,6 +774,31 @@ class EnqueueTests(unittest.TestCase):
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
         self.assertTrue(any(event == "skipped" and data.get("reason") == "conflicting" for event, data in self.events))
+
+    def test_unrecorded_review_of_record_is_skipped_with_its_reason(self):
+        fake = Fake(count=1)
+        fake.review_gaps[1] = "A review of record was requested with no later recorded outcome"
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        skipped = [data for event, data in self.events if event == "skipped"]
+        self.assertEqual([data["reason"] for data in skipped], ["review_of_record_not_recorded"])
+        self.assertEqual(skipped[0]["detail"], fake.review_gaps[1])
+
+    def test_incomplete_inventory_reports_coverage_instead_of_review(self):
+        fake = Fake(count=1)
+        fake.pulls[1]["changed_files"] = 2
+        fake.review_gaps[1] = "review-of-record evidence unavailable: incomplete inventory"
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        skipped = [data for event, data in self.events if event == "skipped"]
+        self.assertEqual([data["reason"] for data in skipped], ["file_inventory_changed_or_incomplete"])
+
+    def test_review_request_appearing_before_label_stops_batch(self):
+        fake = Fake(count=1)
+        fake.before = lambda io: io.review_gaps.update({1: "requested"}) if io.calls > 1 else None
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
 
     def test_conflict_appearing_before_label_stops_batch(self):
         fake = Fake(count=1)
@@ -1518,6 +1681,56 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(self.qualified())
         self.io.acceptance.assert_called_once()
 
+    def test_review_gap_reads_records_and_base_branch_review_paths(self):
+        config = None
+        files = [{"filename": "src/tool.py"}]
+
+        def get(path):
+            if f"/contents/{ready_handoff.REVIEW_CONFIG_PATH}?ref=trunk" in path:
+                if config is None:
+                    raise watch.GitHubReadError(
+                        "Not Found",
+                        result=watch.github_api.ApiResult(ok=False, status=404, body=None),
+                        diagnostics={},
+                    )
+                return {"content": base64.b64encode(json.dumps(config).encode()).decode()}
+            raise AssertionError(path)
+
+        self.io.get = get
+        self.io.pages = lambda path: files if path.endswith("/files") else self.comments
+        gap = lambda: self.io.review_gap(TARGET, self.pull, set())
+        self.assertEqual(gap(), "")
+        self.comments.append(comment("Supervisor runs the review.", 2))
+        self.assertTrue(gap())
+        self.comments.append(comment(ready_handoff.review_result_body("Review weighed: none.", SHA), 3))
+        self.assertEqual(gap(), "")
+        config = {"qualityGate": {"modelReview": {"requiredPaths": ["skills/*"]}}}
+        self.assertEqual(gap(), "")
+        files = [{"filename": "skills/github/SKILL.md"}]
+        self.assertEqual(gap(), "")
+        files = [{"filename": "src/tool.py"}]
+        self.pull["changed_files"] = 3001
+        self.assertTrue(gap())
+        self.pull["changed_files"] = 1
+        self.assertEqual(gap(), "")
+        original_pages = self.io.pages
+        def comments_only(path):
+            if path.endswith("/comments"):
+                return self.comments
+            raise AssertionError("Supplied file inventory should not be read again")
+        self.io.pages = comments_only
+        self.assertEqual(self.io.review_gap(TARGET, self.pull, set(), file_inventory=files), "")
+        self.io.pages = original_pages
+        files = [{"filename": "skills/github/SKILL.md"}]
+        self.comments.pop()
+        self.comments.pop()
+        self.assertTrue(gap())
+        config = {"qualityGate": {"modelReview": {"requiredPaths": [""]}}}
+        self.assertTrue(gap())
+        for malformed in ([], "bad", {"qualityGate": [1]}, {"qualityGate": {"modelReview": [1]}}):
+            config = malformed
+            self.assertTrue(gap())
+
     def test_cli_defaults_accept_automation_review_of_dependency_head(self):
         self.pull["user"]["login"] = "dependabot[bot]"
         login = "configured-automation[bot]"
@@ -1594,6 +1807,20 @@ class QualificationTests(unittest.TestCase):
             self.assertFalse(self.qualified())
         self.io.acceptance = lambda *_args: True
         self.assertTrue(self.qualified())
+
+    def test_engineering_release_notes_enqueue_without_claiming_client_acceptance(self):
+        self.pull["body"] = (
+            "## Client test notes\n"
+            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n"
+            "Check the imported parts at release."
+        )
+        self.io.acceptance = lambda *_args: False
+        self.assertTrue(self.qualified())
+        self.pull["labels"] = [{"name": "owner-review"}]
+        self.assertFalse(self.qualified())
+        self.pull["labels"] = []
+        self.pull["body"] += "\n## Owner test notes\nApprove the wording before merge."
+        self.assertFalse(self.qualified())
 
     def test_latest_current_head_changes_requested_refuses(self):
         self.reviews = [
@@ -1971,7 +2198,7 @@ class WatchLoopTests(unittest.TestCase):
                     result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
                 self.assertEqual((result, calls, sleeps), (1, 1, []))
                 self.assertEqual(fake.writes, [])
-                self.assertEqual(events[-1]["payload"]["message"], "controller read rejected")
+                self.assertEqual(events[-1]["payload"]["cause"], watch.WatchError.__name__)
 
     def test_transport_error_during_label_dispatch_never_replays(self):
         fake = Fake(count=1)
@@ -2028,28 +2255,24 @@ class WatchLoopTests(unittest.TestCase):
                 self.assertEqual(healthy.writes, [1])
                 self.assertEqual(events[0]["event"], "pass_failed")
 
-    def test_write_and_policy_stops_report_the_specific_message(self):
-        for certainty, message in (
-            ("unknown", "enqueue write uncertain; reconcile before restarting"),
-            ("confirmed", "enqueue label readback failed"),
-        ):
-            with self.subTest(certainty=certainty):
-                fake = Fake(count=1)
-                adapter = object.__new__(watch.Live)
-                adapter.deadline = 10_000
-                adapter.pages = Mock(return_value=[])
-                fake.label = adapter.label
-                with patch.object(watch.github_api, "call_gh_with_retry", return_value=api_result(certainty)) as write:
-                    result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
-                self.assertEqual((result, calls, sleeps), (1, 1, []))
-                self.assertEqual(write.call_count, 1)
-                self.assertEqual(events[-1]["payload"]["message"], message)
+    def test_missing_label_readback_and_policy_change_stop(self):
+        fake = Fake(count=1)
+        adapter = object.__new__(watch.Live)
+        adapter.deadline = 10_000
+        adapter.pages = Mock(return_value=[])
+        fake.label = adapter.label
+        with patch.object(watch.github_api, "call_gh_with_retry", return_value=api_result("confirmed")) as write:
+            result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+        self.assertEqual((result, calls, sleeps), (1, 1, []))
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual(adapter.pages.call_count, 1)
+        self.assertEqual(events[-1]["payload"]["outcome"], "error")
         fake = Fake(count=1)
         fake.policies = Mock(side_effect=[[TARGET], []])
         result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
         self.assertEqual((result, calls, sleeps), (1, 1, []))
         self.assertEqual(fake.writes, [])
-        self.assertEqual(events[-1]["payload"]["message"], "policy or hold changed")
+        self.assertEqual(events[-1]["payload"]["cause"], watch.WatchError.__name__)
 
     def test_controller_read_recovery_respects_once_and_deadline(self):
         adapter = object.__new__(watch.Live)
@@ -2065,7 +2288,7 @@ class WatchLoopTests(unittest.TestCase):
                 self.assertEqual((result, calls), (int(once), 1))
                 self.assertEqual([call.args[0] for call in sleeps], [] if once else [2])
                 self.assertEqual(fake.writes, [])
-                self.assertEqual(events[0]["payload"]["message"], "controller read unavailable")
+                self.assertEqual(events[0]["payload"]["cause"], watch.LaunchplaneReadError.__name__)
                 if not once:
                     self.assertEqual(events[-1]["payload"]["failed_passes"], 1)
 
@@ -2086,7 +2309,7 @@ class WatchLoopTests(unittest.TestCase):
         self.assertEqual((result, calls, sleeps), (1, 1, []))
         self.assertEqual(fake.writes, [1])
         self.assertEqual(events[-1]["event"], "stop")
-        self.assertEqual(events[-1]["payload"]["message"], "controller read unavailable")
+        self.assertEqual(events[-1]["payload"]["cause"], watch.LaunchplaneReadError.__name__)
 
     def test_uncertain_label_write_or_failed_readback_stops_without_replay(self):
         for certainty in ("unknown", "confirmed"):

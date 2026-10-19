@@ -53,7 +53,7 @@ else
 fi
 
 if [ "$#" -eq 0 ]; then
-	echo "usage: git-commit-as-bot [--repo OWNER/REPO] [--git-command commit|merge|pull|rebase|cherry-pick|revert|am] <git args...>" >&2
+	echo "usage: git-commit-as-bot [--repo OWNER/REPO] [--git-command commit|merge|pull|rebase|cherry-pick|revert|am] [--refresh-required REQUIREMENT] <git args...>" >&2
 	exit 2
 fi
 
@@ -61,6 +61,7 @@ fi
 # same identity selection for other commands that can create commits.
 git_command=commit
 target_repository=
+refresh_required=
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--repo)
@@ -86,10 +87,120 @@ while [ "$#" -gt 0 ]; do
 		*) echo "error: unsupported commit-creating Git command: $git_command" >&2; exit 2 ;;
 		esac
 		;;
+	--refresh-required)
+		[ "$#" -ge 2 ] && [ -n "$2" ] || { echo "error: --refresh-required needs the check or rule that requires a fresh base" >&2; exit 2; }
+		refresh_required=$2
+		shift 2
+		;;
 	*) break ;;
 	esac
 done
 [ "$#" -gt 0 ] || { echo "error: Git arguments are required" >&2; exit 2; }
+
+# The merge train owns base freshness, so a task branch takes the default
+# branch only for a real conflict or a named requirement (repo-workflow.md
+# Merge Readiness). Any other refresh only reruns the PR's CI.
+refuse_refresh() {
+	echo "error: $1; the merge train owns freshness, so this refresh would only rerun CI" >&2
+	echo "hint: merge the base only for a real conflict, or name the check or rule that requires it with --refresh-required \"<requirement>\" (repo-workflow.md Merge Readiness)" >&2
+	exit 1
+}
+
+# Refuse when the commit brings the default branch into the subject branch
+# without conflicts.
+check_refresh_commit() {
+	commit=$("$git_bin" rev-parse -q --verify "$1^{commit}" 2>/dev/null) || return 0
+	target=$("$git_bin" rev-parse -q --verify "$subject_ref^{commit}" 2>/dev/null) || return 0
+	"$git_bin" merge-base --is-ancestor "$commit" "$default_ref" 2>/dev/null || return 0
+	! "$git_bin" merge-base --is-ancestor "$commit" "$target" 2>/dev/null || return 0
+	# merge-tree exits 1 for a conflict; any other failure leaves the merge to Git.
+	merge_tree_status=0
+	"$git_bin" merge-tree --write-tree "$target" "$commit" >/dev/null 2>&1 || merge_tree_status=$?
+	[ "$merge_tree_status" -ne 0 ] || refuse_refresh "$1 brings $default_branch into $subject without conflicts"
+}
+
+refuse_pull() {
+	refuse_refresh "pulling $default_branch into $subject cannot be checked for a conflict first; fetch, then use --git-command merge origin/$default_branch"
+}
+
+check_base_refresh() {
+	[ -z "$refresh_required" ] || return 0
+	# Options that take a separate value, per command; any other option is a
+	# flag or carries its value after "=".
+	case "$git_command" in
+	merge) value_options=' -m -F --file -s -X --strategy --strategy-option --cleanup --into-name ' ;;
+	pull) value_options=' -s -X --strategy --strategy-option --depth --deepen --shallow-since --shallow-exclude -o --server-option --upload-pack -j --jobs --refmap ' ;;
+	rebase) value_options=' -s -X --strategy --strategy-option -x --exec --onto ' ;;
+	*) return 0 ;;
+	esac
+	# origin/HEAD is optional, for example after remote add and fetch.
+	if default_ref=$("$git_bin" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null); then :
+	elif "$git_bin" rev-parse -q --verify refs/remotes/origin/main >/dev/null; then default_ref=refs/remotes/origin/main
+	elif "$git_bin" rev-parse -q --verify refs/remotes/origin/master >/dev/null; then default_ref=refs/remotes/origin/master
+	else return 0
+	fi
+	default_branch=${default_ref#refs/remotes/origin/}
+	takes_value=
+	operands=0
+	onto=
+	upstream_operand=
+	branch_operand=
+	pull_refspec=
+	for arg in "$@"; do
+		if [ -n "$takes_value" ]; then
+			[ "$takes_value" != --onto ] || onto=$arg
+			takes_value=
+			continue
+		fi
+		case "$arg" in
+		--continue | --abort | --quit | --skip | --edit-todo | --show-current-patch) return 0 ;;
+		--root | --keep-base) [ "$git_command" != rebase ] || return 0 ;;
+		--onto=*) onto=${arg#--onto=}; continue ;;
+		esac
+		case "$value_options" in *" $arg "*) takes_value=$arg; continue ;; esac
+		case "$arg" in -*) continue ;; esac
+		operands=$((operands + 1))
+		case "$git_command:$operands" in
+		merge:*) upstream_operand="$upstream_operand $arg" ;;
+		rebase:1) upstream_operand=$arg ;;
+		rebase:2) branch_operand=$arg ;;
+		pull:1) ;;
+		pull:*)
+			# A fetched refspec cannot be checked for conflicts before it merges.
+			case "${arg#+}" in
+			"$default_branch" | "$default_branch":* | "refs/heads/$default_branch" | "refs/heads/$default_branch":*) pull_refspec=1 ;;
+			esac
+			;;
+		esac
+	done
+	# A rebase may name the branch it rewrites; everything else changes HEAD.
+	if [ -n "$branch_operand" ]; then
+		subject=$branch_operand
+		subject_ref=$branch_operand
+	else
+		subject=$("$git_bin" symbolic-ref -q --short HEAD 2>/dev/null) || return 0
+		subject_ref=HEAD
+	fi
+	[ "$subject" != "$default_branch" ] || return 0
+	# Without an operand, Git takes the branch's upstream, which is the base
+	# until a task branch's first push.
+	upstream='@{upstream}'
+	case "$git_command" in
+	merge)
+		[ -n "$upstream_operand" ] || upstream_operand=$upstream
+		for commit_operand in $upstream_operand; do check_refresh_commit "$commit_operand"; done
+		;;
+	rebase) check_refresh_commit "${onto:-${upstream_operand:-$upstream}}" ;;
+	pull)
+		[ -z "$pull_refspec" ] || refuse_pull
+		if [ "$operands" -le 1 ] &&
+			[ "$("$git_bin" rev-parse -q --symbolic-full-name "$upstream" 2>/dev/null)" = "$default_ref" ]; then
+			refuse_pull
+		fi
+		;;
+	esac
+}
+check_base_refresh "$@"
 
 # In a repository the App's registering account does not own and the GitHub
 # App is not installed on, a contributor's agent works as the person when the

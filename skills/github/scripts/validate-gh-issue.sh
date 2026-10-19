@@ -1262,6 +1262,43 @@ grep -q -- '--method POST.* /repos/owner/repo/issues/42/assignees' "$log"
 grep -q -- '--method DELETE.* /repos/owner/repo/issues/42/assignees' "$log"
 grep -q -- '--method GET.* /repos/owner/repo/issues/42' "$log"
 
+# Exercise the real wrapper and HTTP parser, including stderr from gh on 404.
+cat >"$tmpdir/absent-label-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+    *'/user'*) printf '{"login":"fixture-automation"}\n' ;;
+    *'--method POST'*'/issues/42/labels'*) cat >/dev/null; printf '[{"name":"plan:active"}]\n' ;;
+    *'--method DELETE'*'/issues/42/labels/plan%3Awaiting'*)
+        if [[ ! -f "$GH_ISSUE_LABEL_REMOVED" ]]; then
+            : >"$GH_ISSUE_LABEL_REMOVED"
+            printf '[{"name":"plan:active"}]\n'
+            printf 'fixture: successful label deletion\n' >&2
+            exit 0
+        fi
+        printf 'HTTP/2.0 404 Not Found\r\ncontent-type: application/json\r\n\r\n{"message":"Label does not exist"}\n'
+        printf 'gh: Label does not exist (HTTP 404)\n' >&2
+        exit 1 ;;
+    *'--method GET'*'/issues/42'*)
+        printf '{"number":42,"title":"Issue title","state":"open","html_url":"https://github.com/owner/repo/issues/42","labels":[{"name":"plan:active"}],"assignees":[],"milestone":null}\n' ;;
+    *) printf 'unexpected gh args: %s\n' "$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$tmpdir/absent-label-gh"
+for edit_pass in first rerun; do
+    GH_ISSUE_GH="$tmpdir/absent-label-gh" GH_ISSUE_LABEL_REMOVED="$tmpdir/label-removed" \
+        "$repo_root/github/scripts/gh-issue" edit 42 --repo owner/repo \
+        --add-label plan:active --remove-label plan:waiting \
+        >"$stdout_log" 2>"$stderr_log"
+    assert_helper_envelope "$stdout_log" github.issue.edit 'https://github.com/owner/repo/issues/42'
+    jq -e '.disposition == "complete" and .outcome_certainty == "confirmed" and .recommended_next_action == "none" and .labels == ["plan:active"]' "$stdout_log" >/dev/null
+    if [[ "$edit_pass" == first ]]; then
+        jq -e '.completed_steps | index("reconcile_remove_label") == null' "$stdout_log" >/dev/null
+    else
+        jq -e '.completed_steps | index("reconcile_remove_label") != null' "$stdout_log" >/dev/null
+    fi
+done
+
 cat >"$tmpdir/record-comment-helper-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1328,6 +1365,13 @@ cmp "$tmpdir/expected-pr-comment-body" "$env_log"
 assert_helper_envelope "$stdout_log" github.comment.pr 'https://github.com/owner/repo/issues/42#issuecomment-7'
 jq -e '.comment_action == "updated" and .comment.id == 7' "$stdout_log" >/dev/null
 
+# Close projection verifies the mocked repository's local configuration.
+# An empty real Git checkout supplies that identity without provider access.
+close_checkout="$tmpdir/close-checkout"
+git init --quiet --template= "$close_checkout"
+git -C "$close_checkout" remote add origin https://github.com/owner/repo.git
+pushd "$close_checkout" >/dev/null
+
 cat >"$tmpdir/record-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1341,6 +1385,13 @@ case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
 	*'--method GET'*'/comments?'*) printf '[]\n' ;;
+	*'--method GET'*'/dependencies/blocked_by?'*|*'--method GET'*'/dependencies/blocking?'*|*'--method GET'*'/sub_issues?'*)
+		printf '[]\n'
+		;;
+	*'--method GET'*'/parent'*)
+		printf 'HTTP/2.0 404 Not Found\r\ncontent-type: application/json\r\n\r\n{"message":"Not Found"}\n'
+		exit 1
+		;;
 	*'--method GET'*'/repos/owner/repo/issues/'*)
 		number=''
 		for arg in "$@"; do
@@ -1658,6 +1709,7 @@ if [[ -s "$log" ]]; then
 	echo "error: conflicting close modes must fail before calling GitHub" >&2
 	exit 1
 fi
+popd >/dev/null
 
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash

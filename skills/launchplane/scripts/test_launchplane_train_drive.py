@@ -696,7 +696,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
     def test_service_membership_survives_missing_queue_and_different_merge_commits(self) -> None:
         for component in ("candidate", "landing_plan"):
             with self.subTest(component=component):
-                projected = _project_controller({"status": "accepted", "result": {
+                projected = _project_controller({"status": "accepted", "trace_id": "t", "records": {}, "result": {
                     "controller_action": "land_batch",
                     component: {"entries": [{"pull_request_number": 7}, {"pull_request_number": 8}]}}})
                 train = FakeTrain([projected],
@@ -1246,6 +1246,40 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
             self.assertTrue(train_drive._uncertain(io.recover()))
             run.assert_not_called()
         self.assertTrue(Path(receipt["recovery"]["request_file"]).exists())
+
+    def test_accepted_but_unreadable_reply_releases_the_saved_request_and_stops(self) -> None:
+        unreadable = {"status": "invalid", "result": {}, "records": {}, "summary": {
+            "launchplane_status": "accepted", "projection_error_code": "invalid_response",
+            "trace_id": "launchplane_req_accepted",
+            "error_code": "merge_train_candidate_failure_isolated"}}
+        unverified = {**unreadable, "summary": {k: v for k, v in unreadable["summary"].items()
+                                                if k != "launchplane_status"}}
+        reply = lambda payload: subprocess.CompletedProcess([], 1, stdout=json.dumps(payload), stderr="")
+        # Without Launchplane's acceptance the exchange stays uncertain and its key is kept.
+        with patch("subprocess.run", return_value=reply(unverified)):
+            kept = train_drive.live_io(1, tracked_pr=7).controller(REPO, "main", "unverified-key")
+        journal = Path(kept["recovery"]["request_file"])
+        self.assertTrue(journal.exists())
+        # A replay whose stored reply was accepted releases it, even though it stays unreadable.
+        with patch.object(train_drive.github_read.GitHubReader, "get_json", return_value={"state": "open"}), \
+                patch("subprocess.run", side_effect=[reply(_response("idle")), reply(unreadable)]) as run:
+            recovered = train_drive.live_io(1, recover_controller=True, repository_context=REPO).recover()
+        self.assertEqual(run.call_args.args[0][-1], "unverified-key")
+        self.assertFalse(journal.exists())
+        self.assertTrue(train_drive._uncertain(recovered))
+        self.assertEqual(recovered["recovery"]["saved_request"], "released")
+        self.assertEqual(recovered["recovery"]["projection_error_code"], "invalid_response")
+        # A fresh pass with an accepted, unreadable reply never leaves a request behind.
+        with patch("subprocess.run", return_value=reply(unreadable)):
+            response = train_drive.live_io(1, tracked_pr=7).controller(REPO, "main", "fresh-key")
+        self.assertEqual(list(journal.parent.iterdir()), [])
+        train = FakeTrain([response, _response("idle")])
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls), ("error", 1))
+        receipt = events[-1][1]["controller_recovery"]
+        self.assertEqual(receipt["saved_request"], "released")
+        self.assertNotIn("--recover-controller", receipt["recommendation"])
+        self.assertEqual(events[-1][1]["controller_evidence"][-1]["controller_action"], "controller_reply_unreadable")
 
     def test_known_denial_releases_its_key_but_gateway_failure_keeps_it(self) -> None:
         denial = subprocess.CompletedProcess([], 1, stdout=json.dumps(_refusal("authorization_denied", status="denied", http_status=403)), stderr="")

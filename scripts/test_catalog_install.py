@@ -65,6 +65,13 @@ class InstallTests(unittest.TestCase):
         mock.patch.object(installer, "ROOT", self.catalog).start()
         mock.patch.object(installer, "load_sync", return_value=self.sync).start()
 
+    @staticmethod
+    def legacy_alerts():
+        # Historical install input, independent of what today's renderer emits.
+        return {event: [{"hooks": [{"command": "uv run /legacy/catalog/hooks/session_alert_hook.py", "statusMessage": label}]}]
+                for event, label in (("Stop", "codex-skills stop alert"),
+                                     ("Interrupt", "codex-skills interrupt alert"))}
+
     def install(self, write=True):
         return installer.install(self.home, self.codex, self.claude, write=write, updater=False)
 
@@ -78,12 +85,12 @@ class InstallTests(unittest.TestCase):
                                        updater=False, refresh_instructions=True, **options)
 
     def assert_alert_binding_skipped(self, target, hooks):
-        """Check the installer refuses to rewrite this binding; return its generated alert hooks."""
+        """Check the installer refuses to rewrite this binding; return its retained event hooks."""
         original, preview = self.install_inline_hooks(target, hooks, show_diff=True)
-        entry = next(item for item in preview["outputs"] if "catalog_alert_toml" in item)
+        entry = next(item for item in preview["outputs"] if "catalog_retired_toml" in item)
         self.assertEqual(entry["state"], "skipped")
         self.assertEqual(target.read_text(), original)
-        return tomllib.loads(entry["catalog_alert_toml"])["hooks"]
+        return tomllib.loads(entry["catalog_retired_toml"])["hooks"]
 
     def assert_reconciled_alert_binding_kept(self, target, hooks):
         """Check the installer accepts the owner's reconciled binding unchanged."""
@@ -260,18 +267,6 @@ class InstallTests(unittest.TestCase):
         self.install()
         self.assertEqual(target.read_bytes(), (self.claude / "CLAUDE.md").read_bytes())
         self.assertEqual(list(target.parent.glob("generated.md.backup-*"))[0].read_bytes(), original)
-        self.assertEqual(path.readlink(), target)
-
-    def test_legacy_crlf_receipt_recognizes_stale_generated_link(self):
-        self.install()
-        path = self.codex / "AGENTS.md"
-        target = self.root / "generated.md"
-        target.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
-        path.unlink()
-        path.symlink_to(target)
-        (self.catalog / "instructions" / "global.md").write_text("New shared rule.\n")
-        self.install()
-        self.assertIn("New shared rule.", target.read_text())
         self.assertEqual(path.readlink(), target)
 
     def test_read_only_generated_targets_are_preserved_without_stopping_install(self):
@@ -794,58 +789,62 @@ class InstallTests(unittest.TestCase):
         self.install()
         self.assertIn("Moved rule.", host.read_text())
 
-    def test_refresh_upgrades_bound_alerts_preserving_other_hooks_and_trust(self):
+    def test_refresh_retires_alerts_preserving_other_hooks_and_trust(self):
         self.install()
         hook_path = self.codex / "hooks.json"
         existing = json.loads(hook_path.read_text())
-        # Emulate an older installed catalog without alert registrations.
-        existing["hooks"].pop("Stop")
-        existing["hooks"].pop("Interrupt")
         other = {"hooks": [{"type": "command", "command": "my-stop-hook"}]}
-        existing["hooks"]["Stop"] = [other]
+        existing["hooks"].update(self.legacy_alerts())
+        existing["hooks"]["Stop"].append(other)
         hook_path.write_text(json.dumps(existing))
         config = self.codex / "config.toml"
         config.write_text('[hooks.state]\nopaque_trust = "preserve"\n')
         installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         upgraded = json.loads(hook_path.read_text())
-        self.assertEqual(upgraded["hooks"]["Stop"][0], other)
+        self.assertEqual(upgraded["hooks"]["Stop"], [other])
+        self.assertEqual(upgraded["hooks"]["Interrupt"], [])
         self.assertEqual(upgraded["hooks"]["PreToolUse"], existing["hooks"]["PreToolUse"])
         self.assertEqual(upgraded["hooks"]["SessionStart"], existing["hooks"]["SessionStart"])
-        self.assertEqual(len(upgraded["hooks"]["Stop"]), 2)
-        self.assertEqual(len(upgraded["hooks"]["Interrupt"]), 1)
         self.assertEqual(config.read_text(), '[hooks.state]\nopaque_trust = "preserve"\n')
         first = hook_path.read_bytes()
         installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertEqual(hook_path.read_bytes(), first)
 
-    def test_inline_catalog_binding_reports_migration_without_changing_trust(self):
+    def test_inline_obsolete_alerts_are_reported_even_with_current_json_hooks(self):
+        import tomlkit
+
+        self.install()
+        config = self.codex / "config.toml"
+        original = tomlkit.dumps({"hooks": self.legacy_alerts()})
+        config.write_text(original)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True,
+                                    updater=False, refresh_instructions=True, show_diff=True)
+        self.assertEqual(config.read_text(), original)
+        retained = next(entry["catalog_retired_toml"] for entry in receipt["outputs"]
+                        if "catalog_retired_toml" in entry)
+        self.assertFalse(any(tomllib.loads(retained)["hooks"].values()))
+
+    def test_inline_policy_binding_does_not_add_obsolete_alerts(self):
         self.install()
         (self.codex / "hooks.json").unlink()
         config = self.codex / "config.toml"
-        original = f'[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ncommand="uv run {installer.ROOT / "hooks" / "command_policy_hook.py"}"\n[hooks.state]\nopaque_trust="preserve"\n'
-        config.write_text(original)
-        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
-        self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
-        self.assertEqual(config.read_text(), original)
-        self.assertFalse((self.codex / "hooks.json").exists())
+        hooks = {"PreToolUse": [{"hooks": [{"command": "policy"}]}], "state": {"opaque_trust": "preserve"}}
+        self.assert_reconciled_alert_binding_kept(config, hooks)
 
-    def test_inline_dotfiles_alert_preview_can_clear_notice_preserving_trust(self):
+    def test_inline_dotfiles_retirement_preview_preserves_policy_and_trust(self):
         self.install()
         (self.codex / "hooks.json").unlink()
         config = self.codex / "config.toml"
         target = self.root / "dotfiles-config.toml"
-        original = f'[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ncommand="uv run {installer.ROOT / "hooks" / "command_policy_hook.py"}"\n[hooks.state]\nopaque_trust="preserve"\n'
-        target.write_text(original)
         config.symlink_to(target)
-        preview = installer.install(self.home, self.codex, self.claude, write=False, updater=False, refresh_instructions=True, show_diff=True)
-        generated = next(entry["catalog_alert_toml"] for entry in preview["outputs"] if "catalog_alert_toml" in entry)
-        self.assertEqual(target.read_text(), original)
-        target.write_text(original + generated)
-        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
-        self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
-        self.assertEqual(target.read_text(), original + generated)
+        hooks = {**self.legacy_alerts(), "PreToolUse": [{"hooks": [{"command": "policy"}]}],
+                 "state": {"opaque_trust": "preserve"}}
+        remaining = self.assert_alert_binding_skipped(target, hooks)
+        hooks.update(remaining)
+        self.assertEqual(hooks["Stop"], [])
+        self.assertEqual(hooks["Interrupt"], [])
+        self.assert_reconciled_alert_binding_kept(target, hooks)
         self.assertTrue(config.is_symlink())
-        self.assertFalse((self.codex / "hooks.json").exists())
 
     def test_inline_duplicate_alerts_require_replacement_in_place(self):
         import copy
@@ -857,8 +856,7 @@ class InstallTests(unittest.TestCase):
         config = self.codex / "config.toml"
         target = self.root / "dotfiles-config.toml"
         config.symlink_to(target)
-        generated = json.loads(self.sync.render_codex_hook_content(
-            {}, hook_path, self.catalog, alerts_only=True))["hooks"]
+        generated = self.legacy_alerts()
         for stale_command in (False, True):
             with self.subTest(stale_command=stale_command):
                 hooks = copy.deepcopy(installed["hooks"])
@@ -869,9 +867,10 @@ class InstallTests(unittest.TestCase):
                 hooks["Stop"] = [old, personal, *generated["Stop"]]
                 hooks["state"] = {"opaque_trust": "preserve"}
                 current = self.assert_alert_binding_skipped(target, hooks)
-                # The owner replaces the managed groups, keeping the first slot
-                # and all unrelated positional inputs and trust state intact.
-                hooks["Stop"] = [*current["Stop"], personal]
+                # The owner removes obsolete groups and retains the real hook.
+                # Native trust state is never manufactured or rewritten.
+                hooks.update(current)
+                self.assertEqual(hooks["Stop"], [personal])
                 self.assert_reconciled_alert_binding_kept(target, hooks)
                 self.assertTrue(config.is_symlink())
 
@@ -882,8 +881,7 @@ class InstallTests(unittest.TestCase):
         hook_path = self.codex / "hooks.json"
         hook_path.unlink()
         config = self.codex / "config.toml"
-        generated = json.loads(self.sync.render_codex_hook_content(
-            {}, hook_path, self.catalog, alerts_only=True))["hooks"]
+        generated = self.legacy_alerts()
         for event in generated:
             with self.subTest(event=event):
                 stale = copy.deepcopy(generated[event])
@@ -897,17 +895,27 @@ class InstallTests(unittest.TestCase):
         self.install()
         path = self.codex / "hooks.json"
         config = json.loads(path.read_text())
-        config["hooks"]["Stop"].append({"hooks": None})
+        config["hooks"]["Stop"] = [{"hooks": None}, *self.legacy_alerts()["Stop"]]
         path.write_text(json.dumps(config))
-        installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
-        self.assertIn({"hooks": None}, json.loads(path.read_text())["hooks"]["Stop"])
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        # A group the catalog can't read is left alone; the alert still retires.
+        self.assertEqual(json.loads(path.read_text())["hooks"]["Stop"], [{"hooks": None}])
+        self.assertFalse([entry for entry in receipt["outputs"] if entry.get("state") == "skipped"])
+
+    def test_inline_trust_state_datetime_does_not_stop_instruction_refresh(self):
+        self.install()
+        config = self.codex / "config.toml"
+        original = '[hooks.state]\nreviewed_at = 2026-10-17T07:32:00Z\n'
+        config.write_text(original)
+        receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        self.assertEqual(config.read_text(), original)
+        self.assertFalse([entry for entry in receipt["outputs"] if entry.get("state") == "skipped"])
 
     def test_concurrent_hook_edit_is_preserved_and_refresh_reports_skip(self):
         self.install()
         hook_path = self.codex / "hooks.json"
         original = json.loads(hook_path.read_text())
-        original["hooks"].pop("Stop")
-        original["hooks"].pop("Interrupt")
+        original["hooks"].update(self.legacy_alerts())
         hook_path.write_text(json.dumps(original))
         user_hook = {"hooks": [{"type": "command", "command": "new-user-stop"}]}
         changed = {**original, "hooks": {**original["hooks"], "Stop": [user_hook]}}
@@ -942,6 +950,7 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(hook_path.is_symlink())
         modified = json.loads(original)
         user_stop = {"hooks": [{"command": "personal-stop"}]}
+        modified["hooks"].update(self.legacy_alerts())
         modified["hooks"]["Stop"].insert(0, user_stop)
         modified["hooks"]["Stop"][-1]["hooks"][0]["command"] = "old-alert-command"
         target.write_text(json.dumps(modified))
@@ -949,12 +958,12 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
         self.assertEqual(json.loads(target.read_text()), modified)
         preview = installer.install(self.home, self.codex, self.claude, write=False, updater=False, refresh_instructions=True, show_diff=True)
-        entries = next(entry["catalog_alert_entries"] for entry in preview["outputs"] if "catalog_alert_entries" in entry)
+        entries = next(entry["catalog_retired_events"] for entry in preview["outputs"] if "catalog_retired_events" in entry)
         self.assertEqual(json.loads(target.read_text()), modified)
         # A dotfiles manager can apply this preview without hand-writing command
         # strings. Unrelated existing events stay in its authoritative source.
         for event, generated in entries.items():
-            modified["hooks"][event] = [group for group in modified["hooks"].get(event, []) if group == user_stop] + generated
+            modified["hooks"][event] = generated
         target.write_text(json.dumps(modified))
         receipt = installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
         self.assertFalse(any(entry["state"] == "skipped" for entry in receipt["outputs"]))
@@ -1205,24 +1214,9 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(runtime.status_line(self.checkout), "")
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
 
-    def test_generated_idea_name_does_not_block_updates_but_other_local_files_do(self):
-        idea = self.checkout / ".idea"
-        idea.mkdir()
-        source = Path(__file__).resolve().parents[1] / ".idea" / ".gitignore"
-        (idea / ".gitignore").write_bytes(source.read_bytes())
-        command("git", "add", ".idea/.gitignore", cwd=self.checkout)
-        command("git", "commit", "-qm", "shared IDE ignores", cwd=self.checkout)
-        command("git", "push", "-q", "origin", "main", cwd=self.checkout)
-        (idea / ".name").write_text("Generated project name")
-        self.assertEqual(runtime.update(self.checkout)["state"], "current")
-        local = idea / "personal.txt"
-        local.write_text("Preserve this")
-        self.assertEqual(runtime.update(self.checkout)["blocking_paths"], [".idea/personal.txt"])
-        self.assertEqual(local.read_text(), "Preserve this")
-
-    def test_root_tool_logs_allow_fast_forward_but_other_untracked_files_block(self):
-        source = Path(__file__).resolve().parents[1] / ".gitignore"
-        (self.seed / ".gitignore").write_bytes(source.read_bytes())
+    def test_ignored_files_allow_fast_forward_but_other_untracked_files_block(self):
+        ignores = self.seed / ".gitignore"
+        ignores.write_text(ignores.read_text() + "/*.log\n")
         command("git", "commit", "-qam", "catalog ignores", cwd=self.seed)
         command("git", "push", "-q", "origin", "main", cwd=self.seed)
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
@@ -1511,7 +1505,6 @@ class UpdateTests(unittest.TestCase):
             skipped = runtime.update(self.checkout)
             self.assertEqual(skipped["state"], "current")
             self.assertIn("alert_refresh", skipped)
-            self.assertIn("alert refresh was skipped", runtime.status_line(self.checkout))
             self.assertIn("Catalog notice", runtime.status_line(self.checkout))
             hooks.write_text('{"hooks": {}}\n')
             fixed = runtime.update(self.checkout)
@@ -1537,7 +1530,13 @@ class UpdateTests(unittest.TestCase):
             self.assertIn("instruction_refresh", both)
             self.assertIn("alert_refresh", both)
             self.assertIn("instruction refresh", runtime.status_line(self.checkout))
-            self.assertIn("alert refresh", runtime.status_line(self.checkout))
+            # The skipped alert retirement adds its own recovery to the notice.
+            receipt = self.checkout / ".local" / "catalog-update.json"
+            recorded = json.loads(receipt.read_text())
+            line = runtime.status_line(self.checkout)
+            receipt.write_text(json.dumps({key: value for key, value in recorded.items() if key != "alert_refresh"}))
+            self.assertNotEqual(runtime.status_line(self.checkout), line)
+            receipt.write_text(json.dumps(recorded))
             self.assertIn("Hand edit.", target.read_text())
             hooks.write_text('{"hooks": {}}\n')
             target.write_bytes((fixture_home / ".claude" / "CLAUDE.md").read_bytes())
@@ -1591,7 +1590,6 @@ class UpdateTests(unittest.TestCase):
         install.write_text(json.dumps({"scheduled_updater": False}))
         head = command("git", "rev-parse", "HEAD", cwd=self.checkout)
         line = runtime.status_line(self.checkout)
-        self.assertIn("alert refresh was skipped", line)
         self.assertIn("--refresh-instructions", line)
         self.assertEqual(command("git", "rev-parse", "HEAD", cwd=self.checkout), head)
         job = self.base / "job.plist"

@@ -43,12 +43,15 @@ resources:
   - path: scripts/finished_map.py
     kind: script
     description: Find transcript close-out candidates for Supervisor verification.
-  - path: scripts/close_ttys.py
-    kind: script
-    description: Dry-run closing an exact tab after its agent process has exited.
   - path: scripts/release_session_claims.py
     kind: script
     description: Record verified closure, discover remaining claims across Director repositories and release them through the planning helper; includes closed-log backfill.
+  - path: scripts/codex-session.py
+    kind: script
+    description: Register a fresh managed native launch, resume or queue an exact thread under the closure/admission ownership lease, read its new launch metadata, or preview and cancel one guarded NotLoaded queue entry.
+  - path: scripts/codex_session_proxy.py
+    kind: script
+    description: Private per-client native RPC ingress that holds source ownership for attachments and actions; imported by codex-session.py.
   - path: references/helpers.md
     kind: reference
     description: Local state, session registry schema, goal board, helper usage and shutdown stages.
@@ -78,6 +81,16 @@ commands:
     resource_path: scripts/status.py
     example_argv: ["uv", "run", "scripts/status.py", "--ledger", "<ledger.json>"]
     purpose: Report ledger session context and transcript activity.
+  - name: supervisor-codex-queue-cancel-preview
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "queue-cancel", "--session-id", "<native-id>", "--codex-home", "<target-home>", "--ledger", "<original-ledger.json>"]
+    purpose: Observe opaque queued-entry identities without creating ownership or changing source state.
+  - name: supervisor-codex-queue-cancel-apply
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "queue-cancel", "--session-id", "<native-id>", "--codex-home", "<target-home>", "--ledger", "<original-ledger.json>", "--queued-submission-id", "<selected-id>", "--entry-sha256", "<observed-full-entry-sha256>", "--apply"]
+    purpose: Delete one selected entry only from a verified NotLoaded target, preserving other queues and barriers.
   - name: supervisor-codex-idle-watch
     source: skill
     resource_path: scripts/codex_idle_watch.py
@@ -111,13 +124,28 @@ commands:
   - name: supervisor-release-session-claims
     source: skill
     resource_path: scripts/release_session_claims.py
-    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--closed-log", "<closed.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
+    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
     purpose: Preview remaining claims after transcript, issue handoff and actual process exit verification.
-  - name: supervisor-close-ttys
+  - name: supervisor-codex-session-queue
     source: skill
-    resource_path: scripts/close_ttys.py
-    example_argv: ["uv", "run", "scripts/close_ttys.py", "--ledger", "<ledger.json>", "--session-id", "<id>", "--verified-handoff", "--verified-input"]
-    purpose: Preview closing a tab after its agent process exited.
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "queue", "--session-id", "<native-id>", "--codex-home", "<source-home>", "--message", "<text>"]
+    purpose: Queue exact-thread input after invalidating its closure under the ownership lease.
+  - name: supervisor-codex-session-launch
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "launch", "--codex-home", "<selected-home>", "--", "codex", "-C", "<worktree>", "--", "<brief>"]
+    purpose: Register a fresh managed client before executing it on the selected account's observed daemon.
+  - name: supervisor-codex-session-resume
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "resume", "--session-id", "<native-id>", "--codex-home", "<source-home>"]
+    purpose: Resume a native thread through the same lease as closure and successor admission.
+  - name: supervisor-codex-session-status
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "status", "--session-id", "<native-id>"]
+    purpose: Read the resumed generation's launch metadata for the native ledger.
   - name: supervisor-iterm-close
     source: skill
     resource_path: scripts/iterm_tab.py
@@ -125,6 +153,24 @@ commands:
     purpose: Close one Supervisor-owned tab after current process and empty-input proof.
 policy:
   command_policies:
+    - id: prefer-coordinated-codex-resume
+      match:
+        shell_regex: >-
+          (?x)^\s*(?:\S*/)?codex\s+
+          (?:(?:(?:--(?:remote|cd|config|profile|model|sandbox|ask-for-approval|enable|disable|add-dir|image)|-[cCpmsai])
+          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--[\w-]+|exec)\s+)*
+          (?:resume\b|queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
+      action: require_preferred
+      message: Native resume and queue mutations must invalidate closure evidence under the same ownership lease as successor admission. Use the exact-thread helper with the source account home.
+      preferred:
+        - kind: script
+          path: scripts/codex-session.py
+          example_argv: ["uv", "run", "scripts/codex-session.py", "queue", "--session-id", "<native-id>", "--codex-home", "<source-home>", "--message", "<text>"]
+          purpose: Queue input through the supported ownership-coordinated route.
+        - kind: script
+          path: scripts/codex-session.py
+          example_argv: ["uv", "run", "scripts/codex-session.py", "resume", "--session-id", "<native-id>", "--codex-home", "<source-home>"]
+          purpose: Resume an exact native thread through the supported ownership-coordinated route.
     - id: reject-system-events-keyboard-synthesis
       match:
         shell_regex: >-
@@ -259,15 +305,21 @@ whether any lesson was new.
 ## Harnesses
 
 Verified on Claude Code as the Supervisor. From there it reaches Codex sessions
-with `codex queue --thread <id> --message "<text>"`, run under the account
-home the session launched with, as [helper setup](references/helpers.md)
-says (another home silently drops the message), and Claude Code sessions in
+with `codex-session.py queue --session-id <id> --codex-home <source-home> --message "<text>"`,
+run with `uv run` from this skill's scripts directory, as [helper setup](references/helpers.md)
+says. This invalidates the old closure before sending. It reaches Claude Code sessions in
 terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
 `--session-id` from its `list` output. Launch Codex sessions with "keep working
 through compaction" and Keep instructions naming the brief, issue and current
 step; do not hand them off at a context percentage. Codex as
 the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
 records that run.
+
+For stale queued input on a stopped source, read the [recovery procedure](references/helpers.md#release-a-verified-finished-session)
+and use `codex-session.py queue-cancel` preview before an explicit ID/digest apply.
+Cancellation requires a NotLoaded target and the original owned ledger or freshly
+verified termination record. It preserves pending actions and successor freezes;
+it does not establish completion or release claims.
 
 For new Supervisor launches, use `iterm_tab.py --backend tmux` with the
 dedicated `tmux -L supervisor` server so controls work while the display sleeps
@@ -380,6 +432,9 @@ including non-dim text, establishes neither its author nor approval.
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs);
    a renewed wait follows that contract's withdrawal route, and a push needs
    a fresh `ready` call.
+   When the Supervisor runs the review, every brief points the author to the
+   [worker review request](references/helpers.md#worker-review-request) format
+   and follow-through. Keep the template there rather than copying it into briefs.
    Use closing keywords for the PR completing an issue's work. Briefs must not
    append "then the Supervisor verifies/qualifies/reads back the deployed
    change" after routing. Follow GitHub's
@@ -391,10 +446,21 @@ including non-dim text, establishes neither its author nor approval.
    command file to the agent invocation and settings. The launcher validates
    every brief before launch side effects; read the launching procedure in
    [helpers](references/helpers.md#launching-and-nudging).
-   Then read each launch's first screen. A folder-trust or hook-trust prompt
-   looks like a working session from outside, and the launcher still reports
-   success; a launch with no transcript after one minute is blocked
-   ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)).
+   Page checks run headless. When a GUI brief explicitly names the Agents
+   Chrome profile, use the pinned `mcp__catalog-chrome__*` route on Claude or
+   local Codex on its account-relative bundle. Add `--require-browser` to that
+   launch and read [tool preflight](references/helpers.md#browser-and-computer-use-preflight).
+   Codex is the default for screen work. Claude Computer Use runs only in a
+   visible iTerm tab with the Director's approval for that session.
+   Then read each launch's first screen. The launcher reports a visible Codex
+   hook-review prompt as `launch_blocked`, retaining the terminal identity and
+   screen. Inspect that terminal before acting; do not relaunch or grant trust
+   automatically. A folder-trust or later prompt may still need attention;
+   a launch with no transcript after one minute is blocked
+   ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)). Claude
+   launches into `~/Developer` repositories and their worktrees get folder
+   trust set before launch, in every Claude home including the default one; other folders must already be trusted
+   ([#2100](https://github.com/cbusillo/codex-skills/issues/2100)).
    Anchor each brief, sweeps and checks included, on an issue in the same
    repository. Tell read-only checks not to claim it, so two of them on one
    issue do not clash. A worker that will claim its anchor needs a claimable
@@ -419,7 +485,11 @@ including non-dim text, establishes neither its author nor approval.
    weekly direction audit judges the decision and removes it.
 3. **A check about every 23 minutes.** Rebuild the goal board first, under
    [Milestone State](#milestone-state). Keep the session registry under
-   [Local State](#local-state). Nudge a stalled session with exact facts: the comment,
+   [Local State](#local-state). At takeover and each check, catch up any
+   unverified catalog landings through
+   [catalog landing verification](references/helpers.md#catalog-landing-verification),
+   including landings completed by the service after a local driver stopped.
+   Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context
    size. Let automatic compaction proceed; a routine idle check alone is not
    a reason to compact. When a session needs manual compaction, use the
@@ -449,12 +519,15 @@ including non-dim text, establishes neither its author nor approval.
    refuses a whole batch when its candidate fails, while the driver may only
    report "lease held"; after about 45 minutes, read the candidate's CI
    directly.
-   After landing, load `github` and complete
+   After landing, load `github`. For catalog landings, complete
+   [catalog landing verification](references/helpers.md#catalog-landing-verification)
+   before retiring the source worktree. Then complete
    [After A Merge](../github/SKILL.md#after-a-merge), including
    [issue closure and planning metadata](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
-   for the work handed to you. Reconcile closure in the landing flow; do not
-   create a later agent qualification step or per-issue deploy check. The PR's
-   tests and the deploy's existing health checks are the proof.
+   for the work handed to you. Reconcile closure in the landing flow. Apart
+   from catalog landing verification, do not create a later agent qualification
+   step or per-issue deploy check; use the PR's tests and the deploy's existing
+   health checks for that proof.
    For Q154's interim automatic routing, read the
    [auto-enqueue helper procedure](references/helpers.md#interim-auto-enqueue-watcher)
    before running it. Executing sessions still hand off; the Supervisor owns
@@ -499,6 +572,14 @@ for products a Client runs business on.
   devkit, images, tenants and the live sites) carries a `## Client test notes`
   section. One missing section, even on a housekeeping PR, blocks the release
   invitation and disables Accept.
+- Classify each PR from its own notes under [Q537](https://github.com/cbusillo/codex-skills/issues/2332#issuecomment-6271199870)
+  and the [ready handoff notes contract](../github/references/cli-reference.md#ready-handoffs).
+  A no-test reason or explicit engineering marker with release test steps routes
+  to ordinary checked `ready`; unmarked steps or anything the Client must approve
+  before merge routes to `--waiting-for-client`. Lead briefs link that contract.
+  Bring the Director only real judgment calls; never ask the Director to repeat
+  an engineering classification the notes already settle. Every release still
+  needs the Client's acceptance.
 - On a Client's repositories, Discussions are drafts and issues are requests
   (Q122): read Discussions, act only on issues.
 
@@ -557,9 +638,9 @@ for recovery or repeat them as fact.
 ## Procedure
 
 1. Check the permission mode as above.
-2. Load `direction` and take the daily turn for the repository this session
-   opened in, which also clears the turn reminder, before launching or taking
-   over any session.
+2. Load `direction` and take the daily turn, which covers the Director's whole
+   account whatever folder this session opened in and clears the turn
+   reminder, before launching or taking over any session.
 3. Read the latest handoff on the pilot issue, then every comment after it.
    Before you repeat what the Director said, read the exact words where the
    Director said them, not a summary. Allocate new question IDs through the
@@ -574,7 +655,10 @@ for recovery or repeat them as fact.
 5. Recreate the ~23-minute check and morning digest with the harness's own
    scheduling feature. Arm Claude Code turn-end notices (`notify_when_idle`)
    and the bounded `skills/supervisor/scripts/codex_idle_watch.py` watch for
-   Codex turn ends. A notice prompts verification, never a completion verdict.
+   Codex turn ends. On either notice, immediately run
+   [finished-session verification](#close-finished-sessions-on-every-notice-and-check)
+   for that exact session; do not defer it to the ~23-minute check. A notice
+   prompts verification, never a completion verdict.
    Start the bounded `skills/supervisor/scripts/foreign_watch.py` watch for the
    run's Director-owned repositories and configured own/Launchplane logins,
    with the Director's login and mention approval so mentions outside those
@@ -588,6 +672,9 @@ for recovery or repeat them as fact.
    start without a comment.
    Read [helper setup](references/helpers.md) before rebuilding the session
    registry or running a helper.
+   While workers post Supervisor review requests, also schedule the
+   [pending-review dispatcher](references/helpers.md#dispatcher-timer) using
+   its documented cadence and terminal route, and recreate it at takeover.
 6. Read `stale_wait_report` from the existing
    `uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --stale-waits-only` output for
    each Director repository returned in `discovery_context.repositories` by
@@ -628,7 +715,48 @@ For an enrolled Supervisor Claude session with a pending rate-limit move, read
 [account moves](references/claude-account-moves.md) for relaunch qualification
 and its terminal, transcript and account readbacks before sending input.
 
-## Close Finished Sessions On Every Check
+## Close Finished Sessions On Every Notice And Check
+
+Handle turn-end notices as they arrive. For a Codex notice with
+`closeout_request`, start this procedure immediately. For a Claude
+`notify_when_idle` notice, resolve its exact native session in the ledger and
+run `finished_map.py --ledger <private-ledger.json> --session-id <native-id>`;
+its `closeout_request` enters the same procedure. Re-read the transcript even
+when the notice supplies a request. A request is a verification task, not
+permission to send an exit command. An absent request leaves the session open
+for normal stall or capacity handling. Every scheduled check still scans all
+sessions, recovering missed notices. Re-arm an expired or failed watch; do not
+let loss of the watch look like a fleet with no finished sessions.
+
+Match a notice's terminal id to the ledger's `iterm_session_id` or
+`tmux_session_id`, then verify the backend's `read` TTY and the native identity
+in that entry's transcript. An agent name or tab title alone is not identity;
+use its original launch receipt to find the exact terminal and native ids, or
+report the ambiguity and keep it open. A malformed ledger is a fleet-wide
+read blocker: report the invalid entry and reconcile it against its original
+launch receipt before retrying; never guess or skip identity checks.
+
+Before exit, when `closeout_blockers` lists background tasks or scheduled jobs,
+report their ids and keep the session open. Nudge that exact worker to check
+each task's completion condition and stop an obsolete task through its native
+TaskStop or CronDelete route, then give a fresh close-out verdict. For an unknown
+schedule id or a job that is already absent, have the worker run native CronList
+to reconcile the list before deciding what to delete. A still-needed
+task remains a wait. A missing terminal
+notice is uncertainty, not proof that a task ended; never send exit keys or
+stop another session's tasks to clear the list.
+Once process exit is independently proven, use the established final-verdict
+and process closure checks. Scheduled jobs alone do not suppress a review
+notification to an idle empty Claude prompt; an active turn or Bash/Monitor
+task still does.
+
+Aim to finish verification and shutdown within two minutes of the worker's
+verdict. If a check fails, keep the session open and report the exact missing
+proof and next action immediately. Do not bypass a check to meet that target.
+Run each session's verification and claim discovery separately from global
+work selection, train polling and other finished sessions; a slow GitHub read,
+uncertain release or pending permission on one session must not hold up the
+others. A missed target remains visible in the next check and handoff.
 
 1. Match the ledger's session to its transcript, process, and terminal tab.
    Leave the Director's own sessions alone. Keep thread-only sessions without
@@ -678,7 +806,7 @@ and its terminal, transcript and account readbacks before sending input.
 5. After verified process exit, run `release_session_claims.py finish` as
    [finished-session shutdown stages](references/helpers.md#finished-session-shutdown-stages)
    describes, before closing the tab. It records the observed exit in the
-   private closed-session log, discovers the session's claims across accessible
+   shared host-local closed-session log, discovers the session's claims across accessible
    repositories under `--owner` and the configured automation identity, posts the
    closed-session attestation, and previews then
    applies `gh-plan.py release-claim --role supervisor`, naming retained PRs.
@@ -690,10 +818,13 @@ and its terminal, transcript and account readbacks before sending input.
    verified closure times and transcript/issue handoffs in that log. It never
    treats log age, a merged PR or an idle tab as closure evidence. Preserve
    status, waits, blockers and retained artifacts; release is ownership only.
+   Name retained PRs and worktrees in the handoff and record any incomplete
+   reconciliation before reporting shutdown complete. The closed-session log
+   records the transcript's verified verdict and observed process exit; never
+   write a fixed "safe-exit yes" just because a close command was attempted.
 
 6. After the process-exit wait, read `list`. If the exact session is gone,
-   record that the tab already closed. For a surviving idle shell, preview `close_ttys.py` with the verified
-   handoff and input flags, then use `iterm_tab.py close --session-id <exact-iterm-id>
+   record that the tab already closed. For a surviving idle shell, use `iterm_tab.py close --session-id <exact-iterm-id>
    --ledger <private-ledger.json>`. It checks the launch ledger, rejects split
    tabs, and rechecks the TTY processes and native shell prompt twice before
    one non-force close. Read `list` once to confirm disappearance; preserve an
@@ -747,11 +878,13 @@ issue while pending. There is no local rule list.
 - Start a fresh tab per task; reused old sessions caused most of the friction.
   Put Supervisor tabs in one dedicated terminal window and leave the
   Director's own sessions alone.
-- A Codex thread stays loaded in its account home's daemon for 30 minutes
-  after the session exits, and a successor's claim is refused until it
-  unloads, even after the predecessor released the claim
-  ([#1951](https://github.com/cbusillo/codex-skills/issues/1951)). Brief
-  other work for that window rather than retrying the claim.
+- A Codex thread may stay loaded after its client exits. Loaded status alone
+  does not require a fixed wait before a successor can claim. An exactly released
+  source needs verified idle closure or current native end proof with validated
+  source ownership; active work, queued input and unknown coverage still refuse.
+  Use the reported native state and recovery evidence rather than a timer
+  ([#1951](https://github.com/cbusillo/codex-skills/issues/1951),
+  [#2285](https://github.com/cbusillo/codex-skills/issues/2285)).
 - Take every time you write from `date`, never from memory or a summary.
 - Recorded pilot compactions preserved briefs and issues on both harnesses;
   keep recording degradation during the experiment above. The previous 450k
@@ -771,6 +904,10 @@ issue while pending. There is no local rule list.
   spent by the train and its drivers' polling; current measured capacity is
   tracked in
   [codex-skills#1191](https://github.com/cbusillo/codex-skills/issues/1191).
+- Before a planned host restart, have active sessions checkpoint their work
+  and recovery state without releasing their claims, then resume those same
+  sessions afterward. Use successor recovery only when ownership actually
+  changes; a restart alone does not end it.
 - After a host restart, the launcher starts each selected account's Codex
   app-server daemon and names the failure if startup fails. Re-run train
   candidate jobs that a runner shutdown killed (not a code failure), restart the driver, and

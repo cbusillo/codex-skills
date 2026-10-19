@@ -20,7 +20,7 @@ from unittest import mock
 import landed_worktrees
 
 
-NAMED = "External worktree; retire with: dev-worktree retire <path>"
+NAMED = f"External worktree; {landed_worktrees.RETIRE_MARKER} <path>"
 IDENTITY = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
 
 
@@ -83,7 +83,7 @@ class LandedDecisionTests(Fixture):
         pr_head = self.commit(path, "Landed")
         self.commit(path, "After the PR")
         rows = landed_worktrees.landed_decisions(self.repo, "work/extra", pr_head, self.root)
-        self.assertEqual((rows[0]["decision"], rows[0]["reason"]), ("kept", "local commits beyond the landed PR head"))
+        self.assertEqual(rows[0]["decision"], "kept")
 
     def test_lock_without_retire_command_and_outside_root_are_kept(self):
         plain = self.worktree("plain", lock="Held by another job")

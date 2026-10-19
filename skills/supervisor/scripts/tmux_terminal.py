@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 
 import account_choice
 import iterm_tab
@@ -32,7 +33,7 @@ LAUNCH_ENVIRONMENT_KEYS = (
     "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
 )
 PANE_FIELDS = ("session_id", "window_id", "pane_id", "pane_title", "pane_tty",
-               "pane_pid", "pane_dead", "pane_dead_status", "pane_dead_signal", "@supervisor_identity", "pid")
+               "pane_pid", "pane_dead", "pane_dead_status", "pane_dead_signal", "@supervisor_identity", "pid", "pane_dead_time")
 
 
 def process_parents():
@@ -244,7 +245,7 @@ class Terminal:
             values = line.split("\t")
             if len(values) != len(fields):
                 raise ValueError("tmux inventory is malformed")
-            window, tab, pane, title, tty, pid, dead, status, death_signal, identity, server = values
+            window, tab, pane, title, tty, pid, dead, status, death_signal, identity, server, died = values
             if not pid and dead != "1":
                 raise ValueError("live tmux pane has no PID; inventory unavailable")
             identity = identity or f"{server}:{pane}"
@@ -253,6 +254,7 @@ class Terminal:
                          "title": title, "tty": tty, "pane_id": pane,
                          "pid": int(pid) if pid else None, "dead": dead == "1", "exit_status": status,
                          "exit_signal": death_signal,
+                         "exited_at": datetime.fromtimestamp(int(died), timezone.utc).isoformat() if died.isdigit() else None,
                          "backend": "tmux", "tmux_socket": self.socket_name})
         return rows
 
@@ -271,6 +273,7 @@ class Terminal:
     async def send(self, identity, text, submit=True, allow_tabs=False):
         iterm_tab.validate_text(text, allow_tabs=allow_tabs)
         row = self.select(identity)
+        iterm_tab.validate_resume_input(text, tty=row.get("tty"))
         if row["dead"]:
             raise ValueError("agent process has exited; no input was sent")
         if "\n" in text or "\t" in text:
@@ -291,10 +294,14 @@ class Terminal:
             except (ValueError, OSError, subprocess.SubprocessError) as error:
                 raise iterm_tab.SendFailure(identity, "unknown", str(error)) from error
 
-    def verify_closed(self, identity, entry):
-        from close_ttys import inventory
-
-        row = self.select(identity)
+    def dead_pane(self, identity, entry, *, panes=None):
+        if not re.fullmatch(r"tmux:" + re.escape(self.socket_name) + r":[0-9a-f]{32}", identity or ""):
+            raise ValueError("terminal has no Supervisor launch identity")
+        panes = self.list() if panes is None else panes
+        matches = [pane for pane in panes if pane["session_id"] == identity]
+        if len(matches) != 1:
+            raise ValueError("expected one exact owned tmux pane")
+        row = matches[0]
         if entry.get("supervisor_owned") is not True or entry.get("tmux_session_id") != identity:
             raise ValueError("exact terminal is not Supervisor-owned in the launch ledger")
         if not isinstance(entry.get("pid"), int) or entry["pid"] <= 0:
@@ -308,35 +315,48 @@ class Terminal:
                 raise ValueError(f"terminal {key} differs from launch ledger")
         if not row["dead"]:
             raise ValueError("agent process remains; terminal kept")
-        panes = self.list()
         siblings = [r for r in panes if r["tab_id"] == row["tab_id"]]
         if len(siblings) != 1:
             raise ValueError("split or linked tmux window; terminal kept")
-        rows = inventory()
+        cutoff = datetime.fromisoformat(row["exited_at"]) if row["exited_at"] else None
+        if cutoff is not None:
+            try:
+                started = datetime.fromisoformat(entry["launch_started_at"]) if entry.get("launch_started_at") is not None else None
+            except TypeError as error:
+                raise ValueError("native pane launch time is invalid") from error
+            if (cutoff.tzinfo is None or cutoff > datetime.now(timezone.utc)
+                    or started is not None and (started.tzinfo is None or started > cutoff)):
+                raise ValueError("native pane exit time differs from this launch generation")
+        return row
+
+    def verify_closed(self, identity, entry):
+        import session_liveness
+
+        panes = self.list()
+        row = self.dead_pane(identity, entry, panes=panes)
+        rows = session_liveness.inventory()
         tty = row["tty"].removeprefix("/dev/")
-        if any(pid in {entry["pid"], row["pid"]} for pid, _, _ in rows):
-            raise ValueError("process remains or PID was reused; terminal kept")
         jobs = [pid for pid, job_tty, _ in rows if job_tty == tty]
+        replacement = None
         if jobs:
             owners = [pane for pane in panes if pane["pane_id"] != row["pane_id"]
                       and not pane["dead"] and pane["tty"].removeprefix("/dev/") == tty]
             if len(owners) != 1 or owners[0]["pid"] not in jobs:
                 raise ValueError("TTY ownership is uncertain; terminal kept")
             parents = process_parents()
-            if not all(belongs_to(pid, owners[0]["pid"], parents) for pid in jobs):
-                raise ValueError("process belongs to no verified new TTY owner; terminal kept")
+            replacement = lambda pid: belongs_to(pid, owners[0]["pid"], parents)
+        session_liveness.verify_process_exit(
+            {**entry, "_terminal_pid": row["pid"]}, rows=rows,
+            ended_at=datetime.fromisoformat(row["exited_at"]) if row["exited_at"] else None,
+            replacement_owner=replacement, scope="terminal")
         # A dead pane has no input consumer. Never kill a live shell to clear it.
         return row
 
     def close(self, identity, ledger):
-        entries = json.loads(ledger.read_text(encoding="utf-8"))
-        if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-            raise ValueError("ledger must contain session objects")
-        matches = [e for e in entries if e.get("tmux_session_id") == identity]
-        if len(matches) != 1:
-            raise ValueError("terminal is not unique in the launch ledger")
-        before = self.verify_closed(identity, matches[0])
-        if self.verify_closed(identity, matches[0]) != before:
+        import session_record
+        entry = session_record.terminal_entry(ledger, "tmux_session_id", identity)
+        before = self.verify_closed(identity, entry)
+        if self.verify_closed(identity, entry) != before:
             raise ValueError("terminal state changed; terminal kept")
         marker = identity.removeprefix(f"tmux:{self.socket_name}:")
         if not re.fullmatch(r"[0-9a-f]{32}", marker):
@@ -436,10 +456,12 @@ async def operate(args):
                                                    "observation_error": type(error).__name__}) from error
                 return {key: snapshot[key] for key in ("dead", "exit_status", "exit_signal", "screen")}
 
-            await iterm_tab.verify_startup(read_startup)
+            await iterm_tab.verify_startup(read_startup, prompt_window=iterm_tab.startup_prompt_window(choice),
+                                           submitted=command)
             result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}
             if choice:
                 result["account"] = account_choice.public(choice)
+            iterm_tab.source_launch_metadata(result, choice)
             results.append(result)
         except Exception as error:
             iterm_tab.cancel_unsubmitted_gui(choice, progress)

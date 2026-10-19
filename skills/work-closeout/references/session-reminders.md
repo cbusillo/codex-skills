@@ -141,8 +141,9 @@ uv run <skill-dir>/scripts/reminder_save.py --harness codex \
 
 Use `--harness claude` for Claude Code, or replace `--session-id` with `--prompt`
 for a separately requested fresh session. Add `--link` again for the PR. The default
-title names the repository, issue numbers (or session ID) and provider. `--title`
-can name the requested purpose. Notes contain only the provider and session ID
+title names the repository, issue numbers (or session ID), provider and local due
+time (`every N days from` the first due time for a repeat), so a session's next
+check-in does not collide with its completed one. `--title` can name the requested purpose. Notes contain only the provider and session ID
 (or “fresh session”), followed by issue/PR links. Keep next actions on the owning
 issue. The fallback command and machine marker are dry-run fields, not visible notes.
 
@@ -166,14 +167,16 @@ the Reminders database.
 A single existing incomplete match is reported with its ID and left untouched.
 Pass `--update-id <id>` only when changing that existing reminder is authorized.
 For an authorized cleanup of existing Notes and URL, also pass `--preserve-existing`.
-It requires `--update-id` and the unchanged title, changes only Notes and URL, and
+It requires `--update-id` and the unchanged title (pass the existing title with
+`--title`, or the original `--due` for a default title), changes only Notes and URL, and
 reads back the same ID with unchanged list, title, due/start dates, timezone,
 priority, completion, alarms and recurrence. The required dry-run schedule fields
 are validated but are not applied in this mode. Ordinary updates keep their
 explicit schedule behavior.
 Missing update targets, duplicate incomplete matches and colliding titles are refused.
 Completed matches are never changed or reactivated and do not block a new reminder,
-but for session or linked reminders a completed item's title still collides: pass a distinct `--title`. A `saved` receipt confirms list,
+but for session or linked reminders a completed item with the same title still
+collides: the default title differs by due time; otherwise pass a distinct `--title`. A `saved` receipt confirms list,
 title, schedule, alarm, recurrence, short notes and the exact visible URL. A `partial`
 receipt includes the created/updated ID and missing proof: do not claim completion
 or repeat creation. Finish that same item with its ID or, under removal authority,

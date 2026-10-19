@@ -99,7 +99,7 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
             continue
         if timeout and settings.get("timeout") and timeout > settings["timeout"]:
             raise PolicyConflict(provider, skipped, "--timeout exceeds the standing review limit; no review launched")
-        choice["storage_root"] = account_choice.storage_root(config["snapshot_command"])
+        choice.update(account_choice.receipt_route(config["snapshot_command"]))
         budget = settings.get("timeout", 900)
         return {"provider": provider, "model": model or settings.get("model"),
                 "timeout": timeout or (min(300, budget) if probe else budget), "choice": choice,

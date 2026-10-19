@@ -1,11 +1,12 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Replay a sanitized recorded capacity stop with disposable queue adapters."""
 
 import copy
+from contextlib import asynccontextmanager
 import json
 import os
 import socket
@@ -20,15 +21,44 @@ import capacity_retry
 import codex_idle_watch
 import session_record
 import status
+import github_plan_native
+import github_plan_sessions
+
+NATIVE_CONNECTION = github_plan_native.connection
 
 FIXTURE = Path(__file__).parent / "fixtures" / "codex-capacity-stop.jsonl"
+# The records Codex writes when `codex queue` delivers a message to an idle thread.
+QUEUED_CONTINUE = Path(__file__).parent / "fixtures" / "codex-queued-continue.jsonl"
 
 
 class CapacityTests(unittest.TestCase):
+    def test_native_transport_failure_records_uncertain_and_never_replays(self):
+        import aiohttp
+        with patch.object(github_plan_native, "connection", NATIVE_CONNECTION), \
+                patch.object(aiohttp.ClientSession, "ws_connect", side_effect=aiohttp.ClientConnectionError("synthetic transport failure")) as connect:
+            result = capacity_retry.resume(self.entry, session_record.session_status(self.entry), {}, self.state_path, self.now + 100000)
+            self.assertEqual(result["state"], "reconciliation_required")
+            stored = capacity_retry.load_state(self.state_path)
+            self.assertEqual(stored[self.native_id]["phase"], "uncertain")
+            capacity_retry.resume(self.entry, session_record.session_status(self.entry), stored, self.state_path, self.now + 200000)
+            self.assertEqual(connect.call_count, 1)
+            self.assertTrue(capacity_retry.github_plan_closure.action_pending(self.native_id))
+
+    def test_ownership_busy_before_send_does_not_spend_or_uncertainly_record_an_attempt(self):
+        state = {}
+        now = self.now + 100000
+        with patch.object(capacity_retry.time, "time", return_value=now), patch.object(
+                capacity_retry, "queue_continue", side_effect=capacity_retry.github_plan_closure.LeaseBusy("owned")):
+            result = capacity_retry.resume(self.entry, session_record.session_status(self.entry), state, self.state_path, now)
+        self.assertEqual(result["attempts"], 0)
+        self.assertFalse(state)
+        self.assertEqual(capacity_retry.load_state(self.state_path), {})
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
+        self.enterContext(patch.object(capacity_retry.github_plan_closure, "closed_log", return_value=self.root / "closed.json"))
         self.home = self.root / "account"
         self.transcript = self.home / "sessions" / "fixture.jsonl"
         self.transcript.parent.mkdir(parents=True)
@@ -49,15 +79,30 @@ class CapacityTests(unittest.TestCase):
         self.socket.bind(str(endpoint))
         self.socket.listen(128)
         self.addCleanup(self.socket.close)
-        executable = patch.object(capacity_retry.shutil, "which", return_value="fixture-codex")
-        executable.start()
-        self.addCleanup(executable.stop)
+        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.home]))
+        self.queue_requests = []
+        self.queue_hook = lambda: None
+        @asynccontextmanager
+        async def connection(home, **_kwargs):
+            async def request(method, params):
+                self.assertEqual(method, "thread/queue/add")
+                self.queue_hook()
+                self.queue_requests.append(params)
+                return {"queuedSubmission": {"id": "queued", **{key: params[key] for key in ("clientUserMessageId", "input")}}}
+            request.codex_home = str(home.resolve())
+            yield request
+        self.enterContext(patch.object(github_plan_native, "connection", connection))
 
     def append(self, kind, **fields):
         record = {"type": "event_msg", "timestamp": datetime.fromtimestamp(
             self.now, timezone.utc).isoformat(), "payload": {"type": kind, **fields}}
         with self.transcript.open("a") as stream:
             stream.write(json.dumps(record) + "\n")
+        os.utime(self.transcript, (self.now, self.now))
+
+    def queued_continue(self):
+        with self.transcript.open("a") as stream:
+            stream.write(QUEUED_CONTINUE.read_text())
         os.utime(self.transcript, (self.now, self.now))
 
     def capacity_again(self):
@@ -68,8 +113,7 @@ class CapacityTests(unittest.TestCase):
     def continue_sent(self, *_):
         reservation = capacity_retry.load_state(self.state_path)[self.native_id]
         self.assertEqual(reservation["phase"], "pending")
-        self.append("user_message", message="continue")
-        self.append("task_started")
+        self.queued_continue()
         self.capacity_again()
 
     def test_recorded_terminal_error_is_visible_without_agent_text(self):
@@ -79,6 +123,23 @@ class CapacityTests(unittest.TestCase):
         self.assertFalse(result["safe_verdict"])
         self.assertEqual(result["last_text"], "")
         self.assertIsNotNone(result["capacity_stop"])
+
+    def test_capacity_queue_invalidates_closure_and_refuses_handed_off_generation(self):
+        log = capacity_retry.github_plan_closure.closed_log()
+        log.write_text(json.dumps([{"session_id": self.native_id, "closure_evidence": {"old": True}}]))
+        log.chmod(0o600)
+        home, endpoint = capacity_retry.verified_target(self.entry, session_record.session_status(self.entry))
+        def sent():
+            self.assertIsNone(json.loads(log.read_text())[0]["closure_evidence"])
+        self.queue_hook = sent
+        capacity_retry.queue_continue(self.entry, home, endpoint, session_record.session_status(self.entry))
+        rows = json.loads(log.read_text())
+        rows[0]["successor_admitted"] = True
+        log.write_text(json.dumps(rows))
+        before = len(self.queue_requests)
+        with self.assertRaises(ValueError):
+            capacity_retry.queue_continue(self.entry, home, endpoint, session_record.session_status(self.entry))
+        self.assertEqual(len(self.queue_requests), before)
 
     def link_shared_sessions(self):
         sessions = self.home / "sessions"
@@ -98,12 +159,8 @@ class CapacityTests(unittest.TestCase):
                     self.assertEqual(capacity_retry.retry_status(entry, expected, {})["state"],
                                      "retry_due")
                 home, endpoint = capacity_retry.verified_target(entry, expected)
-                with patch.object(capacity_retry.subprocess, "run") as run:
-                    capacity_retry.queue_continue(entry, home, endpoint, expected)
-                argv = run.call_args.args[0]
-                self.assertEqual(argv[argv.index("--thread") + 1], self.native_id)
-                self.assertEqual(argv[argv.index("--remote") + 1], "unix://" + str(endpoint))
-                self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], str(self.home.resolve()))
+                capacity_retry.queue_continue(entry, home, endpoint, expected)
+                self.assertEqual(self.queue_requests[-1]["threadId"], self.native_id)
 
     def test_symlinked_live_sessions_still_reject_outside_transcripts_and_bad_binding(self):
         shared = self.link_shared_sessions()
@@ -248,14 +305,12 @@ class CapacityTests(unittest.TestCase):
         queue.assert_not_called()
         self.assertFalse(self.state_path.exists())
 
-    def test_stale_socket_missing_cli_and_overdue_retry_are_visible(self):
+    def test_stale_socket_and_overdue_retry_are_visible_without_cli_dependency(self):
         summary = session_record.session_status(self.entry)
         with patch.object(capacity_retry.time, "time", return_value=self.now + 100000):
             due = capacity_retry.retry_status(self.entry, summary, {})
         self.assertEqual(due["state"], "retry_due")
         self.assertGreater(due["retry_at"], self.now)
-        with patch.object(capacity_retry.shutil, "which", return_value=None):
-            self.assertEqual(capacity_retry.retry_status(self.entry, summary, {})["state"], "blocked")
         self.socket.close()
         self.assertEqual(capacity_retry.retry_status(self.entry, summary, {})["state"], "blocked")
 
@@ -287,20 +342,26 @@ class CapacityTests(unittest.TestCase):
     def test_queue_uses_verified_native_target_and_home(self):
         expected = session_record.session_status(self.entry)
         home, endpoint = capacity_retry.verified_target(self.entry, expected)
-        with patch.object(capacity_retry.subprocess, "run") as run:
-            capacity_retry.queue_continue(self.entry, home, endpoint, expected)
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[argv.index("--thread") + 1], self.entry["session_id"])
-        self.assertEqual(argv[argv.index("--message") + 1], "continue")
-        self.assertEqual(argv[argv.index("--remote") + 1], "unix://" + str(endpoint))
-        self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], str(home))
+        capacity_retry.queue_continue(self.entry, home, endpoint, expected)
+        params = self.queue_requests[-1]
+        self.assertEqual(params["threadId"], self.entry["session_id"])
+        self.assertEqual(len(self.queue_requests), 1)
 
     def test_readback_requires_new_continue_from_same_native_transcript(self):
         size = self.transcript.stat().st_size
         self.append("agent_message", message="continue")
+        for role, text in (("assistant", "continue"), ("user", "owner work")):
+            with self.transcript.open("a") as stream:
+                stream.write(json.dumps({"type": "response_item", "payload": {
+                    "type": "message", "role": role,
+                    "content": [{"type": "input_text", "text": text}]}}) + "\n")
         self.assertFalse(capacity_retry.readback_continue(self.entry, size, timeout=0))
-        self.append("user_message", message="continue")
+        before_continue = self.transcript.stat().st_size
+        self.queued_continue()
         self.assertTrue(capacity_retry.readback_continue(self.entry, size, timeout=0))
+        self.assertFalse(capacity_retry.readback_continue(
+            self.entry, self.transcript.stat().st_size, timeout=0))
+        self.assertTrue(capacity_retry.readback_continue(self.entry, before_continue, timeout=0))
         self.assertFalse(capacity_retry.readback_continue({**self.entry, "session_id": "other"},
                                                         size, timeout=0))
 

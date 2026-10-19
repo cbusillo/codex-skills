@@ -30,7 +30,11 @@ sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
 from skills.github.scripts import github_api, github_pr_batch
 from skills.github.scripts.github_identity import automation_login
-from skills.github.scripts.ready_handoff import latest_ready, requires_client_acceptance
+from skills.github.scripts.ready_handoff import (
+    latest_ready,
+    requires_client_acceptance,
+    review_evidence_gap,
+)
 from skills.github.scripts.github_read import (
     GitHubReader,
     GitHubReadError,
@@ -560,6 +564,23 @@ class Live:
             return False
         return True
 
+    def review_gap(self, target, pr, extra_trusted, *, file_inventory=None):
+        """Name a pending or missing review of record; ready refuses the same gap."""
+        repo, number = target["repo"], pr["number"]
+        try:
+            return review_evidence_gap(
+                repo, number, base=target["base"], head=pr["head"]["sha"],
+                comments=self.pages(f"/repos/{repo}/issues/{number}/comments"),
+                trusted={pr["user"]["login"].casefold()} | extra_trusted,
+                # Review coverage needs the PR snapshot's file count, not a
+                # second mergeability recovery with its shared sleep budget.
+                read_json=lambda path: pr if path == f"/repos/{repo}/pulls/{number}" else self.get(path),
+                read_pages=self.pages, file_inventory=file_inventory,
+                missing=lambda error: isinstance(error, GitHubReadError) and error.result.status == 404,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            return f"review-of-record evidence unavailable: {error}"
+
     def label(self, target, number):
         result = github_api.call_gh_with_retry(
             "POST",
@@ -653,6 +674,67 @@ def read_staging_queue(io, target, state, emit):
         return None
 
 
+def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None, **detail):
+    """Account for unenqueued receipts, without making admission decisions."""
+    failures = (GitHubReadError, GitHubReadShapeError, OSError, ValueError,
+                KeyError, TypeError, AttributeError, subprocess.TimeoutExpired)
+
+    def unavailable(error, **identity):
+        emit("skip_inventory_unavailable", {
+            "repository": target["repo"], "reason": reason,
+            "detail": exception_message(error), **identity,
+        })
+
+    if pulls is None:
+        try:
+            pulls = io.pages(f"/repos/{target['repo']}/pulls", state="open")
+        except failures as error:
+            unavailable(error)
+            return
+    dispositions = {row["number"]: row for row in queue or ()}
+    for pr in pulls:
+        try:
+            if pr.get("state") != "open" or pr["base"]["ref"] != target["base"]:
+                continue
+            if target["label"] in {label["name"] for label in pr["labels"]}:
+                continue
+            row = dispositions.get(pr["number"])
+            if row and row.get("head_sha") != pr["head"]["sha"]:
+                row = None
+            reasons = row.get("ineligible_reasons", []) if row else []
+            if row and not reasons:
+                continue
+            author = pr["user"]["login"].casefold()
+            handoff = set(args.handoff_login)
+            trusted = handoff - {author} if DEPENDENCY_REVIEW in reasons else handoff | {author}
+            comments = io.pages(f"/repos/{target['repo']}/issues/{pr['number']}/comments")
+            if latest_ready(pr, comments, trusted):
+                emit("skipped", {
+                    "repository": target["repo"], "pr": pr["number"],
+                    "head": pr["head"]["sha"],
+                    "reason": "not_in_controller_queue" if reason == "controller_ineligible" and row is None else reason,
+                    "controller_admission": "ineligible" if row else "unknown",
+                    "ineligible_reasons": reasons, **detail,
+                })
+        except failures as error:
+            unavailable(error, pr=pr.get("number"))
+            if isinstance(error, GitHubReadError) and not transient_read_error(error):
+                return
+
+
+@contextmanager
+def deferred_skip_reports(io, target, args, emit):
+    """Observe outside the lock only after a normal pass, never while stopping."""
+    pending = []
+
+    def report(reason, **kwargs):
+        pending.append((reason, kwargs))
+
+    yield report
+    for reason, kwargs in pending:
+        report_ready_skips(io, target, args, emit, reason, **kwargs)
+
+
 def run_pass(io, args, emit, *, state=None):
     state = PassState() if state is None else state
     targets = io.policies(args.owner)
@@ -661,9 +743,10 @@ def run_pass(io, args, emit, *, state=None):
         repo = target["repo"]
         if selected and repo.casefold() not in selected:
             continue
-        with hold_lock(args.hold_file):
+        with deferred_skip_reports(io, target, args, emit) as report_skips, hold_lock(args.hold_file):
             if held(read_holds(args.hold_file), repo):
                 emit("held", {"repository": repo})
+                report_skips('repository_held')
                 continue
             response = io.train(target)
             others = [
@@ -687,14 +770,19 @@ def run_pass(io, args, emit, *, state=None):
                         "queue": busy_result.get("dry_run_result", {}).get("queue", []),
                     },
                 )
+                report_skips('controller_busy',
+                                   queue=busy_result.get('dry_run_result', {}).get('queue', []),
+                                   action=busy_result.get('controller_action'))
                 continue
             if staging:
                 staged_queue = read_staging_queue(io, target, state, emit)
                 if staged_queue is None:
+                    report_skips('queue_read_unavailable')
                     continue
                 response["result"]["dry_run_result"] = staged_queue
                 if not own_queue(response["result"]["dry_run_result"], staging[3]):
                     emit("busy", {"repository": repo})
+                    report_skips('existing_queue', queue=staged_queue['queue'])
                     continue
             queue = response["result"]["dry_run_result"]["queue"]
             author_allowed = {
@@ -703,6 +791,8 @@ def run_pass(io, args, emit, *, state=None):
                 if needs_ready_handoff(item, target)
             }
             pulls = io.pages(f"/repos/{repo}/pulls", state="open")
+            report_skips('controller_ineligible',
+                               pulls=[pr for pr in pulls if pr['number'] not in author_allowed], queue=queue)
             # Active candidates were checked above. Only controller-proven
             # ineligible PRs can be ignored here; absent or stale inventory stays
             # busy. Include other enrolled bases without dropping stack children.
@@ -734,6 +824,8 @@ def run_pass(io, args, emit, *, state=None):
                         "queue": [item for item in queue if item["number"] in labeled],
                     },
                 )
+                report_skips('existing_queue',
+                                   pulls=[pr for pr in pulls if pr['number'] in author_allowed], queue=queue)
                 continue
             held_labels = {
                 pr["number"]: sorted(label["name"] for label in pr["labels"])
@@ -752,6 +844,8 @@ def run_pass(io, args, emit, *, state=None):
                 for pr in pulls
             ):
                 emit("busy", {"repository": repo})
+                report_skips('existing_queue',
+                                   pulls=[pr for pr in pulls if pr['number'] in author_allowed], queue=queue)
                 continue
             candidates = []
             if getattr(args, "batch_read", False):
@@ -765,6 +859,7 @@ def run_pass(io, args, emit, *, state=None):
                     emit("skipped", {
                         "repository": repo,
                         "pr": pr["number"],
+                        "head": pr["head"]["sha"],
                         "reason": "conflicting" if pr.get("mergeable") is False
                         else "mergeability_unknown",
                     })
@@ -781,7 +876,21 @@ def run_pass(io, args, emit, *, state=None):
                             {
                                 "repository": repo,
                                 "pr": pr["number"],
+                                "head": pr["head"]["sha"],
                                 "reason": "file_inventory_changed_or_incomplete",
+                            },
+                        )
+                        continue
+                    review_gap = io.review_gap(target, pr, set(args.handoff_login), file_inventory=files)
+                    if review_gap:
+                        emit(
+                            "skipped",
+                            {
+                                "repository": repo,
+                                "pr": pr["number"],
+                                "head": pr["head"]["sha"],
+                                "reason": "review_of_record_not_recorded",
+                                "detail": review_gap,
                             },
                         )
                         continue
@@ -801,10 +910,16 @@ def run_pass(io, args, emit, *, state=None):
                         {
                             "repository": repo,
                             "pr": pr["number"],
+                            "head": pr["head"]["sha"],
                             "reason": "current_head_readiness_not_proven",
                         },
                     )
             batch = group(candidates, args.max_batch_size)
+            for item in candidates:
+                if item not in batch or not args.apply:
+                    emit('skipped', {'repository': repo, 'pr': item['number'],
+                                     'head': item['head'],
+                                     'reason': 'batch_limit_or_unrelated_area' if args.apply else 'dry_run'})
             emit(
                 "batch",
                 {
@@ -881,6 +996,7 @@ def run_pass(io, args, emit, *, state=None):
                             for row in entries
                         ),
                     )
+                    or io.review_gap(target, pr, set(args.handoff_login))
                 ):
                     emit("batch_stopped", {"repository": repo, "labeled": own})
                     break
@@ -900,6 +1016,10 @@ def run_pass(io, args, emit, *, state=None):
                     "enqueued",
                     {"repository": repo, "pr": item["number"], "head": item["head"]},
                 )
+            for item in batch:
+                if item['number'] not in own:
+                    emit('skipped', {'repository': repo, 'pr': item['number'],
+                                     'head': item['head'], 'reason': 'batch_preconditions_changed'})
             if own:
                 if staging:
                     emit("next_batch_queued", {"repository": repo, "prs": own})

@@ -1,6 +1,6 @@
 ---
 name: repo-readiness
-description: Use when the user asks whether a change, branch, PR, or workstream is ready to review, merge, ship, pause, or hand off, or asks to run gates, validate changes, check CI/PR readiness, inspect IDE warnings, verify UI, or identify blockers. Orchestrates local, GitHub, inspection, and browser evidence into a concise readiness report.
+description: Use when building or installing an installed or packaged app, when the user asks whether a change, branch, PR, or workstream is ready to review, merge, ship, pause, or hand off, or asks to run gates, validate changes, check CI/PR readiness, inspect IDE warnings, verify UI, or identify blockers. Orchestrates local, GitHub, inspection, and browser evidence into a concise readiness report.
 metadata:
   short-description: Check repo readiness to ship
 ---
@@ -98,8 +98,8 @@ inspection, browser, CI, deployment, or security gates.
    `../references/background-review-reporting.md`. Match the observation to the
    active branch, PR, and head SHA before using it as evidence. Do not declare a
    branch, PR, release, or handoff green while findings against the current
-   target are not yet accounted for (fixed, deferred, tracked, or declined with
-   a recorded reason) or while a matching review is `in flight`.
+   target are not yet accounted for under `../references/model-review.md` or
+   while a matching review is `in flight`.
    When no lifecycle evidence is visible before a possible post-turn trigger,
    report `not yet observable`; do not infer a skipped or not-emitted outcome,
    and do not delay the final response solely waiting for that trigger. If a
@@ -139,6 +139,15 @@ inspection, browser, CI, deployment, or security gates.
    turn normal readiness into a full security audit.
 9. Report readiness concisely, then continue into `work-closeout` for the
    requests identified above, using the handoff below.
+
+## Installed And Packaged Builds
+
+In every repository that ships an installed or packaged app, make installed or
+packaged builds only from a clean, committed tree. If a messy tree mixes
+workstreams, split them into separate branches in new linked worktrees yourself
+as ordinary engineering, leaving the original checkout and active sessions'
+files in place. Follow [repository cleanup and preservation](../references/repo-cleanup.md).
+A scratch build from a messy tree happens only when the Director asks for one.
 
 ## Readiness To Closeout Handoff
 
@@ -270,9 +279,9 @@ unresolved, stop and report it.
 Existing lint/inspection noise is not an invisible background condition. Fix
 real findings the right way when straightforward or in the affected area. If
 findings are broad but real, call them out and decide whether to include a
-cleanup pass or track a focused cleanup item. If a finding is a false positive or
-cannot be fixed cleanly, discuss an explicit suppression, baseline, or config
-change.
+cleanup pass or track a focused cleanup item. For a false positive or a finding
+that cannot be fixed cleanly, follow the shared
+[suppression and inspection configuration rule](../jetbrains-inspection/SKILL.md#suppressions-and-inspection-configuration).
 
 Reviewability is part of readiness. Unless a change is mostly mechanical, treat
 diffs over roughly 800 changed lines as a review-risk signal; for complex logic
@@ -300,9 +309,8 @@ update is needed, say why briefly in readiness output.
 Delegate JetBrains/PyCharm/IntelliJ/WebStorm inspection execution and triage to
 `jetbrains-inspection`. Treat stale results, incomplete capture, indexing,
 session drift, unavailable IDE, ambiguous routing, or wrong-worktree routing as
-not-clean states. Do not add suppressions, disable inspections, or change IDE
-inspection profiles without explicit approval unless the repo already has an
-approved convention.
+not-clean states. Follow the shared
+[suppression and inspection configuration rule](../jetbrains-inspection/SKILL.md#suppressions-and-inspection-configuration).
 
 If the repo inspection config is blank or feels wrong, ask the user when the
 choice affects durable repo policy or readiness. Examples: configured IDE does

@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 import director_waits
 
 NOW = datetime(2026, 10, 9, tzinfo=timezone.utc)
+EMPTY_SEARCH = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
 
 
 def issue(number=1, reason="Director to approve", labels=None, extra=""):
@@ -54,6 +55,7 @@ class WaitTests(unittest.TestCase):
 
     def test_search_covers_repositories_without_label_or_question_filter(self):
         reader = Mock()
+        reader.paged_json.return_value = []
         records = [issue(), {**issue(2), "repository_url": "https://api.github.com/repos/owner/second"}]
         reader.request.return_value = SimpleNamespace(body={
             "items": records, "total_count": 2, "incomplete_results": False})
@@ -91,6 +93,7 @@ class WaitTests(unittest.TestCase):
                                  ({"items": [issue(1)], "total_count": 101, "incomplete_results": False}, False),
                                  ({"items": [issue(101)], "total_count": 102, "incomplete_results": False}, False)):
             reader = Mock()
+            reader.paged_json.return_value = []
             reader.request.side_effect = [SimpleNamespace(body=first), SimpleNamespace(body=second)]
             result = director_waits.collect_query(reader, "owner", ["Director"], NOW)
             self.assertEqual(result["complete"], complete)
@@ -148,12 +151,14 @@ class WaitTests(unittest.TestCase):
     def test_parked_and_waiting_searches_merge_without_losing_waits(self):
         parked = {**issue(2), "body": "## Current Status\nParked until: Director selects it"}
         reader = Mock()
+        reader.paged_json.return_value = []
         reader.request.side_effect = [SimpleNamespace(body={"items": [issue()], "total_count": 1, "incomplete_results": False}),
-            SimpleNamespace(body={"items": [issue(), parked], "total_count": 2, "incomplete_results": False})]
+            SimpleNamespace(body={"items": [issue(), parked], "total_count": 2, "incomplete_results": False}), EMPTY_SEARCH]
         report = director_waits.collect(reader, "owner", ["Director"], NOW)
         self.assertTrue(report["complete"])
         self.assertEqual([row["number"] for row in report["waits"]], [1, 2])
-        self.assertEqual(reader.request.call_count, 2)
+        self.assertEqual(reader.request.call_count, 3)
+        self.assertEqual(reader.paged_json.call_count, 2)
 
     def test_identity_refused_search_preserves_other_search_and_never_reads_links(self):
         import github_api
@@ -167,12 +172,13 @@ class WaitTests(unittest.TestCase):
         reader.request.side_effect = [director_waits.GitHubReadError(
             refused.failure.message, result=refused, diagnostics={}), SimpleNamespace(body={
                 "items": [issue(reason="Director to approve outside/tools#475")],
-                "total_count": 1, "incomplete_results": False})]
+                "total_count": 1, "incomplete_results": False}), EMPTY_SEARCH]
         report = director_waits.collect(reader, "owner", ["Director"], NOW)
         self.assertFalse(report["complete"])
         self.assertEqual([row["number"] for row in report["waits"]], [1])
         self.assertTrue(report["errors"])
         self.assertTrue(all(call.args[1].startswith("/search/issues?") for call in reader.request.call_args_list))
+        self.assertTrue(all(call.args[0].startswith("/repos/owner/repo/issues/") for call in reader.paged_json.call_args_list))
 
     def test_product_wait_cannot_hide_director_decision_or_hold(self):
         for reason in ("Chris to approve", "Chris to resume"):
@@ -213,6 +219,114 @@ class WaitTests(unittest.TestCase):
                 self.assertEqual(director_waits.main(), expected)
                 result = json.loads(output.getvalue())
                 self.assertEqual(result["complete"], expected == 0)
+
+
+def wait_comment(author, *, waiting_for=None, ends_when=None, marker=None):
+    if marker is None:
+        record = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": "Recorded on the issue.",
+                  "waits": [{"waiting_for": waiting_for, "ends_when": ends_when}] if waiting_for else []}
+        marker = "<!-- github-plan:wait " + json.dumps(record, sort_keys=True) + " -->"
+    return {"user": {"login": author, "type": "User"}, "body": "Wait recorded.\n\n" + marker}
+
+
+def search(*items):
+    return SimpleNamespace(body={"items": list(items), "total_count": len(items), "incomplete_results": False})
+
+
+class StructuredWaitTests(unittest.TestCase):
+    """The shared resolver over the complete discussion owns each issue's current wait."""
+
+    def collect_one(self, record, comments):
+        reader = Mock()
+        reader.request.return_value = search(record)
+        if isinstance(comments, Exception):
+            reader.paged_json.side_effect = comments
+        else:
+            reader.paged_json.return_value = comments
+        return director_waits.collect_query(reader, "owner", ["owner", "Director"], NOW)
+
+    def test_comment_only_structured_hold_is_reported(self):
+        quiet = {**issue(7), "body": "## Current Status\nState: Active.\nNext action: Ship it."}
+        reader = Mock()
+        reader.request.side_effect = [EMPTY_SEARCH, EMPTY_SEARCH, search(quiet)]
+        reader.paged_json.return_value = [wait_comment(
+            "owner", waiting_for="Director to approve the release", ends_when="The Director answers")]
+        report = director_waits.collect(reader, "owner", ["owner", "Director"], NOW)
+        self.assertTrue(report["complete"])
+        self.assertEqual([(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+                          for row in report["waits"]], [(7, "decision", "structured_wait", False)])
+
+    def test_later_trusted_clear_removes_stale_prose_hold(self):
+        comments = [wait_comment("owner", waiting_for="Director to approve", ends_when="Approved"),
+                    wait_comment("owner")]
+        result = self.collect_one(issue(), comments)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["waits"], [])
+
+    def test_untrusted_clear_cannot_release_a_trusted_hold(self):
+        comments = [wait_comment("owner", waiting_for="Director to approve", ends_when="Approved"),
+                    wait_comment("mallory")]
+        result = self.collect_one(issue(), comments)
+        self.assertEqual([(row["number"], row["wait_source"]) for row in result["waits"]], [(1, "structured_wait")])
+
+    def test_malformed_trusted_record_keeps_prose_hold_for_review_and_partial_coverage(self):
+        for marker in ("<!-- github-plan:wait {not json -->",
+                       '<!-- github-plan:wait {"version": 1, "state": "clear", "evidence": "x", '
+                       '"waits": [{"waiting_for": "Director", "ends_when": "x"}]} -->'):
+            with self.subTest(marker=marker):
+                result = self.collect_one(issue(), [wait_comment("owner", marker=marker)])
+                self.assertFalse(result["complete"])
+                self.assertEqual([(row["number"], row["wait_review_required"]) for row in result["waits"]], [(1, True)])
+                self.assertEqual([error["scope"] for error in result["errors"]], ["structured wait"])
+
+    def test_unread_discussion_is_partial_coverage_with_prose_kept_for_review(self):
+        result = self.collect_one(issue(), director_waits.GitHubReadShapeError("comments unavailable"))
+        self.assertFalse(result["complete"])
+        self.assertEqual([(row["number"], row["wait_review_reason"]) for row in result["waits"]],
+                         [(1, "discussion_unread")])
+        self.assertEqual([(error["scope"], error["number"]) for error in result["errors"]], [("discussion", 1)])
+
+    def test_prose_without_structured_record_is_explicit_review(self):
+        result = self.collect_one(issue(), [])
+        self.assertTrue(result["complete"])
+        self.assertEqual([(row["wait_source"], row["wait_review_reason"]) for row in result["waits"]],
+                         [("legacy_wait_review", "no_structured_record")])
+
+    def test_unreadable_trusted_record_keeps_a_comment_hold_as_unresolved(self):
+        # The body prose names someone else; only the comment records the Director hold.
+        hold = wait_comment("owner", waiting_for="Director to approve the release", ends_when="The Director answers")
+        malformed = wait_comment("owner", marker="<!-- github-plan:wait {not json -->")
+        envelope = {**issue(reason="Client to test"),
+                    "body": "<!-- github-plan:managed:start -->\n" + issue(reason="Client to test")["body"]}
+        for name, record, comments in (("malformed after hold", issue(reason="Client to test"), [hold, malformed]),
+                                       ("malformed before hold", issue(reason="Client to test"), [malformed, hold]),
+                                       ("malformed contributor envelope", envelope, [hold])):
+            with self.subTest(name):
+                result = self.collect_one(record, comments)
+                self.assertFalse(result["complete"])
+                self.assertEqual([(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+                                  for row in result["waits"]], [(1, "unresolved", "unresolved_structured_wait", True)])
+                self.assertEqual([error["scope"] for error in result["errors"]], ["structured wait"])
+
+
+    def test_trusted_review_record_after_a_hold_is_an_unresolved_wait(self):
+        # No prose records a wait; only the comments do.
+        quiet = {**issue(), "body": "## Current Status\nState: Active.\nNext action: Ship it."}
+        hold = wait_comment("owner", waiting_for="Director to approve the release", ends_when="The Director answers")
+        review = '<!-- github-plan:wait {"evidence": "", "state": "review", "version": 1, "waits": []} -->'
+        for reviewer, expected in (("owner", (1, "unresolved", "unresolved_structured_wait", True, "structured_wait_review")),
+                                   ("mallory", (1, "decision", "structured_wait", False, None))):
+            with self.subTest(reviewer=reviewer):
+                result = self.collect_one(quiet, [hold, wait_comment(reviewer, marker=review)])
+                self.assertTrue(result["complete"])
+                self.assertEqual([(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"],
+                                   row["wait_review_reason"]) for row in result["waits"]], [expected])
+
+    def test_issue_with_no_wait_record_or_prose_is_not_a_wait(self):
+        quiet = {**issue(), "body": "## Current Status\nState: Active.\nNext action: Ship it."}
+        result = self.collect_one(quiet, [])
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["waits"], [])
 
 
 if __name__ == "__main__":

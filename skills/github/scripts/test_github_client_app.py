@@ -119,7 +119,7 @@ class PlanCommandContextTests(unittest.TestCase):
         commands = (
             ("index",), ("search", "fixture"), ("search", '"user:fixture"'),
             ("next",), ("wait", "--all"), ("create", "fixture"), ("ensure-labels",),
-            ("reconcile-landing", "--pr", "1"), ("milestone-list",), ("milestone-show", "1"),
+            ("reconcile-landing", "--pr", "1"), ("reconcile-status", "1"), ("milestone-list",), ("milestone-show", "1"),
             ("milestone-create", "fixture"), ("milestone-update", "1", "--title", "fixture"),
             ("milestone-close", "1"),
         )
@@ -537,13 +537,17 @@ class ClientAppTests(unittest.TestCase):
                 expected_actor="different[bot]", write_repository="host/product")
 
     def plan(self, repo: str | None, issue: str = "1", *,
-             checkout_repo: str = "client/product",
+             checkout_repo: str | None = "client/product",
              command: tuple[str, ...] | None = None) -> subprocess.CompletedProcess[str]:
         # Reproduce a two-App Client fleet without a separate bulk-reader App.
         env = {name: value for name, value in os.environ.items()
                if not name.startswith("GITHUB_READER_APP_")}
-        checkout = self.root / "checkout"
-        if not checkout.exists():
+        checkout = self.root / ("checkout" if checkout_repo else "outside")
+        if checkout_repo is None:
+            # A working directory in no repository, as when run from /tmp.
+            checkout.mkdir(exist_ok=True)
+            env["GIT_CEILING_DIRECTORIES"] = str(self.root)
+        elif not checkout.exists():
             subprocess.run(["git", "init", "--quiet", str(checkout)], check=True, capture_output=True)
             subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin",
                             f"https://github.com/{checkout_repo}.git"], check=True, capture_output=True)
@@ -578,26 +582,39 @@ class ClientAppTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(json.loads(result.stdout)["last_actor"], self.auth(repo)[1])
 
-    def test_plan_client_repository_keeps_missing_installation_refusal(self) -> None:
-        missing = self.plan("host/missing")
-        self.assertNotEqual(missing.returncode, 0)
-        payload = json.loads(missing.stdout)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error_code"], "identity_refused")
-        self.assertIn(("GET", "/repos/host/missing/installation", self.env["GITHUB_CLIENT_APP_ID"]),
-                      AppHandler.calls)
-        self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
+    def test_plan_missing_installation_refusal_holds_for_explicit_and_inferred_repository(self) -> None:
+        for name, run in (("explicit", lambda: self.plan("host/missing")),
+                          ("inferred_index", lambda: self.plan(None, checkout_repo="host/missing", command=("index",)))):
+            with self.subTest(entry=name):
+                AppHandler.calls = []
+                missing = run()
+                self.assertNotEqual(missing.returncode, 0)
+                payload = json.loads(missing.stdout)
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error_code"], "identity_refused")
+                self.assertIn(("GET", "/repos/host/missing/installation", self.env["GITHUB_CLIENT_APP_ID"]),
+                              AppHandler.calls)
+                self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
 
     def test_plan_qualified_issue_selects_its_owner_over_default_repository(self) -> None:
-        for default, target in (("host/product", "client/product"), ("client/product", "host/product"),
-                                (None, "host/product"), (None, "client/product")):
+        # A None checkout runs from a directory in no repository.
+        for default, target, checkout in (("host/product", "client/product", "client/product"),
+                                          ("client/product", "host/product", "client/product"),
+                                          (None, "host/product", "client/product"),
+                                          (None, "client/product", "client/product"),
+                                          (None, "host/product", None), (None, "client/product", None)):
             for ref in (f"{target}#1", f"https://github.com/{target}/issues/1"):
-                with self.subTest(default=default, ref=ref):
-                    result = self.plan(default, ref)
+                with self.subTest(default=default, ref=ref, checkout=checkout):
+                    result = self.plan(default, ref, checkout_repo=checkout)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     payload = json.loads(result.stdout)
                     self.assertEqual(payload["issue"]["repo"], target)
                     self.assertEqual(payload["last_actor"], self.auth(target)[1])
+
+    def test_plan_bare_issue_outside_any_checkout_still_needs_a_repository(self) -> None:
+        bare = self.plan(None, checkout_repo=None)
+        self.assertNotEqual(bare.returncode, 0)
+        self.assertFalse(json.loads(bare.stdout)["ok"])
 
     def test_plan_inferred_repository_selects_its_owner_app(self) -> None:
         for repo in ("host/product", "client/product"):
@@ -617,16 +634,6 @@ class ClientAppTests(unittest.TestCase):
                     payload = json.loads(result.stdout)
                     self.assertEqual(payload["repo"], repo)
                     self.assertEqual(payload["last_actor"], self.auth(repo)[1])
-
-    def test_plan_inferred_index_preserves_missing_installation_refusal(self) -> None:
-        result = self.plan(None, checkout_repo="host/missing", command=("index",))
-        self.assertNotEqual(result.returncode, 0)
-        payload = json.loads(result.stdout)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error_code"], "identity_refused")
-        self.assertIn(("GET", "/repos/host/missing/installation", self.env["GITHUB_CLIENT_APP_ID"]),
-                      AppHandler.calls)
-        self.assertFalse(any(method == "POST" for method, _, _ in AppHandler.calls))
 
     def test_plan_cross_owner_evidence_read_expects_its_owner_app(self) -> None:
         # A wait or blocker in another owner's repository is read by that
@@ -735,6 +742,10 @@ class ClientAppTests(unittest.TestCase):
                 self.assertNotIn("acting as your own GitHub user", result.stderr)
                 if repo != "client/missing-private":
                     self.assertEqual(json.loads(result.stdout)["login"], "app-1[bot]")
+                else:
+                    # A Client repository the App cannot see is never read as the person.
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("own-user", result.stdout)
 
     def test_private_read_fallback_stays_scoped_to_the_invisible_repository(self) -> None:
         self.primary_app_fleet()
@@ -745,6 +756,7 @@ class ClientAppTests(unittest.TestCase):
                 with self.subTest(args=args):
                     # Refused, or read by the App as before; never the person.
                     result = self.wrapper(*args, own_user=True)
+                    self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn("acting as your own GitHub user", result.stderr)
                     self.assertNotIn("own-user", result.stdout)
 

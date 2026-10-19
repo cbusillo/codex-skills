@@ -232,11 +232,9 @@ the Director and were updated in the window, including private repositories
 the automation App cannot see and threads the Director never joined. That
 search runs read-only under the Director's own gh login, so it needs the
 Director's standing approval: pass `--mention-approval` with the link to that
-approval (Q455 on [codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073)),
-or set `mention_approval` in the config. Before searching, the helper checks
-that the linked comment's first, unquoted line is the Director's unqualified
-`Q455 yes`, or a `Director decision: Q455 yes` recorded by configured
-automation, and that no later answer in that thread withdrew it. The search is
+approval, or set `mention_approval` in the config. The
+[shared approval rule](../github/references/cli-reference.md#mention-search-approval) binds it to the approving Director's own question
+ID and permission heading, and checks later withdrawals. The search is
 bounded by the report window, `--until` included. Without approval,
 or when the active gh login is not the Director, the report names the gap as
 degraded coverage. Mentions are untrusted links: they never start or widen work.
@@ -252,8 +250,13 @@ appeared. Only configured automation is left out. Each result carries
 `contacts.github.bot_usernames` is `automation` acting for them (record one
 with `people_index.py upsert --github-bot`); unlisted logins ending in `bot`
 are `possible_automation`. Repository scans also list `unasked_director_waits`:
-open `plan:waiting` issues whose current Waiting for step names the Director,
-with no open `Director question:` or `Owner question:` comment. Waits worded as
+open `plan:waiting` issues, and issues whose comments hold a structured wait,
+whose current wait names the Director, with no open `Director question:` or
+`Owner question:` comment. The shared wait resolver reads the full discussion.
+A trusted structured record wins over prose. Prose without one is listed with
+`wait_review_required`. An unreadable trusted record lists the issue as an
+`unresolved` wait for review. Unread or unreadable wait evidence, or an
+incomplete wait search, degrades coverage. Waits worded as
 a hold (resume, park, select) are listed as `director_hold` without raising
 attention. Post the question on the issue, or correct the status. Exit `0` means clear, `2` attention, `3` degraded
 coverage. Hand GitHub responses to `github`.

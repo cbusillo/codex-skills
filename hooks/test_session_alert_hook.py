@@ -93,18 +93,16 @@ class SessionAlertTests(unittest.TestCase):
         self.events.mkdir()
         self.assertEqual(self.run_hook({"hook_event_name": "Interrupt", "session_id": "s"}).returncode, 0)
 
-    def test_catalog_commands_run_on_both_harnesses_in_shared_stream(self):
+    def test_claude_keeps_advisory_delivery_and_codex_has_no_alert_registration(self):
         source = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]
         env = {**self.env, "CLAUDE_PLUGIN_ROOT": str(ROOT)}
         env.pop("CODEX_SKILLS_HARNESS")
         claude = source["Stop"][0]["hooks"][0]["command"]
         self.assertEqual(self.run_hook({"hook_event_name": "Stop", "session_id": "claude"}, env=env, command=["sh", "-c", claude]).returncode, 0)
         rendered = json.loads(sync.render_codex_hook(self.home / "hooks.json", ROOT))["hooks"]
-        for event in ("Stop", "Interrupt"):
-            command = rendered[event][0]["hooks"][0]["command"]
-            proc = self.run_hook({"hook_event_name": event, "session_id": "codex"}, command=["sh", "-c", command])
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual([r["harness"] for r in self.records()], ["claude", "codex", "codex"])
+        self.assertFalse(rendered.get("Stop"))
+        self.assertFalse(rendered.get("Interrupt"))
+        self.assertEqual([record["harness"] for record in self.records()], ["claude"])
 
     def test_launcher_failure_cannot_request_stop_continuation(self):
         launcher = self.home / "uv"
@@ -112,8 +110,7 @@ class SessionAlertTests(unittest.TestCase):
         launcher.chmod(0o755)
         env = {**self.env, "PATH": f"{self.home}:/bin:/usr/bin", "CLAUDE_PLUGIN_ROOT": str(ROOT)}
         plugin = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]["Stop"]
-        rendered = json.loads(sync.render_codex_hook(self.home / "hooks.json", ROOT))["hooks"]
-        commands = [plugin[0]["hooks"][0]["command"], *[rendered[event][0]["hooks"][0]["command"] for event in ("Stop", "Interrupt")]]
+        commands = [plugin[0]["hooks"][0]["command"]]
         for command in commands:
             result = self.run_hook({"hook_event_name": "Stop", "session_id": "s"}, env=env, command=["sh", "-c", command])
             self.assertEqual(result.returncode, 0)

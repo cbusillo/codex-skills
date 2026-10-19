@@ -8,10 +8,12 @@
 import argparse
 import asyncio
 from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import shlex
+import socket
 import shutil
 import signal
 import subprocess
@@ -25,7 +27,7 @@ from types import SimpleNamespace
 
 import account_choice
 import iterm2
-import close_ttys
+import session_liveness
 import iterm_tab
 import tmux_terminal
 
@@ -295,8 +297,13 @@ class PaneParserTests(unittest.TestCase):
         self.addCleanup(capability.stop)
         self.marker = "a" * 32
         common = {"session_id": "$1", "pid": "123"}
+        self.cutoff = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        born = patch.object(session_liveness, "process_started_at", return_value=self.cutoff + timedelta(seconds=22))
+        born.start()
+        self.addCleanup(born.stop)
         self.dead = self.pane_line({**common, "window_id": "@1", "pane_id": "%1", "pane_title": "exited",
                                     "pane_tty": "/dev/ttys987", "pane_dead": "1", "pane_dead_status": "0",
+                                    "pane_dead_time": str(int(self.cutoff.timestamp())),
                                     "@supervisor_identity": self.marker})
         self.live_fields = {**common, "window_id": "@2", "pane_id": "%2", "pane_title": "live",
                             "pane_tty": "/dev/ttys986", "pane_pid": "456", "pane_dead": "0",
@@ -327,6 +334,19 @@ class PaneParserTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.terminal.list()
 
+    def test_interrupted_terminal_cleanup_retains_physical_close_contract(self):
+        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture",
+                 "session_id": "source", "harness": "claude", "transcript": "interrupted.jsonl"}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "interrupted.jsonl").write_text(json.dumps({"sessionId": "source", "type": "user", "message": {"content": "interrupted"}}) + "\n")
+            ledger = root / "ledger.json"
+            ledger.write_text(json.dumps([entry]))
+            with patch.object(self.terminal, "run", return_value=SimpleNamespace(returncode=0, stdout=self.dead)) as calls, patch.object(session_liveness, "inventory", return_value=[]):
+                self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
+            self.assertTrue(any(call.args[0] == "if-shell" for call in calls.call_args_list))
+
     def test_empty_dead_pid_close_still_checks_ledger_pid_tty_and_siblings(self):
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
                  "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
@@ -335,16 +355,23 @@ class PaneParserTests(unittest.TestCase):
             ledger.write_text(json.dumps([entry]))
             with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                     returncode=0, stdout=self.dead + self.live)) as calls, \
-                    patch.object(close_ttys, "inventory", return_value=[]):
+                    patch.object(session_liveness, "inventory", return_value=[]):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
             for processes in ([(789, "other-tty", "reused-pid")],
                               [(999, "ttys987", "tty-still-live")]):
                 with self.subTest(processes=processes), \
                         patch.object(self.terminal, "run", return_value=SimpleNamespace(
                             returncode=0, stdout=self.dead)), \
-                        patch.object(close_ttys, "inventory", return_value=processes):
+                        patch.object(session_liveness, "inventory", return_value=processes):
                     with self.assertRaises(ValueError):
                         self.terminal.close(self.identity, ledger)
+            for value in (None, False, 0, "789"):
+                with self.subTest(pid=value), patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=self.dead)) as calls:
+                    ledger.write_text(json.dumps([{**entry, "pid": value}]))
+                    with self.assertRaises(ValueError):
+                        self.terminal.close(self.identity, ledger)
+                    self.assertTrue(all(call.args[0] == "list-panes" for call in calls.call_args_list))
 
     def test_redraw_refusal_reports_typed_text_without_sending_return(self):
         row = {"pane_id": "%2", "dead": False, "title": "before"}
@@ -368,7 +395,7 @@ class PaneParserTests(unittest.TestCase):
             ledger.write_text(json.dumps([entry]))
             with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                     returncode=0, stdout=self.dead + live)) as calls, \
-                    patch.object(close_ttys, "inventory", return_value=processes), \
+                    patch.object(session_liveness, "inventory", return_value=processes), \
                     patch.object(tmux_terminal, "process_parents", return_value={456: 123, 999: 456}):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
                 mutations = [c.args for c in calls.call_args_list if c.args[0] != "list-panes"]
@@ -390,11 +417,69 @@ class PaneParserTests(unittest.TestCase):
                 ledger.write_text(json.dumps([entry]))
                 with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                         returncode=0, stdout=self.dead + live)) as calls, \
-                        patch.object(close_ttys, "inventory", return_value=[(456, "ttys987", "new-worker"), *jobs]), \
+                        patch.object(session_liveness, "inventory", return_value=[(456, "ttys987", "new-worker"), *jobs]), \
                         patch.object(tmux_terminal, "process_parents", return_value=parents):
                     with self.assertRaises(ValueError):
                         self.terminal.close(self.identity, ledger)
                     self.assertFalse(any(c.args[0] != "list-panes" for c in calls.call_args_list))
+
+    def test_physical_close_preserves_new_harness_owner_and_resumed_source(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
+        for harness, commands in (
+            ("codex", ["python3 /fixture/codex-session.py launch -- codex", "codex --remote unix:///fixture -- prompt"]),
+            ("claude", ["claude", "node /fixture/claude.js --continue"]),
+            ("codex", ["codex resume " + source, "python3 /fixture/codex_session_proxy.py -- fixture"]),
+        ):
+            with self.subTest(harness=harness, commands=commands), tempfile.TemporaryDirectory() as folder:
+                entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                         "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture",
+                         "session_id": source, "harness": harness}
+                ledger = Path(folder) / "ledger.json"
+                ledger.write_text(json.dumps([entry]))
+                processes = [(456, "ttys987", commands[0]), (999, "ttys987", commands[1]),
+                             (1000, "other-tty", "codex resume " + source)]
+                with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=self.dead + live)) as calls, \
+                        patch.object(session_liveness, "inventory", return_value=processes), \
+                        patch.object(tmux_terminal, "process_parents", return_value={456: 123, 999: 456}):
+                    self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
+                    mutations = [call.args for call in calls.call_args_list if call.args[0] != "list-panes"]
+                    self.assertEqual(len(mutations), 1)
+                    self.assertEqual(mutations[0][-1], "kill-pane -t %1")
+
+    def test_malformed_launch_time_refuses_physical_close_without_traceback(self):
+        for started in (True, 123, {"timestamp": "invalid"}, "2026-01-01T00:00:00"):
+            with self.subTest(started=started), tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                ledger.write_text(json.dumps([{"supervisor_owned": True, "tmux_session_id": self.identity,
+                    "pid": 789, "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture",
+                    "launch_started_at": started}]))
+                with patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=self.dead)) as calls, self.assertRaises(ValueError):
+                    self.terminal.close(self.identity, ledger)
+                self.assertTrue(all(call.args[0] == "list-panes" for call in calls.call_args_list))
+
+    def test_native_close_never_excuses_unknown_old_equal_or_future_birth(self):
+        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
+        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
+        for born in (self.cutoff - timedelta(seconds=1), self.cutoff,
+                     datetime.now(timezone.utc) + timedelta(days=1), ValueError("unknown birth")):
+            with self.subTest(born=born), tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                ledger.write_text(json.dumps([entry]))
+                with patch.object(self.terminal, "run", return_value=SimpleNamespace(returncode=0, stdout=self.dead + live)) as calls, \
+                        patch.object(session_liveness, "inventory", return_value=[(456, "ttys987", "new-worker")]), \
+                        patch.object(tmux_terminal, "process_parents", return_value={456: 123}), \
+                        patch.object(session_liveness, "process_started_at") as clock:
+                    if isinstance(born, Exception):
+                        clock.side_effect = born
+                    else:
+                        clock.return_value = born
+                    with self.assertRaises(ValueError):
+                        self.terminal.close(self.identity, ledger)
+                    self.assertFalse(any(call.args[0] != "list-panes" for call in calls.call_args_list))
 
     def test_tty_ancestry_failure_or_activity_between_checks_never_closes(self):
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
@@ -408,7 +493,7 @@ class PaneParserTests(unittest.TestCase):
                 ledger.write_text(json.dumps([entry]))
                 with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                         returncode=0, stdout=self.dead + live)) as calls, \
-                        patch.object(close_ttys, "inventory", side_effect=inventories), \
+                        patch.object(session_liveness, "inventory", side_effect=inventories), \
                         patch.object(tmux_terminal, "process_parents") as ancestry:
                     if isinstance(parents, Exception):
                         ancestry.side_effect = parents
@@ -474,7 +559,7 @@ def fixture_tmux_environment(root):
     config = root / "tmux.conf"
     config.write_text("set-option -g default-shell /bin/sh\nset-option -g default-command 'exec /bin/sh'\n")
     wrapper = binary / "tmux"
-    wrapper.write_text("#!/bin/sh\nunset ENV\nexport ZDOTDIR=" + shlex.quote(str(startup)) + "\nexec "
+    wrapper.write_text("#!/bin/sh\nunset ENV\nexport HOME=" + shlex.quote(str(root)) + "\nexport ZDOTDIR=" + shlex.quote(str(startup)) + "\nexec "
                        + shlex.quote(executable) + " -f " + shlex.quote(str(config)) + ' "$@"\n')
     wrapper.chmod(0o700)
     return {"PATH": str(binary) + os.pathsep + os.environ["PATH"], "TMUX_TMPDIR": str(root)}, startup
@@ -528,7 +613,11 @@ class TmuxFixture(unittest.TestCase):
         self.folder = tempfile.TemporaryDirectory(dir="/tmp", prefix="svtest-")
         self.addCleanup(self.folder.cleanup)
         self.root = Path(self.folder.name)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         environment_values, self.shell_startup = fixture_tmux_environment(self.root)
+        environment_values["HOME"] = str(self.root)
         environment = patch.dict(os.environ, environment_values)
         environment.start()
         self.addCleanup(environment.stop)
@@ -554,6 +643,7 @@ class TmuxFixture(unittest.TestCase):
         self.agent = self.root / "claude"
         self.agent.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 print("READY:" + json.dumps({"brief": sys.argv[-1], "home": os.getenv("CLAUDE_CONFIG_DIR"), "codex_home": os.getenv("CODEX_HOME"), "move": os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"), "cwd": os.getcwd(), "code_home": os.getenv("CODE_HOME"), "uv_cache": os.getenv("UV_CACHE_DIR"), "shell_startup": os.getenv("ZDOTDIR")}), flush=True)
+print("Working (0s • esc to interrupt)", flush=True)
 for line in sys.stdin:
     if line.strip() in {"/exit", "/quit"}:
         break
@@ -568,6 +658,10 @@ for line in sys.stdin:
         self.choice = {"provider": "anthropic", "account_id": "anthropic-ab12",
                        "env": {"CLAUDE_CONFIG_DIR": str(self.root / "account")},
                        "storage_root": self.root}
+        # Folders outside ~/Developer launch only when the selected home already trusts them.
+        (self.root / "account").mkdir()
+        (self.root / "account/.claude.json").write_text(json.dumps(
+            {"projects": {str(self.root.resolve()): {"hasTrustDialogAccepted": True}}}))
         self.ledger = self.root / "ledger.json"
 
     def diagnostics(self):
@@ -577,7 +671,7 @@ for line in sys.stdin:
             details["panes"] = self.terminal.list()
             pids = {row["pid"] for row in details["panes"]}
             ttys = {row["tty"].removeprefix("/dev/") for row in details["panes"]}
-            details["processes"] = [row for row in close_ttys.inventory()
+            details["processes"] = [row for row in session_liveness.inventory()
                                     if row[0] in pids or row[1] in ttys]
             details["screens"] = {}
             for row in details["panes"]:
@@ -659,6 +753,54 @@ for line in sys.stdin:
 
 
 class TmuxTests(TmuxFixture):
+    def test_exact_source_resume_keeps_receipt_read_send_and_close_routes(self):
+        # Exercise the real terminal route with a disposable helper. Native
+        # ingress, leases and generation publication have separate socket tests.
+        native = str(uuid.uuid4())
+        home = self.root / "codex-account"
+        transcript = home / "sessions" / (native + ".jsonl")
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": native}}) + "\n")
+        self.ledger.write_text(json.dumps([{"session_id": native, "harness": "codex", "supervisor_owned": True,
+                                          "codex_home": str(home), "transcript": str(transcript)}]))
+        helper = self.root / "codex-session.py"
+        helper.write_text('''import json, os, sys
+print("RESUMED:" + json.dumps({"argv": sys.argv[1:], "home": os.environ["CODEX_HOME"], "account_path": os.environ["FIXTURE_ACCOUNT_PATH"]}), flush=True)
+for line in sys.stdin:
+    if line.strip() == "/quit":
+        break
+    print("TURN:" + line.strip(), flush=True)
+''')
+        uv = self.root / "bin/uv"
+        uv.write_text(f"#!{sys.executable}\nimport os, sys\nos.execv(sys.executable, [sys.executable, *sys.argv[2:]])\n")
+        uv.chmod(0o700)
+        choice = {"provider": "openai", "name": "original", "account_id": "openai-ab12",
+                  "env": {"CODEX_HOME": "~/codex-account", "FIXTURE_ACCOUNT_PATH": "~/cache"}, "storage_root": self.root}
+        with (patch.object(iterm_tab, "__file__", str(self.root / "iterm_tab.py")),
+              patch.object(account_choice, "load_config", return_value={"accounts": [choice]}),
+              patch.object(account_choice, "select", return_value=choice),
+              patch("codex_session_proxy.source_endpoint"),
+              patch.object(iterm_tab, "inspect_codex_daemon"),
+              patch.object(iterm_tab, "source_launch_metadata", side_effect=lambda row, _: row),
+              patch.object(iterm_tab, "startup_prompt_window", return_value=0)):
+            row = self.operate("new", window_id=self.window, resume_session_id=native, ledger=self.ledger,
+                               command_file=None, brief_file=None, account_provider="openai", account_config=None, account=None)
+        fd = os.open(row["tty"], os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fd)
+        self.wait_screen(row["session_id"], "RESUMED:")
+        history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
+        received = json.loads(next(line.split("RESUMED:", 1)[1] for line in history.splitlines() if "RESUMED:" in line))
+        self.assertEqual(received, {"argv": ["resume", "--session-id", native, "--codex-home", str(home.resolve())],
+                                    "home": str(home), "account_path": str(self.root / "cache")})
+        self.assertEqual(len(list((self.root / "Launch Receipts").glob("*.json"))), 1)
+        self.operate("send", session_id=row["session_id"], text="fresh safe turn", text_file=None,
+                     verified_target=True, no_submit=False)
+        self.wait_screen(row["session_id"], "TURN:fresh safe turn")
+        self.ended(row)
+        self.ledger.write_text(json.dumps([self.entry(row)]))
+        self.terminal.close(row["session_id"], self.ledger)
+        self.assertFalse(any(r["session_id"] == row["session_id"] for r in self.terminal.list()))
+
     def test_launch_message_read_exit_and_close_with_account_and_literal_brief(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")
@@ -727,11 +869,22 @@ class TmuxTests(TmuxFixture):
     def test_codex_uses_shared_daemon_preflight_and_selected_home(self):
         codex = self.root / "codex"
         self.agent.rename(codex)
-        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote unix:// -C {shlex.quote(str(self.root))}")
         self.choice = {**self.choice, "provider": "openai", "account_id": "openai-ab12",
                        "env": {"CODEX_HOME": str(self.root / "codex-account")}}
         home = Path(self.choice["env"]["CODEX_HOME"])
         home.mkdir()
+        endpoint = iterm_tab.codex_daemon_endpoint(home)
+        endpoint.parent.mkdir()
+        native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+        native_socket.bind(str(endpoint))
+        endpoint.chmod(0o600)
+        self.command.write_text(f"exec {shlex.quote(str(codex))} --remote {shlex.quote('unix://' + str(iterm_tab.codex_daemon_endpoint(home.resolve())))} -C {shlex.quote(str(self.root))}")
+        code = self.root / ".code"
+        (code / "skill-data").mkdir(parents=True)
+        (code / "skill-data/supervisor.toml").write_text(
+            '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+            + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
+        self.enterContext(patch.dict(os.environ, {"CODE_HOME": str(code)}))
         (home / "config.toml").write_text(
             f'[projects.{json.dumps(str(self.root.resolve()))}]\ntrust_level = "trusted"\n'
         )
@@ -746,7 +899,7 @@ class TmuxTests(TmuxFixture):
         self.wait_screen(row["session_id"], "READY:")
         history = self.terminal.run("capture-pane", "-p", "-J", "-t", self.terminal.select(row["session_id"])["pane_id"]).stdout
         received = json.loads(next(line.split("READY:", 1)[1] for line in history.splitlines() if "READY:" in line))
-        self.assertEqual(received["codex_home"], self.choice["env"]["CODEX_HOME"])
+        self.assertEqual(Path(received["codex_home"]), Path(self.choice["env"]["CODEX_HOME"]).resolve())
         self.assertEqual(received["brief"], self.brief_text)
 
     def test_early_worker_exit_reports_dead_pane_and_last_output(self):
@@ -794,7 +947,7 @@ class TmuxTests(TmuxFixture):
     def test_exit_wait_requires_process_proof_after_tmux_reports_dead(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")
-        original = close_ttys.inventory
+        original = session_liveness.inventory
         reads = 0
 
         def reaping():
@@ -804,7 +957,7 @@ class TmuxTests(TmuxFixture):
                 return [(row["pid"], row["tty"].removeprefix("/dev/"), "fixture-agent")]
             return original()
 
-        with patch.object(close_ttys, "inventory", side_effect=reaping):
+        with patch.object(session_liveness, "inventory", side_effect=reaping):
             self.ended(row)
         self.assertGreater(reads, 1)
 
@@ -935,7 +1088,7 @@ class TmuxTests(TmuxFixture):
         self.wait_screen(detail["launched"][0]["session_id"], "READY:")
         self.assertNotEqual(detail["launched"][0]["session_id"], detail["failed_launch"]["session_id"])
 
-    def test_cli_read_and_transcript_close_preview_without_iterm_connection(self):
+    def test_cli_read_and_native_close_without_iterm_connection(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")
         scripts = Path(__file__).parent
@@ -952,20 +1105,15 @@ class TmuxTests(TmuxFixture):
         entry = {**self.entry(row), "session_id": native, "harness": "codex",
                  "transcript": str(transcript), "handoff_url": "https://github.com/example/repo/issues/1#issuecomment-2"}
         self.ledger.write_text(json.dumps([entry]))
-        argv = [sys.executable, str(scripts / "close_ttys.py"), "--backend", "tmux", "--tmux-socket", self.socket,
-                "--ledger", str(self.ledger), "--session-id", native, "--verified-handoff", "--verified-input"]
-        preview = self.run_child(argv)
-        self.assertTrue(json.loads(preview.stdout)["dry_run"])
         self.assertTrue(self.terminal.select(row["session_id"])["dead"])
-        records[1]["payload"]["message"] = "still working"
+        # Physical cleanup supports an interrupted source. Normal finish owns
+        # the verdict gate; this primitive still proves the exact dead pane.
+        records[1]["payload"]["message"] = "interrupted before a final verdict"
         transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        refused = self.run_child([*argv, "--apply"], check=False)
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertTrue(self.terminal.select(row["session_id"])["dead"])
-        records[1]["payload"]["message"] = "Safe to exit: yes"
-        transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        applied = self.run_child([*argv, "--apply"])
-        self.assertTrue(json.loads(applied.stdout)["closed"])
+        with patch.object(session_liveness, "inventory", return_value=[]):
+            applied = self.terminal.close(row["session_id"], self.ledger)
+        self.assertTrue(applied["close_requested"])
+        self.assertNotIn(row["session_id"], {pane["session_id"] for pane in self.terminal.list()})
 
 
 class DetachedTerminalTests(TmuxFixture):

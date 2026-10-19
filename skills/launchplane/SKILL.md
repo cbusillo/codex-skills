@@ -295,6 +295,127 @@ commands:
         "<instance>",
       ]
     purpose: Reads an Odoo lane's replacement plan status, blocker codes and env-key names.
+  - name: launchplane-workflow-rule-retirement-inspect
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "workflow-rule-retirement-inspect",
+        "--payload-file",
+        "<private-file>",
+      ]
+    purpose: Inspects selected workflow authz rules' scope, management and broad flag without changing policy.
+  - name: launchplane-workflow-rule-retirement-plan
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "workflow-rule-retirement-plan",
+        "--payload-file",
+        "<private-file>",
+      ]
+    purpose: Builds an inert plan for retiring selected workflow authz rules; it has no apply mode.
+  - name: launchplane-runtime-setting-removal-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "runtime-setting-removal-dry-run",
+        "--product",
+        "<product>",
+        "--scope",
+        "context",
+        "--context",
+        "<context>",
+        "--key",
+        "<setting-name>",
+        "--reason",
+        "<reason>",
+      ]
+    purpose: Saves a private service review for removing named stored runtime settings and returns its review id and digest; it has no apply.
+  - name: launchplane-runtime-setting-removal-readback
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "runtime-setting-removal-readback",
+        "--product",
+        "<product>",
+        "--scope",
+        "context",
+        "--context",
+        "<context>",
+        "--key",
+        "<setting-name>",
+        "--reason",
+        "<reason>",
+        "--review-id",
+        "<review-id>",
+        "--plan-sha256",
+        "<plan-sha256>",
+      ]
+    purpose: Reads back whether stored runtime settings match a reviewed removal, by names and digests only.
+  - name: launchplane-disposable-lane-inspect
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-inspect",
+        "--payload-file",
+        "<private-file>",
+      ]
+    purpose: Reads one disposable lane's binding digest with every safety fact unknown; changes nothing.
+  - name: launchplane-disposable-lane-collect
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-collect",
+        "--payload-file",
+        "<private-file>",
+        "--expected-binding-sha256",
+        "<binding-sha256>",
+        "--inspect-evidence-file",
+        "<private-inspect-output>",
+        "--reviewed-inspect",
+      ]
+    purpose: Has the service collect and store short-lived safety facts for a reviewed testing or preview lane binding.
+  - name: launchplane-disposable-lane-record
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-record",
+        "--payload-file",
+        "<private-file>",
+        "--expected-binding-sha256",
+        "<binding-sha256>",
+        "--inspect-evidence-file",
+        "<private-inspect-output>",
+        "--reviewed-inspect",
+      ]
+    purpose: Records short-lived safety facts for a reviewed lane binding; known facts only for an exact preview.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -793,8 +914,9 @@ to retrieve the complete saved Client reason; add `--decision-id ID` for a
 historical decision. This narrow read uses the existing private admin config
 and the product's `product_profile.read` permission. It is a bounded local
 extension of `/v1/product-review`, separate from the public-safe context output.
-The output contains Client prose: keep it in task-private evidence unless its
-publication is authorized. A failed read means unavailable, not no feedback.
+The output contains Client prose: unless its publication is authorized, keep
+it only where [task artifacts](../references/repo-cleanup.md#task-artifacts-and-retention)
+go, the session scratchpad or the host's named task-evidence location. A failed read means unavailable, not no feedback.
 The PR watcher uses this reader to verify its GitHub projection and receipt.
 
 ## Stable Deploy Identity
@@ -1018,6 +1140,17 @@ verification.
 
 ## Tools
 
+- `testing-private-ingress-dry-run` / `-apply` / `-readback` wrap the producer's
+  application testing ingress operation. Read the
+  [private ingress caller contract](references/write-action-helper-contract.md#application-testing-private-ingress)
+  before use, including private files, review, original-key recovery, redaction
+  and readback limits.
+- `disposable-lane-inspect` / `-collect` / `-record` wrap the producer's
+  disposable lane observation operation. Read the
+  [disposable lane contract](references/write-action-helper-contract.md#disposable-lane-observations)
+  before use, including the reviewed inspect binding, testing fact limits, no
+  retry and readback limits. Clearing an observation is not offered yet.
+
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
   product-config intent preflight, private local product-config dry-run/apply,
@@ -1152,6 +1285,21 @@ verification.
   product's own stable-lane secret into another of its lanes without
   collecting the value; see the
   [write-action contract](references/write-action-helper-contract.md#copying-a-managed-runtime-secret).
+- `GET /v1/contexts/{context}/runtime-settings` and `/secrets`, with their
+  `/instances/{instance}/...` variants: names-only local-extension reads
+  (`context-runtime-settings-read`, `instance-runtime-settings-read`,
+  `context-secrets-read`, `instance-secrets-read`). Supply `--context` and,
+  for instance commands, `--instance`. Settings show `keys` and `withheld_keys`
+  by record scope; secrets show name, integration, scope and status. These
+  inventories can include inherited global records and reflect caller access.
+  Read the [names-only contract](references/write-action-helper-contract.md#names-only-settings-and-secret-reads)
+  for output bounds and the service's plain-value transport limitation.
+- Native testing rebuild preflight and submission (`testing-rebuild-dry-run` /
+  `testing-rebuild-submit`) reuse `POST /v1/drivers/odoo/target-replacement-plan`
+  and `POST /v1/drivers/odoo/target-replacement-apply`. The fixed testing-only
+  intent, reviewed evidence, audit reason and recovery protocol are in the
+  [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
+  These are bounded local extensions and require deployed native service support.
 - `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`: Bounded
   local-extension read (`target-replacement-operation-read --operation-id`)
   for why a testing or stable Odoo deploy failed: take the id from
@@ -1182,6 +1330,25 @@ verification.
   Blocker, step and warning text, domains, target names and ids, and volume
   values are dropped and listed by path. The service authorizes it as
   `odoo_target_replacement_plan.read` on the lane.
+- `POST /v1/authz-policies/workflow-rule-retirement-plan`: Bounded
+  local-extension read (`workflow-rule-retirement-inspect` /
+  `workflow-rule-retirement-plan --payload-file`) for workflow authz rules you
+  may retire. The private file names the active policy record, revision and
+  digest and up to 50 rule fingerprints. It returns each rule's scope,
+  management and broad flag, plus blockers. The plan adds inert candidate
+  digests. Nothing is written and there is no apply mode. Launchplane does not
+  know which workflows use a rule; review workflow sources first. Read the
+  [helper contract](references/write-action-helper-contract.md#workflow-rule-retirement-inspection).
+- `POST /v1/admin/runtime-settings/removal`: Bounded local-extension path
+  (`runtime-setting-removal-dry-run` / `-readback`, with `--product`,
+  `--scope`, `--context`, `--instance`, one `--key` per setting name, and
+  `--reason`) for the Director agent to review removing stored plain runtime
+  settings. Output holds names and digests only, never values or the reason.
+  A dry run saves a private service review and returns its `review_id` and
+  `plan_sha256`. Readback repeats the same keys and reason with that review id
+  and digest. There is no apply here. Apply belongs to the signed-in admin,
+  and a dry-run digest does not authorize it. Read the
+  [helper contract](references/write-action-helper-contract.md#runtime-setting-removal-review).
 - `POST /v1/product-profiles/{product}/owner`: Bounded local-extension path
   that records or clears a product's Client (`product-owner-dry-run` /
   `-apply`, with `--product`, `--github-login` or `--clear`, and `--reason`).
@@ -1205,7 +1372,13 @@ verification.
   [Provider target](references/write-action-helper-contract.md#provider-target)
   before either source operation, including partial-outcome recovery.
   Add the lane record afterwards with the contract-backed stable-lane repair
-  workflow.
+  workflow. `dokploy-target-create-application-dry-run` / `-apply` create a
+  conventional testing application in new placement, optionally with a new
+  service-named state volume; apply reuses the saved storage plan and needs the
+  same `--idempotency-key` on every retry. `-readback` and `-retain` recover an
+  uncertain allocation from that evidence and key. Read
+  [Provider target](references/write-action-helper-contract.md#provider-target)
+  before any of them.
 - `dokploy-target-repair-domain-authority-dry-run` uses that setup route with
   `operation: repair-domain-authority` and fixed `mode: dry-run`.
   `ingress-route-dry-run` uses the local-extension

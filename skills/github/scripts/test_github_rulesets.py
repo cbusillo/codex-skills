@@ -46,6 +46,10 @@ class FakeClient:
         self.actor = self.owner
         return self.owner
 
+    def request(self, method: str, path: str, *, operation: str, body: Any = None,
+                allow_unprotected: bool = False) -> Any:
+        raise AssertionError("standard fixture unexpectedly used the raw request surface")
+
     def list_owned_repositories(self, owner: str) -> list[str]:
         self.resolve_owner(owner)
         return sorted(self.repos)

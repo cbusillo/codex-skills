@@ -21,6 +21,7 @@ from typing import Any
 import github_agent
 import github_plan_claim
 import github_plan_wait
+import github_plan_status
 import github_client
 import github_milestone as github_milestone_core
 
@@ -257,7 +258,7 @@ def next_static_exclusion(
 ) -> dict[str, Any] | None:
     state = str(issue.get("state") or "").casefold()
     status = next_plan_status(issue, config)
-    base = {
+    base: dict[str, Any] = {
         **compact_list_issue(str(issue.get("repo") or ""), issue),
         "plan_status": status,
         "focus": focus,
@@ -277,6 +278,7 @@ def evaluate_next_plan(
     focus: str | None,
     relationships: dict[str, list[dict[str, Any]]] | None,
     relationship_error: str | None = None,
+    structured_wait: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     status = next_plan_status(issue, config)
     milestone = next_milestone_context(issue)
@@ -288,6 +290,10 @@ def evaluate_next_plan(
     }
     static_exclusion = next_static_exclusion(issue, config=config, focus=focus)
     if static_exclusion is not None:
+        if structured_wait is not None and relationships is not None and relationship_error is None:
+            derived = github_plan_status.derive(issue, relationships, structured_wait, label_names=config["labels"])
+            static_exclusion.update(plan_status=derived["status"], derived=derived,
+                                    blocked_by=derived["blocked_by"])
         return "excluded", static_exclusion
     if relationship_error is not None or relationships is None:
         return "excluded", {
@@ -298,6 +304,12 @@ def evaluate_next_plan(
         }
 
     summary = next_relationship_summary(relationships)
+    if structured_wait is not None:
+        derived = github_plan_status.derive(issue, relationships, structured_wait, label_names=config["labels"])
+        status = derived["status"]
+        base.update(plan_status=status, derived=derived, blocked_by=derived["blocked_by"])
+        base["recorded_labels"] = base["labels"]
+        base["labels"] = github_plan_status.project_labels(base["labels"], config["labels"], derived)
     open_blockers = summary["open_blockers"]
     if open_blockers:
         return "excluded", {
@@ -306,7 +318,7 @@ def evaluate_next_plan(
             "evidence": relationship_refs(open_blockers, str(issue.get("repo") or "")),
             "blocked_by": open_blockers,
         }
-    if status == "blocked":
+    if status == "blocked" and structured_wait is None:
         return "excluded", {
             **base,
             "exclusion": "label_blocked_without_native_edge",
@@ -315,6 +327,11 @@ def evaluate_next_plan(
         }
     if status == "waiting":
         return "excluded", {**base, "exclusion": "waiting", "evidence": []}
+    if status == "hold":
+        return "excluded", {**base, "exclusion": "scope_review_required", "evidence": [],
+                            "scope_status": base["derived"]["scope_status"]}
+    if status == "review":
+        return "excluded", {**base, "exclusion": "wait_review_required", "evidence": [], "wait_review_required": True}
     open_sub_issues = summary["open_sub_issues"]
     if open_sub_issues:
         return "excluded", {
@@ -1164,9 +1181,13 @@ def issue_references(text: str, *, repo: str | None, known_repositories: set[str
                 continue
         number = int(ref.group(3) or ref.group(5) or ref.group(7) or ref.group(8))
         previous_end = ref.end()
-        references[(target.casefold(), number)] = {
+        key = (target.casefold(), number)
+        # A bare #N only assumes this repository; any named form of it makes it explicit.
+        bare = bool(ref.group(8)) and references.get(key, {"bare": True}).get("bare", False)
+        references[key] = {
             "repo": target, "number": number,
             "url": f"https://github.com/{target}/{ref.group(2) or 'issues'}/{number}",
+            **({"bare": True} if bare else {}),
         }
     return list(references.values())
 
@@ -1191,10 +1212,11 @@ def evaluate_direction_node(
     _, item = evaluate_next_plan(
         issue, config=config, focus=focus, relationships=relationships,
         relationship_error=relationship_error,
+        structured_wait=structured_wait,
     )
     if truncated_relationships:
         item["truncated_relationships"] = truncated_relationships
-    if item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies"}:
+    if item.get("exclusion") in {"completed", "stale_needs_review", "scope_review_required", "unknown_dependencies"}:
         return {"item": item}
     if issue.get("pull_request") is not None:
         return {"item": {**item, "exclusion": "pull_request"}}
@@ -1215,7 +1237,7 @@ def evaluate_direction_node(
     if summary["open_sub_issues"]:
         item["open_sub_issues"] = summary["open_sub_issues"]
     if (
-        next_plan_status(issue, config) == "waiting"
+        (structured_wait is None and next_plan_status(issue, config) == "waiting")
         or ((structured_wait is None or structured_wait["state"] == "review") and re.search(r"(?im)^\s*State:\s*(?:waiting|parked)\b", status_text))
         or (structured_wait is not None and structured_wait["state"] == "waiting")
         or (reports and not (summary["open_blockers"] or summary["open_sub_issues"]))

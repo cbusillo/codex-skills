@@ -4,6 +4,9 @@ description: "Comprehensive GitHub Expert persona for repository execution and h
 metadata:
   short-description: Execute GitHub repo workflows
 resources:
+  - path: scripts/gh-attachment.py
+    kind: script
+    description: Bounded read-only downloader for private comment attachments under verified standing approval.
   - path: scripts/dev-worktree
     kind: script
     description: Portable task worktree creation with private per-host root and existing host-helper integration.
@@ -89,6 +92,11 @@ resources:
     kind: reference
     description: Machine-readable transport, quota, actor, retry, and reconciliation decisions for GitHub helper operations.
 commands:
+  - name: github-attachment-download
+    source: skill
+    resource_path: scripts/gh-attachment.py
+    example_argv: ["uv", "run", "scripts/gh-attachment.py", "--repo", "cbusillo/PRODUCT", "--comment", "123", "--url", "https://github.com/user-attachments/files/123/answer.csv", "--evidence-dir", "/absolute/task-evidence/PRODUCT/TASK/download"]
+    purpose: Saves a verified comment attachment privately under verified standing approval, without printing credentials or file contents.
   - name: dev-worktree
     source: skill
     resource_path: scripts/dev-worktree
@@ -290,6 +298,21 @@ commands:
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "plan", "--repo", "OWNER/REPO"]
     purpose: Reads the active repository owner's full ruleset state and reports the idempotent standard-pair and selected client-lock changes without writing.
+  - name: github-required-checks-plan
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-plan", "--repo", "OWNER/REPO", "--target", "classic", "--checks-file", "checks.json", "--out", "plan.json"]
+    purpose: Saves an additive required-check plan and digest using the existing verified repository owner writer.
+  - name: github-required-checks-apply
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-apply", "--plan-file", "plan.json", "--plan-digest", "SHA256", "--confirm-owner-admin-write"]
+    purpose: Applies only the reviewed additive plan after state comparison, then reads it back.
+  - name: github-required-checks-readback
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-readback", "--plan-file", "plan.json", "--plan-digest", "SHA256"]
+    purpose: Verifies the reviewed required-check result without writing.
   - name: github-rulesets-apply
     source: skill
     resource_path: scripts/gh-rulesets.py
@@ -810,7 +833,9 @@ and say why.
   conflict or an explicit check requirement. The merge train owns freshness on
   train-routed PRs. Before a base update, apply the ownership and authorization
   checks in [Merge Readiness](references/repo-workflow.md#merge-readiness), then use
-  `gh-pr.py update-branch`. For local integration,
+  `gh-pr.py update-branch`. The helpers enforce this rule: when an update is
+  required for another reason, name it with `--required-by` or
+  `--refresh-required`. For local integration,
   use `git-commit-as-bot --git-command merge|pull|rebase|cherry-pick|revert|am`
   from the target directory, followed by that command's arguments, including
   `--continue` after resolving
@@ -822,6 +847,11 @@ and say why.
   `--abort`, and `--quit` remain available because they create no commits.
 - **Issue bodies and close comments**: `scripts/gh-issue`; from the catalog
   root (`skills/`), `github/scripts/gh-issue create "Title" --repo OWNER/REPO < body.md`.
+- **Weighed model reviews**: use `scripts/gh-pr.py comment --body-file FILE
+  --reviewed-head FULL_SHA` after weighing the completed review. It posts the
+  free-text disposition and explicit completion metadata in one comment; see
+  [ready handoffs](references/cli-reference.md#ready-handoffs). Ordinary progress
+  comments and raw Supervisor reports do not attest completion.
 - **Comments and reviews**: `scripts/gh-pr.py comment --body-file` or
   `scripts/gh-comment` for timeline comments;
   `scripts/gh-with-env-token pr review --body-file` for review feedback.
@@ -854,7 +884,10 @@ each target repository:
   With the opt-in, publishing checks that the active account matches that
   declaration, and the helpers print `acting as your own GitHub user`.
   With the opt-in, reads of a private repository there that the App cannot
-  see also use that login, scoped to the repository; other reads keep the App.
+  see also use that login, scoped to the repository. In any repository, the
+  opt-in also runs `gh api` reads that only an account can answer (`user/...`,
+  `notifications`, `repos/OWNER/REPO/subscription`) and `gh repo fork` without
+  `--org` as that login; other reads keep the App.
   Commits keep your git identity, and `gh-pr.py create` adds the
   AI-assistance sentence to the body unless it already says so.
   For a fork contribution, the commit's identity follows the fork's `origin`
@@ -887,6 +920,15 @@ helper behavior. When a result is not a confirmed success, for example an
 acting. Read the object back before any retry. Never replay an unknown write,
 and never under another identity. For another operation's arguments or response
 contract, read its CLI reference section; skip unrelated recipes.
+
+For files linked from private issue comments, use `scripts/gh-attachment.py`
+under the recorded Q467 standing approval, without a per-file question. App installation
+tokens may read the comment while failing to read its attachment. This narrow
+route supports only repositories owned by the declared personal login, verifies
+the comment, link and current approval through automation, and saves untrusted
+bytes only to private task evidence outside Git checkouts.
+Read [comment attachments](references/cli-reference.md#comment-attachments)
+before using it. Never obtain or paste a token into an agent command.
 
 ## Pull Requests
 
@@ -1007,8 +1049,7 @@ the landing route:
   merged, releasable, or clean, and before a release. Read the PR and its
   checks for the current head SHA. Match background review evidence to that
   SHA. Unresolved blocking findings against it block the merge or release even
-  when CI is green, until they are addressed, deferred,
-  or declined with a recorded reason under
+  when CI is green, until they are accounted for under
   [reviews by another model](../references/model-review.md). Findings from a
   detached `auto-review-<hex>` worktree are current when their snapshot SHA
   matches the head and history otherwise; those worktrees are not dirty local

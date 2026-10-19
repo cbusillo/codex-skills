@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import datetime as dt
 import json
 import os
 import plistlib
@@ -21,7 +22,8 @@ from pathlib import Path
 
 import aiohttp
 
-from agent_activity import ActivityStore, atomic_json, directory, home_key, native_id, account_id, read_json
+from agent_activity import (INBOX, LEASE_SECONDS, RETENTION_SECONDS, STATE, ActivityStore, account_id, atomic_json,
+                            directory, home_key, inbox_records, native_id, private_root, read_json, renewal_report)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -36,7 +38,7 @@ CONTENT_NOTIFICATIONS = ["item/started", "item/completed", "item/agentMessage/de
                          "turn/diff/updated", "turn/plan/updated", "rawResponseItem/completed"]
 
 
-def accounts(config_path: Path | None = None) -> tuple[list[dict], Path]:
+def accounts(config_path: Path | None = None) -> list[dict]:
     config = account_choice.load_config(config_path)
     snapshot, problem = account_choice.read_snapshot(config["snapshot_command"])
     if problem or not snapshot:
@@ -56,7 +58,7 @@ def accounts(config_path: Path | None = None) -> tuple[list[dict], Path]:
             raise ValueError("multiple accounts select the same harness home")
         homes.add(key)
         result.append({"harness": harness, "accountID": matches[0]["id"], "env": configured["env"], "homeKey": key})
-    return result, account_choice.storage_root(config["snapshot_command"])
+    return result
 
 
 class CodexObserver:
@@ -287,6 +289,9 @@ async def claude_poll(store: ActivityStore, account: dict, *, once: bool = False
     child_env = dict(os.environ)
     child_env.pop("CLAUDE_CONFIG_DIR", None)
     child_env.update(account["env"])
+    if "CLAUDE_CONFIG_DIR" in child_env:
+        # Account homes are configured with "~", which the CLI does not expand.
+        child_env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(child_env["CLAUDE_CONFIG_DIR"])
     while True:
         process = None
         try:
@@ -320,13 +325,11 @@ async def claude_poll(store: ActivityStore, account: dict, *, once: bool = False
         await asyncio.sleep(POLL_SECONDS)
 
 
-async def observe(config: Path | None, *, once: bool = False, storage: Path | None = None,
+async def observe(config: Path | None, *, once: bool = False,
                   state_root: Path | None = None, claude_cli: Path | None = None) -> None:
-    configured, root = accounts(config)
-    if storage is not None and state_root is None:
-        raise ValueError("qualification storage requires isolated --state-root")
-    private = state_root or Path(os.environ.get("CODE_HOME") or Path.home() / ".code").expanduser()
-    store = ActivityStore(storage or root, private)
+    configured = accounts(config)
+    # Events go only to the private inbox; Context Panel imports them. The App Group is never written here.
+    store = ActivityStore(state_root or private_root(os.environ))
     live_bindings = {f"binding-{a['homeKey']}.json" for a in configured}
     for binding in store.private.glob("binding-*.json"):
         if binding.name in live_bindings or not re.fullmatch(r"binding-[0-9a-f]{64}[.]json", binding.name) or binding.is_symlink():
@@ -339,7 +342,7 @@ async def observe(config: Path | None, *, once: bool = False, storage: Path | No
     jobs = []
     for account in configured:
         atomic_json(store.private / f"binding-{account['homeKey']}.json",
-                    {"producerID": "codex-skills", "accountID": account["accountID"], "storageRoot": str(storage or root)})
+                    {"producerID": "codex-skills", "accountID": account["accountID"]})
         if account["harness"] == "codex":
             home = Path(account["env"]["CODEX_HOME"]).expanduser()
             jobs.append(CodexObserver(store, account["accountID"], home).run(once=once))
@@ -373,7 +376,7 @@ def install(config: Path | None, *, write: bool = False, claude_cli: Path | None
         raise ValueError("install from the reconciled runtime checkout, not a task worktree")
     uv = durable_cli("uv")
     claude = durable_cli("claude", claude_cli)
-    private = Path(os.environ.get("CODE_HOME") or Path.home() / ".code").expanduser()
+    private = private_root(os.environ)
     command = [uv, "run", "--no-python-downloads", str(Path(__file__).resolve()), "run", "--claude-cli", claude]
     if config:
         command.extend(["--config", str(config.resolve())])
@@ -396,20 +399,50 @@ def install(config: Path | None, *, write: bool = False, claude_cli: Path | None
     return {"written": write, "launchAgent": str(destination), "job": job}
 
 
-def main() -> int:
+RENEWAL_EXIT = {"pass": 0, "fail": 3, "inconclusive": 4}
+
+
+def renewal_check(state_root: Path | None, window: int, harness: str) -> dict:
+    """Read the inbox only; never create, prune or write anything."""
+    inbox = (state_root or private_root(os.environ)).expanduser() / STATE / INBOX
+    if not inbox.is_absolute():
+        raise ValueError("activity directory must be absolute")
+    if any(path.is_symlink() for path in (*inbox.parents, inbox)):
+        raise ValueError("activity directory contains a symlink")
+    records, files = inbox_records(inbox)
+    harnesses = ("codex", "claude") if harness == "both" else (harness,)
+    report = renewal_report(records, dt.datetime.now(dt.timezone.utc), window, harnesses)
+    report["files"].update(files)
+    return report
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("run", "once", "install"))
+    parser.add_argument("mode", choices=("run", "once", "install", "renewal-check"))
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--storage-root", type=Path, help="explicit qualification/test store")
-    parser.add_argument("--state-root", type=Path, help="isolated private state for qualification/tests")
+    parser.add_argument("--state-root", type=Path, help="isolated private state and inbox for qualification/tests")
     parser.add_argument("--claude-cli", type=Path, help="absolute durable Claude CLI, including for LaunchAgent installation")
     parser.add_argument("--write", action="store_true", help="write the previewed LaunchAgent; does not load it")
-    args = parser.parse_args()
+    parser.add_argument("--window", type=int, default=600, metavar="SECONDS",
+                        help="renewal-check: inbox seconds to examine, above the lease and at most 24 hours")
+    parser.add_argument("--harness", choices=("codex", "claude", "both"), default="both",
+                        help="renewal-check: harness to judge")
+    args = parser.parse_args(argv)
+    if args.mode == "renewal-check":
+        if not LEASE_SECONDS < args.window <= RETENTION_SECONDS:
+            parser.error(f"--window must be above {LEASE_SECONDS} and at most {RETENTION_SECONDS} seconds")
+        try:
+            report = renewal_check(args.state_root, args.window, args.harness)
+        except (OSError, ValueError):
+            print("Agent activity inbox unavailable.", file=sys.stderr)
+            return 1
+        print(json.dumps(report))
+        return RENEWAL_EXIT[report["verdict"]]
     try:
         if args.mode == "install":
             print(json.dumps(install(args.config, write=args.write, claude_cli=args.claude_cli)))
         else:
-            asyncio.run(observe(args.config, once=args.mode == "once", storage=args.storage_root,
+            asyncio.run(observe(args.config, once=args.mode == "once",
                                 state_root=args.state_root, claude_cli=args.claude_cli))
         return 0
     except (OSError, ValueError, TimeoutError):

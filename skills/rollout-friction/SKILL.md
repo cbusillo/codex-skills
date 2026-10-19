@@ -269,8 +269,9 @@ rollout files, session traces, runout files, or agent workflow friction.
    save the ledger text to an ignored local file and run `classify_auto_review_ledger.py` against the active
    repo. Default JSON redacts raw local finding locations and titles into stable
    ids; use `--trusted-local-details` only for approved local-only diagnosis.
-   Treat `current_target` findings as review evidence to address or explicitly
-   defer even if the review ran in a detached generated worktree. Treat
+   Treat `current_target` findings as review evidence to weigh under
+   [reviews by another model](../references/model-review.md) even if the review
+   ran in a detached generated worktree. Treat
    `detached_auto_review` findings as external proposal history by default only
    when the snapshot does not match the active target; verify against active
    `HEAD` before letting them block the current task. Do not read, delete, or

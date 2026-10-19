@@ -25,6 +25,9 @@ import github_identity
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parents[2]))
+from skills.direction.scripts import question_id
+
 DEFAULT_GH = os.environ.get("GH_COMMENT_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 EXPECTED_ACTOR = github_identity.automation_login()
 PER_PAGE = 100
@@ -46,8 +49,8 @@ class CommentError(Exception):
     ):
         super().__init__(github_api_core.redact_string(message))
         self.failure = failure
-        self.api_result = github_api_core.redact_body(api_result) if api_result is not None else None
-        self.payload = github_api_core.redact_body(payload or {})
+        self.api_result: Optional[dict[str, Any]] = github_api_core.redact_body(api_result) if api_result is not None else None
+        self.payload: dict[str, Any] = github_api_core.redact_body(payload or {})
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
@@ -475,13 +478,14 @@ def _matching_actor_comment(
     actor: str,
     body: str,
 ) -> Optional[dict[str, Any]]:
-    canonical_body = _canonical_comment_body(body)
-    matches = [
-        comment
-        for comment in comments
-        if str((comment.get("user") or {}).get("login") or "").casefold() == actor.casefold()
-        and _canonical_comment_body(comment.get("body")) == canonical_body
-    ]
+    matches = []
+    for candidate in comments:
+        if str((candidate.get("user") or {}).get("login") or "").casefold() != actor.casefold():
+            continue
+        prior_question = question_id.heading_id(candidate.get("body") or "")
+        expected = question_id.number_heading(body, prior_question) if prior_question else body
+        if _canonical_comment_body(candidate.get("body")) == _canonical_comment_body(expected):
+            matches.append(candidate)
     if not matches:
         return None
     return max(
@@ -753,6 +757,14 @@ def _comment_impl(
         )
 
     resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
+    if (question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body)
+            and github_identity.acts_as_own_user(resolved_repo)):
+        raise _local_error(
+            "Personal-identity question writes need the existing Q ID in the heading before exact-text approval; "
+            "allocate with question_id.py next before requesting approval, then post that numbered text",
+            operation=operation, cause="validation_error", expected_actor=expected_actor,
+            failed_step="input_validation",
+        )
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     actor = authenticated_actor(
         gh_cmd=gh_cmd,
@@ -814,6 +826,17 @@ def _comment_impl(
                 failed_step="validate_exact_comment", payload=target,
             )
         steps.append("validate_exact_comment")
+        prior_question = question_id.heading_id(selected.get("body") or "")
+        if prior_question:
+            incoming_question = question_id.heading_id(body)
+            if incoming_question and incoming_question != prior_question:
+                raise _local_error(
+                    "Question ID differs from the saved question; keep its original ID when editing",
+                    operation=operation, cause="validation_error", actor=actor,
+                    expected_actor=expected_actor, completed_steps=steps,
+                    failed_step="validate_question_identity", payload=target,
+                )
+            body = question_id.number_heading(body, prior_question)
         update_step = failed_step or "update_comment"
         result = _call_api(
             "PATCH", path, {"body": body},
@@ -847,6 +870,17 @@ def _comment_impl(
         existing_comments = comments
         selected = _latest_actor_comment(comments, actor)
         if selected is not None:
+            prior_question = question_id.heading_id(selected.get("body") or "")
+            if prior_question:
+                incoming_question = question_id.heading_id(body)
+                if incoming_question and incoming_question != prior_question:
+                    raise _local_error(
+                        "Question ID differs from the saved question; keep its original ID when editing",
+                        operation=operation, cause="validation_error", actor=actor,
+                        expected_actor=expected_actor, completed_steps=steps,
+                        failed_step="validate_question_identity",
+                    )
+                body = question_id.number_heading(body, prior_question)
             selected_id = selected.get("id")
             if not isinstance(selected_id, int):
                 raise _local_error(
@@ -1052,7 +1086,7 @@ def comment(
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     try:
-        return _comment_impl(
+        payload = _comment_impl(
             kind,
             number,
             body,
@@ -1070,8 +1104,100 @@ def comment(
             dedupe_body=dedupe_body,
             retry_summaries=collected_retry_summaries,
         )
+        if question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body):
+            payload = _number_saved_question(payload, body, gh_cmd=gh_cmd, retry_summaries=collected_retry_summaries)
+        return payload
     except CommentError as error:
         _enrich_error_with_retry_summaries(error, collected_retry_summaries)
+        raise
+
+
+def _number_saved_question(payload: dict[str, Any], requested_body: str, *, gh_cmd: str,
+                           retry_summaries: list[github_api_core.RetrySummary]) -> dict[str, Any]:
+    """Allocate only for a confirmed saved comment; its URL owns retry identity."""
+    operation = "github.comment." + payload["kind"]
+    repo, number = payload["repo"], payload["number"]
+    steps = [*payload["completed_steps"], "save_question"]
+    assigned = None
+    try:
+        selected_id = payload["comment"]["id"]
+        result = _call_api(
+            "GET", f"/repos/{repo}/issues/comments/{selected_id}", None,
+            gh_cmd=gh_cmd, operation=operation, actor=payload["actor"],
+            expected_actor=payload["expected_actor"], completed_steps=steps,
+            failed_step="read_saved_question", is_write=False, retry_summaries=retry_summaries,
+        )
+        saved = result.body
+        if (not isinstance(saved, dict) or saved.get("id") != selected_id
+                or saved.get("html_url") != payload["url"]
+                or str((saved.get("user") or {}).get("login") or "").casefold() != payload["actor"].casefold()
+                or not isinstance(saved.get("body"), str)):
+            raise ValueError("Saved question readback does not match the confirmed comment")
+        saved_body = saved["body"]
+        if question_id.heading_id(saved_body):
+            payload["question_id"] = question_id.heading_id(saved_body)
+            return payload
+        if _canonical_comment_body(saved_body) != _canonical_comment_body(requested_body):
+            raise ValueError("Saved question changed before numbering; read it before repairing")
+        assigned = "Q" + str(question_id.update(question_id.counter_path(), question_url=payload["url"]))
+        numbered_body = question_id.number_heading(saved_body, assigned)
+        try:
+            numbered = _comment_impl(
+                payload["kind"], number, numbered_body,
+                repo=repo, edit_comment=selected_id, expected_body=saved_body,
+                expected_updated_at=saved.get("updated_at"), gh_cmd=gh_cmd,
+                expected_actor=payload["expected_actor"], operation=operation,
+                completed_steps=steps, retry_summaries=retry_summaries,
+            )
+        except CommentError as conflict:
+            if conflict.failure.cause != "comment_conflict":
+                raise
+            # Another numbering process may have completed the same assignment.
+            # Read only: never replay a conflicting write or accept changed text.
+            current = _call_api(
+                "GET", f"/repos/{repo}/issues/comments/{selected_id}", None,
+                gh_cmd=gh_cmd, operation=operation, actor=payload["actor"],
+                expected_actor=payload["expected_actor"], completed_steps=steps,
+                failed_step="reconcile_question_number", is_write=False, retry_summaries=retry_summaries,
+            )
+            confirmed = current.body
+            if (not isinstance(confirmed, dict) or confirmed.get("id") != selected_id
+                    or confirmed.get("html_url") != payload["url"]
+                    or str((confirmed.get("user") or {}).get("login") or "").casefold() != payload["actor"].casefold()
+                    or confirmed.get("body") != numbered_body):
+                raise conflict
+            numbered = _comment_payload(
+                confirmed, operation=operation, kind=payload["kind"], repo=repo,
+                number=number, actor=payload["actor"], expected_actor=payload["expected_actor"],
+                comment_action="existing", completed_steps=[*steps, "reconcile_question_number"],
+                retry_summary=current.retry_summary,
+            )
+        payload["comment"] = numbered["comment"]
+        payload["completed_steps"] = numbered["completed_steps"]
+        payload["question_id"] = assigned
+        return payload
+    except (OSError, ValueError) as error:
+        raise _local_error(
+            str(error), operation=operation, cause="question_numbering_failed",
+            actor=payload["actor"], expected_actor=payload["expected_actor"],
+            completed_steps=steps, failed_step="number_saved_question",
+            write_outcome="applied", payload={"url": payload["url"], "question_id": assigned,
+                "outcome_certainty": "confirmed_partially_applied",
+                "reconciliation": {"strategy": "read_saved_question_before_exact_edit"}},
+        ) from error
+    except CommentError as error:
+        failed_request = dict(error.api_result or {})
+        certainty = "unknown" if error.failure.write_outcome == "unknown" else "confirmed_partially_applied"
+        error.payload.update({"url": payload["url"], "question_id": assigned,
+                              "saved_question": True, "failed_request": failed_request,
+                              "outcome_certainty": certainty,
+                              "recommended_next_action": "read_saved_question_before_exact_edit"})
+        error.failure.write_outcome = "applied"
+        error.failure.completed_steps = list(dict.fromkeys([*steps, *error.failure.completed_steps]))
+        if error.api_result is not None:
+            error.api_result.update({"write_outcome": "applied", "outcome_certainty": certainty,
+                                     "completed_steps": error.failure.completed_steps,
+                                     "failure": error.failure.as_dict()})
         raise
 
 

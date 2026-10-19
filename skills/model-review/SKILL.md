@@ -53,7 +53,9 @@ before running any allowed supplementary review, serially with its recorded
 budget, and put both results in the PR's review note.
 
 1. Commit the change and leave the worktree clean. Write a prompt file that
-   names the change, the paths to read, and what the change is for. Never ask
+   names the change, the paths to read, and what the change is for. For a
+   [pending decision](../references/model-review.md#before-a-decision), there
+   is no change: describe the saved issue instead. Never ask
    the reviewer to run a command or tests, and do not forbid commands either:
    the OpenAI reviewer reads files through its read-only shell. Say, for example,
    "Your access is read-only; read whatever files you need, and do not modify anything."
@@ -62,7 +64,10 @@ budget, and put both results in the PR's review note.
    ask the reviewer to read it directly. Do not paste file contents, your
    argument that the change is right, or the answer you expect. Ask for a
    realistic trigger and a severity for each finding, and allow the answer
-   "none".
+   "none". For each defect, ask for every sibling path with the same cause, not
+   just one counterexample, so the whole kind is fixed at once. On a rereview,
+   name what changed since the last review and ask the reviewer to cover that
+   plus what it touches.
 2. Run each reviewer from this skill's base directory:
 
    ```bash
@@ -76,6 +81,14 @@ budget, and put both results in the PR's review note.
    `openai` reviewer also ignores `~/.codex/config.toml`, so settings there,
    such as its default model, do not apply.
 
+   Reviewers have no network, and some read only granted roots. Pass each
+   file outside the repository that the review needs, such as a saved issue
+   or the overall DIRECTION.md, with a repeated `--input FILE`. The helper
+   copies it next to the diff, names it in the preamble and removes it after
+   the run. Links in the prompt stay unopened: the helper tells the reviewer
+   so and lists them in the result's `unreachable_links`. Before weighing the
+   review, pass any linked content it needed with `--input` and run it again.
+
    All reviews select their provider's Context Panel use-next
    account at launch through the [Supervisor account reader](../supervisor/scripts/account_choice.py).
    They use its private `skill-data/supervisor.toml` mappings and snapshot command;
@@ -85,12 +98,11 @@ budget, and put both results in the PR's review note.
    overrides are removed by name so they cannot bypass the selected home's login;
    no credentials or logins are read or changed by the helper. Missing config,
    unavailable choices or receipt-storage failures stop the review before launch.
-   JSON reports the account name and opaque ID plus the count-only launch receipt;
-   receipts use Context Panel's existing Launch Receipts store. macOS refuses that
-   store to a session under the Supervisor's launchd-started tmux server, so the
-   review stops with an EPERM refusal there. The Supervisor then runs the review
-   from its terminal session against the task worktree, and the authoring session
-   weighs the findings ([#2069](https://github.com/cbusillo/codex-skills/issues/2069)).
+   JSON reports the account name and opaque ID plus the count-only launch receipt.
+   The receipt goes through the installed Context Panel's `--record-launch`, so a
+   session macOS refuses the App Group store, such as a worker under the
+   Supervisor's launchd-started tmux server, runs its own review, with or without
+   a PR ([#2069](https://github.com/cbusillo/codex-skills/issues/2069)).
    No fixed review-home
    export is needed in a Supervisor launch file. Google uses the account reader's
    single existing agy login binding, without an account override.
@@ -135,6 +147,15 @@ not that the reviewer read every relevant file; check the review's coverage too.
 Failures distinguish no command attempts from attempts without a successful command.
 Nonzero exits retain the JSON provider error and distinct stderr cause as bounded,
 credential-redacted diagnostics; OpenAI's malformed stdout is never excerpted.
+OpenAI's `execution` also reports elapsed seconds, the CLI exit code (null on
+timeout), last and terminal event types, JSONL validity, whether an answer file
+was produced, and failed command count. `completion_shape` distinguishes a
+reviewer-declared `incomplete` or `refused` from malformed completion evidence.
+`command_diagnostics` recognizes GitHub connection failures even when a later
+command made the shell exit 0. These are observed execution signals, not proof
+of the reviewer's reason; absent signals leave the cause unknown. No command,
+source output, narration or partial report is quoted. A completed Codex turn
+can still contain an incomplete review; it remains a failure without a retry.
 
 - Run `uv run scripts/review_with_model.py check --author-provider openai --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.

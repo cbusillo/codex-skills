@@ -18,6 +18,12 @@ from search_history import bound, discover_roots, eastern, scan
 from extract_rollout_memory import events_from_record
 
 
+def eastern_instant(text):
+    """Read an ET display stamp back as the instant it names."""
+    local = datetime.strptime(text, "%Y-%m-%d %I:%M:%S %p ET")
+    return local.replace(tzinfo=ZoneInfo("America/New_York"))
+
+
 def codex(text, role="user", timestamp="2026-10-01T14:20:00Z", kind="response_item"):
     payload = {"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]}
     if kind == "event_msg":
@@ -59,8 +65,8 @@ class SearchHistoryTests(unittest.TestCase):
         self.assertEqual(result["hits"][1]["session"], "synthetic-claude")
         self.assertEqual(result["hits"][2]["attribution"], "agent_text")
         self.assertEqual(result["hits"][0]["attribution"], "user_candidate")
-        expected_time = datetime.fromisoformat(result["hits"][0]["timestamp"]).astimezone(ZoneInfo("America/New_York"))
-        self.assertEqual(result["hits"][0]["time_et"], expected_time.strftime("%Y-%m-%d %I:%M:%S %p ET").replace(" 0", " "))
+        self.assertEqual(eastern_instant(result["hits"][0]["time_et"]),
+                         datetime.fromisoformat(result["hits"][0]["timestamp"]))
 
     def test_codex_event_msg_and_mirror_do_not_inflate_patterns(self):
         text = "Preview is frustrating."
@@ -190,8 +196,8 @@ class SearchHistoryTests(unittest.TestCase):
 
     def test_et_daylight_and_standard_time_follow_zone_database(self):
         for source in ("2026-07-01T14:00:00Z", "2026-12-01T14:00:00Z"):
-            expected = datetime.fromisoformat(source).astimezone(ZoneInfo("America/New_York"))
-            self.assertEqual(eastern(source), expected.strftime("%Y-%m-%d %I:%M:%S %p ET").replace(" 0", " "))
+            with self.subTest(source=source):
+                self.assertEqual(eastern_instant(eastern(source)), datetime.fromisoformat(source))
 
 
 if __name__ == "__main__":

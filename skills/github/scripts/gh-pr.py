@@ -28,6 +28,8 @@ from ready_handoff import (
     client_test_notes_error,
     handoff_body,
     requires_client_acceptance,
+    review_evidence_gap,
+    review_result_body,
 )
 
 
@@ -270,6 +272,7 @@ def parse_args() -> argparse.Namespace:
     p = sub.add_parser("comment", help="Add a PR timeline comment through the shared REST path.")
     p.add_argument("pr", help="PR number, URL, or branch.")
     p.add_argument("--body-file", required=True, help="Read comment Markdown from this file. Use '-' to read from stdin.")
+    p.add_argument("--reviewed-head", help="Attest that this disposition weighs the completed review for this full head SHA.")
     p.add_argument("--edit-last", action="store_true", help="Edit the authenticated actor's latest comment.")
     p.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID.")
     p.add_argument("--expected-body-file", help="Require this exact prior comment body.")
@@ -291,6 +294,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("pr", help="PR number or URL.")
     p.add_argument("--wait-seconds", type=int, choices=range(0, 61), default=30, metavar="0..60",
                    help="Seconds to observe the asynchronous update (default: 30).")
+    p.add_argument("--required-by", metavar="REQUIREMENT",
+                   help="The check or rule that requires a fresh base when GitHub does not report the PR behind.")
     p.set_defaults(func=cmd_update_branch)
 
     p = sub.add_parser("merge", help="Merge a PR via the REST merge endpoint.")
@@ -569,6 +574,14 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
     body = read_text_file(args.body_file, operation="comment", repo=repo, pr=number)
     if not body:
         raise PrHelperError("PR comment body is empty", operation="comment", repo=repo, pr=number)
+    reviewed_head = getattr(args, "reviewed_head", None)
+    if reviewed_head is not None:
+        if args.edit_last or args.edit_comment is not None or args.create_if_none:
+            raise PrHelperError("Post a new review disposition comment; do not edit an earlier result", operation="comment", repo=repo, pr=number)
+        try:
+            body = review_result_body(body, reviewed_head)
+        except ValueError as exc:
+            raise PrHelperError(str(exc), operation="comment", repo=repo, pr=number) from exc
     result = shared_comment(
         "pr",
         repo,
@@ -632,12 +645,44 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
             for check in checks["checkRuns"]
         ):
             raise PrHelperError(UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE, repo=repo, pr=number)
+    review_gap = ready_review_gap(repo, number, current)
+    if review_gap:
+        raise PrHelperError(review_gap, repo=repo, pr=number)
     try:
         body = handoff_body(checks["headSha"], waiting_for_client=args.waiting_for_client)
     except ValueError as exc:
         raise PrHelperError(str(exc), repo=repo, pr=number) from exc
     result = shared_comment("pr", repo, number, body, operation=CURRENT_OPERATION)
     return {**result, "headSha": checks["headSha"], "body": body, "summary": summary}
+
+
+def ready_review_gap(repo: str, number: int, pr: dict[str, Any]) -> str:
+    """Refuse a handoff whose required review of record has no recorded outcome."""
+    reader, config_reader = (
+        github_read_core.GitHubReader(
+            gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=read_operation(), cache_enabled=False,
+        )
+        for _ in range(2)
+    )
+    trusted = {login.casefold() for login in (EXPECTED_ACTOR, (pr.get("user") or {}).get("login")) if login}
+    try:
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="review_records")
+        return review_evidence_gap(
+            repo, number, base=pr["baseRefName"], head=pr["headRefOid"], comments=comments, trusted=trusted,
+            # A repository without the config file answers 404; keep that expected
+            # read out of the successful handoff's retry guidance.
+            read_json=lambda path: (config_reader if "/contents/" in path else reader).get_json(path, step="review_records"),
+            read_pages=lambda path: reader.paged_json(path, step_prefix="review_records"),
+            missing=lambda error: isinstance(error, github_read_core.GitHubReadError) and error.result.status == 404,
+        )
+    except github_read_core.GitHubReadError as exc:
+        raise PrHelperError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict(), diagnostics=exc.diagnostics, repo=repo, pr=number) from exc
+    except (github_read_core.GitHubReadShapeError, KeyError, TypeError, ValueError) as exc:
+        raise PrHelperError(f"Review-of-record evidence is unavailable: {exc}", diagnostics=reader.diagnostics(), repo=repo, pr=number) from exc
+    finally:
+        record_retry_summary(reader.retry_summary())
+        if not any(result.status == 404 for result in config_reader.failed_results):
+            record_retry_summary(config_reader.retry_summary())
 
 
 def validate_ready_pr(pr: dict[str, Any], *, repo: str, number: int) -> None:
@@ -725,6 +770,35 @@ def cmd_checks(args: argparse.Namespace) -> dict[str, Any]:
     return result_payload
 
 
+def update_branch_refusal(
+    repo: str, number: int, mergeable_state: Any, required_by: Optional[str],
+) -> Optional[github_api_core.FailureDetail]:
+    """Refuse a base update that would only rerun CI.
+
+    GitHub reports "behind" only when the base requires up-to-date branches.
+    Any other refresh needs a named requirement; the merge train owns freshness.
+    """
+    if mergeable_state == "dirty":
+        cause, message = "refresh_conflicting_branch", (
+            "The PR conflicts with its base, which update-branch cannot resolve; merge the base locally "
+            "with git-commit-as-bot --git-command merge, resolve, --continue and push "
+            "(repo-workflow.md Merge Readiness)")
+    elif mergeable_state == "behind" or required_by:
+        return None
+    elif mergeable_state in (None, "unknown"):
+        cause, message = "mergeability_unknown", (
+            f"GitHub has not computed mergeability yet; read it again with gh-pr.py --repo {repo} view {number}")
+    else:
+        cause, message = "refresh_not_required", (
+            f"The base does not require this PR to be up to date (merge state {mergeable_state}), so an update "
+            "would only rerun CI; the merge train owns freshness. Update only for a check or rule that requires "
+            f"it: gh-pr.py --repo {repo} update-branch {number} --required-by \"<that check or rule>\"")
+    return github_api_core.FailureDetail(
+        cause=cause, message=message, retryable=False, fallback_eligible=False,
+        disposition="stop", write_outcome="not_started", failed_step="update_branch_preflight",
+    )
+
+
 def cmd_update_branch(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
     path = f"/repos/{repo}/pulls/{number}"
@@ -732,6 +806,12 @@ def cmd_update_branch(args: argparse.Namespace) -> dict[str, Any]:
     expected_head = str((pr.get("head") or {}).get("sha") or "")
     if pr.get("state") != "open" or not FULL_SHA_PATTERN.fullmatch(expected_head):
         raise HelperError("Updating a branch requires an open PR with a full head SHA")
+    refusal = update_branch_refusal(repo, number, pr.get("mergeable_state"), args.required_by)
+    if refusal:
+        raise PrHelperError(
+            refusal.message, failure=refusal, operation="update-branch", repo=repo, pr=number,
+            headSha=expected_head, mergeableState=pr.get("mergeable_state"),
+        )
     # A 202 accepts asynchronous work. Never replay an uncertain update: a
     # changed head alone cannot attribute a concurrent push to this request.
     accepted = rest_result("PUT", f"{path}/update-branch", {"expected_head_sha": expected_head})
@@ -771,7 +851,7 @@ def cmd_update_branch(args: argparse.Namespace) -> dict[str, Any]:
                 "completed_steps": ["update_branch_accepted", "read_head"],
                 "update": {
                     "state": "head_changed" if changed else "accepted_unconfirmed",
-                    "accepted": True, "previousHeadSha": expected_head,
+                    "accepted": True, "previousHeadSha": expected_head, "requiredBy": args.required_by,
                     "newHeadSha": observed_head if changed else None,
                     "next_action": "Wait for checks on the observed head" if changed else
                     "Use gh-pr.py view to observe the head; do not repeat update-branch",

@@ -100,6 +100,15 @@
       "GitHub workflow changes",
       "public safety guidance changes"
     ],
+    "modelReview": {
+      "requiredPaths": [
+        "AGENTS.md",
+        "instructions/*",
+        "skills/references/*",
+        "skills/*/SKILL.md",
+        "skills/*/references/*"
+      ]
+    },
     "test": {
       "default": "./scripts/validate-skills.sh"
     },
@@ -116,6 +125,7 @@
     "CodeQL",
     "Launchplane Contract Freshness",
     "Launchplane Train Validation",
+    "Merge-Train Reply Schema",
     "Update PEP 723 Dependencies"
   ],
   "relatedRepos": [],

@@ -24,6 +24,7 @@ import os
 import plistlib
 import re
 import signal
+import stat
 import shlex
 import shutil
 import subprocess
@@ -541,10 +542,16 @@ def main() -> int:
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
             if args.backend == "api" and (args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv):
-                return emit_agent_usage_error("Qodana options require an explicit --backend qodana selection.")
+                return emit_agent_usage_error("Qodana options cannot be combined with --backend api.")
+            backend_selection = "explicit"
+            if args.backend == "auto":
+                host_default = os.environ.get("JB_INSPECT_DEFAULT_BACKEND")
+                args.backend, backend_selection = qodana_backend_module().select_backend(
+                    args, sys.modules[__name__], host_default if host_default in {"api", "qodana"} else None)
             if args.backend == "qodana":
                 # Keep headless runs outside all desktop configuration/lifecycle paths.
                 result = command_qodana(args)
+                result["backend_selection"] = backend_selection
                 print(public_json(result))
                 return 0
             context = build_context(args)
@@ -586,14 +593,18 @@ def main() -> int:
     return 2
 
 
-def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
+def qodana_backend_module() -> Any:
     backend_path = Path(__file__).with_name("qodana_backend.py")
     spec = importlib.util.spec_from_file_location("jb_qodana_backend", backend_path)
     if spec is None or spec.loader is None:
         raise RuntimeError("Qodana backend unavailable")
     backend = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(backend)
-    return backend.run(args, sys.modules[__name__])
+    return backend
+
+
+def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
+    return qodana_backend_module().run(args, sys.modules[__name__])
 
 
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
@@ -796,9 +807,9 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
     agent = subparsers.choices["agent-inspect"]
-    agent.add_argument("--backend", choices=("api", "qodana"), default="api", help="Explicit per-run backend; the Inspection API remains the default.")
+    agent.add_argument("--backend", choices=("auto", "api", "qodana"), default="auto", help="Per-run backend. auto runs local Qodana for qualified Python selections and the Inspection API otherwise.")
     agent.add_argument("--qodana-image", help="Pinned Community Docker image repository@sha256:digest.")
-    agent.add_argument("--qodana-license-file", action="append", default=[], help="Existing local IDE key or paid-plugin license; copied privately then deleted. Never an account/token store.")
+    agent.add_argument("--qodana-license-file", action="append", default=[], help="Removed: returns UNKNOWN without accessing the file. Use an independently Director-activated headless profile; see qodana-backend.md#director-activation.")
     agent.add_argument("--qodana-plugin-zip", action="append", default=[], help="Public plugin package for the disposable profile; does not supply entitlement.")
     agent.add_argument("--qodana-uv", help="Optional existing Linux uv executable matching the container architecture for configured Python preparation.")
     agent.add_argument("--qodana-recover-only", action="store_true", help="Recover proved interrupted Qodana profiles/containers without starting an inspection or lifting a stop.")
@@ -1280,7 +1291,7 @@ def repository_preparation_command_hash(argv: list[str], target: Path | None = N
                 sdk_table_sha256 = hashlib.sha256(sdk_table.read_bytes()).hexdigest()
             except (OSError, IndexError):
                 sdk_table_sha256 = "unavailable"
-    return stable_value_hash(
+    return text_sha256(
         json.dumps(
             {"argv": argv, "helper_sha256": helper_sha256, "sdk_table_sha256": sdk_table_sha256,
              "pep723_script_sha256": script_hashes},
@@ -1301,7 +1312,7 @@ def repository_preparation_config_hash(context: dict[str, Any]) -> str:
     preparation = context.get("repository_preparation")
     if not isinstance(preparation, dict):
         preparation = {}
-    return stable_value_hash(
+    return text_sha256(
         json.dumps(
             {
                 "command": preparation.get("command"),
@@ -1847,14 +1858,12 @@ def inspection_lane_config_error(message: str) -> InspectError:
 
 
 def canonical_scope_descriptor(args: argparse.Namespace, context: dict[str, Any], worktree_root: Path) -> dict[str, Any]:
-    files = sorted(
-        {
-            stable_value_hash(canonical_scope_path(file_path, worktree_root))
-            for file_path in (getattr(args, "files", []) or [])
-            if clean_optional(file_path)
-        }
-        - {None}
+    file_hashes = (
+        stable_value_hash(canonical_scope_path(file_path, worktree_root))
+        for file_path in (getattr(args, "files", []) or [])
+        if clean_optional(file_path)
     )
+    files = sorted({file_hash for file_hash in file_hashes if file_hash is not None})
     directory = clean_optional(getattr(args, "directory", None))
     descriptor: dict[str, Any] = {
         "scope": str(context.get("scope") or "changed_files").strip().lower(),
@@ -2175,6 +2184,16 @@ def resolve_ide_selection(context: dict[str, Any]) -> IdeSelection | None:
         source="repo_or_cli",
         exact=exact,
     )
+
+
+def dict_field(mapping: dict[str, Any], key: str) -> dict[str, Any]:
+    value = mapping.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def list_field(mapping: dict[str, Any], key: str) -> list[Any]:
+    value = mapping.get(key)
+    return value if isinstance(value, list) else []
 
 
 def clean_optional(value: Any) -> str | None:
@@ -3153,7 +3172,7 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
     result = run_inspection_on_route(args, context, route)
     if not should_retry_unknown_result(result):
         return result
-    retry_policy = result.get("retry_policy") if isinstance(result.get("retry_policy"), dict) else {}
+    retry_policy = dict_field(result, "retry_policy")
     max_attempts = max(0, int(retry_policy.get("max_attempts") or 0))
     retry_summaries: list[dict[str, Any]] = []
     readiness_history: list[dict[str, Any]] = []
@@ -3194,11 +3213,7 @@ def run_inspection_with_internal_retry(args: argparse.Namespace, context: dict[s
             current_result["recovered_from_unknown"] = current_result.get("verdict") in {"GREEN", "RED"}
             current_result["retry_exhausted"] = False
             return current_result
-        current_retry_policy = (
-            current_result.get("retry_policy")
-            if isinstance(current_result.get("retry_policy"), dict)
-            else {}
-        )
+        current_retry_policy = dict_field(current_result, "retry_policy")
         max_attempts = max(max_attempts, max(0, int(current_retry_policy.get("max_attempts") or 0)))
         attempt += 1
     current_result["recovered_from_unknown"] = False
@@ -3212,7 +3227,7 @@ def wait_for_internal_retry_readiness(
     route: dict[str, Any],
     first_result: dict[str, Any],
 ) -> dict[str, Any]:
-    retry_policy = first_result.get("retry_policy") if isinstance(first_result.get("retry_policy"), dict) else {}
+    retry_policy = dict_field(first_result, "retry_policy")
     min_wait_ms = max(0, int(retry_policy.get("wait_ms") or 0))
     poll_ms = max(DEFAULT_POLL_MS, int(getattr(args, "poll_ms", DEFAULT_POLL_MS) or DEFAULT_POLL_MS))
     timeout_ms = max(INTERNAL_RETRY_READY_TIMEOUT_MS, min_wait_ms + poll_ms * INTERNAL_RETRY_READY_STABLE_OBSERVATIONS)
@@ -3375,7 +3390,7 @@ def compact_retry_status(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def should_retry_unknown_result(result: dict[str, Any]) -> bool:
-    retry_policy = result.get("retry_policy") if isinstance(result.get("retry_policy"), dict) else {}
+    retry_policy = dict_field(result, "retry_policy")
     return (
         result.get("verdict") == "UNKNOWN"
         and result.get("bucket") in INTERNAL_RETRY_BUCKETS
@@ -3385,9 +3400,9 @@ def should_retry_unknown_result(result: dict[str, Any]) -> bool:
 
 
 def compact_retry_result(result: dict[str, Any], attempt: int) -> dict[str, Any]:
-    wait = result.get("wait") if isinstance(result.get("wait"), dict) else {}
-    attribution = result.get("inspection_attribution") if isinstance(result.get("inspection_attribution"), dict) else {}
-    retry_policy = result.get("retry_policy") if isinstance(result.get("retry_policy"), dict) else {}
+    wait = dict_field(result, "wait")
+    attribution = dict_field(result, "inspection_attribution")
+    retry_policy = dict_field(result, "retry_policy")
     summary = {
         "attempt": attempt,
         "status": result.get("status"),
@@ -3467,7 +3482,7 @@ def inspection_outcome_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def lifecycle_outcome_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
     evidence = payload.get("worktree_mutation_evidence")
-    existing = payload.get("lifecycle_outcome") if isinstance(payload.get("lifecycle_outcome"), dict) else {}
+    existing = dict_field(payload, "lifecycle_outcome")
     if not isinstance(evidence, dict):
         nested_evidence = existing.get("worktree_mutation_evidence")
         evidence = nested_evidence if isinstance(nested_evidence, dict) else None
@@ -3823,11 +3838,11 @@ def direct_inspection_run_id(payload: dict[str, Any]) -> int | None:
         run_id = positive_run_id(payload.get(key))
         if run_id is not None:
             return run_id
-    evidence_ids = payload.get("evidence_ids") if isinstance(payload.get("evidence_ids"), dict) else {}
+    evidence_ids = dict_field(payload, "evidence_ids")
     evidence_run_id = positive_run_id(evidence_ids.get("inspection_run_id"))
     if evidence_run_id is not None:
         return evidence_run_id
-    attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
+    attribution = dict_field(payload, "inspection_attribution")
     attribution_run_id = positive_run_id(attribution.get("inspection_run_id"))
     if attribution_run_id is not None:
         return attribution_run_id
@@ -4164,7 +4179,7 @@ def inspection_endpoint_failure_result(
         if error.payload.get(key) is not None:
             result[key] = error.payload[key]
     copy_verdict_evidence(result, error.payload)
-    attribution = result.get("inspection_attribution") if isinstance(result.get("inspection_attribution"), dict) else {}
+    attribution = dict_field(result, "inspection_attribution")
     result.setdefault("http_status", attribution.get("http_status"))
     result.setdefault("response_code", attribution.get("code"))
     result.setdefault("client_run_id", attribution.get("client_run_id"))
@@ -4602,7 +4617,7 @@ def accepted_open_identity(open_attempts: list[dict[str, Any]]) -> dict[str, Any
     for attempt in reversed(open_attempts):
         if not attempt.get("ownership_registered"):
             continue
-        identity = attempt.get("identity") if isinstance(attempt.get("identity"), dict) else {}
+        identity = dict_field(attempt, "identity")
         session_id = identity.get("session_id") or attempt.get("session_id")
         port = identity.get("port")
         return {
@@ -4717,7 +4732,7 @@ def cleanup_failed_preparation(
             }
 
     if isinstance(error, InspectError) and lease.get("opened_by_helper") and stage == "readiness_wait":
-        last_status = error.payload.get("last_status") if isinstance(error.payload.get("last_status"), dict) else {}
+        last_status = dict_field(error.payload, "last_status")
         if ide_churn_present(last_status):
             return defer_active_preparation_cleanup(lease, error, stage, last_status)
 
@@ -5635,7 +5650,7 @@ def discover_open_identities(args: argparse.Namespace, context: dict[str, Any]) 
 
 
 def identity_matches_context(identity: dict[str, Any], context: dict[str, Any]) -> bool:
-    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    selection = dict_field(context, "ide_selection")
     product_key = selection.get("product_key")
     ide = str(context.get("ide") or "").lower().replace(" ", "")
     if not ide and not product_key:
@@ -5687,7 +5702,9 @@ def claim_lifecycle(
         "project_instance_id": project_instance_id,
         "lease_id": lease.get("lease_id"),
     })
-    claimed_route = claim.get("route") if isinstance(claim.get("route"), dict) else route
+    claimed_route = claim.get("route")
+    if not isinstance(claimed_route, dict):
+        claimed_route = route
     ensure_exact_worktree(claimed_route, context, args)
     ensure_claim_route_matches(route, claimed_route)
     ownership_proven, close_proof = lifecycle_claim_ownership(claim, lease)
@@ -5727,7 +5744,7 @@ def prepare_owned_python_sdk(
         {"context": context, "repository_preparation": preparation}
     ):
         return {"status": "skipped", "reason": "local_python_environment_not_prepared"}
-    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
+    ide = dict_field(route, "ide")
     if ide.get("product_code") == "WS":
         return {"status": "skipped", "reason": "non_python_ide_lane"}
     selected_files = getattr(args, "files", None)
@@ -5888,7 +5905,7 @@ def call_lifecycle_close(route: dict[str, Any], params: dict[str, Any]) -> dict[
         body = private_http_get_body(port, "lifecycle/close", params, timeout=35.0)
     except InspectError as error:
         body = error.payload if isinstance(error.payload, dict) else {}
-        attribution = body.get("inspection_attribution") if isinstance(body.get("inspection_attribution"), dict) else {}
+        attribution = dict_field(body, "inspection_attribution")
         try:
             http_status = int(body.get("http_status") or attribution.get("http_status") or 0)
         except (TypeError, ValueError):
@@ -6129,7 +6146,7 @@ def http_request(port: int, endpoint: str, params: dict[str, Any], timeout: floa
         payload.setdefault("http_status", error.code)
         if clean_params.get("client_run_id"):
             payload.setdefault("client_run_id", clean_params["client_run_id"])
-        attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
+        attribution = dict_field(payload, "inspection_attribution")
         payload.setdefault(
             "response_code",
             attribution.get("code") or payload.get("error_reason") or payload.get("reason") or payload.get("status") or "inspection_api_http_error",
@@ -6572,7 +6589,11 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
         and summary_counts_consistent
         and (resolved_count is None or evaluated_count == resolved_count)
     )
-    proven_file_count = evaluated_count if aggregate_proof_complete else emitted_diagnostic_count
+    proven_file_count = (
+        evaluated_count
+        if aggregate_proof_complete and evaluated_count is not None
+        else emitted_diagnostic_count
+    )
     truncated = resolved_count is not None and resolved_count > proven_file_count
     if not scope_files and not truncated:
         if not aggregate_proof_complete or (summary_missing_count == 0 and summary_metadata_count == 0):
@@ -6635,8 +6656,16 @@ def semantic_coverage_for_payload(payload: dict[str, Any]) -> dict[str, Any] | N
                 "reasons": ["invalid_metadata_role"],
             }
         )
-    missing_file_count = summary_missing_count if aggregate_proof_complete else len(missing_files)
-    metadata_file_count = summary_metadata_count if aggregate_proof_complete else len(metadata_files)
+    missing_file_count = (
+        summary_missing_count
+        if aggregate_proof_complete and summary_missing_count is not None
+        else len(missing_files)
+    )
+    metadata_file_count = (
+        summary_metadata_count
+        if aggregate_proof_complete and summary_metadata_count is not None
+        else len(metadata_files)
+    )
     if missing_file_count == 0 and metadata_file_count == 0 and not truncated:
         return existing if isinstance(existing, dict) else None
     allow_text_only = payload.get("allow_text_only_coverage") is True
@@ -6725,9 +6754,9 @@ def semantic_coverage_allowed_verdict(payload: dict[str, Any]) -> dict[str, str]
 
 
 def payload_scope(payload: dict[str, Any]) -> str:
-    descriptor = payload.get("scope_descriptor") if isinstance(payload.get("scope_descriptor"), dict) else {}
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    context_descriptor = context.get("scope_descriptor") if isinstance(context.get("scope_descriptor"), dict) else {}
+    descriptor = dict_field(payload, "scope_descriptor")
+    context = dict_field(payload, "context")
+    context_descriptor = dict_field(context, "scope_descriptor")
     return str(
         payload.get("scope")
         or descriptor.get("scope")
@@ -6782,8 +6811,8 @@ def broad_scope_deployment_verdict(payload: dict[str, Any]) -> dict[str, str] | 
                 source.get("plugin_build_fingerprint")
                 for source in (
                     payload,
-                    payload.get("ide") if isinstance(payload.get("ide"), dict) else {},
-                    payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {},
+                    dict_field(payload, "ide"),
+                    dict_field(payload, "inspection_attribution"),
                 )
                 if source.get("plugin_build_fingerprint")
             ),
@@ -6943,7 +6972,7 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
     if payload.get("run_changed") or payload.get("error_reason") == "run_changed":
         return "run_changed"
     if wait.get("status") == "run_changed":
-        trigger = payload.get("trigger") if isinstance(payload.get("trigger"), dict) else {}
+        trigger = dict_field(payload, "trigger")
         expected_run_id = inspection_run_id(trigger) or positive_run_id(wait.get("expected_inspection_run_id"))
         if expected_run_id is None or wait_result_run_changed(wait, expected_run_id):
             return "run_changed"
@@ -7063,7 +7092,7 @@ IDE_ROUTE_CONFIGURATION_NEXT_ACTION = (
 
 
 def inspection_tool_file_examples(payload: dict[str, Any], field: str) -> list[dict[str, str]]:
-    diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+    diagnostic = dict_field(payload, "capture_diagnostic")
     examples = diagnostic.get(field)
     if not isinstance(examples, list):
         return []
@@ -7112,14 +7141,14 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
     if reason == "ide_memory_exhausted":
         action = "Ask the Director to dismiss any memory-error dialog (such as Java heap space) and restart the IDE before inspecting again."
-        cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+        cleanup = dict_field(payload, "cleanup")
         if cleanup.get("status") in {"deferred", "kept_warm"} or payload.get("cleanup_deferred"):
             action += " Then run cleanup-helper-leases for the retained lease before another inspection."
         return action
     if reason in REPOSITORY_PREPARATION_TERMINAL_REASONS or reason == "repository_preparation_failure":
         preparation = repository_preparation_for_payload(payload)
         return repository_preparation_next_action(reason, preparation)
-    diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+    diagnostic = dict_field(payload, "capture_diagnostic")
     execution_proof_reason = normalize_reason(
         diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
     )
@@ -7304,6 +7333,10 @@ def stable_value_hash(value: Any) -> str | None:
     text = str(value).strip()
     if not text:
         return None
+    return text_sha256(text)
+
+
+def text_sha256(text: str) -> str:
     return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
 
 
@@ -7470,11 +7503,11 @@ def apply_inspection_attribution(payload: dict[str, Any]) -> dict[str, Any]:
     ):
         return payload
     attribution = existing_inspection_attribution(payload)
-    cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
+    cleanup = dict_field(payload, "cleanup")
     route = payload_route(payload)
-    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    ide = dict_field(route, "ide")
+    context = dict_field(payload, "context")
+    selection = dict_field(context, "ide_selection")
     if attribution.get("ide_channel"):
         ide_channel_source = attribution.get("ide_channel_source") or "plugin_attribution"
     elif ide.get("channel") or ide.get("ide_channel"):
@@ -7589,7 +7622,7 @@ def apply_verdict(payload: dict[str, Any]) -> dict[str, Any]:
         return apply_multi_lane_verdict(payload)
     apply_semantic_coverage(payload)
     payload.update(verdict_for_payload(payload))
-    wait = payload.get("wait") if isinstance(payload.get("wait"), dict) else {}
+    wait = dict_field(payload, "wait")
     if payload.get("verdict") == "GREEN" and text_only_coverage_wait_timeout_is_recoverable(payload, wait):
         payload["status"] = "clean"
         payload["semantic_coverage_wait_timeout_recovered"] = True
@@ -7682,7 +7715,7 @@ def compact_inspection_proof(payload: dict[str, Any]) -> dict[str, Any]:
 
 def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
     retry_count = max(0, int(payload.get("internal_retry_count") or 0))
-    readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
+    readiness = dict_field(payload, "internal_retry_readiness")
     recovery = disk_freshness_recovery(reason, payload)
     if recovery:
         return "Stop retrying this result and report the diagnostic payload. " + recovery
@@ -7704,7 +7737,7 @@ def exhausted_retry_next_action(reason: str, payload: dict[str, Any]) -> str:
 def unknown_diagnosis_for(reason: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     if reason not in {"stale_results", "inspection_inputs_changed"}:
         return None
-    readiness = payload.get("internal_retry_readiness") if isinstance(payload.get("internal_retry_readiness"), dict) else {}
+    readiness = dict_field(payload, "internal_retry_readiness")
     diagnosis = {
         "classification": "inspection_state_changed",
         "proven": "The inspection result was rejected because the IDE could not prove a current, stable project snapshot.",
@@ -7734,7 +7767,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
     if normalized == "plugin_deployment_mismatch":
         return "environment_blocked"
     if normalized == "execution_not_proven":
-        diagnostic = payload.get("capture_diagnostic") if isinstance(payload.get("capture_diagnostic"), dict) else {}
+        diagnostic = dict_field(payload, "capture_diagnostic")
         execution_proof_reason = normalize_reason(
             diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason")
         )
@@ -7781,7 +7814,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         return "tool_bug"
     if normalized in REPOSITORY_PREPARATION_TERMINAL_REASONS or normalized == "repository_preparation_failure":
         return "environment_blocked"
-    attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
+    attribution = dict_field(payload, "inspection_attribution")
     if payload.get("unattributed_unknown") is True or attribution.get("classification") == "unattributed":
         return "tool_bug"
     if attribution.get("classification") == "tool_caused":
@@ -8153,8 +8186,8 @@ def inspection_started_for_payload(payload: dict[str, Any]) -> bool:
 
 
 def logged_attempt_summary(source: dict[str, Any], attempt_index: int, terminal: bool) -> dict[str, Any]:
-    retry_policy = source.get("retry_policy") if isinstance(source.get("retry_policy"), dict) else {}
-    attribution = source.get("inspection_attribution") if isinstance(source.get("inspection_attribution"), dict) else {}
+    retry_policy = dict_field(source, "retry_policy")
+    attribution = dict_field(source, "inspection_attribution")
     retry = source.get("retry")
     if not isinstance(retry, bool):
         retry = retry_policy.get("retry")
@@ -8248,13 +8281,13 @@ def derived_cleanup_status(
 def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     event_id, timestamp, timestamp_ms, manifest_sha256 = ensure_outcome_event_metadata(payload)
     public = public_payload(payload)
-    context = public.get("context") if isinstance(public.get("context"), dict) else {}
-    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
-    cleanup = public.get("cleanup") if isinstance(public.get("cleanup"), dict) else {}
+    context = dict_field(public, "context")
+    selection = dict_field(context, "ide_selection")
+    cleanup = dict_field(public, "cleanup")
     route = payload_route(public)
-    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
-    attribution = public.get("inspection_attribution") if isinstance(public.get("inspection_attribution"), dict) else {}
-    evidence_ids = public.get("evidence_ids") if isinstance(public.get("evidence_ids"), dict) else {}
+    ide = dict_field(route, "ide")
+    attribution = dict_field(public, "inspection_attribution")
+    evidence_ids = dict_field(public, "evidence_ids")
     command = preferred_command(str(public.get("command"))) if public.get("command") else None
     event_kind = outcome_event_kind(command)
     client_run_id = evidence_ids.get("client_run_id") or attribution.get("client_run_id") or public.get("client_run_id") or context.get("client_run_id")
@@ -8265,7 +8298,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
     worktree_root = clean_optional(context.get("worktree_root") or public.get("worktree_root"))
     worktree_path = Path(worktree_root) if worktree_root else None
     repo_head_sha = git_head_sha(worktree_path) if worktree_path is not None and worktree_path.exists() else context.get("repo_head_sha") or public.get("repo_head_sha")
-    lane_results = public.get("lane_results") if isinstance(public.get("lane_results"), list) else []
+    lane_results = list_field(public, "lane_results")
     lane_summaries = [
         {
             "id": lane.get("id"),
@@ -8377,8 +8410,8 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
 
 def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
     public, record = outcome_record_base(payload)
-    wait = public.get("wait") if isinstance(public.get("wait"), dict) else {}
-    retry_policy = public.get("retry_policy") if isinstance(public.get("retry_policy"), dict) else {}
+    wait = dict_field(public, "wait")
+    retry_policy = dict_field(public, "retry_policy")
     record.update({
         "retry": retry_policy.get("retry"),
         "verdict_message": public.get("verdict_message"),
@@ -8398,9 +8431,9 @@ def unknown_log_record(payload: dict[str, Any]) -> dict[str, Any]:
 
 def outcome_log_record(payload: dict[str, Any], exit_code: int) -> dict[str, Any]:
     public, record = outcome_record_base(payload)
-    retry_policy = public.get("retry_policy") if isinstance(public.get("retry_policy"), dict) else {}
-    agent_result = public.get("agent_result") if isinstance(public.get("agent_result"), dict) else {}
-    agent_retry_policy = agent_result.get("retry_policy") if isinstance(agent_result.get("retry_policy"), dict) else {}
+    retry_policy = dict_field(public, "retry_policy")
+    agent_result = dict_field(public, "agent_result")
+    agent_retry_policy = dict_field(agent_result, "retry_policy")
     record.update({
         "exit_code": exit_code,
         "retry": retry_policy.get("retry"),
@@ -8944,7 +8977,7 @@ def qualification_event_candidate(
     assert attempts is not None
     verdict = event.get("verdict")
     if classification == "configuration_blocked" and inspection_started is False:
-        preparation = event.get("repository_preparation") if isinstance(event.get("repository_preparation"), dict) else {}
+        preparation = dict_field(event, "repository_preparation")
         preparation_reason = preparation.get("failure_reason")
         if not isinstance(preparation_reason, str) or not preparation_reason.strip():
             if preparation.get("execution_state") in {"failed", "blocked"}:
@@ -9027,7 +9060,7 @@ def qualification_event_candidate(
         semantic_failures.append("unattributed_unknown")
     if cleanup_status not in QUALIFICATION_CLEANUP_STATUSES:
         semantic_failures.append("non_clean_cleanup")
-    preparation = event.get("repository_preparation") if isinstance(event.get("repository_preparation"), dict) else {}
+    preparation = dict_field(event, "repository_preparation")
     preparation_reason = preparation.get("failure_reason")
     if not isinstance(preparation_reason, str) or not preparation_reason.strip():
         if preparation.get("execution_state") in {"failed", "blocked"}:
@@ -9469,7 +9502,7 @@ def selected_inspection_file_count(payload: dict[str, Any]) -> int | None:
         count = selection.get("selected_file_count")
     else:
         diagnostic = payload.get("capture_diagnostic")
-        context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+        context = dict_field(payload, "context")
         scope = (diagnostic.get("scope_kind") if isinstance(diagnostic, dict) else None) or context.get("scope")
         if scope in {"whole_project", "directory"}:
             # Broad scopes report zero here as a placeholder; their native
@@ -9487,16 +9520,16 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
     if isinstance(payload.get("lane_results"), list):
         return compact_multi_lane_agent_result_payload(payload, helper_exit_code)
     agent_result = dict(payload.get("agent_result") or {})
-    retry_policy = agent_result.get("retry_policy") if isinstance(agent_result.get("retry_policy"), dict) else {}
+    retry_policy = dict_field(agent_result, "retry_policy")
     agent_result["terminal"] = retry_policy.get("retry") is not True
     agent_result["next_action"] = guidance_for_command(agent_result.get("next_action"), "agent-inspect")
     agent_result["agent_report"] = guidance_for_command(agent_result.get("agent_report"), "agent-inspect")
-    cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else {}
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
-    attribution = payload.get("inspection_attribution") if isinstance(payload.get("inspection_attribution"), dict) else {}
-    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
-    ide = route.get("ide") if isinstance(route.get("ide"), dict) else {}
-    problems = payload.get("problems") if isinstance(payload.get("problems"), list) else []
+    cleanup = dict_field(payload, "cleanup")
+    context = dict_field(payload, "context")
+    attribution = dict_field(payload, "inspection_attribution")
+    route = dict_field(payload, "route")
+    ide = dict_field(route, "ide")
+    problems = list_field(payload, "problems")
     available_findings = [problem for problem in problems if isinstance(problem, dict)]
     compact_findings = [compact_agent_finding(problem) for problem in available_findings[:MAX_AGENT_FINDINGS]]
     total_problems = payload.get("total_problems")
@@ -9583,7 +9616,7 @@ def compact_agent_result_payload(payload: dict[str, Any], helper_exit_code: int)
     }
     raw_mutation_evidence = payload.get("worktree_mutation_evidence")
     if not isinstance(raw_mutation_evidence, dict):
-        nested_lifecycle = payload.get("lifecycle_outcome") if isinstance(payload.get("lifecycle_outcome"), dict) else {}
+        nested_lifecycle = dict_field(payload, "lifecycle_outcome")
         raw_mutation_evidence = nested_lifecycle.get("worktree_mutation_evidence")
     if isinstance(raw_mutation_evidence, dict) and "before_status" in raw_mutation_evidence and "after_status" in raw_mutation_evidence:
         result["worktree_mutation_evidence"] = lifecycle_outcome["worktree_mutation_evidence"]
@@ -9603,7 +9636,7 @@ def compact_multi_lane_agent_result_payload(payload: dict[str, Any], helper_exit
         lane_count = lane.get("finding_count")
         if isinstance(lane_count, int):
             total_findings += lane_count
-        lane_findings = lane.get("findings") if isinstance(lane.get("findings"), list) else []
+        lane_findings = list_field(lane, "findings")
         for finding in lane_findings:
             if not isinstance(finding, dict):
                 continue
@@ -9770,14 +9803,14 @@ def print_findings(problems: list[dict[str, Any]]) -> None:
 def print_human(payload: dict[str, Any], assess: bool = True) -> None:
     if assess:
         apply_verdict(payload)
-    lane_results = payload.get("lane_results") if isinstance(payload.get("lane_results"), list) else []
+    lane_results = list_field(payload, "lane_results")
     if lane_results:
         print(f"VERDICT: {payload.get('verdict')} ({payload.get('verdict_reason')})")
         for lane in lane_results:
             if not isinstance(lane, dict):
                 continue
-            ide = lane.get("ide") if isinstance(lane.get("ide"), dict) else {}
-            cleanup = lane.get("cleanup") if isinstance(lane.get("cleanup"), dict) else {}
+            ide = dict_field(lane, "ide")
+            cleanup = dict_field(lane, "cleanup")
             print(
                 "LANE: "
                 f"{lane.get('id')} required={str(lane.get('required')).lower()} "
@@ -9788,7 +9821,7 @@ def print_human(payload: dict[str, Any], assess: bool = True) -> None:
             )
             print_findings_artifact(lane)
             print_findings(lane.get("findings") or [])
-        selection = payload.get("lane_selection") if isinstance(payload.get("lane_selection"), dict) else {}
+        selection = dict_field(payload, "lane_selection")
         if selection.get("excluded_files"):
             print(f"EXCLUDED_FILES: {len(selection['excluded_files'])}")
         if selection.get("unmatched_files"):
@@ -9929,7 +9962,7 @@ def print_outcome_summary(payload: dict[str, Any]) -> None:
 
 
 def print_qualification_summary(payload: dict[str, Any]) -> None:
-    qualification = payload.get("qualification") if isinstance(payload.get("qualification"), dict) else {}
+    qualification = dict_field(payload, "qualification")
     print(safe_text(
         "QUALIFICATION_GATE: status={gate_status} sample={sample_count}/{sample_size} decisive_rate={decisive_rate} remaining={remaining} hard_failures={hard_failures}",
         {
@@ -10419,7 +10452,7 @@ def prepared_python_sdk_discovery_pending(payload: dict[str, Any]) -> bool:
         return False
     target = Path(target_worktree).expanduser().resolve()
     project = target
-    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    context = dict_field(payload, "context")
     for candidate in (payload, context):
         project_value = candidate.get("project_path") or candidate.get("lifecycle_target_path")
         if isinstance(project_value, str) and project_value.strip():
@@ -11302,13 +11335,14 @@ class lifecycle_lock:
             time.sleep(0.05)
 
     def _release_ticket(self):
-        if self.ticket is not None:
-            with self.ticket_path.with_name("registration.lock").open("a+", encoding="utf-8") as gate:
+        ticket_path = self.ticket_path
+        if self.ticket is not None and ticket_path is not None:
+            with ticket_path.with_name("registration.lock").open("a+", encoding="utf-8") as gate:
                 self._register_lock(gate)
                 try:
                     self.ticket.close()
                     self.ticket = None
-                    self.ticket_path.unlink(missing_ok=True)
+                    ticket_path.unlink(missing_ok=True)
                 finally:
                     self._unlock(gate)
 
@@ -11602,8 +11636,125 @@ def finish_raced_worktree_removal(common: Path, root: Path, before: dict[str, tu
                            {"git_error": git_error, "retained_entry_count": len(remaining), "retained_entries": sorted(remaining)[:50]})
 
 
-def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool) -> list[dict[str, Any]]:
+HELPER_SDK_RECORD_FILENAME = "inspection-helper-sdks.xml"
+HELPER_PROJECT_CACHE_MARKER = ".inspection-helper-owned.json"
+HELPER_SEALED_CACHE_PREFIX = ".inspection-retired-"
+HELPER_FINALIZING_CACHE_PREFIX = ".inspection-finalizing-"
+
+
+def offline_ide_processes() -> list[int]:
+    """A missing plugin identity does not prove the IDE process has exited."""
+    try:
+        output = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True, timeout=5)
+        pids = []
+        for line in output.splitlines():
+            parts = line.strip().split(maxsplit=1)
+            if len(parts) == 2 and re.search(r"\.app/Contents/MacOS/(?:pycharm|idea|webstorm)$", parts[1], re.IGNORECASE):
+                pids.append(int(parts[0]))
+        return pids
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise InspectError("Cannot prove IDE processes have exited; restore process discovery or use live IDE cleanup.", 3) from error
+
+
+def offline_retirement_records(root: Path) -> list[str]:
+    """Prove the no-cleanup case from disk; never edit an offline IDE's state."""
+    if sys.platform != "darwin":
+        raise InspectError("Offline retirement record discovery is only supported on macOS; use a live IDE for cleanup.", 3)
+    if pids := offline_ide_processes():
+        raise InspectError("An IDE is running without a usable identity; restore its plugin route or close it before offline retirement.", 3,
+                           {"offline_retirement_ide_pids": pids})
+    checked: list[str] = []
+
+    def present(path: Path) -> bool:
+        try:
+            path.lstat()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def children(path: Path) -> list[Path]:
+        try:
+            return list(path.iterdir())
+        except FileNotFoundError:
+            return []
+
+    def refers_to_worktree(value: str) -> bool:
+        value = urllib.parse.unquote(value.removeprefix("file://"))
+        value = value.replace("$USER_HOME$", str(Path.home()))
+        path = Path(os.path.expanduser(value))
+        return path.is_absolute() and (Path(os.path.normpath(path)).is_relative_to(root) or path.resolve().is_relative_to(root))
+
+    def require_unrelated(path: Path, values: list[str]) -> None:
+        checked.append(str(path))
+        if any(refers_to_worktree(value) for value in values):
+            raise InspectError("IDE records reference this worktree; use a live IDE to prove cleanup.", 3,
+                               {"offline_retirement_record": str(path)})
+
+    try:
+        # Shared inspection profiles/vcs.xml are copied by Git and do not prove
+        # this worktree was prepared. A virtualenv alone is not a registration either.
+        project_state = [path for path in children(root / ".idea")
+                         if path.name in {"misc.xml", "modules.xml", "workspace.xml", ".name"} or path.suffix == ".iml"]
+        for path in [*project_state, repository_preparation_receipt_path({"worktree_root": str(root)})]:
+            if present(path):
+                raise InspectError("IDE preparation records exist; use a live IDE to prove cleanup.", 3,
+                                   {"offline_retirement_record": str(path)})
+        configs = children(Path.home() / "Library" / "Application Support" / "JetBrains")
+        override = os.environ.get("JETBRAINS_INSPECTION_IDE_CONFIG_DIR")
+        if override:
+            # Add the override, never let it hide other installed IDE records.
+            configs.append(Path(override).expanduser())
+        for config in configs:
+            if not stat.S_ISDIR(config.stat().st_mode):
+                continue
+            for name in ("jdk.table.xml", HELPER_SDK_RECORD_FILENAME, "recentProjects.xml", "recentProjectDirectories.xml"):
+                path = config / "options" / name
+                if not present(path):
+                    continue
+                document = ElementTree.parse(path)
+                if document.getroot().tag != "application":
+                    raise ValueError("Invalid IDE application records")
+                require_unrelated(path, [value for element in document.iter() for value in element.attrib.values()])
+            # Custom system paths cannot be proved from the standard cache root.
+            properties = config / "idea.properties"
+            if present(properties) and any(re.match(r"\s*idea\.(system|config)\.path\s*=", line)
+                                           for line in properties.read_text().splitlines()):
+                raise InspectError("Custom IDE storage paths require live IDE cleanup proof.", 3,
+                                   {"offline_retirement_record": str(properties)})
+        for system in children(Path.home() / "Library" / "Caches" / "JetBrains"):
+            if not stat.S_ISDIR(system.stat().st_mode):
+                continue
+            for project in children(system / "projects"):
+                if (not project.name.startswith((HELPER_FINALIZING_CACHE_PREFIX, HELPER_SEALED_CACHE_PREFIX))
+                        and not stat.S_ISDIR(project.stat().st_mode)):
+                    continue
+                marker = project if project.name.startswith(HELPER_FINALIZING_CACHE_PREFIX) else project / HELPER_PROJECT_CACHE_MARKER
+                if not present(marker):
+                    if project.name.startswith(HELPER_SEALED_CACHE_PREFIX):
+                        raise InspectError("Unresolved IDE cache ownership requires live IDE cleanup proof.", 3,
+                                           {"offline_retirement_record": str(marker)})
+                    continue
+                record = json.loads(marker.read_text())
+                if (not isinstance(record, dict) or not isinstance(record.get("worktree_path"), str)
+                        or not Path(record["worktree_path"]).is_absolute()):
+                    raise InspectError("Invalid IDE cache ownership requires live IDE cleanup proof.", 3,
+                                       {"offline_retirement_record": str(marker)})
+                require_unrelated(marker, [record["worktree_path"]])
+        return checked
+    except (OSError, ValueError, ElementTree.ParseError) as error:
+        raise InspectError("Cannot read offline IDE records; retain the worktree and restore record access or use a live IDE.", 3,
+                           {"offline_retirement_error": type(error).__name__,
+                            "offline_retirement_record": getattr(error, "filename", None)}) from error
+
+
+def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool,
+                           offline_records: list[str] | None = None) -> list[dict[str, Any]]:
     if not identities:
+        if root is not None:
+            records = offline_retirement_records(root)
+            if offline_records is not None:
+                offline_records.extend(records)
+            return []
         raise InspectError("No live IDE is available to prove SDK cleanup; start the prepared worktree's IDE first.", 3)
     # Validate every session before sending any mutating request.
     for identity in identities:
@@ -11700,11 +11851,13 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
     skipped: list[dict[str, Any]] = []
     cache_preview: list[dict[str, Any]] = []
     cache_cleanup: list[dict[str, Any]] = []
+    offline_records: list[str] = []
     with lifecycle_lock(args.lifecycle_lock_timeout_ms):
         try:
             root = retirement_worktree(Path(args.repo), args.dry_run) if args.command == "remove-worktree" else None
             identities = discover_identities(None)
-            preview = unregister_helper_sdks(identities, root, True)
+            proof_identities = identities
+            preview = unregister_helper_sdks(identities, root, True, offline_records)
             if root is not None:
                 cache_preview = retire_helper_project_caches(identities, root, True)
             if not args.dry_run:
@@ -11749,7 +11902,8 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     # Recheck local state and live projects after SDK retirement.
                     retirement_worktree(root)
                     current = discover_identities(None)
-                    final_preview = unregister_helper_sdks(current, root, True)
+                    proof_identities = current
+                    final_preview = unregister_helper_sdks(current, root, True, offline_records)
                     if any(entry["status"] != "absent" and entry["reason"] != "not_helper_owned" for item in final_preview for entry in item["result"]["sdks"]):
                         raise InspectError("An SDK still needs retirement; retain the worktree and repeat the preview.", 3,
                                            {"sdk_remaining": final_preview})
@@ -11767,6 +11921,8 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                     if completed.returncode or root.exists():
                         finish_raced_worktree_removal(common, root, before, completed.stderr)
             return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
+                    "offline_cleanup_proved": root is not None and not proof_identities,
+                    "offline_records_checked": sorted(set(offline_records)),
                     "project_cache_preview": cache_preview, "project_cache_cleanup": cache_cleanup,
                     "sdk_preview": preview, "sdk_cleanup": applied, "sdk_apply_skipped": [item["ide"] for item in skipped],
                     "worktree_removed": root is not None and not args.dry_run,
@@ -12071,7 +12227,7 @@ def lease_open_acknowledged_by_session(lease: dict[str, Any]) -> bool:
     for attempt in requests:
         if not isinstance(attempt, dict) or attempt.get("request_may_have_been_accepted") is True:
             return False
-        identity = attempt.get("identity") if isinstance(attempt.get("identity"), dict) else {}
+        identity = dict_field(attempt, "identity")
         if not (
             attempt.get("accepted") is True
             and attempt.get("ownership_registered") is True
@@ -12137,7 +12293,7 @@ def can_release_dead_original_ide_lease(
             return False
         if attempt.get("lease_id") != lease_id or attempt.get("lifecycle_ownership_protocol") != LIFECYCLE_OWNERSHIP_PROTOCOL:
             return False
-        identity = attempt.get("identity") if isinstance(attempt.get("identity"), dict) else {}
+        identity = dict_field(attempt, "identity")
         attempt_session = identity.get("session_id") or attempt.get("session_id")
         ide_pid = identity.get("pid")
         if attempt_session != session_id or not isinstance(ide_pid, int) or ide_pid <= 0:
@@ -12167,7 +12323,9 @@ def reclaim_lifecycle_claim(
         "project_instance_id": project_instance_id,
         "lease_id": lease.get("lease_id"),
     })
-    claimed_route = claim.get("route") if isinstance(claim.get("route"), dict) else route
+    claimed_route = claim.get("route")
+    if not isinstance(claimed_route, dict):
+        claimed_route = route
     ensure_claim_route_matches(route, claimed_route)
     lease_target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
     claimed_path = claimed_route.get("base_path") or claimed_route.get("project_file_path")
@@ -12447,12 +12605,12 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[
 
 
 def resolved_ide_app_name(context: dict[str, Any]) -> str | None:
-    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    selection = dict_field(context, "ide_selection")
     return clean_optional(selection.get("app_name")) or clean_optional(context.get("ide_app")) or clean_optional(context.get("ide"))
 
 
 def resolved_ide_app_path(context: dict[str, Any]) -> Path | None:
-    selection = context.get("ide_selection") if isinstance(context.get("ide_selection"), dict) else {}
+    selection = dict_field(context, "ide_selection")
     value = selection.get("app_path") or context.get("ide_app_path")
     return Path(str(value)).expanduser() if value else None
 

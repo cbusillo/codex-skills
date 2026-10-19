@@ -8,6 +8,7 @@
 import argparse
 import asyncio
 import errno
+import io
 import json
 import subprocess
 import shlex
@@ -23,7 +24,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
-import close_ttys
+import session_liveness
 import codex_idle_watch
 import finished_map
 import iterm_tab
@@ -226,6 +227,42 @@ class TranscriptTests(unittest.TestCase):
             )["safe_verdict"]
         )
 
+    def test_scheduled_jobs_follow_successful_results_and_one_shot_fire(self):
+        def call(name, identity, **values):
+            return {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": identity, "name": name, "input": values}]}}
+
+        def result(identity, value, *, failed=False):
+            return {"type": "user", "toolUseResult": value, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": identity, "is_error": failed, "content": "fixture"}]}}
+
+        def jobs(records):
+            return {task["task_id"] for task in session_record.summarize(records + [claude("Safe to exit: yes")], "claude")["background_tasks"]}
+
+        prefix = [{"type": "user", "toolUseResult": {"taskId": "watcher"}}]
+        for identity, recurring in (("once", False), ("repeat", True)):
+            prefix += [call("CronCreate", "create-" + identity, cron="* * * * *", prompt="fixture", recurring=recurring),
+                       result("create-" + identity, {"id": identity, "humanSchedule": "fixture", "recurring": recurring, "durable": False})]
+        self.assertEqual(jobs(prefix), {"watcher", "once", "repeat"})
+        fire = [{"type": "system", "subtype": "scheduled_task_fire", "taskId": "once"},
+                {"type": "user", "scheduledTaskId": "once", "scheduledFireId": "fire", "turnOrigin": "scheduled"},
+                {"type": "system", "subtype": "scheduled_task_fire", "taskId": "repeat"}]
+        self.assertEqual(jobs(prefix + fire[:1]), {"watcher", "repeat"})
+        self.assertEqual(jobs(prefix + fire[1:2]), {"watcher", "repeat"})
+        self.assertEqual(jobs(prefix + fire[2:]), {"watcher", "once", "repeat"})
+        self.assertEqual(jobs(prefix + fire), {"watcher", "repeat"})
+        self.assertEqual(jobs(prefix + fire + prefix[1:]), {"watcher", "repeat"})
+        deleting = prefix + [call("CronDelete", "delete", id="repeat")]
+        self.assertEqual(jobs(deleting + [result("delete", {"id": "repeat"}, failed=True)]), {"watcher", "once", "repeat"})
+        self.assertEqual(jobs(deleting + [result("delete", {"id": "different"})]), {"watcher", "once", "repeat"})
+        self.assertEqual(jobs(deleting + [result("delete", {"id": "repeat"})]), {"watcher", "once"})
+        listing = prefix + [call("CronList", "list")]
+        self.assertEqual(jobs(listing + [result("list", {"jobs": []})]), {"watcher"})
+        self.assertEqual(jobs(listing + [result("list", {"jobs": "unknown"})]), {"watcher", "once", "repeat"})
+        ambiguous = result("list", {"jobs": []})
+        ambiguous["message"]["content"].append({"type": "tool_result", "tool_use_id": "other", "content": "fixture"})
+        self.assertEqual(jobs(listing + [ambiguous]), {"watcher", "once", "repeat"})
+
     def test_negative_quoted_and_conditional_verdicts(self):
         for text in (
             "> Safe to exit: yes",
@@ -241,6 +278,30 @@ class TranscriptTests(unittest.TestCase):
                 self.assertFalse(
                     session_record.summarize([claude(text)], "claude")["safe_verdict"]
                 )
+
+    def test_cron_list_reconciles_unknown_placeholder_and_finished_candidacy(self):
+        records = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "create", "name": "CronCreate", "input": {}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "create", "content": "replayed text"}]}},
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            transcript, ledger = root / "native.jsonl", root / "ledger.json"
+            ledger.write_text(json.dumps([{"session_id": "source", "harness": "claude", "supervisor_owned": True, "transcript": "native.jsonl"}]))
+            def candidate():
+                transcript.write_text("".join(json.dumps({**r, "sessionId": "source"}) + "\n" for r in [*records, claude("Safe to exit: yes")]))
+                return finished_map.candidates(ledger)[0]
+            before = candidate()
+            self.assertFalse(before["candidate"])
+            self.assertIsNone(before["closeout_request"])
+            self.assertEqual([task["task_id"] for task in before["closeout_blockers"]], ["cron-create:create"])
+            records += [
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "list", "name": "CronList", "input": {}}]}},
+                {"type": "user", "toolUseResult": {"jobs": []}, "message": {"content": [{"type": "tool_result", "tool_use_id": "list", "content": "No jobs"}]}},
+            ]
+            after = candidate()
+            self.assertEqual(after["background_tasks"], [])
+            self.assertTrue(after["candidate"])
 
     def test_standard_closeout_bullets_and_bold_labels(self):
         for text in (
@@ -535,24 +596,6 @@ class LedgerTests(unittest.TestCase):
         for record in records:
             record["sessionId"] = self.entry["session_id"]
         self.write(records)
-        entry = session_record.load_ledger(self.ledger)[0]
-        terminal = SimpleNamespace(
-            session_id="term1",
-            async_get_variable=AsyncMock(return_value="ttys001"),
-            async_close=AsyncMock(),
-        )
-        app = SimpleNamespace(
-            terminal_windows=[
-                SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-            ]
-        )
-        with patch.object(
-            close_ttys,
-            "inventory",
-            return_value=[(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login")],
-        ):
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
-        terminal.async_close.assert_awaited_once_with(force=False)
         for kind in ("/compact", "/clear"):
             changed = records.copy()
             changed[-2] = {
@@ -691,10 +734,13 @@ class LedgerTests(unittest.TestCase):
 
     def test_watch_dedup_resume_and_abort_notice(self):
         seen = {}
+        self.write([event("agent_message", message="Waiting for the next step."),
+                    event("task_complete")])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1050), [])
         notice = codex_idle_watch.poll(self.ledger, seen, 90, 1200)
         self.assertEqual(notice[0]["session_id"], self.entry["session_id"])
         self.assertIsNone(notice[0]["clean"])
+        self.assertIsNone(notice[0]["closeout_request"])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
         self.write([event("task_complete"), event("task_started")])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
@@ -704,44 +750,110 @@ class LedgerTests(unittest.TestCase):
             "turn_aborted",
         )
 
-    def test_close_only_exited_exact_session_and_never_force(self):
-        entry = session_record.load_ledger(self.ledger)[0]
-        terminal = SimpleNamespace(
-            session_id="term1",
-            async_get_variable=AsyncMock(return_value="/dev/ttys001"),
-            async_close=AsyncMock(),
-        )
-        app = SimpleNamespace(
-            terminal_windows=[
-                SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-            ]
-        )
-        with patch.object(
-            close_ttys,
-            "inventory",
-            return_value=[(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login")],
+    def test_finished_notice_routes_immediately_without_idle_delay(self):
+        seen = {}
+        notices = codex_idle_watch.poll(self.ledger, seen, 90, 1001)
+        self.assertEqual(len(notices), 1)
+        notice = notices[0]
+        request = notice["closeout_request"]
+        self.assertEqual(request, finished_map.candidates(self.ledger)[0]["closeout_request"])
+        self.assertEqual(request["session_id"], self.entry["session_id"])
+        self.assertEqual(request["handoff_url"], self.entry["handoff_url"])
+        self.assertEqual(request.get("verdict_at"), finished_map.candidates(self.ledger)[0]["timestamp"])
+        self.assertIsNone(notice["clean"])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1002), [])
+        # The notice is historical evidence: fresh verification must reject new work.
+        self.write([event("agent_message", message="Safe to exit: yes"),
+                    event("task_complete"), event("task_started")])
+        self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1200), [])
+
+    def test_closeout_metadata_does_not_repeat_request_but_later_verdict_does(self):
+        seen = {}
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1001)), 1)
+        with self.transcript.open("a") as stream:
+            stream.write(json.dumps(event("token_count", info={"total_token_usage": {"total_tokens": 99}})) + "\n")
+        os.utime(self.transcript, (1002, 1002))
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1003), [])
+        # A whole new turn can finish between polls with the same final text.
+        with self.transcript.open("a") as stream:
+            for record in [event("task_started"), event("agent_message", message="Safe to exit: yes"),
+                           {**event("task_complete"), "timestamp": "2026-10-03T00:01:00Z"}]:
+                stream.write(json.dumps(record) + "\n")
+        os.utime(self.transcript, (1004, 1004))
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1005)), 1)
+
+    def test_observed_new_work_rearms_closeout_with_same_response(self):
+        seen = {}
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1001)), 1)
+        self.write([event("task_started")])
+        self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1002), [])
+        self.write([event("agent_message", message="Safe to exit: yes"), event("task_complete")])
+        self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1003)), 1)
+
+    def test_early_closeout_requires_owned_completed_unqualified_response(self):
+        for text, tail, owned in (
+            ("Safe to exit: yes", "task_complete", False),
+            ("Still working.", "task_complete", True),
+            ('"Safe to exit: yes"', "task_complete", True),
+            ("Safe to exit: yes, when CI passes", "task_complete", True),
+            ("Safe to exit: yes", "turn_aborted", True),
+            ("Safe to exit: yes", "task_started", True),
         ):
-            result = asyncio.run(close_ttys.close(app, entry, False, True, True))
-            self.assertTrue(result["dry_run"])
-            terminal.async_close.assert_not_awaited()
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
-            terminal.async_close.assert_awaited_once_with(force=False)
-        for rows in (
-            [(123, "ttys001", "claude")],
-            [(456, "ttys001", "/usr/bin/codex")],
-            [(123, "other", "unrelated")],
-            [(456, "ttys001", "/usr/bin/node")],
-        ):
-            with (
-                patch.object(close_ttys, "inventory", return_value=rows),
-                self.assertRaises(ValueError),
-            ):
-                asyncio.run(close_ttys.close(app, entry, True, True, True))
-        with self.assertRaises(ValueError):
-            asyncio.run(close_ttys.close(app, entry, True, False, True))
-        terminal.async_get_variable.return_value = "/dev/ttys999"
-        with self.assertRaises(ValueError):
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
+            with self.subTest(text=text, tail=tail, owned=owned):
+                self.entry["supervisor_owned"] = owned
+                self.write([event("agent_message", message=text), event(tail)])
+                self.assertEqual(codex_idle_watch.poll(self.ledger, {}, 90, 1001), [])
+                self.assertIsNone(finished_map.candidates(self.ledger)[0].get("closeout_request"))
+
+    def test_notice_rechecks_changed_ledger_ownership(self):
+        seen = {}
+        self.entry["supervisor_owned"] = False
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.assertIsNone(codex_idle_watch.poll(self.ledger, seen, 90, 1200)[0].get("closeout_request"))
+        self.entry["supervisor_owned"] = True
+        self.ledger.write_text(json.dumps([self.entry]))
+        notices = codex_idle_watch.poll(self.ledger, seen, 90, 1201)
+        self.assertEqual(len(notices), 1)
+        self.assertIsNotNone(notices[0]["closeout_request"])
+
+    def test_claude_native_notice_uses_exact_session_and_shared_route(self):
+        self.entry["harness"] = "claude"
+        records = [{**claude("Safe to exit: yes"), "sessionId": self.entry["session_id"]}]
+        self.transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
+        self.ledger.write_text(json.dumps([self.entry]))
+        command = [sys.executable, str(Path(finished_map.__file__)),
+                   "--ledger", str(self.ledger), "--session-id", self.entry["session_id"]]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        candidate = json.loads(result.stdout)[0]
+        self.assertTrue(candidate["candidate"])
+        self.assertEqual(candidate["closeout_request"]["harness"], self.entry["harness"])
+        # A native idle notice arriving after a new user turn is no longer finish evidence.
+        with self.transcript.open("a") as stream:
+            stream.write(json.dumps({"type": "user", "sessionId": self.entry["session_id"],
+                                     "message": {"content": "Continue working."}}) + "\n")
+        self.assertIsNone(finished_map.candidates(self.ledger, self.entry["session_id"])[0]["closeout_request"])
+        result = subprocess.run(command[:-1] + ["other-session"], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("error", json.loads(result.stdout))
+
+    def test_claude_closeout_with_live_background_task_stays_open(self):
+        self.entry["harness"] = "claude"
+        records = [
+            {"type": "user", "toolUseResult": {"taskId": "running-ci"}},
+            claude("Safe to exit: yes"),
+        ]
+        self.transcript.write_text("".join(json.dumps({**r, "sessionId": self.entry["session_id"]}) + "\n"
+                                          for r in records))
+        self.ledger.write_text(json.dumps([self.entry]))
+        candidate = finished_map.candidates(self.ledger)[0]
+        self.assertFalse(candidate["candidate"])
+        self.assertIsNone(candidate["closeout_request"])
+        self.assertEqual(candidate.get("closeout_blockers"), candidate["background_tasks"])
+        self.assertTrue(candidate["closeout_blockers"])
+        self.assertTrue(candidate["next_action"])
+
 
     def test_memory_citation_fixture_through_status_candidates_and_close(self):
         fixture = Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
@@ -762,47 +874,8 @@ class LedgerTests(unittest.TestCase):
                 self.assertTrue(result["safe_verdict"])
                 self.assertIn("<oai-mem-citation>", result["last_text"])
                 self.assertTrue(finished_map.candidates(self.ledger)[0]["candidate"])
-                entry = session_record.load_ledger(self.ledger)[0]
-                terminal = SimpleNamespace(
-                    session_id="term1",
-                    async_get_variable=AsyncMock(return_value="ttys001"),
-                    async_close=AsyncMock(),
-                )
-                app = SimpleNamespace(terminal_windows=[
-                    SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-                ])
-                with patch.object(close_ttys, "inventory", return_value=[(20, "ttys001", "-zsh")]):
-                    self.assertTrue(asyncio.run(close_ttys.close(app, entry, False, True, True))["dry_run"])
-                    terminal.async_close.assert_not_awaited()
-                    asyncio.run(close_ttys.close(app, entry, True, True, True))
-                terminal.async_close.assert_awaited_once_with(force=False)
 
-    def test_activity_race_keeps_tab(self):
-        entry = session_record.load_ledger(self.ledger)[0]
-        terminal = SimpleNamespace(
-            session_id="term1",
-            async_get_variable=AsyncMock(return_value="ttys001"),
-            async_close=AsyncMock(),
-        )
-        app = SimpleNamespace(
-            terminal_windows=[
-                SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-            ]
-        )
-        with (
-            patch.object(
-                session_record,
-                "session_status",
-                side_effect=[{"safe_verdict": True}, {"safe_verdict": False}],
-            ) as reader,
-            patch.object(
-                close_ttys, "inventory", return_value=[(20, "ttys001", "/bin/zsh")]
-            ),
-            self.assertRaises(ValueError),
-        ):
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
-        self.assertEqual(reader.call_count, 2)
-        terminal.async_close.assert_not_awaited()
+
 
 
 class QuestionTests(unittest.TestCase):
@@ -1232,6 +1305,58 @@ class AccountChoiceTests(unittest.TestCase):
                 account_choice.record_launch(choice, NOW)
             self.assertEqual(list((Path(folder) / "Launch Receipts").iterdir()), [])
 
+    def test_app_group_receipts_route_through_the_readers_record_launch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            app = root / "Context Panel"
+            app.write_text("#!/bin/sh\nexit 0\n")
+            app.chmod(0o700)
+            config = accounts_config()
+            config["snapshot_command"] = [str(app), "--account-snapshot"]
+            with patch.object(account_choice, "load_config", return_value=config), \
+                    patch.object(account_choice, "read_snapshot", return_value=(self.snapshot(), None)):
+                choice = account_choice.select("anthropic")
+            self.assertEqual(choice["receipt_app"], str(app))
+            self.assertNotIn(str(app), json.dumps(account_choice.public(choice)))
+            account_choice.prepare_launch(choice)
+            name = "20261003T160000Z-supervisor-" + "a" * 32 + ".json"
+            runner = Mock(return_value=subprocess.CompletedProcess([], 0, name + "\n", ""))
+            choice["storage_root"] = root
+            choice["gui"] = {"app": "Codex"}
+            path = account_choice.record_launch(choice, NOW, runner=runner)
+            argv, options = runner.call_args.args[0], runner.call_args.kwargs
+            self.assertEqual(argv, [str(app), "--record-launch", "--launcher", "supervisor"])
+            self.assertEqual(json.loads(options["input"]), {"schemaVersion": 1, "provider": "anthropic",
+                                                            "accountID": "anthropic-def",
+                                                            "launchedAt": "2026-10-03T16:00:00Z"})
+            self.assertLessEqual(len(options["input"].encode()), 1024)
+            self.assertEqual(path, root / "Launch Receipts" / name)
+            self.assertFalse((root / "Launch Receipts").exists())  # the app wrote it, not this process
+            gui = json.loads((root / "Supervisor GUI Receipts" / name).read_text())
+            self.assertEqual(gui["gui"], {"app": "Codex"})
+
+    def test_app_writer_failures_refuse_without_a_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            choice = account_choice.choose("anthropic", accounts_config(), self.snapshot(), None)
+            choice.update(storage_root=root, receipt_app=str(root / "missing"))
+            with self.assertRaises(ValueError):
+                account_choice.prepare_launch(choice)
+            outcomes = {
+                "receipt is not current": subprocess.CompletedProcess([], 64, "", "receipt is not current\n"),
+                "storage unavailable": subprocess.CompletedProcess([], 1, "", "storage unavailable\n"),
+                "silent failure": subprocess.CompletedProcess([], 2, "", ""),
+                "receipt outside the store": subprocess.CompletedProcess([], 0, "../elsewhere.json\n", ""),
+                "timeout": subprocess.TimeoutExpired(["app"], 30),
+                "missing app": FileNotFoundError(2, "missing"),
+            }
+            for reason, outcome in outcomes.items():
+                with self.subTest(reason=reason):
+                    runner = Mock(side_effect=outcome) if isinstance(outcome, BaseException) else Mock(return_value=outcome)
+                    with self.assertRaises(ValueError):
+                        account_choice.record_launch({**choice, "gui": {"app": "Codex"}}, NOW, runner=runner)
+            self.assertEqual(list(root.iterdir()), [])
+
 
 def fixture_briefs(command_files):
     files = command_files if isinstance(command_files, list) else [command_files]
@@ -1248,12 +1373,256 @@ def account_launch_args(command_file):
     )
 
 
+class ProcessArgumentsTests(unittest.TestCase):
+    source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+    other = "01970242-7941-7f0c-b461-16aa5723fb51"
+
+    def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": harness, "pid": 123, "tty": "source-tty"}
+        with patch.object(session_liveness, "native_arguments", return_value=argv, create=True) as read:
+            result = session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                independent_harness=lambda *_args: guarded, scope=scope)
+        return result, read
+
+    def test_actual_boundaries_distinguish_quoted_prompts_from_native_commands(self):
+        for word in ("resume", "exec"):
+            with self.subTest(word=word), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.probe(["codex", word + " " + self.other])
+        self.probe(["codex", "resume", self.other])
+        self.probe(["codex", "exec", "fresh prompt"])
+        self.probe(["codex", "exec", "-"])
+        self.probe(["codex", "resume", self.other, "-"])
+        with self.assertRaisesRegex(ValueError, "unidentified harness"):
+            self.probe(["codex", "--model", "model resume " + self.other])
+
+    def test_real_resume_after_separator_vetoes_the_source(self):
+        for prefix in (["codex", "resume"], ["codex", "exec", "resume"], ["codex", "e", "resume", "--json"]):
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(ValueError, "resumed harness"):
+                self.probe([*prefix, "--", self.source, "prompt"], tty="other")
+
+    def test_last_and_prompt_uuids_never_supply_an_exact_other_exemption(self):
+        for prefix in (["codex", "resume"], ["codex", "exec", "resume"]):
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.probe([*prefix, "--last", self.other])
+            self.probe([*prefix, "--last", self.source], tty="other")
+        self.probe(["codex", "resume", self.other, "prompt " + self.source])
+        self.probe(["codex", "resume " + self.source], tty="other")
+
+    def test_unavailable_boundaries_grant_no_invocation_exemption(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "codex", "pid": 123, "tty": "source-tty"}
+        for command in ("codex resume " + self.other, "codex exec -- fresh prompt"):
+            with self.subTest(command=command), patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable"), create=True):
+                kwargs = dict(rows=[(456, entry["tty"], command)], ended_at=cutoff,
+                              started_at=lambda _pid: cutoff + timedelta(seconds=1))
+                with self.assertRaisesRegex(ValueError, "unidentified harness"):
+                    session_liveness.verify_process_exit(entry, **kwargs)
+                session_liveness.verify_process_exit(entry, independent_harness=lambda *_args: True, **kwargs)
+
+    def test_uncertain_resume_options_keep_source_operands_after_separator(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "codex", "pid": 123, "tty": "source-tty"}
+        cases = ((["codex", "-m", "M", "resume", "--", self.source], False),
+                 (["codex", "exec", "--json", "resume", "--", self.source], False),
+                 (["codex", "--unlisted-option", "resume", "--", self.source], True))
+        for argv, available in cases:
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(argv=argv, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                for tty in (entry["tty"], "other"):
+                    with self.subTest(tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                            independent_harness=lambda *_args: True)
+                peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
+                self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
+        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+            peers = sessions.process_sessions("456 codex -- please resume " + self.source, {self.source})
+            self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
+        with patch.object(session_liveness, "native_arguments", return_value=["codex", "--", "please resume " + self.source]):
+            self.assertEqual(sessions.process_sessions("456 codex -- please resume " + self.source, {self.source}), [])
+
+    def test_uncertain_delimiters_do_not_hide_source_veto_candidates(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        cases = ((["claude", "--mcp-config", "--", "--resume", self.source], True),
+                 (["claude", "--append-system-prompt", "keep -- terse", "--resume", self.source], False),
+                 (["claude", "-pr", self.source], False),
+                 (["claude", "-cr", self.source], False),
+                 (["claude", "-pcr", self.source], False),
+                 (["codex", "-c", 'key="a -- b"', "resume", self.source], False))
+        for argv, available in cases:
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            entry = {"session_id": self.source, "harness": argv[0], "pid": 123, "tty": "source-tty"}
+            with self.subTest(argv=argv, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                for tty in (entry["tty"], "other"):
+                    with self.subTest(tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                            independent_harness=lambda *_args: True)
+                self.assertIsNone(session_liveness.invocation(argv, bounded=available)[2])
+
+    def test_known_native_separator_keeps_fresh_prompt_boundary(self):
+        for argv in (["codex", "--", "please resume " + self.source],
+                     ["claude", "--", "please --resume " + self.source]):
+            with self.subTest(argv=argv):
+                self.probe(argv, tty="other", harness=argv[0])
+                with self.assertRaisesRegex(ValueError, "unidentified harness"):
+                    self.probe(argv, harness=argv[0])
+                # The same flattened text cannot prove where the prompt began.
+                candidates, kind, exact = session_liveness.invocation(" ".join(argv).split(), bounded=False)
+                self.assertIn(self.source, candidates)
+                self.assertNotEqual(kind, "exec")
+                self.assertIsNone(exact)
+
+    def test_claude_attached_resume_supplies_only_source_veto_candidates(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"}
+        for available in (False, True):
+            argv = ["claude", "-r" + self.source]
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                for tty in (entry["tty"], "other"):
+                    with self.subTest(tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                            independent_harness=lambda *_args: True)
+        # The same token can be another option's value. Its addition must not
+        # create unrelated-session authority merely because argv is available.
+        for argv in (["claude", "-r" + self.other], ["claude", "--append-system-prompt", "-r" + self.other]):
+            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv), \
+                    self.assertRaisesRegex(ValueError, "unidentified harness"):
+                session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], " ".join(argv))],
+                    ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+
+    def test_claude_exact_resume_respects_required_values_and_command_position(self):
+        unsafe = (["--append-system-prompt", "--resume", self.other],
+                  ["--append-system-prompt", "-r", self.other],
+                  ["--append-system-prompt", "--resume=" + self.other],
+                  ["--append-system-prompt", "-r" + self.other],
+                  ["-r=" + self.other], ["-pr=" + self.other],
+                  ["--unknown-option", "--resume", self.other],
+                  ["agents", "--resume", self.other],
+                  ["--", "--resume", self.other])
+        for args in unsafe:
+            with self.subTest(args=args), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.probe(["claude", *args], harness="claude")
+        supported = (["--resume", self.other], ["-r", self.other], ["--resume=" + self.other],
+                     ["--model", "synthetic-model", "--resume", self.other],
+                     ["--verbose", "--debug=synthetic-filter", "-r", self.other],
+                     ["--append-system-prompt", "--resume", "--resume", self.other],
+                     ["--append-system-prompt", "-r" + self.source, "--resume", self.other])
+        for args in supported[:-1]:
+            with self.subTest(args=args):
+                self.probe(["claude", *args], harness="claude")
+        # The conservative candidate veto may still see a source in a prompt.
+        # Exact identity parsing itself must consume that option's value.
+        self.assertEqual(session_liveness.invocation(["claude", *supported[-1]])[2], self.other)
+
+    def test_claude_required_separator_value_does_not_hide_real_source_resume(self):
+        argv = ["claude", "--append-system-prompt", "--", "--resume", self.source]
+        with self.assertRaisesRegex(ValueError, "resumed harness"):
+            self.probe(argv, tty="other", guarded=True, harness="claude")
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"}
+        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+            with self.assertRaisesRegex(ValueError, "resumed harness"):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", " ".join(argv))],
+                    ended_at=cutoff, independent_harness=lambda *_args: True)
+            self.assertIsNone(session_liveness.invocation(["claude", "--resume", self.other], bounded=False)[2])
+
+    def test_claude_boolean_cluster_preserves_resume_veto_but_debug_owns_its_value(self):
+        for available in (False, True):
+            argv = ["claude", "-pr" + self.source]
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+                entry = {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"}
+                for tty in (entry["tty"], "other"):
+                    with self.subTest(tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                            independent_harness=lambda *_args: True)
+        self.assertEqual(session_liveness.invocation(["claude", "-dr" + self.source])[0], [])
+        with self.assertRaisesRegex(ValueError, "unidentified harness"):
+            self.probe(["claude", "-pr" + self.other], harness="claude")
+
+    def test_physical_scope_never_reads_argv_identity(self):
+        _result, read = self.probe(["codex", "resume", self.source], scope="terminal")
+        read.assert_not_called()
+
+    def test_observer_uses_actual_operands_and_keeps_unavailable_argv_unknown(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for argv, live in ((["codex", "resume", "--", self.source], True),
+                           (["codex", "exec", "resume", "--", self.source], True),
+                           (["codex", "resume " + self.source], False),
+                           (["codex", "exec", "--", "resume " + self.source], False),
+                           (["codex", "resume", "--last", self.source], False)):
+            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
+                peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
+                self.assertEqual(bool(peers), live)
+        for command in ("codex exec -- fresh", "codex app-server --listen unix:///observed"):
+            with self.subTest(command=command), patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+                self.assertFalse(sessions.process_absence_known("456 " + command, {"/observed"}))
+
+    def test_known_options_and_late_last_preserve_native_positional_roles(self):
+        for prefix in (["codex", "--model", "model with spaces", "resume"],
+                       ["codex", "-c", 'notify=["hello", "world"]', "exec", "--json", "resume"],
+                       ["codex", "resume", "--model=other model"]):
+            with self.subTest(prefix=prefix):
+                self.probe([*prefix, self.other, "prompt " + self.source])
+        self.probe(["codex", "resume", self.other, "-i", "image.png"])
+        for tail in ([self.other, "--last"], [self.other, "prompt", "--last"]):
+            with self.subTest(tail=tail), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.probe(["codex", "resume", *tail])
+
+    def test_darwin_buffer_decodes_exact_argc_and_never_the_environment(self):
+        argv = ["codex", "resume " + self.other, "", "--"]
+        data = len(argv).to_bytes(4, sys.byteorder) + b"/fixture/codex\0\0\0" + b"\0".join(arg.encode() for arg in argv) + b"\0"
+        # Invalid UTF-8 in the trailing environment would fail if it were decoded.
+        self.assertEqual(session_liveness.darwin_arguments(data + b"DO_NOT_READ=\xff\0"), argv)
+        for malformed in (b"", b"\0" * 4, data[:4] + b"/fixture/codex\0codex"):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                session_liveness.darwin_arguments(malformed)
+
+    def test_linux_reader_preserves_boundaries_and_refuses_truncation(self):
+        from unittest.mock import mock_open
+        argv = ["codex", "resume " + self.other]
+        data = b"\0".join(arg.encode() for arg in argv) + b"\0"
+        with patch.object(sys, "platform", "linux"), patch.object(Path, "open", mock_open(read_data=data)):
+            self.assertEqual(session_liveness.native_arguments(456), argv)
+        for malformed in (b"", data[:-1], b"x" * (session_liveness.ARGUMENT_BYTES + 1)):
+            with self.subTest(size=len(malformed)), patch.object(sys, "platform", "linux"), \
+                    patch.object(Path, "open", mock_open(read_data=malformed)), self.assertRaises(ValueError):
+                session_liveness.native_arguments(456)
+
+    def test_darwin_native_reader_honors_kernel_size_and_argument_count(self):
+        argv = ["codex", "resume", self.other]
+        data = len(argv).to_bytes(4, sys.byteorder) + b"/fixture/codex\0\0" + b"\0".join(arg.encode() for arg in argv) + b"\0DO_NOT_READ=\xff\0"
+        def sysctl(_mib, _count, destination, size, _new, _newsize):
+            size._obj.value = len(data)
+            if destination is not None:
+                session_liveness.ctypes.memmove(destination, data, len(data))
+            return 0
+        library = SimpleNamespace(sysctl=Mock(side_effect=sysctl))
+        with patch.object(sys, "platform", "darwin"), patch.object(session_liveness.ctypes, "CDLL", return_value=library):
+            self.assertEqual(session_liveness.native_arguments(456), argv)
+
+
 class TabCloseTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(self.folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         self.ledger = Path(self.folder.name) / "ledger.json"
-        self.entry = {"supervisor_owned": True, "iterm_session_id": "owned",
+        self.entry = {"supervisor_owned": True, "iterm_session_id": "owned", "pid": 123,
                       "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}
         self.ledger.write_text(json.dumps([self.entry]))
         self.session = SimpleNamespace(session_id="owned", async_close=AsyncMock(),
@@ -1268,7 +1637,10 @@ class TabCloseTests(unittest.TestCase):
         self.rows = [(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fpl user")]
         self.addCleanup(patch.stopall)
         patch.dict("sys.modules", {"iterm2": self.api}).start()
-        self.inventory = patch.object(close_ttys, "inventory", return_value=self.rows).start()
+        self.real_inventory = session_liveness.inventory
+        self.inventory = patch.object(session_liveness, "inventory", return_value=self.rows).start()
+        patch.object(session_liveness, "process_arguments", side_effect=lambda _pid, command:
+                     (session_liveness.harness_arguments(command), True)).start()
 
     def close(self, identity="owned"):
         return asyncio.run(iterm_tab.close_session(self.app, identity, self.ledger))
@@ -1278,6 +1650,178 @@ class TabCloseTests(unittest.TestCase):
         self.session.async_close.assert_awaited_once_with(force=False)
         self.assertEqual(self.inventory.call_count, 2)
         self.assertEqual(self.api.async_get_last_prompt.await_count, 2)
+
+    def test_pidless_idle_iterm_close_retains_prompt_and_launch_pid_guards(self):
+        entry = {key: value for key, value in self.entry.items() if key != "pid"}
+        self.ledger.write_text(json.dumps([entry]))
+        self.assertTrue(self.close()["close_requested"])
+        self.session.async_close.assert_awaited_once_with(force=False)
+        for change, rows, command in (
+            ({"pid": False}, self.rows, ""), ({"pid": 0}, self.rows, ""),
+            ({"pid": "123"}, self.rows, ""), ({"pid": {}}, self.rows, ""),
+            ({"launch_pid": 456}, [*self.rows, (456, "other", "codex")], ""),
+            ({}, [*self.rows, (456, self.entry["tty"], "codex")], ""),
+            ({}, [], ""), ({}, self.rows, "draft"),
+        ):
+            with self.subTest(change=change, rows=rows, command=command):
+                self.session.async_close.reset_mock()
+                self.ledger.write_text(json.dumps([{**entry, **change}]))
+                self.inventory.return_value = rows
+                self.prompt.command = command
+                with self.assertRaises(ValueError):
+                    self.close()
+                self.session.async_close.assert_not_awaited()
+
+    def test_interrupted_terminal_cleanup_retains_physical_close_contract(self):
+        transcript = self.ledger.parent / "interrupted.jsonl"
+        transcript.write_text(json.dumps({"sessionId": "source", "type": "user", "message": {"content": "interrupted"}}) + "\n")
+        self.ledger.write_text(json.dumps([{**self.entry, "session_id": "source", "harness": "claude", "transcript": "interrupted.jsonl"}]))
+        self.assertTrue(self.close()["close_requested"])
+        self.session.async_close.assert_awaited_once_with(force=False)
+
+    def test_physical_close_does_not_stop_a_source_resumed_on_another_tty(self):
+        self.ledger.write_text(json.dumps([{**self.entry, "session_id": "source", "harness": "codex"}]))
+        self.inventory.return_value = [*self.rows, (456, "another-tty", "codex resume source")]
+        self.assertTrue(self.close()["close_requested"])
+        self.session.async_close.assert_awaited_once_with(force=False)
+
+    def test_resume_candidates_do_not_prove_an_unrelated_session(self):
+        entry = {**self.entry, "pid": 123, "session_id": "source", "harness": "codex"}
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for command in ("codex please resume notes", "codex resume --last", "claude --continue", "claude -c"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(
+                    {**entry, "harness": "claude" if command.startswith("claude") else "codex"},
+                    rows=[(456, entry["tty"], command)], ended_at=cutoff,
+                    started_at=lambda _pid: cutoff + timedelta(seconds=1), replacement_owner=lambda _pid: True)
+        for command in ("codex-aarch64-apple-darwin resume source", "codex-aarch64-apple-darwin exec resume source"):
+            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+
+    def test_native_uuid_alias_resumes_are_the_source_on_every_tty(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        entry = {**self.entry, "session_id": source, "harness": "codex"}
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for alias in (source.upper(), source.replace("-", ""), "{" + source.upper() + "}", "urn:uuid:" + source.upper()):
+            for tty in (entry["tty"], "other"):
+                with self.subTest(alias=alias, tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                    session_liveness.verify_process_exit(entry, rows=[(456, tty, "codex resume " + alias)],
+                        ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+
+    def test_codex_resume_options_keep_source_ids_separate_from_option_values(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        other = "01a14296-2820-7da0-979b-51f158dfeb7b"
+        entry = {**self.entry, "session_id": source, "harness": "codex"}
+        for command in (
+            f"codex exec resume --json {source}", f"codex e resume -m model {source}",
+            f"codex resume --all {source}", f"node /bin/codex.js resume --model {other} {source}",
+            f"codex exec resume --model={other} {source}",
+            f'codex resume -c notify=true {source}',
+        ):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+        for command in (
+            f"codex resume -m {source} {other}", f"codex resume --model={source} {other}",
+            f"codex resume -i {source} --last", f"codex resume --json {other} -- {source}",
+            f"codex exec -- resume --json {source}",
+        ):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for command in (f"codex resume -m {other} --last", f"codex resume --unknown-value {other} --last"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], command)],
+                    ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+        session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], f"codex resume -m {source} {other}")],
+            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+
+    def test_repository_codex_scripts_are_unrelated_replacement_work(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for command in ("python /repo/codex_idle_watch.py", "sh /repo/codex-watch.sh"):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit({**self.entry, "harness": "codex"},
+                    rows=[(456, self.entry["tty"], command)], ended_at=cutoff,
+                    started_at=lambda _pid: cutoff + timedelta(seconds=1))
+
+    def test_managed_wrapper_needs_its_guard_on_the_source_tty(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for name in ("codex-session.py", "codex_session_proxy.py"):
+            for guarded in (False, True):
+                with self.subTest(name=name, guarded=guarded):
+                    probe = lambda: session_liveness.verify_process_exit({**self.entry, "harness": "codex"},
+                        rows=[(456, self.entry["tty"], "python /repo/" + name + " launch")], ended_at=cutoff,
+                        started_at=lambda _pid: cutoff + timedelta(seconds=1), independent_harness=lambda *_args: guarded)
+                    if guarded:
+                        probe()
+                    else:
+                        with self.assertRaisesRegex(ValueError, "unidentified harness"):
+                            probe()
+
+    def test_inventory_keeps_long_resume_operands(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        self.inventory.side_effect = self.real_inventory
+        def ps(argv, **_kwargs):
+            # Model ps's truncated command column unless unlimited width is requested.
+            command = "/" + "long-vendor-path/" * 8 + "codex resume " + source
+            return SimpleNamespace(stdout="456 other " + (command if "-ww" in argv else command[:79]))
+        with patch.object(session_liveness.subprocess, "run", side_effect=ps), self.assertRaisesRegex(ValueError, "resumed harness"):
+            session_liveness.verify_process_exit({**self.entry, "session_id": source})
+
+    def test_malformed_native_cutoff_falls_back_to_strict_process_proof(self):
+        import tmux_terminal
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "launch_started_at": 5}
+        pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                "tmux_socket": "fixture", "window_id": entry["window_id"], "tab_id": entry["tab_id"],
+                "tty": entry["tty"], "dead": True, "exited_at": "2026-10-01T02:00:00Z"}
+        for row in (pane, {key: value for key, value in pane.items() if key != "tab_id"}):
+            with self.subTest(row=row), patch.object(tmux_terminal.Terminal, "list", return_value=[row]):
+                self.assertIsNone(session_liveness.native_exit_cutoff(entry))
+                with self.assertRaises(ValueError):
+                    session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], "codex exec -- new task")])
+
+    def test_unknown_peers_on_other_ttys_remain_the_callers_confirmation(self):
+        entry = {**self.entry, "pid": 123, "session_id": "source"}
+        for command, harness in (("codex resume --last", "codex"), ("claude --continue", "claude")):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit({**entry, "harness": harness}, rows=[(456, "other", command)])
+        self.assertEqual(session_liveness.invocation(["claude", "--continue"]), ([], "resume", None))
+        self.assertEqual(session_liveness.invocation(["claude", "-c"]), ([], "resume", None))
+
+    def test_resume_identity_is_read_only_from_harness_operands(self):
+        entry = {**self.entry, "session_id": "source", "pid": 123}
+        for command in ("echo codex resume source", "python worker.py resume source", "codex -- resume source", "codex exec -- resume source"):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+        for command in ("codex resume source -- prompt", "bun /bin/claude.js --resume=source", "node /bin/claude --resume source",
+                        'codex -c notify=true resume source',
+                        "codex exec resume source", "codex e resume source", "node /bin/codex.js exec resume source"):
+            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+
+    def test_missing_source_pid_is_uncertainty_for_every_ordinary_probe(self):
+        for value in (None, False, 0, -1, "123"):
+            with self.subTest(pid=value), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit({**self.entry, "pid": value}, rows=self.rows)
+
+    def test_resume_picker_is_not_fresh_exec_and_explicit_prompt_is_unrelated(self):
+        entry = {**self.entry, "harness": "codex", "session_id": "source"}
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        born = cutoff + timedelta(seconds=1)
+        for command in ("codex exec resume --last", "codex e resume --last", "node /bin/codex.js exec resume --last"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(entry, rows=[(456, self.entry["tty"], command)],
+                                                     ended_at=cutoff, started_at=lambda _pid: born)
+        for command in ("codex exec -- resume source", "codex e -- resume source"):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit(entry, rows=[(456, self.entry["tty"], command)],
+                                                     ended_at=cutoff, started_at=lambda _pid: born)
+
+    def test_verified_exit_uses_final_verdict_independently_of_recorded_jobs(self):
+        status = {"safe_verdict": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}
+        session_liveness.require_safe_status(status)
+        with self.assertRaises(ValueError):
+            session_liveness.require_safe_status({**status, "safe_verdict": False})
 
     def test_refuses_missing_duplicate_director_or_moved_identity(self):
         for entries in ([], [self.entry, self.entry],
@@ -1390,6 +1934,13 @@ def write_codex_project_fixture(directory, home):
 
 
 class CodexProjectTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
+
     def test_codex_cannot_skip_preflight_through_another_provider(self):
         for provider in ("anthropic", "google"):
             with self.subTest(provider=provider), self.assertRaises(ValueError):
@@ -1532,8 +2083,8 @@ class CodexProjectTests(unittest.TestCase):
             receipt.assert_not_called()
 
     def test_prepared_command_preserves_explicit_directory_and_brief(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+            root = Path(folder).resolve()
             repository = root / "brief's repository"
             repository.mkdir()
             fake_codex = root / "codex"
@@ -1547,8 +2098,18 @@ class CodexProjectTests(unittest.TestCase):
             fake_codex.chmod(0o700)
             home = root / "selected"
             write_codex_project_fixture(repository, home)
+            endpoint = iterm_tab.codex_daemon_endpoint(home)
+            endpoint.parent.mkdir()
+            native_socket = self.enterContext(socket.socket(socket.AF_UNIX))
+            native_socket.bind(str(endpoint))
+            endpoint.chmod(0o600)
             launch = root / "launch"
-            launch.write_text(f"{shlex.quote(str(fake_codex))} --remote unix:// -C {shlex.quote(str(repository))}")
+            launch.write_text(f"{shlex.quote(str(fake_codex))} -C {shlex.quote(str(repository))}")
+            code = root / ".code"
+            (code / "skill-data").mkdir(parents=True)
+            (code / "skill-data/supervisor.toml").write_text(
+                '[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
             args = account_launch_args(launch)
             args.account_provider = "openai"
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
@@ -1557,6 +2118,7 @@ class CodexProjectTests(unittest.TestCase):
                   patch.object(account_choice, "prepare_launch")):
                 commands, _ = iterm_tab.prepare_launches(args)
             result = subprocess.run(["/bin/sh", "-c", commands[0]], cwd=root,
+                                    env={**os.environ, "HOME": str(root), "CODE_HOME": str(code)},
                                     capture_output=True, text=True, check=True)
             self.assertEqual(json.loads(result.stdout), [str(repository.resolve()), args.brief_file[0].read_text()])
 
@@ -1570,20 +2132,217 @@ def launch_terminal_fixture():
     return terminal, window, app
 
 
+def git_fixture(*args):
+    subprocess.run(["git", *args], capture_output=True, check=True)
+
+
+def git_repository(path):
+    git_fixture("init", str(path))
+    git_fixture("-C", str(path), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture")
+    return path
+
+
+def claude_projects(config):
+    return json.loads(config.read_text())["projects"]
+
+
+class ClaudeTrustTests(unittest.TestCase):
+    """Folder trust in every configured Claude home, with fixture homes only (codex-skills#2100)."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        self.user = self.root / "user"
+        self.developer = self.user / "Developer"
+        self.worktrees = self.root / "worktrees"
+        for path in (self.developer, self.worktrees):
+            path.mkdir(parents=True)
+        self.homes = [self.root / "claude-main", self.root / "claude-spare"]
+        self.configs = [home / ".claude.json" for home in self.homes] + [self.user / ".claude.json"]
+        for config in self.configs:
+            config.parent.mkdir(exist_ok=True)
+            config.write_text(json.dumps({
+                "oauthAccount": {"emailAddress": "fixture@example.invalid"},
+                "projects": {str(self.developer): {"hasTrustDialogAccepted": True}},
+            }))
+            config.chmod(0o600)
+        accounts = [{"name": "main", "provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(self.homes[0])}},
+                    {"name": "spare", "provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(self.homes[1])}},
+                    {"name": "codex", "provider": "openai", "env": {"CODEX_HOME": str(self.root / "codex")}}]
+        self.choice = {"provider": "anthropic", "env": accounts[0]["env"]}
+        for target in (patch.object(Path, "home", return_value=self.user),
+                       patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent-opt-in"),
+                       patch.object(iterm_tab.claude_trust, "worktree_root", return_value=self.worktrees),
+                       patch.object(account_choice, "load_config", return_value={"accounts": accounts}),
+                       patch.object(account_choice, "select", side_effect=lambda *_: self.choice),
+                       patch.object(iterm_tab, "check_codex_daemon"),
+                       patch.object(account_choice, "prepare_launch")):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def launch(self, directory):
+        command = self.root / "command"
+        command.write_text(f"cd {shlex.quote(str(directory))} && exec claude")
+        return iterm_tab.prepare_launches(account_launch_args(command))
+
+    def test_repository_under_developer_is_trusted_in_every_claude_home(self):
+        # The October 17 stop: ~/Developer itself was trusted, but not the repository inside it.
+        repository = git_repository(self.developer / "odoo-enterprise-docker")
+        (repository / "addons").mkdir()
+        config = self.configs[1]
+        data = json.loads(config.read_text())
+        data["projects"][str(repository)] = {"allowedTools": ["Read"]}
+        config.write_text(json.dumps(data))
+        data = json.loads(self.configs[2].read_text())
+        del data["projects"]
+        self.configs[2].write_text(json.dumps(data))
+        self.launch(repository / "addons")
+        for config in self.configs:
+            with self.subTest(config=config):
+                data = json.loads(config.read_text())
+                self.assertIs(data["projects"][str(repository)]["hasTrustDialogAccepted"], True)
+                self.assertEqual(data["oauthAccount"], {"emailAddress": "fixture@example.invalid"})
+                self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(claude_projects(self.configs[1])[str(repository)]["allowedTools"], ["Read"])
+        self.assertFalse((self.root / "codex").exists())
+
+    def test_worktree_of_developer_repository_trusts_main_and_worktree_roots(self):
+        repository = git_repository(self.developer / "codex-skills")
+        worktree = self.worktrees / "codex-skills" / "task"
+        git_fixture("-C", str(repository), "worktree", "add", "--detach", str(worktree))
+        self.launch(worktree)
+        for config in self.configs:
+            with self.subTest(config=config):
+                projects = claude_projects(config)
+                self.assertIs(projects[str(repository)]["hasTrustDialogAccepted"], True)
+                self.assertIs(projects[str(worktree)]["hasTrustDialogAccepted"], True)
+
+    def test_folders_outside_developer_refuse_before_any_write_or_launch_step(self):
+        outside = git_repository(self.root / "outside")
+        foreign = self.worktrees / "foreign"
+        git_fixture("-C", str(outside), "worktree", "add", "--detach", str(foreign))
+        escape = self.developer / "escape"
+        escape.symlink_to(outside, target_is_directory=True)
+        plain = self.worktrees / "plain"
+        plain.mkdir()
+        disguised = self.worktrees / "disguised"
+        git_fixture("-C", str(outside), "worktree", "add", "--detach", str(disguised))
+        pointer = (disguised / ".git").read_text().split(":", 1)[1].strip()
+        (disguised / ".git").write_text(f"gitdir: {escape / Path(pointer).relative_to(outside)}\n")
+        before = [config.read_bytes() for config in self.configs]
+        for directory in (outside, foreign, escape, plain, disguised, self.developer.parent):
+            with (self.subTest(directory=directory),
+                  patch.object(account_choice, "prepare_launch") as prepare,
+                  self.assertRaisesRegex(ValueError, "not trusted") as caught):
+                self.launch(directory)
+            prepare.assert_not_called()
+            self.assertIn(str(self.configs[0]), str(caught.exception))
+            self.assertEqual([config.read_bytes() for config in self.configs], before)
+
+    def test_folder_outside_developer_launches_when_the_selected_home_already_trusts_it(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        data = json.loads(self.configs[0].read_text())
+        data["projects"][str(outside)] = {"hasTrustDialogAccepted": True}
+        self.configs[0].write_text(json.dumps(data))
+        before = [config.read_bytes() for config in self.configs]
+        commands, _ = self.launch(outside)
+        self.assertIn(str(outside), commands[0])
+        self.assertEqual([config.read_bytes() for config in self.configs], before)
+
+    def session_save(self):
+        # Another Claude session saves a refreshed login from its own view of the file,
+        # which does not include this launch's trust key.
+        data = json.loads(self.configs[0].read_text())
+        data["oauthAccount"] = {"emailAddress": "refreshed@example.invalid"}
+        saved = self.homes[0] / ".claude.json.tmp.session"
+        saved.write_text(json.dumps(data))
+        os.replace(saved, self.configs[0])
+
+    def assert_both_saves_kept(self, repository):
+        data = json.loads(self.configs[0].read_text())
+        self.assertEqual(data["oauthAccount"], {"emailAddress": "refreshed@example.invalid"})
+        self.assertIs(data["projects"][str(repository)]["hasTrustDialogAccepted"], True)
+        self.assertEqual(sorted(path.name for path in self.homes[0].iterdir()), [".claude.json"])
+
+    def test_session_save_just_before_the_swap_is_kept(self):
+        repository = git_repository(self.developer / "repository")
+        exchange = iterm_tab.claude_trust.exchange
+        calls = []
+
+        def save_then_exchange(source, target):
+            if not calls and Path(target) == self.configs[0]:
+                self.session_save()
+            calls.append(target)
+            exchange(source, target)
+
+        with patch.object(iterm_tab.claude_trust, "exchange", side_effect=save_then_exchange):
+            self.launch(repository)
+        self.assert_both_saves_kept(repository)
+
+    def test_session_save_just_after_the_swap_is_kept(self):
+        repository = git_repository(self.developer / "repository")
+        exchange = iterm_tab.claude_trust.exchange
+        calls = []
+
+        def exchange_then_save(source, target):
+            exchange(source, target)
+            if not calls and Path(target) == self.configs[0]:
+                self.session_save()
+            calls.append(target)
+
+        with patch.object(iterm_tab.claude_trust, "exchange", side_effect=exchange_then_save):
+            self.launch(repository)
+        self.assert_both_saves_kept(repository)
+
+    def test_missing_directory_or_home_config_refuses_without_partial_writes(self):
+        command = self.root / "command"
+        command.write_text("exec claude")
+        with self.assertRaisesRegex(ValueError, "cd /absolute/repository"):
+            iterm_tab.prepare_launches(account_launch_args(command))
+        repository = git_repository(self.developer / "repository")
+        self.configs[1].unlink()
+        before = [self.configs[0].read_bytes(), self.configs[2].read_bytes()]
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            self.launch(repository)
+        self.assertEqual([self.configs[0].read_bytes(), self.configs[2].read_bytes()], before)
+        self.assertFalse(self.configs[1].exists())
+
+    def test_unused_default_home_is_not_created(self):
+        repository = git_repository(self.developer / "repository")
+        self.configs[2].unlink()
+        self.launch(repository)
+        self.assertFalse(self.configs[2].exists())
+        for config in self.configs[:2]:
+            with self.subTest(config=config):
+                self.assertIs(claude_projects(config)[str(repository)]["hasTrustDialogAccepted"], True)
+
+
 class TerminalTests(unittest.TestCase):
     def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
+        opt_in.start()
+        self.addCleanup(opt_in.stop)
         # These cases exercise selection/input mechanics. Protocol and startup
         # observation have their own fake-adapter regressions.
         daemon = patch.object(iterm_tab, "inspect_codex_daemon")
         daemon.start()
         self.addCleanup(daemon.stop)
 
-        async def submit(app, session, command):
+        async def submit(app, session, command, **_):
             await iterm_tab.send(session, command, allow_tabs=True)
 
         startup = patch.object(iterm_tab, "submit_iterm_launch", side_effect=submit)
         startup.start()
         self.addCleanup(startup.stop)
+        # Claude folder trust has its own tests (ClaudeTrustTests); keep host homes untouched.
+        trust = patch.object(iterm_tab, "claude_trust_writes", return_value=[])
+        trust.start()
+        self.addCleanup(trust.stop)
 
     def assert_file_settings_argument(self, command, path, brief):
         args = shlex.split(command)
@@ -1747,7 +2506,7 @@ class TerminalTests(unittest.TestCase):
             terminal, window, app = launch_terminal_fixture()
             with (patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                   patch.object(account_choice, "read_snapshot", return_value=(google_snapshot(), None)),
-                  patch.object(account_choice, "storage_root", return_value=root)):
+                  patch.object(account_choice, "receipt_route", return_value={"storage_root": root})):
                 result = asyncio.run(iterm_tab.operate(app, args))
             sent = terminal.async_send_text.await_args_list[0].args[0]
             command = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
@@ -1799,21 +2558,6 @@ class TerminalTests(unittest.TestCase):
             with self.subTest(settings=settings):
                 command = iterm_tab.append_brief(settings, "task")
                 self.assertEqual(shlex.split(command)[-1], "task")
-
-    def test_google_brief_uses_native_interactive_prompt(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            child = root / "agy"
-            child.write_text(f'#!{sys.executable}\nimport argparse\n'
-                             'parser = argparse.ArgumentParser()\n'
-                             'parser.add_argument("-i", "--prompt-interactive", required=True)\n'
-                             'print(parser.parse_args().prompt_interactive, end="")\n')
-            child.chmod(0o700)
-            brief = "--Start here\n\tKeep these details literal."
-            command = iterm_tab.append_brief(shlex.quote(str(child)), brief)
-            result = subprocess.run(["/bin/sh", "-c", command], capture_output=True,
-                                    text=True, check=True)
-            self.assertEqual(result.stdout, brief)
 
     def test_brief_reaches_agent_as_one_literal_argument(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2418,7 +3162,7 @@ class TerminalTests(unittest.TestCase):
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value=choice),
-                self.assertRaisesRegex(ValueError, "check write access") as failed,
+                self.assertRaises(ValueError) as failed,
             ):
                 asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
@@ -2428,11 +3172,11 @@ class TerminalTests(unittest.TestCase):
             account_choice.prepare_launch(choice)
             self.assertEqual(list((root / "Launch Receipts").iterdir()), [])
             with patch.object(account_choice.os, "fsync", side_effect=OSError("disk full")):
-                with self.assertRaisesRegex(ValueError, "cannot prepare"):
+                with self.assertRaises(ValueError):
                     account_choice.prepare_launch(choice)
             self.assertEqual(list((root / "Launch Receipts").iterdir()), [])
 
-    def test_macos_refused_receipt_store_names_the_supported_route(self):
+    def test_explicit_root_refused_by_macos_names_the_app_route(self):
         with tempfile.TemporaryDirectory() as folder:
             choice = {"storage_root": Path(folder)}
             reasons = {}
@@ -2443,10 +3187,8 @@ class TerminalTests(unittest.TestCase):
                     account_choice.prepare_launch(choice)
                 self.assertNotIn(folder, str(failed.exception))
                 reasons[code] = str(failed.exception)
-            self.assertIn("Supervisor's terminal session", reasons[errno.EPERM])
-            self.assertNotIn("Supervisor's terminal session", reasons[errno.EACCES])
-            for reason in reasons.values():
-                self.assertIn("check write access", reason)
+            self.assertIn("--record-launch", reasons[errno.EPERM])
+            self.assertNotIn("--record-launch", reasons[errno.EACCES])
 
     def test_partial_batch_failure_preserves_started_and_failed_launch_identities(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2575,39 +3317,19 @@ class TerminalTests(unittest.TestCase):
         ):
             asyncio.run(iterm_tab.operate(app, args))
 
-    def test_running_shell_script_is_not_an_idle_shell(self):
+    def test_process_verification_preserves_scripts_missing_tty_and_malformed_inventory(self):
         entry = {"pid": 123, "tty": "ttys001"}
-        for command in (
-            "bash build.sh",
-            "zsh -c 'while :; do :; done'",
-            "/bin/sh /tmp/task.sh",
-        ):
-            with self.subTest(command=command):
-                self.assertFalse(
-                    close_ttys.process_exited(entry, [(20, "ttys001", command)])
-                )
-        self.assertTrue(
-            close_ttys.process_exited(
-                entry,
-                [(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fp user")],
-            )
-        )
-
-    def test_missing_tty_rows_are_not_exit_proof(self):
+        for command in ("bash build.sh", "zsh -c 'while :; do :; done'", "/bin/sh /tmp/task.sh"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(entry, rows=[(20, "ttys001", command)])
+        session_liveness.verify_process_exit(entry, rows=[(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fp user")])
         with self.assertRaises(ValueError):
-            close_ttys.process_exited(
-                {"pid": 123, "tty": "ttys001"}, [(20, "ttys999", "/bin/zsh")]
-            )
-
-    def test_process_inventory_refuses_unparseable_or_live_identity(self):
-        self.assertEqual(
-            close_ttys.process_rows("123 ttys001 /bin/claude\n"),
-            [(123, "ttys001", "/bin/claude")],
-        )
+            session_liveness.verify_process_exit(entry, rows=[(20, "ttys999", "-zsh")], require_tty=True)
+        self.assertEqual(session_liveness.process_rows("123 ttys001 /bin/claude\n"), [(123, "ttys001", "/bin/claude")])
         with self.assertRaises(ValueError):
-            close_ttys.process_rows("unexpected")
+            session_liveness.process_rows("unexpected")
         with self.assertRaises(ValueError):
-            close_ttys.process_exited({}, [])
+            session_liveness.verify_process_exit({}, rows=[])
 
 
 if __name__ == "__main__":

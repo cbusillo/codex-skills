@@ -1,0 +1,41 @@
+{
+  "provenance": {
+    "cli": "codex-cli 0.163.0",
+    "route": "existing selected-home daemon, plugin/list local filter",
+    "redaction": "Projection retains only marketplace and plugin names plus installed/enabled flags; paths, interface and account data omitted"
+  },
+  "response": {
+    "marketplaces": [
+      {
+        "name": "openai-primary-runtime",
+        "plugins": [
+          {
+            "name": "documents",
+            "installed": true,
+            "enabled": false
+          },
+          {
+            "name": "pdf",
+            "installed": true,
+            "enabled": true
+          },
+          {
+            "name": "spreadsheets",
+            "installed": true,
+            "enabled": false
+          },
+          {
+            "name": "presentations",
+            "installed": true,
+            "enabled": false
+          },
+          {
+            "name": "template-creator",
+            "installed": true,
+            "enabled": true
+          }
+        ]
+      }
+    ]
+  }
+}

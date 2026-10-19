@@ -1,13 +1,15 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Record verified session closure and release its automation claims. Dry run by default."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import json
 import fcntl
@@ -22,17 +24,19 @@ import tempfile
 import time
 
 import session_record
+import session_liveness
 import account_choice
 import backfill_inventory
-from close_ttys import idle_terminal_command, inventory
+from session_liveness import idle_terminal_command, inventory
 
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
 import github_identity
 import github_plan_claim as claim
 import github_plan_release as release
+import github_plan_closure as closure
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
-from github_comment import CommentError, comment
+from github_comment import OPERATION_MARKER_LINE_RE, CommentError, comment
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 HANDOFF = release.COMMENT_URL
@@ -50,7 +54,64 @@ class ConfirmedIssueRefusal(ValueError):
         self.payload = payload
 
 
-def verify_closed(entry, supervisor_session):
+def verify_process_exit(entry, *, ended_at=None):
+    def source_record():
+        records = closure.log_rows() if closure.closed_log().exists() else []
+        return next((row for row in records if row.get("session_id") == entry["session_id"]), None)
+    return _verify_process_exit(entry, ended_at, source_record)
+
+
+def _verify_process_exit(entry, ended_at, source_record):
+    if not entry.get("_inventory") and (
+        type(entry.get("pid")) is not int or entry["pid"] <= 0
+        or not isinstance(entry.get("tty"), str) or not entry["tty"]
+    ):
+        raise ValueError("closure requires the matched process PID and TTY")
+    cutoff = release.stamp(entry["tty_exited_at"]) if entry.get("tty_exited_at") else ended_at
+    if cutoff is not None and ended_at is not None and cutoff > ended_at:
+        raise ValueError("native TTY exit cutoff is newer than closure")
+    rows = inventory()
+    replacement = None
+    expected = entry.get("_tty_owner")
+    if expected is not None:
+        owner = session_liveness.replacement_tty_owner(entry, rows, started_at=closure.process_started_at)
+        if owner is None or owner[:2] != expected or owner[1] != cutoff:
+            raise ValueError("replacement TTY owner changed; preserve claims")
+        replacement = lambda pid: pid in owner[2]
+        # ps births have second precision. The proved root and its tree may
+        # share that second; ancestry, not a rounded time, identifies them.
+        cutoff -= timedelta(microseconds=1)
+
+    def independent(pid, argv):
+        if closure.guarded_launch_endpoint(pid, argv) is None:
+            return False
+        # Retain the existing saved-generation identity check. A first or
+        # resumed generation instead gets its cutoff from the native pane.
+        saved = source_record()
+        if saved is not None and not saved.get("resumed_at") and saved.get("process_exit_verified"):
+            identity = lambda row: {key: value for key, value in session_record.normalize_ledger_entry(
+                closure.closed_log(), row).items() if not key.startswith("_") and key != "handoff_url"}
+            return identity(saved) == identity(entry)
+        return True
+
+    def verify(cutoff, replacement):
+        return session_liveness.verify_process_exit(
+            entry, rows=rows, ended_at=cutoff, started_at=closure.process_started_at,
+            independent_harness=independent, replacement_owner=replacement)
+    try:
+        return verify(cutoff, replacement)
+    except ValueError:
+        if expected is not None or cutoff is None:
+            raise
+        # A saved replacement cutoff may equal its non-idle root's rounded
+        # birth. Re-prove ancestry only when the existing strict check needs it.
+        owner = session_liveness.replacement_tty_owner(entry, rows, started_at=closure.process_started_at)
+        if owner is None or owner[1] != cutoff:
+            raise
+        return verify(cutoff - timedelta(microseconds=1), lambda pid: pid in owner[2])
+
+
+def verify_closed(entry, supervisor_session, *, ended_at, native=None, process=None):
     historical = entry.get("_inventory") is True
     if entry["session_id"] == supervisor_session or (
         not historical and entry.get("supervisor_owned") is not True
@@ -58,33 +119,27 @@ def verify_closed(entry, supervisor_session):
         raise ValueError("requires another explicitly Supervisor-owned session")
     if historical and (entry.get("safe_exit_yes") is not True or entry.get("still_running") is not False):
         raise ValueError("inventory closure requires the Supervisor's verified safe exit and inactivity")
-    pid, tty = entry.get("pid"), entry.get("tty")
-    if not historical and (type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty):
-        raise ValueError("closure requires the matched process PID and TTY")
-    rows = inventory()
-    if any(p == pid or (not entry.get("_backfill") and t == tty and not idle_terminal_command(c)) for p, t, c in rows):
-        raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity before the documented manual release-claim route")
-    for _, process_tty, command in rows:
-        # ps does not preserve shell quoting. Inspect only native resume
-        # operands; arbitrary quoted prompt text is neither syntax nor identity.
-        argv = command.split()
-        resumed_ids = [argv[index + 1].strip("\"'") for index, arg in enumerate(argv)
-                       if arg in {"resume", "--resume", "-r"} and index + 1 < len(argv)]
-        resumed_ids.extend(arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume="))
-        if entry["session_id"] in resumed_ids:
-            raise ValueError("source native session is visible in a resumed harness process")
-        harness = any(Path(arg).name in {"codex", "claude", "claude.js"} for arg in argv)
-        if entry.get("_backfill") and process_tty == tty and harness and not (
-            len(resumed_ids) == 1 and resumed_ids[0] and not resumed_ids[0].startswith("-")
-        ):
-            raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity before the documented manual release-claim route")
+    cutoff = release.stamp(entry["tty_exited_at"]) if entry.get("tty_exited_at") else ended_at
+    if cutoff is not None and ended_at is not None and cutoff > ended_at:
+        raise ValueError("native TTY exit cutoff is newer than closure")
+    if process is None:
+        verify_process_exit(entry, ended_at=cutoff)
+    else:
+        import github_plan_native
+        github_plan_native.recheck_source_process(process)
+    if native is None:
+        closure.require_fresh_action_verdict(entry)
+    else:
+        import github_plan_native
+        github_plan_native.require_proof_quiet(native)
     status = session_record.session_status(entry)
-    if not status["safe_verdict"]:
-        raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")
+    session_liveness.require_safe_status(status)
     return status
 
 
-def validate_closure(entry, supervisor_session):
+def validate_closure(entry, supervisor_session, *, native=None, process=None):
+    if entry.get("resumed_at"):
+        raise ValueError("closed generation has resumed; record the new launch generation")
     if entry.get("process_exit_verified") is not True:
         raise ValueError("closed-session log lacks verified process exit")
     if not isinstance(entry.get("ended_at"), str) or re.search(r"\s", entry["ended_at"]):
@@ -92,9 +147,11 @@ def validate_closure(entry, supervisor_session):
     ended = release.stamp(entry["ended_at"])
     if ended > datetime.now(timezone.utc):
         raise ValueError("closure timestamp is in the future")
-    status = verify_closed(entry, supervisor_session)
+    status = verify_closed(entry, supervisor_session, ended_at=ended, native=native, process=process)
     if not status["timestamp"] or release.stamp(status["timestamp"]) > ended:
         raise ValueError("transcript resumed after the recorded closure")
+    if "verdict_at" in entry and entry["verdict_at"] != status["timestamp"]:
+        raise ValueError("recorded verdict time differs from the verified transcript")
     paths = {Path(entry["transcript"]).resolve()}
     for root in entry.get("_transcript_roots", []):
         paths.update(p.resolve() for p in Path(root).rglob(f"*{entry['session_id']}*.jsonl"))
@@ -107,6 +164,8 @@ def validate_closure(entry, supervisor_session):
             raise ValueError("source resumed or has newer activity in a configured native transcript")
         if session_record.session_status({**entry, "transcript": str(path)}) != other:
             raise ValueError("native transcript changed during closure verification")
+    # Optional host/boot/account fingerprints belong to idle admission only.
+    # Ordinary release still revalidates exit and every required native copy.
     return status
 
 
@@ -126,32 +185,129 @@ def transcript_roots(harness, configured, explicit):
 
 
 def record_closure(path, entry, supervisor_session, *, persist=True):
+    shared = path.resolve() == closure.closed_log().resolve()
+    coordination = closure.ownership(entry["session_id"], create=persist) if shared else nullcontext()
+    with coordination:
+        native = None
+        saved = closure.source_records({entry["session_id"]}).get(entry["session_id"]) if shared else None
+        if saved and saved.get("resumed_generation"):
+            generation = saved["resumed_generation"]
+            if any(entry.get(key) != generation.get(key) for key in (
+                    "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")):
+                raise ValueError("finish needs the new launch metadata from codex-session.py status")
+        if shared and entry.get("harness") == "codex" and (closure.action_pending(entry["session_id"])
+                or saved and saved.get("resumed_at") and not saved.get("resumed_generation")):
+            import github_plan_native
+            native = asyncio.run(github_plan_native.prove_end(entry))
+            if persist:
+                github_plan_native.resolve_pending(entry["session_id"], native)
+        return _record_closure(path, entry, supervisor_session, persist=persist, native=native)
+
+
+def _closure_identity(entry):
+    identity = {key: entry.get(key) for key in (
+        "pid", "tty", "harness", "supervisor_owned", "handoff_url", "transcript", "codex_home",
+        "launch_pid", "launch_generation", "launch_started_at",
+        "tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id")}
+    for key in ("transcript", "codex_home"):
+        if identity[key]:
+            identity[key] = str(Path(identity[key]).expanduser().resolve())
+    if isinstance(identity["tty"], str):
+        identity["tty"] = identity["tty"].removeprefix("/dev/")
+    return identity
+
+
+def _record_closure(path, entry, supervisor_session, *, persist=True, native=None):
     """Observe exit now; never replace an older actual closure time on retry."""
-    records = [{k: v for k, v in e.items() if not k.startswith("_")}
-               for e in session_record.load_ledger(path)] if path.exists() else []
-    existing = [r for r in records if r["session_id"] == entry["session_id"]]
+    with closure.store_lock(path, create=persist):
+        records = [{k: v for k, v in e.items() if not k.startswith("_")}
+                   for e in session_record.load_ledger(path, closed_log=True)] if path.exists() else []
+        existing = [r for r in records if r["session_id"] == entry["session_id"]]
+        original = [r for r in json.loads(path.read_text()) if r.get("session_id") == entry["session_id"]] if path.exists() else []
+    import github_plan_native
+    saved = session_record.normalize_ledger_entry(path, original[0]) if len(original) == 1 else None
+    if native is not None:
+        process = native["snapshot"]["process"]
+        if saved != process.saved:
+            raise ValueError("source generation changed before recording closure")
+    else:
+        process = github_plan_native._source_process(entry, saved)
+        github_plan_native.recheck_source_process(process)
+    recovered = False
+    if existing and existing[0].get("resumed_at") and not existing[0].get("resumed_generation") and native:
+        # An invalidation is not a launch. Full current native/source proof can
+        # recover an aborted prelaunch without inventing a process generation.
+        later = any(status["status"]["turn_completed_at"] and
+                    release.stamp(status["status"]["turn_completed_at"]) > release.stamp(existing[0]["ended_at"])
+                    for status in native["snapshot"]["transcripts"].values())
+        if later:
+            if _closure_identity(entry) != _closure_identity(existing[0]):
+                raise ValueError("finish needs the new launch metadata from codex-session.py status")
+            entry = {**existing[0], **entry}
+            for key in ("ended_at", "verdict_at", "resumed_at", "closure_evidence"):
+                entry.pop(key, None)
+            existing = []
+        else:
+            existing[0] = {k: v for k, v in existing[0].items() if k != "resumed_at"}
+            recovered = True
+    if existing and existing[0].get("resumed_at"):
+        resumed = existing[0].get("resumed_generation") or {}
+        if not resumed or any(entry.get(k) != resumed.get(k) for k in (
+            "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home"
+        )):
+            raise ValueError("finish needs the new launch metadata from codex-session.py status")
+        records = [r for r in records if r["session_id"] != entry["session_id"]]
+        existing = []
     if existing:
-        if any(existing[0].get(k) != entry.get(k) for k in (
-            "pid", "tty", "harness", "handoff_url", "supervisor_owned"
-        )) or Path(existing[0]["transcript"]).resolve() != Path(entry["transcript"]).resolve():
+        saved_identity, current_identity = _closure_identity(existing[0]), _closure_identity(entry)
+        if any(saved_identity[key] != current_identity[key] for key in (
+                "pid", "tty", "harness", "handoff_url", "supervisor_owned", "transcript")):
             raise ValueError("closure log identity changed; preserve the original record")
         closed = {**existing[0], **{k: v for k, v in entry.items() if k.startswith("_")}}
-        validate_closure(closed, supervisor_session)
+        validate_closure(closed, supervisor_session, native=native, process=process)
+        with closure.store_lock(path):
+            current = json.loads(path.read_text())
+            if [r for r in current if r.get("session_id") == entry["session_id"]] != original:
+                raise ValueError("source closure changed during verification; preserve the current generation")
+            if recovered and persist:
+                # Preserve the actual original end time. An optional admission
+                # fingerprint can be recomputed later; never restore the stale one.
+                durable = {key: value for key, value in closed.items() if not key.startswith("_")}
+                closure.replace_rows([durable if row.get("session_id") == entry["session_id"] else row for row in current])
         return closed
-    verify_closed(entry, supervisor_session)
+    # Keep the generation's verified process cutoff even when a later turn
+    # replaces its closure time. Native proof may have outlived the dead pane.
+    entry = {k: v for k, v in entry.items() if k != "tty_exited_at"}
+    cutoff = process.cutoff
+    if cutoff is not None:
+        entry = {**entry, "tty_exited_at": cutoff.isoformat()}
+    status = session_record.session_status(entry)
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
-              "process_exit_verified": True}
-    validate_closure(closed, supervisor_session)
+              "verdict_at": status["timestamp"], "process_exit_verified": True}
+    if entry.get("harness") == "codex" and entry.get("codex_home"):
+        try:
+            closed["closure_evidence"] = closure.evidence(closed)
+        except (ValueError, OSError, ImportError, subprocess.SubprocessError):
+            # Optional admission proof must not stop the existing release route.
+            closed["closure_proof_unavailable"] = True
+    validate_closure(closed, supervisor_session, native=native, process=process)
     if not persist:
         return closed
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        json.dump([*records, {k: v for k, v in closed.items() if not k.startswith("_")}], stream)
-    try:
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    # Slow native/process/transcript verification owns only this source. The
+    # shared store lock covers a fresh read/compare/write, preserving launches
+    # and closures published for other sources while verification was running.
+    with closure.store_lock(path, create=True):
+        current = json.loads(path.read_text()) if path.exists() else []
+        if [r for r in current if r.get("session_id") == entry["session_id"]] != original:
+            raise ValueError("source closure changed during verification; preserve the current generation")
+        retained = [r for r in current if r.get("session_id") != entry["session_id"]]
+        with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump([*retained, {k: v for k, v in closed.items() if not k.startswith("_")}], stream)
+        try:
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
     return closed
 
 
@@ -288,35 +444,165 @@ def discover_handoff(reader, entry, actor):
     # Shared-bot comments merely read by the source are not its handoff.
     outputs = []
     writes = set()
-    def is_comment_write(command):
+    # Heredoc bodies are data (often a comment body with apostrophes), not commands.
+    heredoc = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1([^\n]*)\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+    def shell_text(command):
         if isinstance(command, list) and all(isinstance(part, str) for part in command):
             command = command[-1] if len(command) >= 3 and command[-2] in {"-c", "-lc"} and Path(command[0]).name in {"bash", "sh", "zsh"} else shlex.join(command)
-        if not isinstance(command, str):
-            return False
+        return command if isinstance(command, str) else ""
+    def shell_parts(command):
+        bodies = {}
+        def replace(match):
+            key = f"__handoff_stdin_{len(bodies)}__"
+            bodies[key] = match[4]
+            if match.start() and command[match.start() - 1].isdigit():
+                return f" __handoff_fd__ {key}{match[3]}\n"
+            return f" < {key}{match[3]}\n"
+        header = heredoc.sub(replace, command)
+        # Explicit file descriptors are not the helper's default stdin/stdout.
+        header = re.sub(r"(?<!\w)\d+(>>?|<)", " __handoff_fd__ ", header)
+        # Multiple/unsupported heredoc syntax is not evidence of bytes sent.
+        if "<<" in header:
+            return [], {}
         try:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
+            lexer = shlex.shlex(header, posix=True, punctuation_chars=";&|\n<>")
             lexer.whitespace_split = True
             lexer.whitespace = " \t\r"
-            tokens = list(lexer)
+            parts, tokens = [], []
+            for token in lexer:
+                if token and all(c in ";&|\n" for c in token):
+                    if tokens:
+                        parts.append(tokens)
+                        tokens = []
+                else:
+                    tokens.append(token)
+            if tokens:
+                parts.append(tokens)
+            return parts, bodies
         except ValueError:
-            return False
-        executable = True
+            return [], {}
+    def is_comment_write(tokens):
         for index, token in enumerate(tokens):
-            if token in {";", "&&", "||", "|", "\n"}:
-                executable = True
-                continue
-            if not executable:
-                continue
             name = Path(token).name
             if name in {"uv", "run", "python", "python3", "env"} or token.startswith("-") or re.match(r"\w+=", token):
                 continue
-            executable = False
             tail = tokens[index + 1:]
             if name in {"gh-comment", "github_comment.py"}:
-                return any(t in {"issue", "pr"} and i + 1 < len(tail) and tail[i + 1].isdigit() for i, t in enumerate(tail))
-            if name == "gh-pr.py" and tail[:1] == ["comment"]:
-                return True
+                if any(t in {"issue", "pr"} and i + 1 < len(tail) and tail[i + 1].isdigit() for i, t in enumerate(tail)):
+                    return True
+            if name == "gh-pr.py":
+                # The documented form puts the global --repo before the subcommand.
+                while tail[:1] in (["--repo"], ["-R"]) or (tail and tail[0].startswith("--repo=")):
+                    tail = tail[1 if "=" in tail[0] else 2:]
+                if tail[:1] == ["comment"]:
+                    return True
+            return False
         return False
+    # A write's output is often summarized or chained with other commands, so any
+    # URL it prints is a candidate. Only a comment whose body is exactly what that
+    # call sent binds: a stdin heredoc, or the --body-file the session wrote itself.
+    files = {}
+    session_cwd = next((r.get("payload", {}).get("cwd") for r in records if r.get("type") == "session_meta"), None)
+    session_cwd = session_cwd or next((r.get("cwd") for r in records if r.get("cwd")), None)
+    def flat(text):
+        return " ".join(text.split())
+    def file_identity(path, cwd):
+        # Never consult the live host: the transcript is the filesystem evidence.
+        if not path or any(c in path for c in "$`~*?["):
+            return None
+        if not os.path.isabs(path):
+            if not cwd or not os.path.isabs(cwd):
+                return None
+            path = os.path.join(cwd, path)
+        return os.path.normpath(path)
+    def note_file_writes(tool_input, cwd):
+        if not isinstance(tool_input, dict) or not isinstance(tool_input.get("file_path"), str):
+            return
+        name = file_identity(tool_input["file_path"], cwd)
+        if name is None:
+            return
+        if isinstance(tool_input.get("content"), str):
+            files[name] = tool_input["content"]
+        for edit in [tool_input, *(tool_input.get("edits") or [])]:
+            if name in files and isinstance(edit, dict) and isinstance(edit.get("old_string"), str) and isinstance(edit.get("new_string"), str):
+                files[name] = files[name].replace(edit["old_string"], edit["new_string"], -1 if edit.get("replace_all") else 1)
+    def sent_bodies(command, cwd):
+        command = shell_text(command)
+        parts, heredocs = shell_parts(command)
+        bodies, variables = set(), {}
+        # shlex removes quotes. Do not expand a dollar that was single-quoted.
+        expand = not re.search(r"'[^']*\$[^']*'", command)
+        def literal(value, values):
+            if expand:
+                value = re.sub(r"\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))",
+                               lambda m: values.get(m[1] or m[2], m[0]), value)
+            return value if not any(c in value for c in "$`~*?[") else None
+        for tokens in parts:
+            local = dict(variables)
+            index = 0
+            while index < len(tokens) and re.match(r"[A-Za-z_]\w*=", tokens[index]):
+                name, value = tokens[index].split("=", 1)
+                local[name] = literal(value, local) or "$unknown"
+                index += 1
+            tokens = tokens[index:]
+            if not tokens:
+                variables = local
+                continue
+            # Shell cwd changes cannot be inferred from an attempted cd alone.
+            if tokens[0] in {"cd", "pushd", "popd"}:
+                cwd = None
+            def operand(flag):
+                value = None
+                for i, token in enumerate(tokens):
+                    if token == flag and i + 1 < len(tokens):
+                        value = literal(tokens[i + 1], variables)
+                    if flag.startswith("--") and token.startswith(flag + "="):
+                        value = literal(token.split("=", 1)[1], variables)
+                return value
+            stdin = operand("<")
+            target = file_identity(operand(">") or operand(">>"), cwd)
+            if target:
+                files.pop(target, None)
+                # Only cat with stdin alone copies the heredoc bytes unchanged.
+                args, i = [], 1
+                while i < len(tokens):
+                    if tokens[i] in {"<", ">", ">>"}:
+                        i += 2
+                    else:
+                        args.append(tokens[i])
+                        i += 1
+                if tokens[0] == "cat" and not args and stdin in heredocs and ">>" not in tokens:
+                    files[target] = heredocs[stdin]
+            if not is_comment_write(tokens):
+                continue
+            path = operand("--body-file")
+            if path is None and any(t == "--body-file" or t.startswith("--body-file=") for t in tokens):
+                continue
+            if path == "-" or path is None:
+                body = heredocs.get(stdin)
+                if body is None:
+                    body = files.get(file_identity(stdin, cwd))
+            else:
+                body = files.get(file_identity(path, cwd))
+            if body and flat(body):
+                bodies.add(flat(body))
+        return bodies
+    started = {}
+    sent = {}
+    printed = []
+    def add_printed(call_id, finished_at, value):
+        for repo, number, comment_id in re.findall(HANDOFF.pattern, "\n".join(strings(value))):
+            printed.append((f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}",
+                            started.get(call_id), finished_at, sent.get(call_id, set())))
+    def start_write(call_id, timestamp, commands):
+        if call_id in sent:
+            return
+        sent[call_id] = set()
+        for command, cwd in commands:
+            sent[call_id].update(sent_bodies(command, cwd))
+            if any(is_comment_write(tokens) for tokens in shell_parts(shell_text(command))[0]):
+                writes.add(call_id)
+                started[call_id] = started.get(call_id) or timestamp
     for record in records:
         payload = record.get("payload") or {}
         arguments = payload.get("arguments") or payload.get("input") or ""
@@ -326,31 +612,43 @@ def discover_handoff(reader, entry, actor):
             structured = None
         command = (structured.get("cmd") or structured.get("command") or "") if isinstance(structured, dict) else ""
         code = structured.get("code", "") if isinstance(structured, dict) else arguments
+        cwd = (structured.get("workdir") or structured.get("cwd") or session_cwd) if isinstance(structured, dict) else session_cwd
+        commands = [(command, cwd)] if command else []
         if not command and isinstance(code, str):
-            literals = re.findall(r'\bcmd\s*:\s*("(?:\\.|[^"\\])*")', code)
-            decoded = []
-            for literal in literals:
+            # Decode each invocation separately so its workdir is not lost when
+            # one orchestration call contains several exec_command invocations.
+            objects = re.findall(r'\btools\.exec_command\(\s*\{((?:"(?:\\.|[^"\\])*"|[^{}"])*)\}', code)
+            for obj in objects:
                 try:
-                    decoded.append(json.loads(literal))
+                    values = {key: json.loads(value) for key, value in re.findall(
+                        r'\b(cmd|workdir|cwd)\s*:\s*("(?:\\.|[^"\\])*")', obj)}
                 except ValueError:
                     continue  # malformed historic tool text is not a write receipt
-            command = "\n".join(decoded)
+                if values.get("cmd"):
+                    commands.append((values["cmd"], values.get("workdir") or values.get("cwd") or cwd))
         # Historical fixtures/native direct calls may contain the shell command itself.
         if not command and not isinstance(structured, dict) and payload.get("name") in {"exec_command", "functions.exec_command"}:
-            command = str(arguments)
-        if payload.get("type") in {"function_call", "custom_tool_call"} and is_comment_write(command):
+            commands = [(str(arguments), cwd)]
+        if payload.get("type") in {"function_call", "custom_tool_call"}:
+            # Use the decoded command, not the orchestration source with its escapes.
             if payload.get("call_id"):
-                writes.add(payload["call_id"])
+                start_write(payload["call_id"], record.get("timestamp"), commands)
         if payload.get("type") in {"function_call_output", "custom_tool_call_output"} and payload.get("call_id") in writes:
             outputs.extend(strings(payload.get("output")))
+            add_printed(payload["call_id"], record.get("timestamp"), payload.get("output"))
         for block in (record.get("message") or {}).get("content") or []:
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "tool_use" and is_comment_write(str((block.get("input") or {}).get("command") or (block.get("input") or {}).get("cmd") or "")):
-                if block.get("id"):
-                    writes.add(block["id"])
+            if block.get("type") == "tool_use":
+                tool_input = block.get("input") or {}
+                cwd = (tool_input.get("workdir") or tool_input.get("cwd") or record.get("cwd") or session_cwd) if isinstance(tool_input, dict) else session_cwd
+                note_file_writes(tool_input, cwd)
+                command = (tool_input.get("command") or tool_input.get("cmd") or "") if isinstance(tool_input, dict) else ""
+                if block.get("id") and command:
+                    start_write(block["id"], record.get("timestamp"), [(command, cwd)])
             if block.get("type") == "tool_result" and block.get("tool_use_id") in writes and block.get("is_error") is not True:
                 outputs.extend(strings(block.get("content")))
+                add_printed(block["tool_use_id"], record.get("timestamp"), block.get("content"))
     receipt_urls = []
     decoder = json.JSONDecoder()
     for text in outputs:
@@ -367,16 +665,11 @@ def discover_handoff(reader, entry, actor):
                 url = (value.get("comment") or {}).get("url")
                 if isinstance(url, str) and HANDOFF.fullmatch(url):
                     receipt_urls.append(url)
-        # Older helpers were commonly piped to grep url; accept a single URL.
-        legacy = list(dict.fromkeys(re.findall(HANDOFF.pattern, text)))
-        if len(legacy) == 1 and "{" not in text:
-            repo, number, comment_id = legacy[0]
-            receipt_urls.append(f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}")
     final_text = session_record.session_status(entry)["last_text"]
     final_urls = [f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
                   for repo, number, comment_id in re.findall(HANDOFF.pattern, final_text)]
     candidates = [*entry.get("_handoffs", []),
-                  *reversed(receipt_urls), *reversed(final_urls)]
+                  *reversed(receipt_urls), *(url for url, _, _, _ in reversed(printed)), *reversed(final_urls)]
     for url in dict.fromkeys(candidates):
         match = HANDOFF.fullmatch(url)
         if not match:
@@ -390,10 +683,20 @@ def discover_handoff(reader, entry, actor):
                 continue
             raise
         text = evidence.get("body") or ""
+        # GitHub stamps whole seconds; allow that truncation plus small clock skew.
+        created = release.stamp(evidence.get("created_at") or "1970-01-01T00:00:00Z")
+        slack = timedelta(seconds=2)
+        body = flat(OPERATION_MARKER_LINE_RE.sub("", text))
+        sent_here = release.related_sessions_match(text, entry["session_id"]) and any(
+            u == url and body in bodies and (not start or not end
+                                             or release.stamp(start) - slack <= created <= release.stamp(end) + slack)
+            for u, start, end, bodies in printed)
         if (release.stamp(evidence.get("updated_at") or evidence.get("created_at")) <= release.stamp(entry["ended_at"])
                 and not text.startswith("Claimed by ") and not claim.records(text)
-                and (url in entry.get("_handoffs", []) or url in receipt_urls or entry["session_id"] in text)):
-            provenance = "Supervisor verified inventory handoff" if url in entry.get("_handoffs", []) else "native comment-write receipt" if url in receipt_urls else "exact-ID handoff"
+                and (url in entry.get("_handoffs", []) or url in receipt_urls or sent_here or entry["session_id"] in text)):
+            provenance = ("Supervisor verified inventory handoff" if url in entry.get("_handoffs", [])
+                          else "native comment-write receipt" if url in receipt_urls
+                          else "native comment-write body" if sent_here else "exact-ID handoff")
             return {**entry, "handoff_url": url, "_handoff_provenance": provenance}, evidence
     # A summary without a transcript URL must name the exact native ID.
     threads = {(r["repo"], r["issue"]) for r in entry.get("_inventory_claims", [])}
@@ -753,7 +1056,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("finish", "backfill"))
     parser.add_argument("--ledger", type=Path)
-    parser.add_argument("--closed-log", type=Path, required=True)
+    parser.add_argument("--closed-log", type=Path,
+                        help="shared host-local closure log; an explicit private log is not successor evidence")
     parser.add_argument("--session-id")
     parser.add_argument("--supervisor-session", required=True)
     parser.add_argument("--owner", required=True)
@@ -770,9 +1074,13 @@ def main():
     reports = []
     lock_stream = None
     try:
+        if args.closed_log is None:
+            if args.mode != "finish":
+                raise ValueError("backfill requires an explicit --closed-log")
+            args.closed_log = closure.closed_log()
         if args.apply:
             args.closed_log.parent.mkdir(parents=True, exist_ok=True)
-            lock_stream = os.fdopen(os.open(str(args.closed_log) + ".lock", os.O_CREAT | os.O_RDWR, 0o600), "w")
+            lock_stream = os.fdopen(os.open(str(args.closed_log) + ".release.lock", os.O_CREAT | os.O_RDWR, 0o600), "w")
             try:
                 fcntl.flock(lock_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
@@ -792,7 +1100,9 @@ def main():
             if len(entries) != 1:
                 raise ValueError("native session must match exactly one ledger entry")
             entries[0]["_transcript_roots"] = transcript_roots(entries[0]["harness"], args.account_config, args.transcript_root)
-            verify_closed(entries[0], args.supervisor_session)
+            # record_closure verifies exit against the saved closure on retry,
+            # or a fresh observation time for a new closure. A ledger timestamp
+            # alone is not proof that this generation has already ended.
             if args.apply:
                 entries = [record_closure(args.closed_log, entries[0], args.supervisor_session)]
             else:
@@ -814,7 +1124,7 @@ def main():
                 entries = owned
             else:
                 entries = [{k: v for k, v in e.items() if not k.startswith("_")}
-                           for e in session_record.load_ledger(args.closed_log)]
+                           for e in session_record.load_ledger(args.closed_log, closed_log=True)]
             entries = [{**e, "_backfill": True} for e in entries]
             if args.session_id:
                 entries = [e for e in entries if e["session_id"] == args.session_id]

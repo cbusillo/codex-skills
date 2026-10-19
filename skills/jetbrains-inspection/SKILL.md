@@ -1,6 +1,6 @@
 ---
 name: jetbrains-inspection
-description: Use JetBrains inspections through the local Inspection API or an explicitly selected local Qodana backend; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
+description: Use JetBrains inspections through local headless Qodana (the Python default) or the local Inspection API; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
 metadata:
   short-description: Run JetBrains IDE inspections safely
 resources:
@@ -108,15 +108,22 @@ Use this skill to run and interpret JetBrains IDE inspections through the local
 inspection plugin HTTP API. The script-backed helper is the primary agent
 interface; prefer it over direct curl or MCP tool calls.
 
-The Inspection API remains the default. To run headless Qodana locally, read
-[local Qodana](references/qodana-backend.md) first, then explicitly select
-`agent-inspect --backend qodana` for that run. It uses an isolated per-run
-profile and the same agent envelope. Existing local IDE/plugin license files
-may be copied read-only into that profile, never printed, logged or archived,
-and deleted after the run. Stop on trial start, activation or purchase. Run
-one capped, niced Qodana worker at a time and pause above load1 64. Coverage
-that cannot be proved remains UNKNOWN; backend availability does not qualify
-a language default switch or plugin retirement.
+`agent-inspect` runs a selection of only Python files through headless local
+Qodana when its pinned image is in local Docker and the repository declares
+structured Python preparation, with no desktop IDE; Odoo repositories, other
+languages and non-PyCharm lanes keep the Inspection API.
+`--backend api|qodana` chooses explicitly, and the host setting
+`JB_INSPECT_DEFAULT_BACKEND=api|qodana` pins the default. Read
+[local Qodana](references/qodana-backend.md) before diagnosing a Qodana result
+or changing the runner. It uses an isolated per-run profile and the same agent
+envelope. Never copy, export or move license or credential files. Licensed
+headless runs use only an independently Director-activated profile; see
+[Director activation](references/qodana-backend.md#director-activation).
+Stop on trial start, activation or purchase. Run one capped, niced Qodana
+worker at a time and pause above load1 64. Coverage that cannot be proved
+remains UNKNOWN. Results name profile inspections the engine does not run in
+`uncovered_inspections`; report them with the verdict. While the Director's
+Q481 is open, they keep a clean result UNKNOWN.
 
 When IDE configuration appears in the change set, use
 `../references/ide-configuration-policy.md` before deciding whether to keep,
@@ -294,7 +301,21 @@ Command model:
   lifecycle lock; unresolved identity or close failures return nonzero.
 - `remove-worktree --repo /exact/task/path`: after the repository cleanup
   checks establish disposition, dry-run SDK retirement through every discovered
-  live IDE. With `--no-dry-run`, unregister only SDKs proved helper-owned,
+  live IDE. With no live IDE on macOS, an unprepared worktree can instead prove
+  there is nothing to clean from local preparation records, every standard
+  JetBrains config's SDK and recent-project records (plus the explicit config
+  override), and sealed/finalizing project-cache ownership markers. A `.venv`
+  alone is not a registration. Matching records, unreadable/malformed records,
+  storage redirects in config `idea.properties`, or local `.idea` project-model/workspace state retain the worktree for the live
+  IDE cleanup route. Offline proof is repeated before Git removal and reported
+  as `offline_cleanup_proved`, with `offline_records_checked` naming the records
+  read. A running supported IDE without a usable plugin identity also holds
+  offline retirement; restore its plugin route or close it. The offline scan
+  covers standard macOS storage plus the explicit config override; redirects in
+  VM options, environment variables or edited application bundles, and IDEs
+  outside these locations, are not discovered by this scan and need live cleanup
+  proof. It never edits global IDE files. Other platforms
+  retain the live-IDE requirement. With `--no-dry-run`, unregister only SDKs proved helper-owned,
   sending the apply only to IDEs whose preview lists one (`sdk_apply_skipped`
   names the rest), recheck every IDE, then remove the clean, unlocked linked worktree with non-force Git removal. Close
   its IDE project and reconcile its leases first. Primary checkouts, locked apply attempts,
@@ -538,10 +559,16 @@ scope, never source code or a mixed scope containing source code.
 - Existing broad noise is not invisible. Fix straightforward findings in the
   affected area or track a cleanup item.
 
-Do not hide findings casually. Suppressions, disabled inspections, inspection
-profile changes, or baseline changes require explicit approval unless the repo
-already has an established approved convention. Prefer fixing code or narrowing
-the scope first.
+## Suppressions And Inspection Configuration
+
+Prefer fixing code or narrowing the scope first. In every repository, an agent
+may add a suppression only when it covers one line or one rule, never a whole
+file, carries a written reason on the same line, and is named in the PR body
+so the second-model review sees it. Reviewers may still reject it.
+
+Disabling inspections, changing inspection profiles, or changing baselines
+requires explicit approval unless the repo already has an established approved
+convention.
 
 ## Reporting
 

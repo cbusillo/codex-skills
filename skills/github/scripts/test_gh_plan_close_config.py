@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -36,6 +37,61 @@ def comment_check(attention: list[dict] | None = None, linked: list[dict] | None
 
 
 class CloseConfigTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These routing fixtures have no dependents; native propagation is
+        # exercised with a real graph in test_github_plan_landing.py.
+        context = patch.object(PLAN.github_plan_landing, "neighborhood", return_value=[])
+        context.start()
+        self.addCleanup(context.stop)
+
+    def show_fixture(self, *, enrichment: Any = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        target = "fixture/target"
+        configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
+        configs[target]["labels"] = {key: f"target:{key}" for key in configs[target]["labels"]}
+        names = configs[target]["labels"]
+        issue = {"repo": target, "number": 7, "state": "open", "title": "Target request",
+                 "html_url": f"https://github.com/{target}/issues/7", "user": {"login": "fixture"},
+                 "body": "Original human request.\n## Current Status\nState: Blocked.\nNext action: Implement export.",
+                 "labels": [{"name": names[key]} for key in ("plan", "blocked")]}
+        comments = [{"id": 1, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
+            PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}]
+        relationships = Mock(return_value=("fixture-bot", {"blocked_by": [], "sub_issues": []}))
+        if isinstance(enrichment, Exception):
+            relationships.side_effect = enrichment
+        elif enrichment is not None:
+            relationships.return_value = ("fixture-bot", enrichment)
+        output = io.StringIO()
+        with patch.multiple(PLAN, default_repo=Mock(return_value="fixture/local"),
+                load_config=Mock(side_effect=lambda repo, **_: configs[repo]),
+                get_issue=Mock(return_value=("fixture-bot", issue)),
+                collect_paged_rest_items=Mock(return_value=("fixture-bot", comments)),
+                read_issue_relationships=relationships), contextlib.redirect_stdout(output):
+            PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full"]))
+        return json.loads(output.getvalue()), issue, configs[target]
+
+    def test_qualified_show_projects_with_the_target_custom_label_configuration(self) -> None:
+        result, issue, target_config = self.show_fixture()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["issue"]["derived"]["status"], "active")
+        self.assertEqual(set(result["issue"]["labels"]),
+                         {target_config["labels"][key] for key in ("plan", "active")})
+        self.assertEqual(result["issue"]["body"], issue["body"])
+        self.assertEqual(result["issue"]["recorded_labels"], PLAN.normalize_labels(issue["labels"]))
+
+    def test_show_preserves_the_original_read_when_graph_enrichment_is_unavailable(self) -> None:
+        denied = PLAN.PlanError("Fixture dependency read denied", failure=PLAN.github_api_core.FailureDetail(
+            cause="permission_denied", message="Dependency endpoint returned 403", retryable=False,
+            fallback_eligible=False, disposition="stop"))
+        partial = {"blocked_by": [{"repo": "fixture/gate", "number": 8, "state": "unknown"}], "sub_issues": []}
+        for enrichment in (denied, partial):
+            with self.subTest(enrichment=enrichment):
+                result, issue, _ = self.show_fixture(enrichment=enrichment)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["issue"]["derived"]["status"], "review")
+                self.assertEqual(result["issue"]["body"], issue["body"])
+                self.assertEqual(result["issue"]["number"], issue["number"])
+                self.assertEqual(len(result["issue"]["comments"]), 1)
+
     def test_public_close_uses_resolved_target_config_and_keeps_overrides(self) -> None:
         for ref, caller in (("fixture/target#7", "fixture/local"),
                             ("https://github.com/fixture/target/issues/7", "fixture/local"),
@@ -62,6 +118,9 @@ class CloseConfigTests(unittest.TestCase):
                     with patch.multiple(PLAN,
                                         default_repo=Mock(return_value=caller), load_config=config,
                                         get_issue=Mock(return_value=("fixture-bot", issue)),
+                                        collect_paged_rest_items=Mock(return_value=("fixture-bot", [
+                                            {"user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
+                                                PLAN.github_plan_wait.reviewed(evidence="Target completion reviewed"))}])),
                                         close_relationship_preflight=preflight,
                                         comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
                                         project_meta=meta,
@@ -105,7 +164,10 @@ class CloseConfigTests(unittest.TestCase):
             if workspace is not None:
                 workspace_path.write_text(json.dumps(workspace))
             issue = {"number": 7, "state": "open", "labels": [{"name": "plan:active"}],
-                     "html_url": "https://github.com/fixture/target/issues/7"}
+                     "html_url": "https://github.com/fixture/target/issues/7",
+                     "user": {"login": "fixture"},
+                     "body": PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(
+                         evidence="Fixture completion and full discussion reviewed"))}
             if indexed:
                 issue["labels"].append({"name": PLAN.github_plan_trigger.INDEX_LABEL})
             if already_closed:
@@ -136,7 +198,9 @@ class CloseConfigTests(unittest.TestCase):
                                 get_issue=Mock(return_value=("fixture-bot", issue)),
                                 close_relationship_preflight=preflight,
                                 ensure_labels=Mock(return_value=("fixture-bot", [])),
-                                collect_paged_rest_items=trigger_readback or Mock(return_value=("fixture-bot", [])),
+                                collect_paged_rest_items=trigger_readback or Mock(return_value=("fixture-bot", [
+                                    {"user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
+                                        PLAN.github_plan_wait.reviewed(evidence="Target completion reviewed"))}])),
                                 comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
                                 project_meta=meta, project_fields=Mock(return_value={"Status": {"id": "status"}}),
                                 find_project_item=Mock(return_value={"id": "item"}), set_project_field=Mock()), \

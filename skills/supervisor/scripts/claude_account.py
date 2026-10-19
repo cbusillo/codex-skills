@@ -29,6 +29,12 @@ def load_module(name, path):
     return module
 
 
+def receipt_fields(route):
+    """Persist the launch receipt route with a move request; None means a direct --storage-root write."""
+    return {"storage_root": str(route["storage_root"]),
+            "receipt_app": str(route["receipt_app"]) if route.get("receipt_app") else None}
+
+
 def reader():
     return load_module("account_choice", Path(__file__).with_name("account_choice.py"))
 
@@ -225,7 +231,7 @@ def move_environment(argv, env):
                             target_config_dir=str(Path(choice["env"]["CLAUDE_CONFIG_DIR"]).expanduser())
                             if "CLAUDE_CONFIG_DIR" in choice["env"] else None,
                             account_id=choice["account_id"],
-                            storage_root=str(account_choice.storage_root(config["snapshot_command"])),
+                            **receipt_fields(account_choice.receipt_route(config["snapshot_command"])),
                             target_default="CLAUDE_CONFIG_DIR" not in choice["env"])
             target = Path(data["target_home"])
             if not (target / "settings.json").is_file() or (target / "settings.json").resolve() != settings.resolve():
@@ -233,8 +239,15 @@ def move_environment(argv, env):
             if not target.is_dir() or not history_matches(data, target):
                 raise ValueError("selected account history is unavailable")
             if not data.get("launch_receipt"):
-                receipt = reader().record_launch({"provider": "anthropic", "account_id": data["account_id"],
-                                                  "storage_root": data["storage_root"]})
+                account_choice = reader()
+                if "receipt_app" not in data:
+                    # Requests saved before codex-skills#2069 carry no receipt route; keep their chosen account.
+                    config = account_choice.load_config(env=env)
+                    data.update(receipt_fields(account_choice.receipt_route(config["snapshot_command"])))
+                receipt = account_choice.record_launch({"provider": "anthropic", "account_id": data["account_id"],
+                                                        "storage_root": data["storage_root"],
+                                                        **({"receipt_app": data["receipt_app"]}
+                                                           if data["receipt_app"] else {})})
                 data["launch_receipt"] = str(receipt)
             data.pop("problem", None)
             data["state"] = "restarting"

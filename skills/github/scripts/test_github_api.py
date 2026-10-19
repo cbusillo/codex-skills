@@ -1340,6 +1340,72 @@ def test_legacy_deadline_and_cancellation_are_distinct() -> None:
     assert cancelled.retryable is False
 
 
+def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
+    # As gh's flag parser: -fname=x is -f name=x, -iXPOST is -i -X POST, the
+    # last method wins, fields without a method send POST, and options take
+    # their values. gh rejects an unknown flag or a second endpoint.
+    for args in (
+        ["api", "user/repos", "-fname=example"],
+        ["api", "user/repos", "-Fname=example"],
+        ["api", "-iXPOST", "user/repos"],
+        ["api", "user/repos", "-iFname=example"],
+        ["api", "-iX", "POST", "user/repos"],
+        ["api", "user/repos", "-Z"],
+        ["api", "user/repos", "-iXGET", "-iXDELETE"],
+        ["api", "--method", "GET", "user/repos", "-X", "PATCH"],
+        ["api", "--jq", "graphql", "user/repos", "-fname=example", "-fquery=query { viewer { login } }"],
+        ["api", "user/repos", "other/endpoint"],
+        ["api", "user/repos", "--unknown"],
+        ["api", "-i=false", "-XPOST", "user/repos"],
+        ["api", "user/repos", "--input=", "--input", "body.json"],
+        ["api", "user/repos", "-X="],
+        ["api", "user/repos", "-i="],
+    ):
+        assert _api.infer_gh_command_context(args).is_write is True, args
+    for args in (
+        ["api", "-iX", "GET", "user/repos"],
+        ["api", "-iq", ".[].name", "user/repos"],
+        ["api", "user/repos", "-H", "Accept: application/json"],
+        ["api", "user/repos", "-XDELETE", "-XGET"],
+        ["api", "-f", "per_page=100", "user/repos", "-X", "GET"],
+        ["api", "--jq", "graphql", "user/repos"],
+        ["api", "--paginate", "--slurp", "-X", "GET", "repos/o/r/pulls"],
+        ["api", "user/repos", "-i=false"],
+        ["api", "user/repos", "-i=true", "--allow-escape-sequences"],
+        ["api", "user/repos", "--input="],
+        ["api", "user/repos", "--input", "body.json", "--input="],
+        ["api", "user/repos", "--method="],
+        ["api", "user/repos", "-X", "", "-f", "name=example"],
+    ):
+        assert _api.infer_gh_command_context(args).is_write is False, args
+    mutation = _api.infer_gh_command_context(["api", "graphql", "-fquery=mutation { x }"])
+    assert mutation.is_write is True
+
+
+def test_legacy_gh_usage_error_is_a_local_argument_failure() -> None:
+    # gh 2.102's stderr for `gh repo fork OWNER/REPO --remote=false`, shortened.
+    usage = (
+        "the `--remote` flag is unsupported when a repository argument is provided\n"
+        "\n"
+        "Create a fork of a repository.\n"
+        "\n"
+        "USAGE\n"
+        "  gh repo fork [<repository>] [-- <gitflags>...] [flags]\n"
+        "\n"
+        "FLAGS\n"
+        "  --clone                 Clone the fork\n"
+    )
+    failure = _api.classify_legacy_failure(usage, is_write=True)
+    assert failure.cause == "validation_error"
+    assert failure.write_outcome == "not_started"
+    assert failure.retryable is False
+    assert "`--remote` flag is unsupported" in failure.message
+
+    # An unexplained failure without gh's usage block keeps its unknown outcome.
+    unexplained = _api.classify_legacy_failure("the `--remote` flag is unsupported", is_write=True)
+    assert unexplained.write_outcome == "unknown"
+
+
 def test_legacy_html_parse_error_is_summarized_as_provider_failure() -> None:
     result = _api.legacy_process_result(
         1,
@@ -3103,6 +3169,8 @@ def main() -> None:
         test_legacy_graphql_rate_limit_uses_probe_reset,
         test_legacy_provider_bucket_replaces_requested_bucket,
         test_legacy_deadline_and_cancellation_are_distinct,
+        test_gh_api_short_flag_groups_are_classified_as_gh_reads_them,
+        test_legacy_gh_usage_error_is_a_local_argument_failure,
         test_legacy_html_parse_error_is_summarized_as_provider_failure,
         test_infer_gh_command_context_distinguishes_project_reads_and_writes,
         test_terminal_envelopes_have_stable_fields_and_redaction,

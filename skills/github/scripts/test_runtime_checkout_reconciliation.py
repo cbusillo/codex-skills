@@ -775,7 +775,8 @@ def test_session_start_catches_up_without_a_driver_and_keeps_the_reminder(tmp_pa
     first = start_session(fixture)
     assert first.returncode == 0
     assert "Catalog catch-up synchronized" in first.stdout
-    assert "Direction check overdue" in first.stdout
+    hook = runpy.run_path(str(fixture.runtime / "hooks/direction_check_hook.py"))
+    assert hook["REMINDER_LINES"]["turn", "due"] in first.stdout
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
     assert git(fixture.runtime, "status", "--porcelain") == ""
     second = start_session(fixture)
@@ -1015,11 +1016,13 @@ def test_fetch_timeout_with_descendant_holding_output(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path)
     namespace = runpy.run_path(str(SCRIPT))
     actual_run = subprocess.run
-    child_code = "import time; time.sleep(2)"
+    # The descendant holds Git's output far past the deadline; waiting on it would show.
+    hold_seconds = 10
+    child_code = f"import time; time.sleep({hold_seconds})"
     parent_code = (
         "import subprocess, sys, time; "
         f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
-        "time.sleep(10)"
+        f"time.sleep({2 * hold_seconds})"
     )
     def slow_transport(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         if "fetch" not in argv:
@@ -1040,7 +1043,7 @@ def test_fetch_timeout_with_descendant_holding_output(tmp_path: Path) -> None:
         with mock.patch("subprocess.run", side_effect=slow_transport):
             with pytest.raises(namespace["GitCommandError"]):
                 namespace["run_git"](fixture.runtime, "fetch", "origin")
-    assert time.monotonic() - started < 1.5
+    assert time.monotonic() - started < hold_seconds / 2
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
     assert git(fixture.runtime, "status", "--porcelain") == ""
 

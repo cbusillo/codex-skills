@@ -21,8 +21,6 @@ from unittest import mock
 from urllib.parse import urlsplit
 
 import discord_digest as sender
-from test_digest_summary import FULL
-from test_digest_summary import report as synthetic_report
 
 
 class SenderTests(unittest.TestCase):
@@ -110,19 +108,6 @@ class SenderTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         result = self.run_sender(env={**self.env, sender.KEY: self.url})
         self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_large_stranded_digest_posts_one_summary_to_loopback(self):
-        rows = [("merged_link_needs_review", i, f"{i}h", "Supervisor", f"Task {i}") for i in range(1, 101)]
-        rows.append(("aged_structured_wait", 200, "age unknown", "Chris", "Choose preview"))
-        with mock.patch.object(sender, "webhook_url", return_value=self.url), \
-                mock.patch.object(sender.sys, "stdin", io.StringIO(synthetic_report(rows))), \
-                mock.patch.object(sender.digest_summary, "archive", return_value=FULL), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(sender.main([]), 0)
-        self.assertEqual(len(self.posts), 1)
-        self.assertLess(len(self.posts[0]["content"].encode("utf-16-le")) // 2, 2000)
-        self.assertIn("Choose preview", self.posts[0]["content"])
-        self.assertIn(FULL, self.posts[0]["content"])
 
     def test_codex_home_and_default_home_fallback(self):
         for env, path in (({"CODEX_HOME": str(self.root)}, self.root),

@@ -28,6 +28,141 @@ when their path spellings differ. A repository-local link to an external payload
 and an external link to repository-local data are both refused; an external payload,
 including an external link to another external file, is accepted.
 
+## Application testing private ingress
+
+`testing-private-ingress-dry-run`, `testing-private-ingress-apply` and
+`testing-private-ingress-readback` call the vendored
+`prepare_testing_private_ingress` service API. The producer advertises a
+`service_api` surface, and this installed caller retains that surface and its
+existing Director-agent identity dependency. It adds no permission or provider
+fallback. Source contract agreement does not prove deployed compatibility;
+confirm normal service delivery before operational use.
+`SERVICE_API_HELPER_COMMANDS` validates these explicit bindings against that
+producer surface and its modes without rewriting the vendored advertisement.
+
+Each command requires `--payload-file /absolute/private/request.json`. Its
+exact fields are `product`, `context`, `instance` (only `testing`),
+`endpoint_key`, `edge_endpoint_key`, `access_list_id`, `certificate_id`,
+`operation` (`create` or `disable`) and `reason`. Both numeric IDs must be
+positive integers naming existing resources. Obtain real scope and IDs from
+service records or scoped admin input. Mode, digest, URL, domain, target and
+provider configuration fields are not accepted in this file. The service
+derives the hostname from the lane's active private HTTPS health endpoint and
+checks application ownership, placement, certificate coverage, access list and
+receipt ownership itself. This operation neither deploys nor changes DNS,
+access lists, certificates, credentials or production.
+
+Save the dry-run's JSON output in a private file outside the repository. Apply
+and readback additionally require `--dry-run-evidence-file`,
+`--expected-plan-digest` (the returned `plan_sha256`) and `--reviewed-dry-run`.
+Evidence binds the full normalized request including its reason and resource
+IDs, the configured service, operation and returned plan. Receipts show the
+same product/context/testing instance, endpoint and edge keys, operation and
+digests; they omit the reason, numeric resource IDs, URLs and provider topology.
+The edge key in the receipt comes from the submitted request, not an echoed
+service field. Its verification rests on the service-owned plan digest and
+provider readback; the helper does not independently inspect the edge provider.
+The helper's binding checks are local review consistency checks; the service
+remains authorization and plan authority.
+
+Apply also requires `--idempotency-key`. Retain the exact private request,
+saved evidence and original key on an interrupted exchange. The helper never
+retries automatically or replans before recovery: a fresh plan would describe
+already changed provider state. Explicitly run readback first, then, if still
+unverified, resubmit the exact original apply and key for the service's durable
+recovery. A denied call stays denied; neither another identity nor a raw
+provider route is supported. A successful apply or replay is followed by a
+separate `mode=readback` POST with the same reviewed digest and request, without
+an idempotency header. Only aligned readback yields `read_back_matches=true`.
+Disable requires a fresh review of `operation=disable`; it leaves the
+application hostname and bot state intact.
+
+Transport loss or malformed evidence after apply begins returns
+`outcome_unknown`; failed readback after an aligned applied response returns
+`accepted_unverified` and retains that response's result and trace. Both exit
+nonzero. A service result with `applied=false`, `replan_required=true` and
+`previous_effects_absent=true` is a terminal original-key recovery outcome,
+returned as `replan_required` with nonzero exit and no success/readback claim.
+Only that explicit absence proof permits obtaining a fresh reviewed plan and
+new key. Other ambiguous outcomes preserve the original request and key.
+
+Neither plan nor provider readback verifies actual TLS, WSS, public denial,
+remote tailnet reachability or runtime health. The returned
+`deployment_performed=false` and `transport_verified=false` preserve those
+limits. Actual qualification belongs to the operational issue after supported
+source and caller delivery.
+
+## Disposable lane observations
+
+`disposable-lane-inspect`, `disposable-lane-collect` and
+`disposable-lane-record` call the vendored `record_disposable_lane_safety`
+service API with the existing Director-agent identity. They add no permission
+or provider fallback. The `prepare-rebuild` mode is not wrapped. An observation
+is short-lived safety evidence for one lane. It is never an access grant.
+
+Clearing an observation is not offered. The service's clear mode checks
+neither a current observation binding nor lane ownership, so a local check of
+saved inspect output cannot stop it from deleting a protective observation.
+The helper adds clear only after Launchplane enforces both before it clears
+([launchplane#4111](https://github.com/cbusillo/launchplane/issues/4111)).
+
+Each command requires `--payload-file /absolute/private/request.json` outside
+the repository. Its fields are `product`, `context`, `instance` and an optional
+`preview_id`. Collect and record also accept `lifetime_seconds` (1 to 900,
+default 300). Record also accepts `usage` (`unknown`, `unused`, `in_use`),
+`data` (`unknown`, `reproducible`, `only_copy`), `production_resources`
+(`unknown`, `isolated`, `separation_ready`, `shared`) and the evidence
+references `usage_evidence`, `data_evidence` and `isolation_evidence`. Any
+other field is refused. The helper refuses these before reading configuration:
+instance `prod`; an instance other than `testing` without a `preview_id`; a
+known fact without its evidence reference; and any known fact on a testing
+lane. The service collects testing facts itself and would store them as
+`unknown`.
+
+Run inspect first and save its JSON output privately. It returns the lane's
+`binding_sha256`, with every fact `unknown`. Collect and record each require
+`--expected-binding-sha256` (that value), `--inspect-evidence-file` (the saved
+output) and `--reviewed-inspect`. The evidence must match the private request
+scope, the configured service and the digest. The helper never runs inspect
+inside a mutation for you. The service rechecks the binding and refuses a
+changed lane with a 409.
+
+Output never echoes the product, context, instance, preview ID, evidence
+references or the observing identity. The request shows only the mode, the
+payload source and, for record, the count of known facts. Collect reports each
+fact, the usage diagnostics and, for each evidence reference, only whether it is
+present and its source kind. Coverage sources, evidence kinds and usage
+diagnostics are closed vocabularies copied from the producer. A usage
+diagnostic the helper does not know is reported as `diagnostics_unrecognized`,
+as the producer's own client does. On a preview, a fact kept from an earlier
+recorded observation reports the kind `recorded`.
+
+A receipt that fails these checks reports no facts and carries an
+`invalid_response` warning: a wrong binding, `provider_mutation` other than
+`false`, an unknown fact value, unknown coverage sources, an evidence reference
+the producer does not build for that fact, a positive fact returned for a
+testing record, preview facts that differ from those submitted, collect usage
+evidence that contradicts itself, or a collect window that is not current. The
+window must have started no later than now (5 seconds of clock skew allowed),
+must not have expired, and must last no longer than the requested lifetime. For
+inspect this is `invalid`. For collect and record the service has already
+answered, so it is `outcome_unknown` with the recovery below.
+
+There is no automatic retry and no `Idempotency-Key`. Transport loss, a
+malformed receipt or a 5xx after a mutating call begins returns
+`outcome_unknown`. Inspect the lane, then re-run the command explicitly if it
+is still needed. A 403, 404 or 409 keeps its trace and stops; never change
+identity or route. A collect 409 can follow publication, so inspect again
+before relying on any stored fact.
+
+After an accepted collect or record, the helper sends one separate inspect
+POST. It reports `binding_readback_matches`. `effect_readback` is always
+`unavailable`, because no route reads stored observations back. A mismatch or
+failed readback returns `accepted_unverified` and exits nonzero.
+
+Recording facts for a preview also requests a preview reconcile, reported as
+`reconcile_requested=true`.
+
 ## Read budgets and timeout diagnostics
 
 `dokploy-inventory-read` and `product-promotion-status-read` default to a bounded 30-second HTTP socket
@@ -80,6 +215,44 @@ On HTTP 409, restart at zero. No failure yields a partial-success page. Reduce
 `--limit` on a page-target budget failure; a single project over the service
 budget remains unavailable. Runtime use waits for normal delivery of the service
 route; this command never falls back to direct provider access.
+
+## Names-only settings and secret reads
+
+```bash
+uv run scripts/launchplane-write-action.py context-runtime-settings-read --context example-site
+uv run scripts/launchplane-write-action.py instance-runtime-settings-read --context example-site --instance testing
+uv run scripts/launchplane-write-action.py context-secrets-read --context example-site
+uv run scripts/launchplane-write-action.py instance-secrets-read --context example-site --instance testing
+```
+
+These four local extensions use the existing authenticated GET routes under
+`/v1/contexts/{context}` and `/v1/contexts/{context}/instances/{instance}`.
+They add no permission, workflow fallback or direct storage access. A denial
+retains its error code and trace, with no second request.
+
+`result.settings` contains only each record's scope, context, instance, `keys`
+and `withheld_keys`. `result.secrets` contains only name, integration, scope
+and status. Unknown fields, values, ciphertext, descriptions and audit metadata
+are never projected. Malformed retained metadata fails the read. The service
+accepts any non-empty settings key, so a key that is not env-key shaped is left
+out and counted in `dropped_name_count`; a secret-looking key fails the read.
+The envelope
+keeps the requested context/instance and service trace. Both record lists and
+each key list are capped at 500; `records_truncated` and `names_truncated`
+report the bounds. A truncated or access-filtered list cannot prove absence.
+
+The settings endpoint currently transports non-credential plain values too.
+The helper does not access its `values` field and never emits it; this is an
+output projection, not a server-side names-only transport option. Do not use a
+live settings call when the task forbids receiving values. Secret endpoints
+return status metadata, without requesting or decrypting managed values.
+
+Global records returned by the service remain visible in these inventories.
+An empty context/instance on an inherited global record is valid. This is a
+record inventory, not proof that a global key reaches a site's effective
+environment. A product-only binding read cannot replace it when auditing
+legacy global-inclusive paths. No resolver, delivery, or global authorization
+policy changes here.
 
 ## Merge-train enrollment read
 
@@ -347,6 +520,62 @@ local extensions until the vendored artifact is refreshed.
   other unlisted field is dropped and counted under
   `bindings[].<unlisted field>`, and a binding without a usable key, context
   or scope is omitted and counted.
+- `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
+  --reason` reads the native preflight through
+  `POST /v1/drivers/odoo/target-replacement-plan`. It records no artifact,
+  allocation, lease or provider effect. Its bounded receipt identifies the
+  testing lane's address origin, build/source, observation time and pending
+  candidate verification. It does not attest a healthy successor or completed
+  restore. Save the JSON output outside the repository and inspect it.
+
+  `testing-rebuild-submit` with those same intent arguments plus
+  `--idempotency-key --reviewed-dry-run --expected-plan-digest
+  --dry-run-evidence-file` queues one testing rebuild through
+  `POST /v1/drivers/odoo/target-replacement-apply`. It fixes the instance to
+  `testing`, strategy to `replace-and-cutover` and health verification on.
+  `--copy-source` is `empty`, `production` (sanitized production copy) or
+  `upstream` (the lane's configured upstream). The build/source pair must use
+  an immutable 40- or 64-character lowercase hexadecimal source commit. A concrete
+  reason is required and retained by the service; public helper output carries
+  only its request digest. Empty allows
+  initialization of independent empty storage. No target, host, credential,
+  arbitrary payload or health-bypass argument is accepted.
+
+  Use the saved receipt's `result.plan_sha256` as `--expected-plan-digest`.
+  The existing reviewed-evidence loader checks the exact intent, reason and
+  returned preflight digest before loading admin configuration. A fingerprint
+  also binds the evidence to the configured service before any submit call.
+  A changed intent or service needs a new dry run. This is the ordinary
+  preflight for one native queued action; it does not allocate/bootstrap/restore
+  or repair routing through separate manual writes. The service rechecks current
+  authority and copy safety before effects.
+
+  Use the configured service identity and existing service authorization.
+  These commands add no grant and never invoke a provider or local live-target
+  CLI. They require a deployed service with native testing rebuild and preflight/
+  reason support (Launchplane #3997 and #4002 source); a source PR is not activation.
+  A 400 can mean the service predates this capability, while 404 means the
+  route is absent; confirm deployed support before use. A denial retains its
+  code and trace and stops the action. There is no legacy rebuild,
+  alternate identity or workflow fallback.
+
+  The receipt must agree with the submitted product, testing instance,
+  original key and build/source intent. Output reuses the bounded operation
+  projection below, retaining the operation ID and service trace while dropping
+  raw authorization, poll URLs and request/provider evidence. Acceptance is not
+  completion. Poll `target-replacement-operation-read --operation-id ID` using
+  that original ID until the service reports its outcome; a failure or pending
+  reconciliation does not authorize a different rebuild.
+
+  The helper sends once. A timeout, unsafe redirect, malformed/misaligned receipt,
+  interrupted exchange or server error reports `outcome_unknown`. Keep the
+  original key and arguments. Read the original operation if its ID is known;
+  an ID is retained only after the receipt agrees with the original key and
+  complete intent, even if later output projection fails. A mismatched receipt's
+  ID cannot identify this request's outcome. With no aligned ID,
+  the service's identical-key submission can recover its existing
+  admission receipt. Do not choose a new key or replay a denied action. The
+  helper does not retry, poll automatically, rotate secrets or retire storage.
 - `target-replacement-operation-read --operation-id` calls
   `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}` with no
   query. The service authorizes it as `operations.read` on product
@@ -555,6 +784,66 @@ HTTP 502 `dokploy_source_partial_outcome` may follow a provider change. The
 helper reports `outcome_unknown`, retains the safe trace/code and sends no
 automatic retry. Require admin reconciliation before retrying under **any**
 key; never recreate, replace or silently adopt the target as recovery.
+
+`dokploy-target-create-application-dry-run` and
+`dokploy-target-create-application-apply` use the same setup route with
+`operation: "create-application"`: a new project, environment and empty
+application for the `testing` lane, with no domain route. Authorization is
+the same as compose setup; first testing setup also admits the Director agent
+on a lane with exclusive context ownership. It may replace only a
+never-deployed target Launchplane created empty, named exactly in
+`expected_current_provider_target`.
+
+- The private payload requires `context`, `instance` (exactly `testing`),
+  `target_name`, `server_id`, `project_name`, `environment_name` and `reason`.
+  Optional: `schema_version`, `project_description`, `environment_description`,
+  `description`, `source_git_ref`, `healthcheck_path` (starting `/`),
+  `deploy_timeout_seconds`, `state_volume_path` (the product's absolute
+  container state directory) and `expected_current_provider_target`. Ids,
+  domains, ports, git source and `app_name` are refused before a request.
+- Without `state_volume_path`, output shows the plan actions for project,
+  environment and application. With it, the dry run saves a service storage
+  plan; output shows its `plan_id` and `service_plan_sha256` and drops the
+  generated project, environment, application and volume names. `plan_sha256`
+  covers the payload digest and that plan.
+- Apply sends the saved `state_volume_plan_id` and `expected_plan_sha256` from
+  the reviewed evidence, never a new dry run, which would allocate new names.
+  Keep the first apply's `--idempotency-key` with the evidence: the service
+  binds the allocation to it, and a retry or recovery uses that key only.
+- HTTP 202 is a receipt. Success needs `applied: true`, a created target, and
+  with storage `allocation_state: adopted` and `configuration_evidence:
+  matches`. A `retained_uncertain` receipt or unverified mount is reported as
+  `accepted_unverified` with a warning. Refusals carry the service's
+  `application_state_volume_*` codes; act on the code, not the message.
+- Apply reads the target back through inspect and checks the provider-target
+  record, that every record names the created application, no domains and the
+  reviewed health-check path. Creation deploys nothing; image delivery follows
+  the ordinary testing deploy.
+- `dokploy-target-create-application-readback --payload-file P
+  --idempotency-key K --expected-plan-digest D --dry-run-evidence-file E` reads
+  back an uncertain storage allocation. Use the unchanged payload, the saved
+  dry run and its `plan_sha256`, and the original apply's key; the helper sends
+  the saved plan id and digest with `mode: readback` and no confirmation.
+  Readback never creates or adopts. Output shows `operation_state`,
+  `allocation_state`, `configuration_matches`, `configuration_evidence`
+  (`matches`, `differs` or `unavailable`), `custody_sha256`, and the durable
+  `provider_effect_phase` as step names only (`created`, `pending`,
+  `mount_verified`); generated names and provider ids drop. A wrong key is
+  refused by the service. Save this output as readback evidence.
+- When the allocation cannot resume, `dokploy-target-create-application-retain`
+  takes the apply arguments under the original key plus
+  `--readback-evidence-file` (that readback's output) and
+  `--expected-custody-digest` (its `custody_sha256`). Before sending, the helper
+  requires that the readback used the same payload, plan, review digest and key,
+  and that its custody matches. It sends `retain_state_volume_allocation: true`
+  and `expected_state_volume_custody_sha256` with the setup confirmation.
+  Success is a `retained_uncertain`, `applied: false` receipt naming this plan,
+  key and custody. The retained allocation never resumes; keep its resources
+  and start new work from a fresh dry run with a new key.
+- For an `application_state_volume_*` refusal, the helper's recommendation is
+  chosen by the code, never from the message: wait out an active lease, retry
+  a busy lane, read back again after custody changed, apply the original key
+  when already adopted, resolve changed ownership, or fix an unqualified request.
 
 ### Inert domain and ingress planning
 
@@ -1558,13 +1847,26 @@ operations, drop or list unknown fields instead. A Launchplane PR that adds a
 field to a strictly projected response lands the matching helper allowlist
 change first and says so in its PR body.
 
+The merge-train controller reply has no helper allowlist. Launchplane publishes
+its contract as `contracts/merge-train-controller-reply.schema.json` and tests
+every reply against it; this skill pins a byte-for-byte copy at
+`references/merge-train-controller-reply.schema.json`. The helper enforces the
+pin's types, required fields and bounds. A field the pin does not declare is
+newer than the pin: it is left out of the result, named in
+`summary.unrecognized_fields` (plain identifiers only, at most ten) with a
+`controller_reply_newer_than_pinned_schema` warning, and does not fail the
+read. A field name that is not a plain public-safe identifier, or any unsafe
+value, still fails closed. Refresh the pin with
+`uv run scripts/sync-merge-train-reply-schema.py sync` from this skill
+directory, naming the Launchplane commit in the commit message; the
+`Merge-Train Reply Schema` workflow fails on pull requests, on `main` and daily
+when the pin differs from Launchplane's `main`.
+
 Unexpected successful provider shapes fail closed as `invalid_response` rather
 than being recursively sanitized. For an accepted controller reply that cannot
 be projected, `summary.projection_error_code` and the warning code retain the
 local `LaunchplaneSafetyError` code (such as `unsafe_response_shape` or
-`invalid_response`). `summary.unrecognized_key` names the first unknown result
-or record key only when it is a public-safe plain identifier of at most 80
-characters. No rejected value is emitted. Independently validated service error
+`invalid_response`). No rejected value is emitted. Independently validated service error
 codes and trace IDs remain available; read the PR and controller state before
 retrying a mutating pass, which may already have completed.
 Summary fields, including `trace_id`, must be
@@ -1662,6 +1964,115 @@ For event-driven generic-web recovery, use the service-owned reference read
 described under [Generic-Web Deploy Recovery](#generic-web-deploy-recovery).
 `deploy_key_sha256` identifies a key but cannot reconstruct it. If the service
 cannot supply exact evidence, leave recovery held.
+
+## Workflow-rule retirement inspection
+
+`workflow-rule-retirement-inspect --payload-file <private-file>` and
+`workflow-rule-retirement-plan --payload-file <private-file>` are bounded local
+extensions of `POST /v1/authz-policies/workflow-rule-retirement-plan`. They are
+reads. The service writes nothing, and the helper sends no idempotency key.
+There is no apply mode. Retiring a rule needs a separate reviewed policy change.
+
+The private JSON file holds exactly `policy_record_id`, `policy_revision`,
+`policy_sha256` and `selection`. Take them from the active policy. `selection`
+lists 1 to 50 unique rules. Each has `rule_sha256` and both `managed_set_id`
+and `managed_rule_id`: both `null` for an unmanaged rule, both set for a
+managed one. Do not put `mode` in the file; the subcommand sets it. Keep the
+file outside the repository. The helper refuses a bad file before any call.
+The echoed request shows only the mode, `payload_source` and the selection
+count, never the path or a digest.
+
+Each selected rule returns its fingerprint, management, managed ids,
+`broad_or_shared_scope` and `scope`. Scope keeps the repository, its numeric
+ids, and the workflow ref, job workflow ref, event, ref, environment, product,
+context, instance and action selectors. Selectors may hold glob characters.
+A value the helper cannot verify is dropped, its path is listed in
+`dropped_field_paths`, and that rule's `scope_complete` is `false`. Unlisted
+fields are dropped the same way. A token-like value anywhere in scope makes
+the whole read `invalid`. The result also keeps `blockers` (for example
+`last_administrator_protection`) and `apply_supported`, which is always
+`false`. The plan adds `candidate_policy_sha256`,
+`surviving_workflow_rule_count`, `survivor_rules_sha256`,
+`other_principal_collections_preserved` and `plan_sha256`.
+
+`dependency_verification: unknown_requires_source_review` means Launchplane
+does not know which workflows use these rules. Read the workflow sources
+before you propose a retirement.
+
+The helper checks the response against the request. A different policy
+record, revision or digest, a missing or extra rule, a wrong management value,
+`apply_supported` other than `false`, plan fields on the wrong mode, a missing
+or mistyped repository or selector field in a scope (only null managed ids may
+be absent), or any `dependency_verification` other than
+`unknown_requires_source_review` return `invalid`. A 409
+`workflow_rule_selection_changed` or `active_authz_policy_ambiguous` returns
+`stale`: re-read the active policy and the rules, then rerun. A 400 returns
+`invalid_request`, and a 403 returns `denied` with its trace. A client timeout
+returns `unavailable` with the error code `client_timeout`. The service
+needs service-wide policy read authority to show full scopes.
+
+## Runtime-setting removal review
+
+`runtime-setting-removal-dry-run` and `runtime-setting-removal-readback` are
+bounded local extensions of `POST /v1/admin/runtime-settings/removal`. They
+let the Director agent review removing stored plain runtime settings and read
+back the result. There is no apply command. Apply belongs to the signed-in
+admin in Launchplane, and a dry-run digest does not authorize it.
+
+Inputs are flags, not a file: `--product`, `--scope` (`global`, `context` or
+`instance`), `--context`, `--instance`, one `--key` per stored setting name,
+and `--reason`. Readback also needs `--review-id` and `--plan-sha256`. Global
+scope needs product `launchplane` and no context or instance. Context scope
+needs a context and no instance. Instance scope needs both. Keys must be
+unique printable setting names, not token-shaped, at most 256. The reason is
+required, at most 1,000 characters, and sent to the service but never printed.
+The helper refuses a bad request before any call. Neither mode sends an
+idempotency key.
+
+The echoed request shows the mode, product, scope, context, instance, keys,
+`payload_source: operator_argument`, and on readback the review id. It never
+shows the reason or the digest.
+
+A dry run saves a private service-owned review, including the original record
+for rollback, and returns a fresh `review_id` and `plan_sha256` on every call.
+The result keeps the scope fields, `removed_keys`, `surviving_keys` (capped at
+500, with `surviving_keys_truncated`), `unprintable_survivor_count`,
+`surviving_value_count`, `retirement_intent_count`, `record_deleted`,
+`requires_compatible_readers_and_rollback`, `record_sha256`,
+`authority_sha256`, `plan_sha256`, `review_id`, `updated_at`, `applied`
+(always `false`) and `apply_supported` (always `false`). Readback adds
+`readback_matches` and `current_record_present`. An odd surviving name or a
+malformed `updated_at` is dropped and listed in `dropped_field_paths`, as are
+unlisted fields.
+
+The helper checks the response against the request. A different product,
+scope, context or instance, removed keys that differ from the requested keys,
+`applied` other than `false`, any apply-only field (`applied_at`,
+`audit_review_id`, `replayed`), a malformed digest, a `review_id` other than
+`runtime-removal-` plus `plan_sha256`, a mistyped flag or count, a
+`surviving_value_count` below the number of surviving names, readback fields
+on a dry run or missing ones on readback, or a token-shaped surviving name
+returns `invalid`. On readback the review id and digest must also equal the
+ones sent.
+
+Readback must reuse the dry run's exact keys, reason, review id and digest;
+the service compares the saved review's intent with the request.
+`readback_matches: false` means drift or the removal is not applied yet. It
+is not success.
+
+`requires_compatible_readers_and_rollback: true` means the removal takes the
+last stored value from a record that keeps provider-retirement intent, so the
+record survives with no values. Before any admin apply, deploy readers that
+accept such records everywhere and keep a rollback build with that support.
+The flag reports the requirement; it does not attest deployment or approve it.
+
+A 409 `runtime_setting_removal_unverified` returns `stale`: refresh the
+names-only runtime-settings read and run a fresh dry run, or for readback
+reuse the dry run's exact keys, reason, review id and digest. A 403
+`authorization_denied` returns `denied`, a 401 `unauthorized`, a 503
+`database_storage_required` `unavailable`, and a 400 `invalid_request`, each
+with its trace. A client timeout is `unavailable` with the error code
+`client_timeout`.
 
 ## Policy Proposals
 

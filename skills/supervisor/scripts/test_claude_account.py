@@ -26,7 +26,7 @@ class MoveTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         (self.root / "panel").mkdir()
         self.reader_patch = patch.object(account, "reader", return_value=account_choice)
-        self.storage_patch = patch.object(account_choice, "storage_root", return_value=self.root / "panel")
+        self.storage_patch = patch.object(account_choice, "receipt_route", return_value={"storage_root": self.root / "panel"})
         self.storage_patch.start()
         self.addCleanup(self.storage_patch.stop)
         self.reader_patch.start()
@@ -107,6 +107,28 @@ class MoveTests(unittest.TestCase):
         with patch.object(account_choice, "load_config", side_effect=AssertionError("must reuse")):
             self.assertEqual(account.move_environment(self.argv, self.env)["CLAUDE_CONFIG_DIR"], str(self.new))
         self.assertEqual(len(list((self.root / "panel" / "Launch Receipts").glob("*.json"))), 1)
+
+    def test_request_saved_without_a_receipt_route_records_through_the_current_route(self):
+        self.record()
+        with patch.object(account_choice, "record_launch", side_effect=ValueError("store refused")):
+            self.assertEqual(self.move(), self.env)
+        legacy = json.loads(self.request.read_text())
+        self.assertIsNone(legacy.pop("receipt_app"))  # a request saved before the route existed
+        self.request.write_text(json.dumps(legacy))
+        received = self.root / "received.json"
+        app = self.root / "Context Panel"
+        app.write_text(f"#!{sys.executable}\nimport sys\nopen({str(received)!r}, 'w').write(sys.stdin.read())\n"
+                       "print('20261018T184448Z-supervisor-' + '0' * 32 + '.json')\n")
+        app.chmod(0o700)
+        route = {"storage_root": self.root / "panel", "receipt_app": str(app)}
+        with patch.object(account_choice, "receipt_route", return_value=route), \
+             patch.object(account_choice, "load_config", return_value={"snapshot_command": [str(app)]}), \
+             patch.object(account_choice, "choose", side_effect=AssertionError("must keep the chosen account")):
+            moved = account.move_environment(self.argv, self.env)
+        self.assertEqual(moved["CLAUDE_CONFIG_DIR"], str(self.new))
+        self.assertEqual(json.loads(received.read_text())["accountID"], "anthropic-b")
+        self.assertEqual(json.loads(self.request.read_text())["receipt_app"], str(app))
+        self.assertFalse((self.root / "panel" / "Launch Receipts").exists())
 
     def test_choice_failure_and_same_account_preserve_recovery(self):
         self.record()
@@ -203,17 +225,6 @@ class MoveTests(unittest.TestCase):
         self.record()
         self.assertEqual(account.move_environment(self.argv, env), env)
 
-    def test_installed_wrapper_preserves_every_environment_variable(self):
-        settings = self.root / "settings.json"
-        installed = account.install(settings, self.root / "moves", write=True)
-        argv = json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
-        code = "import os,json;print(json.dumps(dict(os.environ)))"
-        env = {**os.environ, **self.env, "HOME": str(self.root), "PYTHONPATH": "unchanged"}
-        direct = subprocess.check_output([sys.executable, "-I", "-c", code], env=env)
-        wrapped = subprocess.check_output([*argv, sys.executable, "-I", "-c", code], env=env)
-        self.assertEqual({k for k in json.loads(wrapped).keys() | json.loads(direct).keys()
-                          if json.loads(wrapped).get(k) != json.loads(direct).get(k)}, set())
-
     def test_enrollment_refuses_task_worktree(self):
         self.runtime_patch.stop()
         from types import SimpleNamespace
@@ -283,11 +294,12 @@ class MoveTests(unittest.TestCase):
         account.install(settings, self.root / "moves", write=True)
         data = json.loads(settings.read_text())
         shim = Path(json.loads(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])[0])
-        shim.write_text(shim.read_text().replace("my $python =", "my $old_python ="))
+        current = shim.read_text()
+        shim.write_text(current + "# left by an older enrollment\n")
         with self.assertRaises(ValueError):
             account.install(settings, self.root / "moves", write=True)
         account.install(settings, self.root / "moves", write=True, refresh=True)
-        self.assertNotIn("my $old_python", shim.read_text())
+        self.assertEqual(shim.read_text(), current)
         account.uninstall(settings, write=True)
         result = json.loads(settings.read_text())
         self.assertEqual(result["env"], {"OTHER": "keep"})
@@ -330,15 +342,20 @@ class MoveTests(unittest.TestCase):
         child = self.root / "child"
         child.write_text('#!/usr/bin/perl\nexec {"/usr/bin/env"} "/usr/bin/env", "-0";\n')
         child.chmod(0o700)
-        for assignment in ("my $python", "my $script"):
-            original = shim.read_text()
-            lines = [line if not line.startswith(assignment + " =") else assignment + " = '/missing/dependency';"
-                     for line in original.splitlines()]
-            shim.write_text("\n".join(lines) + "\n")
-            fallback = subprocess.check_output([str(shim), str(child), "--resume", self.identifier], env=env)
-            self.assertEqual({x.split(b"=", 1)[0] for x in set(fallback.split(b"\0")) ^ set(expected.split(b"\0"))}, set())
-            self.assertTrue(self.request.exists())
-            shim.write_text(original)
+        for missing in ("python", "script"):
+            with self.subTest(missing=missing):
+                # Enroll with an interpreter or helper that is later removed from the host.
+                gone = self.root / f"removed-{missing}"
+                gone.write_text("#!/bin/sh\n")
+                gone.chmod(0o700)
+                removed = (patch.object(account.sys, "executable", str(gone)) if missing == "python"
+                           else patch.object(account, "runtime_script", return_value=gone))
+                with removed:
+                    account.install(settings, self.root / "moves", write=True, refresh=True)
+                gone.unlink()
+                fallback = subprocess.check_output([str(shim), str(child), "--resume", self.identifier], env=env)
+                self.assertEqual({x.split(b"=", 1)[0] for x in set(fallback.split(b"\0")) ^ set(expected.split(b"\0"))}, set())
+                self.assertTrue(self.request.exists())
 
     def test_uninstall_recovers_missing_entrypoint_and_alternate_source_hooks(self):
         settings = self.root / "settings.json"

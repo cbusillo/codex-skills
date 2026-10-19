@@ -8,11 +8,15 @@
 import json
 import contextlib
 import io
+import itertools
 import fcntl
 import importlib
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 from unittest.mock import Mock, patch
 
@@ -29,7 +33,18 @@ def comment(number, body, author=ACTOR):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_optional_admission_proof_is_not_a_dependency_of_release_retry(self):
+        log = self.root / "closed.json"
+        saved = {**self.entry, "closure_evidence": {"host": "old-boot"}}
+        log.write_text(json.dumps([saved]))
+        for unavailable in (ValueError("account set changed"), TimeoutError("scan budget"), OSError("config unreadable")):
+            with self.subTest(unavailable=type(unavailable).__name__), patch.object(helper.closure, "evidence", side_effect=unavailable):
+                result = helper.record_closure(log, self.entry, "supervisor")
+                self.assertEqual(result["ended_at"], saved["ended_at"])
+
     def setUp(self):
+        self.enterContext(patch.object(helper.session_liveness, "process_arguments",
+            side_effect=lambda _pid, command: (helper.session_liveness.harness_arguments(command), True)))
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -42,7 +57,7 @@ class ReleaseTests(unittest.TestCase):
         self.transcript = self.root / "source-session.jsonl"
         self.transcript.write_text("\n".join(json.dumps(r) for r in [
             {"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z",
-             "payload": {"id": SOURCE["session"]}},
+             "payload": {"id": SOURCE["session"], "cwd": "/repo"}},
             {"timestamp": "2026-01-01T00:01:00Z", "payload": {
                 "type": "agent_message", "message": "Finished.\nSafe to exit: yes"}},
             {"timestamp": "2026-01-01T00:01:01Z", "payload": {"type": "task_complete"}},
@@ -52,6 +67,10 @@ class ReleaseTests(unittest.TestCase):
                       "supervisor_owned": True, "process_exit_verified": True,
                       "ended_at": "2026-01-01T00:02:00Z",
                       "handoff_url": "https://github.com/test/a/issues/1#issuecomment-99"}
+        started = patch.object(helper.closure, "process_started_at", return_value=
+                               helper.release.stamp(self.entry["ended_at"]) - timedelta(seconds=1))
+        started.start()
+        self.addCleanup(started.stop)
         self.source = comment(1, "Claimed by trial\n\n" + helper.claim.marker(SOURCE))
         self.reader = Mock()
         self.reader.get_json.return_value = {**comment(99, "Handoff"),
@@ -174,10 +193,11 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "single timezone"):
             helper.validate_closure({**self.entry, "ended_at": "2026-01-01 00:02:00+00:00"}, "supervisor")
 
-    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body="", scoped=False, evidence=None):
+    def finish_thread(self, comments, *, verdict="Safe to exit: yes", body="", scoped=False, evidence=None, apply=True):
         ledger, log = self.root / "ledger.json", self.root / "closed.json"
         ledger.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
         log.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
+        log.chmod(0o600)
         records = helper.session_record.read_jsonl(self.transcript)
         records[1]["payload"]["message"] = "Finished.\n" + verdict
         self.transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n")
@@ -186,7 +206,9 @@ class ReleaseTests(unittest.TestCase):
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
                 "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
                 "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
-                "--verified-handoff", "--handoff-thread", "test/a#2", "--transcript-root", str(self.root), "--apply"]
+                "--verified-handoff", "--handoff-thread", "test/a#2", "--transcript-root", str(self.root)]
+        if apply:
+            argv.append("--apply")
         if scoped:
             argv += ["--repo", "test/a"]
         output = io.StringIO()
@@ -219,6 +241,172 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(report["reports"][0]["released_claims"], [])
         self.assertFalse(report["needs_reconciliation"])
+
+    def test_finish_retry_uses_original_closure_to_distinguish_tty_reuse(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        for apply in (False, True):
+            wrapper = "python codex-session.py launch -- codex --remote unix:///new-client"
+            for command, guarded in (("python gh_pr_watch.py", False), ("codex exec fresh-job", False),
+                                     ("codex resume 11111111-1111-4111-8111-111111111111", False), ("claude -c", False),
+                                     (wrapper, False), (wrapper, True)):
+                for born, expected in ((ended - timedelta(seconds=1), 1), (ended, 1),
+                                       (ended + timedelta(seconds=22), 0),
+                                       (datetime.now(timezone.utc) + timedelta(days=1), 1)):
+                    if command == wrapper and not guarded:
+                        expected = 1
+                    with self.subTest(apply=apply, command=command, born=born, guarded=guarded), \
+                            patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], command)]), \
+                            patch.object(helper.closure, "process_started_at", return_value=born), \
+                            patch.object(helper.closure, "closed_log", return_value=self.root / "closed.json"), \
+                            patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client" if guarded else None):
+                        result, report = self.finish_thread([self.source, self.own_release()], apply=apply)
+                        self.assertEqual(result, expected, report)
+                        saved = json.loads((self.root / "closed.json").read_text())[0]
+                        self.assertEqual(saved["ended_at"], self.entry["ended_at"])
+
+    def test_finish_retry_never_excuses_recorded_pids_or_native_resume(self):
+        self.entry["launch_pid"] = 124
+        ended = helper.release.stamp(self.entry["ended_at"])
+        for pid, tty, command in ((self.entry["pid"], "other-tty", "codex"),
+                                  (self.entry["launch_pid"], "other-tty", "shell"),
+                                  *((456, self.entry["tty"], command) for command in (
+                                      "codex resume source-session", "codex resume --last", "codex resume",
+                                      "codex"))):
+            for born in (ended - timedelta(seconds=1), ended + timedelta(seconds=22)):
+                with self.subTest(pid=pid, command=command, born=born), \
+                        patch.object(helper, "inventory", return_value=[(pid, tty, command)]), \
+                        patch.object(helper.closure, "process_started_at", return_value=born):
+                    result, report = self.finish_thread([])
+                    self.assertEqual(result, 1, report)
+
+    def test_process_exit_only_suspects_reattachment_by_the_sources_harness(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        commands = {"codex": ("codex", "codex resume --last"),
+                    "claude": ("claude -c", "node /bin/claude.js")}
+        for source in commands:
+            for occupant, variants in commands.items():
+                for command in variants:
+                    for born in (ended - timedelta(seconds=1), ended, ended + timedelta(seconds=22)):
+                        with self.subTest(source=source, command=command, born=born), \
+                                patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], command)]), \
+                                patch.object(helper.closure, "process_started_at", return_value=born):
+                            if source == occupant or born <= ended:
+                                with self.assertRaises(ValueError):
+                                    helper.verify_process_exit({**self.entry, "harness": source}, ended_at=ended)
+                            else:
+                                helper.verify_process_exit({**self.entry, "harness": source}, ended_at=ended)
+
+    def test_finish_retry_preserves_claims_when_tty_start_is_unavailable(self):
+        with patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex")]), \
+                patch.object(helper.closure, "process_started_at", side_effect=ValueError("start unavailable")):
+            result, report = self.finish_thread([self.source, self.own_release()])
+        self.assertEqual(result, 1, report)
+
+    def test_new_closure_does_not_trust_ledger_end_to_excuse_existing_work(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        with patch.object(helper, "inventory", side_effect=[[(456, self.entry["tty"], "python gh_pr_watch.py")], []]), \
+                patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)):
+            with self.assertRaises(ValueError):
+                helper.record_closure(self.root / "new-closure.json", self.entry, "supervisor")
+        self.assertFalse((self.root / "new-closure.json").exists())
+
+    def test_new_closure_rejects_worker_born_during_the_first_inventory(self):
+        observed = datetime.now(timezone.utc)
+        log = self.root / "new-closure.json"
+        with patch.object(helper, "datetime") as clock, \
+                patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "exit-hook")]), \
+                patch.object(helper.closure, "process_started_at", return_value=observed + timedelta(seconds=1)):
+            clock.now.side_effect = itertools.chain([observed], itertools.repeat(observed + timedelta(seconds=2)))
+            with self.assertRaises(ValueError):
+                helper.record_closure(log, self.entry, "supervisor")
+        self.assertFalse(log.exists())
+
+    def test_first_recovery_finish_uses_native_dead_pane_cutoff_then_retains_it(self):
+        import tmux_terminal
+        ended = helper.release.stamp(self.entry["ended_at"])
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "window_id": "$1", "tab_id": "@1", "tty_exited_at": "2099-01-01T00:00:00Z",
+                 "launch_pid": 123, "launch_generation": "new-generation",
+                 "launch_started_at": (ended - timedelta(minutes=1)).isoformat(), "codex_home": str(self.root)}
+        pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                "dead": True, "exited_at": ended.isoformat()}
+        for recovered in (False, True):
+            log = self.root / f"recovery-{recovered}.json"
+            if recovered:
+                metadata = {key: entry[key] for key in (
+                    "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")}
+                log.write_text(json.dumps([{**self.entry, "pid": 122, "tty": "old-tty",
+                                            "resumed_at": (ended - timedelta(minutes=1)).isoformat(),
+                                            "resumed_generation": metadata}]))
+            with self.subTest(recovery=recovered), \
+                    patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
+                    patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex --remote unix:///new-client")]), \
+                    patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                    patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client"):
+                closed = helper.record_closure(log, entry, "supervisor")
+                self.assertEqual(closed["tty_exited_at"], ended.isoformat())
+                self.assertGreater(helper.release.stamp(closed["ended_at"]), ended + timedelta(seconds=22))
+                with patch.object(tmux_terminal.Terminal, "list", side_effect=AssertionError("dead pane already removed")):
+                    retried = helper.record_closure(log, entry, "supervisor")
+                self.assertEqual(retried["ended_at"], closed["ended_at"])
+                self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
+
+    def test_missing_dead_pane_uses_strict_exit_check_without_accepting_caller_cutoff(self):
+        import tmux_terminal
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "tty_exited_at": "2099-01-01T00:00:00Z"}
+        for error in (ValueError("pane missing"), OSError("inventory unavailable")):
+            with self.subTest(error=type(error).__name__), patch.object(tmux_terminal.Terminal, "dead_pane", side_effect=error):
+                log = self.root / f"fallback-{type(error).__name__}.json"
+                closed = helper.record_closure(log, entry, "supervisor")
+                self.assertNotIn("tty_exited_at", closed)
+                with patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex exec -- new work")]), self.assertRaises(ValueError):
+                    helper.record_closure(self.root / "must-not-publish.json", entry, "supervisor")
+                self.assertFalse((self.root / "must-not-publish.json").exists())
+
+    def test_private_closure_uses_its_own_verified_source_instead_of_shared_same_id(self):
+        import tmux_terminal
+        ended = helper.release.stamp(self.entry["ended_at"])
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "window_id": "$1", "tab_id": "@1"}
+        pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                "dead": True, "exited_at": ended.isoformat()}
+        log = self.root / "private-closure.json"
+        shared = self.root / "shared-closure.json"
+        shared.write_text(json.dumps([{**self.entry, "pid": 999, "tty": "other-tty"}]))
+        shared.chmod(0o600)
+        with patch.object(helper.closure, "closed_log", return_value=shared), \
+                patch.object(tmux_terminal.Terminal, "list", return_value=[pane]):
+            closed = helper.record_closure(log, entry, "supervisor")
+            with patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex --remote unix:///guarded")]), \
+                    patch.object(helper.closure, "guarded_launch_endpoint", return_value="/guarded"), \
+                    patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                    patch.object(tmux_terminal.Terminal, "list", side_effect=AssertionError("pane removed")):
+                retried = helper.record_closure(log, entry, "supervisor")
+            self.assertEqual(retried["ended_at"], closed["ended_at"])
+            self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
+
+    def test_ordinary_offline_finish_and_validation_do_not_need_an_unrelated_shared_store(self):
+        shared = self.root / "unrelated-shared.json"
+        shared.write_text("fixture unavailable store")
+        shared.chmod(0o600)
+        with patch.object(helper.closure, "closed_log", return_value=shared):
+            closed = helper.record_closure(self.root / "private-closure.json", self.entry, "supervisor")
+            self.assertTrue(helper.validate_closure(closed, "supervisor")["safe_verdict"])
+
+    def test_scheduled_jobs_do_not_change_post_exit_finish_policy(self):
+        entry = {**self.entry, "harness": "claude"}
+        records = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "create", "name": "CronCreate", "input": {}}]}},
+            {"type": "user", "toolUseResult": {"id": "wake", "recurring": True, "durable": False},
+             "message": {"content": [{"type": "tool_result", "tool_use_id": "create", "content": "fixture"}]}},
+            {"type": "assistant", "timestamp": "2026-01-01T00:01:00Z", "message": {
+                "stop_reason": "end_turn", "content": [{"type": "text", "text": "Safe to exit: yes"}]}},
+        ]
+        self.transcript.write_text("".join(json.dumps({**r, "sessionId": SOURCE["session"]}) + "\n" for r in records))
+        helper.validate_closure(entry, "supervisor")
 
     def test_finish_self_release_with_session_field_and_progress_note(self):
         released = self.own_release(body="Released claim 1\n\nSession: source-session\nEngineering handoff")
@@ -332,19 +520,227 @@ class ReleaseTests(unittest.TestCase):
 
     def test_legacy_abbreviated_write_receipt_and_unbound_final_link(self):
         records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
-        records.insert(2, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
+        records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "body", "input": {"file_path": "handoff.md", "content": "Handoff"}}]}})
+        records.insert(2, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
+        records.insert(3, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
         # This models receipt shapes only; harness identity and safe exit remain Codex.
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
         self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
         records = helper.session_record.read_jsonl(self.transcript)
-        records[2]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
+        records[3]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
         records[-2]["payload"]["message"] = f"See {self.entry['handoff_url']}\nSafe to exit: yes"
         self.transcript.write_text("\n".join(json.dumps(r) for r in records))
         self.reader.paged_json.return_value = []
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+
+    def summarized_write(self, command, output, started="2025-12-31T23:59:59.400Z", finished="2026-01-01T00:00:01.200Z",
+                         body="Handoff: the lane's passwords moved.\nNext: land it.", posted=None):
+        # Each call starts from the base transcript, so subtests stay independent.
+        self.__dict__.setdefault("base_transcript", self.transcript.read_text())
+        self.transcript.write_text(self.base_transcript)
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[1:1] = [
+            # The session writes the comment body itself before posting it.
+            {"type": "assistant", "timestamp": started, "message": {"content": [
+                {"type": "tool_use", "id": "body", "input": {"file_path": "c.md", "content": body}}]}},
+            {"type": "assistant", "timestamp": started, "message": {"content": [
+                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
+            # Claude Code repeats tool blocks in untimestamped records.
+            {"type": "api-request-blob", "message": {"content": [
+                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
+            {"type": "user", "timestamp": finished, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "write", "content": output, "is_error": False}]}},
+        ]
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        self.reader.paged_json.return_value = []
+        # The comment helper appends its operation marker to the posted body.
+        self.reader.get_json.return_value = {**self.reader.get_json.return_value,
+                                             "body": f"{posted or body}\n\n<!-- github-skill-operation:0123abcd -->"}
+        return {**self.entry, "handoff_url": None}
+
+    def test_summarized_write_created_during_the_call_is_bound(self):
+        other = "https://github.com/test/a/issues/1#issuecomment-98"
+        summary = "python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get(\"url\"))'"
+        shapes = {
+            # LP3912-D2: heredoc body with an apostrophe, then two writes in one call.
+            "two writes after a heredoc": (
+                f"cat > c.md <<'EOF'\nHandoff: the lane's passwords moved.\nNext: land it.\nEOF\ngh-comment -R test/a --body-file c.md issue 2 | {summary}; "
+                f"gh-comment -R test/a --body-file c.md issue 1 | {summary}",
+                f"confirmed {other}\nconfirmed {self.entry['handoff_url']}"),
+            # CS2069-C1: the write chained with a read whose summary prints a dict.
+            "write chained with a read": (
+                f"gh-comment issue 1 -R test/a --body-file c.md | {summary}; gh-pr.py --repo test/a checks 2 | {summary}",
+                f"True None {self.entry['handoff_url']}\n{{'summary': {{'pendingCount': 3}}}}"),
+            "body on stdin": (
+                f"gh-comment issue 1 --body-file - <<'EOF' | {summary}\nHandoff: the lane's passwords moved.\nNext: land it.\nEOF",
+                f"True None {self.entry['handoff_url']}"),
+            "documented gh-pr.py argument order": (
+                f"gh-pr.py --repo test/a comment 1 --body-file c.md | {summary}",
+                f"True None {self.entry['handoff_url']}"),
+        }
+        for name, (command, output) in shapes.items():
+            with self.subTest(name):
+                found, _ = helper.discover_handoff(self.reader, self.summarized_write(command, output), ACTOR)
+                self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_another_sessions_comment_created_during_the_call_is_not_bound(self):
+        # Session B posts with the same bot while session A's write is chained with a read.
+        command = "gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments"
+        outputs = {"bare URL": self.entry["handoff_url"], "read JSON": json.dumps([{"html_url": self.entry["handoff_url"]}])}
+        bodies = {"names its own session": "B's handoff\nSession: session-B", "names no session": "B's handoff"}
+        for (shape, output), (name, other_body) in itertools.product(outputs.items(), bodies.items()):
+            with self.subTest(shape=shape, body=name):
+                entry = self.summarized_write(command, output)
+                self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": other_body}
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_text_the_session_typed_but_did_not_post_does_not_bind(self):
+        # Another session's comment, printed by a chained read, matches text this session only searched for or typed.
+        shapes = {
+            "search argument": ("rg -F 'Engineering handoff: ready to merge' notes.md; ", "Engineering handoff: ready to merge"),
+            "loop terminator": ("for f in a b; do echo $f; done; ", "done"),
+        }
+        for name, (prefix, other_body) in shapes.items():
+            with self.subTest(name):
+                entry = self.summarized_write(
+                    f"{prefix}gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/comments/99 --jq .html_url",
+                    self.entry["handoff_url"], posted=other_body)
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_body_file_edited_after_writing_binds_its_final_text(self):
+        entry = self.summarized_write("gh-comment issue 1 --body-file /repo/c.md | jq -r .url", self.entry["handoff_url"],
+                                      body="Draft handoff", posted="Final handoff")
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(2, {"type": "assistant", "timestamp": "2025-12-31T23:59:59.400Z", "message": {"content": [
+            {"type": "tool_use", "id": "edit", "input": {"file_path": "c.md", "old_string": "Draft", "new_string": "Final"}}]}})
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_unrelated_command_heredoc_does_not_bind_a_read_comment(self):
+        commands = (
+            "rg -F -f - notes.md <<'EOF'\nOther handoff\nEOF\n"
+            "gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments",
+            "gh-comment issue 1 3<<'EOF' >/dev/null\nOther handoff\nEOF\n"
+            "gh api repos/test/a/issues/1/comments",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                entry = self.summarized_write(command, self.entry["handoff_url"], posted="Other handoff")
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_different_absolute_body_paths_do_not_bind_by_basename(self):
+        entry = self.summarized_write(
+            "gh-comment issue 1 --body-file /tmp/c.md >/dev/null; gh api repos/test/a/issues/1/comments",
+            self.entry["handoff_url"], posted="Other handoff")
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[1]["message"]["content"][0]["input"].update(file_path="/repo/notes/c.md", content="Other handoff")
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_literal_shell_variable_body_path_binds(self):
+        entry = self.summarized_write(
+            'body=/tmp/c.md; gh-comment issue 1 --body-file "$body" | jq -r .comment.url',
+            self.entry["handoff_url"])
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[1]["message"]["content"][0]["input"]["file_path"] = "/tmp/c.md"
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_recorded_workdir_resolves_relative_body_paths(self):
+        for orchestrated, cwd in itertools.product((False, True), ("/repo/notes", "/tmp")):
+            with self.subTest(orchestrated=orchestrated, cwd=cwd):
+                entry = self.summarized_write("gh-comment issue 1 --body-file c.md", self.entry["handoff_url"])
+                records = helper.session_record.read_jsonl(self.transcript)
+                records[1]["message"]["content"][0]["input"]["file_path"] = "/repo/notes/c.md"
+                args = {"cmd": "gh-comment issue 1 --body-file c.md", "workdir": cwd}
+                # Replace both copies of the native call, retaining its result.
+                records[2] = {"timestamp": records[2]["timestamp"], "payload": {
+                    "type": "custom_tool_call" if orchestrated else "function_call", "call_id": "write",
+                    "input" if orchestrated else "arguments": (
+                        f'await tools.exec_command({{cmd: {json.dumps(args["cmd"])}, workdir: {json.dumps(cwd)}}})'
+                        if orchestrated else json.dumps(args))}}
+                records[3] = {"payload": {"type": "function_call_output", "call_id": "write", "output": self.entry["handoff_url"]}}
+                del records[4]
+                self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+                if cwd == "/repo/notes":
+                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+                else:
+                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                        helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_relative_body_path_without_recorded_cwd_is_ambiguous(self):
+        entry = self.summarized_write("gh-comment issue 1 --body-file c.md", self.entry["handoff_url"])
+        records = helper.session_record.read_jsonl(self.transcript)
+        del records[0]["payload"]["cwd"]
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_body_path_variable_must_be_known_and_expandable(self):
+        for path in ("'$body'", '"$unknown"'):
+            with self.subTest(path=path):
+                entry = self.summarized_write(
+                    f"body=/repo/c.md; gh-comment issue 1 --body-file {path}", self.entry["handoff_url"])
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_untracked_redirect_contents_do_not_preserve_an_old_file_body(self):
+        for command in ("printf changed > c.md", "cat other.md > c.md <<'EOF'\nOther handoff\nEOF"):
+            with self.subTest(command=command):
+                entry = self.summarized_write(
+                    f"{command}\ngh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments",
+                    self.entry["handoff_url"])
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_codex_orchestrated_heredoc_body_is_bound(self):
+        # Codex functions.exec records the shell command as an escaped JavaScript string literal.
+        command = "cat > c.md <<'EOF'\nEngineering handoff\nReady for merge\nEOF\ngh-comment issue 1 --body-file c.md | jq -r .comment.url"
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[1:1] = [
+            {"timestamp": "2025-12-31T23:59:59.400Z", "payload": {"type": "custom_tool_call", "call_id": "write",
+                "input": f"await tools.exec_command({{cmd: {json.dumps(command)}}})"}},
+            {"timestamp": "2026-01-01T00:00:01.200Z", "payload": {"type": "custom_tool_call_output", "call_id": "write",
+                "output": f"{self.entry['handoff_url']}\n{{}}"}},
+        ]
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        self.reader.paged_json.return_value = []
+        self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": "Engineering handoff\nReady for merge"}
+        found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_a_written_comment_that_names_another_session_is_not_its_handoff(self):
+        # For example, a Supervisor attestation about the session it closed.
+        entry = self.summarized_write("gh-comment issue 1 --body-file c.md", self.entry["handoff_url"],
+                                      body="Closed session\nSession: session-B\nSafe to exit: yes")
+        with self.assertRaisesRegex(ValueError, "no authored handoff"):
+            helper.discover_handoff(self.reader, entry, ACTOR)
+
+    def test_a_read_before_the_write_in_one_call_does_not_hide_the_write(self):
+        summary = "python3 -c 'import json,sys; print(json.load(sys.stdin)[\"comment\"][\"url\"])'"
+        entry = self.summarized_write(f"gh-pr.py --repo test/a checks 2; gh-comment issue 1 --body-file c.md | {summary}",
+                                      f"{{'summary': {{'pendingCount': 3}}}}\n{self.entry['handoff_url']}")
+        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
+
+    def test_url_printed_by_a_write_but_created_outside_the_call_is_not_bound(self):
+        # A read chained into the write may print an older shared-bot comment, bare or in JSON.
+        for output in (self.entry["handoff_url"], f"{self.entry['handoff_url']}\n{{}}"):
+            with self.subTest(output=output):
+                entry = self.summarized_write(
+                    "gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/comments/99 --jq .html_url",
+                    output, started="2026-01-01T00:00:30Z", finished="2026-01-01T00:00:35Z")
+                with self.assertRaisesRegex(ValueError, "no authored handoff"):
+                    helper.discover_handoff(self.reader, entry, ACTOR)
 
     def test_unplanned_active_inventory_followup_is_not_an_all_clear(self):
         entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
@@ -387,6 +783,28 @@ class ReleaseTests(unittest.TestCase):
         self.reader.paged_json.return_value = []
         with self.assertRaisesRegex(ValueError, "no authored handoff"):
             helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
+
+    def test_truncated_orchestration_with_many_quotes_does_not_hang(self):
+        records = helper.session_record.read_jsonl(self.transcript)
+        records.insert(1, {"payload": {"type": "custom_tool_call", "call_id": "truncated",
+            "input": 'await tools.exec_command({cmd: ' + '""' * 80}})
+        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
+        # Keep a regressed parser from hanging the test runner indefinitely.
+        script = """
+import json, sys
+from unittest.mock import Mock
+import release_session_claims as helper
+try:
+    helper.discover_handoff(Mock(), json.loads(sys.argv[1]), sys.argv[2])
+except ValueError as error:
+    assert 'no authored handoff' in str(error), error
+else:
+    raise AssertionError('truncated command cannot establish authorship')
+"""
+        result = subprocess.run([sys.executable, "-c", script,
+                                 json.dumps({**self.entry, "handoff_url": None}), ACTOR],
+                                cwd=Path(helper.__file__).parent, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_interrupted_handoff_uses_exact_inventory_ownership_context(self):
         entry = {**self.entry, "handoff_url": None, "_inventory_claims": [self.inventory_row()]}
@@ -466,6 +884,23 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.validate_closure(self.entry, SOURCE["session"])
 
+    def test_record_closure_uses_verified_verdict_time_and_preserves_it_on_retry(self):
+        observed = helper.session_record.session_status(self.entry)
+        log = self.root / "timed-close.json"
+        supplied = {**self.entry, "verdict_at": self.entry["ended_at"]}
+        closed = helper.record_closure(log, supplied, "supervisor")
+        self.assertEqual(closed["verdict_at"], observed["timestamp"])
+        self.assertEqual(json.loads(log.read_text())[0]["verdict_at"], observed["timestamp"])
+        retried = helper.record_closure(log, supplied, "supervisor")
+        self.assertEqual(retried["verdict_at"], closed["verdict_at"])
+        self.assertEqual(retried["ended_at"], closed["ended_at"])
+
+    def test_recorded_verdict_time_must_match_transcript_but_legacy_log_still_works(self):
+        observed = helper.validate_closure(self.entry, "supervisor")
+        helper.validate_closure({**self.entry, "verdict_at": observed["timestamp"]}, "supervisor")
+        with self.assertRaises(ValueError):
+            helper.validate_closure({**self.entry, "verdict_at": self.entry["ended_at"]}, "supervisor")
+
     def test_conditional_verdict_and_resumed_transcript_refuse(self):
         original = self.transcript.read_text()
         self.transcript.write_text(original.replace("Safe to exit: yes", "Safe to exit: yes, if CI passes"))
@@ -485,6 +920,129 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(helper.record_closure(log, self.entry, "supervisor", persist=False)["ended_at"], first["ended_at"])
         with self.assertRaisesRegex(ValueError, "identity changed"):
             helper.record_closure(log, {**self.entry, "pid": 789}, "supervisor")
+
+    def test_optional_admission_proof_failure_does_not_stop_verified_closure(self):
+        log = self.root / "closed.json"
+        entry = {**self.entry, "codex_home": str(self.root)}
+        with patch.object(helper.closure, "evidence", side_effect=ValueError("account inventory unavailable")):
+            closed = helper.record_closure(log, entry, "supervisor")
+        self.assertTrue(helper.validate_closure(closed, "supervisor")["safe_verdict"])
+        self.assertIsNone(closed.get("closure_evidence"))
+
+    def test_adding_account_home_does_not_rewrite_or_block_a_legacy_receipt(self):
+        log = self.root / "closed.json"
+        original = helper.record_closure(log, self.entry, "supervisor")
+        result = helper.record_closure(log, {**self.entry, "codex_home": str(self.root)}, "supervisor")
+        self.assertEqual(result["ended_at"], original["ended_at"])
+        self.assertIsNone(result.get("closure_evidence"))
+
+    def test_resumed_source_requires_its_new_launch_generation_before_reclosing(self):
+        log = self.shared_closure()
+        metadata = {"launch_pid": 789, "launch_generation": "resumed-generation",
+                    "launch_started_at": "2026-01-01T00:01:40Z", "codex_home": str(self.root.resolve())}
+        with helper.closure.resume_guard(SOURCE["session"]):
+            helper.closure.resumed_launch(SOURCE["session"], metadata, str(self.transcript), self.entry["tty"])
+        with self.transcript.open("a") as stream:
+            for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
+        # This test isolates generation matching after independent native
+        # recovery. Full pending resolution is exercised with a real daemon fixture.
+        with helper.closure.ownership(SOURCE["session"]):
+            helper.closure.set_action_pending(SOURCE["session"], False)
+        with self.assertRaises(ValueError):
+            helper.record_closure(log, self.entry, "supervisor")
+        replacement = {**self.entry, **metadata, "pid": metadata["launch_pid"]}
+        closed = helper.record_closure(log, replacement, "supervisor")
+        self.assertTrue(helper.closure.idle_eligible(closed))
+        self.assertEqual(closed["launch_generation"], metadata["launch_generation"])
+
+    def test_finish_uses_shared_default_and_preview_creates_nothing(self):
+        ledger, log = self.root / "ledger.json", self.root / "shared/closed.json"
+        ledger.write_text(json.dumps([self.entry]))
+        for apply in (False, True):
+            argv = ["helper", "finish", "--ledger", str(ledger), "--session-id", SOURCE["session"],
+                    "--supervisor-session", "supervisor", "--owner", "test", "--checkout-root", str(self.root),
+                    "--confirm-session-ended", "--verified-handoff", "--transcript-root", str(self.root)]
+            if apply:
+                argv.append("--apply")
+            with patch.object(helper.sys, "argv", argv), \
+                    patch.object(helper.closure, "closed_log", return_value=log), \
+                    patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                    patch.object(helper, "GitHubReader", return_value=self.reader), \
+                    patch.object(helper, "discover", return_value=([("test/a", 1)], ["test/a"])), \
+                    patch.object(helper, "release_session", return_value={}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(helper.main(), 0)
+            self.assertEqual(log.exists(), apply)
+            if apply:
+                self.assertEqual(json.loads(log.read_text())[0]["session_id"], SOURCE["session"])
+            else:
+                self.assertFalse(log.parent.exists())
+
+    def shared_closure(self):
+        import github_plan_sessions
+        sessions = self.root / "sessions"
+        sessions.mkdir()
+        self.transcript.rename(sessions / self.transcript.name)
+        self.transcript = sessions / self.transcript.name
+        self.entry.update(transcript=str(self.transcript), codex_home=str(self.root))
+        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve()]))
+        self.enterContext(patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-a", "uid": 1}))
+        log = self.root / "closed.json"
+        self.enterContext(patch.object(helper.closure, "closed_log", return_value=log))
+        helper.record_closure(log, self.entry, "supervisor")
+        return log
+
+    def test_shared_receipt_is_fresh_read_only_evidence(self):
+        log = self.shared_closure()
+        before = log.read_bytes(), log.stat().st_mtime_ns
+        result = helper.closure.verified_record(SOURCE["session"], self.root)
+        self.assertEqual(result["session_id"], SOURCE["session"])
+        self.assertEqual((log.read_bytes(), log.stat().st_mtime_ns), before)
+        with patch.object(helper, "inventory", return_value=[(123, "another-tty", "unrelated-process")]):
+            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        with patch.object(helper, "inventory", return_value=[(456, "other-tty", "codex --remote unix:///other")]):
+            self.assertIsNotNone(helper.closure.verified_record(SOURCE["session"], self.root))
+
+    def test_shared_receipt_refuses_resumed_and_rewritten_transcripts(self):
+        self.shared_closure()
+        original = self.transcript.read_text()
+        self.transcript.write_text(original + json.dumps({"timestamp": "2026-01-01T00:01:30Z",
+            "payload": {"type": "user_message", "message": "resume"}}) + "\n")
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        self.transcript.write_text(original)
+        # Even a rewrite restoring the old final verdict invalidates the receipt.
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+
+    def test_new_transcript_copy_invalidates_shared_receipt(self):
+        import github_plan_sessions
+        self.shared_closure()
+        other = self.root / "other-account"
+        archived = other / "archived_sessions"
+        archived.mkdir(parents=True)
+        (archived / self.transcript.name).write_bytes(self.transcript.read_bytes())
+        with patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve(), other.resolve()]):
+            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+
+    def test_shared_receipt_refuses_home_boot_malformed_and_missing_evidence(self):
+        log = self.shared_closure()
+        original = log.read_text()
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root / "another-home"))
+        with patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-b", "uid": 1}):
+            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        saved = json.loads(original)[0]
+        malformed = [json.dumps([{**saved, "closure_evidence": value}]) for value in (None, "invalid", [])]
+        malformed.append(json.dumps([{**saved, "pid": None, "_inventory": True,
+                                      "safe_exit_yes": True, "still_running": False}]))
+        for value in ("{", "{}", "[null]", "[]", json.dumps([saved, saved]), *malformed):
+            log.write_text(value)
+            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        log.write_text(original)
+        log.chmod(0o644)
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        log.unlink()
+        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
+        self.assertFalse(log.exists())
 
     def test_cross_repository_discovery_includes_closed_issue_comments(self):
         def paged(path, **kwargs):
@@ -521,14 +1079,14 @@ class ReleaseTests(unittest.TestCase):
 
     def test_backfill_reused_tty_is_not_source_identity_but_pid_still_refuses(self):
         old = {**self.entry, "_backfill": True}
-        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex resume different-session")]):
+        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex resume 11111111-1111-4111-8111-111111111111")]):
             self.assertTrue(helper.validate_closure(old, "supervisor")["safe_verdict"])
             with self.assertRaises(ValueError):
                 helper.validate_closure(self.entry, "supervisor")
-        for command in ("codex resume --last", "claude -c", "node /bin/claude.js"):
+        for command, harness in (("codex resume --last", "codex"), ("claude -c", "claude"), ("node /bin/claude.js", "claude")):
             with patch.object(helper, "inventory", return_value=[(456, "ttys123", command)]):
-                with self.assertRaisesRegex(ValueError, "unidentified harness"):
-                    helper.validate_closure(old, "supervisor")
+                with self.assertRaises(ValueError):
+                    helper.verify_process_exit({**old, "harness": harness}, ended_at=helper.release.stamp(old["ended_at"]))
         with patch.object(helper, "inventory", return_value=[(123, "other", "codex")]):
             with self.assertRaises(ValueError):
                 helper.validate_closure(old, "supervisor")

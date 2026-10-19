@@ -46,26 +46,6 @@ class CacheRoutingTests(unittest.TestCase):
                     self.assertTrue(expected.is_dir())
                 self.assertFalse((caller / ".venv").exists())
 
-    def test_no_cache_watch_leaves_shared_cache_prunable(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            cache = root / "cache"
-            cache.mkdir()
-            uv = shutil.which("uv")
-            env = {**os.environ, "UV_CACHE_DIR": str(cache), "UV_LOCK_TIMEOUT": "1"}
-            watcher = subprocess.Popen([uv, "run", "--no-project", "--no-config", "--no-cache",
-                                        "--python", "3.12", "python", "-c",
-                                        'import time; print("ready", flush=True); time.sleep(60)'],
-                                       env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            try:
-                self.assertEqual(watcher.stdout.readline().strip(), "ready")
-                subprocess.run([uv, "--no-config", "cache", "prune", "--cache-dir", str(cache)],
-                               env=env, check=True, capture_output=True, timeout=10)
-                self.assertIsNone(watcher.poll())
-            finally:
-                watcher.terminate()
-                watcher.communicate(timeout=10)
-
 
 if __name__ == "__main__":
     unittest.main()

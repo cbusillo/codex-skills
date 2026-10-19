@@ -43,6 +43,7 @@ people:
       preferred_contact: github
       mention_style: "@example-user"
       timezone: Etc/UTC
+      communication_style: Use short paragraphs and state the next action.
       contact_notes: Use GitHub for repository work in this example.
     trust:
       level: trusted

@@ -10,6 +10,7 @@ from datetime import datetime
 import json
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -18,6 +19,15 @@ from typing import Any
 
 MARKER = "github-plan:claim "
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
+
+
+class ClaimProofError(ValueError):
+    """A source-proof refusal with a stable machine-readable reason."""
+
+    def __init__(self, code: str, message: str, *, payload: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.payload = payload or {}
 
 
 def word_pattern(*words: str) -> str:
@@ -73,12 +83,15 @@ def marker(claim: dict[str, str]) -> str:
     return "<!-- " + MARKER + json.dumps(claim, sort_keys=True) + " -->"
 
 
-def records(text: str) -> list[dict[str, str]]:
-    found = []
+def live_lines(text: str) -> list[str]:
     # Format examples and incidental prose are not live ownership records.
     text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", text)
-    lines = [line.strip() for line in text.splitlines() if line.strip().startswith("<!-- " + MARKER)]
-    for line in lines:
+    return [line for line in text.splitlines() if line.strip().startswith("<!-- " + MARKER)]
+
+
+def records(text: str) -> list[dict[str, str]]:
+    found = []
+    for line in (line.strip() for line in live_lines(text)):
         match = re.fullmatch(r"<!-- github-plan:claim (.*?) -->", line)
         if not match:
             raise ValueError("Malformed claim marker; preserve ownership for owner review")
@@ -433,6 +446,47 @@ def released_explanatory_note(
     return False
 
 
+def attested_handoff_note(text: str, index: int, comments: list[dict[str, Any]]) -> bool:
+    """A released session's closure evidence that names this exact note as its handoff accounts for it."""
+    from github_plan_release import COMMENT_URL, receipt_for, related_sessions_match, stamp, validate_evidence
+    header = re.match(r"Claimed by:?\s+\S+", text, re.IGNORECASE)
+    if not header:
+        return False
+    note = comments[index]
+    for source_index, record, release_index in exact_released_sources(comments):
+        source, release = comments[source_index], comments[release_index]
+        # Only a Supervisor or direction receipt carries closure evidence.
+        receipt = receipt_for(release)
+        author = (source.get("user") or {}).get("login")
+        if (receipt is None or not source_index < index < release_index
+                or (note.get("user") or {}).get("login") != author
+                or not related_sessions_match(text, record["session"])):
+            continue
+        # Claim reads attach evidence fetched from any issue; otherwise use this issue's copy.
+        evidence_ids = {int(m.group(3)) for m in COMMENT_URL.finditer(receipt["evidence_url"])}
+        evidence = release.get("_release_evidence") or next((c for c in comments if c.get("id") in evidence_ids), None)
+        if evidence is None or evidence.get("id") not in evidence_ids:
+            continue
+        try:
+            validate_evidence(receipt, evidence, (release.get("user") or {}).get("login", ""))
+        except (KeyError, ValueError, TypeError):
+            continue
+        handoffs = {int(m.group(3)) for line in (evidence.get("body") or "").splitlines()
+                    if re.match(r"Handoff(?: context \([^)\n]*\))?: ", line)
+                    for m in COMMENT_URL.finditer(line)}
+        if note.get("id") not in handoffs:
+            continue
+        try:
+            if not max(stamp(source.get("updated_at") or source.get("created_at")), stamp(record["claimed_at"])) < stamp(
+                    note.get("created_at")) <= stamp(note.get("updated_at") or note.get("created_at")) < stamp(receipt["evidence_at"]):
+                continue
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not has_ownership_assertion(text[header.end():], own_claim=record):
+            return True
+    return False
+
+
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
     ended_claims: set[int] | None = None,
@@ -512,7 +566,7 @@ def discussion_evidence(
         prose = ownership_text(text, strip_quotes=False)
         legacy = re.match(r"Claimed by:?\s+(\S+)", prose, re.IGNORECASE)
         if legacy and not parsed and has_ownership_assertion(text):
-            if released_explanatory_note(text, index, comments):
+            if released_explanatory_note(text, index, comments) or attested_handoff_note(text, index, comments):
                 continue
             worker = legacy.group(1)
             if legacy_released.get((worker, author), -1) > index:
@@ -539,6 +593,8 @@ def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) 
     ids = {r["session"] for c in comments for r in records(c.get("body") or "")}
     released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
     proof_ids = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
+    # Ordinary unloaded end proofs exclude released claims. Their exact release
+    # is instead a prerequisite for the observer's leased idle-closure proof.
     peers, states, coverage = observe(ids, proof_ids)
     return {**inventory, "sessions": [*inventory["sessions"], *peers], "session_states": states,
             "session_coverage": {**inventory.get("session_coverage", {}), "codex_claims": {
@@ -548,7 +604,7 @@ def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) 
 
 def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -> list[dict[str, Any]]:
     """Ended ownership is evidence about an exact claim, never artifact disposal."""
-    from github_plan_release import effective_comments, stamp
+    from github_plan_release import effective_comments
     comments = effective_comments(comments)
     released = {comments[i]["id"]: comments[j]["id"] for i, _, j in exact_released_sources(comments)}
     ended = []
@@ -566,12 +622,6 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -
         ):
             continue
         proof = "authored_release" if source["id"] in released else None
-        if not proof and native.get("state") == "ended":
-            try:
-                if stamp(native["ended_at"]) > max(stamp(record["claimed_at"]), stamp(source.get("updated_at") or source.get("created_at"))):
-                    proof = "native_session_ended"
-            except (KeyError, TypeError, ValueError):
-                pass
         if proof:
             ended.append({"claim_id": source["id"], **record, "evidence": proof,
                           **({"release_id": released[source["id"]]} if source["id"] in released else {}),
@@ -666,13 +716,13 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
     comments = effective_comments(comments)
     original = next((c for c in comments if c.get("id") == comment_id), None)
     if original is None:
-        raise ValueError("Resume source claim comment is missing")
+        raise ClaimProofError("claim_resume_source_missing", "Resume source claim comment is missing")
     parsed = records(original.get("body") or "")
     if len(parsed) != 1:
-        raise ValueError("Resume source must contain one structured claim record")
+        raise ClaimProofError("claim_resume_source_invalid", "Resume source must contain one structured claim record")
     author = (original.get("user") or {}).get("login")
     if not author:
-        raise ValueError("Resume source author is unavailable")
+        raise ClaimProofError("claim_resume_author_missing", "Resume source author is unavailable")
     source_index = comments.index(original)
     for comment in comments[source_index + 1:]:
         if (comment.get("user") or {}).get("login") != author:
@@ -680,7 +730,7 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
         if (released_claim_id(comment.get("body") or "") == comment_id
                 or legacy_release_worker(comment.get("body") or "") == parsed[0]["worker"]):
             return parsed[0]["branch"]
-    raise ValueError("Resume source claim has not been released by its author")
+    raise ClaimProofError("claim_resume_source_unreleased", "Resume source claim has not been released by its author")
 
 
 def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[int]:
@@ -700,6 +750,7 @@ def retained_handoff(
     comments: list[dict[str, Any]], source_id: int, handoff_id: int,
     pulls: list[dict[str, Any]], target_number: int | None, *, issue_repo: str,
     issue_number: int, target_repo: str,
+    allow_resume_only: bool = False,
 ) -> set[str]:
     """Bind retained PR identities to the exact author-released handoff."""
     source_branch = retained_branch(comments, source_id)
@@ -707,7 +758,7 @@ def retained_handoff(
     author = source["user"]["login"]
     handoff = next((c for c in comments if c.get("id") == handoff_id), None)
     if handoff is None or (handoff.get("user") or {}).get("login") != author:
-        raise ValueError("Refresh handoff must be a comment by the source claim author")
+        raise ClaimProofError("claim_handoff_author_mismatch", "Refresh handoff must be a comment by the source claim author")
     source_index, handoff_index = comments.index(source), comments.index(handoff)
     if handoff_index <= source_index or not any(
         (c.get("user") or {}).get("login") == author
@@ -770,7 +821,18 @@ def retained_handoff(
     if target_number is not None and not target_found:
         raise ValueError("Refresh target must be an open same-repository PR linked to the issue and attested in the released handoff")
     if target_number is None and not attested:
-        raise ValueError("Retained handoff must attest a same-repository open or merged PR linked to the issue")
+        message = "Retained handoff must attest a same-repository open or merged PR linked to the issue"
+        retained_pr = any((pull.get("head") or {}).get("ref") == source_branch or pull["number"] in named
+                          for pull in pulls)
+        if allow_resume_only and not retained_pr:
+            options = shlex.join(["--resume-from", str(source_id), "--branch", source_branch])
+            raise ClaimProofError("claim_handoff_pr_required",
+                message + ". For WIP without a PR, verify the source session has finished, "
+                "the handoff retains no PR at all, and the preserved branch is pushed, "
+                f"then use the existing same-record resume-only options `{options}` "
+                "without --handoff-comment or --refresh-pr. Ownership, waits, blockers and other artifact checks still apply.",
+                payload={"successor_route": {"resume_from": source_id, "branch": source_branch}})
+        raise ValueError(message)
     return permitted
 
 
@@ -907,59 +969,19 @@ ADMISSIONS = ("live-breakage", "milestone", "repeat-stop", "spare-capacity")
 ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/([1-9]\d*)")
 
 
-def admission_track(
-    start: tuple[str, int], owner: str, *, read_issue: Any, read_parent: Any, read_blocking: Any,
-    max_nodes: int = 50, limitations: list[str] | None = None,
-) -> tuple[dict[str, Any] | None, bool]:
-    """The milestone Track this issue reaches through parents and the issues it blocks.
-
-    Returns the Track and whether the walk was complete. A Track is an issue
-    titled `Track:` with an open milestone in OWNER/direction, the graph the
-    weekly audit counts as milestone work. A closed milestone is history and
-    admits nothing; work selection owns the Director's listed priorities.
-    """
-    direction = f"{owner}/direction".casefold()
-    limits = limitations if limitations is not None else []
-    pending = [start]
-    seen: set[tuple[str, int]] = set()
-    while pending:
-        repo, number = pending.pop(0)
-        key = (repo.casefold(), number)
-        if key in seen:
-            continue
-        if len(seen) >= max_nodes:
-            limits.append("node_limit")
-            return None, False
-        seen.add(key)
-        issue = read_issue(repo, number)
-        milestone = (issue.get("milestone") or {}).get("title")
-        if (key[0] != direction and key[0].endswith("/direction")
-                and str(issue.get("title") or "").startswith("Track:") and milestone
-                and (issue.get("milestone") or {}).get("state", "open") == "open"):
-            # The claim knows the repository account, not its cross-owner Director.
-            # Do not certify a foreign Track or report its graph fully verified.
-            if "cross_owner_direction_account" not in limits:
-                limits.append("cross_owner_direction_account")
-        if (key[0] == direction and str(issue.get("title") or "").startswith("Track:") and milestone
-                and (issue.get("milestone") or {}).get("state", "open") == "open"):
-            return {"url": f"https://github.com/{repo}/issues/{number}", "title": issue.get("title"),
-                    "milestone": milestone}, True
-        for linked in [read_parent(repo, number), *read_blocking(repo, number)]:
-            match = ISSUE_URL.fullmatch(str((linked or {}).get("html_url") or ""))
-            if match:
-                pending.append((match[1], int(match[2])))
-    return None, not limits
+def admission_link_target(link: str) -> tuple[str, int, int | None] | None:
+    """The cited issue/PR and comment, keyed as GitHub resolves them, without broadening graph URLs."""
+    parent, separator, fragment = link.partition("#")
+    comment = re.fullmatch(r"issuecomment-([1-9]\d*)", fragment)
+    if separator and not comment:
+        return None
+    match = ISSUE_URL.fullmatch(parent)
+    return (match[1].casefold(), int(match[2]), int(comment[1]) if comment else None) if match else None
 
 
-def admission_text(kind: str, links: list[str], *, track: dict[str, Any] | None = None,
-                   unlinked: str | None = None, graph_complete: bool = True) -> str:
-    """The claim comment's admission line."""
-    detail = []
-    if track:
-        detail.append(f"reaches {track['url']} ({track['title']}, milestone `{track['milestone']}`)")
-    if unlinked and not track:
-        description = "no Track link found in the readable graph" if graph_complete else "Track link not verified"
-        detail.append(f"{description}: {unlinked}")
+def admission_text(kind: str, links: list[str], *, unlinked: str | None = None) -> str:
+    """Record the selected Order rule and its evidence; admission grants no authority."""
+    detail = [unlinked] if unlinked else []
     if links:
         detail.append(", ".join(links))
     return f"Admission: {kind}" + ("; " + "; ".join(detail) if detail else "")

@@ -28,7 +28,10 @@ PROVIDERS = ("openai", "anthropic", "google")
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
 GOOGLE_ACCOUNT_BINDING = "existing-agy-login"
 SNAPSHOT_TIMEOUT_SECONDS = 60
+RECORD_LAUNCH_TIMEOUT_SECONDS = 30
+LAUNCHER = "supervisor"
 OWN_RECEIPT = re.compile(r"^\d{8}T\d{6}Z-supervisor-[0-9a-f]{32}\.json$")
+APP_RECEIPT = re.compile(rf"^\d{{8}}T\d{{6}}Z-{LAUNCHER}-[0-9A-Za-z]+\.json$")
 
 
 def config_paths(env, home):
@@ -302,12 +305,28 @@ def storage_root(command):
     return home / "Library/Group Containers/MM5YXC7T6E.group.com.shinycomputers.contextpanel/Context Panel"
 
 
+def receipt_route(command):
+    """Where this launch's receipt goes, from the reader's snapshot command.
+
+    An explicit --storage-root is written directly; Context Panel's writer takes no root override.
+    The App Group default always goes through the reader's own --record-launch, because macOS refuses
+    that store to processes with no app behind them, such as launchd tmux workers (codex-skills#2069),
+    and the app reaches it from any process without a new grant.
+    """
+    root = storage_root(command)
+    if command and "--storage-root" in command:
+        return {"storage_root": root}
+    if not command:
+        raise ValueError("no snapshot_command configured; no launch receipt writer")
+    return {"storage_root": root, "receipt_app": str(Path(command[0]).expanduser())}
+
+
 def select_batch(provider, config_path=None, name=None, count=1):
     config = load_config(config_path)
     snapshot, problem = read_snapshot(config["snapshot_command"])
     choices = choose_batch(provider, config, snapshot, problem, count=count, name=name)
-    root = storage_root(config["snapshot_command"])
-    return [{**choice, "storage_root": root} for choice in choices]
+    route = receipt_route(config["snapshot_command"])
+    return [{**choice, **route} for choice in choices]
 
 
 def select(provider, config_path=None, name=None):
@@ -316,6 +335,13 @@ def select(provider, config_path=None, name=None):
 
 def prepare_launch(choice):
     """Detect storage failures before making tabs, without creating a receipt."""
+    app = choice.get("receipt_app")
+    if app is not None:
+        if not (Path(app).is_file() and os.access(app, os.X_OK)):
+            raise ValueError("cannot prepare launch receipts: the snapshot command's Context Panel executable is "
+                             "not installed, and launch receipts for its App Group store are written through its "
+                             "--record-launch mode (Context Panel 1.0.75 or later); install it before retrying")
+        return
     try:
         directory = Path(choice["storage_root"]) / "Launch Receipts"
         directory.mkdir(mode=0o700, exist_ok=True)
@@ -325,37 +351,79 @@ def prepare_launch(choice):
             os.fsync(probe.fileno())
     except OSError as error:
         if error.errno == errno.EPERM:
-            # EPERM is usually macOS app-data protection refusing a process with no
-            # app behind it (a launchd-started tmux worker), but a file flag such as
-            # uchg on the storage root returns it too, so name both.
-            raise ValueError("cannot prepare launch receipt storage (PermissionError: EPERM); macOS may refuse "
-                             "this process the reader's storage root. If so, launch from a process macOS allows, "
-                             "such as the Supervisor's terminal session (codex-skills#2069); otherwise check "
-                             "write access and file flags on the reader's storage root before retrying") from error
+            # Only an explicit --storage-root is written directly. EPERM there is macOS
+            # app-data protection or a file flag such as uchg, so name both.
+            raise ValueError("cannot prepare launch receipt storage (PermissionError: EPERM) at the snapshot "
+                             "command's --storage-root; macOS may refuse this process that directory, and "
+                             "Context Panel's --record-launch writes only its App Group store. Remove "
+                             "--storage-root to record through the app, or check write access and file flags "
+                             "on that directory before retrying") from error
         raise ValueError(f"cannot prepare launch receipt storage ({type(error).__name__}); "
                          "check write access to the reader's storage root before retrying") from error
 
 
-def record_launch(choice, now=None):
+def record_launch(choice, now=None, runner=None):
     """Write immediately before submitting a launch; retain on an uncertain submit."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     provider, account_id = choice["provider"], choice.get("account_id")
     if not isinstance(account_id, str) or not re.fullmatch(rf"{provider}-[0-9a-f]{{1,64}}", account_id):
         raise ValueError("launch receipt needs the snapshot's opaque account ID")
+    receipt = {"schemaVersion": 1, "provider": provider,
+               "accountID": account_id, "launchedAt": now.isoformat(timespec="seconds").replace("+00:00", "Z")}
     directory = Path(choice["storage_root"]) / "Launch Receipts"
+    if choice.get("receipt_app") is not None:
+        target = directory / record_through_app(choice["receipt_app"], receipt, runner)
+        if "gui" in choice:
+            write_gui_receipt(directory.parent, target.name, receipt, choice["gui"], now)
+        return target
     # A bad root must not create a replacement Context Panel store.
     directory.mkdir(mode=0o700, exist_ok=True)
     prune_receipts(directory, now)
-    receipt = {"schemaVersion": 1, "provider": provider,
-               "accountID": account_id, "launchedAt": now.isoformat(timespec="seconds").replace("+00:00", "Z")}
-    target = directory / f"{now:%Y%m%dT%H%M%SZ}-supervisor-{uuid.uuid4().hex}.json"
+    target = directory / f"{now:%Y%m%dT%H%M%SZ}-{LAUNCHER}-{uuid.uuid4().hex}.json"
     if "gui" in choice:
-        gui_directory = directory.parent / "Supervisor GUI Receipts"
-        gui_directory.mkdir(mode=0o700, exist_ok=True)
-        prune_receipts(gui_directory, now, max_bytes=16 * 1024)
-        write_launch_receipt(gui_directory / target.name, {**receipt, "gui": choice["gui"]})
+        write_gui_receipt(directory.parent, target.name, receipt, choice["gui"], now)
     write_launch_receipt(target, receipt)
     return target
+
+
+def write_gui_receipt(root, name, receipt, gui, now):
+    """The private GUI receipt is written directly; GUI launches run from the Supervisor's terminal."""
+    gui_directory = root / "Supervisor GUI Receipts"
+    gui_directory.mkdir(mode=0o700, exist_ok=True)
+    prune_receipts(gui_directory, now, max_bytes=16 * 1024)
+    write_launch_receipt(gui_directory / name, {**receipt, "gui": gui})
+
+
+def record_through_app(app, receipt, runner=None):
+    """Hand one receipt to Context Panel's --record-launch on stdin; return the file name it wrote."""
+    runner = runner or subprocess.run
+    try:
+        completed = runner([app, "--record-launch", "--launcher", LAUNCHER],
+                           input=json.dumps(receipt, separators=(",", ":")), capture_output=True, text=True,
+                           timeout=RECORD_LAUNCH_TIMEOUT_SECONDS, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f"Context Panel --record-launch did not finish within {RECORD_LAUNCH_TIMEOUT_SECONDS} "
+                         "seconds, so the receipt is unconfirmed and nothing was launched; Context Panel before "
+                         "1.0.75 has no --record-launch mode") from error
+    except OSError as error:
+        raise ValueError(f"Context Panel --record-launch could not run ({type(error).__name__}); "
+                         "no launch receipt was written and nothing was launched") from error
+    reason = (completed.stderr or "").strip().splitlines()
+    detail = f": {reason[0][:200]}" if reason else ""
+    if completed.returncode == 64:
+        raise ValueError(f"Context Panel refused the launch receipt as invalid (exit 64{detail}); "
+                         "nothing was launched")
+    if completed.returncode == 1:
+        raise ValueError(f"Context Panel could not store the launch receipt (exit 1{detail}); "
+                         "nothing was launched")
+    if completed.returncode != 0:
+        raise ValueError(f"Context Panel --record-launch exited {completed.returncode}{detail}; "
+                         "the receipt is unconfirmed and nothing was launched")
+    name = completed.stdout.strip()
+    if not APP_RECEIPT.fullmatch(name):
+        raise ValueError("Context Panel --record-launch did not name the receipt it wrote; "
+                         "the receipt is unconfirmed and nothing was launched")
+    return name
 
 
 def write_launch_receipt(target, receipt):
@@ -391,8 +459,15 @@ def prune_receipts(directory, now, *, max_bytes=1024):
 
 def public(choice):
     """Launch output contains environment names, never private paths."""
-    result = {**{k: v for k, v in choice.items() if k not in {"env", "storage_root", "gui"}},
+    result = {**{k: v for k, v in choice.items() if k not in {"env", "storage_root", "receipt_app", "gui", "tools", "require_browser", "tool_directory"}},
               "env_keys": sorted(choice["env"])}
+    if "tools" in choice:
+        tools = choice["tools"]
+        result["tools"] = {key: tools[key] for key in ("warnings", "browsers", "route") if key in tools}
+        result["tools"]["warnings"] = [
+            warning.replace(os.path.expanduser(choice["env"].get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")), "<account-home>")
+            .replace(os.path.expanduser(choice["env"].get("CODEX_HOME") or str(Path.home() / ".codex")), "<account-home>")
+            for warning in tools.get("warnings", [])]
     if "gui" in choice:
         gui = choice["gui"]
         result["gui"] = {key: gui[key] for key in ("app", "token", "phase", "screen")}

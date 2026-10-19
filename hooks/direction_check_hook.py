@@ -6,21 +6,25 @@
 """Session-start executing loop and overdue direction reminder.
 
 The `direction` skill records the end of every daily turn in a small local
-marker and in a shared turn record in OWNER/direction, and the audit script
-records each weekly audit in the marker per repository, including an audit
-that ran but held its window open, which is reported as held, not overdue. When this machine's
-own turn is older than a day, the hook reads the shared record, so a turn
-taken on another machine counts; when that read fails it says so instead of
-calling the turn overdue.
+marker and in a shared turn record in OWNER/direction. `direction_audit.py
+--weekly` records a weekly audit that read every adopted repository in the
+same marker and in a separate shared weekly-audit record there. Both are
+account-wide: the account is the owner of the direction repository named by
+the marker's newest turn or weekly audit. Only when the marker records no
+account does the hook fall back to the folder's origin owner, and only when
+that owner has an OWNER/direction set up on this machine. When
+this machine's own turn is older than a day, or its own weekly audit older
+than a week, the hook reads the shared records once and takes the newer
+stamps, so a turn or audit taken on another machine counts; when that read
+fails it says so instead of calling either overdue.
 With --turn, run for each Claude Code prompt, it prints a one-line skills reminder.
 At session start this hook prints the skills protocol on Claude Code and the executing loop's command block and reference for repositories with a
 root DIRECTION.md. In a repository without one, whose origin owner keeps an overall direction in OWNER/direction
 that has been audited on this machine or is checked out beside it, it prints that file's stop boundaries, where the file lives, and the loop.
-It reads the marker and prints one line when the last
-turn is older than a day, or when the repository the session opened in has a
-`DIRECTION.md` and its last audit is older than a week. Outside a direction
-repository it prints nothing when checks are current. It never reads stdin,
-never blocks, and exits 0 whatever
+It prints at most two reminder lines, whatever folder the session opened in:
+one when the daily turn is overdue or unconfirmed, and one when the weekly
+audit is, for an account with direction set up. It prints nothing when checks
+are current. It never reads stdin, never blocks, and exits 0 whatever
 it finds, so the same script serves Claude Code's SessionStart hook and a
 Codex session-start hook.
 """
@@ -54,11 +58,41 @@ OVERALL_READ_TIMEOUT = 6
 RUNTIME_CATCHUP_TIMEOUT = 5
 # Test seam: fixtures under a loaded parallel gate need more than the session budget.
 RUNTIME_CATCHUP_TIMEOUT_ENV = "DIRECTION_RUNTIME_CATCHUP_TIMEOUT"
-# The shared turn record: one issue in OWNER/direction that direction_mark.py keeps current.
+# The shared records: issues in OWNER/direction that direction_mark.py keeps current.
 TURN_RECORD_TAG = "<!-- direction-turn-record -->"
 TURN_RECORD_LINE = re.compile(r"^Last daily turn: (\S+) covering (\S+)$", re.MULTILINE)
+WEEKLY_RECORD_TAG = "<!-- direction-weekly-audit-record -->"
+WEEKLY_RECORD_LINE = re.compile(r"^Last weekly audit: (\S+)$", re.MULTILINE)
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+# Pages of open issues read to find the records; more than that leaves them unconfirmed.
+RECORD_PAGES = 10
+# The first words of each reminder line, by check and state. Tests match these, not the wording.
+REMINDER_LINES = {
+    ("turn", "due"): "Direction turn overdue",
+    ("turn", "unconfirmed"): "Direction turn unconfirmed",
+    ("audit", "due"): "Weekly direction audit overdue",
+    ("audit", "unconfirmed"): "Weekly direction audit unconfirmed",
+}
 RUNTIME_HELPER = Path("skills/github/scripts/reconcile-runtime-checkout.py")
+
+
+def agent_tools_warning(catalog: Path, directory: Path, env: Mapping[str, str]) -> str:
+    """Static session-start check only: never connect a browser or change settings."""
+    if not (catalog / ".local/chrome.toml").is_file():
+        return ""
+    helpers = Path(__file__).resolve().parents[1] / "skills/supervisor/scripts/agent_tools.py"
+    try:
+        checker = runpy.run_path(str(helpers))
+        if env.get("CLAUDECODE") == "1":
+            home = Path(env["CLAUDE_CONFIG_DIR"]).expanduser() if env.get("CLAUDE_CONFIG_DIR") else None
+            problems = checker["claude_problems"](home, directory, env, check_computer_use=False)
+        elif env.get("CODEX_HOME") and env.get(checker["CODEX_SOURCE_ENV"]):
+            problems = checker["codex_problems"](Path(env["CODEX_HOME"]).expanduser(), env)
+        else:
+            return ""
+        return "Agent tools setup: " + "; ".join(" ".join(p.split()) for p in problems) if problems else ""
+    except Exception:
+        return "Agent tools check unavailable; verify catalog-chrome and Computer Use through /mcp."
 
 
 def runtime_catchup_budget() -> float:
@@ -205,6 +239,11 @@ def read_marker(path: Path) -> dict[str, object]:
     result: dict[str, object] = {"turn": parse_stamp(raw.get("turn")), "audits": audits, "audit_runs": runs}
     if isinstance(raw.get("turn_repo"), str):
         result["turn_repo"] = raw["turn_repo"]
+    weekly = raw.get("weekly_audit")
+    if isinstance(weekly, dict):
+        ran, record = parse_stamp(weekly.get("ran")), weekly.get("record")
+        if ran and isinstance(record, str) and "/" in record:
+            result["weekly"], result["weekly_record"] = ran, record
     return result
 
 
@@ -262,7 +301,7 @@ def loop_summary(text: str) -> str:
     return f"{block.group()}\n\n{link}" if block else link
 
 
-def run_reader(*args: str) -> subprocess.CompletedProcess[str]:
+def run_reader(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     """The GitHub reader, bounded across its whole process tree.
 
     The reader is a shell wrapper that starts credential helpers. A plain timeout
@@ -273,7 +312,7 @@ def run_reader(*args: str) -> subprocess.CompletedProcess[str]:
         stdin=subprocess.DEVNULL, start_new_session=True,
     )
     try:
-        stdout, stderr = process.communicate(timeout=OVERALL_READ_TIMEOUT)
+        stdout, stderr = process.communicate(timeout=OVERALL_READ_TIMEOUT if timeout is None else timeout)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -322,6 +361,18 @@ def read_local_overall(local: Path | None) -> tuple[str | None, str]:
     return result.stdout, f"the default branch last fetched into {local}, which may be behind GitHub"
 
 
+def direction_set_up(owner: str, root: Path, marker: dict[str, object]) -> tuple[bool, Path | None]:
+    """Whether OWNER/direction is set up on this machine, and its sibling checkout if there is one.
+
+    It counts when it has been audited here or is checked out beside this repository, so an
+    owner who never set one up pays for no network read.
+    """
+    audits = marker.get("audits")
+    audited = isinstance(audits, dict) and any(str(key).lower() == f"{owner}/{OVERALL_REPO}".lower() for key in audits)
+    local = local_overall_checkout(owner, root)
+    return audited or local is not None, local
+
+
 def overall_direction(repo: str | None, root: Path | None, marker: dict[str, object], loop: str) -> str:
     """Overall direction for a checkout without its own DIRECTION.md, empty when its owner keeps none here.
 
@@ -333,10 +384,8 @@ def overall_direction(repo: str | None, root: Path | None, marker: dict[str, obj
     if not repo or root is None:
         return ""
     owner = repo.split("/", 1)[0]
-    audits = marker.get("audits")
-    audited = isinstance(audits, dict) and any(str(key).lower() == f"{owner}/{OVERALL_REPO}".lower() for key in audits)
-    local = local_overall_checkout(owner, root)
-    if not audited and local is None:
+    set_up, local = direction_set_up(owner, root, marker)
+    if not set_up:
         return ""
     url = f"https://github.com/{owner}/{OVERALL_REPO}/blob/HEAD/DIRECTION.md"
     where = url
@@ -367,143 +416,213 @@ def parse_turn_record(body: object) -> tuple[dt.datetime, str] | None:
     return (stamp, match.group(2)) if match and stamp else None
 
 
-def read_shared_turn(owner: str) -> tuple[tuple[dt.datetime, str] | None, str | None]:
-    """The newest turn in OWNER/direction's shared record, and why it could not be read.
+def parse_weekly_record(body: object) -> dt.datetime | None:
+    """The weekly-audit time from a shared weekly-audit record body, if it is one."""
+    if not isinstance(body, str) or WEEKLY_RECORD_TAG not in body:
+        return None
+    match = WEEKLY_RECORD_LINE.search(body)
+    return parse_stamp(match.group(1)) if match else None
 
-    No record yet is (None, None): nobody has taken a turn that wrote one.
+
+def read_open_issues(owner: str) -> tuple[list[object], str | None]:
+    """Every open issue in OWNER/direction, oldest first, within one read budget, or why not."""
+    deadline = time.monotonic() + OVERALL_READ_TIMEOUT
+    issues: list[object] = []
+    for page in range(1, RECORD_PAGES + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return [], "GitHub did not answer in time"
+        try:
+            result = run_reader("api", f"repos/{owner}/{OVERALL_REPO}/issues?state=open&sort=created&direction=asc&per_page=100&page={page}",
+                                "--method", "GET", timeout=remaining)
+        except subprocess.TimeoutExpired:
+            return [], "GitHub did not answer in time"
+        except OSError as exc:
+            return [], f"the GitHub reader could not run ({exc.strerror or exc})"
+        if result.returncode != 0:
+            detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}").splitlines()[-1]
+            return [], f"GitHub read failed: {detail[:160]}"
+        try:
+            listed = json.loads(result.stdout)
+        except ValueError:
+            listed = None
+        if not isinstance(listed, list):
+            return [], "GitHub returned something other than an issue list"
+        issues.extend(listed)
+        if len(listed) < 100:
+            return issues, None
+    return [], f"more than {RECORD_PAGES * 100} open issues, so not every record could be read"
+
+
+def read_shared_records(owner: str) -> tuple[dict[str, object], str | None]:
+    """The newest turn and weekly audit across OWNER/direction's shared records, and why they could not be read.
+
+    One listing of every open issue serves both records. No record yet is a missing key, not an error.
     """
-    try:
-        # Oldest first: the record is created at the first shared turn, so it stays on this page.
-        result = run_reader("api", f"repos/{owner}/{OVERALL_REPO}/issues?state=open&sort=created&direction=asc&per_page=100", "--method", "GET")
-    except subprocess.TimeoutExpired:
-        return None, "GitHub did not answer in time"
-    except OSError as exc:
-        return None, f"the GitHub reader could not run ({exc.strerror or exc})"
-    if result.returncode != 0:
-        detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}").splitlines()[-1]
-        return None, f"GitHub read failed: {detail[:160]}"
-    try:
-        issues = json.loads(result.stdout)
-    except ValueError:
-        return None, "GitHub returned something other than an issue list"
-    if not isinstance(issues, list):
-        return None, "GitHub returned something other than an issue list"
-    turns = []
+    issues, error = read_open_issues(owner)
+    if error:
+        return {}, error
+    turns, weeklies = [], []
     for issue in issues:
         if not isinstance(issue, dict) or "pull_request" in issue:
             continue
         user = issue.get("user")
-        # Only the automation identity or a repository member writes the record.
+        # Only the automation identity or a repository member writes the records.
         if issue.get("author_association") not in TRUSTED_ASSOCIATIONS and not (isinstance(user, dict) and user.get("type") == "Bot"):
             continue
-        turn = parse_turn_record(issue.get("body"))
-        if turn:
-            turns.append(turn)
-    return (max(turns, key=lambda turn: turn[0]) if turns else None), None
+        turn_record = parse_turn_record(issue.get("body"))
+        if turn_record:
+            turns.append(turn_record)
+        weekly = parse_weekly_record(issue.get("body"))
+        if weekly:
+            weeklies.append(weekly)
+    found: dict[str, object] = {}
+    if turns:
+        # Two machines may each have created a record; the newest stamp wins.
+        found["turn"] = max(turns, key=lambda record: record[0])
+    if weeklies:
+        found["weekly"] = max(weeklies)
+    return found, None
 
 
-def with_shared_turn(marker: dict[str, object], now: dt.datetime, repo: str | None) -> dict[str, object]:
-    """The marker with a newer turn from the shared record, read only when this machine's turn is stale.
+def marker_account(marker: dict[str, object]) -> str | None:
+    """The owner of the direction repository named by this machine's newest recorded turn or weekly audit."""
+    recorded = []
+    for stamp_key, repo_key in (("turn", "turn_repo"), ("weekly", "weekly_record")):
+        stamp, value = marker.get(stamp_key), marker.get(repo_key)
+        if isinstance(value, str) and re.fullmatch(r"[\w.-]+/[\w.-]+", value):
+            moment = stamp if isinstance(stamp, dt.datetime) else dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+            recorded.append((moment, value.split("/", 1)[0]))
+    return max(recorded, key=lambda item: item[0])[1] if recorded else None
 
-    The record lives in the overall direction repository of the owner whose turn this
-    machine last recorded, or, on a machine that never recorded one, of the repository
-    the session opened in.
+
+def resolve_account(marker: dict[str, object], checkout: Path | None) -> str | None:
+    """The Director's account, from the marker; the folder counts only when the marker records no account.
+
+    The folder's origin owner counts only when that owner has OWNER/direction set up on this
+    machine, so a fork or another person's repository never picks the account.
     """
-    turn = marker.get("turn")
-    if isinstance(turn, dt.datetime) and now - turn <= TURN_STALE:
+    owner = marker_account(marker)
+    if owner or checkout is None:
+        return owner
+    repo = origin_repo(checkout)
+    if not repo:
+        return None
+    owner = repo.split("/", 1)[0]
+    if repo.split("/", 1)[1].lower() == OVERALL_REPO:
+        return owner
+    return owner if direction_set_up(owner, checkout, marker)[0] else None
+
+
+def local_weekly(marker: dict[str, object], owner: str | None) -> dt.datetime | None:
+    """This machine's last complete weekly audit, when it was of the same account."""
+    weekly, record = marker.get("weekly"), marker.get("weekly_record")
+    if not owner or not isinstance(weekly, dt.datetime) or not isinstance(record, str):
+        return None
+    return weekly if record.split("/", 1)[0].casefold() == owner.casefold() else None
+
+
+def local_turn(marker: dict[str, object], owner: str | None) -> dt.datetime | None:
+    """This machine's last daily turn, when it was of the same account.
+
+    With no account selected, the turn counts as recorded. Otherwise a turn that
+    names another account's direction repository, or names none, does not count.
+    """
+    turn, repo = marker.get("turn"), marker.get("turn_repo")
+    if not isinstance(turn, dt.datetime):
+        return None
+    if not owner:
+        return turn
+    return turn if isinstance(repo, str) and repo.split("/", 1)[0].casefold() == owner.casefold() else None
+
+
+def with_shared_records(marker: dict[str, object], now: dt.datetime, owner: str | None) -> dict[str, object]:
+    """The marker with newer stamps from the shared records, read only when a local stamp is stale."""
+    if not owner:
         return marker
-    coverage = marker.get("turn_repo")
-    source = coverage if isinstance(coverage, str) and "/" in coverage else repo
-    if not source:
+    turn, weekly = local_turn(marker, owner), local_weekly(marker, owner)
+    turn_stale = turn is None or now - turn > TURN_STALE
+    weekly_stale = weekly is None or now - weekly > AUDIT_STALE
+    if not turn_stale and not weekly_stale:
         return marker
-    owner = source.split("/", 1)[0]
-    shared, error = read_shared_turn(owner)
+    shared, error = read_shared_records(owner)
     result = dict(marker)
     result["shared_record"] = f"{owner}/{OVERALL_REPO}"
     if error:
         result["shared_error"] = error
-    elif shared and (not isinstance(turn, dt.datetime) or shared[0] > turn):
-        result["turn"], result["turn_repo"] = shared
+        return result
+    shared_turn = shared.get("turn")
+    if isinstance(shared_turn, tuple) and (turn is None or shared_turn[0] > turn):
+        result["turn"], result["turn_repo"] = shared_turn
+    shared_weekly = shared.get("weekly")
+    if isinstance(shared_weekly, dt.datetime) and (weekly is None or shared_weekly > weekly):
+        result["weekly"], result["weekly_record"] = shared_weekly, f"{owner}/{OVERALL_REPO}"
     return result
 
 
-def last_audit(marker: dict[str, object], repo: str) -> dt.datetime | None:
-    """When an audit of the repository last ran, whether or not its window settled."""
-    audits, runs = marker.get("audits"), marker.get("audit_runs")
-    stamps = [audits.get(repo) if isinstance(audits, dict) else None,
-              (runs.get(repo) or (None,))[0] if isinstance(runs, dict) else None]
-    return max((stamp for stamp in stamps if isinstance(stamp, dt.datetime)), default=None)
+def reminder_states(marker: dict[str, object], now: dt.datetime, owner: str | None) -> dict[str, str | None]:
+    """Each check as current, due or unconfirmed; the audit is None for an account without direction."""
+    unreadable = isinstance(marker.get("shared_error"), str)
+    turn = local_turn(marker, owner)
+    turn_state = ("current" if turn is not None and now - turn <= TURN_STALE
+                  else "unconfirmed" if unreadable else "due")
+    audit_state = None
+    if owner:
+        weekly = local_weekly(marker, owner)
+        audit_state = ("current" if weekly is not None and now - weekly <= AUDIT_STALE
+                       else "unconfirmed" if unreadable else "due")
+    return {"turn": turn_state, "audit": audit_state}
 
 
-def weekly_audit_repo(marker: dict[str, object], now: dt.datetime, repo: str | None) -> str | None:
-    """Suppress a due weekly reminder only for a confirmed archived repository."""
-    if not repo:
-        return None
-    stamp = last_audit(marker, repo)
-    if isinstance(stamp, dt.datetime) and now - stamp <= AUDIT_STALE:
-        return repo
-    try:
-        result = run_reader("api", f"repos/{repo}", "--method", "GET")
-        metadata = json.loads(result.stdout) if result.returncode == 0 else None
-        if (isinstance(metadata, dict) and metadata.get("archived") is True
-                and str(metadata.get("full_name", "")).casefold() == repo.casefold()):
-            return None
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        pass
-    return repo
-
-
-def reminder(marker: dict[str, object], now: dt.datetime, repo: str | None, path: Path) -> str:
-    """One line when something is overdue, empty when the checks are current."""
-    overdue: list[str] = []
-    turn = marker.get("turn")
-    audits = marker.get("audits")
-    audits = audits if isinstance(audits, dict) else {}
-    unconfirmed = ""
-    shared_error = marker.get("shared_error")
-    turn_stale = not isinstance(turn, dt.datetime) or now - turn > TURN_STALE
-    if turn_stale and isinstance(shared_error, str):
-        local = ("has recorded no direction turn" if not isinstance(turn, dt.datetime)
-                 else f"last recorded a direction turn {(now - turn).days} days ago")
-        unconfirmed = (
-            f"Direction turn unconfirmed: this machine {local}, and the shared turn record in "
-            f"{marker.get('shared_record')} could not be read ({shared_error}), so a turn taken on another machine "
-            "would not show here. Tell the owner once at the start of the session that the shared record could not be "
-            "read, and to run the `direction` skill only if no machine has taken today's turn. "
+def reminder(marker: dict[str, object], now: dt.datetime, path: Path, owner: str | None = None) -> str:
+    """At most two lines, one for the daily turn and one for the weekly audit; empty when both are current."""
+    states = reminder_states(marker, now, owner)
+    lines: list[str] = []
+    shared_record, shared_error = marker.get("shared_record"), marker.get("shared_error")
+    record = shared_record if isinstance(shared_record, str) else f"{owner}/{OVERALL_REPO}"
+    error = shared_error if isinstance(shared_error, str) else "no reason given"
+    after = f"Do not run the marking helpers yourself; the marker is {path}."
+    turn = local_turn(marker, owner)
+    turn_local = ("has recorded no direction turn" if turn is None
+                  else f"last recorded a direction turn {(now - turn).days} days ago")
+    if states["turn"] == "unconfirmed":
+        lines.append(
+            f"{REMINDER_LINES['turn', 'unconfirmed']}: this machine {turn_local}, and the shared turn record in {record} could not "
+            f"be read ({error}), so a turn taken on another machine would not show here. Tell the owner once at the "
+            "start of the session that the shared record could not be read, and to run the `direction` skill only if "
+            f"no machine has taken today's turn. {after}"
         )
-    elif not isinstance(turn, dt.datetime):
-        overdue.append("no direction turn has been recorded on this machine")
-    elif turn_stale:
-        overdue.append(f"the last direction turn was {(now - turn).days} days ago")
-    held_note = ""
-    if repo:
-        audit = last_audit(marker, repo)
-        runs = marker.get("audit_runs")
-        run = runs.get(repo) if isinstance(runs, dict) else None
-        if not isinstance(audit, dt.datetime):
-            overdue.append(f"{repo} has a DIRECTION.md but no recorded weekly audit")
-        elif now - audit > AUDIT_STALE:
-            overdue.append(f"the last weekly audit of {repo} was {(now - audit).days} days ago")
-        elif run and run[1] and run[0] == audit:
-            # The audit ran; only its window is still open, so this is not a missed audit.
-            held_note = (
-                f"The weekly audit of {repo} ran {(now - audit).days} days ago and held its window open ({run[1]}); "
-                "the next audit rereads that window. Do not call this audit overdue. "
-            )
-    if not overdue and not unconfirmed and not held_note:
-        return ""
-    if not overdue:
-        return unconfirmed + held_note + f"Do not run the marking helpers yourself; the marker is {path}."
-    coverage_note = ""
-    coverage = marker.get("turn_repo")
-    if isinstance(turn, dt.datetime) and isinstance(coverage, str) and coverage:
-        coverage_note = f" The last daily turn covered {coverage}."
-    return unconfirmed + held_note + (
-        "Direction check overdue: " + "; ".join(overdue) + "." + coverage_note + " "
-        "Tell the owner once at the start of the session to open Claude Code and run the `direction` skill "
-        "(a daily turn, or the weekly audit of this repository when that is what is overdue), then continue with the task. "
-        f"Do not run the marking helpers yourself; the marker is {path}."
-    )
+    elif states["turn"] == "due":
+        detail = ("no direction turn has been recorded" if turn is None
+                  else f"the last direction turn was {(now - turn).days} days ago")
+        lines.append(
+            f"{REMINDER_LINES['turn', 'due']}: {detail}. Tell the owner once at the start of the session to open Claude Code "
+            f"and run the `direction` skill for the daily turn, then continue with the task. {after}"
+        )
+    weekly = local_weekly(marker, owner)
+    if states["audit"] == "unconfirmed":
+        local = ("has recorded no full weekly audit" if weekly is None
+                 else f"last recorded a full weekly audit {(now - weekly).days} days ago")
+        lines.append(
+            f"{REMINDER_LINES['audit', 'unconfirmed']}: this machine {local}, and the shared weekly-audit record in {record} "
+            f"could not be read ({error}), so an audit run on another machine would not show here. Tell the owner once "
+            "at the start of the session, and to run the weekly audit only if no machine has run it this week. "
+            f"{after}"
+        )
+    elif states["audit"] == "due":
+        detail = ("no full weekly audit has been recorded" if weekly is None
+                  else f"the last full weekly audit was {(now - weekly).days} days ago")
+        lines.append(
+            f"{REMINDER_LINES['audit', 'due']}: {detail}. Tell the owner once at the start of the session to run the "
+            f"`direction` skill's weekly audit for {owner}, then continue with the task. {after}"
+        )
+    return "\n".join(lines)
+
+
+def session_reminder(marker: dict[str, object], now: dt.datetime, checkout: Path | None, path: Path) -> str:
+    """The reminder for this session; the folder matters only when the marker records no account."""
+    owner = resolve_account(marker, checkout)
+    return reminder(with_shared_records(marker, now, owner), now, path, owner)
 
 
 def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime_catchup: bool = False,
@@ -523,6 +642,9 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             return 0
         # Resolve the runtime catalog from this registered hook, never the task cwd.
         catalog = catalog_root or Path(__file__).resolve().parents[1]
+        tools_line = agent_tools_warning(catalog, Path.cwd(), os.environ)
+        if tools_line:
+            print(tools_line, flush=True)
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         try:
             from scripts.catalog_runtime import status_line
@@ -553,8 +675,7 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             memory_text = ""
         if memory_text:
             print(memory_text, flush=True)
-        marker = with_shared_turn(marker, now, origin_repo(root or checkout_root(Path.cwd())))
-        reminder_text = reminder(marker, now, weekly_audit_repo(marker, now, origin_repo(root)), path)
+        reminder_text = session_reminder(marker, now, checkout_root(Path.cwd()), path)
         if reminder_text:
             print(reminder_text, flush=True)
         if runtime_catchup:

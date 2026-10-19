@@ -406,8 +406,9 @@ Codex 0.157.0 supports a blocking `PreToolUse` hook, exposes shell calls as
 It also accepts the JSON deny decision used by the registered launcher. Hooks
 are enabled by default in that version; if the host explicitly disabled them,
 restore its `features.hooks` setting before expecting enforcement.
-`--codex-hook` maintains the catalog's `PreToolUse`, `SessionStart`, `Stop`, and `Interrupt` hooks in
-`~/.codex/hooks.json`, retaining other hooks. It also moves existing inline
+`--codex-hook` maintains the catalog's `PreToolUse` and `SessionStart` hooks in
+`~/.codex/hooks.json`, retaining other hooks and retiring the obsolete catalog
+Stop/Interrupt alert registrations. It also moves existing inline
 event declarations from `config.toml` into JSON, preserving their commands,
 matchers, timeouts, unrelated settings, and Codex-managed `[hooks.state]`.
 An existing catalog direction hook is retained rather than registered twice.
@@ -654,16 +655,20 @@ file's link and the executing loop. When neither can be read
 it says so in one line. Repositories under other repository owners print
 nothing extra.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
-turn and that the audit script writes per repository when an audit completes,
-and it also prints a reminder line while the turn is more than a
-day old or the current repository's audit more than a week old. An audit that
-ran but held its window open counts as run; the hook names the held reason
-instead of calling it overdue. While this
-machine's own turn is stale it reads the shared turn record in `OWNER/direction`
-(see the `direction` skill), so a turn taken on another machine counts. When a
-weekly reminder is due, it makes a bounded repository-metadata read and omits
-that reminder for a confirmed archived repository; unknown reads retain it.
-The daily-turn reminder still applies. It never
+turn and that `direction_audit.py --weekly` writes after a weekly audit that
+read every adopted repository. It prints at most two reminder lines, the same
+in every folder: one while the daily turn is more than a day old, and one while
+the weekly audit is more than a week old for an account with direction set up.
+Audits of single repositories never clear the weekly line. The account is the
+one whose direction repository the marker's newest turn or weekly audit names.
+Only when the marker records no account does it fall back to the account of
+the folder's origin, and only when that account has `OWNER/direction` set up
+as above. A local turn or weekly audit counts only when it names that
+account. While either local stamp is stale it reads
+the shared turn and weekly-audit records in `OWNER/direction` once (see the
+`direction` skill), so a turn or audit on another machine counts. When it
+cannot read every open issue there, the line says unconfirmed instead of
+overdue. It never
 reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
 (not after a compaction), and uses the registered hook timeout with Python downloads
 disabled. The marker is `~/.code/direction-last-check.json` on every host
@@ -680,65 +685,43 @@ on both harnesses load the owning skill.
 
 ### Session alerts
 
-For count-only run lifecycle events in Context Panel's App Group, see the
-[agent activity producer](docs/agent-activity.md). It shares this hook but keeps
+For count-only run lifecycle events written to a private inbox for Context
+Panel, see the [agent activity producer](docs/agent-activity.md). It shares this hook but keeps
 its activity contract separate from the advisory alerts below.
 
-Inline dotfiles hook configurations can preview `--refresh-instructions --show-diff` and replace managed alert entries in place with the generated `catalog_alert_toml` in their authoritative `config.toml` source. Remove obsolete duplicate alert groups while retaining unrelated hooks, group positions, and native trust. Refresh recognizes current inline alerts without writing that source. Regular configurations can use the hook-only migration described above.
+Claude's plugin retains the advisory Stop hook and the other lifecycle events
+used by the activity producer. Codex run outcomes come from the daemon, and
+Supervisor stop notification uses `codex_idle_watch.py`; Codex no longer installs
+advisory Stop/Interrupt hooks. Those obsolete hooks could interrupt every launch
+with a native trust prompt after a catalog update (Q422, #2018).
 
-The same catalog hook source registers advisory `Stop` alerts on both harnesses
-and `Interrupt` alerts on Codex (verified against 0.159.2). Claude Code has no native Interrupt event, and
-its Stop event does not run for user interruptions or API errors. These notices
-are prompts for a supervisor to check session state, not completion records:
-a Stop hook can run again when another hook continues the turn. The hook never
-returns a continuation, approval, or blocking decision.
+Claude advisory Stop notices prompt a supervisor to check session state. A Stop
+can recur when another hook continues a turn, and never proves final completion.
+The hook appends local metadata to `$CODE_HOME/session-events.jsonl` (default
+`~/.code/session-events.jsonl`), including harness, session/turn identity, UTC
+time, event, `advisory: true` and `clean: null`. It never copies messages,
+transcripts, credentials or working directories. Storage errors leave the
+session running. Set `SESSION_ALERTS_DISABLED=1` in Claude's environment to
+suppress advisory output; the independent lifecycle call remains available.
 
-Each advisory Stop/Interrupt invocation appends one JSON line to `$CODE_HOME/session-events.jsonl`,
-falling back to `~/.code/session-events.jsonl` on either harness. Set `CODE_HOME`
-to the same shared directory for both harnesses when using an override.
-Records contain `schema_version`, `harness`, `session_id`, optional `turn_id`
-(null on Claude), UTC `time`, `event`, `advisory: true`, `clean: null`, and
-`stop_hook_active` (null unless a boolean is supplied for Stop). Neither event proves clean final
-completion; the supervisor must verify current session state. Messages,
-transcripts, credentials and working directories are not copied. Concurrent
-local writes append whole lines; storage errors leave the session running and
-emit a short diagnostic. Delivery is best effort, without exactly-once or
-all-outcomes coverage.
+Instruction refresh removes obsolete catalog alert handlers from regular Codex
+`hooks.json` files, preserving unrelated handlers and policy/startup commands.
+It never adds alerts. Preview `scripts/install-catalog.py --refresh-instructions
+--show-diff` before applying. Concurrent edits and unsafe destinations are kept
+and reported as skipped while instruction updates continue.
 
-The installer renders Codex alerts into its existing `hooks.json` path, leaving
-trust bookkeeping unchanged. The catalog updater refreshes only alert entries
-for installations that still have catalog-owned hook bindings. Claude's plugin
-loads Stop from the catalog hook source. Existing installations can preview
-`scripts/install-catalog.py` and rerun it with `--write`. Codex may skip changed
-or new definitions until reviewed through its supported `/hooks` flow; no trust
-is granted or copied by the installer. To suppress Codex alerts independently,
-disable their reviewed definitions with the `/hooks` toggle while retaining
-other enabled hooks. Leaving entries untrusted can prompt for review again
-on later launches.
-On either harness, set `SESSION_ALERTS_DISABLED=1` in the hook environment to
-suppress alerts independently without changing other hooks. For example, launch
-Claude Code with `SESSION_ALERTS_DISABLED=1 claude` or Codex with
-`SESSION_ALERTS_DISABLED=1 codex`. Removing the variable resumes alerts.
-If an instruction refresh cannot safely update a hook destination, it leaves
-that destination untouched, reports the skipped alert refresh in its output
-and updater receipt, and still refreshes instructions. Concurrent edits observed
-since the hook preview are preserved and reported as skipped. The next session-start
-status line names the skipped alert refresh and its recovery command. Hook writes
-require a regular hooks.json file. A readable symlink with no catalog labels
-is recognized as unbound and left alone. A bound symlink whose alert entries already match the catalog is current and
-needs no write. A stale bound symlink or malformed destination remains unverified
-and produces a notice, while checkout/instruction updates continue. Catalog
-staleness and instruction drift take priority over this advisory notice. Reconcile that destination
-through the documented installer preview. For a stale dotfiles symlink, use
-`scripts/install-catalog.py --refresh-instructions --show-diff`: its skipped
-entry includes `catalog_alert_entries` with the generated Stop/Interrupt groups
-for your dotfiles source; apply those groups there, preserving their positions
-and unrelated hooks. Then run `scripts/catalog_runtime.py --update` to clear
-the old skipped-refresh receipt. This preview contains no trust state. Dotfiles
-shared across hosts with different catalog paths need per-host rendered entries.
-Supervisors own local retention of the events file; truncating it discards old
-notices and subsequent invocations append new ones. Readers should skip malformed
-lines, which can result from interrupted or partial storage writes.
+Symlinked JSON and inline TOML remain read-only during background refresh. The
+preview provides `catalog_retired_events` for JSON or `catalog_retired_toml` for
+inline TOML: replace the Stop/Interrupt event arrays in the authoritative
+source with these remaining groups, retaining other events and native state.
+Regular files can instead use `scripts/sync-global-instructions.py --codex-hook
+--hooks-only` to preview migration, then add `--write`. Run
+`scripts/catalog_runtime.py --update` afterward to clear the skipped receipt.
+Removing a group or handler can shift a remaining Stop/Interrupt hook's native
+positional trust key, on every account path sharing the global file. Review
+remaining hooks through Codex `/hooks`; neither helper grants or copies trust.
+Policy and SessionStart event positions are unaffected by alert retirement.
+Supervisors own local event-file retention; readers skip malformed lines.
 The stream appears on the first alert;
 once it exists a local supervisor can use:
 
@@ -1130,6 +1113,51 @@ uv run skills/github/scripts/gh-rulesets.py apply \
   --confirm-owner-admin-write
 ```
 
+For additive required status checks, use the same verified repository owner writer's
+`checks-plan`, `checks-apply` and `checks-readback` route. It handles one
+repository's default branch at a time. The checks file is a JSON list such as
+`[{"context":"validation","app_id":123}]`; use `null` explicitly for any App.
+Choose `--target classic` for existing classic required-check protection, an
+existing ruleset ID for an active ruleset covering exactly the default branch,
+or `--target new` to create a separate required-check ruleset without bypasses.
+The new ruleset leaves other protection in place and uses non-strict checks;
+an existing target retains its strictness, App bindings, rules and bypass actors.
+Conflicting App bindings for the same context refuse instead of guessing.
+Standard, legacy-alias and client-lock rulesets cannot be check targets because
+standard apply replaces their payloads. Use `--target new` to keep the checks
+in a separate ruleset that standard apply leaves in place.
+
+```sh
+uv run skills/github/scripts/gh-rulesets.py checks-plan \
+  --repo OWNER/REPO --target classic --checks-file checks.json --out plan.json
+```
+
+Review the saved plan's full `before`, `after`, `payload` and exact `added`
+list. Keep the printed `plan_digest` with the approval; the file alone is not
+approval. After any task-specific fresh preflight and authorization, apply
+that file with that digest, then verify it independently:
+
+```sh
+uv run skills/github/scripts/gh-rulesets.py checks-apply \
+  --plan-file plan.json --plan-digest REVIEWED_SHA256 --confirm-owner-admin-write
+uv run skills/github/scripts/gh-rulesets.py checks-readback \
+  --plan-file plan.json --plan-digest REVIEWED_SHA256
+```
+
+Apply validates the digest, recomputes the additive payload from the reviewed
+snapshot, and re-reads current protection and every repository-owned ruleset
+before its single mutation. It refuses drift; it accepts an exact already-applied
+result without another write. Only the classic required-check subresource or
+the selected ruleset is written. Unknown write/readback outcomes stop without
+replay; inspect with `checks-readback` and plan again if the state differs.
+GitHub exposes no conditional-write token here, so preflight and readback do
+not lock out another settings writer between those calls. Coordinate settings
+changes while applying. This path adds no App grant or identity fallback.
+It does not apply repository flags, remove collaborators or manage custom tag
+rules. Implementation tests use fixtures and injected clients, with no live
+repository owner calls. A rollout's default-head and ordinary-PR check proof is still its
+own preflight requirement, separate from the settings snapshot.
+
 On a repository where Clients or their staff are collaborators, add
 `--client-lock` to also manage a ruleset that stops anyone except the admin role
 and the configured App from creating, updating or deleting any branch, and
@@ -1271,6 +1299,33 @@ or a CLI update: from a signed-in session on an account different from the
 extension, call only `mcp__catalog-chrome__list_connected_browsers` and verify
 the existing Chrome appears. Do not pair, select, navigate or modify the browser
 for this check. An installer success alone does not prove cross-account pairing.
+
+With the catalog Chrome opt-in, Supervisor Claude launches export
+`CLAUDE_CODE_ENABLE_CFC=0` and reject `--chrome`. Use
+`mcp__catalog-chrome__*` for the pinned Agents route. A bounded listing checks
+the selected home's server before launch without selecting or navigating a
+browser. Source briefs get warnings when unavailable; add `--require-browser`
+to browser launches to refuse before terminals and receipts. `--without-browser`
+skips the listing for work that needs none. Session start reports static Claude
+Chrome-route conflicts and validates Codex's source override when the local
+launcher supplied its marker. Unrequested desktop tools and unverified remote
+setup stay with launch preflight. The hook changes no settings and starts no
+browser or Computer Use server.
+
+For enrolled homes, local Supervisor Codex launches add `--no-daemon`, validate
+the account-relative bundle link, pass its marketplace source override, and
+check installed/enabled plugins. Desktop GUI briefs require `computer-use`;
+`--require-browser` needs `chrome` and `browser`. Briefs asking for both need both sets.
+An explicit `--no-daemon` is retained once and stays local even without the opt-in.
+`--remote unix://` source launches check daemon admission without unrequested
+plugin warnings. With `--require-browser`, they inspect the selected daemon's
+`plugin/list` and refuse missing plugins. Explicit
+other endpoints stay unverified. Use local `codex -C /absolute/repository` for
+a browser brief. See [launcher tools and remote research](skills/supervisor/references/helpers.md#browser-and-computer-use-preflight).
+Discovery is separate from a working browser connection, OS permission and app
+approval. Chris handles profiles, sign-ins, settings and permission prompts;
+Codex is the default screen worker. Claude Computer Use runs only in a visible
+iTerm tab with Chris's approval for that session.
 
 ## TLS verification lint
 

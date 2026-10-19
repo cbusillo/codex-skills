@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -898,6 +900,9 @@ def opening_comment(item: dict[str, object]) -> github_unanswered_comments.Comme
     return result
 
 
+EMPTY_SEARCH = {"items": [], "total_count": 0, "incomplete_results": False}
+
+
 class FakeGitHub:
     """Answers the radar's gh api calls from fixtures keyed by endpoint path."""
 
@@ -916,7 +921,7 @@ class FakeGitHub:
             return {"data": {"node": {"lastEditedAt": None, "reactions": {
                 "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}
         path = endpoint.split("?", 1)[0]
-        payload = self.routes.get(path, [])
+        payload = self.routes.get(path, EMPTY_SEARCH if path == "search/issues" else [])
         if callable(payload):
             payload = payload(endpoint)
         return [payload] if "--slurp" in command else payload
@@ -1430,7 +1435,11 @@ def outbound_fixture():
         "repos/cbusillo/codex-skills/issues/comments/99": {
             "id": 99, "user": {"login": "cbusillo"}, "created_at": "2026-07-20T00:00:00Z",
             "issue_url": "https://api.github.com/repos/cbusillo/codex-skills/issues/2073",
-            "body": f"{github_unanswered_comments.director_mentions.APPROVAL_QUESTION} yes"},
+            "body": "Q100 yes"},
+        "repos/cbusillo/codex-skills/issues/2073/comments": [{
+            "id": 98, "user": {"login": "fixture-automation"}, "created_at": "2026-07-19T00:00:00Z",
+            "body": "Owner question: **Q100** — may the radar search GitHub for mentions "
+                    "of you under your own login, unattended?"}],
     }
     for number in (1, 2, 33):
         for item in routes[f"repos/outside/project/issues/{number}/comments"]:
@@ -1468,13 +1477,13 @@ def test_outbound_lists_mentions_outside_scope_including_private_and_mention_onl
 
 
 def test_outbound_withdrawn_mention_approval_reports_the_gap(monkeypatch, outbound_fixture, director_search):
-    question = github_unanswered_comments.director_mentions.APPROVAL_QUESTION
-    outbound_fixture["repos/cbusillo/codex-skills/issues/2073/comments"] = [
+    question = "Q100"
+    outbound_fixture["repos/cbusillo/codex-skills/issues/2073/comments"] += [
         {"id": 100, "user": {"login": "cbusillo"}, "created_at": "2026-07-21T00:00:00Z", "body": f"{question} no"}]
     monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
     payload = github_unanswered_comments.collect_payload(outbound_settings())
     assert payload["status"] == "degraded"
-    assert "withdrew" in payload["coverage"]["errors"][0]["error"]
+    assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_mentions"]
     assert director_search["calls"] == []
 
 
@@ -1654,6 +1663,195 @@ def test_others_edits_do_not_advance_outbound_human_cutoff(monkeypatch, outbound
     monkeypatch.setattr(github_unanswered_comments, "run_json", edited_by_other)
     payload = github_unanswered_comments.collect_payload(outbound_settings())
     assert {item["comment_id"] for item in payload["attention"]} == {1, 5, 7, 8}
+
+
+def wait_record_comment(number: int, comment_id: int, author: str, waiting_for: str | None = None,
+                        marker: str | None = None) -> dict[str, object]:
+    if marker is None:
+        record = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": "Recorded on the issue.",
+                  "waits": [{"waiting_for": waiting_for, "ends_when": "Pat answers"}] if waiting_for else []}
+        marker = "<!-- github-plan:wait " + json.dumps(record, sort_keys=True) + " -->"
+    return {
+        "id": comment_id, "issue_url": f"https://api.github.com/repos/example/repo/issues/{number}",
+        "user": {"login": author, "type": "User"}, "body": "Wait recorded.\n\n" + marker,
+        "created_at": "2026-07-24T00:00:00Z", "html_url": f"https://github.com/example/repo/issues/{number}#issuecomment-{comment_id}",
+    }
+
+
+def labeled_waiting(endpoint: str) -> list[dict[str, object]]:
+    return [waiting_issue("Pat's review of the release.")] if "plan%3Awaiting" in endpoint else []
+
+
+def structured_wait_rows(monkeypatch, tmp_path: Path, routes: dict[str, object]) -> dict[str, object]:
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(routes))
+    return github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
+
+
+def test_comment_only_structured_hold_without_waiting_label_is_reported(monkeypatch, tmp_path: Path) -> None:
+    # The repository owner is a trusted wait author; the label write never happened.
+    quiet = {**waiting_issue("Nothing.", number=52), "labels": [{"name": "plan"}, {"name": "plan:active"}],
+             "state": "open", "repository_url": "https://api.github.com/repos/example/repo",
+             "body": "## Current Status\n\nState: Active.\nNext action: Ship it.\n"}
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
+        "repos/example/repo/issues/52/comments": [wait_record_comment(52, 5, "example", "Pat's approval of the release.")],
+    })
+
+    assert payload["status"] == "attention"
+    assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+            for row in payload["unasked_director_waits"]] == [(52, "decision", "structured_wait", False)]
+
+
+def test_later_trusted_clear_removes_stale_prose_wait(monkeypatch, tmp_path: Path) -> None:
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "repos/example/repo/issues": labeled_waiting,
+        "repos/example/repo/issues/141/comments": [wait_record_comment(141, 5, "example")],
+    })
+
+    assert payload["status"] == "clear"
+    assert payload["unasked_director_waits"] == []
+
+
+def test_untrusted_clear_cannot_release_a_trusted_wait(monkeypatch, tmp_path: Path) -> None:
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "repos/example/repo/issues": labeled_waiting,
+        "repos/example/repo/issues/141/comments": [
+            wait_record_comment(141, 5, "example", "Pat's review of the release."),
+            wait_record_comment(141, 6, "outside-contributor"),
+        ],
+    })
+
+    assert payload["status"] == "attention"
+    assert [(row["number"], row["wait_source"]) for row in payload["unasked_director_waits"]] == [(141, "structured_wait")]
+
+
+def test_malformed_trusted_record_keeps_prose_wait_for_review(monkeypatch, tmp_path: Path) -> None:
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "repos/example/repo/issues": labeled_waiting,
+        "repos/example/repo/issues/141/comments": [
+            wait_record_comment(141, 5, "example", marker="<!-- github-plan:wait {not json -->")],
+    })
+
+    assert payload["status"] == "degraded"
+    assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_waits/141"]
+    assert [(row["number"], row["wait_review_required"]) for row in payload["unasked_director_waits"]] == [(141, True)]
+
+
+def test_unread_wait_discussion_or_partial_wait_search_degrades_coverage(monkeypatch, tmp_path: Path) -> None:
+    quiet = {**waiting_issue("Nothing.", number=52), "labels": [], "state": "open",
+             "repository_url": "https://api.github.com/repos/example/repo", "body": "Plain issue."}
+
+    def unreadable(endpoint: str) -> object:
+        raise github_unanswered_comments.rollup.RollupError("comments unavailable")
+
+    for routes, lane in (
+        ({"search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
+          "repos/example/repo/issues/52/comments": unreadable}, "director_waits/52"),
+        ({"search/issues": {"items": [], "total_count": 0, "incomplete_results": True}}, "director_waits_search"),
+    ):
+        payload = structured_wait_rows(monkeypatch, tmp_path, routes)
+        assert payload["status"] == "degraded"
+        assert [(error["repo"], error["lane"]) for error in payload["coverage"]["errors"]] == [
+            ("example/repo" if lane != "director_waits_search" else "example", lane)]
+
+
+MALFORMED_WAIT = "<!-- github-plan:wait {not json -->"
+
+
+@pytest.mark.parametrize("case", ["malformed_after_hold", "malformed_before_hold", "malformed_contributor_envelope"])
+def test_unreadable_trusted_record_keeps_a_comment_hold_as_unresolved(monkeypatch, tmp_path: Path, case: str) -> None:
+    # The body prose names someone else, so only the comment records a hold on Pat.
+    issue = waiting_issue("Client's testing of the build.")
+    hold = wait_record_comment(141, 5, "example", "Pat's approval of the release.")
+    malformed = wait_record_comment(141, 6, "example", marker=MALFORMED_WAIT)
+    if case == "malformed_contributor_envelope":
+        issue = {**issue, "body": "<!-- github-plan:managed:start -->\n" + str(issue["body"])}
+    comments = {"malformed_after_hold": [hold, malformed], "malformed_before_hold": [malformed, hold],
+                "malformed_contributor_envelope": [hold]}[case]
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "repos/example/repo/issues": lambda endpoint: [issue] if "plan%3Awaiting" in endpoint else [],
+        "repos/example/repo/issues/141/comments": comments,
+    })
+
+    assert payload["status"] == "degraded"
+    assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_waits/141"]
+    assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+            for row in payload["unasked_director_waits"]] == [(141, "unresolved", "unresolved_structured_wait", True)]
+    rendered = github_unanswered_comments.render_markdown(payload)
+    assert all(row["url"] in rendered for row in payload["unasked_director_waits"]), "the unresolved wait is shown"
+
+
+REVIEW_WAIT = '<!-- github-plan:wait {"evidence": "", "state": "review", "version": 1, "waits": []} -->'
+
+
+@pytest.mark.parametrize("reviewer", ["example", "outside-contributor", None])
+def test_trusted_review_record_after_a_hold_is_an_unresolved_wait(monkeypatch, tmp_path: Path, reviewer: str | None) -> None:
+    # No prose records a wait; only the comments do.
+    quiet = {**waiting_issue("Nothing.", number=52), "labels": [], "state": "open",
+             "repository_url": "https://api.github.com/repos/example/repo", "body": "Plain issue."}
+    comments = [wait_record_comment(52, 5, "example", "Pat's approval of the release.")]
+    if reviewer:
+        comments.append(wait_record_comment(52, 6, reviewer, marker=REVIEW_WAIT))
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
+        "repos/example/repo/issues/52/comments": comments,
+    })
+
+    assert payload["coverage"]["errors"] == []
+    expected = {"example": (52, "unresolved", "unresolved_structured_wait", True),
+                "outside-contributor": (52, "decision", "structured_wait", False),
+                None: (52, "decision", "structured_wait", False)}[reviewer]
+    assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+            for row in payload["unasked_director_waits"]] == [expected]
+
+
+def test_issue_with_no_wait_record_or_prose_is_not_a_wait(monkeypatch, tmp_path: Path) -> None:
+    quiet = {**waiting_issue("Nothing.", number=52), "labels": [], "state": "open",
+             "repository_url": "https://api.github.com/repos/example/repo", "body": "Plain issue."}
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
+        "repos/example/repo/issues/52/comments": [],
+    })
+
+    assert payload["coverage"]["errors"] == []
+    assert payload["unasked_director_waits"] == []
+
+
+def test_labeled_wait_reads_a_new_comment_hold_before_search_indexes_it(monkeypatch, tmp_path: Path) -> None:
+    # Search has not indexed the new comment yet, and the prose names someone else.
+    issue = waiting_issue("Client's testing of the build.")
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "repos/example/repo/issues": lambda endpoint: [issue] if "plan%3Awaiting" in endpoint else [],
+        "repos/example/repo/issues/141/comments": [wait_record_comment(141, 5, "example", "Pat's approval of the release.")],
+    })
+
+    assert payload["status"] == "attention"
+    assert [(row["number"], row["wait_kind"], row["wait_source"])
+            for row in payload["unasked_director_waits"]] == [(141, "decision", "structured_wait")]
+
+
+def outside_result(number: int) -> dict[str, object]:
+    # A matching issue outside the scanned repositories still counts toward the total.
+    return {"number": number, "state": "open", "repository_url": "https://api.github.com/repos/example/other"}
+
+
+@pytest.mark.parametrize("pages", [
+    pytest.param({1: {"items": [outside_result(n) for n in range(1, 101)], "total_count": 101, "incomplete_results": False},
+                  2: {"items": [outside_result(100)], "total_count": 101, "incomplete_results": False}},
+                 id="duplicate_across_pages"),
+    pytest.param({1: {"items": [outside_result(n) for n in range(1, 101)], "total_count": 101, "incomplete_results": False},
+                  2: {"items": [outside_result(101)], "total_count": 100, "incomplete_results": False}},
+                 id="total_changed"),
+    pytest.param({1: {"items": [], "total_count": 0}}, id="incomplete_results_missing"),
+])
+def test_structured_wait_search_pagination_gaps_degrade_coverage(monkeypatch, tmp_path: Path, pages) -> None:
+    def search(endpoint: str) -> object:
+        return pages[int(parse_qs(urlsplit(endpoint).query)["page"][0])]
+
+    payload = structured_wait_rows(monkeypatch, tmp_path, {"search/issues": search})
+
+    assert payload["status"] == "degraded"
+    assert [(error["repo"], error["lane"]) for error in payload["coverage"]["errors"]] == [("example", "director_waits_search")]
 
 
 if __name__ == "__main__":

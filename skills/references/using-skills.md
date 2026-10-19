@@ -22,7 +22,7 @@ work changes.
 | Inspect changed code and resolve IDE findings | `jetbrains-inspection` |
 | Inspect or operate live hosts and managed services | `infra-ops` |
 | Find unknown private access paths or source-of-truth docs | `docs-lookup` |
-| Assess readiness to review, merge, or ship | `repo-readiness` |
+| Build or install an installed or packaged app; assess readiness to review, merge, or ship | `repo-readiness` |
 | Close out, preserve work, clean up, or assess whether the Director can exit | `work-closeout` |
 
 Use the host's skill invocation tool when available (including the catalog's

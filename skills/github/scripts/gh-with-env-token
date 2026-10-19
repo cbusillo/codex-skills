@@ -144,6 +144,30 @@ readonly require_automation_auth
 
 expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 
+# github_api.parse_gh_api_args is the one reading of `gh api` arguments, as
+# gh's own flag parser reads them; every check below uses its answer. A `gh
+# api` command it cannot read leaves the method empty, which counts as a write.
+gh_api_shape=$(run_python - "$script_dir" "$@" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import github_api
+args = sys.argv[2:]
+# Leading global flags, read as is_write_command reads them.
+while args and args[0].startswith("-"):
+    if args[0] == "--":
+        args = args[1:]
+        break
+    args = args[2:] if args[0] in ("-R", "--repo", "--hostname") else args[1:]
+if args[:1] == ["api"]:
+    parsed = github_api.parse_gh_api_args(args[1:])
+    if parsed is not None:
+        print(parsed.sent_method)
+        print(parsed.endpoint)
+PY
+) || gh_api_shape=
+api_sent_method=$(printf '%s\n' "$gh_api_shape" | sed -n '1p')
+api_endpoint_operand=$(printf '%s\n' "$gh_api_shape" | sed -n '2p')
+
 run_with_input() {
 	# Only this route launches the requested CLI command. Actor/authentication
 	# probes use their own read-only route and cannot make a write sent.
@@ -193,43 +217,10 @@ is_write_command() {
 
 	case "${1:-}" in
 	api)
-		shift
-		while [ "$#" -gt 0 ]; do
-			case "$1" in
-			--method | -X)
-				case "${2:-}" in
-				GET | get | HEAD | head)
-					return 1
-					;;
-				*)
-					return 0
-					;;
-				esac
-				;;
-			--method=* | -X*)
-				method=${1#*=}
-				if [ "$method" = "$1" ]; then
-					method=${1#-X}
-				fi
-				case "$method" in
-				GET | get | HEAD | head)
-					return 1
-					;;
-				*)
-					return 0
-					;;
-				esac
-				;;
-			-f | -F | --field | --raw-field | --input)
-				return 0
-				;;
-			--field=* | --raw-field=* | --input=*)
-				return 0
-				;;
-			esac
-			shift
-		done
-		return 1
+		case $api_sent_method in
+		GET | HEAD) return 1 ;;
+		esac
+		return 0
 		;;
 	issue)
 		case "${2:-}" in
@@ -761,47 +752,78 @@ target_repository() {
 		return 0
 	fi
 	if [ "${1:-}" = api ]; then
-		shift
-		api_endpoint "$@" && return 0
+		api_endpoint && return 0
 	fi
 	if [ -n "${GH_REPO:-}" ]; then
 		repository_from_reference "$GH_REPO"
 	fi
 }
 
-# The repository in the endpoint of `gh api`: its first argument that is not an
-# option or an option's value.
+# The endpoint of this `gh api` command, without a leading slash.
+api_path() {
+	[ -n "$api_endpoint_operand" ] || return 1
+	# gh also accepts the full URL of a github.com API path.
+	path=${api_endpoint_operand#https://api.github.com/}
+	printf '%s\n' "${path#/}"
+}
+
+# The repository in the endpoint of `gh api`.
 api_endpoint() {
+	path=$(api_path) || return 1
+	case $path in
+	repos/*/*) ;;
+	*) return 1 ;;
+	esac
+	path=${path#repos/}
+	owner=${path%%/*}
+	rest=${path#*/}
+	name=${rest%%[/?#]*}
+	case "$owner/$name" in
+	*'{'* | *'}'* | /* | */) return 1 ;;
+	esac
+	printf '%s/%s\n' "$owner" "$name"
+}
+
+# A `gh api` read that answers only for the authenticated account, which an
+# App installation token cannot read. Bare `user` stays the App actor probe.
+is_user_scoped_read() {
+	[ "${1:-}" = api ] || return 1
+	! is_write_command "$@" || return 1
+	user_scoped_path=$(api_path) || return 1
+	user_scoped_path=${user_scoped_path%%[?#]*}
+	case $user_scoped_path in
+	user/* | notifications | notifications/*) return 0 ;;
+	repos/*/*/subscription)
+		rest=${user_scoped_path#repos/*/}
+		[ "${rest#*/}" = subscription ]
+		return
+		;;
+	esac
+	return 1
+}
+
+# `gh repo fork` creates the fork in the authenticated account unless --org
+# names an organization, so an App installation token cannot make it. Print
+# the source repository, empty for the current one.
+personal_fork_source() {
+	[ "${1:-}" = repo ] && [ "${2:-}" = fork ] || return 1
+	shift 2
 	skip_value=0
+	fork_source=
 	for argument in "$@"; do
 		if [ "$skip_value" -eq 1 ]; then
 			skip_value=0
 			continue
 		fi
 		case $argument in
-		-X | --method | -f | --raw-field | -F | --field | -H | --header | --input | -q | --jq | -t | --template | -p | --preview | --hostname | --cache)
-			skip_value=1
-			;;
+		--) break ;;
+		--org | --org=*) return 1 ;;
+		--fork-name | --remote-name) skip_value=1 ;;
 		-*) ;;
-		*)
-			path=${argument#/}
-			case $path in
-			repos/*/*) ;;
-			*) return 1 ;;
-			esac
-			path=${path#repos/}
-			owner=${path%%/*}
-			rest=${path#*/}
-			name=${rest%%[/?#]*}
-			case "$owner/$name" in
-			*'{'* | *'}'* | /* | */) return 1 ;;
-			esac
-			printf '%s/%s\n' "$owner" "$name"
-			return 0
-			;;
+		*) [ -n "$fork_source" ] || fork_source=$(repository_from_reference "$argument") ;;
 		esac
 	done
-	return 1
+	printf '%s\n' "$fork_source"
 }
 
 # gh accepts OWNER/REPO, HOST/OWNER/REPO, and repository URLs.
@@ -907,15 +929,10 @@ if args and args[0] == "api" and context.bucket == "graphql":
     # Inspect all definitions because operationName can select a later mutation.
     payload = github_api._try_parse_json(body) if body else None
     if payload is None:
-        for index, arg in enumerate(args):
-            if arg in {"-f", "-F", "--field", "--raw-field"} and index + 1 < len(args):
-                value = args[index + 1]
-                if value.startswith("query="):
-                    payload = {"query": value.split("=", 1)[1]}
-            elif arg.startswith(("--field=", "--raw-field=")):
-                value = arg.split("=", 1)[1]
-                if value.startswith("query="):
-                    payload = {"query": value.split("=", 1)[1]}
+        # Arguments gh rejects already made the context a write.
+        parsed = github_api.parse_gh_api_args(args[1:])
+        if parsed is not None and parsed.graphql_query is not None:
+            payload = {"query": parsed.graphql_query}
     if github_api.reader_request_is_write("POST", "/graphql", payload):
         context = github_api.CommandContext(True, context.transport, context.bucket)
 # Only API reads and the known read-only CLI families used by bulk helpers.
@@ -979,6 +996,23 @@ act_as_own_user() {
 	fi
 	run_with_input env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
 }
+
+# Under the caller's opt-in, a read only the person's account can answer and a
+# fork into that account run as the declared personal login, whichever
+# credential the named repository would otherwise select.
+if [ "$own_user_opt_in" -eq 1 ] && [ "$require_automation_auth" -ne 1 ] &&
+	[ "$check_auth" -ne 1 ] && [ -z "$write_actor_repository" ]; then
+	if is_user_scoped_read "$@"; then
+		verify_read_command "$@" || exit 1
+		act_as_own_user "the user-scoped endpoint $user_scoped_path" "$@"
+		exit $?
+	fi
+	if personal_fork_source "$@" >/dev/null; then
+		fork_source=$(personal_fork_source "$@")
+		act_as_own_user "a fork of ${fork_source:-the current repository}" "$@"
+		exit $?
+	fi
+fi
 
 app_variable_count=0
 app_variables='GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY_PATH'

@@ -111,9 +111,14 @@ def _enrich_error_with_retry_summaries(
     if summary is None:
         return
     retry_fields = summary.as_dict()
-    error.payload = github_api_core.redact_body({**retry_fields, **error.payload})
+    # Keep the failed request's certainty/reconciliation, but count later
+    # reconciliation reads in the operation's diagnostics.
+    diagnostics = {key: retry_fields[key] for key in (
+        "attempts", "elapsed_wait", "effective_deadline", "last_actor", "last_bucket",
+    )}
+    error.payload = github_api_core.redact_body({**retry_fields, **error.payload, **diagnostics})
     if error.api_result is not None:
-        error.api_result = github_api_core.redact_body({**retry_fields, **error.api_result})
+        error.api_result = github_api_core.redact_body({**retry_fields, **error.api_result, **diagnostics})
 
 
 def _from_comment_error(exc: github_comment.CommentError) -> IssueError:
@@ -1129,20 +1134,45 @@ def _edit_issue_impl(
         steps.append("add_labels")
     for label in normalized_remove_labels:
         encoded = urllib.parse.quote(label, safe="")
-        _call_api(
-            "DELETE",
-            f"/repos/{resolved_repo}/issues/{number}/labels/{encoded}",
-            None,
-            gh_cmd=gh_cmd,
-            operation=operation,
-            actor=actor,
-            expected_actor=expected_actor,
-            completed_steps=steps,
-            failed_step="remove_label",
-            is_write=True,
-            failure_payload=failure_payload,
-            retry_summaries=retry_summaries,
-        )
+        removal_summary_index = len(retry_summaries)
+        try:
+            _call_api(
+                "DELETE", f"/repos/{resolved_repo}/issues/{number}/labels/{encoded}",
+                None, failed_step="remove_label", is_write=True,
+                gh_cmd=gh_cmd, operation=operation, actor=actor,
+                expected_actor=expected_actor, completed_steps=steps,
+                failure_payload=failure_payload, retry_summaries=retry_summaries,
+            )
+        except IssueError as error:
+            # A replay can get 404 after an earlier DELETE succeeded unseen.
+            # Only this endpoint's absent-label response permits reconciliation.
+            if not (
+                error.api_result and error.api_result.get("status") == 404
+                and error.failure.cause == "not_found"
+                and error.failure.message == "Resource not found: Label does not exist"
+            ):
+                raise
+            readback = _call_api(
+                "GET", f"/repos/{resolved_repo}/issues/{number}", None,
+                failed_step="reconcile_remove_label", is_write=False,
+                gh_cmd=gh_cmd, operation=operation, actor=actor,
+                expected_actor=expected_actor, completed_steps=steps,
+                failure_payload=failure_payload, retry_summaries=retry_summaries,
+            ).body
+            labels = readback.get("labels") if isinstance(readback, dict) else None
+            if not (
+                isinstance(readback, dict) and readback.get("number") == number
+                and isinstance(labels, list)
+                and all(isinstance(item, dict) and isinstance(item.get("name"), str)
+                        and item["name"] for item in labels)
+                and all(item["name"].casefold() != label.casefold() for item in labels)
+            ):
+                raise error
+            removal_summary = retry_summaries[removal_summary_index]
+            removal_summary.outcome_certainty = "confirmed"
+            removal_summary.recommended_next_action = "none"
+            removal_summary.exhausted_reason = None
+            steps.append("reconcile_remove_label")
         steps.append("remove_label")
     if normalized_add_assignees:
         _call_api(
@@ -1601,6 +1631,65 @@ def _resolve_cli_target(value: str, repo: Optional[str], *, operation: str) -> t
     return _resolve_repo(repo, gh_cmd=DEFAULT_GH, operation=operation), target_number
 
 
+def refresh_after_close(repo: str, number: int, payload: dict[str, Any], *, operation: str) -> dict[str, Any]:
+    """The CLI owns fanout; the shared state-mutation primitive remains unchanged."""
+    recovery = {"issue_closed": True, "issue": {"repo": repo, "number": number},
+                "next_action": f"gh-plan.py --repo {repo} reconcile-status {number} --include-dependents --apply",
+                "scope": "Existing authorized target session repairs metadata; do not replay the close or comment"}
+    personal = github_identity.own_user_opted_in() or github_identity.active_auth_fallback_allowed()
+    import github_plan_close_adapter
+    summaries: list[github_api_core.RetrySummary] = []
+    expected = payload.get("expected_actor")
+    actor = payload.get("actor") or payload.get("last_actor") or expected
+    def request(method, path, body=None, **kwargs):
+        result = _call_api(method, path, body, gh_cmd=DEFAULT_GH, operation=operation,
+            actor=actor, expected_actor=expected, completed_steps=kwargs.get("completed_steps") or [],
+            failed_step=kwargs.get("failed_step") or "planning_projection",
+            is_write=method.upper() != "GET", retry_summaries=summaries)
+        return result.actor or actor, result.body
+    projection = github_plan_close_adapter.reconcile(
+        repo=repo, number=number, request=request, actor=actor, gh_cmd=DEFAULT_GH,
+        expected_actor=expected, operation=operation, issue_core=sys.modules[__name__],
+        apply=not personal, include_dependents=not personal)
+    if personal:
+        # Read only the explicit target through the confirmed close transport.
+        # Exact close approval does not grant a subsequent label mutation.
+        for entry in projection.get("issues", []):
+            if (entry.get("required") and entry.get("ok") and entry["status"] not in {"not_planning_issue", "unchanged"}
+                    and entry.get("projection_status") != "unchanged"):
+                entry.update(status="review_posting_authority", ok=False, verified=False,
+                             projection_status="preserved", informational=False)
+                projection["ok"] = False
+        projection.update(coverage="partial", review_required=True)
+        if not any(entry.get("error") for entry in projection.get("issues", [])):
+            projection.update(status="review_posting_authority",
+                reason="Exact personal close approval does not authorize automatic planning writes")
+    summary = github_api_core.aggregate_retry_summaries(summaries)
+    projection["retry"] = summary.as_dict() if summary else None
+    projection["recovery"] = recovery
+    return projection
+
+
+def close_projection_diagnostics(payload: dict[str, Any]) -> None:
+    """Count each phase once while retaining the close's confirmed certainty."""
+    fields = ("attempts", "elapsed_wait", "effective_deadline", "last_actor", "last_bucket",
+              "outcome_certainty", "reconciliation", "retry_eligible", "recommended_next_action")
+    close = {key: payload.get(key) for key in fields}
+    projection = payload["projection"]
+    phases = [close, *([projection["retry"]] if projection.get("retry") else []),
+              *(entry["labels"] for entry in projection.get("issues", []) if isinstance(entry.get("labels"), dict))]
+    payload["diagnostics"] = {"close": close, "projection": phases[1:]}
+    payload["attempts"] = sum(phase.get("attempts") or 0 for phase in phases)
+    payload["elapsed_wait"] = round(sum(phase.get("elapsed_wait") or 0 for phase in phases), 3)
+    deadlines = [deadline for phase in phases
+                 if isinstance(deadline := phase.get("effective_deadline"), (int, float)) and deadline]
+    if deadlines:
+        payload["effective_deadline"] = min(deadlines)
+    if len(phases) > 1:
+        payload["last_actor"] = phases[-1].get("last_actor") or payload.get("last_actor")
+        payload["last_bucket"] = phases[-1].get("last_bucket") or payload.get("last_bucket")
+
+
 def main() -> int:
     operation = "github.issue.unknown"
     try:
@@ -1682,6 +1771,14 @@ def main() -> int:
                 operation=operation,
             )
             payload["close_attention"] = close_attention
+            payload["projection"] = refresh_after_close(target_repo, target_number, payload, operation=operation)
+            close_projection_diagnostics(payload)
+            if not payload["projection"]["ok"]:
+                raise _local_error("Issue is closed; planning projection is incomplete", operation=operation,
+                    cause="planning_projection_incomplete", actor=payload.get("actor"),
+                    expected_actor=payload.get("expected_actor"), write_outcome="confirmed",
+                    completed_steps=payload.get("completed_steps", []), failed_step="planning_projection",
+                    payload={**payload, "recovery": payload["projection"]["recovery"]})
         else:
             target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
             comment_body = _state_comment(args)

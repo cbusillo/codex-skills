@@ -23,6 +23,54 @@ from unittest.mock import patch
 from github_next_reads import NextReads, ReadDeadline
 
 
+@contextlib.contextmanager
+def self_signals_reach_sender():
+    """Pin the allowed delivery that made #1990 intermittent.
+
+    POSIX may deliver a process-directed signal to the thread that sent it,
+    while only the main Python thread runs handlers. Rerouting self-signals
+    makes a helper-thread os.kill(getpid()) stall every run instead of some.
+    Signals for other processes keep their real route.
+    """
+    real_kill = os.kill
+    def kill(pid, sig):
+        if pid == os.getpid():
+            signal.raise_signal(sig)
+        else:
+            real_kill(pid, sig)
+    with patch.object(os, "kill", kill):
+        yield
+
+
+@contextlib.contextmanager
+def first_wakeup_signal_lost():
+    """Pin the lost wakeup that kept #2241 intermittent.
+
+    A signal that lands after the main thread's last signal check but before
+    its wait blocks is recorded, yet never interrupts that wait. Dropping the
+    first targeted signal makes every run take that route.
+    """
+    real_kill = signal.pthread_kill
+    dropped = []
+    def pthread_kill(thread_id, sig):
+        if not dropped:
+            dropped.append(sig)
+        else:
+            real_kill(thread_id, sig)
+    with patch.object(signal, "pthread_kill", pthread_kill):
+        yield
+
+
+FIXTURE_INTERRUPTED = threading.Event()
+
+
+def interrupt_once(_signum, _frame):
+    # A repeated stimulus must not raise a second KeyboardInterrupt into cleanup.
+    if not FIXTURE_INTERRUPTED.is_set():
+        FIXTURE_INTERRUPTED.set()
+        raise KeyboardInterrupt
+
+
 def cancellation_fixture(mode: str) -> None:
     """Exercise the real CLI envelope and reader/retry path, without GitHub."""
     from test_gh_plan_next import load_module
@@ -36,6 +84,7 @@ def cancellation_fixture(mode: str) -> None:
     attempted = []
     stopped_at = []
     pools = []
+    interrupters = []
     runtime_type = api.RetryRuntime
     actor = "fixture-reader"
 
@@ -93,11 +142,21 @@ def cancellation_fixture(mode: str) -> None:
         pools.append(reads.pool)
         if mode.startswith("inline"):
             # The main thread owns this read, so SIGINT lands in its own retry wait.
+            main_thread = threading.get_ident()
             def interrupt():
                 assert entered.wait(3), "inline read did not reach retry wait"
                 stopped_at.append(time.monotonic())
-                os.kill(os.getpid(), signal.SIGINT)
-            threading.Thread(target=interrupt, daemon=True).start()
+                # A process-directed signal may reach this sender or the progress
+                # thread instead. Python then defers KeyboardInterrupt until the
+                # main thread's 60-second wait ends. Interrupt its syscall too.
+                # One that lands just before the wait blocks never interrupts it
+                # (#2241), so repeat until the main thread has handled one.
+                signal.pthread_kill(main_thread, signal.SIGINT)
+                while not FIXTURE_INTERRUPTED.wait(0.05):
+                    signal.pthread_kill(main_thread, signal.SIGINT)
+            interrupter = threading.Thread(target=interrupt, daemon=True)
+            interrupters.append(interrupter)
+            interrupter.start()
             if mode == "inline_focus":
                 module.next_focus_context("fixture/source", {"projects": {
                     "enabled": True, "owner": "fixture", "default_project": "1"}})
@@ -150,6 +209,9 @@ def cancellation_fixture(mode: str) -> None:
             code = exc.code
         else:
             raise AssertionError("fixture did not produce a terminal failure")
+        for interrupter in interrupters:
+            interrupter.join(timeout=3)
+            assert not interrupter.is_alive(), "inline signal sender leaked"
         assert module.NEXT_READS is None
         assert os.environ["GITHUB_RETRY_DEADLINE_AT"] == prior_deadline
         assert all(not thread.is_alive() for pool in pools for thread in pool._threads)
@@ -179,6 +241,16 @@ def test_cli_cancellation_and_fatal_reads_interrupt_backoff_and_join_workers() -
         print(f"cancellation fixture: {metrics}")
 
 
+def test_cancellation_fixture_interrupts_when_launched_with_sigint_ignored() -> None:
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--cancellation-fixture", "inline"],
+                              capture_output=True, text=True, timeout=20)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    assert proc.returncode == 130, (proc.stdout, proc.stderr)
+
+
 def test_cli_main_thread_inline_interrupt_is_terminal_cancellation() -> None:
     # REST read, quota wait, the quota read's own retry, recoverable Project focus, milestones.
     for mode in ("inline", "inline_preflight", "inline_nested_preflight", "inline_focus", "inline_milestone"):
@@ -195,6 +267,23 @@ def test_cli_main_thread_inline_interrupt_is_terminal_cancellation() -> None:
         metrics = json.loads(proc.stderr.splitlines()[-1])
         assert metrics["latency"] < 5, metrics
         print(f"inline cancellation fixture: {metrics}")
+
+
+def test_signal_routing_pin_leaves_other_processes_alone() -> None:
+    received = []
+    previous = signal.signal(signal.SIGTERM, lambda *_: received.append("fixture"))
+    child = None
+    try:
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        with self_signals_reach_sender():
+            os.kill(child.pid, signal.SIGTERM)
+        assert not received, "a signal for another process reached the fixture"
+        assert child.wait(timeout=5) == -signal.SIGTERM
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        if child is not None:
+            child.kill()
+            child.wait()
 
 
 def test_cancelled_global_graphql_read_never_launches_transport() -> None:
@@ -362,6 +451,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--cancellation-fixture":
-        cancellation_fixture(sys.argv[2])
+        # A shell's background job inherits SIGINT ignored; the stimulus needs a Python handler.
+        signal.signal(signal.SIGINT, interrupt_once)
+        with self_signals_reach_sender(), first_wakeup_signal_lost():
+            cancellation_fixture(sys.argv[2])
     else:
         main()

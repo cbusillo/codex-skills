@@ -286,7 +286,7 @@ hash = "existing-hash"
             self.assertEqual(hook_path.read_bytes(), old_json)
             hooks = json.loads(plan[hook_path])["hooks"]
             self.assertEqual(hooks["SessionStart"], expected["hooks"]["SessionStart"])
-            self.assertEqual(hooks["Stop"], json.loads(old_json)["hooks"]["Stop"] + expected["hooks"]["Stop"])
+            self.assertEqual(hooks["Stop"], json.loads(old_json)["hooks"].get("Stop", []) + expected["hooks"]["Stop"])
             self.assertEqual(len(hooks["PreToolUse"]), 1)
             receipt = sync.write_codex_hooks(plan, codex)
             for item in receipt:
@@ -355,6 +355,21 @@ hash = "existing-hash"
             subprocess.run([sys.executable, str(Path(sync.__file__)), "--codex-dir", str(codex), "--claude-dir", str(claude), "--local-source", str(root / "absent.md"), "--write"], check=True, capture_output=True)
             self.assertEqual((codex / "AGENTS.md").read_bytes(), (claude / "CLAUDE.md").read_bytes())
 
+    def test_obsolete_alert_handlers_are_removed_without_losing_real_consumers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hooks.json"
+            other = {"command": "real-stop-consumer"}
+            hooks = {event: [{"matcher": "*", "hooks": [
+                {"command": "old-alert", "statusMessage": label}, other]}]
+                for event, label in (("Stop", "codex-skills stop alert"),
+                                     ("Interrupt", "codex-skills interrupt alert"))}
+            path.write_text(json.dumps({"hooks": hooks}))
+            rendered = json.loads(sync.render_codex_hook(path))["hooks"]
+            for event in hooks:
+                self.assertEqual(rendered[event], [{"matcher": "*", "hooks": [other]}])
+            path.write_text(json.dumps({"hooks": rendered}))
+            self.assertEqual(json.loads(sync.render_codex_hook(path))["hooks"], rendered)
+
     def test_codex_registration_preserves_other_hooks_and_reuses_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hooks.json"
@@ -365,8 +380,8 @@ hash = "existing-hash"
             self.assertEqual(first, sync.render_codex_hook(path))
             hooks = json.loads(first)["hooks"]
             self.assertEqual(hooks["Stop"][0], other)
-            self.assertEqual(len(hooks["Stop"]), 2)
-            self.assertEqual(len(hooks["Interrupt"]), 1)
+            self.assertEqual(hooks["Stop"], [other])
+            self.assertNotIn("Interrupt", hooks)
             self.assertEqual(hooks["PreToolUse"][0], other)
             self.assertIn("command_policy_hook.py", hooks["PreToolUse"][1]["hooks"][0]["command"])
 
@@ -389,7 +404,7 @@ hash = "existing-hash"
             self.assertEqual(rendered["SessionStart"], legacy["SessionStart"])
             other = {"hooks": [{"type": "command", "command": "user-hook"}]}
             for event in ("Stop", "Interrupt"):
-                rendered[event].append(other)
+                rendered[event] = [other]
             path.write_text(json.dumps({"hooks": rendered}))
             self.assertEqual(json.loads(sync.render_codex_hook(path, include_session_start=True))["hooks"], rendered)
 

@@ -63,6 +63,8 @@ people:
       preferred_contact: github
       timezone: America/New_York
       mention_style: "@example-manager"
+      communication_style: Use short paragraphs and explain the next action.
+      contact_notes: Use the issue thread for repository work.
     trust:
       level: trusted
       intent: good
@@ -123,11 +125,121 @@ class ResolvePersonTest(TestCase):
             all("details_file" not in candidate for candidate in result["candidates"])
         )
         self.assertTrue(all("notes" not in candidate for candidate in result["candidates"]))
+        for candidate in result["candidates"]:
+            self.assertNotIn("communication_style", candidate)
+            self.assertNotIn("contact_notes", candidate)
 
-    def test_resolver_output_omits_notes(self) -> None:
-        result = resolve_person.resolve("Example", self.people())
+    def test_matched_person_preserves_configured_guidance(self) -> None:
+        people = self.people()
+        person = people[0]
+        for query, confidence in (
+            ("person:example-manager", "id"),
+            ("manager@example.com", "contact"),
+            ("Example", "name"),
+            ("examplemanager", "compact"),
+        ):
+            with self.subTest(confidence=confidence):
+                result = resolve_person.resolve(query, people)
+                self.assertEqual(result["status"], "matched")
+                self.assertEqual(result["confidence"], confidence)
+                self.assertEqual(result["match"]["notes"], person["notes"])
+                for field in ("communication_style", "contact_notes"):
+                    self.assertEqual(result["match"][field], person["preferences"][field])
+
+    def test_missing_guidance_is_optional(self) -> None:
+        result = resolve_person.resolve("Reviewer", self.people())
         self.assertEqual(result["status"], "matched")
-        self.assertNotIn("notes", result["match"])
+        for field in ("communication_style", "contact_notes", "notes"):
+            self.assertNotIn(field, result["match"])
+
+    def test_single_fuzzy_match_keeps_lookup_context(self) -> None:
+        people = self.people()
+        person = people[0]
+        result = resolve_person.resolve("exampleman", people, fuzzy=True)
+        self.assertEqual(result["status"], "matched")
+        self.assertEqual(result["confidence"], "fuzzy")
+        self.assertEqual(result["match"]["notes"], person["notes"])
+        for field in ("communication_style", "contact_notes"):
+            self.assertEqual(result["match"][field], person["preferences"][field])
+
+    def test_cli_serializes_yaml_dates_in_global_guidance(self) -> None:
+        document = resolve_person.yaml.safe_load("""
+people:
+  - id: dated-person
+    display_name: Dated Person
+    notes: 2026-10-01
+    preferences:
+      communication_style: 2026-10-01T12:00:00Z
+      contact_notes: 2026-10-02
+""")
+        with tempfile.TemporaryDirectory() as tmp:
+            index = self.write_index(
+                Path(tmp), "global/people.yaml", resolve_person.yaml.safe_dump(document)
+            )
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), "dated-person", "--scope", "global",
+                 "--global-index", str(index), "--strict"],
+                text=True, capture_output=True, check=False,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        match = json.loads(proc.stdout)["match"]
+        person = document["people"][0]
+        self.assertEqual(match["notes"], str(person["notes"]))
+        for field in ("communication_style", "contact_notes"):
+            self.assertEqual(match[field], str(person["preferences"][field]))
+
+    def test_fuzzy_ambiguity_omits_guidance(self) -> None:
+        # Remove the exact alias so both longer names reach the fuzzy tier.
+        people = self.people()
+        people[0]["aliases"] = []
+        people[0].pop("preferred_reference")
+        people[1]["notes"] = "Other private context."
+        people[1]["preferences"] = {"communication_style": "Other private guidance."}
+        result = resolve_person.resolve("example", people, fuzzy=True)
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(result["confidence"], "fuzzy")
+        for candidate in result["candidates"]:
+            for field in ("communication_style", "contact_notes", "notes", "details_file"):
+                self.assertNotIn(field, candidate)
+
+    def test_cli_guidance_from_global_index_and_repo_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            repo_root.mkdir()
+            for home_variable in ("CODE_HOME", "CODEX_HOME"):
+                with self.subTest(home_variable=home_variable):
+                    code_home = root / home_variable
+                    self.write_index(code_home, "skills/.local/people.yaml", SAMPLE)
+                    env = {key: value for key, value in os.environ.items()
+                           if key not in ("CODE_HOME", "CODEX_HOME")}
+                    env[home_variable] = str(code_home)
+                    command = [sys.executable, str(SCRIPT_PATH), "Example",
+                               "--repo-root", str(repo_root), "--strict"]
+                    proc = subprocess.run(command, text=True, capture_output=True,
+                                          env=env, check=False)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    match = json.loads(proc.stdout)["match"]
+                    person = self.people()[0]
+                    self.assertEqual(match["notes"], person["notes"])
+                    for field in ("communication_style", "contact_notes"):
+                        self.assertEqual(match[field], person["preferences"][field])
+
+            self.write_index(repo_root, ".local/people.yaml", """
+people:
+  - id: example-manager
+    display_name: Example
+    notes: Repo-specific context.
+    preferences:
+      communication_style: Repo-specific guidance.
+""")
+            proc = subprocess.run(command, text=True, capture_output=True,
+                                  env=env, check=False)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            match = json.loads(proc.stdout)["match"]
+            self.assertEqual(match["notes"], "Repo-specific context.")
+            self.assertEqual(match["communication_style"], "Repo-specific guidance.")
+            self.assertNotIn("contact_notes", match)
 
     def test_accepts_documented_detail_markdown_path(self) -> None:
         people = self.people()
