@@ -349,6 +349,9 @@ def test_recorded_rest_show_provenance_and_fallback():
                 "collect_paged_rest_items",
                 return_value=("fixture-reader", record["comments"]),
             ),
+            mock_attribute(plan, "read_issue_relationships", return_value=("fixture-reader", {
+                key: [plan.compact_relationship_issue(row, key) for row in values]
+                for key, values in rows[0]["_graph_relationships"].items()})),
         ):
             plan.cmd_show(args)
         assert output.call_args.args[0]["issue"] == batched
@@ -399,6 +402,40 @@ def test_local_next_batch_selection_matches_rest_and_falls_back():
         module.cmd_next(args)
         assert captured["candidates"] == selected
         assert captured["excluded"] == excluded
+
+
+def test_real_inventory_rows_read_the_newer_wait_comment_before_selection():
+    import test_gh_plan_next as fixtures
+
+    module = fixtures.load_module()
+    recorded = json.loads(FIXTURE.read_text())
+    inventory = recorded["data"]["repository"]["issues"]
+    node = copy.deepcopy(inventory["nodes"][0])
+    clear = module.github_plan_wait.reviewed(evidence="Earlier body review found no remaining hold")
+    held = module.github_plan_wait.reviewed(evidence="Client subsequently requested acceptance",
+        waiting_for="Client acceptance", ends_when="Client accepts")
+    node.update(body=module.github_plan_wait.marker(clear), author={"__typename": "User", "login": "owner"})
+    for key in ("blockedBy", "blocking", "subIssues"):
+        node[key] = {"nodes": [], "totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}}
+    node["labels"] = {"nodes": [{"name": module.DEFAULT_CONFIG["labels"][key]} for key in ("plan", "active")],
+        "totalCount": 2, "pageInfo": {"hasNextPage": False, "endCursor": None}}
+    node.pop("comments", None)
+    inventory.update(nodes=[node], totalCount=1, pageInfo={"hasNextPage": False, "endCursor": None})
+    rows = graph.planning_graph(reader_for(recorded), "owner/repo")
+    module.BATCH_READ_CONTEXT.update(diagnostics={"actor": "fixture-reader"})
+    with fixtures.local_next_fixture(module, rows, read_relationships=module.read_next_issue_relationships) as result:
+        collector = module.collect_paged_rest_items
+        def discussion(path, **kwargs):
+            if path.endswith("/comments"):
+                return "fixture-reader", [{"user": {"login": "owner"}, "body": module.github_plan_wait.marker(held)}]
+            return collector(path, **kwargs)
+        with patch.object(module, "read_planning_graph", return_value=rows), \
+                patch.object(module, "collect_paged_rest_items", discussion):
+            module.cmd_next(argparse.Namespace(repo="owner/repo", milestone=None, limit=20, scan_limit=20, batch_read=True))
+    assert not result["candidates"], result
+    observed = next(row for row in result["excluded"] if row["number"] == node["number"])
+    assert observed["exclusion"] == "waiting", observed
+    assert observed["derived"]["waits"] == held["waits"], observed
 
 
 if __name__ == "__main__":

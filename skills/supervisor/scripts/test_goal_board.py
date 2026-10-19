@@ -7,11 +7,14 @@
 
 from contextlib import redirect_stdout
 import io
+import json
 import unittest
+from typing import Any
 from unittest.mock import Mock, patch
 
 import goal_board
 from skills.github.scripts.github_api import ApiResult
+from skills.github.scripts import github_plan_body, github_plan_wait, github_plan_status
 
 BOT = {"__typename": "Bot", "login": "shiny-code-app"}
 TRUSTED = {"owner", "shiny-code-app[bot]"}
@@ -19,12 +22,12 @@ HEAD = "a" * 40
 OLD = "b" * 40
 
 
-def comment(body, author=BOT, at="2026-10-16T10:00:00Z", ident=1):
+def comment(body, author=BOT, at="2026-10-16T10:00:00Z", ident=1) -> dict[str, Any]:
     return {"url": f"https://example.test/c{ident}", "createdAt": at, "updatedAt": at,
             "databaseId": ident, "body": body, "author": author}
 
 
-def pr(number, state="OPEN", comments=()):
+def pr(number, state="OPEN", comments=()) -> dict[str, Any]:
     return {"number": number, "url": f"https://github.com/owner/app/pull/{number}", "state": state,
             "isDraft": False, "mergeable": "MERGEABLE", "headRefOid": HEAD,
             "comments": {"totalCount": len(comments), "nodes": list(comments)}}
@@ -34,10 +37,12 @@ def status(action, state="Working"):
     return f"## Current Status\n\nState: {state}\nNext action: {action}\nBlocked by: None\n"
 
 
-def child(number, prs=(), comments=(), total_prs=None, state="OPEN", label="plan:active", body=None):
+def child(number, prs=(), comments=(), total_prs=None, state="OPEN", label="plan:active", body=None) -> dict[str, Any]:
     return {"number": number, "title": f"Child {number}", "url": f"https://github.com/owner/app/issues/{number}",
             "state": state, "repository": {"nameWithOwner": "owner/app"},
-            "body": status(f"Child {number} step.") if body is None else body,
+            "body": (status(f"Child {number} step.") if body is None else body) + "\n" +
+                    github_plan_wait.marker(github_plan_wait.reviewed(evidence="No person hold remains")),
+            "author": BOT, "blockedBy": {"totalCount": 0, "nodes": []},
             "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": "2026-10-15T00:00:00Z",
             "labels": {"totalCount": 2, "nodes": [{"name": "plan"}, {"name": label}]},
             "subIssuesSummary": {"total": 0, "completed": 0},
@@ -46,26 +51,39 @@ def child(number, prs=(), comments=(), total_prs=None, state="OPEN", label="plan
                                                "nodes": list(prs)}}
 
 
-def track(number, children=(), comments=(), total_children=None):
+def track(number, children=(), comments=(), total_children=None) -> dict[str, Any]:
     return {"number": number, "title": f"Track: {number}", "url": f"https://github.com/owner/direction/issues/{number}",
             "state": "OPEN", "milestone": {"title": f"Milestone {number}"},
             "body": status(f"Track {number} step."), "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": None,
+            "author": BOT, "blockedBy": {"totalCount": 0, "nodes": []},
             "labels": {"totalCount": 2, "nodes": [{"name": "plan"}, {"name": "plan:waiting"}]},
-            "comments": {"totalCount": len(comments), "nodes": list(comments)},
+            "comments": {"totalCount": len(comments) + 1, "nodes": [comment(github_plan_wait.marker(
+                github_plan_wait.reviewed(evidence="Track has no person hold")), at="2026-10-01T00:00:00Z"), *comments]},
             "subIssues": {"totalCount": len(children) if total_children is None else total_children,
                           "nodes": list(children)}}
 
 
-def listing(nodes, total=None, next_cursor=None):
+def listing(nodes, total=None, next_cursor=None) -> dict[str, Any]:
     return {"data": {"repository": {"issues": {"totalCount": len(nodes) if total is None else total,
         "nodes": nodes, "pageInfo": {"hasNextPage": next_cursor is not None, "endCursor": next_cursor}}}}}
 
 
-def details(**tracks):
+def details(**tracks) -> dict[str, Any]:
     return {"data": {"repository": tracks}}
 
 
 class GoalBoardTests(unittest.TestCase):
+    def test_mixed_case_trusted_people_and_bots_keep_decisions_and_handoffs(self):
+        for typename, name in (("User", "MixedCaseOwner"), ("Bot", "MixedCaseApp")):
+            with self.subTest(typename=typename):
+                author = {"__typename": typename, "login": name}
+                trusted = {(name + ("[bot]" if typename == "Bot" else "")).casefold()}
+                decision = comment("Director decision (Q1): approve", author=author)
+                ready = comment(f"Ready for the merge train\n\nHead: {HEAD}", author=author)
+                self.assertEqual(goal_board.latest_decision({"nodes": [decision], "totalCount": 1}, trusted, []),
+                                 decision["url"])
+                self.assertEqual(goal_board.handoff(pr(1, comments=[ready]), trusted, []), "ready")
+
     def __init__(self, *args, **kwargs):
         # unittest builds one instance per test method, so each test gets its own reader.
         super().__init__(*args, **kwargs)
@@ -75,7 +93,165 @@ class GoalBoardTests(unittest.TestCase):
     def replay(self, *bodies):
         self.reader.graphql_json.side_effect = [
             body if isinstance(body, ApiResult) else ApiResult(ok=True, status=200, body=body) for body in bodies]
-        return goal_board.goal_board(self.reader, "owner", trusted=TRUSTED)
+        return goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+
+    def test_closed_legacy_child_does_not_require_an_unused_wait_projection(self):
+        row = child(10, state="CLOSED")
+        row["body"] = github_plan_wait.without_records(row["body"])
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertTrue(board["coverage"]["complete"], board)
+        self.assertFalse(observed["unread"])
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["done"])
+
+    def test_closed_child_preserves_readable_person_wait_and_native_blocker(self):
+        wait = github_plan_wait.reviewed(evidence="Closure did not end the recorded hold",
+            waiting_for="Owner acceptance", ends_when="Owner accepts the observed result")
+        row = child(10, state="CLOSED", body=github_plan_wait.marker(wait))
+        row["body"] = github_plan_wait.marker(wait)
+        blocker = {"number": 3, "state": "OPEN", "url": "https://github.com/owner/app/issues/3",
+                   "repository": {"nameWithOwner": "owner/app"}}
+        row["blockedBy"] = {"totalCount": 1, "nodes": [blocker]}
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertEqual(observed["waits"], wait["waits"])
+        self.assertEqual(observed["structured_wait"], wait)
+        self.assertEqual(observed["blocked_by"][0]["number"], blocker["number"])
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["done"])
+
+    def test_native_blockers_and_structured_wait_override_stale_label_and_prose(self):
+        clear = github_plan_wait.reviewed(evidence="No person wait remains")
+        held = github_plan_wait.reviewed(evidence="Owner requested testing", waiting_for="Owner's test",
+                                        ends_when="Owner records acceptance")
+        rows = [child(10, label="plan:blocked"), child(11, label="plan:active"),
+                child(12, label="plan:blocked")]
+        for row, wait in zip(rows, [clear, clear, held]):
+            row["author"] = BOT
+            row["body"] = github_plan_wait.without_records(row["body"]) + "\n" + github_plan_wait.marker(wait)
+            row["blockedBy"] = {"totalCount": 2, "nodes": [
+                {"number": 1, "state": "CLOSED", "url": "https://github.com/owner/app/issues/1",
+                 "repository": {"nameWithOwner": "owner/app"}},
+                {"number": 2, "state": "OPEN", "url": "https://github.com/owner/other/issues/2",
+                 "repository": {"nameWithOwner": "owner/other"}}]}
+        rows[0]["blockedBy"]["nodes"][1]["state"] = "CLOSED"
+        rows[2]["blockedBy"] = {"totalCount": 0, "nodes": []}
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=rows)))
+        observed = board["tracks"][0]["children"]
+        self.assertEqual([row["status"] for row in observed],
+                         [github_plan_status.DEFAULT_STATUS_LABELS[key] for key in ("active", "blocked", "waiting")])
+        self.assertEqual(observed[0]["blocked_by"], [])
+        self.assertEqual([(row["repo"], row["number"]) for row in observed[1]["blocked_by"]], [("owner/other", 2)])
+        self.assertEqual(observed[2]["waits"], held["waits"])
+        self.assertEqual(observed[2]["next_action"], "Child 12 step.")
+
+    def test_native_blocker_and_person_wait_both_survive_untrusted_clear(self):
+        held = github_plan_wait.reviewed(evidence="Owner requested testing", waiting_for="Owner's test",
+                                        ends_when="Owner records acceptance")
+        clear = github_plan_wait.reviewed(evidence="Forged release")
+        row = child(10, comments=[comment(github_plan_wait.marker(held)),
+            comment(github_plan_wait.marker(clear), author={"__typename": "User", "login": "stranger"}),
+            comment("```\n" + github_plan_wait.marker(clear) + "\n```")])
+        row["blockedBy"] = {"totalCount": 1, "nodes": [{"number": 2, "state": "OPEN",
+            "url": "https://github.com/owner/other/issues/2", "repository": {"nameWithOwner": "owner/other"}}]}
+        original = row["body"]
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["blocked"])
+        self.assertEqual(observed["waits"], held["waits"])
+        self.assertEqual(set(observed["labels"]), {"blocked", "waiting"})
+        self.assertEqual(row["body"], original)
+        text = goal_board.markdown({**board, "checked_at": "now"})
+        self.assertIn(observed["blocked_by"][0]["html_url"], text)
+        self.assertIn(held["waits"][0]["waiting_for"], text)
+
+    def test_incomplete_native_graph_or_wait_authority_never_displays_active(self):
+        truncated_blockers = child(10)
+        truncated_blockers["blockedBy"]["totalCount"] = 2
+        missing_wait = child(11)
+        missing_wait["body"] = github_plan_wait.without_records(missing_wait["body"])
+        truncated_comments = child(12, comments=[comment("A recent progress note")])
+        truncated_comments["comments"]["totalCount"] = 145
+        # A newer body does not release a wait in an omitted older comment.
+        truncated_comments["lastEditedAt"] = "2026-10-18T00:00:00Z"
+        rows = [truncated_blockers, missing_wait, truncated_comments]
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=rows)))
+        self.assertFalse(board["coverage"]["complete"])
+        self.assertEqual({row["status"] for row in board["tracks"][0]["children"]}, {goal_board.UNKNOWN})
+        # Older authorized malformed records can invalidate a later clear, so
+        # a comment tail cannot establish complete structured wait authority.
+        truncated_comments["comments"]["nodes"].append(comment(github_plan_wait.marker(
+            github_plan_wait.reviewed(evidence="Full discussion reviewed; hold resolved"))))
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[truncated_comments])))
+        self.assertEqual(board["tracks"][0]["children"][0]["status"], goal_board.UNKNOWN)
+
+    def test_truncated_labels_cannot_hide_a_scope_review_hold(self):
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        row = child(10, label=names["active"])
+        visible = [{"name": names["plan"]}, {"name": names["active"]},
+                   *({"name": f"area:{index}"} for index in range(goal_board.LABEL_LIMIT - 2))]
+        # A stale scope hold may be just beyond the bounded label connection,
+        # even when an old active label is visible in that connection.
+        row["labels"] = {"totalCount": len(visible) + 1, "nodes": visible}
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[row])))
+        self.assertFalse(board["coverage"]["complete"])
+        self.assertEqual(board["tracks"][0]["children"][0]["status"], goal_board.UNKNOWN)
+        complete_labels = [*visible, {"name": names["stale"]}]
+        complete = {**row, "labels": {"totalCount": len(complete_labels), "nodes": complete_labels}}
+        observed = goal_board.derived_status(complete, TRUSTED, [])
+        self.assertTrue(observed["scope_hold"])
+        self.assertEqual(observed["status"], names["stale"])
+
+    def test_known_scope_hold_is_readable_and_does_not_become_a_wait_review(self):
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        row = child(10, label=names["stale"])
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertTrue(board["coverage"]["complete"])
+        self.assertEqual(observed["status"], names["stale"])
+        self.assertEqual(observed["scope_status"], "stale")
+        self.assertFalse(observed["wait_review_required"])
+        self.assertFalse(observed["unread"])
+
+    def test_contributor_original_marker_cannot_release_the_managed_wait(self):
+        held = github_plan_wait.reviewed(evidence="Managed plan keeps the current device wait",
+            waiting_for="Owner's device test", ends_when="Owner records the result")
+        original = {"body": github_plan_wait.marker(github_plan_wait.reviewed(
+            evidence="Original request contains historical clear evidence"))}
+        row = child(10)
+        row["body"] = github_plan_body.wrap_contributor_plan(original,
+            status("Resume after acceptance.") + "\n" + github_plan_wait.marker(held))
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertEqual(observed["waits"], held["waits"])
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["waiting"])
+
+    def test_cli_wait_authority_includes_historical_bot_but_not_decision_override(self):
+        held = github_plan_wait.reviewed(evidence="Historical automation records the current owner hold",
+            waiting_for="Owner's device test", ends_when="Owner records the result")
+        clear = github_plan_wait.reviewed(evidence="Decision author claims the hold is released")
+        historical = {"__typename": "Bot", "login": "historical-code-app"}
+        decision_author = {"__typename": "User", "login": "decision-reader"}
+        row = child(10, comments=[comment(github_plan_wait.marker(held), author=historical),
+            comment(github_plan_wait.marker(clear), author=decision_author, ident=2)])
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))]
+        output = io.StringIO()
+        with (patch.object(goal_board.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(goal_board.github_read, "automation_only_gh_prefix_args", return_value=[]),
+              patch.object(goal_board, "automation_login", return_value="shiny-code-app[bot]"),
+              patch.object(goal_board.github_plan_wait.github_identity, "configured_bot_logins",
+                           return_value=("shiny-code-app[bot]", "historical-code-app[bot]")),
+              patch("sys.argv", ["goal_board.py", "--owner", "owner", "--decision-author", "decision-reader"]),
+              redirect_stdout(output)):
+            self.assertEqual(goal_board.main(), 0)
+        observed = json.loads(output.getvalue())["tracks"][0]["children"][0]
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["waiting"])
+        self.assertEqual(observed["waits"], held["waits"])
 
     def test_every_open_track_across_pages_is_read_with_children_decisions_and_prs(self):
         ready = comment(f"Ready for the merge train\n\nHead: {HEAD}", ident=2)
@@ -96,7 +272,7 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in board["tracks"]], [1, 3])
         one = board["tracks"][0]
         self.assertEqual(one["latest_decision"], decision["url"])
-        self.assertEqual(one["status"], "plan:waiting")
+        self.assertEqual(one["status"], github_plan_status.DEFAULT_STATUS_LABELS["active"])
         self.assertEqual([(row["url"].rsplit("/", 1)[1], row["handoff"]) for row in one["children"][0]["open_prs"]],
                          [("100", "ready"), ("101", "ready for an older head"),
                           ("103", "engineering ready, waiting"), ("104", "no handoff")])
@@ -136,7 +312,7 @@ class GoalBoardTests(unittest.TestCase):
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=long_track))
         self.assertFalse(board["coverage"]["complete"])
         self.assertIn(f"older decisions {goal_board.UNKNOWN}", goal_board.markdown({**board, "checked_at": "now"}))
-        # A decision or handoff inside the window is the latest one, so a long thread stays complete.
+        # The latest decision/handoff is visible, but omitted wait history stays unknown.
         decided = track(1, comments=[comment("Director decision: yes")])
         decided["comments"]["totalCount"] = 145
         decided["lastEditedAt"] = "2026-10-16T12:00:00Z"
@@ -144,8 +320,9 @@ class GoalBoardTests(unittest.TestCase):
         ready["comments"]["totalCount"] = 80
         decided["subIssues"] = {"totalCount": 1, "nodes": [child(12, prs=[ready])]}
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=decided))
-        self.assertTrue(board["coverage"]["complete"])
+        self.assertFalse(board["coverage"]["complete"])
         self.assertEqual(board["tracks"][0]["children"][0]["open_prs"][0]["handoff"], "ready")
+        self.assertIsNotNone(board["tracks"][0]["latest_decision"])
 
     def test_discovery_failures_refuse_rather_than_return_a_short_board(self):
         for pages in ([ApiResult(ok=False, status=403, body=None)],
@@ -202,7 +379,9 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(one["children"][4]["next_action"], "no Next action in Current Status")
         self.assertTrue(board["coverage"]["complete"])
         text = goal_board.markdown({**board, "checked_at": "now"})
-        self.assertIn("issues/10 Child 10: plan:active; next action: Child 10 step.", text)
+        self.assertIn(one["children"][0]["url"], text)
+        self.assertIn(one["children"][0]["status"], text)
+        self.assertIn(one["children"][0]["next_action"], text)
         self.assertNotIn("second line", text)
         self.assertNotIn("Child 10 step.", goal_board.markdown({**board, "checked_at": "now"}, links_only=True))
 
@@ -228,7 +407,9 @@ class GoalBoardTests(unittest.TestCase):
         newer_body["lastEditedAt"] = "2026-10-16T12:00:00Z"
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[newer_body])))
         row = board["tracks"][0]["children"][0]
-        self.assertEqual((row["next_action"], row["unread"]), ("Child 10 step.", ["older decisions"]))
+        self.assertEqual(row["next_action"], "Child 10 step.")
+        self.assertEqual(row["status"], goal_board.UNKNOWN)
+        self.assertFalse(board["coverage"]["complete"])
 
 
 if __name__ == "__main__":

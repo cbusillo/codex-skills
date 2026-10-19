@@ -27,7 +27,7 @@ def cases() -> list[dict]:
 
 
 def source(case: dict) -> tuple[dict, list[dict]]:
-    raw = cli.global_issue('cbusillo/launchplane', case['number'], body=(
+    raw = cli.global_issue('cbusillo/launchplane', case['number'], wait_reviewed=False, body=(
         f"## Current Status\nState: {case['state']}\nNext action: {case['action']}\n"
         f"Waiting for: {case['waiting_for']}\n"))
     raw['user'] = {'login': 'cbusillo'}
@@ -98,7 +98,9 @@ def test_current_authorized_wait_wins_and_real_event_waits_remain() -> None:
     assert not result['available_candidates']
     row = next(row for row in result['excluded'] if row['number'] == raw['number'])
     assert row['exclusion'] == 'waiting'
-    assert {row['waiting_for'].split(';')[0] for row in result['recorded_waits']} == {entry['waiting_for'] for entry in pending['waits']}
+    assert {row['waiting_for'] for row in result['waiting']} == {entry['waiting_for'] for entry in pending['waits']}
+    assert row['structured_wait'] == pending
+    assert not result['recorded_waits']
     comments.append({'id': 5, 'user': {'login': 'bot'}, 'body': wait.marker(wait.reviewed(evidence='Both holds resolved'))})
     assert run_global(raw, comments)['available_candidates']
 
@@ -111,11 +113,11 @@ def test_unread_or_malformed_later_records_never_advertise_clear_work() -> None:
         assert not run_global(raw, changed, comment_limit=len(comments))['available_candidates']
 
 
-def test_clear_record_does_not_override_native_wait_or_blocker_or_parent_hold() -> None:
+def test_clear_record_ignores_old_wait_label_but_preserves_native_and_parent_holds() -> None:
     raw, comments = source(cases()[0])
     held = copy.deepcopy(raw)
     held['labels'] = [{'name': 'plan:waiting'}]
-    assert not run_global(held, comments)['available_candidates']
+    assert run_global(held, comments)['available_candidates']
     module = cli.load_module()
     clear = wait.current(raw, comments, {'cbusillo', 'bot'})
     node = direction.evaluate_direction_node(raw, config=module.DEFAULT_CONFIG, focus=None,
@@ -149,7 +151,7 @@ def test_structured_wait_text_is_data_even_when_it_looks_like_status_fields() ->
     comments.append({'id': 3, 'user': {'login': 'bot'}, 'body': wait.marker(record)})
     result = run_global(raw, comments)
     assert not result['available_candidates']
-    reported = result['recorded_waits'][0]
+    reported = result['waiting'][0]
     assert reported['waiting_for'] == record['waits'][0]['waiting_for']
     assert reported['ends_when'] == record['waits'][0]['ends_when']
     assert not reported['agent_next']
@@ -271,7 +273,7 @@ def test_service_wait_review_flag_blocks_available_without_cli_queue() -> None:
     result = direction.rank_portfolio_work({'candidates': [row], 'excluded': []}, [], milestone_titles=['First'],
         selection_context={'issues': {'owner/repo#1': cli.reviewed(row, ownership_complete=True)}})
     assert not result['available_candidates']
-    assert result['candidates'][0]['review_required'] == 'wait_review_required'
+    assert result['excluded'][0]['exclusion'] == 'wait_review_required'
 
 
 def test_bold_legacy_wait_keeps_its_invalid_milestone_finding() -> None:

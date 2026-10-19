@@ -967,12 +967,12 @@ id = "github.plan.wait"
 request_priority = "essential"
 capabilities = ["issues_read", "issues_write", "pull_requests_read"]
 permission_mode = "input_dependent"
-permission_note = "Default single-record and --all inventories read complete issue discussions; explicit --clear or --waiting-for writes one automation-authored wait record to the existing issue/PR comment endpoint. No grant, label, ownership release or prose replacement."
+permission_note = "Default single-record and --all inventories read complete issue discussions; explicit --clear or --waiting-for writes one automation-authored wait record to the existing issue/PR comment endpoint and refreshes issue status labels through the canonical guarded projection. No new grant, ownership release or prose replacement."
 entrypoint = "github/scripts/gh-plan.py wait"
 intent = "Report legacy records for one review and record every existing person/event/ownership hold or evidenced absence without prose heuristics."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Paged GET /repos/{repo}/issues and /issues/{number}/comments; GET /issues/{number}; optional shared comment POST; structured record readback"
+endpoint_or_command = "Paged GET /repos/{repo}/issues and /issues/{number}/comments; GET /issues/{number}; optional shared comment POST; structured record readback; delegated guarded issue label projection"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "mixed"
@@ -980,7 +980,7 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL; existing comment transport owns fingerprint dedupe and unknown-write reconciliation."
-source_refs = ["github/scripts/gh-plan.py:cmd_wait", "github/scripts/github_plan_wait.py:current", "github/scripts/github_plan_wait.py:records"]
+source_refs = ["github/scripts/gh-plan.py:cmd_wait", "github/scripts/github_plan_status/waits.py:current", "github/scripts/github_plan_status/waits.py:records"]
 test_refs = ["github/scripts/test_github_plan_wait.py", "github/scripts/test_gh_plan_claim.py:test_wait_review_reports_full_legacy_evidence_without_changing_it", "github/scripts/test_gh_plan_claim.py:test_wait_review_records_real_hold_then_evidenced_release_without_editing_prose", "github/scripts/test_gh_plan_claim.py:test_wait_inventory_reports_each_unreviewed_open_issue_and_never_drops_prose"]
 
 [[operations]]
@@ -1394,14 +1394,14 @@ test_refs = ["github/scripts/test_github_api.py:test_retry_idempotent_write_reco
 [[operations]]
 id = "github.issue.close"
 request_priority = "essential"
-capabilities = ["issues_write"]
-permission_mode = "fixed"
-permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
+capabilities = ["issues_read", "issues_write"]
+permission_mode = "input_dependent"
+permission_note = "Existing issue read/write authority covers confirmed-close status projection and native parents/blocking dependents in the source account. The adapter binds the original automation transport and actor; exact personal close approval never authorizes fanout. Unavailable target authority stays review work, with no new grant or identity fallback."
 entrypoint = "github/scripts/gh-issue close"
 intent = "Close an issue with an optional stdin-backed REST timeline comment and explicit partial-success evidence."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Optional POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/{number} state=closed with state_reason and optional duplicate_issue_id resolved from --duplicate-of; report completed steps on partial success"
+endpoint_or_command = "Optional POST /repos/{repo}/issues/{number}/comments; PATCH /repos/{repo}/issues/{number} state=closed with state_reason and optional duplicate_issue_id; after confirmed close, delegated native parent/blocking discovery and guarded status label projection/readback; report completed steps and projection receipts separately"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "close"
@@ -1409,7 +1409,7 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "two_phase_compensating"
 retained_graphql_rationale = "No retained GraphQL transport; close comments and issue state changes use explicit REST steps with partial-success reporting."
-source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:set_issue_state", "github/scripts/github_comment.py:comment"]
+source_refs = ["github/scripts/gh-issue", "github/scripts/github_issue.py:set_issue_state", "github/scripts/github_issue.py:refresh_after_close", "github/scripts/github_plan_close_adapter.py:reconcile", "github/scripts/github_comment.py:comment"]
 test_refs = ["github/scripts/test_github_issue.py:test_close_partial_failure_preserves_comment_step", "github/scripts/test_github_issue.py:test_close_and_reopen_use_explicit_state_reasons", "github/scripts/test_github_issue.py:test_duplicate_close_resolves_database_id", "github/scripts/test_github_issue.py:test_invalid_duplicate_target_does_not_post_comment", "github/scripts/test_github_issue.py:test_mutation_parsers_accept_self_contained_targets_without_repo_resolution", "github/scripts/test_github_issue.py:test_close_reason_and_duplicate_target_are_mutually_exclusive", "github/scripts/test_github_issue.py:test_state_and_edit_commands_return_with_open_idle_stdin", "github/scripts/test_github_issue.py:test_explicit_comment_file_waits_for_slow_stdin_and_reads_paths", "github/scripts/test_github_issue.py:test_close_rejects_comment_with_comment_file", "github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
@@ -2505,6 +2505,27 @@ reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "GraphQL GitHub closingIssuesReferences is the authoritative relationship for keyword/manual PR closing links; prose and merged prerequisites never establish completion."
 source_refs = ["github/scripts/gh-plan.py:cmd_reconcile_landing", "github/scripts/github_plan_landing.py:closing_references", "github/scripts/github_plan_landing.py:reconcile", "launchplane/scripts/launchplane-train-drive.py:_with_runtime_reconciliation"]
 test_refs = ["github/scripts/test_github_plan_landing.py:LandingTests", "launchplane/scripts/test_launchplane_train_drive.py:TrainDriveTests"]
+
+[[operations]]
+id = "github.plan.reconcile_status"
+request_priority = "essential"
+capabilities = ["issues_read", "issues_write"]
+permission_mode = "input_dependent"
+permission_note = "Read-only by default. Apply uses verified target configuration and the existing repository posting identity for status label changes only. Missing wait, graph or authority evidence remains review work. No new grant or identity fallback."
+entrypoint = "github/scripts/gh-plan.py reconcile-status"
+intent = "Recover a derived status projection without repeating a confirmed issue, wait, edge or close write."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Delegated REST issue, comment and native relationship reads; optional direct parent/blocking dependent discovery; guarded issue label PATCH and readback"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "mixed"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No GraphQL transport; the existing related-issue projection supplies complete evidence and guarded label writes."
+source_refs = ["github/scripts/gh-plan.py:cmd_reconcile_status", "github/scripts/gh-plan.py:refresh_planning_targets", "github/scripts/github_plan_landing.py:reconcile_related"]
+test_refs = ["github/scripts/test_github_plan_landing.py:MutationProjectionTests"]
 
 [[operations]]
 id = "github.worktree.retire_landed"

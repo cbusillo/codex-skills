@@ -12,6 +12,7 @@ import copy
 from typing import Any
 
 import github_read
+import github_plan_status
 
 ISSUE_FIELDS = """number title body state stateReason createdAt updatedAt url
  author { __typename login } authorAssociation repository { nameWithOwner }
@@ -138,14 +139,7 @@ def complete_issue(
 def rest_author(author: dict[str, Any] | None) -> dict[str, str]:
     if author is None:
         return {"login": "ghost", "type": "User"}
-    login = author["login"]
-    kind = author.get("__typename")
-    return {
-        "login": login + "[bot]"
-        if kind == "Bot" and not login.endswith("[bot]")
-        else login,
-        "type": "Bot" if kind == "Bot" else "User",
-    }
+    return github_plan_status.normalize_author({"author": author})
 
 
 def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
@@ -202,7 +196,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
                 ("sub_issues", "subIssues"),
             ]
         },
-        "_graph_comments": [
+        **({"_graph_comments": [
             {
                 "id": n["databaseId"],
                 "body": n["body"],
@@ -212,7 +206,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
                 "user": rest_author(n["author"]),
             }
             for n in node.get("comments", [])
-        ],
+        ]} if "comments" in node else {}),
     }
 
 

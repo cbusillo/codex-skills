@@ -1349,6 +1349,13 @@ cmp "$tmpdir/expected-pr-comment-body" "$env_log"
 assert_helper_envelope "$stdout_log" github.comment.pr 'https://github.com/owner/repo/issues/42#issuecomment-7'
 jq -e '.comment_action == "updated" and .comment.id == 7' "$stdout_log" >/dev/null
 
+# Close projection verifies the mocked repository's local configuration.
+# An empty real Git checkout supplies that identity without provider access.
+close_checkout="$tmpdir/close-checkout"
+git init --quiet --template= "$close_checkout"
+git -C "$close_checkout" remote add origin https://github.com/owner/repo.git
+pushd "$close_checkout" >/dev/null
+
 cat >"$tmpdir/record-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1361,6 +1368,13 @@ case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
 	*'--method GET'*'/comments?'*) printf '[]\n' ;;
+	*'--method GET'*'/dependencies/blocked_by?'*|*'--method GET'*'/dependencies/blocking?'*|*'--method GET'*'/sub_issues?'*)
+		printf '[]\n'
+		;;
+	*'--method GET'*'/parent'*)
+		printf 'HTTP/2.0 404 Not Found\r\ncontent-type: application/json\r\n\r\n{"message":"Not Found"}\n'
+		exit 1
+		;;
 	*'--method GET'*'/repos/owner/repo/issues/'*)
 		number=''
 		for arg in "$@"; do
@@ -1639,6 +1653,7 @@ if [[ -s "$log" ]]; then
 	echo "error: conflicting close modes must fail before calling GitHub" >&2
 	exit 1
 fi
+popd >/dev/null
 
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash
