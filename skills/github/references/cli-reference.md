@@ -1083,7 +1083,14 @@ Verify the original session's transcript and actual closure first. Post a
 closed-session attestation through `gh-comment` on the canonical issue or
 Supervisor handoff issue. Its first line is `Closed session <native-id>`,
 followed by `Ended at: <timezone-qualified-ISO-timestamp>` recording actual
-closure, `Safe to exit: yes`, and links to the transcript-verified handoff.
+closure and `Safe to exit: yes`. Cite the genuine transcript-verified handoff
+when one exists. If a finished session has no such handoff, cite its exact
+canonical original structured claim matching that verified native session as
+original ownership context. Label it truthfully as ownership context, never as
+a worker handoff. Independently verify the original transcript, actual closure
+and original end time in either case; the ownership link replaces none of them.
+This alternative does not replace unstructured-source or legacy reconciliation,
+including their existing handoff and branch-evidence requirements below.
 Do not substitute the attestation's posting time for the closure time.
 
 ```bash
