@@ -945,7 +945,7 @@ REVIEWED_HEAD = "c" * 40
 
 def supervisor_receipt_line(head=REVIEWED_HEAD, request_id=4100):
     # The receipt builder is the Supervisor's; the watcher itself never imports it.
-    supervisor_scripts = str(Path(gh_pr_watch.__file__).resolve().parents[2] / "supervisor" / "scripts")
+    supervisor_scripts = str(Path(__file__).resolve().parents[2] / "supervisor" / "scripts")
     if supervisor_scripts not in sys.path:
         sys.path.append(supervisor_scripts)
     import pending_reviews
@@ -1076,6 +1076,11 @@ def test_corrected_supervisor_review_report_resurfaces_once(monkeypatch):
     state = {}
 
     assert [item["id"] for item in supervisor_watch(state)] == ["41"]
+    assert supervisor_watch(state) == []
+
+    # Only the transport marker and trailing whitespace change: no correction.
+    original = comments[0]["body"]
+    comments[0] = {**comments[0], "body": original.rstrip().rsplit("\n", 1)[0] + "\n<!-- github-skill-operation:" + "f" * 32 + " -->\n"}
     assert supervisor_watch(state) == []
 
     corrected = supervisor_report_body(findings="Corrected: the second finding does not apply.")

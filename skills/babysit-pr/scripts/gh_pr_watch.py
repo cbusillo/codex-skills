@@ -1339,7 +1339,10 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
 
         kind = item["kind"]
         if item.get("source") == "supervisor_review":
-            fingerprint = hashlib.sha256(item["body"].encode()).hexdigest()[:16]
+            from github_plan_claim import without_operation_marker
+            # A replaced transport marker or reflowed edges is not a correction.
+            content = without_operation_marker(item["body"]).strip()
+            fingerprint = hashlib.sha256(content.encode()).hexdigest()[:16]
             if seen_supervisor_reports.get(item_id) == fingerprint:
                 continue
             new_items.append(item)

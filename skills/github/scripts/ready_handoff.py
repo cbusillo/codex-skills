@@ -374,8 +374,11 @@ def supervisor_review_request(body):
 def raw_receipt(body):
     # gh-pr appends a transport marker. Only the raw report's final marker
     # is a receipt; source snippets inside the review remain ordinary data.
-    # Imported here so package-style importers of this module need no path setup.
-    from github_plan_claim import without_operation_marker
+    # Imported here, in either import style, so importers need no path setup.
+    try:
+        from github_plan_claim import without_operation_marker
+    except ModuleNotFoundError:
+        from skills.github.scripts.github_plan_claim import without_operation_marker
     lines = without_operation_marker(body).strip().splitlines()
     match = SUPERVISOR_RECEIPT.fullmatch(lines[-1]) if lines else None
     if match:
