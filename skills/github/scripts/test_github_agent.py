@@ -91,14 +91,17 @@ class AgentTests(unittest.TestCase):
         for family, other, scan in (("codex", "claude", 1), ("claude", "codex", 1),
                                     ("codex", "claude", 50), ("claude", "codex", 50)):
             module = next_tests.load_module()
-            items = [next_tests.issue(1, labels=["plan", f"agent:{other}"]),
-                     next_tests.issue(2, labels=["plan", f"agent:{family}"]),
+            items = [next_tests.issue(1, labels=["plan", "plan:active", f"agent:{other}"]),
+                     next_tests.issue(2, labels=["plan", "plan:active", f"agent:{family}"]),
                      next_tests.issue(3)]
             result = {}
             with patch.multiple(module, default_repo=lambda _: "owner/repo",
                                 load_config=lambda _: module.DEFAULT_CONFIG,
                                 load_direction=lambda _: None,
-                                collect_paged_rest_items=lambda *_a, **_k: ("bot", items),
+                                collect_paged_rest_items=lambda path, **_k: ("bot", [{
+                                    "user": {"login": "owner"}, "body": module.github_plan_wait.marker(
+                                        module.github_plan_wait.reviewed(evidence="Routing fixture has no person/event holds"))}]
+                                    if path.endswith("/comments") else items),
                                 next_focus_context=lambda *_: ("bot", {}, {"available": True}),
                                 read_next_issue_relationships=lambda *_: ("bot", next_tests.relationships(), []),
                                 emit=result.update):
@@ -184,7 +187,7 @@ class AgentTests(unittest.TestCase):
     def test_family_discovery_omissions_preserve_milestone_and_parent_waits(self):
         for family, other in (("codex", "claude"), ("claude", "codex")):
             parent = next_tests.global_issue("someone/product", 10,
-                labels=["plan:waiting"], body="## Current Status\nWaiting for: Owner testing")
+                labels=["plan:waiting"], body="## Current Status\nWaiting for: Owner testing", waiting_for="Owner testing")
             leaves = [next_tests.global_issue("someone/product", n, labels=[f"agent:{other}"])
                       for n in (2, 3)]
             leaves[1]["milestone"] = next_tests.milestone_data(1, "First", created_at="2026-01-01T00:00:00Z")
@@ -205,7 +208,8 @@ class AgentTests(unittest.TestCase):
         for family, other in (("codex", "claude"), ("claude", "codex")):
             roots = [next_tests.track("someone/direction", 1, "First"),
                      next_tests.track("someone/direction", 2, "Second")]
-            leaves = [next_tests.global_issue("someone/business", n, labels=[f"agent:{assigned}", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.")
+            leaves = [next_tests.global_issue("someone/business", n, labels=[f"agent:{assigned}", "plan:waiting"], waiting_for="Customer testing",
+                                              body="## Current Status\nWaiting for: Customer testing.")
                       for n, assigned in ((10, other), (11, family))]
             tool = next_tests.global_issue("someone/tools", 20, labels=[f"agent:{family}"])
             edges = {(root["repo"], root["number"]): next_tests.relationships(sub_issues=[leaf])
@@ -275,6 +279,7 @@ class AgentTests(unittest.TestCase):
                                 load_config=lambda _: {**module.DEFAULT_CONFIG, "projects": {"enabled": False}},
                                 find_existing_plan_issues=lambda *_a, **_k: ("bot", []),
                                 ensure_labels=lambda *_a, **_k: ("bot", []),
+                                refresh_planning_targets=lambda *_a, **_k: {"ok": True, "coverage": "complete", "issues": []},
                                 comment_route=lambda: ("bot", "fake-gh", "bot"), emit=lambda _: None), \
                     patch.object(module.github_issue_core, "create_issue", side_effect=create):
                 module.cmd_create(args)
