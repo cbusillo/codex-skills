@@ -312,6 +312,16 @@ def test_preview_collect_reports_recorded_evidence_kind_only():
     assert code != 0 and output["status"] == "outcome_unknown"
 
 
+@pytest.mark.parametrize("blank", ["", " "])
+def test_preview_collect_refuses_a_recorded_fact_without_a_reference(blank):
+    body = scope(preview=True)
+    collected = receipt("collect", usage="in_use", usage_evidence=blank,
+                        odoo_usage={"reason_code": "unsupported_lane"})
+    code, output, _, _ = invoke("collect", body=body, inspect_body=body, responses=[collected, receipt("inspect")])
+    assert code != 0 and output["status"] == "outcome_unknown"
+    assert "result" not in output or not output["result"]
+
+
 def test_preview_record_must_return_exactly_the_submitted_facts():
     body = scope(preview=True, usage="unused", usage_evidence="ref")
     code, output, calls, _ = invoke("record", body=body, inspect_body=scope(preview=True),

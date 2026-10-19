@@ -251,7 +251,8 @@ def _evidence_kind(fact: str, value: str, reference: str, preview: bool) -> str 
     for kind, pattern in EVIDENCE_FORMATS[fact][value]:
         if pattern.fullmatch(reference):
             return kind
-    if preview and value in RECORDED_PREVIEW_FACTS[fact]:
+    # The producer's DisposableLaneSafety rejects a known fact without a reference.
+    if preview and value in RECORDED_PREVIEW_FACTS[fact] and reference.strip():
         return "recorded"
     return None
 
