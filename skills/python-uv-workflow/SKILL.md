@@ -79,8 +79,10 @@ the workflow. Release-specific work may also require:
 - TestPyPI/PyPI environment rules
 - verifying package import name versus distribution name
 
-Do not publish, tag, push, or dispatch release workflows unless the user
-explicitly asks.
+For publishing, tags, pushes, and release workflow dispatches, apply
+[task scope and authorization](../references/execution-scope.md), the Director's
+current `DIRECTION.md` release timing and acceptance rules, and the repository's
+gated publish path. Building a package does not itself authorize publishing it.
 
 ## Repo-Specific Execution
 

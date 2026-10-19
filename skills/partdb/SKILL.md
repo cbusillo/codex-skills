@@ -64,9 +64,10 @@ updates.
 2. **Propose:** Turn supplied evidence into a structured draft. Show unknown or
    ambiguous fields explicitly; never fabricate part numbers, quantities,
    locations, or categories.
-3. **Mutate:** Create, update, move, adjust, or delete inventory only after the
-   user explicitly approves the rendered change set. Re-verify the target and
-   result, and do not reuse approval for later changes.
+3. **Mutate:** Apply [task scope and authorization](../references/execution-scope.md)
+   and the Director's current overall and product `DIRECTION.md` stop boundaries
+   to the rendered change set. Re-verify the target and result. The helper's
+   approval artifact binds one exact plan and remains single-use.
 
 Do not improvise request payloads from general memory. Probe the installed
 instance's OpenAPI contract before relying on version-sensitive endpoints.
@@ -83,7 +84,7 @@ instance's OpenAPI contract before relying on version-sensitive endpoints.
 4. Run `uv run scripts/partdb-read.py context-check`, then a schema probe before
    querying inventory.
    For a mutation, generate a plan from a private intent file, render its exact
-   diff, and wait for explicit approval of that plan digest.
+   diff, and check its scope against existing task authority before approval.
 5. Keep durable local taxonomy and location decisions in the private source of
    truth; update public skill guidance only when the generic contract changes.
 
@@ -99,8 +100,11 @@ plan, approval, and receipt files in a private ignored directory.
    validates the installed OpenAPI schema, reads the current amount, and emits a
    plan with an exact digest binding an opaque fingerprint of the configured
    instance URL as well as the quantities.
-3. Show the plan's `prior_amount` and `target_amount` to the user. Do not run
-   the next step until the user explicitly approves that exact digest.
+3. Show the plan's `prior_amount` and `target_amount` to the user. For an
+   unambiguous change covered by existing task or standing authority, the agent
+   may run the next step with that exact plan digest. Resolve new scope,
+   ambiguous inventory intent, or a real stop boundary before continuing,
+   using the shared authorization rules above.
 4. Run `uv run scripts/partdb-write.py approve --plan ... --approve <digest>
    --output ...`.
 5. Run `uv run scripts/partdb-write.py apply --plan ... --approval ... --apply`.
@@ -113,7 +117,8 @@ plan, approval, and receipt files in a private ignored directory.
    after an approval is reserved.
 
 If the instance changes or an older plan lacks its binding, create a new plan,
-show its diff, and obtain approval of its new digest. The fingerprint binds the
+show its diff, and re-check authority before approving its new digest through
+the same helper. The fingerprint binds the
 configured URL; it does not detect a replacement server behind the same URL.
 
 The ledger is `~/.local/state/codex-skills/partdb-write` on either harness,
@@ -123,8 +128,9 @@ together; do not delete or fork this consumption history. Apply refuses missing
 or mismatched authority before context or write access. If the ledger is lost,
 corrupt, or its consumption history is uncertain, preserve any remaining ledger
 outside its active location as private reconciliation evidence. Generate and
-explicitly approve a fresh plan to initialize a new authority; older approvals
-remain invalid. Never restore stale consumption history into the active ledger.
+approve a fresh plan through the same scope check to initialize a new authority;
+older approvals remain invalid. Never restore stale consumption history into the
+active ledger.
 The helper cannot detect a manual rollback of both its authority and receipts.
 Plans and approvals from the older formats require fresh planning and approval;
 this also applies when moving work to a different ledger or local user.
