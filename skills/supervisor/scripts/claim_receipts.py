@@ -2414,6 +2414,7 @@ def python_ownership(content, *, partial=False):
             self.node, self.scope = node, scope
             self.arguments, self.keywords, self.operands = arguments, keywords, operands
             self.positions = None
+            self.created_active = tuple(active)
 
     def same(left, right):
         if isinstance(left, ast.alias) and isinstance(right, ast.alias):
@@ -2585,7 +2586,7 @@ def python_ownership(content, *, partial=False):
                 results = [operation(item if isinstance(item, (str, int, float, bool)) else computed) for item in arguments[0]]
             return choices(results) or (unknown,)
         yielded = {}
-        result = invoke(sequence.node, sequence.scope, sequence.arguments, sequence.keywords, evaluated=True, consumed=True, yielded=yielded)
+        result = invoke(sequence.node, sequence.scope, sequence.arguments, sequence.keywords, evaluated=True, consumed=True, yielded=yielded, created_active=sequence.created_active)
         wrapper = sequence.node.function if isinstance(sequence.node, Bound) else sequence.node
         if isinstance(wrapper, Function) and isinstance(wrapper.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             paths = yield_paths(wrapper.node.body)
@@ -2634,7 +2635,7 @@ def python_ownership(content, *, partial=False):
         result = []
         for sequence in sequences:
             if isinstance(sequence, Generator):
-                identity = (id(sequence.node), id(sequence.scope)) if sequence.node is not None else (id(sequence),)
+                identity = id(sequence)
                 if identity in active_iterators:
                     recursion_skips += 1
                     result.append(unknown)
@@ -2692,6 +2693,22 @@ def python_ownership(content, *, partial=False):
                                 words.append(value(sequence.node.elt, local))
                             rows.extend(combinations(words))
                     continue
+            if isinstance(sequence, Generator) and isinstance(sequence.node, ast.Call):
+                functions, names, inputs = sequence.arguments
+                if all(isinstance(source, (Sequence, list, tuple)) for assigned in inputs for source in assigned):
+                    alternatives = [tuple(row for source in assigned for row in sequence_rows(source)) for assigned in inputs]
+                    for source_rows in combinations(alternatives):
+                        words = []
+                        for items in zip(*source_rows):
+                            arguments = [(item,) for item in items]
+                            mapped = choices(result for function in functions for result in invoke(function, sequence.scope, arguments, evaluated=True))
+                            if not mapped and len(items) == 1 and names & {"str", "repr", "ascii", "shlex.quote"}:
+                                operation = shlex.quote if "shlex.quote" in names else repr if "repr" in names else ascii if "ascii" in names else str
+                                item = items[0]
+                                mapped = (operation(item if isinstance(item, (str, int, float, bool)) else computed),)
+                            words.append(mapped or (unknown,))
+                        rows.extend(combinations(words))
+                    continue
             rows.append(list(iterate_values((sequence,), scope)))
         return rows
 
@@ -2735,10 +2752,13 @@ def python_ownership(content, *, partial=False):
         if isinstance(node, ast.Lambda):
             return (Function(node, scope),)
         if isinstance(node, ast.GeneratorExp):
-            # Python captures its outer iterator now; only the body and later
-            # clauses resolve names when the generator is consumed.
-            scan(node.generators[0].iter, scope)
-            return (Generator(node, scope, arguments=(value(node.generators[0].iter, scope),)),)
+            cached = expression_values.get((id(scope), id(node)))
+            if cached is None:
+                # The eager outer iterator is evaluated once in this evaluation.
+                scan(node.generators[0].iter, scope)
+                cached = (Generator(node, scope, arguments=(value(node.generators[0].iter, scope),)),)
+                expression_values[id(scope), id(node)] = cached
+            return cached
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
             local = comprehension(node, scope)
             if isinstance(node, ast.DictComp):
@@ -3103,6 +3123,34 @@ def python_ownership(content, *, partial=False):
         memo[identity] = result
         return result
 
+    def captures_generator(item, seen=None):
+        """A live iterator can read late bindings that an identity key omits."""
+        if isinstance(item, Generator):
+            return True
+        seen = set() if seen is None else seen
+        if id(item) in seen:
+            return False
+        seen.add(id(item))
+        if isinstance(item, Function):
+            children = [*item.defaults.values(), *(item.scope.get(name, ()) for name in item.free)]
+        elif isinstance(item, Bound):
+            children = [item.function, item.receiver]
+        elif isinstance(item, Instance):
+            children = [item.kind, *item.attributes.values()]
+        elif isinstance(item, ast.ClassDef):
+            children = class_bindings.get(id(item), {}).values()
+        elif isinstance(item, Partial):
+            children = [item.functions, item.arguments, *item.keywords.values()]
+        elif isinstance(item, Sequence):
+            children = sequence_rows(item)
+        elif isinstance(item, Keywords):
+            children = item.items.values()
+        elif isinstance(item, (list, tuple)):
+            children = item
+        else:
+            return False
+        return any(captures_generator(child, seen) for child in children)
+
     def reusable_result(item, seen=()):
         if id(item) in seen:
             return True
@@ -3138,12 +3186,12 @@ def python_ownership(content, *, partial=False):
                 invoke(hook, scope)
         return instance
 
-    def invoke(wrapper, caller, arguments=(), keywords=(), *, evaluated=False, consumed=False, yielded=None, unknown_effect=True):
+    def invoke(wrapper, caller, arguments=(), keywords=(), *, evaluated=False, consumed=False, yielded=None, unknown_effect=True, created_active=None):
         nonlocal found, recursion_skips, expression_values
         argument_values = list(arguments) if evaluated else expanded_arguments(arguments, caller)
         keyword_values = dict(keywords) if evaluated else call_keywords(keywords, caller)
         if isinstance(wrapper, Partial):
-            return choices(item for function in wrapper.functions for item in invoke(function, caller, [*wrapper.arguments, *argument_values], dict(wrapper.keywords, **keyword_values), evaluated=True, consumed=consumed, yielded=yielded))
+            return choices(item for function in wrapper.functions for item in invoke(function, caller, [*wrapper.arguments, *argument_values], dict(wrapper.keywords, **keyword_values), evaluated=True, consumed=consumed, yielded=yielded, created_active=created_active))
         if isinstance(wrapper, ast.ClassDef):
             return (construct(wrapper, caller, argument_values, keyword_values),)
         if isinstance(wrapper, ast.alias) and wrapper.name in launches:
@@ -3174,7 +3222,9 @@ def python_ownership(content, *, partial=False):
         node = wrapper.node
         if not consumed and wrapper.generator:
             return (Generator(Bound(wrapper, receiver) if receiver is not None else wrapper, caller, argument_values, keyword_values),)
-        if active.count(node) >= 2:
+        # Pre-created iterator adapters may nest the same function finitely.
+        # Iterators created by that active function still obey its recursion bound.
+        if active.count(node) >= 2 and (created_active is None or node in created_active):
             recursion_skips += 1
             return (unknown,)
         local = Scope(wrapper.scope, wrapper.locals, wrapper.globals, wrapper.nonlocals)
@@ -3193,12 +3243,15 @@ def python_ownership(content, *, partial=False):
         cache_key = (binding_key(wrapper), tuple(sorted((name, binding_key(assigned)) for name, assigned in local.state.items())))
         # A pure method depends on its receiver attributes just like lexical
         # inputs. Mutating bodies still execute on every actual invocation.
-        cacheable = yielded is None and not effectful(Bound(wrapper, receiver) if receiver is not None else wrapper) and not any(
+        invoked = Bound(wrapper, receiver) if receiver is not None else wrapper
+        cacheable = not captures_generator([invoked, *local.state.values()]) and not effectful(invoked) and not any(
             effectful(assigned) for assigned in local.state.values()
             if not (receiver is not None and len(assigned) == 1 and assigned[0] is receiver))
         if cacheable and cache_key in invocation_cache:
-            owning, result = invocation_cache[cache_key]
+            owning, result, collected = invocation_cache[cache_key]
             found |= owning
+            if yielded is not None:
+                yielded.update(collected)
             return result
         previous, generation, mutation_start = found, recursion_skips, attribute_mutations
         found = False
@@ -3223,8 +3276,8 @@ def python_ownership(content, *, partial=False):
         owning, result = found, choices(returned) or (unknown,)
         found |= previous
         if (cacheable and recursion_skips == generation and attribute_mutations == mutation_start
-                and reusable_result(result)):
-            invocation_cache[cache_key] = owning, result
+                and reusable_result(result) and all(reusable_result(assigned) for assigned in collected.values())):
+            invocation_cache[cache_key] = owning, result, collected
         return result
 
     mutation_methods = {"append", "extend", "insert", "add", "update", "setdefault", "clear", "pop", "remove", "discard", "reverse", "sort", "copy"}

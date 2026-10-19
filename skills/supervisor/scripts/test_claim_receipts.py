@@ -2963,10 +2963,22 @@ class ReceiptTests(unittest.TestCase):
                 self.assertLessEqual(counts[1], counts[0] * 6)
 
     def test_python_repeated_clear_helpers_do_not_expand_with_call_paths(self):
-        for style in ("function", "stored_function", "method", "constructor", "lexical_dag", "module_container", "keywords", "data_method", "escaped_container"):
+        for style in ("function", "stored_function", "method", "constructor", "lexical_dag", "module_container", "keywords", "data_method", "escaped_container", "yield_from", "loop_yield_from", "generator_expression"):
             counts = []
             for depth in (3, 6):
-                if style in {"module_container", "keywords", "data_method", "escaped_container"}:
+                if style == "generator_expression":
+                    expression = "['echo safe']"
+                    for index in range(depth):
+                        expression = f"(item{index} for item{index} in {expression})"
+                    program = f"list({expression})"
+                elif style in {"yield_from", "loop_yield_from"}:
+                    program = "def leaf(): yield 'echo safe'\n"
+                    for index in range(depth):
+                        child = "leaf" if index == 0 else f"step{index - 1}"
+                        body = f"yield from {child}(); yield from {child}()" if style == "yield_from" else f"\n    for _ in [1]: yield from {child}()"
+                        program += f"def step{index}(): {body}\n"
+                    program += f"list(step{depth - 1}())"
+                elif style in {"module_container", "keywords", "data_method", "escaped_container"}:
                     parameter, forwarded = ("**kw", "**kw") if style == "keywords" else ("", "")
                     program = "import subprocess,shutil\nBASE=['echo']\n"
                     body = "shutil.copy('src','dest')" if style == "data_method" else "fill(BASE); subprocess.run(['echo','done'])" if style == "escaped_container" else "subprocess.run(BASE+['done'])"
@@ -2997,7 +3009,7 @@ class ReceiptTests(unittest.TestCase):
                         assignment = f"result{index} = " if style == "stored_function" else ""
                         program += f"{indent}def step{index}({parameter}): {assignment}{child}(); {child}()\n"
                     program += ("Job()." if method else "") + f"step{depth - 1}()"
-                if style == "lexical_dag":
+                if style in {"lexical_dag", "yield_from", "loop_yield_from", "generator_expression"}:
                     calls = []
                     def profile(frame, event, _argument):
                         if event == "call" and frame.f_code.co_filename == receipts.__file__:
@@ -3021,6 +3033,24 @@ class ReceiptTests(unittest.TestCase):
     def test_python_process_launches_resolve_only_literal_concatenation(self):
         writer = "uv run /catalog/gh-plan.py --repo client/repo claim 12"
         programs = (
+            *[("import os,subprocess,shlex\nargv=" + ("['echo','dry'] if dry else " if conditional else "") + repr(["uv", "run", "--with", "requests", "/catalog/gh-plan.py", "--repo", "client/repo", verb, "12"]) + "\n" + consumer,
+               verb == "claim")
+              for conditional in (False, True) for verb in ("claim", "show")
+              for consumer in ("os.system(' '.join(map(shlex.quote,argv)))", "subprocess.run(list(map(str,argv)))", "subprocess.run(tuple(map(str,argv)))")],
+            *[("import os,shlex\ndef word(value,unused): return shlex.quote(value)\nargv=['echo','dry'] if dry else " + repr(["uv", "run", "/catalog/gh-plan.py", "--repo", "client/repo", verb, "12"]) + "\nos.system(' '.join(map(word,argv,[1,2,3,4,5,6,7])))", verb == "claim")
+              for verb in ("claim", "show")],
+            *[("import os\ndef word(value,unused):\n    os.system(" + repr(writer) + ")\n    return value\nos.system(' '.join(map(word," + repr(items) + ",[1])))", bool(items))
+              for items in ([], ["echo safe"])],
+            *[("import os\ndef passthru(xs):\n    for x in xs: yield x\nfor cmd in " + "passthru(" * depth + repr([command]) + ")" * depth + ": os.system(cmd)", owning)
+              for depth in (2, 4) for command, owning in ((writer, True), ("echo safe", False))],
+            ("import os\ncmd='echo safe'\ng=(cmd for _ in [1,2])\ndef consume(xs):\n    for c in xs: yield c\niterator=consume(g)\nprint(next(iterator))\ncmd=" + repr(writer) + "\nos.system(next(iterator))", True),
+            ("import os\ncmd='echo safe'\ng=(cmd for _ in [1,2])\ndef consume(): yield from g\nprint(next(consume()))\ncmd=" + repr(writer) + "\nos.system(next(consume()))", True),
+            ("import os\ncmd='echo safe'\nholder=[(cmd for _ in [1,2])]\ndef consume(): yield from holder[0]\nprint(next(consume()))\ncmd=" + repr(writer) + "\nos.system(next(consume()))", True),
+            ("import os\ncmd='echo safe'\nclass C:\n    def consume(self): yield from self.g\nobj=C()\nobj.g=(cmd for _ in [1,2])\nprint(next(obj.consume()))\ncmd=" + repr(writer) + "\nos.system(next(obj.consume()))", True),
+            ("import os\ncmd='echo safe'\nclass C:\n    g=(cmd for _ in [1,2])\n    @classmethod\n    def consume(cls): yield from cls.g\nprint(next(C.consume()))\ncmd=" + repr(writer) + "\nos.system(next(C.consume()))", True),
+            ("import os\ndef recursive(xs):\n    yield from recursive((x for x in xs))\nfor c in recursive(['echo safe']): os.system(c)", False),
+            ("import os\ndef commands():\n    yield 'echo safe'\n    yield " + repr(writer) + "\nlist(commands())\nos.system(*commands())", False),
+            ("import os\ndef commands():\n    yield " + repr(writer) + "\n    yield 'echo safe'\nlist(commands())\nos.system(*commands())", True),
             ("import os\nfrom supplied_module import fill\nq=[]\nfill(q)\nfor c in q: os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')", True),
             ("import os\nfrom supplied_module import fill\nq=[]\nfill((q,))\nfor c in q: os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')", True),
             ("import os\nfrom supplied_module import fill\nq=[]\nfill({'pack': (q,)})\nfor c in q: os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')", True),
