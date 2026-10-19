@@ -219,7 +219,9 @@ preserved, or intentionally left in place.
    task-owned branch cleanup. Before deleting task-owned testing or preview
    resources, establish disposability under current overall and repository
    direction, including their in-use, only-copy, production-isolation and
-   live-data safeguards. For Launchplane-managed resources, use
+   live-data safeguards. For Launchplane-managed lanes, use the
+   [disposable-lane observations](../launchplane/references/write-action-helper-contract.md#disposable-lane-observations)
+   for that evidence. For Launchplane-managed resources, use
    [contract-backed lifecycle routing](../launchplane/SKILL.md#contract-backed-lifecycle-and-repair-routing).
    For other resources, use [infra-ops](../infra-ops/SKILL.md#workflow) for
    documented provider lifecycle operations under existing task authority.
