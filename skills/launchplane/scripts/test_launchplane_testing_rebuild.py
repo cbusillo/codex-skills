@@ -5,6 +5,7 @@
 # ///
 """Native rebuild submission keeps one testing request and bounded receipts."""
 
+import http.client
 import io
 import json
 import urllib.error
@@ -308,9 +309,16 @@ def test_uncertain_exchange_preserves_unknown_and_never_repeats(error):
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-def test_malformed_accepted_response_preserves_bounded_diagnostics():
-    diagnostics = {"http_status": 202, "trace_id": "launchplane_req_broken"}
-    code, output, post, _, _ = invoke(error=helper.ServiceResponseError(diagnostics))
+@pytest.mark.parametrize("partial_body", [False, True])
+def test_malformed_accepted_response_preserves_bounded_diagnostics(partial_body):
+    diagnostics = {"http_status": 202}
+    if partial_body:
+        error = http.client.IncompleteRead(b"PRIVATE_SENTINEL")
+        setattr(error, "http_status", diagnostics["http_status"])
+    else:
+        diagnostics["trace_id"] = "launchplane_req_broken"
+        error = helper.ServiceResponseError(diagnostics)
+    code, output, post, _, _ = invoke(error=error)
     assert code != 0 and output["status"] == "outcome_unknown"
     assert all(output["summary"].get(key) == value for key, value in diagnostics.items())
     post.assert_called_once()

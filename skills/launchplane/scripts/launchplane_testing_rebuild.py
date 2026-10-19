@@ -243,8 +243,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         diagnostics = h.service_response_diagnostics(error)
     except (h.LaunchplaneSafetyError, ValueError):
         pass
-    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
-        pass
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
+        diagnostics = h.service_response_diagnostics(error)
     output = h._apply_outcome_unknown(
         operation=COMMAND, request=request, label="original testing rebuild operation"
     )

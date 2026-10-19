@@ -7987,6 +7987,8 @@ def _run_read_transport(
     calls: list[dict[str, object]] = []
 
     class Response:
+        status = 202
+
         def __enter__(self) -> "Response":
             return self
 
@@ -9832,19 +9834,20 @@ def _interrupted_http(kind: str) -> Exception:
 def test_interrupted_http_admin_reads_emit_bounded_json(argv: list[str], kind: str) -> None:
     code, payload, calls = _run_read_transport(argv, response=_interrupted_http(kind))
     assert code == 1 and payload["status"] == "unavailable"
+    assert payload["summary"]["http_status"] == 202
     assert len(calls) == 1
     assert "private-provider" not in json.dumps(payload)
 
 
-@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
-@pytest.mark.parametrize("phase", ["preflight", "post", "readback"])
+@pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('incomplete', 'readback'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('disconnected', 'readback'), ('decoding', 'preflight')])
 def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phase: str) -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
         evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
         path = _write_json(directory, "owner-review.json", evidence)
         argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:],
                 *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
-        fault = _interrupted_http(kind)
+        fault = (write_action.ServiceResponseError({"http_status": 202})
+             if kind == "decoding" else _interrupted_http(kind))
         reads = iter([fault] if phase == "preflight" else [_profile_response(), fault])
         applied = _owner_response(_owner_plan(mode="apply", applied=True))
         code, payload, posts, gets = _run_main(
@@ -9852,7 +9855,7 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
         )
     assert code == 1
     assert payload["status"] == {
-        "preflight": "unavailable", "post": "outcome_unknown", "readback": "accepted_unverified",
+        "preflight": "invalid" if kind == "decoding" else "unavailable", "post": "outcome_unknown", "readback": "accepted_unverified",
     }[phase]
     assert len(posts) == (0 if phase == "preflight" else 1)
     assert len(gets) == (2 if phase == "readback" else 1)
@@ -9860,6 +9863,9 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
         assert "read" in payload["summary"]["recommendation"].lower()
         assert posts[0]["idempotency_key"] == "apply-1"
     assert "private-provider" not in json.dumps(payload)
+
+    if kind == "decoding":
+        assert payload["summary"]["http_status"] == 202
 
 
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial"])
@@ -9941,10 +9947,10 @@ def test_interrupted_http_error_body_keeps_admin_refusal_bounded(kind: str, stat
     assert "private-" not in json.dumps(payload)
 
 
-@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
-@pytest.mark.parametrize("phase", ["preflight", "post"])
+@pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('decoding', 'preflight')])
 def test_interrupted_http_policy_import_preserves_failure_phase(kind: str, phase: str) -> None:
-    fault = _interrupted_http(kind)
+    fault = (write_action.ServiceResponseError({"http_status": 202})
+             if kind == "decoding" else _interrupted_http(kind))
     output = io.StringIO()
     with (
         patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
@@ -9960,9 +9966,12 @@ def test_interrupted_http_policy_import_preserves_failure_phase(kind: str, phase
             expected_current_policy_digest="a" * 64, expected_candidate_policy_digest="c" * 64,
         )
     payload = json.loads(output.getvalue())
-    assert code == 1 and payload["status"] == ("unavailable" if phase == "preflight" else "outcome_unknown")
+    assert code == 1 and payload["status"] == ("invalid" if kind == "decoding" else "unavailable" if phase == "preflight" else "outcome_unknown")
     assert post.call_count == (0 if phase == "preflight" else 1)
     assert "private-provider" not in output.getvalue()
+
+    if kind == "decoding":
+        assert payload["summary"]["http_status"] == 202
 
 
 @pytest.mark.parametrize("service_url", ["https://private.example.invalid", "https://private.example.invalid/launchplane/"])
@@ -10039,6 +10048,25 @@ def test_backup_proposal_malformed_product_is_a_local_input_error(policy: object
         file.write_text(json.dumps({"descriptor_id": "production-backup-policy", "source_event_id": "backup-1", "request": {"authority": {"mode": "dry_run", "policy": policy}, "reason": "Plan protection"}}))
         with pytest.raises(ValueError, match="invalid_backup_proposal_product"):
             write_action.privileged_policy_proposal_body(argparse.Namespace(payload_file=str(file)))
+
+
+
+@pytest.mark.parametrize("argv", [
+    ["repository-inventory-read", "--repository-id", "123"],
+    ["production-backup-authority-read", "--product", "example-product", "--context", "example", "--instance", "prod", "--promotion-action", "example.promote"],
+    ["private-health-endpoint-read", "--product", "example-product", "--context", "example", "--instance", "testing"],
+    ["product-promotion-status-read", "--product", "example-product"],
+])
+@pytest.mark.parametrize("decoding_failure", [False, True])
+def test_legacy_read_failure_keeps_safe_exchange_diagnostics(argv, decoding_failure):
+    response = write_action._ServiceResponse({"trace_id": "launchplane_req_invalid", "private": "PRIVATE_SENTINEL"}, 202)
+    source = write_action.ServiceResponseError(write_action.service_response_diagnostics(response)) if decoding_failure else response
+    code, payload, posts, reads = _run_main(argv, read=source)
+    assert code == 1 and not posts and len(reads) == 1
+    assert payload["summary"]["http_status"] == response.http_status
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
+
 
 
 if __name__ == "__main__":

@@ -158,7 +158,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         output["result"] = result
         output["summary"] = {**h.service_response_diagnostics(response),
             "recommendation": ("Previous effects are absent. Obtain a fresh reviewed dry-run and a new key."
-                if status == "replan_required" else RECOVERY if mode != "dry-run" else
+                if status == "replan_required" else "The requested ingress state was verified. Retain the reviewed evidence and original key. Transport and runtime health remain unproven." if mode != "dry-run" else
                 "Save and review this evidence before apply. This plan changes no provider state and proves no transport or runtime health.")}
         if mode == "apply":
             output["summary"]["idempotency_key_fingerprint"] = h.repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
@@ -193,7 +193,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         if mode != "apply":
             h.emit_read_transport_error(operation=args.command, request=request, timeout=args.timeout, exc=error)
             return 1
-        diagnostics = {}
+        diagnostics = h.service_response_diagnostics(error)
     if mode == "apply":
         output = h._apply_outcome_unknown(operation=args.command, request=request, label="private testing hostname")
         if applied:

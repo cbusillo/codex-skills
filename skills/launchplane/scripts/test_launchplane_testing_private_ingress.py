@@ -148,11 +148,24 @@ def test_unaligned_apply_cannot_be_reported_verified(updates):
 
 @pytest.mark.parametrize("failure", [TimeoutError("PRIVATE_SENTINEL"), http.client.IncompleteRead(b"PRIVATE_SENTINEL")])
 def test_interruption_keeps_unknown_or_accepted_apply_without_retry(failure):
+    class PartialResponse:
+        status = 202
+
+        def read(self):
+            raise failure
+
+    try:
+        h._read_service_response(PartialResponse())
+    except (OSError, http.client.HTTPException) as error:
+        failure = error
     code, output, calls, _ = invoke("apply", responses=[failure])
     assert code != 0 and output["status"] == "outcome_unknown" and len(calls) == 1
+    assert output["summary"]["http_status"] == 202
     code, output, calls, _ = invoke("apply", responses=[receipt("apply"), failure])
     assert code != 0 and output["status"] == "accepted_unverified" and len(calls) == 2
     assert output["result"]["applied"] is True
+    assert output["summary"]["read_back_http_status"] == 202
+    assert output["summary"]["trace_id"] == receipt("apply")["trace_id"]
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
@@ -224,12 +237,21 @@ def test_observation_failure_is_not_an_unknown_write(mode):
 
 
 @pytest.mark.parametrize("status", [403, 409, 503])
-def test_http_errors_preserve_trace_and_never_switch_route_or_retry(status):
+@pytest.mark.parametrize("phase", ["apply", "readback"])
+def test_http_errors_preserve_trace_and_never_switch_route_or_retry(status, phase):
     failure = urllib.error.HTTPError(SERVICE, status, "PRIVATE_SENTINEL", {}, io.BytesIO(json.dumps({
         "trace_id": "launchplane_req_refusal", "error": {"code": "authorization_denied" if status == 403 else "reconcile_required",
         "message": "PRIVATE_SENTINEL"}}).encode()))
-    code, output, calls, _ = invoke("apply", responses=[failure])
-    assert code != 0 and len(calls) == 1
+    code, output, calls, _ = invoke("apply", responses=([receipt("apply")] if phase == "readback" else []) + [failure])
+    assert code != 0 and len(calls) == (2 if phase == "readback" else 1)
+    if phase == "readback":
+        assert output["status"] == "accepted_unverified"
+        assert output["summary"]["trace_id"] == receipt("apply")["trace_id"]
+        assert output["summary"]["read_back_trace_id"] == "launchplane_req_refusal"
+        assert output["summary"]["read_back_http_status"] == status
+        assert output["summary"]["read_back_error_code"] == ("authorization_denied" if status == 403 else "reconcile_required")
+        assert "PRIVATE_SENTINEL" not in json.dumps(output)
+        return
     assert output["summary"]["trace_id"] == "launchplane_req_refusal"
     assert output["summary"]["error_code"] == ("authorization_denied" if status == 403 else "reconcile_required")
     if status == 503:

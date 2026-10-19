@@ -4603,7 +4603,12 @@ def emit_read_transport_error(
         isinstance(exc, TimeoutError)
         or (isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError))
     ):
-        emit_provider_unavailable(operation=operation, request=request)
+        payload = unavailable_payload(
+            operation=operation, request=request, status="unavailable",
+            code="provider_unavailable", message="Launchplane service is unavailable.",
+        )
+        cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(exc))
+        emit(payload)
         return
     payload = unavailable_payload(
         operation=operation, request=request, status="unavailable",
@@ -4616,6 +4621,7 @@ def emit_read_transport_error(
             "No response trace was received. Retry the read with a longer --timeout before the subcommand."
         ),
     }
+    cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(exc))
     emit(payload)
 
 
@@ -7279,7 +7285,7 @@ def execute_merge_train_policy_import(
             return 1
         emit_provider_unavailable(operation=operation, request=request)
         return 1
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
         if operation == "merge-train-policy-import-apply" and post_attempted:
             payload = base_payload(
                 status="accepted_unverified", operation=operation, request=request
@@ -7295,7 +7301,7 @@ def execute_merge_train_policy_import(
             ]
             emit(payload)
             return 0
-        emit_invalid_response(operation=operation, request=request)
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(exc))
         return 1
 
 
@@ -7344,6 +7350,7 @@ def execute_repository_inventory_read(
     )
     if settings is None:
         return 2
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -7362,15 +7369,16 @@ def execute_repository_inventory_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
-    except (ValueError, json.JSONDecodeError):
-        emit_invalid_response(operation=operation, request=request)
+    except (ValueError, json.JSONDecodeError) as exc:
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -8513,11 +8521,11 @@ def execute_verified_apply(
             return 1
         emit_provider_unavailable(operation=operation, request=request)
         return 1
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
         if post_attempted:
             emit(_apply_response_unverified(operation=operation, request=request, label=label))
             return 1
-        emit_invalid_response(operation=operation, request=request)
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(exc))
         return 1
 
 
@@ -8853,6 +8861,7 @@ def execute_production_backup_authority_read(
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -8888,15 +8897,16 @@ def execute_production_backup_authority_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
-    except (ValueError, json.JSONDecodeError):
-        emit_invalid_response(operation=operation, request=request)
+    except (ValueError, json.JSONDecodeError) as exc:
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -9234,6 +9244,7 @@ def execute_private_health_endpoint_read(
     query = {"product": args.product, "context": args.context}
     if args.instance:
         query["instance"] = args.instance
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -9267,15 +9278,16 @@ def execute_private_health_endpoint_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
-    except (ValueError, json.JSONDecodeError):
-        emit_invalid_response(operation=operation, request=request)
+    except (ValueError, json.JSONDecodeError) as exc:
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -9452,6 +9464,7 @@ def execute_product_promotion_status_read(
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
+    provider_payload = None
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -9478,15 +9491,16 @@ def execute_product_promotion_status_read(
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
-        emit_safety_error_payload(operation=operation, request=request, exc=exc)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
             operation=operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
-    except (ValueError, json.JSONDecodeError):
-        emit_invalid_response(operation=operation, request=request)
+    except (ValueError, json.JSONDecodeError) as exc:
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
