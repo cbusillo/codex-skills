@@ -107,7 +107,7 @@ def answer(comment: Any, director_login: str, recorders: set[str], *,
     match = re.match(rf"{re.escape(question)}\b\W*(\w+)(.*)", text, re.IGNORECASE)
     if not match:
         return None
-    return match.group(1).casefold() in AFFIRMATIVE and not HEDGE.search(match.group(2))
+    return match.group(1).casefold() in AFFIRMATIVE and "?" not in match.group(2) and not HEDGE.search(match.group(2))
 
 
 def approval_gap(

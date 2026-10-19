@@ -174,6 +174,7 @@ class ApprovalTests(unittest.TestCase):
         for url, read in ((None, None), ("https://example.com/x", None),
                           (APPROVAL_URL, approval(login="client")),
                           (APPROVAL_URL, approval(f"{Q} no")),
+                          (APPROVAL_URL, approval(f"{Q} yes?")),
                           (APPROVAL_URL, approval(f"> {Q} yes\n\nNo, I do not approve this.")),
                           (APPROVAL_URL, approval(f"{Q} yes, but not unattended")),
                           (APPROVAL_URL, approval(f"Thinking about it. {Q} yes?")),
