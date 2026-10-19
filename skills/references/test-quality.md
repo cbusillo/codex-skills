@@ -46,10 +46,12 @@ arbitrary data flow or understand every language/test DSL. Foreign-language
 source-text/instruction checks, computed paths, imported loaders with no path
 argument, and custom assertion helpers can escape it. Python execution
 detection follows `self` and `cls` method calls within the same class. A
-`setUp` fixture counts as executed only when a class method that runs a
-process also reads an attribute the fixture stored. An unrelated execution in
-the same test can still hide a workflow warning, and a step run through a
-module-level helper function is still a false positive. Foreign alias
+`setUp` or `setUpClass` fixture counts as executed only when a class method
+that runs a process also reads an attribute the fixture stored, whether or not
+that attribute holds the workflow text. An unrelated execution in the same
+test, or a helper method replaced at run time, can still hide a workflow
+warning, and a step run through a module-level helper function is still a
+false positive. Foreign alias
 detection is file-wide and conservative.
 Coincidental version matches in dependency locks or documentation need triage;
 token duplication alone does not prove ownership.
