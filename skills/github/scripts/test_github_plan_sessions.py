@@ -110,7 +110,12 @@ class ReceiptFixture:
                         status = SESSIONS.native_helpers()[1].session_status({**self.entry, "transcript": str(native_path)})
                         # Native completion is independent of claim disposition.
                         result = {"data": [{"id": status["turn_id"], "status": "completed" if status["turn_completed_at"] else "inProgress"}] if status["turn_id"] else [], "nextCursor": None}
-                    elif method in {"thread/backgroundTerminals/list", "thread/timeline/list"}:
+                    elif method == "thread/timeline/list":
+                        status = SESSIONS.native_helpers()[1].session_status({**self.entry, "transcript": str(native_path)})
+                        result = {"data": [{"type": "turnStarted", "position": 0, "turnId": status["turn_id"]},
+                                           {"type": "turnCompleted", "position": 1, "turnId": status["turn_id"], "status": "completed"}]
+                                  if status["turn_id"] else [], "nextCursor": None}
+                    elif method == "thread/backgroundTerminals/list":
                         result = {"data": [], "nextCursor": None}
                     elif method == "thread/goal/get": result = {"goal": None}
                     elif method == "thread/read": result = {"thread": {

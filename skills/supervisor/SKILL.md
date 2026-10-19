@@ -572,6 +572,14 @@ for products a Client runs business on.
   devkit, images, tenants and the live sites) carries a `## Client test notes`
   section. One missing section, even on a housekeeping PR, blocks the release
   invitation and disables Accept.
+- Classify each PR from its own notes under [Q537](https://github.com/cbusillo/codex-skills/issues/2332#issuecomment-6271199870)
+  and the [ready handoff notes contract](../github/references/cli-reference.md#ready-handoffs).
+  A no-test reason or explicit engineering marker with release test steps routes
+  to ordinary checked `ready`; unmarked steps or anything the Client must approve
+  before merge routes to `--waiting-for-client`. Lead briefs link that contract.
+  Bring the Director only real judgment calls; never ask the Director to repeat
+  an engineering classification the notes already settle. Every release still
+  needs the Client's acceptance.
 - On a Client's repositories, Discussions are drafts and issues are requests
   (Q122): read Discussions, act only on issues.
 
