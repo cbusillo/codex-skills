@@ -779,8 +779,13 @@ def response_is_after(response: Comment, external: Comment, until: datetime) -> 
     return (
         comment_timestamp(response.updated_at) == comment_timestamp(response.created_at)
         and comment_timestamp(external.updated_at) == comment_timestamp(external.created_at)
-        and response.comment_id > external.comment_id
+        and posted_later_in_same_second(response, external)
     )
+
+
+def posted_later_in_same_second(response: Comment, external: Comment) -> bool:
+    # Each comment kind has its own ID sequence, so only same-kind IDs order a tie.
+    return response.kind == external.kind and response.comment_id > external.comment_id
 
 
 def reaction_is_after(reaction: Reaction, external: Comment, until: datetime) -> bool:
@@ -896,9 +901,10 @@ def later_reply_for(
 
     An edit is never a reply: an older comment edited later, even one that links or
     mentions the comment, does not answer it. Planning records and Director questions
-    or decisions are bookkeeping, not replies.
+    or decisions are bookkeeping, not replies. The latest version is the newest one
+    fetched, even when its edit falls after ``until``.
     """
-    version = comment_activity_through(external, until)
+    version = comment_activity_time(external)
     unedited = comment_timestamp(external.updated_at) == comment_timestamp(external.created_at)
     responses = sorted(comments, key=lambda comment: (comment_timestamp(comment.created_at), comment.comment_id))
     for response in responses:
@@ -910,7 +916,7 @@ def later_reply_for(
             continue
         posted = comment_timestamp(response.created_at)
         if posted <= until and (posted > version or (
-                posted == version and unedited and response.comment_id > external.comment_id)):
+                posted == version and unedited and posted_later_in_same_second(response, external))):
             return response
     return None
 

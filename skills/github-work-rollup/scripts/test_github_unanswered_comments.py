@@ -196,6 +196,27 @@ def test_later_reply_counts_only_a_reply_posted_after_the_latest_version(name: s
     assert result["later_reply_url"] == (reply.url if answered else None)
 
 
+def test_same_second_ids_of_different_kinds_do_not_order_a_reply() -> None:
+    # Issue comments and inline review comments have separate ID sequences.
+    at = "2026-07-25T17:00:00Z"
+    inline = comment(comment_id=2500, author="outside-user", body="Wrong file?", created_at=at, kind="review_comment")
+    agent = comment(comment_id=3500, author="fixture-automation", body="CI: green", created_at=at)
+    until = datetime(2026, 7, 26, tzinfo=timezone.utc)
+    agents = {"fixture-automation"}
+
+    assert github_unanswered_comments.later_reply_for(inline, [inline, agent], agents, until) is None
+    assert not github_unanswered_comments.response_is_after(agent, inline, until)
+
+
+def test_an_edit_fetched_after_the_scan_cutoff_is_still_the_latest_version() -> None:
+    external = comment(comment_id=1, author="outside-user", body="Corrected: use the new sheet.",
+                       created_at="2026-07-25T16:00:00Z", updated_at="2026-07-25T18:00:01Z")
+    reply = comment(comment_id=2, author="fixture-automation", body="Thanks.", created_at="2026-07-25T17:00:00Z")
+    until = datetime(2026, 7, 25, 18, tzinfo=timezone.utc)
+
+    assert github_unanswered_comments.later_reply_for(external, [external, reply], {"fixture-automation"}, until) is None
+
+
 def test_planning_record_linking_a_comment_does_not_answer_it() -> None:
     external = comment(comment_id=1, author="outside-user", body="Can I send a corrected sheet?",
                        created_at="2026-07-25T14:59:27Z")
