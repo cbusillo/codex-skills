@@ -6992,18 +6992,21 @@ def execute_post(
             idempotency_key=args.idempotency_key,
         )
         try:
-            emit(
-                summarize_privileged_policy_proposal(
-                    request=request, provider_payload=provider_payload,
-                    service_url=settings["service_url"],
-                )
-                if operation == "privileged-policy-propose"
-                else summarize_success(
+            if operation == "privileged-policy-propose":
+                try:
+                    payload = summarize_privileged_policy_proposal(
+                        request=request, provider_payload=provider_payload,
+                        service_url=settings["service_url"],
+                    )
+                except TypeError as exc:
+                    raise LaunchplaneSafetyError("invalid_response") from exc
+            else:
+                payload = summarize_success(
                     operation=operation,
                     request=request,
                     provider_payload=provider_payload,
                 )
-            )
+            emit(payload)
         except LaunchplaneSafetyError as exc:
             if operation == "preview-feedback-remediation" and mutating:
                 emit(_preview_feedback_response_unverified(
@@ -7012,11 +7015,7 @@ def execute_post(
                 return 1
             if operation == "privileged-policy-propose":
                 payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be verified; the plan may have been saved.")
-                try:
-                    trace_id = public_trace_id(provider_payload.get("trace_id"))
-                except LaunchplaneSafetyError:
-                    trace_id = ""
-                payload["summary"] = {"trace_id": trace_id, "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+                payload["summary"] = {**service_response_diagnostics(provider_payload), "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
                 emit(payload)
                 return 1
             if operation == "merge-train-controller-run-once":

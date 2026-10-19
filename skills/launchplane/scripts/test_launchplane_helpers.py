@@ -9107,6 +9107,9 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
         (502, "outcome_unknown"),
         (503, "outcome_unknown"),
         (504, "outcome_unknown"),
+        *(({"field": field, "value": value}, "accepted_unverified")
+          for field in ("status", "write_status", "result_status")
+          for value in ({"private": "never-emit"}, ["never-emit"])),
     ],
 )
 def test_privileged_policy_propose_failure_reports_safe_reconciliation(
@@ -9139,6 +9142,19 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
         post = Mock(side_effect=exception)
     elif isinstance(failure, BaseException):
         post = Mock(side_effect=failure)
+    elif isinstance(failure, dict):
+        response = write_action._ServiceResponse({
+            "status": "ok", "trace_id": "launchplane_req_" + "c" * 32, "write_status": "written",
+            "summary": {"operation_id": "privileged-operation-" + "a" * 32,
+                "descriptor_id": "managed-authz-policy-set", "status": "planned",
+                "result_status": "ok", "changed": True, "expires_at": "",
+                **{field: 0 for field in ("added_rule_count", "adopted_rule_count", "updated_rule_count",
+                    "removed_rule_count", "unchanged_rule_count", "policy_safety_blocker_count",
+                    "operational_readiness_blocked_rule_count")}},
+        }, 202)
+        target = response if failure["field"] == "write_status" else response["summary"]
+        target[failure["field"]] = failure["value"]
+        post = Mock(return_value=response)
     else:
         post = Mock(
             return_value={
@@ -9171,6 +9187,10 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
             )
         result = json.loads(output.getvalue())
         assert result["status"] == expected
+        post.assert_called_once()
+        if isinstance(failure, dict):
+            assert result["summary"]["http_status"] == post.return_value.http_status
+            assert result["summary"]["trace_id"] == post.return_value["trace_id"]
         if expected in {"outcome_unknown", "accepted_unverified"}:
             assert result["summary"]["recommendation"]
         if failure in (403, 409, "malformed"):
