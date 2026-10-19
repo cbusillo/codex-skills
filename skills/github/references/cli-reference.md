@@ -911,18 +911,14 @@ the work record without copying that history into the claim comment.
 
 When the overall direction's Order admits the work, name the rule with
 `--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
-comment records it as an `Admission:` line. `milestone` walks the issue's
-native parent and `blocks` links up to a `Track:` issue with an open milestone
-in `OWNER/direction`, records the Track it reaches, and refuses before writing
-(`claim_admission_unlinked`) when none is reached. Link the issue into that
-graph with `gh-plan.py link`, or pass `--admission-unlinked "<why not yet>"`.
-The walk verifies Tracks in the claimed repository account's `OWNER/direction`.
-A Track in another account's direction repository is a reported graph
-limitation; use the explicit explanation when that is the Director's graph.
-Completeness is bounded by the configured reader's link visibility.
-Unreadable admission graph nodes or relationships also accept that explanation
-and record incomplete verification. Ownership, actor authentication, waits and
-native blockers retain their independent refusals.
+comment records it as an `Admission:` line. Admission does not read or certify
+a milestone graph. Link milestone work into
+its Track during planning and cite that evidence with `--admission-link`.
+`--admission-unlinked REASON` remains available as optional milestone context
+for existing callers; it records the explanation without checking a graph.
+Ownership, actor authentication, waits and native blockers keep their independent
+checks. A plain `Admission:` line explains why the work was selected and grants
+no authority.
 `repeat-stop` needs both occurrences as `--admission-link URL`; any kind may
 add links. Links accept `https://github.com/OWNER/REPO/issues/N` or
 `https://github.com/OWNER/REPO/pull/N`, optionally followed by

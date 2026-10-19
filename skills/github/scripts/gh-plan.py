@@ -2928,57 +2928,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     def admission_line() -> str:
         if not admission:
             return ""
-        track = None
-        complete = True
-        limitations: list[str] = []
-        read_failures: list[dict[str, Any]] = []
-        if admission == "milestone":
-            def read_parent(parent_repo: str, parent_number: int) -> dict[str, Any] | None:
-                try:
-                    return api_json("GET", f"/repos/{parent_repo}/issues/{parent_number}/parent", is_write=False,
-                                    bucket="rest_core", failed_step="claim_admission_parent")[1]
-                except PlanError as parent_error:
-                    if (parent_error.api_result or {}).get("status") == 404:
-                        return None
-                    raise
-
-            def graph_read(surface: str, node_repo: str, node_number: int) -> Any:
-                # Recover only admission reads; independent claim guards still run.
-                try:
-                    if surface == "issue":
-                        return get_issue(str(node_number), node_repo)[1]
-                    if surface == "parent":
-                        return read_parent(node_repo, node_number)
-                    return collect_paged_rest_items(
-                        f"/repos/{node_repo}/issues/{node_number}/dependencies/blocking",
-                        query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1]
-                except PlanError as graph_error:
-                    if "graph_read_unavailable" not in limitations:
-                        limitations.append("graph_read_unavailable")
-                    read_failures.append({"repo": node_repo, "number": node_number, "surface": surface,
-                                          "status": (graph_error.api_result or {}).get("status")})
-                    return {} if surface == "issue" else None if surface == "parent" else []
-
-            track, complete = github_plan_claim.admission_track(
-                (issue_repo, number), issue_repo.split("/")[0],
-                read_issue=lambda node_repo, node_number: graph_read("issue", node_repo, node_number),
-                read_parent=lambda node_repo, node_number: graph_read("parent", node_repo, node_number),
-                read_blocking=lambda node_repo, node_number: graph_read("blocking", node_repo, node_number),
-                limitations=limitations,
-            )
-            if not track and not admission_unlinked:
-                raise ClassifiedPlanError(
-                    "claim_admission_unlinked",
-                    "Milestone admission needs this issue linked into its milestone's Track graph (a sub-issue or blocker "
-                    "of the Track or of work already in its graph). Link it with gh-plan.py link, or pass "
-                    "--admission-unlinked REASON" + ("" if complete else "; graph limitations: " + ", ".join(limitations)),
-                    payload={"graph_walk_complete": complete, "graph_limitations": limitations,
-                             "graph_read_failures": read_failures},
-                )
-        record = github_plan_claim.admission_text(admission, admission_links, track=track,
-                                                 unlinked=admission_unlinked, graph_complete=complete)
-        if limitations and not track:
-            record += "; graph verification incomplete: " + ", ".join(limitations)
+        record = github_plan_claim.admission_text(admission, admission_links, unlinked=admission_unlinked)
         return record + "\n\n"
 
     def refuse_or_route(competing_claims: list[dict[str, Any]], route_comments: list[dict[str, Any]]) -> None:
@@ -6348,11 +6298,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--planning-checkout", help="Canonical planning repository checkout for cross-repository ownership inventory")
     p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
     p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,
-                   help="Which overall Order rule admits this work; milestone requires a native link into a milestone Track graph")
+                   help="Which overall Order rule admits this work; recorded with evidence, without an admission graph check")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL",
                    help="Issue or PR URL, optionally with #issuecomment-ID; preserves the cited comment; repeat-stop needs both occurrences")
     p.add_argument("--admission-unlinked", metavar="REASON",
-                   help="Why milestone work cannot be linked into its Track graph yet")
+                   help="Optional context for milestone admission; recorded without a graph check")
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("wait", help="Report legacy evidence or record a reviewed structured wait; never parses prose")
