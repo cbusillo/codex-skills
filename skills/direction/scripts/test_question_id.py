@@ -133,18 +133,17 @@ class QuestionCounterTests(unittest.TestCase):
             self.assertEqual(self.path.read_text(), data)
 
     def test_seed_reads_all_current_comments_and_reserved_ranges(self):
-        records = [
-            {"body": "Q239", "comments": [{"body": "Reserved Q240–Q259"}], "url": self.seed[1][0]},
-            {"body": "No questions here", "comments": [{"body": "Q263 decided"}], "url": "https://github.com/owner/catalog/issues/9"},
-        ]
-        envelopes = [SimpleNamespace(stdout=json.dumps({"ok": True, "disposition": "complete",
-                      "outcome_certainty": "confirmed", "issue": record})) for record in records]
-        with patch.object(counter.subprocess, "run", side_effect=envelopes):
-            highest, sources = counter.github_seed(["owner/direction#7", "owner/catalog#9"])
-        self.assertEqual(highest, max(int(m.group(1)) for record in records
-            for text in [record["body"], *(c["body"] for c in record["comments"])]
-            for m in counter.QUESTION.finditer(text)))
-        self.assertEqual(sources, [record["url"] for record in records])
+        reserved = {"body": "Q239", "comments": [{"body": "Reserved Q240–Q259"}], "url": self.seed[1][0]}
+        catalog = "https://github.com/owner/catalog/issues/9"
+        for later_comment, expected in (("Q263 decided", 263), ("Nothing numbered yet", 259)):
+            with self.subTest(expected=expected):
+                records = [reserved, {"body": "No questions here", "comments": [{"body": later_comment}], "url": catalog}]
+                envelopes = [SimpleNamespace(stdout=json.dumps({"ok": True, "disposition": "complete",
+                              "outcome_certainty": "confirmed", "issue": record})) for record in records]
+                with patch.object(counter.subprocess, "run", side_effect=envelopes):
+                    highest, sources = counter.github_seed(["owner/direction#7", "owner/catalog#9"])
+                self.assertEqual(highest, expected)
+                self.assertEqual(sources, [record["url"] for record in records])
 
     def test_seed_read_resolves_its_repository_outside_any_checkout(self):
         record = {"body": "Q601", "comments": [], "url": "https://github.com/owner/launchplane/issues/3601"}

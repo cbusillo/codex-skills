@@ -742,6 +742,10 @@ class ClientAppTests(unittest.TestCase):
                 self.assertNotIn("acting as your own GitHub user", result.stderr)
                 if repo != "client/missing-private":
                     self.assertEqual(json.loads(result.stdout)["login"], "app-1[bot]")
+                else:
+                    # A Client repository the App cannot see is never read as the person.
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("own-user", result.stdout)
 
     def test_private_read_fallback_stays_scoped_to_the_invisible_repository(self) -> None:
         self.primary_app_fleet()
@@ -752,6 +756,7 @@ class ClientAppTests(unittest.TestCase):
                 with self.subTest(args=args):
                     # Refused, or read by the App as before; never the person.
                     result = self.wrapper(*args, own_user=True)
+                    self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn("acting as your own GitHub user", result.stderr)
                     self.assertNotIn("own-user", result.stdout)
 
