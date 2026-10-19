@@ -70,6 +70,17 @@ def _verify_process_exit(entry, ended_at, source_record):
     cutoff = release.stamp(entry["tty_exited_at"]) if entry.get("tty_exited_at") else ended_at
     if cutoff is not None and ended_at is not None and cutoff > ended_at:
         raise ValueError("native TTY exit cutoff is newer than closure")
+    rows = inventory()
+    replacement = None
+    expected = entry.get("_tty_owner")
+    if expected is not None:
+        owner = session_liveness.replacement_tty_owner(entry, rows, started_at=closure.process_started_at)
+        if owner is None or owner[:2] != expected or owner[1] != cutoff:
+            raise ValueError("replacement TTY owner changed; preserve claims")
+        replacement = lambda pid: pid in owner[2]
+        # ps births have second precision. The proved root and its tree may
+        # share that second; ancestry, not a rounded time, identifies them.
+        cutoff -= timedelta(microseconds=1)
 
     def independent(pid, argv):
         if closure.guarded_launch_endpoint(pid, argv) is None:
@@ -83,9 +94,21 @@ def _verify_process_exit(entry, ended_at, source_record):
             return identity(saved) == identity(entry)
         return True
 
-    return session_liveness.verify_process_exit(
-        entry, rows=inventory(), ended_at=cutoff, started_at=closure.process_started_at,
-        independent_harness=independent)
+    def verify(cutoff, replacement):
+        return session_liveness.verify_process_exit(
+            entry, rows=rows, ended_at=cutoff, started_at=closure.process_started_at,
+            independent_harness=independent, replacement_owner=replacement)
+    try:
+        return verify(cutoff, replacement)
+    except ValueError:
+        if expected is not None or cutoff is None:
+            raise
+        # A saved replacement cutoff may equal its non-idle root's rounded
+        # birth. Re-prove ancestry only when the existing strict check needs it.
+        owner = session_liveness.replacement_tty_owner(entry, rows, started_at=closure.process_started_at)
+        if owner is None or owner[1] != cutoff:
+            raise
+        return verify(cutoff - timedelta(microseconds=1), lambda pid: pid in owner[2])
 
 
 def verify_closed(entry, supervisor_session, *, ended_at, native=None, process=None):

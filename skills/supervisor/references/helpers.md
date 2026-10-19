@@ -2202,8 +2202,16 @@ Retries preserve both original times. Legacy records without `verdict_at`
 remain valid and need their original native transcript to reconstruct it;
 never substitute notice arrival or log-write time for the verdict.
 Repeat finish previews use the existing log's original closure time. The first
-closure requires an empty or idle TTY before recording its own observation
-time; it never trusts an end time supplied by the ledger. A newer unidentified
+closure requires an empty or idle TTY, an exact dead-pane cutoff, or a proved
+replacement process tree before recording its own observation time; it never
+trusts an end time supplied by the ledger. If the original nonce-bearing tmux
+pane has already been removed, the helper can use the birth of one newer TTY
+root as a cutoff only after proving that every TTY process descends from it.
+It rechecks that root and ancestry throughout closure verification. Missing or
+uncertain pane/process coverage, orphaned work, any recorded source PID and a
+resumed source still refuse. The normal `finish` command is the recovery route;
+do not replace the original ledger identity or supply a guessed cutoff.
+A newer unidentified
 client of the source's harness still refuses on retry. With a matching current
 shared closure, use the existing guarded Codex launcher so its PID, birth, argv
 and private ingress establish that its actions cannot silently resume the source.

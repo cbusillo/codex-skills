@@ -3639,6 +3639,41 @@ class ClaimTests(unittest.TestCase):
                     with closure.resume_guard(session): pass
                 self.assertFalse(f.mutations)
 
+    def test_removed_pane_closure_allows_resume_only_successor_and_freezes_source(self):
+        import uuid
+        from datetime import datetime, timedelta, timezone
+        from test_github_plan_sessions import ReceiptFixture
+        from github_plan_sessions import native_helpers
+        native_helpers()
+        import tmux_terminal
+        closure = PLAN.github_plan_closure
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            closure.replace_rows([])
+            with closure.resume_guard(f.session, method="turn/start", home=f.home): pass
+            entry = {**f.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                     "window_id": "$1", "tab_id": "@1"}
+            born = datetime.now(timezone.utc) - timedelta(minutes=1)
+            f.native_state = "notLoaded"
+            f.process_rows = [(455, f.entry["tty"], "login"), (456, f.entry["tty"], "unrelated-worker")]
+            with patch.object(tmux_terminal.Terminal, "list", return_value=[]), \
+                    patch.object(tmux_terminal, "process_parents", return_value={99: 1, 455: 99, 456: 455}), \
+                    patch.object(closure, "process_started_at", side_effect=lambda pid: born + timedelta(seconds=pid != 455)):
+                f.release.record_closure(f.log, entry, "supervisor")
+                self.setUp()
+                source = {**OTHER, "session": f.session}
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(source), "user": {"login": TEST_BOT}, "created_at": source["claimed_at"]},
+                    {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T03:00:00Z"}]
+                self.args.resume_from = 1
+                self.args.branch = source["branch"]
+                self.observe_inventory = CLAIM.observe_sessions
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertEqual(self.emitted.call_args.args[0]["claim"]["branch"], source["branch"])
+                with self.assertRaises(ValueError):
+                    with closure.resume_guard(f.session): pass
+                self.assertFalse(f.mutations)
+
     def test_real_released_source_with_current_or_unknown_work_refuses_without_lease_contention(self):
         import uuid
         from test_github_plan_sessions import ReceiptFixture
