@@ -21,6 +21,7 @@ SPEC = importlib.util.spec_from_file_location("codex_session", Path(__file__).wi
 SESSION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SESSION)
 import github_plan_sessions
+import github_plan_native
 
 
 class ResumeTests(unittest.TestCase):
@@ -80,6 +81,21 @@ class ResumeTests(unittest.TestCase):
         self.child = MagicMock(pid=456)
         self.child.__enter__.return_value = self.child
         self.child.wait.return_value = 0
+        self.queue_requests = []
+        self.queue_hook = lambda: None
+        @contextlib.asynccontextmanager
+        async def connection(home, **_kwargs):
+            async def request(method, params):
+                if method == "thread/queue/add":
+                    self.queue_hook()
+                    self.queue_requests.append(params)
+                    return {"queuedSubmission": {"id": "queued", **{key: params[key] for key in ("clientUserMessageId", "input")}}}
+                if method == "thread/read":
+                    return {"thread": {"id": self.native, "path": str(path), "status": {"type": "notLoaded"}}}
+                return {"data": [], "nextCursor": None}
+            request.codex_home = str(home.resolve())
+            yield request
+        self.enterContext(patch.object(github_plan_native, "connection", connection))
         self.spawn = self.enterContext(patch.object(SESSION.subprocess, "Popen", return_value=self.child))
         self.enterContext(patch.object(SESSION.closure, "launch_metadata", return_value={
             "launch_pid": self.child.pid, "launch_generation": "new-generation", "launch_started_at": "2026-10-01T01:00:00Z",
@@ -144,14 +160,13 @@ class ResumeTests(unittest.TestCase):
         self.log.parent.mkdir()
         self.log.write_text(json.dumps([{"session_id": self.native, "closure_evidence": {"old": True}}]))
         self.log.chmod(0o600)
-        def spawn(*_args, **_kw):
+        def queued():
             self.assertIsNone(json.loads(self.log.read_text())[0]["closure_evidence"])
-            return self.child
-        self.spawn.side_effect = spawn
+        self.queue_hook = queued
         self.args.command, self.args.message = "queue", "literal $(touch NEVER) message"
         self.assertEqual(SESSION.run(self.args), 0)
-        command = self.spawn.call_args.args[0]
-        self.assertEqual(command[command.index("--message") + 1], self.args.message)
+        self.assertEqual(self.queue_requests[0]["input"][0]["text"], self.args.message)
+        self.spawn.assert_not_called()
 
     def test_queue_to_live_worker_does_not_replace_its_launch_on_finish(self):
         import release_session_claims as release
@@ -169,6 +184,7 @@ class ResumeTests(unittest.TestCase):
         worker = {"session_id": self.native, "harness": "codex", "transcript": str(transcript),
                   "pid": 789, "tty": "worker-tty", "supervisor_owned": True,
                   "launch_pid": 789, "launch_generation": "worker-generation", "launch_started_at": "2026-10-01T01:00:00Z"}
+        worker["codex_home"] = str(self.home)
         with patch.object(release, "inventory", return_value=[]):
             closed = release.record_closure(self.log, worker, "supervisor")
         self.assertEqual(closed["pid"], worker["pid"])

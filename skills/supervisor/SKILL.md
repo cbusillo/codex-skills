@@ -852,11 +852,13 @@ issue while pending. There is no local rule list.
 - Start a fresh tab per task; reused old sessions caused most of the friction.
   Put Supervisor tabs in one dedicated terminal window and leave the
   Director's own sessions alone.
-- A Codex thread stays loaded in its account home's daemon for 30 minutes
-  after the session exits, and a successor's claim is refused until it
-  unloads, even after the predecessor released the claim
-  ([#1951](https://github.com/cbusillo/codex-skills/issues/1951)). Brief
-  other work for that window rather than retrying the claim.
+- A Codex thread may stay loaded after its client exits. Loaded status alone
+  does not require a fixed wait before a successor can claim. An exactly released
+  source needs verified idle closure or current native end proof with validated
+  source ownership; active work, queued input and unknown coverage still refuse.
+  Use the reported native state and recovery evidence rather than a timer
+  ([#1951](https://github.com/cbusillo/codex-skills/issues/1951),
+  [#2285](https://github.com/cbusillo/codex-skills/issues/2285)).
 - Take every time you write from `date`, never from memory or a summary.
 - Recorded pilot compactions preserved briefs and issues on both harnesses;
   keep recording degradation during the experiment above. The previous 450k

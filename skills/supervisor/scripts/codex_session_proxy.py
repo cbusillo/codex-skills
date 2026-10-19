@@ -52,10 +52,13 @@ def source_endpoint(session, home, *, transcript=None):
     if home not in codex_homes(strict=True, configured_only=True):
         raise ValueError("resume requires the source's configured account home")
     paths = [p for root in ("sessions", "archived_sessions") for p in (home / root).rglob(f"*{session}*.jsonl")]
+    if transcript is not None:
+        explicit = Path(transcript).resolve(strict=True)
+        if not any(explicit.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
+            raise ValueError("source transcript is outside the selected native home")
+        paths.append(explicit)
     if not paths:
         raise ValueError("source native transcript is unavailable")
-    if transcript is not None:
-        paths.append(transcript)
     for path in dict.fromkeys(paths):
         session_record.session_status({"session_id": session, "harness": "codex", "transcript": str(path)})
     if closure.closed_log().exists():
@@ -182,16 +185,16 @@ class Ingress:
                 else:
                     leases[target] = guard, count - 1
 
-        def acquire(targets):
+        def acquire(targets, method):
             entered = set()
             try:
                 for target in sorted(targets):
                     if target in leases:
                         guard, count = leases[target]
-                        closure.set_action_pending(target, True)
+                        closure.set_action_pending(target, True, method=method, home=self.home)
                         leases[target] = guard, count + 1
                     else:
-                        guard = closure.resume_guard(target)
+                        guard = closure.resume_guard(target, method=method, home=self.home)
                         guard.__enter__()
                         leases[target] = guard, 1
                     entered.add(target)
@@ -216,10 +219,11 @@ class Ingress:
                             if not method:
                                 if identity not in approvals:
                                     raise ValueError("native approval response has no guarded request")
-                                for target in approvals[identity]:
-                                    closure.set_action_pending(target, True)
+                                targets, approval_method = approvals.pop(identity)
+                                for target in targets:
+                                    closure.set_action_pending(target, True, method=approval_method, home=self.home)
                                 await native.send(raw)
-                                release(approvals.pop(identity))
+                                release(targets)
                                 reads[asyncio.create_task(client.recv())] = "client"
                                 continue
                             try:
@@ -237,14 +241,14 @@ class Ingress:
                                         raise ValueError("native action needs a request ID for acknowledgement")
                                 if method == "thread/resume":
                                     session = message["params"]["threadId"]
-                                guarded = acquire(targets)
+                                guarded = acquire(targets, method)
                             except (OSError, ValueError) as error:
                                 await client.send(json.dumps({"id": identity, "error": {
                                     "code": -32600, "message": str(error)}}))
                                 reads[asyncio.create_task(client.recv())] = "client"
                                 continue
                             if identity is not None:
-                                requests[identity] = guarded, session, method == "thread/start"
+                                requests[identity] = guarded, session, method == "thread/start", method
                             await native.send(raw)
                             reads[asyncio.create_task(client.recv())] = "client"
                         else:
@@ -255,14 +259,14 @@ class Ingress:
                                     targets = set(thread_targets(message.get("params", {})))
                                     if method not in NON_ACTION_REQUESTS and not targets:
                                         raise ValueError("native approval source is unavailable")
-                                    approvals[identity] = acquire(set() if method in NON_ACTION_REQUESTS else targets)
+                                    approvals[identity] = acquire(set() if method in NON_ACTION_REQUESTS else targets, method), method
                                 except (OSError, ValueError) as error:
                                     await native.send(json.dumps({"id": identity, "error": {"code": -32600, "message": str(error)}}))
                                     reads[asyncio.create_task(native.recv())] = "native"
                                     continue
                             # Bidirectional ID namespaces remain independent.
-                            unguarded = set(), None, False
-                            guarded, session, started = requests.pop(identity, unguarded) if not method else unguarded
+                            unguarded = set(), None, False, None
+                            guarded, session, started, action_method = requests.pop(identity, unguarded) if not method else unguarded
                             owned = set()  # Separate references: start params may name the same thread.
                             try:
                                 if started and "result" in message:
@@ -275,19 +279,22 @@ class Ingress:
                                         if not isinstance(target, str) or not target:
                                             raise ValueError("started native thread identity is unavailable")
                                         require_native_identity(target)
-                                        owned = acquire({target})
+                                        owned = acquire({target}, "thread/start")
                                     except (OSError, ValueError) as error:
                                         raw = json.dumps({"id": identity, "error": {"code": -32603,
                                             "message": "native thread start succeeded but its ownership lease was not created: " + str(error)}})
-                                for target in guarded | owned:
-                                    closure.set_action_pending(target, True)
+                                if action_method not in closure.ROUTED_METHODS:
+                                    for target in guarded | owned:
+                                        closure.set_action_pending(target, True, method=action_method, home=self.home)
                                 if session and "result" in message and self.child_metadata:
                                     thread = message["result"]["thread"]
                                     path = Path(thread.get("path") or "/").resolve()
                                     if thread.get("id") != session or not any(path.is_relative_to((self.home / root).resolve()) for root in ("sessions", "archived_sessions")):
                                         raise ValueError("resumed native transcript identity is unavailable")
                                     try:
-                                        await asyncio.to_thread(closure.resumed_launch, session, self.child_metadata, str(path), self.child_tty)
+                                        # Publish in the actual lease-owning context. A
+                                        # cancelled worker must never outlive its flock.
+                                        closure.resumed_launch(session, self.child_metadata, str(path), self.child_tty)
                                     except (OSError, ValueError) as error:
                                         # Native resume happened. Durable invalidation
                                         # remains until verified closure, including when
@@ -341,7 +348,7 @@ async def run_client(home: Path, native: list[str], *, session: str | None = Non
             # The ingress reacquires ownership for every RPC before it acts.
             try:
                 if session:
-                    with closure.resume_guard(session):
+                    with closure.resume_guard(session, method="thread/resume", home=home):
                         pass
                 with subprocess.Popen(boot, env={**os.environ, "CODEX_HOME": str(home)}) as child:
                     try:

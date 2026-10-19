@@ -602,7 +602,7 @@ def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) 
 
 def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -> list[dict[str, Any]]:
     """Ended ownership is evidence about an exact claim, never artifact disposal."""
-    from github_plan_release import effective_comments, stamp
+    from github_plan_release import effective_comments
     comments = effective_comments(comments)
     released = {comments[i]["id"]: comments[j]["id"] for i, _, j in exact_released_sources(comments)}
     ended = []
@@ -620,12 +620,6 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -
         ):
             continue
         proof = "authored_release" if source["id"] in released else None
-        if not proof and native.get("state") == "ended":
-            try:
-                if stamp(native["ended_at"]) > max(stamp(record["claimed_at"]), stamp(source.get("updated_at") or source.get("created_at"))):
-                    proof = "native_session_ended"
-            except (KeyError, TypeError, ValueError):
-                pass
         if proof:
             ended.append({"claim_id": source["id"], **record, "evidence": proof,
                           **({"release_id": released[source["id"]]} if source["id"] in released else {}),

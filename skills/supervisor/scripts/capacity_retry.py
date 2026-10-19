@@ -1,15 +1,15 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Bound Codex capacity nudges across watcher restarts; never replay uncertain sends."""
 
 import fcntl
+import asyncio
 import json
 import math
 import os
-import shutil
 import socket
 import stat
 import subprocess
@@ -26,6 +26,7 @@ from iterm_tab import codex_daemon_endpoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure
+from github_plan_native import queue_input
 
 BACKOFF_SECONDS = (60, 180, 600)
 
@@ -132,8 +133,6 @@ def target_coordinates(entry: dict) -> tuple[Path, Path]:
     endpoint = codex_daemon_endpoint(home)
     if not stat.S_ISSOCK(endpoint.stat().st_mode):
         raise ValueError("configured home's daemon socket is unavailable")
-    if shutil.which("codex") is None:
-        raise ValueError("codex executable is unavailable")
     with socket.socket(socket.AF_UNIX) as probe:
         probe.settimeout(1)
         probe.connect(str(endpoint))
@@ -152,13 +151,9 @@ def queue_continue(entry: dict, home: Path, endpoint: Path, expected: dict) -> N
     # Reuse the catalog's preferred exact-thread nudge. No terminal composer is
     # touched, no daemon is started, and no authentication material is read.
     verified_target(entry, expected)
-    with github_plan_closure.resume_guard(entry["session_id"]):
-        subprocess.run(
-            ["codex", "queue", "--remote", "unix://" + str(endpoint),
-             "--thread", entry["session_id"], "--message", "continue"],
-            env={**os.environ, "CODEX_HOME": str(home)},
-            check=True, capture_output=True, text=True, timeout=10,
-        )
+    if endpoint != codex_daemon_endpoint(home):
+        raise ValueError("capacity queue endpoint changed")
+    return asyncio.run(queue_input(home, entry["session_id"], "continue", transcript=Path(entry["transcript"])))
 
 
 def readback_continue(entry: dict, before_size: int, timeout: float = 10) -> bool:
