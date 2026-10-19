@@ -524,6 +524,16 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/dokploy-targets/setup",
         "mode": "apply",
     },
+    "dokploy-target-create-application-dry-run": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "dry-run",
+    },
+    "dokploy-target-create-application-apply": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "apply",
+    },
     "dokploy-target-complete-compose-source-dry-run": {
         "method": "POST",
         "path": "/v1/dokploy-targets/setup",
