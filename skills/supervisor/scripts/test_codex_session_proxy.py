@@ -74,6 +74,72 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(closure.action_pending(f.session))
                 self.assertEqual(after, before)
 
+    async def test_app_metadata_reads_after_queued_verdict_preserve_only_a_fresh_verdict(self):
+        from websockets.asyncio.client import unix_connect
+        async def receive(ws):
+            return json.loads(await asyncio.wait_for(ws.recv(), 2))
+
+        method, params, result = "app/installed", {"forceRefresh": True}, {"apps": []}
+        # All app methods have classification coverage in the history-read test.
+        for later in (None, "thread/queue/add", "thread/resume", "turn/start", "execCommandApproval"):
+            with self.subTest(later=later), ReceiptFixture(str(uuid.uuid4())) as f:
+                closure.replace_rows([])
+                task, request, response, _ = await self.start_client(f)
+                endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
+                received, acknowledge = threading.Event(), threading.Event()
+                async def delayed_read(_request):
+                    received.set()
+                    if not await asyncio.to_thread(acknowledge.wait, 5):
+                        raise TimeoutError("fixture app read acknowledgement was not released")
+                    return result
+                f.rpc_results[method] = delayed_read
+                try:
+                    self.assertIn("result", await self.send(task, request, response, "thread/queue/add", f.session, message="safe turn"))
+                    self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
+                    async with unix_connect(endpoint) as ws:
+                        await ws.send(json.dumps({"id": "app-read", "method": method,
+                                                 "params": {"threadId": f.session, **params}}))
+                        self.assertTrue(await asyncio.to_thread(received.wait, 3))
+                        # Native reads can finish after a fast queued turn.
+                        with f.transcript.open("a") as stream:
+                            for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
+                                stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
+                        before = closure.action_time(f.session)
+                        acknowledge.set()
+                        self.assertIn("result", await receive(ws))
+                        after = closure.action_time(f.session)
+                        # A read started after the verdict must also preserve it.
+                        await ws.send(json.dumps({"id": "later-read", "method": method,
+                                                 "params": {"threadId": f.session, **params}}))
+                        self.assertIn("result", await receive(ws))
+                    if later == "execCommandApproval":
+                        f.approval_target = f.session
+                        async with unix_connect(endpoint) as ws:
+                            await ws.send(json.dumps({"id": 0, "method": "initialize", "params": {}}))
+                            self.assertIn("result", await receive(ws))
+                            approval = await receive(ws)
+                            await ws.send(json.dumps({"id": approval["id"], "result": {"decision": "approved"}}))
+                            async with asyncio.timeout(3):
+                                while not f.approval_results:
+                                    await asyncio.sleep(.01)
+                    elif later:
+                        self.assertIn("result", await self.send(task, request, response, later, f.session, message="later"))
+                    f.rpc_results["thread/unsubscribe"] = {"status": "unsubscribed"}
+                    self.assertIn("result", await self.send(task, request, response, "thread/unsubscribe", f.session))
+                finally:
+                    acknowledge.set()
+                    (f.root / "stop").touch()
+                    self.assertEqual(await asyncio.wait_for(task, 8), 0)
+                if later:
+                    with self.assertRaises(ValueError):
+                        await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                    self.assertTrue(closure.action_pending(f.session))
+                else:
+                    closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                    self.assertTrue(closed["process_exit_verified"])
+                    self.assertFalse(closure.action_pending(f.session))
+                self.assertEqual(after, before)
+
     async def test_failed_queue_requires_exact_resume_and_fresh_safe_turn_before_finish(self):
         from test_codex_session import SESSION
         with ReceiptFixture(str(uuid.uuid4())) as f:
@@ -661,6 +727,9 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         for frozen in (False, True):
             with self.subTest(frozen=frozen), ReceiptFixture() as f:
                 methods = [
+                    ("app/installed", f.session, {"forceRefresh": True}),
+                    ("app/read", f.session, {"appIds": ["fixture-app"], "includeTools": True}),
+                    ("app/list", f.session, {"forceRefetch": True}),
                     ("thread/turns/list", f.session, {}),
                     ("thread/items/read", f.session, {"turnId": "source-turn", "itemIds": ["source-item"]}),
                     ("thread/timeline/list", f.session, {}),
