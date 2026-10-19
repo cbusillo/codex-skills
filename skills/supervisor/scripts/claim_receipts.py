@@ -295,6 +295,111 @@ def node_expression_parts(code, start, end, separators=","):
     return [*parts, (begin, end)]
 
 
+def node_control_statements(code):
+    """Keep branch boundaries while reading mutable process-launch arguments."""
+    def skip(cursor):
+        while cursor < len(code) and (code[cursor].isspace() or code[cursor] == ";"):
+            cursor += 1
+        return cursor
+
+    def close(cursor):
+        stack = []
+        for end in range(cursor, len(code)):
+            if code[end] in "([{":
+                stack.append(code[end])
+            elif code[end] in ")]}":
+                if not stack:
+                    return end
+                stack.pop()
+                if not stack:
+                    return end
+        return len(code)
+
+    def statement(cursor):
+        start = cursor = skip(cursor)
+        if cursor >= len(code):
+            return None
+        if code[cursor] == "{":
+            children, cursor = sequence(cursor + 1, "}")
+            return {"kind": "block", "start": start, "end": cursor, "body": children}
+        keyword = re.match(r"(if|while|for)\b", code[cursor:])
+        if keyword:
+            condition = cursor + keyword.end()
+            while condition < len(code) and code[condition].isspace():
+                condition += 1
+            if condition < len(code) and code[condition] == "(":
+                finish = close(condition)
+                body = statement(finish + 1)
+                if body is not None:
+                    end, other = body["end"], None
+                    following = skip(end)
+                    if keyword[1] == "if" and re.match(r"else\b", code[following:]):
+                        other = statement(following + 4)
+                        if other is not None:
+                            end = other["end"]
+                    return {"kind": keyword[1], "start": start, "end": end,
+                            "condition": (condition + 1, finish), "body": [body],
+                            "other": [other] if other else []}
+        end = node_expression_parts(code, cursor, len(code), ";\n")[0][1]
+        if end <= cursor:
+            end = cursor + 1
+        elif end < len(code) and code[end] in ";\n":
+            end += 1
+        return {"kind": "statement", "start": start, "end": end}
+
+    def sequence(cursor, closing=None):
+        nodes = []
+        while (cursor := skip(cursor)) < len(code):
+            if closing and code[cursor] == closing:
+                return nodes, cursor + 1
+            node = statement(cursor)
+            if node is None:
+                break
+            nodes.append(node)
+            cursor = node["end"]
+        return nodes, cursor
+    return sequence(0)[0]
+
+
+def node_deferred_functions(code):
+    """Find named function bodies whose assignments wait for a code reference."""
+    def closing(start):
+        depth = 0
+        for cursor in range(start, len(code)):
+            if code[cursor] == code[start]:
+                depth += 1
+            elif code[cursor] == {"(": ")", "{": "}"}[code[start]]:
+                depth -= 1
+                if not depth:
+                    return cursor
+        return len(code)
+
+    functions = []
+    for match in re.finditer(r"\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)?\s*\(", code):
+        parameter_end = closing(match.end() - 1)
+        body = parameter_end + 1
+        while body < len(code) and code[body].isspace():
+            body += 1
+        if body >= len(code) or code[body] != "{":
+            continue
+        assigned = re.search(r"([A-Za-z_$][\w$]*)\s*=\s*$", code[:match.start()])
+        name = assigned[1] if assigned else match[1]
+        if name:
+            declaration = assigned.start(1) if assigned else match.start(1)
+            functions.append((name, declaration, body + 1, closing(body)))
+    for match in re.finditer(r"=>\s*", code):
+        binding = re.search(r"([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*$", code[:match.start()])
+        if binding is None:
+            continue  # Anonymous callbacks may be invoked by their consumer.
+        body = match.end()
+        if body < len(code) and code[body] == "{":
+            begin, end = body + 1, closing(body)
+        else:
+            begin, end = node_expression_parts(code, body, len(code), ";,\n")[0]
+        functions.append((binding[1], binding.start(1), begin, end))
+    return functions
+
+
 def node_ownership(content):
     """Resolve child_process arguments at their call site and binding time."""
     atoms_pattern = r'''//[^\n]*|/\*[\s\S]*?\*/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`'''
@@ -310,6 +415,51 @@ def node_ownership(content):
         start = definition.end()
         _, end = node_expression_parts(code, start, len(code), ";,\n")[0]
         declarations.setdefault(definition[1], []).append((definition.start(), start, end, definition[2]))
+    statements = node_control_statements(code)
+    deferred = node_deferred_functions(code)
+
+    def inactive_body(position, before):
+        for name, declaration, begin, finish in deferred:
+            if begin <= position < finish and not begin <= before < finish:
+                references = (match.start() for match in re.finditer(r"\b" + re.escape(name) + r"\b", code[:before]))
+                if not any(at != declaration and not begin <= at < finish for at in references):
+                    return True
+        return False
+
+    @lru_cache(maxsize=None)
+    def bindings(name, before):
+        assignments = [item for item in declarations.get(name, []) if not inactive_body(item[0], before)]
+        def walk(nodes, state):
+            for node in nodes:
+                if node["start"] >= before:
+                    break
+                if node["kind"] == "statement":
+                    for assignment in assignments:
+                        position = assignment[0]
+                        if node["start"] <= position < min(node["end"], before):
+                            conditional = re.search(r"&&|\|\||\?", code[node["start"]:position])
+                            conditional = conditional or any(begin <= position < finish and not begin <= before < finish
+                                                             for _, _, begin, finish in deferred)
+                            state = state | {assignment} if conditional else {assignment}
+                elif node["kind"] == "block":
+                    state = walk(node["body"], state)
+                else:
+                    body, other = node["body"], node["other"]
+                    if before <= body[0]["start"]:
+                        break
+                    if before < body[0]["end"]:
+                        return walk(body, state)
+                    if other and other[0]["start"] <= before < other[0]["end"]:
+                        return walk(other, state)
+                    condition = code[slice(*node["condition"])].strip()
+                    if condition == "false":
+                        state = walk(other, state)
+                    elif condition == "true" and node["kind"] == "if":
+                        state = walk(body, state)
+                    else:
+                        state = walk(body, state) | walk(other, state)
+            return state
+        return frozenset(walk(statements, set()))
 
     def evidence(start, end, before, seen=frozenset()):
         """Unresolved launch operands retain only their own bound source text."""
@@ -328,9 +478,7 @@ def node_ownership(content):
             fragment[literal.start():literal.end()] = " " * len(literal[0])
         words = re.findall(r"[A-Za-z_$][\w$]*", "".join(fragment))
         for word in words:
-            preceding = [item for item in declarations.get(word, []) if item[0] < before]
-            if preceding:
-                position, begin, finish, operator = preceding[-1]
+            for position, begin, finish, operator in bindings(word, before):
                 key = (word, position)
                 if key not in seen:
                     pieces.extend(evidence(begin, finish, position, seen | {key}))
@@ -345,17 +493,19 @@ def node_ownership(content):
         expression = content[start:end]
         identifier = re.fullmatch(r"[A-Za-z_$][\w$]*", expression)
         if identifier:
-            preceding = [item for item in declarations.get(expression, []) if item[0] < before]
+            preceding = bindings(expression, before)
             if preceding:
-                position, begin, finish, operator = preceding[-1]
-                key = (expression, position)
-                if key in seen:
-                    return None
-                assigned = value(begin, finish, position, seen | {key})
-                if operator == "+=":
-                    previous = value(start, end, position, seen | {key})
-                    return str(previous) + str(assigned) if isinstance(previous, (str, int, float)) and isinstance(assigned, (str, int, float)) else None
-                return assigned
+                possible = []
+                for position, begin, finish, operator in preceding:
+                    key = (expression, position)
+                    if key in seen:
+                        return None
+                    assigned = value(begin, finish, position, seen | {key})
+                    if operator == "+=":
+                        previous = value(start, end, position, seen | {key})
+                        assigned = str(previous) + str(assigned) if isinstance(previous, (str, int, float)) and isinstance(assigned, (str, int, float)) else None
+                    possible.append(assigned)
+                return possible[0] if all(item == possible[0] for item in possible) else None
             return {"true": True, "false": False, "null": None}.get(expression)
         literal = literals.get(start)
         if literal is not None and literal.end() == end:
@@ -383,6 +533,30 @@ def node_ownership(content):
             return [value(begin, finish, before, seen)
                     for begin, finish in node_expression_parts(code, start + 1, end - 1)
                     if content[begin:finish].strip()]
+        if expression.startswith('{') and expression.endswith('}'):
+            options = {}
+            for begin, finish in node_expression_parts(code, start + 1, end - 1):
+                property_text = content[begin:finish].strip()
+                if not property_text:
+                    continue
+                if property_text.startswith("..."):
+                    spread_start = begin + content[begin:finish].index("...") + 3
+                    spread = value(spread_start, finish, before, seen)
+                    options.update(spread if isinstance(spread, dict) else {"shell": None})
+                    continue
+                pair = node_expression_parts(code, begin, finish, ":")
+                key_fragment = content[pair[0][0]:pair[0][1]]
+                key_text = key_fragment.strip()
+                if key_text.startswith("[") and key_text.endswith("]"):
+                    key_start = pair[0][0] + key_fragment.index("[") + 1
+                    key = value(key_start, pair[0][0] + key_fragment.rindex("]"), before, seen)
+                else:
+                    key = value(*pair[0], before, seen) if key_text.startswith(("'", '"')) else key_text
+                if not isinstance(key, str):
+                    options["shell"] = None
+                    continue
+                options[key] = value(*pair[1], before, seen) if len(pair) > 1 else value(begin, finish, before, seen)
+            return options
         if expression.startswith('(') and expression.endswith(')'):
             return value(start + 1, end - 1, before, seen)
         try:
@@ -426,6 +600,16 @@ def node_ownership(content):
                 return True
         else:
             arguments = value(*parts[1], call.start()) if len(parts) > 1 else []
+            options = arguments if isinstance(arguments, dict) else value(*parts[2], call.start()) if len(parts) > 2 else {}
+            if isinstance(arguments, dict):
+                arguments = []
+            shell = options.get("shell", False) if isinstance(options, dict) else None
+            if shell is True or isinstance(shell, str) and shell:
+                shell_command = " ".join([command, *(str(word) for word in arguments)]) if isinstance(arguments, list) else command
+                if executable_content(shell_command) or opaque_ownership("exec_command", {"cmd": shell_command}):
+                    return True
+            elif shell is None and OWNERSHIP_TEXT.search(command):
+                return True
             if not isinstance(arguments, list):
                 related = " ".join([command, *evidence(*parts[1], call.start())]) if len(parts) > 1 else command
                 if (Path(command).name in {"gh-plan.py", "gh-pr.py", "gh"} or executable_wrapper([command])) and OWNERSHIP_TEXT.search(related):
@@ -485,7 +669,25 @@ def compound_stdin_language(tokens, source, at, spans, heredocs):
     return next(iter(kinds)) if len(kinds) == 1 else "argv" if kinds else None
 
 
-def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None, inline_inputs=None):
+def stream_argv(argv):
+    """Reuse launcher operands for stream producers and forwarders."""
+    for _ in range(16):
+        child = unwrapped_command(argv)
+        commands = list(executor_commands(child))
+        if len(commands) != 1:
+            return child
+        try:
+            following = shlex.split(commands[0])
+        except ValueError:
+            return child
+        if following == child:
+            return child
+        argv = following
+    return child
+
+
+def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None, inline_inputs=None,
+                      stream_sources=None, output_sources=None):
     """Parse command descriptors once and carry each stdin source through groups.
 
     A balanced group is one outer pipeline node. Its children share the same
@@ -499,6 +701,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         if start >= 0:
             cursor = start + len(token)
     bounds = compound_bounds(tokens)
+    stream_sources = {} if stream_sources is None else stream_sources
     languages = {}
 
     def parse(begin, end):
@@ -548,9 +751,12 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                                 inline_inputs[index] = (operand, decoded[0] + "\n")
                     elif token in {"<&", ">&"} and operand.isdigit():
                         descriptors[fd] = descriptors.get(int(operand))
+                    elif token == "<":
+                        target = shlex.split(operand, comments=False)
+                        descriptors[fd] = ("input-file", target[0]) if len(target) == 1 else None
                     elif token in {">", ">>", ">|", "&>", "&>>"}:
                         target = shlex.split(operand, comments=False)
-                        descriptors[fd] = ("file", target[0]) if len(target) == 1 else None
+                        descriptors[fd] = ("file", target[0], token not in {">>", "&>>"}) if len(target) == 1 else None
                         if token.startswith("&>"):
                             descriptors[2] = descriptors[fd]
                     else:
@@ -563,7 +769,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             language = stdin_language(argv)
             if children is None and tokens[segment[0]] in {"}", ")", "done", "fi", "esac"}:
                 language = compound_stdin_language(tokens, source, segment[0], spans, heredocs) or language
-            nodes.append({"argv": argv, "children": children, "language": language,
+            nodes.append({"argv": argv, "children": children, "language": language, "index": segment[0],
                           "descriptors": descriptors, "heredocs": heredocs,
                           "separator": separator, "source": " ".join(tokens[index] for index in segment)})
         return nodes
@@ -571,17 +777,33 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
     def assign_language(sources, language):
         if language:
             for identifier in sources:
-                if isinstance(identifier, int):
+                if identifier != "external":
                     previous = languages.get(identifier)
                     languages[identifier] = language if previous in {None, language} else "argv"
 
-    def record_file(node, target, sources, forwards):
+    def record_file(node, target, sources, forwards, replaces=True):
         if file_commands is not None:
-            identifiers = sorted(identifier for identifier in sources if isinstance(identifier, int))
+            identifiers = sorted((identifier for identifier in sources if identifier != "external"), key=repr)
             for identifier in identifiers or [None]:
                 file_commands.append({"target": target, "body": identifier,
                                       "argv": node["argv"], "source": node["source"],
-                                      "forwards": forwards})
+                                      "forwards": forwards, "replaces": replaces})
+
+    def append_streams(before, after):
+        """Concatenate actual sequential bytes, keeping variants as alternatives."""
+        if not before or not after:
+            return set(before or after)
+        def choice(sources):
+            if len(sources) == 1:
+                return next(iter(sources))
+            parts = tuple(sorted(sources, key=repr))
+            identifier = ("choice", parts)
+            stream_sources[identifier] = {"kind": "choice", "parts": parts}
+            return identifier
+        parts = (choice(before), choice(after))
+        identifier = ("concat", parts)
+        stream_sources[identifier] = {"kind": "concat", "parts": parts}
+        return {identifier}
 
     def flow(nodes, inherited):
         output, pipe, previous = set(), set(), ""
@@ -590,33 +812,76 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             incoming = pipe if previous in {"|", "|&"} else inherited
             input_source = descriptors[0]
             inputs = set(incoming) if input_source == "pipe-in" else {input_source} if isinstance(input_source, int) else set()
+            if isinstance(input_source, tuple) and input_source[0] == "input-file":
+                identifier = ("file", input_source[1])
+                stream_sources[identifier] = {"kind": "file", "path": input_source[1]}
+                inputs.add(identifier)
             if node["children"] is not None:
                 produced = flow(node["children"], inputs)
                 forwards = bool(produced)
             else:
                 assign_language(inputs, node["language"])
-                forwards = forwards_stdin(node["argv"])
+                child = stream_argv(node["argv"])
+                forwards = forwards_stdin(child)
                 produced = set(inputs) if forwards else set()
-                child = unwrapped_command(node["argv"])
+                variants = literal_producer_variants(child)
+                if variants is not None:
+                    produced = set()
+                    for variant, content in enumerate(variants):
+                        identifier = ("literal", source, node["index"], variant)
+                        stream_sources[identifier] = {"kind": "literal", "content": content}
+                        produced.add(identifier)
+                    forwards = True
+                if child and Path(child[0]).name == "cat" and not any(word in {"--help", "--version"} for word in child[1:]):
+                    operands, options = [], True
+                    for word in child[1:]:
+                        if options and word == "--":
+                            options = False
+                        elif not options or not word.startswith("-") or word == "-":
+                            operands.append(word)
+                    if operands:
+                        produced = set()
+                    for path in operands:
+                        if path == "-":
+                            produced = append_streams(produced, inputs)
+                        else:
+                            identifier = ("file", path)
+                            stream_sources[identifier] = {"kind": "file", "path": path}
+                            produced = append_streams(produced, {identifier})
+                    forwards |= bool(produced)
+                body = shell_c_body(child)
+                if child and Path(child[0]).name == "eval":
+                    body = " ".join(child[1:])
+                if body is not None:
+                    expansion = re.fullmatch(r"\s*\$\(([\s\S]*)\)\s*", body)
+                    if expansion:
+                        lexer = shell_lexer(expansion[1], posix=False)
+                        lexer.whitespace_split = True
+                        substitution_sources = set()
+                        heredoc_languages(list(lexer), lexer.instream.getvalue(), stream_sources=stream_sources,
+                                          output_sources=substitution_sources)
+                        assign_language(substitution_sources, "shell")
                 if child and Path(child[0]).name == "tee" and forwards:
                     options = True
                     for word in child[1:]:
                         if options and word == "--":
                             options = False
                         elif not options or not word.startswith("-") or word == "-":
-                            record_file(node, word, inputs, True)
+                            record_file(node, word, inputs, True, not any(flag in {"-a", "--append"} for flag in child[1:]))
             if isinstance(descriptors[1], tuple):
-                record_file(node, descriptors[1][1], produced, forwards)
+                record_file(node, descriptors[1][1], produced, forwards, descriptors[1][2])
             outgoing = produced if descriptors[1] == "pipe-out" else set()
             previous = node["separator"]
             if previous in {"|", "|&"}:
                 pipe = outgoing
             else:
-                output.update(outgoing)
+                output = append_streams(output, outgoing)
         return output
 
     nodes = parse(0, len(tokens))
-    flow(nodes, {"external"})
+    produced = flow(nodes, {"external"})
+    if output_sources is not None:
+        output_sources.update(identifier for identifier in produced if identifier != "external")
     if command_kinds is not None:
         def collect(nodes):
             for node in nodes:
@@ -731,8 +996,37 @@ def literal_producer_output(argv, fallback):
             return "".join(pieces)
 
 
+def literal_producer_variants(argv):
+    """Keep possible literal output streams separate when shell defaults differ."""
+    argv = unwrapped_command(argv)
+    if not argv or Path(argv[0]).name not in {"echo", "printf"}:
+        return None
+    outputs = [literal_producer_output(argv, "")]
+    if Path(argv[0]).name == "echo":
+        cursor, explicit = 1, False
+        while cursor < len(argv) and re.fullmatch(r"-[neE]+", argv[cursor]):
+            explicit |= bool(set(argv[cursor][1:]) & {"e", "E"})
+            cursor += 1
+        if not explicit:
+            # bash's default echo leaves escapes literal; zsh's expands them.
+            # Native tool history need not record its shell's option state.
+            outputs.append(literal_producer_output([argv[0], "-e", *argv[1:]], ""))
+    return tuple(dict.fromkeys(outputs))
+
+
+class UnresolvedStream(str):
+    """Bounded stream expansion retained as uncertainty, never inert text."""
+
+    def __new__(cls, possible_ownership):
+        result = super().__new__(cls, "")
+        result.possible_ownership = possible_ownership
+        return result
+
+
 def stdin_ownership(content, language):
     """Use the same execution check for heredoc and here-string input streams."""
+    if isinstance(content, UnresolvedStream):
+        return language is not None and content.possible_ownership
     if language == "shell":
         return executable_content(content) or opaque_ownership("exec_command", {"cmd": content})
     if language == "python":
@@ -742,29 +1036,19 @@ def stdin_ownership(content, language):
     return language is not None and bool(OWNERSHIP_TEXT.search(content))
 
 
-def shell_code(text, *, writes=None):
-    """Exclude heredoc bodies, retaining commands on both sides of them."""
+def shell_code(text, *, writes=None, reads=None, replacements=None):
+    """Extract bodies first, then resolve streams across the complete command."""
     # Quoted cat substitutions are a common CLI body argument. Their literal
     # contents must never participate in either shell lexing or '&' detection.
     substitution = re.compile(r"\$\(cat[ \t]+<<(-?)(['\"])([\w-]+)\2[ \t]*\n([\s\S]*?)\n[\t]*\3\r?\n\s*\)")
     text = substitution.sub("inert-heredoc-body", text)
     code, pending, header = [], [], ""
-    file_commands, file_bodies = [], {}
+    bodies = []
     for line in text.splitlines(keepends=True):
         if pending:
-            delimiter, tabs, expands, language, body, body_key = pending[0]
+            delimiter, tabs, expands, body = pending[0]
             if (line.lstrip("\t") if tabs else line).rstrip("\r\n") == delimiter:
-                content = "".join(body)
-                if expands:
-                    if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
-                           for expansion in shell_expansions(content, heredoc=True)):
-                        raise ExecutableOwnership("executable heredoc expansion")
-                    # Backslashes protect $, `, \\ and newline during the outer
-                    # shell's expansion, then disappear before the stdin reader.
-                    content = re.sub(r"\\([\\$`\n])", lambda match: "" if match[1] == "\n" else match[1], content)
-                if stdin_ownership(content, language):
-                    raise ExecutableOwnership("executable heredoc")
-                file_bodies[body_key] = content
+                bodies.append(("".join(body), expands))
                 pending.pop(0)
             else:
                 body.append(line)
@@ -778,30 +1062,6 @@ def shell_code(text, *, writes=None):
             continue  # A quoted word may span several physical lines.
         if len(line.rstrip("\r\n")) - len(line.rstrip("\r\n").rstrip("\\")) & 1:
             continue  # Complete an escaped newline before reading delimiters.
-        header_files = [] if writes is not None else None
-        inline_inputs = {}
-        languages = heredoc_languages(tokens, lexer.instream.getvalue(), file_commands=header_files,
-                                      inline_inputs=inline_inputs) if any(token in {"<<", "<<<"} for token in tokens) or writes is not None else {}
-        group = len(code)
-        if header_files is not None:
-            file_commands.extend((group, command) for command in header_files)
-        # A here-string is a word expanded by the outer shell, then delivered
-        # as stdin. Its literal text is data unless the connected reader runs
-        # it, just like a heredoc; remove it from later argv inspection.
-        masked, cursor = [], 0
-        for index, token in enumerate(tokens):
-            start = header.find(token, cursor)
-            if start < 0:
-                continue
-            cursor = start + len(token)
-            if index - 1 not in inline_inputs:
-                continue
-            raw, content = inline_inputs[index - 1]
-            if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
-                   for expansion in shell_expansions(raw)) or stdin_ownership(content, languages.get(index - 1)):
-                raise ExecutableOwnership("executable stdin")
-            file_bodies[(group, index - 1)] = content
-            masked.append((start, cursor))
         for index, token in enumerate(tokens):
             if token != "<<":
                 continue
@@ -812,25 +1072,147 @@ def shell_code(text, *, writes=None):
             delimiter = shlex.split(raw[1:] if tabs else raw, comments=False)
             if len(delimiter) != 1:
                 raise ValueError("unparsed heredoc delimiter")
-            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\"), languages.get(index), [], (group, index)))
-        for start, end in reversed(masked):
-            header = header[:start] + "'inert-stdin-body'" + header[end:]
+            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\"), []))
         code.append(header)
         header = ""
     if pending or header:
         raise ValueError("unparsed heredoc body")
+    code = "".join(code)
+    lexer = shell_lexer(code, posix=False)
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    file_commands, inline_inputs, stream_sources = [], {}, {}
+    languages = heredoc_languages(tokens, lexer.instream.getvalue(), file_commands=file_commands,
+                                  inline_inputs=inline_inputs, stream_sources=stream_sources)
+    contents, owns = {}, False
+    identifiers = [index for index, token in enumerate(tokens) if token == "<<"]
+    if len(identifiers) != len(bodies):
+        raise ValueError("unparsed heredoc correspondence")
+    for identifier, (content, expands) in zip(identifiers, bodies):
+        if expands:
+            owns |= any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
+                        for expansion in shell_expansions(content, heredoc=True))
+            content = re.sub(r"\\([\\$`\n])", lambda match: "" if match[1] == "\n" else match[1], content)
+        contents[identifier] = content
+    for identifier, (raw, content) in inline_inputs.items():
+        owns |= any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
+                    for expansion in shell_expansions(raw))
+        contents[identifier] = content
+    def possible_substring(identifier, needle):
+        @lru_cache(maxsize=None)
+        def states(identifier, matched):
+            if matched == len(needle):
+                return frozenset({matched})
+            stream = stream_sources.get(identifier, {})
+            raw = contents.get(identifier, stream.get("content"))
+            if raw is not None:
+                for char in raw:
+                    prefix = needle[:matched] + char
+                    matched = next(length for length in range(min(len(needle), len(prefix)), -1, -1)
+                                   if prefix.endswith(needle[:length]))
+                    if matched == len(needle):
+                        break
+                return frozenset({matched})
+            if stream.get("kind") == "choice":
+                return frozenset(value for part in stream["parts"] for value in states(part, matched))
+            if stream.get("kind") == "concat":
+                current = frozenset({matched})
+                for part in stream["parts"]:
+                    current = frozenset(value for previous in current for value in states(part, previous))
+                return current
+            return frozenset({len(needle)})  # Unknown file bytes stay conservative.
+        return len(needle) in states(identifier, 0)
+
+    def unresolved(identifier):
+        computed = ("exec", "spawn", "system", "subprocess", "child_process", "eval", "$", "`", "python", "node")
+        possible = any(possible_substring(identifier, word) for word in computed)
+        possible |= (possible_substring(identifier, "gh-plan.py") and possible_substring(identifier, "claim")
+                     or possible_substring(identifier, "gh-pr.py") and possible_substring(identifier, "create")
+                     or possible_substring(identifier, "gh") and possible_substring(identifier, "pr") and possible_substring(identifier, "create"))
+        return UnresolvedStream(possible)
+
+    resolved, expansion_limit = {}, object()
+    def content_of(identifier):
+        if identifier in resolved:
+            return resolved[identifier]
+        stream = stream_sources.get(identifier, {})
+        raw = contents.get(identifier, stream.get("content"))
+        if raw is not None:
+            result = (raw,)
+        elif stream.get("kind") in {"concat", "choice"}:
+            children = [content_of(part) for part in stream["parts"]]
+            if any(child is None for child in children):
+                result = None
+            elif any(child is expansion_limit for child in children):
+                result = expansion_limit
+            else:
+                variants = set()
+                if stream["kind"] == "choice":
+                    variants.update(value for child in children for value in child)
+                else:
+                    for left in children[0]:
+                        for right in children[1]:
+                            variants.add(left + right)
+                            if len(variants) > 64:
+                                break
+                        if len(variants) > 64:
+                            break
+                result = tuple(variants) if len(variants) <= 64 else expansion_limit
+        else:
+            result = None
+        resolved[identifier] = result
+        return result
+
+    def file_parts(identifier):
+        stream = stream_sources.get(identifier, {})
+        if stream.get("kind") == "file":
+            yield stream["path"]
+        elif stream.get("kind") in {"concat", "choice"}:
+            for part in stream["parts"]:
+                yield from file_parts(part)
+
+    for identifier in languages:
+        if reads is not None and languages.get(identifier):
+            reads.update(file_parts(identifier))
     if writes is not None:
-        for group, command in file_commands:
+        for command in file_commands:
             input_source = command["body"]
-            if input_source is not None and command.get("forwards", forwards_stdin(command["argv"])):
-                content = file_bodies[(group, input_source)]
+            variants = content_of(input_source) if input_source is not None else None
+            if variants is expansion_limit:
+                variants = unresolved(input_source)
+            if variants is not None and command.get("forwards", forwards_stdin(command["argv"])):
+                variants = (variants,) if isinstance(variants, UnresolvedStream) else variants
             else:
                 # Literal producers write their operands, rather than the
                 # shell command that quoted those operands as data. A replaced
                 # or unused stdin cannot lend a heredoc body to that output.
-                content = literal_producer_output(command["argv"], command["source"])
-            writes.append((command["target"], content))
-    return "".join(code)
+                variants = (literal_producer_output(command["argv"], command["source"]),)
+            writes.extend((command["target"], content) for content in variants)
+            if replacements is not None and command["replaces"]:
+                replacements.add(command["target"])
+    for identifier, language in languages.items():
+        if language:
+            variants = content_of(identifier)
+            if variants is expansion_limit:
+                variants = unresolved(identifier)
+            if variants is not None:
+                variants = (variants,) if isinstance(variants, UnresolvedStream) else variants
+                owns |= any(stdin_ownership(content, language) for content in variants)
+    if owns:
+        raise ExecutableOwnership("executable stdin")
+    # Here-string words are stdin data. Remove them from later argv inspection.
+    masked, cursor = [], 0
+    for index, token in enumerate(tokens):
+        start = code.find(token, cursor)
+        if start < 0:
+            continue
+        cursor = start + len(token)
+        if index - 1 in inline_inputs:
+            masked.append((start, cursor))
+    for start, end in reversed(masked):
+        code = code[:start] + "'inert-stdin-body'" + code[end:]
+    return code
 
 
 def unparsed_command_text(value):
@@ -986,13 +1368,19 @@ def executor_commands(argv):
         "sudo": {"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-C", "--close-from", "-R", "--chroot", "-D", "--chdir", "-r", "--role", "-t", "--type"},
         "doas": {"-u", "-C"},
         "flock": {"-E", "--conflict-exit-code", "-w", "--timeout"},
+        "su": {"-c", "--command", "--session-command", "-s", "--shell", "-g", "--group", "-G", "--supp-group", "-w", "--whitelist-environment"},
+        "runuser": {"-c", "--command", "--session-command", "-u", "--user", "-s", "--shell", "-g", "--group", "-G", "--supp-group", "-w", "--whitelist-environment"},
         "ssh": {"-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w"},
     }.get(name)
     if value_options is None:
         return
+    user_seen, direct_user = False, False
+    command_options = {"-c", "--command"}
+    if name in {"su", "runuser"}:
+        command_options.add("--session-command")
     while cursor < len(argv):
         option, equal, _ = argv[cursor].partition("=")
-        if name == "flock" and option in {"-c", "--command"}:
+        if name in {"flock", "su", "runuser"} and option in command_options:
             if equal:
                 yield argv[cursor].partition("=")[2]
             elif cursor + 1 < len(argv):
@@ -1001,14 +1389,31 @@ def executor_commands(argv):
         if option == "--":
             cursor += 1
             break
+        if name in {"su", "runuser"} and option == "-":
+            cursor += 1  # Login shell marker is not a command or a user.
+            continue
         if not option.startswith("-"):
+            if name in {"su", "runuser"} and not user_seen and not direct_user:
+                user_seen = True
+                cursor += 1
+                continue  # su permits its own options after the user operand.
             break
+        if name == "runuser" and option in {"-u", "--user"}:
+            direct_user = True
         cursor += 1
         takes_next = option in value_options
         if not option.startswith("--") and not takes_next:
             cluster = option[1:]
             for index, letter in enumerate(cluster):
                 if "-" + letter in value_options:
+                    if name in {"su", "runuser"} and letter == "c":
+                        if cluster[index + 1:]:
+                            yield cluster[index + 1:]
+                        elif cursor < len(argv):
+                            yield argv[cursor]
+                        return
+                    if name == "runuser" and letter == "u":
+                        direct_user = True
                     takes_next = index == len(cluster) - 1
                     break
         if takes_next and not equal:
@@ -1023,7 +1428,7 @@ def executor_commands(argv):
                 yield inline
             elif len(remaining) > 1:
                 yield remaining[1]
-        else:
+        elif name not in {"su", "runuser"} or name == "runuser" and direct_user:
             yield " ".join(remaining) if name == "ssh" else shlex.join(remaining)
 
 
@@ -1388,6 +1793,8 @@ def python_fragment_ownership(content):
 
 
 def executable_file_content(path, content):
+    if isinstance(content, UnresolvedStream):
+        return content.possible_ownership
     return python_fragment_ownership(content) if Path(path).suffix == ".py" else executable_content(content)
 
 
@@ -1399,6 +1806,12 @@ def executable_content(content):
         pass
     else:
         return python_ownership(content)
+    try:
+        shell_code(content)
+    except ExecutableOwnership:
+        return True
+    except ValueError:
+        pass  # Unknown syntax still follows the existing command classifier.
     return any(ownership_command(unwrapped_command(argv))
                for argv in shell_commands("exec_command", {"cmd": content}))
 
@@ -1412,10 +1825,12 @@ def executable_wrapper(argv):
             or re.match(r"[A-Za-z_]\w*=", argv[0]) is not None)
 
 
-def file_writes(name, value):
+def file_writes(name, value, *, replacements=None):
     """Read file provenance from native writes, never from current disk contents."""
     value = arguments(value)
     if name in {"Write", "Edit"} and isinstance(value, dict):
+        if replacements is not None and name == "Write":
+            replacements.add(value.get("file_path", ""))
         yield value.get("file_path", ""), value.get("content") or value.get("new_string") or ""
     patches = []
     if name in {"apply_patch", "functions.apply_patch"} and isinstance(value, str):
@@ -1427,17 +1842,20 @@ def file_writes(name, value):
             except (SyntaxError, ValueError):
                 pass
     for patch in patches:
+        if replacements is not None:
+            replacements.update(re.findall(r"(?m)^\*\*\* Add File: (.+)$", patch))
         for match in re.finditer(r"(?m)^\*\*\* (?:Add|Update) File: (.+)\n([\s\S]*?)(?=^\*\*\* |\Z)", patch):
             for hunk in re.split(r"(?m)^@@[^\n]*\n", match[2]):
                 content = "\n".join(line[1:] for line in hunk.splitlines() if line.startswith(("+", " ")))
                 if content:
                     yield match[1], content
     for text in shell_texts(name, value):
-        if not OWNERSHIP_TEXT.search(text):
-            continue
         writes = []
         try:
-            shell_code(text, writes=writes)
+            shell_code(text, writes=writes, replacements=replacements)
+        except ExecutableOwnership:
+            yield from writes
+            continue
         except ValueError:
             continue  # Existing opaque ownership handles unparsed shell text.
         yield from writes
@@ -1467,10 +1885,20 @@ def native_path(path, cwd):
 
 
 def ownership_file_candidates(histories):
-    return {native_path(path, cwd) for node in histories
-            for _, name, value, cwd in native_calls(node["records"], node["harness"])
-            for path, content in file_writes(name, value)
-            if path and native_path(path, cwd) and executable_file_content(path, content)}
+    """Retain path origins so a history cannot borrow its own future writes.
+
+    First-record object identity is local to this invocation. Normalization
+    retains that record; an unknown copied history remains a separate origin.
+    """
+    candidates = {}
+    for node in histories:
+        origin = id(node["records"][0]) if node["records"] else None
+        for _, name, value, cwd in native_calls(node["records"], node["harness"]):
+            for path, content in file_writes(name, value):
+                path = native_path(path, cwd) if path else None
+                if path and executable_file_content(path, content):
+                    candidates.setdefault(path, set()).add(origin)
+    return candidates
 
 
 def execution_targets(argv):
@@ -1490,15 +1918,32 @@ def execution_targets(argv):
 
 def file_ownership_executions(records, harness, *, file_candidates=()):
     """Link script candidates to later executions across native tool calls."""
-    candidates, invocations = set(file_candidates), set()
+    origin = id(records[0]) if records else None
+    candidates = ({path for path, origins in file_candidates.items() if origins - {origin}}
+                  if isinstance(file_candidates, dict) else set(file_candidates))
+    invocations = set()
     for identifier, name, value, cwd in native_calls(records, harness):
-        for path, content in file_writes(name, value):
-            if path and native_path(path, cwd) and executable_file_content(path, content):
-                candidates.add(native_path(path, cwd))
+        replacements, writes = set(), {}
+        for path, content in file_writes(name, value, replacements=replacements):
+            resolved = native_path(path, cwd) if path else None
+            if resolved:
+                writes[resolved] = writes.get(resolved, False) or executable_file_content(path, content)
+        for path in replacements:
+            resolved = native_path(path, cwd) if path else None
+            if resolved and not writes.get(resolved, True):
+                candidates.discard(resolved)
+        candidates.update(path for path, owning in writes.items() if owning)
         if not candidates:
             continue
         commands = list(shell_commands(name, value))
         targets = [target for argv in commands for target in execution_targets(argv)]
+        for text in shell_texts(name, value):
+            connected = set()
+            try:
+                shell_code(text, reads=connected)
+            except ValueError:
+                pass
+            targets.extend(connected)
         if (any(argv and Path(argv[0]).name in {"bash", "sh", "zsh"} for argv in commands)
                 and any(Path(argv[0]).name == "cat" for argv in commands)):
             targets += [argv[i + 1] for argv in commands for i, word in enumerate(argv[:-1]) if word == "<"]
@@ -1513,6 +1958,25 @@ class GroupShellLexer(shlex.shlex):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._word_cursor = 0
+
+    def read_token(self):
+        if self.posix:
+            return super().read_token()
+        # Let shlex's POSIX quote state handle quotes inside an option word,
+        # while retaining the raw source slice needed for descriptor adjacency.
+        source = self.instream.getvalue()
+        start = self.instream.tell() - len(self._pushback_chars)
+        while start < len(source) and source[start] in self.whitespace:
+            start += 1
+        self.posix = True
+        try:
+            super().read_token()
+        finally:
+            self.posix = False
+        end = self.instream.tell() - len(self._pushback_chars)
+        if end > start and source[end - 1] in self.whitespace:
+            end -= 1
+        return source[start:end] if end > start else self.eof
 
     def get_token(self):
         token = super().get_token()

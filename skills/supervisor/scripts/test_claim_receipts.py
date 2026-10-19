@@ -842,6 +842,15 @@ class ReceiptTests(unittest.TestCase):
         helper = "uv run /catalog/gh-plan.py --repo example/a claim 1"
         for harness in ("codex", "claude"):
             for command in ("sudo -u me bash -c " + shlex.quote(helper),
+                            "su deploy -c " + shlex.quote(helper),
+                            "sudo su - deploy -c " + shlex.quote(helper),
+                            "su -c " + shlex.quote(helper) + " deploy",
+                            "su deploy --command=" + shlex.quote(helper),
+                            "su -lc " + shlex.quote(helper) + " deploy",
+                            "su deploy -c" + shlex.quote(helper),
+                            "runuser -u deploy -- " + helper,
+                            "sudo runuser -u deploy -- " + helper,
+                            "runuser deploy -c " + shlex.quote(helper),
                             "sudo -iu me bash -c " + shlex.quote(helper),
                             "sudo -uME bash -c " + shlex.quote(helper),
                             "flock /tmp/claim-lock -c " + shlex.quote(helper),
@@ -880,6 +889,11 @@ class ReceiptTests(unittest.TestCase):
                             "git commit -m gh-plan.py claim",
                             "uv pip show gh-plan.py claim",
                             "sudo -u me gh issue comment 1 --body " + shlex.quote(handoff),
+                            "su deploy -c " + shlex.quote("echo " + shlex.quote(handoff)),
+                            "sudo su - deploy --command=" + shlex.quote("printf '%s' " + shlex.quote(handoff)),
+                            "su -s /bin/sh deploy -c " + shlex.quote("gh issue comment 1 --body " + shlex.quote(handoff)),
+                            "runuser -u deploy -- printf '%s' " + shlex.quote(handoff),
+                            "runuser -u deploy -- gh issue comment 1 --body " + shlex.quote(handoff),
                             "sudo -p " + shlex.quote(handoff) + " -u me printf x",
                             "flock /tmp/claim-lock gh pr edit 1 --body " + shlex.quote(handoff),
                             "sudo -u me bash -c " + shlex.quote("printf '%s' " + shlex.quote(handoff)),
@@ -1103,6 +1117,33 @@ class ReceiptTests(unittest.TestCase):
                     rows[2], rows[4] = output({}, harness, "tool-0"), output({}, harness, "tool-1")
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
+    def test_nested_script_ownership_survives_the_shell_parser_boundary(self):
+        writer = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
+        nested = "python3 - <<'PY'\nimport os; os.system(" + repr(writer) + ")\nPY\n"
+        shell_nested = "cat <<'CODE' | bash\n" + writer + "\nCODE\n"
+        data = "cat <<'DATA'\n" + nested + "DATA\n"
+        for harness in ('codex', 'claude'):
+            for content, expected in ((nested, True), (shell_nested, True), (data, False)):
+                with self.subTest(harness=harness, content=content):
+                    rows = history(harness, {}, {})
+                    if harness == 'codex':
+                        patch = '*** Begin Patch\n*** Add File: /repo/run.sh\n' + '\n'.join('+' + line for line in content.splitlines()) + '\n*** End Patch'
+                        rows[1]['payload'].update(name='apply_patch', arguments=patch)
+                        rows[3]['payload']['arguments'] = json.dumps({'cmd': 'bash /repo/run.sh'})
+                    else:
+                        rows[1]['message']['content'][0].update(name='Write', input={'file_path': '/repo/run.sh', 'content': content})
+                        rows[3]['message']['content'][0]['input'] = {'command': 'bash /repo/run.sh'}
+                    rows[2], rows[4] = output({}, harness, 'tool-0'), output({}, harness, 'tool-1')
+                    self.assertEqual(receipts.ownership_state(rows, harness)['pending'], expected)
+            for command in ("cat > run.sh <<'OUT'\n" + nested + "OUT\nbash run.sh",
+                            "python3 - <<'OUT'\nimport subprocess; subprocess.run(" + repr(shell_nested) + ", shell=True)\nOUT"):
+                rows = history(harness, {})
+                if harness == 'codex': rows[1]['payload']['arguments'] = json.dumps({'cmd': command})
+                else: rows[1]['message']['content'][0]['input'] = {'command': command}
+                rows[2] = output({}, harness, 'tool-0')
+                with self.subTest(harness=harness, command=command):
+                    self.assertTrue(receipts.ownership_state(rows, harness)['pending'])
+
     def test_executable_wrappers_cannot_turn_hidden_ownership_into_no_write(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json'
         for harness in ("codex", "claude"):
@@ -1163,6 +1204,25 @@ class ReceiptTests(unittest.TestCase):
             "const {execSync}=require('child_process'); const cmd=process.env.CMD || " + command + "; execSync(`${cmd} --json`)",
             "const {spawnSync}=require('child_process'); const args=process.env.ARGS || " + uv_args + "; spawnSync('uv',args)",
             "const {spawnSync}=require('child_process'); const args=process.env.ARGS || ['pr','create']; spawnSync('gh',args)",
+            "const {spawnSync}=require('child_process'); spawnSync(" + command + ", {shell:true,stdio:'inherit'})",
+            "const {spawn}=require('child_process'); const cmd=" + command + "; const options={shell:true}; spawn(cmd,options)",
+            "const {execFileSync}=require('child_process'); execFileSync(" + command + ", [], {shell:true})",
+            "const {spawnSync}=require('child_process'); spawnSync('gh pr create --fill',{shell:true})",
+            "const {spawnSync}=require('child_process'); const options={shell:true}; spawnSync(" + command + ",{shell:false,...options})",
+            "const {spawnSync}=require('child_process'); const key='shell'; spawnSync(" + command + ",{[key]:true})",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; if(process.env.DRY) cmd='echo skip'; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; if(process.env.DRY) {cmd='echo skip';} execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd='echo skip'; if(process.env.GO) cmd=" + command + "; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd='echo skip'; if(process.env.DRY) {cmd='echo other';} else {cmd=" + command + ";} execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; if(process.env.DRY) if(process.env.OTHER) cmd='echo skip'; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; process.env.DRY && (cmd='echo skip'); execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; cmd=process.env.DRY?'echo skip':cmd; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; while(process.env.DRY) {cmd='echo skip';} execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; function neverCalled(){cmd='echo skip';} execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; const neverCalled=()=>{cmd='echo skip';}; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; const neverCalled=()=>cmd='echo skip'; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd='echo skip'; function setCommand(){cmd=" + command + ";} setCommand(); execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; function readCommand(){cmd='echo skip';} const callback=readCommand; execSync(cmd)",
         )
         data = (
             "const {execSync}=require('child_process'); const fixture=" + command + "; const cmd='echo done'; execSync(`${cmd} --json`)",
@@ -1177,6 +1237,17 @@ class ReceiptTests(unittest.TestCase):
             "const cp=require('child_process'); let args=" + uv_args + "; args=[]; cp.spawnSync('printf',args)",
             "const fixture=" + command + "; console.log(`${fixture}`)",
             "const {execSync}=require('child_process'); const fixture=" + command + "; const pattern=/claim/; pattern.exec(fixture)",
+            "const {spawnSync}=require('child_process'); spawnSync(" + command + ",{shell:false})",
+            "const {spawn}=require('child_process'); const options={shell:false}; spawn(" + command + ",options)",
+            "const {execFileSync}=require('child_process'); execFileSync(" + command + ",[],{shell:false})",
+            "const {spawnSync}=require('child_process'); const fixture=" + command + "; spawnSync('printf',{shell:true})",
+            "const {spawnSync}=require('child_process'); const options={shell:true}; spawnSync(" + command + ",{...options,shell:false})",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; if(process.env.DRY) cmd='echo first'; else cmd='echo second'; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; if(process.env.DRY) {cmd='echo first';} else {cmd='echo second';} execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd='echo skip'; if(false) cmd=" + command + "; execSync(cmd)",
+            "const {execSync}=require('child_process'); const cmd='echo skip'; function neverCalled(){cmd=" + command + ";} execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd='echo skip'; const neverCalled=()=>{cmd=" + command + ";}; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd='echo skip'; const neverCalled=()=>cmd=" + command + "; execSync(cmd)",
         )
         for harness in ('codex', 'claude'):
             for expected, bodies in ((True, executing), (False, data)):
@@ -2138,6 +2209,141 @@ class ReceiptTests(unittest.TestCase):
             ("gh issue comment 1 --body-file - <<< 'uv '" + '"run "' + "'/catalog/gh-plan.py --repo client/repo claim 12'", False),
             ("cat > 'run'\".\"'sh' <<'EOF'\n" + writer + "\nEOF\nbash run.sh", True),
             ("echo 'uv '" + '"run "' + "'/catalog/gh-plan.py --repo client/repo claim 12' > run.sh\nbash run.sh", True),
+        )
+        for harness in ("codex", "claude"):
+            for command, pending in commands:
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+
+    def test_literal_streams_and_multiline_commands_share_reader_flow(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        commands = (
+            ("echo " + shlex.quote(writer) + " | bash", True),
+            ("printf '%s\\n' " + shlex.quote(writer) + " | sh", True),
+            ("echo " + shlex.quote(writer) + " | gh issue comment 1 --body-file -", False),
+            ("printf '%s\\n' " + shlex.quote("echo " + writer) + " | bash", False),
+            ("while read -r line; do\n eval \"$line\"\ndone <<'EOF'\n" + writer + "\nEOF", True),
+            ("while read -r line; do\n printf '%s\\n' \"$line\"\ndone <<'EOF'\n" + writer + "\nEOF", False),
+            ("{\n cat <<'EOF'\n" + writer + "\nEOF\n} | bash", True),
+            ("{\n gh issue comment 1 --body-file - <<'EOF'\n" + writer + "\nEOF\n} | bash", False),
+            ("echo " + shlex.quote('#!/bin/sh\\n' + writer) + " | bash", True),
+            ("echo -E " + shlex.quote('#!/bin/sh\\n' + writer) + " | bash", False),
+            ("echo " + shlex.quote('echo "fixture\\n' + writer + '"') + " | bash", False),
+            ("{ printf '#'; printf '%s\\n' " + shlex.quote(writer) + "; } | bash", False),
+            ("{ printf 'uv '; printf '%s\\n' " + shlex.quote(writer.removeprefix('uv ')) + "; } | bash", True),
+        )
+        for harness in ("codex", "claude"):
+            for command, pending in commands:
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+    def test_literal_streams_retain_provenance_through_groups_and_files(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        producers = (
+            ("echo " + shlex.quote(writer) + " | tee run.sh", True),
+            ("echo " + shlex.quote(writer) + " | sudo tee run.sh", True),
+            ("printf '%s\\n' " + shlex.quote(writer) + " | cat > run.sh", True),
+            ("{ echo '#!/bin/sh'; echo " + shlex.quote(writer) + "; } > run.sh", True),
+            ("{\n echo '#!/bin/sh'\n echo " + shlex.quote(writer) + "\n} > run.sh", True),
+            ("( echo '#!/bin/sh'; echo " + shlex.quote(writer) + ") > run.sh", True),
+            ("echo " + shlex.quote(writer) + " | sudo gh issue comment 1 --body-file - > run.sh", False),
+            ("echo " + shlex.quote('#!/bin/sh\\n' + writer) + " > run.sh", True),
+            ("echo -E " + shlex.quote('#!/bin/sh\\n' + writer) + " > run.sh", False),
+            ("{ printf '#'; printf '%s\\n' " + shlex.quote(writer) + "; } > run.sh", False),
+        )
+        for harness in ("codex", "claude"):
+            for command, pending in producers:
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {}, {})
+                    for index, text in ((1, command), (3, "bash run.sh")):
+                        if harness == "codex":
+                            rows[index]["payload"]["arguments"] = json.dumps({"cmd": text})
+                        else:
+                            rows[index]["message"]["content"][0]["input"] = {"command": text}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+    def test_candidate_file_streams_execute_only_in_connected_code_consumers(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        commands = (
+            ("cat run.sh | bash", True), ("sudo cat run.sh | sh", True),
+            ('bash -c "$(cat run.sh)"', True), ('eval "$(cat run.sh)"', True),
+            ("cat run.sh", False), ("cat run.sh | gh issue comment 1 --body-file -", False),
+            ('echo "$(cat run.sh)"', False), ('bash -c \'echo "$(cat run.sh)"\'', False),
+            ('eval \'echo "$(cat run.sh)"\'', False),
+        )
+        for harness in ("codex", "claude"):
+            for command, pending in commands:
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {}, {})
+                    if harness == "codex":
+                        rows[1]["payload"].update(name="apply_patch", arguments='*** Begin Patch\n*** Add File: /repo/run.sh\n+' + writer + '\n*** End Patch')
+                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run.sh", "content": writer})
+                        rows[3]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+
+    def test_ordered_file_provenance_does_not_borrow_overwritten_or_future_content(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        for harness in ("codex", "claude"):
+            for contents in ((writer, "echo done", None), (None, writer)):
+                with self.subTest(harness=harness, contents=contents):
+                    rows = history(harness, *({} for _ in contents))
+                    for position, content in enumerate(contents):
+                        index = 1 + position * 2
+                        if harness == "codex":
+                            command = "bash run.sh" if content is None else "cat > run.sh <<'EOF'\n" + content + "\nEOF"
+                            rows[index]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        elif content is None:
+                            rows[index]["message"]["content"][0]["input"] = {"command": "bash run.sh"}
+                        else:
+                            rows[index]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run.sh", "content": content})
+                    candidates = receipts.ownership_file_candidates([{"harness": harness, "records": rows}])
+                    self.assertFalse(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"])
+
+
+    def test_producer_stream_graph_grows_with_commands_without_expanding_variants(self):
+        for count in (12, 64):
+            command = "; ".join(["echo 'a\\nb'"] * count)
+            lexer = receipts.shell_lexer(command, posix=False)
+            lexer.whitespace_split = True
+            graph, produced = {}, set()
+            receipts.heredoc_languages(list(lexer), lexer.instream.getvalue(), stream_sources=graph,
+                                       output_sources=produced)
+            self.assertLessEqual(len(graph), count * 6)
+            self.assertLessEqual(sum(len(node.get("parts", ())) for node in graph.values()), count * 6)
+            for harness in ("codex", "claude"):
+                for suffix, pending in (("", False), (" | bash", False),
+                                        ("; echo 'uv run /catalog/gh-plan.py --repo client/repo claim 12'; } | bash", True)):
+                    text = "{ " + command + suffix if pending else "{ " + command + "; }" + suffix
+                    rows = history(harness, {})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": text})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": text}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+
+    def test_bounded_streams_preserve_computed_and_file_execution(self):
+        prefix = "; ".join(["echo '#a\\n#b'"] * 12)
+        python = "import os; os.system('uv run /catalog/' + 'gh-' + 'plan.py --repo client/repo ' + 'claim 12')"
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        commands = (
+            ("{ " + prefix + "; printf '%s\\n' " + shlex.quote(python) + "; } | python3", True),
+            ("{ " + prefix + "; echo " + shlex.quote(writer) + "; } > run.sh\nbash run.sh", True),
+            ("{ " + prefix + "; } > run.sh\nbash run.sh", False),
         )
         for harness in ("codex", "claude"):
             for command, pending in commands:
