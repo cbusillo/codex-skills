@@ -2534,10 +2534,16 @@ Codex delivery uses `codex-session.py queue` with the ledger's absolute
 checks remain in force. The transcript must be inside that home's live sessions.
 Claude delivery uses the existing tmux `Terminal.send` route with the ledger's
 launch nonce, coordinates and matched process PID/ancestry. It requires an ended
-turn without background tasks and two stable reads of an empty prompt, including
-the closing separator immediately below the first input line. Cursor spaces and
-styled whitespace padding count as empty; visible typed, suggested,
-wrapped or unknown input refuses without keys or clearing. A legacy iTerm Claude
+turn without background tasks and two stable reads of the supported empty
+composer: an unindented `❯` line containing only whitespace, with unindented
+horizontal rules immediately above and below. Its closing rule must be the last
+such rule on screen. The current Claude renderer puts continuation text two
+columns inward; a quote or typed marker in a draft cannot become that prompt.
+The dispatcher validates only the shared parser's selected line and never
+searches for an earlier empty candidate. Cursor spaces and styled whitespace
+padding count as empty. Visible typed, suggested, wrapped or unknown input,
+missing/indented borders and unsupported composer modes refuse without keys or
+clearing. A legacy iTerm Claude
 entry reports the unsupported route; there is no automatic terminal migration.
 Ledger-relative transcript paths resolve beside the ledger, as for other helpers.
 

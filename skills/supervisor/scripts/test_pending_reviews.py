@@ -1497,8 +1497,8 @@ class NotificationTests(unittest.TestCase):
             "message": {"content": [{"type": "text", "text": "Waiting for review."}], "stop_reason": "end_turn"}}) + "\n")
         self.row = {"session_id": self.entry["tmux_session_id"], "dead": False, "pid": 456,
                     **{key: self.entry[key] for key in ("tty", "window_id", "tab_id", "tmux_socket")},
-                    "screen": ["❯ ", "────────"],
-                    "input_line": {"style": "empty", "text": "", "line_index": 0}}
+                    "screen": ["────────", "❯ ", "────────"],
+                    "input_line": {"style": "empty", "text": "", "line_index": 1}}
         self.read = self.enterContext(patch("tmux_terminal.Terminal.read", side_effect=lambda _: copy.deepcopy(self.row)))
         self.send = self.enterContext(patch("tmux_terminal.Terminal.send", new_callable=AsyncMock))
         self.enterContext(patch("close_ttys.inventory", return_value=[(789, "ttys123", "claude")]))
@@ -1540,11 +1540,12 @@ class NotificationTests(unittest.TestCase):
     def test_claude_real_prompt_parser_accepts_cursor_padding_but_never_visible_input(self):
         from iterm_tab import ansi_screen, input_line
         self.claude()
-        for captured, should_send in (("❯ \x1b[7m \x1b[0m\n────────", True),
-                                      ("❯ \x1b[2m   \x1b[0m\n────────", True),
-                                      ("❯ \x1b[7mc\x1b[0m\x1b[2mandidate\x1b[0m\n────────", False),
-                                      ("❯ \x1b[7mc\x1b[0mandidate\n────────", False),
-                                      ("❯  \nwrapped input\n────────", False)):
+        for captured, should_send in (("────────\n❯\u00a0\x1b[7m \x1b[0m\n────────", True),
+                                      ("────────\n❯ \x1b[2m   \x1b[0m\n────────", True),
+                                      ("────────\n❯ old input\n────────\nold output\n────────\n❯ \n────────", True),
+                                      ("────────\n❯ \x1b[7mc\x1b[0m\x1b[2mandidate\x1b[0m\n────────", False),
+                                      ("────────\n❯ \x1b[7mc\x1b[0mandidate\n────────", False),
+                                      ("────────\n❯  \nwrapped input\n────────", False)):
             with self.subTest(captured=captured):
                 screen, styles = ansi_screen(captured)
                 self.row.update(screen=screen, input_line=input_line(screen, styles))
@@ -1557,15 +1558,35 @@ class NotificationTests(unittest.TestCase):
                         notifications.send(self.entry, "Read review")
                     self.send.assert_not_called()
 
+    def test_claude_composer_refuses_nested_prompt_lines_incomplete_frames_and_old_output_fallback(self):
+        from iterm_tab import ansi_screen, input_line
+        self.claude()
+        samples = ["❯ \n────────", "────────\n❯ ", "────────\n❯ \n  \n────────",
+                   "  ────────\n  ❯ \n  ────────", "  ────────\n❯ \n────────",
+                   "────────\n❯ \n  ────────", "────────\n❯ \n────────\n────────"]
+        for marker in (">", "›", "❯"):
+            samples.extend(f"────────\n❯ unfinished draft\n{typed_rule}  {marker}\n────────"
+                           for typed_rule in ("", "  ────────\n"))
+        samples.extend(f"────────\n{marker} \n────────" for marker in (">", "›"))
+        samples.extend(f"────────\n❯ \n────────\noutput\n────────\n{current}\n────────"
+                       for current in ("! command", "$ command", "agent ❯ draft"))
+        for captured in samples:
+            with self.subTest(captured=captured):
+                screen, styles = ansi_screen(captured)
+                self.row.update(screen=screen, input_line=input_line(screen, styles))
+                with self.assertRaises(notifications.NotSent):
+                    notifications.send(self.entry, "Read review")
+        self.send.assert_not_called()
+
     def test_claude_nonempty_unknown_wrapped_active_changed_or_wrong_target_never_sends(self):
         self.claude()
         original = copy.deepcopy(self.row)
-        for change in ({"input_line": {"style": s, "text": "draft", "line_index": 0}}
+        for change in ({"input_line": {"style": s, "text": "draft", "line_index": 1}}
                        for s in ("dim", "non_dim", "mixed", "unknown", "empty")):
             self.row = {**original, **change}
             with self.subTest(change=change), self.assertRaises(notifications.NotSent):
                 notifications.send(self.entry, "Read review")
-        for change in ({"screen": ["❯ ", "wrapped draft", "────────"]}, {"dead": True},
+        for change in ({"screen": ["────────", "❯ ", "wrapped draft", "────────"]}, {"dead": True},
                        {"tty": "ttys999"}, {"window_id": "$9"}, {"tab_id": "@9"}):
             self.row = {**original, **change}
             with self.subTest(change=change), self.assertRaises(notifications.NotSent):
@@ -1578,7 +1599,7 @@ class NotificationTests(unittest.TestCase):
                                {"at_turn_end": True, "background_tasks": [{"task_id": "live"}]}):
             with patch.object(notifications, "session_status", return_value=changed_status), self.assertRaises(notifications.NotSent):
                 notifications.send(self.entry, "Read review")
-        self.read.side_effect = [original, {**original, "input_line": {"style": "non_dim", "text": "new draft", "line_index": 0}}]
+        self.read.side_effect = [original, {**original, "input_line": {"style": "non_dim", "text": "new draft", "line_index": 1}}]
         with self.assertRaises(notifications.NotSent):
             notifications.send(self.entry, "Read review")
         self.send.assert_not_called()

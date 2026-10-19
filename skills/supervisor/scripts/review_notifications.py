@@ -21,6 +21,25 @@ class NotSent(ValueError):
         self.needs_attention = needs_attention
 
 
+def empty_claude_composer(row):
+    """Prove the supported single-line composer, without parser fallback."""
+    line, screen = row["input_line"], row["screen"]
+    index = line["line_index"]
+    if (line["style"] != "empty" or not isinstance(line["text"], str) or line["text"].strip()
+            or type(index) is not int or not 0 < index < len(screen) - 1):
+        return False
+    # Claude renders its marker in a separate width-two child; continuation
+    # text is indented. The shared last-line parser also matches quote markers,
+    # so its empty classification alone cannot prove the composer is empty.
+    if not re.fullmatch(r"❯\s*", screen[index]):
+        return False
+    def rule(text):
+        return re.fullmatch(r"[─━-]{3,}\s*", text) is not None
+
+    return (rule(screen[index - 1]) and rule(screen[index + 1])
+            and not any(rule(text) for text in screen[index + 2:]))
+
+
 def prepare(entry, message):
     # Native transcript identity must agree with the ledger on either harness.
     status = session_status(entry)
@@ -75,13 +94,7 @@ def prepare(entry, message):
         if (type(pid) is not int or pid <= 0 or len(matching) != 1
                 or not belongs_to(pid, row["pid"], process_parents())):
             raise ValueError("notification agent PID is not verified in the ledger's tmux pane")
-        line = row["input_line"]
-        if line["style"] != "empty" or not isinstance(line["text"], str) or line["text"].strip():
-            raise NotSent("Claude input line is not verified empty; no keys sent", needs_attention=False)
-        # The shared parser identifies only the first composer line. Require its
-        # closing separator immediately below, so wrapped input cannot be hidden.
-        following = row["screen"][line["line_index"] + 1:]
-        if not following or not re.fullmatch(r"\s*[─━-]{3,}\s*", following[0]):
+        if not empty_claude_composer(row):
             raise NotSent("Claude full input area is not verified empty; no keys sent", needs_attention=False)
         return current, row
 
