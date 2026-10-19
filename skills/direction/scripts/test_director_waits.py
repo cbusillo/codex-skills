@@ -292,6 +292,22 @@ class StructuredWaitTests(unittest.TestCase):
         self.assertEqual([(row["wait_source"], row["wait_review_reason"]) for row in result["waits"]],
                          [("legacy_wait_review", "no_structured_record")])
 
+    def test_unreadable_trusted_record_keeps_a_comment_hold_as_unresolved(self):
+        # The body prose names someone else; only the comment records the Director hold.
+        hold = wait_comment("owner", waiting_for="Director to approve the release", ends_when="The Director answers")
+        malformed = wait_comment("owner", marker="<!-- github-plan:wait {not json -->")
+        envelope = {**issue(reason="Client to test"),
+                    "body": "<!-- github-plan:managed:start -->\n" + issue(reason="Client to test")["body"]}
+        for name, record, comments in (("malformed after hold", issue(reason="Client to test"), [hold, malformed]),
+                                       ("malformed before hold", issue(reason="Client to test"), [malformed, hold]),
+                                       ("malformed contributor envelope", envelope, [hold])):
+            with self.subTest(name):
+                result = self.collect_one(record, comments)
+                self.assertFalse(result["complete"])
+                self.assertEqual([(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+                                  for row in result["waits"]], [(1, "unresolved", "unresolved_structured_wait", True)])
+                self.assertEqual([error["scope"] for error in result["errors"]], ["structured wait"])
+
 
 if __name__ == "__main__":
     unittest.main()

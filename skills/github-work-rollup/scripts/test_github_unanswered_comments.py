@@ -16,6 +16,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -1663,6 +1664,68 @@ def test_unread_wait_discussion_or_partial_wait_search_degrades_coverage(monkeyp
         assert payload["status"] == "degraded"
         assert [(error["repo"], error["lane"]) for error in payload["coverage"]["errors"]] == [
             ("example/repo" if lane != "director_waits_search" else "example", lane)]
+
+
+MALFORMED_WAIT = "<!-- github-plan:wait {not json -->"
+
+
+@pytest.mark.parametrize("case", ["malformed_after_hold", "malformed_before_hold", "malformed_contributor_envelope"])
+def test_unreadable_trusted_record_keeps_a_comment_hold_as_unresolved(monkeypatch, tmp_path: Path, case: str) -> None:
+    # The body prose names someone else, so only the comment records a hold on Pat.
+    issue = waiting_issue("Client's testing of the build.")
+    hold = wait_record_comment(141, 5, "example", "Pat's approval of the release.")
+    malformed = wait_record_comment(141, 6, "example", marker=MALFORMED_WAIT)
+    if case == "malformed_contributor_envelope":
+        issue = {**issue, "body": "<!-- github-plan:managed:start -->\n" + str(issue["body"])}
+    comments = {"malformed_after_hold": [hold, malformed], "malformed_before_hold": [malformed, hold],
+                "malformed_contributor_envelope": [hold]}[case]
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "repos/example/repo/issues": lambda endpoint: [issue] if "plan%3Awaiting" in endpoint else [],
+        "repos/example/repo/issues/141/comments": comments,
+    })
+
+    assert payload["status"] == "degraded"
+    assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_waits/141"]
+    assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+            for row in payload["unasked_director_waits"]] == [(141, "unresolved", "unresolved_structured_wait", True)]
+    assert "## Wait Unknown — Structured Record Needs Review" in github_unanswered_comments.render_markdown(payload)
+
+
+def test_labeled_wait_reads_a_new_comment_hold_before_search_indexes_it(monkeypatch, tmp_path: Path) -> None:
+    # Search has not indexed the new comment yet, and the prose names someone else.
+    issue = waiting_issue("Client's testing of the build.")
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "repos/example/repo/issues": lambda endpoint: [issue] if "plan%3Awaiting" in endpoint else [],
+        "repos/example/repo/issues/141/comments": [wait_record_comment(141, 5, "example", "Pat's approval of the release.")],
+    })
+
+    assert payload["status"] == "attention"
+    assert [(row["number"], row["wait_kind"], row["wait_source"])
+            for row in payload["unasked_director_waits"]] == [(141, "decision", "structured_wait")]
+
+
+def outside_result(number: int) -> dict[str, object]:
+    # A matching issue outside the scanned repositories still counts toward the total.
+    return {"number": number, "state": "open", "repository_url": "https://api.github.com/repos/example/other"}
+
+
+@pytest.mark.parametrize("pages", [
+    pytest.param({1: {"items": [outside_result(n) for n in range(1, 101)], "total_count": 101, "incomplete_results": False},
+                  2: {"items": [outside_result(100)], "total_count": 101, "incomplete_results": False}},
+                 id="duplicate_across_pages"),
+    pytest.param({1: {"items": [outside_result(n) for n in range(1, 101)], "total_count": 101, "incomplete_results": False},
+                  2: {"items": [outside_result(101)], "total_count": 100, "incomplete_results": False}},
+                 id="total_changed"),
+    pytest.param({1: {"items": [], "total_count": 0}}, id="incomplete_results_missing"),
+])
+def test_structured_wait_search_pagination_gaps_degrade_coverage(monkeypatch, tmp_path: Path, pages) -> None:
+    def search(endpoint: str) -> object:
+        return pages[int(parse_qs(urlsplit(endpoint).query)["page"][0])]
+
+    payload = structured_wait_rows(monkeypatch, tmp_path, {"search/issues": search})
+
+    assert payload["status"] == "degraded"
+    assert [(error["repo"], error["lane"]) for error in payload["coverage"]["errors"]] == [("example", "director_waits_search")]
 
 
 if __name__ == "__main__":

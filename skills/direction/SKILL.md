@@ -203,8 +203,10 @@ It uses Director-wide GitHub issue searches for open issue bodies containing
 `Waiting for` or `Parked until`, and for comments holding a structured wait
 record. It reads each match's full discussion and resolves the current wait
 with the shared wait resolver. A trusted structured record wins over prose.
-Without one, the prose wait stays listed with `wait_review_required`. An unread
-discussion or unreadable record makes coverage incomplete. It then applies the
+Without one, the prose wait stays listed with `wait_review_required`. An
+unreadable trusted record lists the issue as an `unresolved` wait for review,
+not read from prose. An unread discussion or unreadable record makes coverage
+incomplete. It then applies the
 shared human-attention classifier locally with the optional people index for
 the Director's names. This reads wait records
 across repositories; it does not audit their direction files or milestones.

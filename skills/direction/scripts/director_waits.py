@@ -78,9 +78,29 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
         prose = github_direction_next.waiting_records(item, status)
         wait_record, review = resolve_wait(repo, issue, (discussions or {}).get(issue["number"]), trusted)
         item.update({"structured_wait": wait_record} if wait_record else {"wait_review_required": True})
-        if errors is not None and review and review.startswith("structured_wait_unreadable"):
-            # A record that cannot be read may hide or release a hold: partial coverage.
-            errors.append({"scope": "structured wait", "repo": repo, "number": issue["number"], "error": review})
+        # The status line's verification still dates the issue's recorded state.
+        verified = next((record.get("last_verified") for record in prose if record.get("last_verified")), None)
+        last_verified = parse_date(verified)
+        missing_date_basis = ("verification_commit_only" if verified and re.fullmatch(r"[0-9a-fA-F]{7,40}", verified.strip())
+                              else "verification_unparseable" if verified else "verification_missing")
+        if review and review.startswith("structured_wait_unreadable"):
+            # A record that cannot be read may hide or release a hold. Like the goal
+            # board, keep the issue as an unknown wait for review, never resolve
+            # it from prose, and report partial coverage.
+            if errors is not None:
+                errors.append({"scope": "structured wait", "repo": repo, "number": issue["number"], "error": review})
+            rows.append({
+                "repo": repo, "number": issue["number"], "title": issue.get("title"),
+                "url": issue.get("html_url"), "waiting_for": "unknown: the structured wait record needs review",
+                "wait_kind": "unresolved", "waiting_since": None, "wait_age_days": None, "wait_age_unknown": True,
+                "recorded_at": None, "last_verified": last_verified.isoformat() if last_verified else None,
+                "last_verified_raw": verified,
+                "verification_age_days": max(0, (now - last_verified).total_seconds() / 86400) if last_verified else None,
+                "possibly_stale": True, "staleness_basis": "structured_wait_unreadable",
+                "verification_unknown": last_verified is None, "wait_source": "unresolved_structured_wait",
+                "wait_review_required": True, "wait_review_reason": review,
+            })
+            continue
         records = github_direction_next.waiting_records(item, status)
         candidates = []
         for record in records:
@@ -99,11 +119,6 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
             since = parse_date(inline_since[1])
         elif sum(not record["no_current_wait"] for record in records) > 1:
             since = None  # A status-wide start cannot date one of several waits.
-        # The status line's verification still dates the issue's recorded state.
-        verified = next((record.get("last_verified") for record in prose if record.get("last_verified")), None)
-        last_verified = parse_date(verified)
-        missing_date_basis = ("verification_commit_only" if verified and re.fullmatch(r"[0-9a-fA-F]{7,40}", verified.strip())
-                              else "verification_unparseable" if verified else "verification_missing")
         rows.append({
             "repo": repo, "number": issue["number"], "title": issue.get("title"),
             "url": issue.get("html_url"), "waiting_for": wait[0], "wait_kind": wait[1],

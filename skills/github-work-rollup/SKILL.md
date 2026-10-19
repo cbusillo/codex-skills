@@ -256,7 +256,9 @@ open `plan:waiting` issues, and issues whose comments hold a structured wait,
 whose current wait names the Director, with no open `Director question:` or
 `Owner question:` comment. The shared wait resolver reads the full discussion.
 A trusted structured record wins over prose. Prose without one is listed with
-`wait_review_required`. Unread or unreadable wait evidence degrades coverage. Waits worded as
+`wait_review_required`. An unreadable trusted record lists the issue as an
+`unresolved` wait for review. Unread or unreadable wait evidence, or an
+incomplete wait search, degrades coverage. Waits worded as
 a hold (resume, park, select) are listed as `director_hold` without raising
 attention. Post the question on the issue, or correct the status. Exit `0` means clear, `2` attention, `3` degraded
 coverage. Hand GitHub responses to `github`.
