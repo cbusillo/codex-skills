@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from pathlib import Path
 from argparse import Namespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import unittest
 
 import test_gh_plan_claim as fixtures
@@ -132,6 +132,132 @@ class ReleaseTests(ReleaseHarness):
         invalidated = release.verified_comments(comments, lambda *_args: evidence)
         self.assertFalse(any(release.receipt_for(c) for c in invalidated))
         self.assertTrue(CLAIM.discussion_evidence("", invalidated, fixtures.OWNER)[0])
+
+    def test_malformed_canonical_evidence_shape_propagates_without_hiding_ownership(self):
+        self.run_release()
+        for field, value in (("user", None), ("body", []), ("created_at", None), ("issue_url", None), ("id", "88")):
+            with self.subTest(field=field):
+                malformed = {**self.evidence, field: value}
+                with self.assertRaises(ValueError):
+                    release.verified_comments(self.f.comments, lambda *_args: malformed)
+                before = self.f.events.count("post")
+                with patch.object(self, "evidence", malformed), self.assertRaises(PLAN.PlanError):
+                    self.successor()
+                self.assertEqual(self.f.events.count("post"), before)
+        invalid = {**self.evidence, "user": {"login": "foreign[bot]"}}
+        canonical = release.verified_comments(self.f.comments, lambda *_args: invalid)
+        self.assertFalse(any(release.receipt_for(c) for c in canonical))
+        self.assertTrue(CLAIM.discussion_evidence("", canonical, fixtures.OWNER)[0])
+
+    def test_actual_supervisor_related_release_is_consumed_after_source_end(self):
+        self.f.comments.append(self.comment(3, "Claimed by trial-b\nSession: session-b", "2026-10-01T01:00:00Z"))
+        self.args.related_claim_comment = [3]
+        self.f.comment_id_offset = 10
+        self.run_release()
+        produced = copy.deepcopy(self.f.comments)
+        release.termination.native_helpers()
+        import release_session_claims as supervisor
+        reader = Mock()
+        reader.get_json.side_effect = lambda path, **_kw: self.evidence if "/issues/comments/" in path else {"body": ""}
+        entry = {"session_id": "session-b", "ended_at": "2026-10-02T00:00:00Z", "_finish_scope": "explicit scope"}
+        def consume(comments):
+            reader.paged_json.return_value = comments
+            return supervisor.finished_claims(reader, entry, BOT, [("owner/repo", 42)], True)
+        report = consume(produced)
+        self.assertFalse(report["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in report["released_claims"]}, {1, 3})
+        source_receipt = next(c for c in produced if release.receipt_for(c))
+        related_release = next(c for c in produced if CLAIM.released_claim_id(c["body"]) == 3)
+        def alter(identifier, **fields):
+            return [{**c, **fields} if c["id"] == identifier else c for c in produced]
+        receipt = release.receipt_for(source_receipt)
+        unrelated_body = source_receipt["body"].replace(json.dumps(receipt, sort_keys=True),
+            json.dumps({**receipt, "related_ids": []}, sort_keys=True))
+        cases = [
+            alter(source_receipt["id"], body=unrelated_body),
+            alter(1, user={"login": "foreign[bot]"}),
+            alter(3, user={"login": "foreign[bot]"}),
+            alter(related_release["id"], body="Released claim 3\n\nEngineering handoff"),
+            [c for c in produced if c["id"] != related_release["id"]],
+            alter(related_release["id"], user={"login": "foreign[bot]"}),
+            alter(related_release["id"], body=related_release["body"].replace("/issues/42#", "/issues/43#")),
+            alter(related_release["id"], body=related_release["body"].replace("of claim 1;", "of claim 9;")),
+            alter(source_receipt["id"], body=release.pending_body(source_receipt["body"])),
+            alter(3, body="Claimed by wrong-worker\nSession: session-b"),
+            alter(3, body="Claimed by trial-b\nSession: other-session", updated_at="2026-10-04T00:00:00Z"),
+            alter(3, updated_at="2026-10-04T00:00:00Z"),
+        ]
+        for comments in cases:
+            with self.subTest(comments=comments):
+                failed = consume(comments)
+                self.assertTrue(failed["issue_refusals"])
+                self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
+
+        changed_evidence = {**self.evidence, "updated_at": "2026-10-04T00:00:00Z"}
+        with patch.object(self, "evidence", changed_evidence):
+            failed = consume(produced)
+        self.assertTrue(failed["issue_refusals"])
+        self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
+
+    def test_known_source_refusals_precede_retained_pr_transport_failure(self):
+        cases = ("different-peer", "anonymous-peer", "native-session", "source-activity", "related-activity", "related-identity")
+        for case in cases:
+            with self.subTest(case=case):
+                self.setUp()
+                self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
+                if case.endswith("peer"):
+                    self.f.inventory["sessions"] = [{"cwd": "/source/subdir", **({"sessionId": "different-session"} if case == "different-peer" else {})}]
+                elif case == "native-session":
+                    self.f.inventory["sessions"] = [{"cwd": "/elsewhere", "sessionId": fixtures.OTHER["session"]}]
+                elif case == "source-activity":
+                    self.f.comments[0]["updated_at"] = "2026-10-03T00:00:00Z"
+                else:
+                    native = "different-session" if case == "related-identity" else "session-b"
+                    at = "2026-10-03T00:00:00Z" if case == "related-activity" else "2026-10-01T01:00:00Z"
+                    self.f.comments.append(self.comment(2, f"Claimed by trial-b\nSession: {native}", at))
+                    self.args.related_claim_comment = [2]
+                reads = []
+                original = self.f.read_pages
+                def pages(path, **kwargs):
+                    if path.endswith("/pulls"):
+                        reads.append(path)
+                        raise PLAN.PlanError("fixture transport unavailable", api_result={"status": 503})
+                    return original(path, **kwargs)
+                with patch.object(self.f, "read_pages", side_effect=pages), self.assertRaises(PLAN.PlanError):
+                    self.run_release()
+                self.assertFalse(reads)
+                self.f.assert_no_writes()
+
+    def test_unknown_retained_path_peer_does_not_mask_an_earlier_pr_read_failure(self):
+        self.f.inventory["worktrees"] = [{"branch": "repair-branch", "path": "/retained"}]
+        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/retained"}]
+        reads = []
+        original = self.f.read_pages
+        def pages(path, **kwargs):
+            if path.endswith("/pulls"):
+                reads.append(path)
+                raise PLAN.PlanError("fixture transport unavailable", api_result={"status": 503})
+            return original(path, **kwargs)
+        with patch.object(self.f, "read_pages", side_effect=pages), self.assertRaises(PLAN.PlanError) as caught:
+            self.run_release()
+        self.assertEqual(PLAN.plan_error_status(caught.exception), 503)
+        self.assertEqual(len(reads), 1)
+        self.f.assert_no_writes()
+
+    def test_attested_termination_artifact_peer_precedes_pr_transport_failure(self):
+        self.termination_setup()
+        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": self.termination_record["retained_artifacts"][0]["worktree"]}]
+        reads = []
+        original = self.f.read_pages
+        def pages(path, **kwargs):
+            if path.endswith("/pulls"):
+                reads.append(path)
+                raise PLAN.PlanError("fixture transport unavailable", api_result={"status": 503})
+            return original(path, **kwargs)
+        with patch.object(self.f, "read_pages", side_effect=pages), self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        self.assertFalse(reads)
+        self.f.assert_no_writes()
 
     def test_malformed_ended_at_precedes_pr_reads_for_subject_and_legacy_paths(self):
         for legacy in (False, True):

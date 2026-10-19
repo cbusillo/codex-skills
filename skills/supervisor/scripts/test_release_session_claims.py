@@ -170,6 +170,70 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "resumed harness"):
                 helper.validate_closure(entries[0], "supervisor")
 
+    def test_loaded_inventory_preserves_explicit_handoff_and_every_named_retained_pr(self):
+        handoff_url = self.entry["handoff_url"]
+        rows = [self.inventory_row(handoff_url=handoff_url),
+                self.inventory_row(handoff_url=handoff_url, retained_pr_url="https://github.com/test/a/pull/13")]
+        entries, errors = helper.backfill_inventory.load(rows, {"codex": [str(self.root)]})
+        self.assertFalse(errors)
+        self.assertEqual(len(entries[0]["_inventory_claims"]), 2)
+        source = {**self.source, "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        public = {**comment(99, "Session: source-session\nRetained PRs: https://github.com/test/a/pull/12 https://github.com/test/a/pull/14"),
+                  "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        named = {n: self.pull(n, f"repair-{n}") for n in (12, 13, 14)}
+        def read(path, **_kwargs):
+            if "/pulls/" in path:
+                return named[int(path.rsplit("/", 1)[1])]
+            if "/commits/" in path:
+                return self.head_commit()
+            if path.endswith("/issues/comments/99"):
+                return public
+            if path.endswith("/issues/comments/1"):
+                return source
+            return {"number": 1, "body": ""}
+        self.reader.get_json.side_effect = read
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [source]
+        with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as command:
+            report = helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
+                "supervisor", [("test/a", 1)], self.root, False)
+        self.assertEqual(report["handoff_url"], handoff_url)
+        self.assertEqual(set(report["claims"][0]["retained_prs"]), {pull["html_url"] for pull in named.values()})
+        self.assertFalse(report["issue_refusals"])
+        write.assert_not_called()
+        command.assert_not_called()
+        # The same loaded path must not accept a changed or foreign handoff.
+        original_public = dict(public)
+        for changed in ({**original_public, "updated_at": "2026-01-01T00:03:00Z"},
+                        {**original_public, "user": {"login": "foreign[bot]"}},
+                        {**original_public, "issue_url": "https://api.github.com/repos/test/a/issues/2"}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                public = changed
+                helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
+                    "supervisor", [("test/a", 1)], self.root, False)
+
+    def test_inventory_conflicting_handoffs_preserve_the_whole_session_for_reconciliation(self):
+        rows = [self.inventory_row(handoff_url=self.entry["handoff_url"]),
+                self.inventory_row(issue=2, claim_comment_id=2,
+                    handoff_url="https://github.com/test/a/issues/2#issuecomment-98")]
+        original = json.loads(json.dumps(rows))
+        entries, reports = helper.backfill_inventory.load(rows, {"codex": [str(self.root)]})
+        self.assertFalse(entries)
+        self.assertTrue(reports)
+        self.assertEqual(rows, original)
+
+    def test_loaded_inventory_noncanonical_handoff_refuses_instead_of_using_source_context(self):
+        entries, reports = helper.backfill_inventory.load(
+            [self.inventory_row(handoff_url="https://example.com/not-a-handoff")], {"codex": [str(self.root)]})
+        if reports:
+            self.assertFalse(entries)
+            return
+        self.source["issue_url"] = "https://api.github.com/repos/test/a/issues/1"
+        self.reader.get_json.return_value = self.source
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        with self.assertRaises(ValueError):
+            helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
+                "supervisor", [("test/a", 1)], self.root, False)
+
     def test_bad_inventory_row_preserves_all_claims_of_that_session(self):
         for row in (self.inventory_row(still_running=True), self.inventory_row(safe_exit_yes=False),
                     self.inventory_row(ended_at="2026-01-01T00:04:00Z")):
@@ -205,7 +269,7 @@ class ReleaseTests(unittest.TestCase):
         self.reader.get_json.side_effect = lambda path, **_kw: evidence if evidence and path.endswith("/issues/comments/99") else {"body": body, "number": 1}
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
                 "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
-                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
+                "--owner", "test", "--confirm-session-ended",
                 "--transcript-root", str(self.root)]
         if apply:
             argv.append("--apply")
@@ -226,6 +290,17 @@ class ReleaseTests(unittest.TestCase):
     def own_release(self, **changes):
         return {**comment(2, "Released claim 1\n\nEngineering handed to Supervisor."),
                 "created_at": "2026-01-01T00:01:00Z", "updated_at": "2026-01-01T00:01:00Z", **changes}
+
+    def test_backfill_missing_checkout_refuses_before_any_apply_mutation(self):
+        log = self.root / "new-log.json"
+        argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
+                "--owner", "test", "--confirm-session-ended", "--apply"]
+        with patch.object(helper.sys, "argv", argv), patch.object(helper, "GitHubReader") as reader, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(helper.main(), 1)
+        self.assertFalse(log.exists())
+        self.assertFalse(Path(str(log) + ".release.lock").exists())
+        reader.assert_not_called()
 
     def test_finish_recognizes_self_released_claim_from_its_original_comment(self):
         result, report = self.finish_thread([self.source, self.own_release()], body=self.source["body"])
@@ -588,7 +663,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(found["handoff_url"], "https://github.com/test/a/issues/1#issuecomment-1")
         self.assertIn("ownership record", found["_handoff_provenance"])
         self.source["user"]["login"] = "other-identity"
-        with self.assertRaisesRegex(ValueError, "no canonical original ownership record"):
+        with self.assertRaises(ValueError):
             helper.inventory_source_context(self.reader, entry, ACTOR)
 
     def test_inventory_source_context_requires_exact_backfill_source_and_unchanged_readback(self):

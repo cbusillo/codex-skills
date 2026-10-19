@@ -1848,7 +1848,7 @@ It does not
 send exit commands or change issue status, waits, blockers, branches or worktrees.
 
 ```sh
-uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended
+uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --confirm-session-ended
 ```
 
 The default closed-session log is
@@ -2178,7 +2178,11 @@ native session, with both comments authored by the automation actor. A worker's
 release must precede its recorded closure. A Supervisor/direction release may
 be posted later: its canonical source, receipt and cited closure evidence are
 validated together, with the original source's end time. Each canonical
-comment/evidence snapshot is reused only within that read phase.
+comment/evidence snapshot is reused only within that read phase. Related
+ownership follow-ups released after the source ended also need their actual
+exact-ID release, linked to the same validated structured receipt and its
+selected related IDs. The receipt binds their source author, worker, native
+session and original closure chronology; shared-bot prose alone cannot do so.
 When every source has that evidence, the report says `already released` and
 names the release handoffs without writing another release. A verified session
 that never claimed reports `nothing to release`. A body marker matching the
@@ -2210,7 +2214,9 @@ posted attestation. Repeat with `--apply` after inspecting it. Apply records the
 verified exit in a private JSON log, posts/readbacks the required `Closed session`
 / `Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
 the maintained `release-claim` preview and apply. `finish --apply` records closure
-and reports existing releases; it posts no attestation or release.
+and reports existing releases; it posts no attestation or release. Finish
+needs no `--checkout-root`; existing callers may still pass it. Backfill requires
+that checkout root before it can create a closure/release lock or write evidence.
 The original observed exit
 time survives retries. The log has the ledger's array schema plus `ended_at`
 (timezone-qualified ISO timestamp), the verified completed response's
@@ -2277,7 +2283,17 @@ transcript activity against the original end time. Normal finish still requires
 the matched PID/TTY and Supervisor-owned ledger entry.
 
 Backfill uses the ledger's explicit exact `handoff_url`, verified against the
-canonical comment author and issue. There is no transcript command interpreter,
+canonical comment author and issue. Inventory rows for one native session may
+supply one agreed nonempty URL; it remains the handoff context, preserving every
+PR named in that comment as well as every row's `retained_pr_url`. The canonical
+inventory handoff must remain no newer than the original end and must not name a
+different native session. Conflicting URLs preserve the whole session for
+reconciliation. Keep the original inventory and use each source's existing
+evidence-backed `release-claim` route. Alternatively, a separate inventory can
+retain every source row and every named PR through `retained_pr_url`, omitting
+the optional conflicting URLs so the supported original source-context route
+can run. Do not choose one URL, merge handoff prose or drop source rows.
+There is no transcript command interpreter,
 summary-thread fallback or handoff cache.
 An interrupted session with no public closeout can use the inventory's original
 structured ownership comment as recovery context only when its exact native ID,

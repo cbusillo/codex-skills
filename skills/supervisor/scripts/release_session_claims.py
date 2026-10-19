@@ -418,6 +418,10 @@ def handoff(reader, entry, actor):
     if ((evidence.get("user") or {}).get("login") != actor
             or evidence.get("issue_url") != f"https://api.github.com/repos/{match[1]}/issues/{match[2]}"):
         raise ValueError("handoff identity or canonical issue differs")
+    if entry.get("_inventory") and (
+            release.stamp(evidence.get("updated_at") or evidence.get("created_at")) > release.stamp(entry["ended_at"])
+            or not release.related_sessions_match(evidence.get("body") or "", entry["session_id"])):
+        raise ValueError("inventory handoff changed after closure or names another native session; preserve the original inventory and use the source's evidence-backed release-claim route")
     return evidence
 
 
@@ -533,12 +537,8 @@ def finished_claims(reader, entry, actor, issues, apply):
                     if (claim.released_explanatory_note(source.get("body") or "", index, comments)
                             or claim.attested_handoff_note(source.get("body") or "", index, comments)):
                         continue
-                    evidence = next((c for c in comments[index + 1:]
-                        if (c.get("user") or {}).get("login") == actor
-                        and claim.released_claim_id(c.get("body") or "") == source["id"]
-                        and release.stamp(c["created_at"]) > release.stamp(source.get("updated_at") or source["created_at"])
-                        and release.related_sessions_match(c.get("body") or "", entry["session_id"])
-                        and release.stamp(c.get("updated_at") or c["created_at"]) <= ended), None)
+                    evidence = release.followup_release(source, comments, actor=actor,
+                        session=entry["session_id"], ended=ended, repo=repo, number=number)
                     if evidence is not None and (source.get("user") or {}).get("login") == actor:
                         released.append({**source_identity,
                             "handoff_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}"})
@@ -795,7 +795,7 @@ def main():
     parser.add_argument("--supervisor-session", required=True)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--repo", action="append", help="scope disposable trials; omission discovers all owner repositories")
-    parser.add_argument("--checkout-root", type=Path, required=True)
+    parser.add_argument("--checkout-root", type=Path, help="existing per-repository checkouts; required only for backfill")
     parser.add_argument("--confirm-session-ended", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--deadline-seconds", type=int, default=600)
@@ -805,6 +805,8 @@ def main():
     reports = []
     lock_stream = None
     try:
+        if args.mode == "backfill" and args.checkout_root is None:
+            raise ValueError("backfill requires --checkout-root for canonical release preflight")
         if args.closed_log is None:
             if args.mode != "finish":
                 raise ValueError("backfill requires an explicit --closed-log")

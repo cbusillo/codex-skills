@@ -2232,6 +2232,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             facts.record["session"])
         # Check source identity, closure and native peers before a retained-PR
         # refusal can be classified as independent issue work.
+        checked_paths = github_plan_release.validate_source_release(facts, source_comments, source_inventory,
+            retained_prs=args.retained_pr, related=related_comments)
         issue_refusal = None
         branch_query = ({"state": "all", "head": f"{source_issue['repo'].split('/')[0]}:{source_branch}"}
                         if legacy_options["legacy"] else {"state": "open"})
@@ -2282,8 +2284,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                     allow_closed_unmerged=legacy_options["legacy"])
             except github_plan_release.IssueReleaseRefusal as retained_error:
                 issue_refusal = retained_error
-        github_plan_release.validate_release(facts, source_comments, source_inventory,
-            retained_prs=args.retained_pr, related=related_comments, retained_branches=retained_branches)
+        github_plan_release.validate_retained_release(facts, source_inventory,
+            retained_branches=retained_branches, checked_paths=checked_paths)
         release_body = github_plan_release.render_release(facts,
             evidence_url=args.evidence_comment, retained_prs=args.retained_pr,
             related=related_comments, checked_prs=checked_prs)

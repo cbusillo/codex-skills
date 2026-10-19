@@ -28,13 +28,15 @@ def load(rows, roots_by_harness) -> tuple[list[dict[str, Any]], list[dict[str, A
                 raise ValueError("inventory requires positive issue and exact claim-comment IDs")
             entry = grouped.setdefault(session, {"session_id": session, "ended_at": row["ended_at"],
                 "safe_exit_yes": True, "still_running": False, "process_exit_verified": True,
-                "_inventory": True, "_inventory_claims": [], "_handoffs": []})
+                "_inventory": True, "_inventory_claims": []})
             if entry["ended_at"] != row["ended_at"]:
                 raise ValueError("inventory has conflicting original closure timestamps")
             if row not in entry["_inventory_claims"]:
                 entry["_inventory_claims"].append(row)
             if row.get("handoff_url"):
-                entry["_handoffs"].append(row["handoff_url"])
+                if entry.get("handoff_url") and entry["handoff_url"] != row["handoff_url"]:
+                    raise ValueError("inventory has conflicting explicit handoff URLs; preserve the original rows and use each source's evidence-backed release-claim route, or record all retained PRs with retained_pr_url for source-context backfill")
+                entry["handoff_url"] = row["handoff_url"]
         except (KeyError, TypeError, ValueError) as error:
             reports.append({"session_id": row.get("session_id"), "repository": row.get("repo"),
                             "issue": row.get("issue"), "claim_comment": row.get("claim_comment_id"),

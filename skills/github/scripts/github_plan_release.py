@@ -193,44 +193,82 @@ def parse_release(source: dict[str, Any], evidence: dict[str, Any], *, actor: st
     return ReleaseFacts(source, evidence, record, cutoff, terminated, actor, role, releaser_session)
 
 
-def validate_release(facts: ReleaseFacts, comments: list[dict[str, Any]], inventory: dict[str, Any], *,
-                     retained_prs: list[str], related: list[dict[str, Any]],
-                     retained_branches: set[str] | None = None) -> None:
-    """Check source activity, all retained artifacts and live peers for this phase."""
+def check_related(record: dict[str, str], comment: dict[str, Any], actor: str, cutoff: datetime) -> None:
+    """Bind an unstructured follow-up to its source worker, native ID and closure."""
+    if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
+            or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
+        raise ValueError("Related release must name an unstructured ownership follow-up of this exact source worker")
+    if not related_sessions_match(comment.get("body") or "", record["session"]):
+        raise ValueError("Related ownership follow-up names a different native session; obtain that session's own closure evidence")
+    if stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
+        raise ValueError("Related ownership follow-up is newer than the session-ended evidence")
+
+
+def _check_peers(inventory, paths):
+    if any(any(cwd == root or root in cwd.parents for root in paths)
+           for session in inventory["sessions"] for cwd in [pathlib.Path(session.get("cwd") or "/").resolve()]):
+        raise ValueError("A live peer is using the source claim's retained worktree")
+
+
+def _observed_branches(inventory):
+    return (set(inventory["local_branches"]) | set(inventory["remote_branches"])
+            | {tree["branch"] for tree in inventory["worktrees"]})
+
+
+def validate_source_release(facts: ReleaseFacts, comments: list[dict[str, Any]], inventory: dict[str, Any], *,
+                            retained_prs: list[str], related: list[dict[str, Any]]) -> set[pathlib.Path]:
+    """Check source activity and all known source/artifact paths before PR reads."""
     record, cutoff, terminated = facts.record, facts.cutoff, facts.terminated
-    if "legacy_reason" in record and (related or retained_prs):
-        raise ValueError("Legacy releases do not support related releases or structured retained-PR handoffs")
     legacy = "legacy_reason" in record
+    if legacy and (related or retained_prs):
+        raise ValueError("Legacy releases do not support related releases or structured retained-PR handoffs")
     _check_activity(comments, facts.source, cutoff, record)
     if any(s.get("sessionId") == record["session"] or
            (legacy and any(s.get(k) == record["worker"] for k in ("sessionId", "name", "worker")))
            for s in inventory["sessions"]):
         raise ValueError("Source session is still visible in the active native session inventory")
-    retained_paths = {pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] in {record["branch"], *(retained_branches or set())}}
+    known_paths = {pathlib.Path(tree["path"]).resolve() for tree in inventory["worktrees"]
+                   if tree["branch"] == record["branch"]}
     if terminated is not None:
-        observed_branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | (retained_branches or set())
-        observed_branches.update(t["branch"] for t in inventory["worktrees"])
-        if record["branch"] in observed_branches and record["branch"] not in {a["branch"] for a in terminated["retained_artifacts"]}:
+        if record["branch"] in _observed_branches(inventory) and record["branch"] not in {a["branch"] for a in terminated["retained_artifacts"]}:
             raise ValueError("Termination evidence must retain the claimed source branch")
-        if any(a["branch"] not in observed_branches for a in terminated["retained_artifacts"] if a.get("worktree") is None):
-            raise ValueError("Branch-only retained artifact is absent from repository inventory")
         artifact_paths = {pathlib.Path(a["worktree"]).resolve() for a in terminated["retained_artifacts"] if a.get("worktree") is not None}
-        if not retained_paths.issubset(artifact_paths):
+        if not known_paths.issubset(artifact_paths):
             raise ValueError("Termination evidence must name every preserved source/retained worktree")
-        retained_paths.update(artifact_paths)
-    peers = [s for s in inventory["sessions"]
-             if any(cwd == root or root in cwd.parents
-                    for cwd in [pathlib.Path(s.get("cwd") or "/").resolve()] for root in retained_paths)]
-    if peers:
-        raise ValueError("A live peer is using the source claim's retained worktree")
+        known_paths.update(artifact_paths)
+    _check_peers(inventory, known_paths)
     for comment in related:
-        if ((comment.get("user") or {}).get("login") != facts.actor or claim.records(comment.get("body") or "")
-                or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
-            raise ValueError("Related release must name an unstructured ownership follow-up of this exact source worker")
-        if not related_sessions_match(comment.get("body") or "", record["session"]):
-            raise ValueError("Related ownership follow-up names a different native session; obtain that session's own closure evidence")
-        if stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
-            raise ValueError("Related ownership follow-up is newer than the session-ended evidence")
+        check_related(record, comment, facts.actor, cutoff)
+    return known_paths
+
+
+def validate_retained_release(facts: ReleaseFacts, inventory: dict[str, Any], *,
+                              retained_branches: set[str], checked_paths: set[pathlib.Path]) -> None:
+    """Check only newly discovered retained paths, after PR metadata is available."""
+    paths = {pathlib.Path(tree["path"]).resolve() for tree in inventory["worktrees"]
+             if tree["branch"] in retained_branches} - checked_paths
+    terminated = facts.terminated
+    if terminated is not None:
+        known_branches = _observed_branches(inventory)
+        observed_branches = known_branches | retained_branches
+        artifacts = terminated["retained_artifacts"]
+        if (facts.record["branch"] not in known_branches and facts.record["branch"] in retained_branches
+                and facts.record["branch"] not in {a["branch"] for a in artifacts}):
+            raise ValueError("Termination evidence must retain the claimed source branch")
+        if any(a["branch"] not in observed_branches for a in artifacts if a.get("worktree") is None):
+            raise ValueError("Branch-only retained artifact is absent from repository inventory")
+        artifact_paths = {pathlib.Path(a["worktree"]).resolve() for a in artifacts if a.get("worktree") is not None}
+        if not paths.issubset(artifact_paths):
+            raise ValueError("Termination evidence must name every preserved source/retained worktree")
+    _check_peers(inventory, paths)
+
+
+def validate_release(facts: ReleaseFacts, comments: list[dict[str, Any]], inventory: dict[str, Any], *,
+                     retained_prs: list[str], related: list[dict[str, Any]],
+                     retained_branches: set[str] | None = None) -> None:
+    """Compatibility validation when every retained branch is already available."""
+    checked_paths = validate_source_release(facts, comments, inventory, retained_prs=retained_prs, related=related)
+    validate_retained_release(facts, inventory, retained_branches=retained_branches or set(), checked_paths=checked_paths)
 
 
 def render_release(facts: ReleaseFacts, *, evidence_url: str, retained_prs: list[str],
@@ -355,6 +393,60 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
         raise ValueError("Closed-session evidence changed or no longer attests this release")
 
 
+def followup_release(source: dict[str, Any], comments: list[dict[str, Any]], *, actor: str,
+                     session: str, ended: datetime, repo: str, number: int) -> dict[str, Any] | None:
+    """Consume an exact worker release or a follow-up bound to validated closure.
+
+    A later Supervisor release needs the same structured receipt/related-ID facts
+    that produced it, plus the actual authored exact-ID follow-up release.
+    """
+    if (source.get("user") or {}).get("login") != actor or claim.records(source.get("body") or ""):
+        return None
+    index = comments.index(source)
+    for release_index in range(index + 1, len(comments)):
+        released = comments[release_index]
+        if ((released.get("user") or {}).get("login") != actor
+                or claim.released_claim_id(released.get("body") or "") != source["id"]
+                or not related_sessions_match(released.get("body") or "", session)):
+            continue
+        if stamp(released["created_at"]) <= stamp(source.get("updated_at") or source["created_at"]):
+            continue
+        if stamp(released.get("updated_at") or released["created_at"]) <= ended:
+            return released
+        # Only the maintained release command's exact canonical linkage can
+        # bind a follow-up posted after its original source ended.
+        notes = [line for line in (released.get("body") or "").splitlines()
+                 if line.startswith("Ownership follow-up of claim ")]
+        if len(notes) != 1:
+            continue
+        note = re.fullmatch(r"Ownership follow-up of claim ([1-9]\d*); closed-session release (\S+)\.", notes[0])
+        link = COMMENT_URL.fullmatch(note[2]) if note else None
+        if link is None or link[1].casefold() != repo.casefold() or int(link[2]) != number:
+            continue
+        for confirmed, receipt in receipts(comments[:release_index]):
+            related_ids = receipt.get("related_ids", [])
+            if not isinstance(related_ids, list):
+                continue
+            if (confirmed.get("id") != int(link[3]) or receipt["source_id"] != int(note[1])
+                    or "_release_evidence" not in confirmed
+                    or (confirmed.get("user") or {}).get("login") != actor
+                    or receipt["source"]["session"] != session
+                    or source["id"] not in related_ids
+                    or stamp(receipt["evidence_at"]) > ended):
+                continue
+            original_index = next((i for i, c in enumerate(comments) if c.get("id") == receipt["source_id"]), None)
+            if original_index is None or not original_index < index < comments.index(confirmed):
+                continue
+            if stamp(released["created_at"]) < stamp(confirmed.get("updated_at") or confirmed["created_at"]):
+                continue
+            try:
+                check_related(receipt["source"], source, actor, stamp(receipt["evidence_at"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            return released
+    return None
+
+
 def verified_comments(comments: list[dict[str, Any]],
                       read_evidence: Callable[[str, int, int], dict[str, Any] | None]) -> list[dict[str, Any]]:
     """Validate one canonical discussion phase; a missing evidence read returns None.
@@ -395,7 +487,11 @@ def verified_comments(comments: list[dict[str, Any]],
 
 
 def effective_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Invalid releases restore source ownership; they never poison an issue."""
+    """Invalid receipt facts restore ownership within a well-formed discussion.
+
+    This does not convert malformed canonical API shapes or failed evidence
+    reads into missing records; verified_comments propagates those failures.
+    """
     result = []
     for comment in comments:
         text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", comment.get("body") or "")

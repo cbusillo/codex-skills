@@ -124,7 +124,7 @@ commands:
   - name: supervisor-release-session-claims
     source: skill
     resource_path: scripts/release_session_claims.py
-    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended"]
+    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--confirm-session-ended"]
     purpose: Report consumed releases and unresolved claim IDs after transcript and actual process exit verification.
   - name: supervisor-codex-session-queue
     source: skill
