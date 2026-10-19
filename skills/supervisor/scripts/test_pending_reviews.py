@@ -1537,6 +1537,26 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(self.read.call_count, 2)
         self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
 
+    def test_claude_real_prompt_parser_accepts_cursor_padding_but_never_visible_input(self):
+        from iterm_tab import ansi_screen, input_line
+        self.claude()
+        for captured, should_send in (("❯ \x1b[7m \x1b[0m\n────────", True),
+                                      ("❯ \x1b[2m   \x1b[0m\n────────", True),
+                                      ("❯ \x1b[7mc\x1b[0m\x1b[2mandidate\x1b[0m\n────────", False),
+                                      ("❯ \x1b[7mc\x1b[0mandidate\n────────", False),
+                                      ("❯  \nwrapped input\n────────", False)):
+            with self.subTest(captured=captured):
+                screen, styles = ansi_screen(captured)
+                self.row.update(screen=screen, input_line=input_line(screen, styles))
+                self.send.reset_mock()
+                if should_send:
+                    notifications.send(self.entry, "Read review")
+                    self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+                else:
+                    with self.assertRaises(notifications.NotSent):
+                        notifications.send(self.entry, "Read review")
+                    self.send.assert_not_called()
+
     def test_claude_nonempty_unknown_wrapped_active_changed_or_wrong_target_never_sends(self):
         self.claude()
         original = copy.deepcopy(self.row)

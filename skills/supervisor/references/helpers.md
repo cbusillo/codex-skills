@@ -2298,10 +2298,31 @@ or directory contents. Only `--apply` takes these locks; read-only discovery
 remains available during an active review and creates no evidence files. A held
 apply lock means wait for that sweep, never select another ledger directory to
 evade it. Distinct runs use their own private run directories. The evidence lock
-also protects shared output from different runs. During a Supervisor handoff,
-pass the same `--evidence-dir` to the successor even if its ledger moves to another run directory. Keep that directory and its journals;
+also prevents concurrent writes through different ledger paths. During a
+Supervisor handoff, pass the same `--evidence-dir` to the successor even if its
+ledger moves to another run directory. Keep that directory and its journals;
 a new evidence path cannot deduplicate concurrent copies of one session in
-different run directories. The shared GitHub reader owns pagination and
+different run directories. One evidence directory serves one logical run,
+including its Supervisor handoffs. Unrelated runs use distinct private paths,
+for example `--evidence-dir /private/run-a/reviews` and
+`--evidence-dir /private/run-b/reviews`. Retained history establishes that run's
+historical ownership, even after an author leaves its ledger; the lock does
+not partition history between unrelated runs.
+
+If unrelated runs already shared a directory, stop their dispatchers before
+separating state. Preserve the original private directory unchanged as inactive
+recovery evidence. Use the existing ledgers, launch receipts and handoffs to
+assign each paid-review family and completion comment to its original run.
+Copy that family's journals, prompt/response/result files and every notification
+version byte-for-byte into its run's private evidence directory; keep the
+original archive so recorded absolute evidence paths remain readable. Verify
+that every existing attempted, failed and denied state is present before using
+the new `--evidence-dir`. Each family has one active owning run. If ownership is
+ambiguous, keep dispatch stopped until the existing records resolve it; an empty
+directory is never a recovery route. Record both active and archive paths in the
+handoff. No session identity, account, lease or daemon is changed.
+
+The shared GitHub reader owns pagination and
 transport retries; the comment helper owns write reconciliation. This helper never retries inference or an uncertain write.
 Journals retain `review_failed` for failed/empty inference, `post_failed` for
 confirmed non-applied writes, and `post_unknown` for uncertain delivery or
@@ -2338,6 +2359,16 @@ author to resolve the scope; never post against guessed bindings. Uncertain
 writes still require remote readback and the GitHub helper's existing manual
 reconciliation, never automatic replay. Remote receipts let a later sweep skip
 confirmed posts without replaying them.
+
+For a finished repository, verify that every retained request is resolved and
+its PR is closed before retiring that repository's state from active discovery.
+Stop the dispatcher between passes, preserve all of its journal/result families
+in a private archive outside the active evidence directory, and record their
+original paths and resolution evidence in the run handoff. Restore the complete
+families to those original paths before any resumed dispatch of that scope.
+Never archive state to retry a spent request. An unavailable repository read
+does not prove resolution or authorize archival: keep its exact refusal visible
+and resolve coverage through the existing operational/authorization route.
 
 ### Worker review request
 
@@ -2504,7 +2535,8 @@ checks remain in force. The transcript must be inside that home's live sessions.
 Claude delivery uses the existing tmux `Terminal.send` route with the ledger's
 launch nonce, coordinates and matched process PID/ancestry. It requires an ended
 turn without background tasks and two stable reads of an empty prompt, including
-the closing separator immediately below the first input line. Typed, suggested,
+the closing separator immediately below the first input line. Cursor spaces and
+styled whitespace padding count as empty; visible typed, suggested,
 wrapped or unknown input refuses without keys or clearing. A legacy iTerm Claude
 entry reports the unsupported route; there is no automatic terminal migration.
 Ledger-relative transcript paths resolve beside the ledger, as for other helpers.

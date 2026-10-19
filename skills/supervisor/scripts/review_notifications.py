@@ -76,7 +76,7 @@ def prepare(entry, message):
                 or not belongs_to(pid, row["pid"], process_parents())):
             raise ValueError("notification agent PID is not verified in the ledger's tmux pane")
         line = row["input_line"]
-        if line["style"] != "empty" or line["text"] != "":
+        if line["style"] != "empty" or not isinstance(line["text"], str) or line["text"].strip():
             raise NotSent("Claude input line is not verified empty; no keys sent", needs_attention=False)
         # The shared parser identifies only the first composer line. Require its
         # closing separator immediately below, so wrapped input cannot be hidden.
