@@ -63,8 +63,7 @@ class OwnershipDiagnostic(ValueError):
 
 def verify_process_exit(entry, *, ended_at=None):
     def source_record():
-        records = closure.log_rows() if closure.closed_log().exists() else []
-        return next((row for row in records if row.get("session_id") == entry["session_id"]), None)
+        return closure.source_records({entry["session_id"]}).get(entry["session_id"])
     return _verify_process_exit(entry, ended_at, source_record)
 
 
@@ -253,30 +252,10 @@ def _closure_identity(entry):
     return identity
 
 
-def _closure_source_rows(rows, session):
-    """Validate the selected source without interpreting other sessions' facts."""
-    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-        raise ValueError("closure log must contain session objects")
-    for row in rows:
-        if row.get("record_kind") in {"managed_launch", "managed_proxy"} and "session_id" not in row:
-            continue
-        if not isinstance(row.get("session_id"), str) or not row["session_id"].strip():
-            raise ValueError("closure log has an ambiguous session identity")
-    selected = [row for row in rows if row.get("session_id") == session]
-    if len(selected) > 1:
-        raise ValueError("duplicate selected closure session_id")
-    for row in selected:
-        if row.get("harness") not in {"claude", "codex"}:
-            raise ValueError("selected closure harness must be claude or codex")
-        if not isinstance(row.get("transcript"), str) or not row["transcript"].strip():
-            raise ValueError("selected closure requires its transcript")
-    return selected
-
-
 def _record_closure(path, entry, supervisor_session, *, persist=True, native=None):
     """Observe exit now; never replace an older actual closure time on retry."""
     with closure.store_lock(path, create=persist):
-        original = _closure_source_rows(json.loads(path.read_text()), entry["session_id"]) if path.exists() else []
+        original = closure.selected_source_rows(json.loads(path.read_text()), entry["session_id"]) if path.exists() else []
         existing = [session_record.normalize_ledger_entry(path, row) for row in original]
     import github_plan_native
     saved = session_record.normalize_ledger_entry(path, original[0]) if len(original) == 1 else None
@@ -320,7 +299,7 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
         validate_closure(closed, supervisor_session, native=native, process=process)
         with closure.store_lock(path):
             current = json.loads(path.read_text())
-            if _closure_source_rows(current, entry["session_id"]) != original:
+            if closure.selected_source_rows(current, entry["session_id"]) != original:
                 raise ValueError("source closure changed during verification; preserve the current generation")
             if recovered and persist:
                 # Preserve the actual original end time. An optional admission
@@ -351,7 +330,7 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
     # and closures published for other sources while verification was running.
     with closure.store_lock(path, create=True):
         current = json.loads(path.read_text()) if path.exists() else []
-        if _closure_source_rows(current, entry["session_id"]) != original:
+        if closure.selected_source_rows(current, entry["session_id"]) != original:
             raise ValueError("source closure changed during verification; preserve the current generation")
         retained = [r for r in current if r.get("session_id") != entry["session_id"]]
         with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:

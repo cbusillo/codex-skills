@@ -2287,8 +2287,13 @@ Use `ended_at - verdict_at` for the one-day shutdown-latency measurement.
 Retries preserve both original times. Legacy records without `verdict_at`
 remain valid and need their original native transcript to reconstruct it;
 never substitute notice arrival or log-write time for the verdict.
-Repeat finish previews use the existing log's original closure time. The first
-closure requires an empty or idle TTY, an exact dead-pane cutoff, or a proved
+Repeat finish previews use the existing log's original closure time. Shared
+source reads require valid saved metadata or proved absence of that source.
+Unreadable, unsafe, ambiguous or continuously changing source data stays unknown:
+finish preserves pending, and claim observation takes no new source lease or
+ended verdict. Correct the existing source artifact, then preview again;
+unknown metadata never becomes a first closure from caller-supplied launch facts.
+A first closure requires an empty or idle TTY, an exact dead-pane cutoff, or a proved
 replacement process tree before recording its own observation time; it never
 trusts an end time supplied by the ledger. If the original nonce-bearing tmux
 pane has already been removed, the helper can use the birth of one newer TTY

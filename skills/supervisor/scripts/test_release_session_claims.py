@@ -339,6 +339,26 @@ class ReleaseTests(unittest.TestCase):
                         saved = json.loads((self.root / "closed.json").read_text())[0]
                         self.assertEqual(saved["ended_at"], self.entry["ended_at"])
 
+    def test_guarded_tty_reuse_requires_a_unique_saved_source(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        shared = self.root / "shared.json"
+        other = {**self.entry, "pid": 999, "tty": "other-tty"}
+        for rows in ([self.entry], [self.entry, other], [other, self.entry]):
+            with self.subTest(rows=rows):
+                shared.write_text(json.dumps(rows))
+                shared.chmod(0o600)
+                before = shared.read_bytes()
+                with patch.object(helper.closure, "closed_log", return_value=shared), \
+                        patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex --remote unix:///new-client")]), \
+                        patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                        patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client"):
+                    if len(rows) == 1:
+                        helper.verify_process_exit(self.entry, ended_at=ended)
+                    else:
+                        with self.assertRaises(ValueError):
+                            helper.verify_process_exit(self.entry, ended_at=ended)
+                self.assertEqual(shared.read_bytes(), before)
+
     def test_finish_retry_never_excuses_recorded_pids_or_native_resume(self):
         self.entry["launch_pid"] = 124
         ended = helper.release.stamp(self.entry["ended_at"])

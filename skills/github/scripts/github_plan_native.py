@@ -589,15 +589,7 @@ def _cancel_selected(path, session, *, ledger=False):
 
 
 def _cancel_saved(session):
-    if not closure.closed_log().exists():
-        return None
-    matches = [row for row in closure.log_rows() if row.get("session_id") == session]
-    if len(matches) > 1:
-        raise ValueError("source generation is not unique")
-    if not matches:
-        return None
-    from github_plan_sessions import native_helpers
-    return native_helpers()[1].normalize_ledger_entry(closure.closed_log(), matches[0])
+    return closure.source_records({session}).get(session)
 
 
 def _cancel_generation(entry, saved):

@@ -340,7 +340,13 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None, *, _sour
     with github_plan_closure.observation(sessions, retain=retained) as leased:
         cache_token = github_plan_closure.LOG_CACHE.set(None)
         receipts = {}
-        for session, row in github_plan_closure.source_records(sessions).items():
+        source_unknown = False
+        try:
+            sources = github_plan_closure.source_records(sessions)
+        except (OSError, ValueError, KeyError, TypeError):
+            sources = {}
+            source_unknown = True
+        for session, row in sources.items():
             try:
                 if session in leased or row.get("resumed_at") or github_plan_closure.action_pending(session):
                     receipts[session] = row
@@ -402,6 +408,10 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None, *, _sour
                 if blocked:
                     peers.append({"sessionId": session, "cwd": "/", "state": "active", "source": "native_action"})
                     states[session] = {"state": "live", "source": "native_action"}
+            if source_unknown:
+                for session in sessions:
+                    peers.append({"sessionId": session, "cwd": "/", "state": "unknown", "source": "native_recovery"})
+                    states[session] = {"state": "live", "source": "native_recovery"}
             unreleased = sessions if proof_sessions is None else proof_sessions
             retained.update(session for session, state in states.items()
                             if state.get("state") == "ended" and session not in unreleased)

@@ -505,7 +505,8 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_cancel_refuses_unowned_wrong_home_native_identity_and_unknown_queue(self):
         import uuid
-        for mode in ("unowned", "source_home", "initialize_home", "native_id", "native_path", "queue_api"):
+        for mode in ("unowned", "source_home", "initialize_home", "native_id", "native_path", "queue_api",
+                     "missing_transcript", "missing_harness", "ambiguous_unrelated", "duplicate_source"):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, ledger, selected, _retained, deleted = self.cancel_setup(f)
                 digest = self.cancel_digest(other, f, ledger)
@@ -519,9 +520,17 @@ class NativeQueueTests(unittest.TestCase):
                     "path": str(f.root / "unbound.jsonl") if mode == "native_path" else str(f.transcript),
                     "status": {"type": "notLoaded"}}}
                 if mode == "queue_api": f.rpc_results["thread/queue/list"] = ValueError("fixture queue unavailable")
+                rows = CLOSURE.log_rows()
+                if mode == "missing_transcript": rows[0].pop("transcript")
+                if mode == "missing_harness": rows[0].pop("harness")
+                if mode == "ambiguous_unrelated": rows.append({})
+                if mode == "duplicate_source": rows += copy.deepcopy(rows)
+                CLOSURE.replace_rows(rows)
+                lease = CLOSURE.lease_path(f.session).read_bytes()
                 with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session,
                     ledger=ledger, apply=True, queued_submission_id=selected["id"], entry_sha256=digest))
                 self.assertFalse(deleted)
+                self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
 
     def test_cancel_selected_authority_stability_ignores_unrelated_ledger_rows(self):
         import uuid

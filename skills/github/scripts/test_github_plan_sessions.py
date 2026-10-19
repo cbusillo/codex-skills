@@ -412,6 +412,193 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                         self.assertEqual(code, 1)
                         self.assertFalse(report["ok"])
 
+    def source_artifact(self, f, kind):
+        if kind == "malformed-json":
+            f.log.write_text("{")
+        elif kind == "unsafe-mode":
+            f.log.chmod(0o644)
+        elif kind == "duplicates":
+            rows = CLOSURE.log_rows() or [f.entry]
+            CLOSURE.replace_rows([*rows, *rows])
+        elif kind == "missing-transcript":
+            CLOSURE.replace_rows([{"session_id": f.session, "harness": "codex"}])
+        elif kind == "normalization-error":
+            CLOSURE.replace_rows([{"session_id": f.session, "harness": "codex", "transcript": "\0"}])
+        elif kind == "ambiguous-unrelated":
+            CLOSURE.replace_rows([{"record_kind": "not-a-registration"}])
+        elif kind == "absent":
+            f.log.unlink()
+        elif kind == "empty":
+            CLOSURE.replace_rows([])
+        elif kind == "registration-only":
+            CLOSURE.replace_rows([])
+            CLOSURE.register_proxy(str(f.home), str(f.root / "fixture-ingress.sock"))
+        else:
+            raise AssertionError(kind)
+
+    def source_bytes(self, f):
+        return f.log.read_bytes() if f.log.exists() else None
+
+    def test_unknown_shared_source_cannot_resolve_or_record_a_pending_finish(self):
+        import github_plan_native as native
+        for kind in ("malformed-json", "unsafe-mode", "duplicates", "missing-transcript",
+                     "normalization-error", "ambiguous-unrelated"):
+            for mode in ("apply", "preview", "resolve"):
+                with self.subTest(kind=kind, mode=mode), ReceiptFixture() as f:
+                    self.pending(f)
+                    self.source_artifact(f, kind)
+                    source = self.source_bytes(f)
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    if mode == "resolve":
+                        with CLOSURE.ownership(f.session), self.assertRaises((OSError, ValueError)):
+                            proof = asyncio.run(native.prove_end(f.entry))
+                            native.resolve_pending(f.session, proof)
+                    else:
+                        code, report = self.finish(f, apply=mode == "apply")
+                        self.assertEqual(code, 1)
+                        self.assertFalse(report["ok"])
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                    self.assertEqual(self.source_bytes(f), source)
+                    self.assertFalse(f.mutations)
+
+    def test_known_absence_allows_first_pending_finish_and_read_only_preview(self):
+        for kind in ("absent", "empty", "registration-only"):
+            for apply in (False, True):
+                with self.subTest(kind=kind, apply=apply), ReceiptFixture() as f:
+                    self.pending(f)
+                    self.source_artifact(f, kind)
+                    source = self.source_bytes(f)
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    code, report = self.finish(f, apply=apply)
+                    self.assertEqual(code, 0)
+                    self.assertTrue(report["ok"])
+                    self.assertEqual(CLOSURE.action_pending(f.session), not apply)
+                    if apply:
+                        closed = CLOSURE.verified_record(f.session)
+                        self.assertIsNotNone(closed)
+                        self.assertEqual(closed["session_id"], f.session)
+                    else:
+                        self.assertEqual(self.source_bytes(f), source)
+                        self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                    self.assertFalse(f.mutations)
+
+    def test_resolution_refuses_source_read_failure_after_valid_native_proof(self):
+        import github_plan_native as native
+        for initial in ("selected", "empty"):
+            for kind in ("malformed-json", "unsafe-mode", "duplicates", "missing-transcript",
+                         "normalization-error", "ambiguous-unrelated", "disappeared"):
+                with self.subTest(initial=initial, kind=kind), ReceiptFixture() as f, ExitStack() as stack:
+                    self.pending(f)
+                    if initial == "empty":
+                        self.source_artifact(f, initial)
+                    with CLOSURE.ownership(f.session):
+                        proof = asyncio.run(native.prove_end(f.entry))
+                        if kind == "disappeared":
+                            read = self.interleave_source_records(f, stack, kind)
+                        else:
+                            self.source_artifact(f, kind)
+                        source = self.source_bytes(f)
+                        lease = CLOSURE.lease_path(f.session).read_bytes()
+                        with self.assertRaises((OSError, ValueError)):
+                            native.resolve_pending(f.session, proof)
+                        if kind == "disappeared":
+                            self.assertTrue(read["changed"])
+                        self.assertTrue(CLOSURE.action_pending(f.session))
+                        self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                        self.assertEqual(self.source_bytes(f), source)
+                        self.assertFalse(f.mutations)
+
+    def test_observation_keeps_unknown_cleared_resumed_source_live_without_retaining_lease(self):
+        import github_plan_native as native
+        for moved, queued in ((False, False), (True, True)):
+            for kind in (None, "unsafe-mode", "malformed-json", "duplicates"):
+                with self.subTest(moved=moved, queued=queued, kind=kind), ReceiptFixture() as f:
+                    home = f.root / "retained-account" if moved else f.home
+                    transcript = f.add_home(home) if moved else f.transcript
+                    metadata = {"codex_home": str(home), "launch_pid": 456,
+                                "launch_generation": "actual-resume",
+                                "launch_started_at": f.entry["launch_started_at"]}
+                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=home):
+                        CLOSURE.resumed_launch(f.session, metadata, str(transcript), "resumed-tty")
+                    f.native_state = "notLoaded"
+                    current = {**f.entry, **metadata, "pid": metadata["launch_pid"],
+                               "tty": "resumed-tty", "transcript": str(transcript)}
+                    with CLOSURE.ownership(f.session):
+                        native.resolve_pending(f.session, asyncio.run(native.prove_end(current)))
+                    self.assertFalse(CLOSURE.action_pending(f.session))
+                    if moved:
+                        f.homes = [f.home]
+                    if queued:
+                        f.home_queues[str(home)] = [{"id": "queued", "clientUserMessageId": "client",
+                            "input": [{"type": "text", "text": "queued after prior resolution"}]}]
+                    if kind is not None:
+                        self.source_artifact(f, kind)
+                    source = self.source_bytes(f)
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    f.home_requests.clear()
+                    def available():
+                        try:
+                            with CLOSURE.ownership(f.session) as acquired:
+                                return acquired
+                        except CLOSURE.LeaseBusy:
+                            return False
+                    with CLOSURE.admission(), ThreadPoolExecutor(max_workers=1) as pool:
+                        peers, states, coverage = f.observe()
+                        available_after_observe = pool.submit(available).result(2)
+                        self.assertEqual(coverage["process_coverage"], "complete")
+                        self.assertIn((str(f.home), "thread/queue/list"), f.home_requests)
+                        if kind is not None:
+                            self.assertEqual(states[f.session]["state"], "live")
+                            self.assertEqual(states[f.session]["source"], "native_recovery")
+                            self.assertTrue(any(peer.get("sessionId") == f.session
+                                                and peer.get("source") == "native_recovery" for peer in peers))
+                        else:
+                            self.assertEqual(states[f.session]["state"], "live" if queued else "ended")
+                            self.assertIn((str(home), "thread/queue/list"), f.home_requests)
+                        self.assertEqual(available_after_observe, kind is not None or queued)
+                    self.assertFalse(CLOSURE.action_pending(f.session))
+                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                    self.assertEqual(self.source_bytes(f), source)
+                    self.assertFalse(f.mutations)
+
+    def test_resumed_source_keeps_its_saved_generation_and_refuses_unknown_metadata(self):
+        import github_plan_native as native
+        for corrupt in (False, True):
+            for mode in ("apply", "resolve"):
+                with self.subTest(corrupt=corrupt, mode=mode), ReceiptFixture() as f:
+                    generation = {"codex_home": str(f.home), "launch_pid": 456,
+                                  "launch_generation": "resumed-generation",
+                                  "launch_started_at": f.entry["launch_started_at"]}
+                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                        CLOSURE.resumed_launch(f.session, generation, str(f.transcript), "resumed-tty")
+                    f.native_state = "notLoaded"
+                    if corrupt:
+                        self.source_artifact(f, "malformed-json")
+                    source = self.source_bytes(f)
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    if mode == "resolve":
+                        with CLOSURE.ownership(f.session):
+                            if corrupt:
+                                with self.assertRaises((OSError, ValueError)):
+                                    proof = asyncio.run(native.prove_end(f.entry))
+                                    native.resolve_pending(f.session, proof)
+                            else:
+                                proof = asyncio.run(native.prove_end(f.entry))
+                                self.assertEqual(proof["snapshot"]["process"].effective["launch_generation"],
+                                                 generation["launch_generation"])
+                                native.resolve_pending(f.session, proof)
+                    else:
+                        code, report = self.finish(f, apply=True)
+                        self.assertEqual(code, 1)
+                        self.assertFalse(report["ok"])
+                    refuses = mode == "apply" or corrupt
+                    self.assertEqual(CLOSURE.action_pending(f.session), refuses)
+                    if refuses:
+                        self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                    self.assertEqual(self.source_bytes(f), source)
+                    self.assertFalse(f.mutations)
+
     def interleave_source_records(self, f, stack, kind):
         real = CLOSURE.log_rows
         state = {"changed": False, "inside": False, "serial": 0}
@@ -429,14 +616,18 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                 return real()
             state["inside"] = True
             try:
-                if kind == "malformed":
+                if kind in {"malformed", "disappeared"}:
                     before = f.log.read_bytes()
                     try:
-                        f.log.write_text("{")
+                        if kind == "disappeared":
+                            f.log.unlink()
+                        else:
+                            f.log.write_text("{")
                         state["changed"] = True
                         return real()
                     finally:
                         f.log.write_bytes(before)
+                        f.log.chmod(0o600)
                 rows = real()
                 if kind == "selected":
                     metadata = {"codex_home": str(f.home), "launch_pid": 456,
@@ -883,7 +1074,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                     self.assertEqual(verified["transcript"], str(f.transcript))
                     self.assertEqual(verified["tty"], "fixture-tty")
                     self.assertTrue(CLOSURE.receipt_current(verified))
-                    self.assertEqual(CLOSURE.candidate_records({f.session})[f.session]["transcript"], str(f.transcript))
+                    self.assertEqual(CLOSURE.source_records({f.session})[f.session]["transcript"], str(f.transcript))
                     self.assertEqual(f.log.read_bytes(), saved)
                     for change in ("generation", "transcript", "pending"):
                         with self.subTest(change=change):
