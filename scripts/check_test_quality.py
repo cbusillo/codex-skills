@@ -67,7 +67,7 @@ def kind(path: str, catalog: bool) -> str | None:
     ):
         return "config"
     if catalog and (file.name in {"SKILL.md", "AGENTS.md"} or (
-        "references" in file.parts and file.suffix == ".md"
+        ("references" in file.parts or file.parts[0] == "instructions") and file.suffix == ".md"
     )):
         return "instruction"
     return "source" if file.suffix in {".py", ".js", ".sh"} else None
@@ -118,20 +118,36 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
     module_aliases = aliases_for([node for node in tree.body if not isinstance(
         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
     )])
-    scopes: list[tuple[ast.AST, dict[str, ast.AST]]] = []
+    functions = {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    scopes: list[tuple[ast.AST, dict[str, ast.AST], dict[str, ast.AST]]] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            scopes.append((node, module_aliases))
+            scopes.append((node, module_aliases, {}))
         elif isinstance(node, ast.ClassDef):
             setup = [child for child in node.body if isinstance(child, ast.FunctionDef)
                      and child.name in {"setUp", "setUpClass"}]
             baseline = {**module_aliases, **aliases_for(setup)}
-            scopes.extend((child, baseline) for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)))
+            methods = {child.name: child for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            scopes.extend((child, baseline, methods) for child in methods.values())
     # Top-level pytest assertions also count.
     scopes.append((ast.Module(body=[node for node in tree.body if not isinstance(
-        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[]), module_aliases))
+        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[]), module_aliases, {}))
+
+    def executes(scope: ast.AST, methods: dict[str, ast.AST], seen: frozenset[int] = frozenset()) -> bool:
+        # A step run by a same-file helper (self.helper(...) or helper(...)) is still executed.
+        for call in (item for item in ast.walk(scope) if isinstance(item, ast.Call)):
+            name = ast.unparse(call.func)
+            if EXECUTE.search(name):
+                return True
+            target = functions.get(name) if isinstance(call.func, ast.Name) else (
+                methods.get(call.func.attr) if isinstance(call.func, ast.Attribute)
+                and ast.unparse(call.func.value) in {"self", "cls"} else None)
+            if target is not None and id(target) not in seen and executes(target, methods, seen | {id(scope)}):
+                return True
+        return False
+
     found: set[Finding] = set()
-    for scope, baseline in scopes:
+    for scope, baseline, methods in scopes:
         aliases = {**baseline, **aliases_for([scope])}
 
         def expanded(node: ast.AST, seen: frozenset[str] = frozenset()) -> list[ast.AST]:
@@ -176,8 +192,9 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
                 return set().union(*(follow(child, seen) for child in ast.iter_child_nodes(item)))
             return follow(node)
 
-        executing = any(isinstance(node, ast.Call) and EXECUTE.search(ast.unparse(node.func))
-                        for node in ast.walk(scope))
+        # Fixtures load what the class's tests run; any executing method covers them.
+        fixture = getattr(scope, "name", "") in {"setUp", "setUpClass"}
+        executing = executes(scope, methods) or (fixture and any(executes(method, methods) for method in methods.values()))
         for node in ast.walk(scope):
             if isinstance(node, ast.Call) and not executing and READ.search(ast.unparse(node.func)) and not ast.unparse(node.func).startswith(("json.", "tomllib.", "yaml.", "plistlib.")):
                 for origin in origins(node):
