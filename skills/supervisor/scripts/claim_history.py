@@ -210,6 +210,17 @@ def spawn_prefix(records, harness, child, *, agent_path=None):
     return records[:min(matches)] if matches else []
 
 
+def unique_prefixes(prefixes):
+    """Keep each immutable native segment once across converging histories."""
+    seen, result = set(), []
+    for prefix in prefixes:
+        key = prefix["harness"], tuple(map(id, prefix["records"]))
+        if key not in seen:
+            seen.add(key)
+            result.append(prefix)
+    return result
+
+
 def completed_prefixes(parent, records, nodes):
     """Return child prefixes linked to an observed native completion boundary.
 
@@ -279,7 +290,7 @@ def completed_prefixes(parent, records, nodes):
             prefixes.extend(child.get("preceding_histories", []))
             prefixes.append({"harness": harness, "records": rows[:end]})
             prefixes.extend(completed_prefixes(child, rows[:end], nodes))
-    return prefixes
+    return unique_prefixes(prefixes)
 
 
 def collect(path, harness, session, records, read, *, homes=None):
@@ -383,6 +394,6 @@ def collect(path, harness, session, records, read, *, homes=None):
     # launch prefix to a previously completed child's exact returned turn.
     for node in nodes[1:]:
         parent = next(n for n in nodes if n["transcript"] == node["parent_transcript"])
-        node["preceding_histories"] = [*parent.get("preceding_histories", []),
-            *node["preceding_histories"], *completed_prefixes(parent, node.pop("launch_prefix"), nodes)]
+        node["preceding_histories"] = unique_prefixes([*parent.get("preceding_histories", []),
+            *node["preceding_histories"], *completed_prefixes(parent, node.pop("launch_prefix"), nodes)])
     return nodes

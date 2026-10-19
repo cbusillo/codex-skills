@@ -149,6 +149,47 @@ class NativeHistoryTests(unittest.TestCase):
                 node = next(n for n in nodes if n["transcript"] == str(sibling.resolve()))
                 self.assertEqual(self.preceding_claims(node, sessions=("root", "child")), {("example/a", 1, 10)})
 
+    def test_sequential_completed_siblings_do_not_multiply_ancestor_prefixes(self):
+        for harness in ('codex', 'claude'):
+            with self.subTest(harness=harness):
+                count = 12
+                end = 2 if harness == 'codex' else 1
+                root = self.root if harness == 'codex' else self.home / 'claude' / 'root.jsonl'
+                parent = records(harness, 'root')
+                body = parent[:-end]
+                if harness == 'codex':
+                    with sqlite3.connect(self.database) as db:
+                        db.execute('DELETE FROM thread_spawn_edges')
+                        db.execute("DELETE FROM threads WHERE id != 'root'")
+                for index in range(count):
+                    key = 'child-' + str(index)
+                    launch, child = completed_child_records(harness)
+                    launch = json.loads(json.dumps(launch).replace('"child"', json.dumps(key)).replace('"spawn"', json.dumps('spawn-' + str(index))))
+                    child = json.loads(json.dumps(child).replace('"child"', json.dumps(key))) if harness == 'codex' else child
+                    if harness == 'codex':
+                        launch[2]['payload']['output'] = json.dumps({'agent_id': key})
+                    body.extend(launch[1:-end])
+                    path = (self.home / 'sessions' / (key + '.jsonl') if harness == 'codex'
+                            else root.parent / 'root' / 'subagents' / ('agent-' + key + '.jsonl'))
+                    self.write(path, child)
+                    if harness == 'codex':
+                        with sqlite3.connect(self.database) as db:
+                            self.edge(db, 'root', key, path)
+                parent = body + parent[-end:]
+                self.write(root, parent)
+                nodes = claim_history.collect(root, harness, 'root', parent, lambda p, *_: session_record.read_jsonl(p))
+                for node in nodes[1:]:
+                    prefixes = node['preceding_histories']
+                    identities = [(p['harness'], tuple(map(id, p['records']))) for p in prefixes]
+                    self.assertEqual(len(identities), len(set(identities)))
+                    self.assertLessEqual(len(prefixes), 2 * count)
+                completed = claim_history.completed_prefixes(nodes[0], parent, nodes)
+                identities = [(p['harness'], tuple(map(id, p['records']))) for p in completed]
+                self.assertEqual(len(identities), len(set(identities)))
+                # Every native child completion is still present, once.
+                completed_ends = {id(p['records'][-1]) for p in completed if p['records']}
+                self.assertTrue(all(id(n['records'][-1]) in completed_ends for n in nodes[1:]))
+
     def test_claude_completed_handback_binds_its_terminal_tool_result(self):
         parent, child = completed_child_records("claude")
         use = {"type": "assistant", "sessionId": "root", "message": {"content": [
