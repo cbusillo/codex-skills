@@ -354,10 +354,28 @@ def summarize(records: list[dict], harness: str) -> dict:
     return result
 
 
+class TranscriptChanged(ValueError):
+    """The native transcript changed while its status was being read."""
+
+
 def session_status(entry: dict) -> dict:
     path = Path(entry["transcript"])
     before = path.stat()
-    records = read_jsonl(path)
+
+    def checked_stat():
+        after = path.stat()
+        if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+            raise TranscriptChanged("transcript changed during read; check again")
+        return after
+
+    try:
+        records = read_jsonl(path)
+    except (ValueError, TypeError):
+        # A partial append is a wait; stable malformed data needs attention.
+        # Permission and I/O refusals propagate without being reclassified.
+        checked_stat()
+        raise
+    checked_stat()
     identities = {
         record.get("sessionId") for record in records if record.get("sessionId")
     }
@@ -370,9 +388,7 @@ def session_status(entry: dict) -> dict:
     if identities != {entry["session_id"]}:
         raise ValueError("transcript identity does not match the ledger session")
     result = summarize(records, entry["harness"])
-    after = path.stat()
-    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
-        raise ValueError("transcript changed during read; check again")
+    after = checked_stat()
     result.update(
         session_id=entry["session_id"],
         harness=entry["harness"],

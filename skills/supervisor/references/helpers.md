@@ -2242,7 +2242,8 @@ restart boundary; do not interrupt another session to make cache maintenance run
 
 Read this when workers ask the Supervisor to run a review from its terminal.
 Use `pending_reviews.py` there to discover and dispatch requests across the
-explicit Supervisor-owned repositories in the run's ledger. It does not alter
+explicit Supervisor-owned repositories in the run's ledger and retained review
+journals. It does not alter
 the ledger, transcripts, launch files or account configuration. Run it once
 without `--apply` to see pending requests, refused bindings and blocked prior launches:
 
@@ -2273,8 +2274,8 @@ skip that tick and let the active pass finish. Reconcile `results[].status`
 values `refused` and `blocked`, plus top-level `ledger_errors`, `attention`
 and `error`, against the diagnostics below; a timer tick never authorizes
 replay of a failed, denied or uncertain action. For `notification_needed`,
-follow [completion notifications](#completion-notifications), including its
-once-per-report-version routing and retained notification history.
+check [completion notifications](#completion-notifications) and the dispatcher's
+retained notification outcome for that report version.
 
 Record the timer's identity, command, state paths and routed-notification
 history in the Supervisor handoff
@@ -2311,10 +2312,31 @@ or directory contents. Only `--apply` takes these locks; read-only discovery
 remains available during an active review and creates no evidence files. A held
 apply lock means wait for that sweep, never select another ledger directory to
 evade it. Distinct runs use their own private run directories. The evidence lock
-also protects shared output from different runs. During a Supervisor handoff,
-pass the same `--evidence-dir` to the successor even if its ledger moves to another run directory. Keep that directory and its journals;
+also prevents concurrent writes through different ledger paths. During a
+Supervisor handoff, pass the same `--evidence-dir` to the successor even if its
+ledger moves to another run directory. Keep that directory and its journals;
 a new evidence path cannot deduplicate concurrent copies of one session in
-different run directories. The shared GitHub reader owns pagination and
+different run directories. One evidence directory serves one logical run,
+including its Supervisor handoffs. Unrelated runs use distinct private paths,
+for example `--evidence-dir /private/run-a/reviews` and
+`--evidence-dir /private/run-b/reviews`. Retained history establishes that run's
+historical ownership, even after an author leaves its ledger; the lock does
+not partition history between unrelated runs.
+
+If unrelated runs already shared a directory, stop their dispatchers before
+separating state. Preserve the original private directory unchanged as inactive
+recovery evidence. Use the existing ledgers, launch receipts and handoffs to
+assign each paid-review family and completion comment to its original run.
+Copy that family's journals, prompt/response/result files and every notification
+version byte-for-byte into its run's private evidence directory; keep the
+original archive so recorded absolute evidence paths remain readable. Verify
+that every existing attempted, failed and denied state is present before using
+the new `--evidence-dir`. Each family has one active owning run. If ownership is
+ambiguous, keep dispatch stopped until the existing records resolve it; an empty
+directory is never a recovery route. Record both active and archive paths in the
+handoff. No session identity, account, lease or daemon is changed.
+
+The shared GitHub reader owns pagination and
 transport retries; the comment helper owns write reconciliation. This helper never retries inference or an uncertain write.
 Journals retain `review_failed` for failed/empty inference, `post_failed` for
 confirmed non-applied writes, and `post_unknown` for uncertain delivery or
@@ -2351,6 +2373,16 @@ author to resolve the scope; never post against guessed bindings. Uncertain
 writes still require remote readback and the GitHub helper's existing manual
 reconciliation, never automatic replay. Remote receipts let a later sweep skip
 confirmed posts without replaying them.
+
+For a finished repository, verify that every retained request is resolved and
+its PR is closed before retiring that repository's state from active discovery.
+Stop the dispatcher between passes, preserve all of its journal/result families
+in a private archive outside the active evidence directory, and record their
+original paths and resolution evidence in the run handoff. Restore the complete
+families to those original paths before any resumed dispatch of that scope.
+Never archive state to retry a spent request. An unavailable repository read
+does not prove resolution or authorize archival: keep its exact refusal visible
+and resolve coverage through the existing operational/authorization route.
 
 ### Worker review request
 
@@ -2479,21 +2511,75 @@ inference. Missing local evidence leaves provider completion unconfirmed.
 
 An edit to a served request sets `request_edited_after_review`; the completion
 link is preserved and inference never reruns. Weigh the original scope and
-record whether a separate request is needed for changed scope. The Supervisor
-uses `completion_comment` together with `completion_updated_at` to route each
-report version once. For a fresh `posted` result, take the timestamp from
-`post.comment.updated_at`, or read back the returned comment, before recording
-its version; later completion reports expose `completion_updated_at` directly.
+record whether a separate request is needed for changed scope. The dispatcher
+uses the repository, PR, `completion_id` and `completion_updated_at` to notify each
+report version once on `--apply`, including recovered posts. It reads the posted
+comment back to bind its version before notifying.
 A corrected edit to the same comment can need a fresh
 notification; a disposition must follow its latest edit.
 `notification_needed` means the result still lacks a later trusted weighed
-disposition, not a history of terminal input. That history remains the
-Supervisor's responsibility. Older receipts without identity metadata attempt
-the same trusted branch-claim binding. Malformed claims or failed GitHub reads
+disposition, not a history of terminal input. The dispatcher records delivery
+separately as `notification_status: sent`, `pending` or `blocked`, with
+`notification_journal` in the same durable evidence directory. Discovery reads
+that history without sending or writing. Older receipts first recover original
+author identity from the matching paid journal and all versions of that completion
+comment, then attempt the trusted branch-claim binding only without retained
+identity. Conflicting or unreadable history blocks delivery rather than rebinding
+to a successor. Malformed claims or failed GitHub reads
 become `notification_error`, preserving the already-posted completion link.
-The Supervisor sends that authoring session the result through its normal
-exact session route. This helper sends no terminal input, weighs no findings
-and never calls `ready`. Posting removes the inherited per-command own-user
+Delivery history belongs to that posted version. A retained sent or spent outcome
+is read before resolving a live recipient, including after ledger retirement or
+claim handoff. Historical author/provider metadata remains available from the
+receipt and retained journals; it is never replaced by a successor. A delivered
+notice neither confirms provider completion nor weighs findings. Paid journals
+also keep posts observable after retirement when readback failed before a
+notification could be reserved. Sweeps discover repositories from retained
+notification filenames and verified paid-journal bindings, even after the last
+ledger entry is retired. Legacy paid journals use their retained prompt-source
+repository and unchanged request/head journal key. Unreadable paid-journal
+scope reports attention instead of silently disappearing. Automatic discovery
+still covers open PRs; retain journals for closed items through normal recovery.
+Foreign-run completions with no local history retain the ownership exclusion.
+
+Only a unique, Supervisor-owned author entry in this repository's ledger may
+receive a notification. Native transcript identity must agree with that entry.
+Codex delivery uses `codex-session.py queue` with the ledger's absolute
+`codex_home` and native session UUID; its existing managed-source and ownership
+checks remain in force. The transcript must be inside that home's live sessions.
+Claude delivery uses the existing tmux `Terminal.send` route with the ledger's
+launch nonce, coordinates and matched process PID/ancestry. It requires an ended
+turn without background tasks and two stable reads of the supported empty
+composer: an unindented `❯` line containing only whitespace, with unindented
+horizontal rules immediately above and below. Its closing rule must be the last
+such rule on screen. The current Claude renderer puts continuation text two
+columns inward; a quote or typed marker in a draft cannot become that prompt.
+The dispatcher validates only the shared parser's selected line and never
+searches for an earlier empty candidate. Cursor spaces and styled whitespace
+padding count as empty. Visible typed, suggested, wrapped or unknown input,
+missing/indented borders and unsupported composer modes refuse without keys or
+clearing. A legacy iTerm Claude
+entry reports the unsupported route; there is no automatic terminal migration.
+Ledger-relative transcript paths resolve beside the ledger, as for other helpers.
+
+The dispatcher reserves each delivery durably before calling the send helper.
+Checks that stop before delivery record `not_sent` with their diagnostic.
+Busy turns, background tasks, nonempty prompts and verified transcript read races
+report `pending` without adding attention. Unsupported routes, missing home or
+terminal metadata and identity/coordinate mismatches report `blocked` with
+attention. Both remain certainly unsent: after the underlying condition is
+corrected, later apply passes recheck the ledger, native identity and empty prompt.
+Independent review warnings remain visible. Discovery never retries.
+A permission refusal, a queue call, a possibly sent terminal message or an
+interrupted attempt stays spent. Those failures expose `notification_error`,
+set `needs_attention` and make the sweep nonzero, preserving the review link.
+Read the exact session and reconcile a spent attempt before any manual
+notification; never delete its journal to retry or use another route after a
+denial. Once sent, ledger maintenance does not require another notice. Corrected
+report edits get their own version and retain the original author; an edit cannot
+replay or conceal a spent earlier version. A later weighed disposition ends
+notification need.
+The helper weighs no findings and never calls `ready`.
+Posting removes the inherited per-command own-user
 opt-in before invoking the GitHub helper. An earlier personal-identity approval
 cannot carry into this write; the existing automation App or its refusal remains
 the supported route. Its raw receipt cannot serve as the author's
