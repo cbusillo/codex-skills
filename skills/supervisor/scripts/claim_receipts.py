@@ -474,6 +474,105 @@ def javascript_source_literals(atoms):
         yield text
 
 
+def javascript_literal(expression, current, declarations, bindings, active=()):
+    expression = expression.strip()
+    # Declaration aliases are a worklist walk, not Python recursion:
+    # a long but finite source alias chain must remain inspectable.
+    while expression in declarations:
+        if expression in active:
+            return None
+        start, end = declarations[expression]
+        active = (*active, expression)
+        expression = current[start:end].strip()
+    if expression in active:
+        return None
+    if expression in bindings:
+        return bindings[expression]
+    try:
+        return javascript_string(expression)
+    except ValueError:
+        pass
+    stringify = re.fullmatch(r"JSON\.stringify\(\s*(\w+)\s*\)", expression)
+    if stringify:
+        operand = javascript_literal(stringify[1], current, declarations, bindings, active)
+        return json.dumps(operand, ensure_ascii=False) if operand is not None else None
+    if expression.startswith("`") and expression.endswith("`"):
+        substitutions = list(re.finditer(r"\$\{([^{}]*)\}", expression))
+        if substitutions:
+            pieces, start = [], 1
+            for match in substitutions:
+                operand = javascript_literal(match[1], current, declarations, bindings, active)
+                if operand is None:
+                    return None
+                try:
+                    pieces.append(javascript_string("`" + expression[start:match.start()] + "`"))
+                except ValueError:
+                    return None
+                pieces.append(operand)
+                start = match.end()
+            try:
+                pieces.append(javascript_string("`" + expression[start:-1] + "`"))
+            except ValueError:
+                return None
+            return "".join(pieces)
+    _, projected, _, _ = javascript_projection(expression)
+    parts = node_expression_parts(projected, 0, len(projected), "+")
+    if len(parts) > 1:
+        values = [javascript_literal(expression[start:end], current, declarations, bindings, active) for start, end in parts]
+        if all(value is not None for value in values):
+            return "".join(values)
+    return None
+
+
+def javascript_output_only(code, bound, capabilities=False):
+    capabilities |= bool(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", code))
+    return (not capabilities and "text" not in bound
+            and all(call[1] == "text" and not code[:call.start()].rstrip().endswith(".")
+                    for call in re.finditer(r"([A-Za-z_$][\w$]*)\s*\(", code)))
+
+
+def javascript_call_inputs(code, regions):
+    """Select possible call operands, never unrelated fixture declarations."""
+    source_starts = {start for start, _ in regions}
+    for call in re.finditer(r"([A-Za-z_$][\w$]*|\]|\))\s*(?:\?\.)?\s*\(", code):
+        if call.end() in source_starts or call[1] in {"if", "for", "while", "switch", "catch", "with"}:
+            continue
+        yield from node_expression_parts(code, call.end(), len(code))
+
+
+def javascript_possible_patches(native):
+    """Unbound call targets may consume their patch inputs, as partial writes."""
+    atoms, code, regions, _ = javascript_projection(native)
+    declarations, bound = javascript_bindings(code)
+    if javascript_output_only(code, bound):
+        return
+    seen = set()
+    for _, raw in composed_patch_fields(native):
+        try:
+            seen.add(composed_string(raw, native))
+        except (SyntaxError, ValueError):
+            pass
+    for begin, finish in javascript_call_inputs(code, regions):
+        reached = [(begin, finish)]
+        visited = set()
+        while reached:
+            begin, finish = reached.pop()
+            if (begin, finish) in visited:
+                continue
+            visited.add((begin, finish))
+            inputs = list(javascript_source_literals(atom for atom in atoms if begin <= atom.start() < finish))
+            resolved = javascript_literal(native[begin:finish], native, declarations, {})
+            if resolved is not None:
+                inputs.append(resolved)
+            for word in re.findall(r"\b[A-Za-z_$][\w$]*\b", code[begin:finish]):
+                if word in declarations:
+                    reached.append(declarations[word])
+            for value in inputs:
+                if value.startswith("*** Begin Patch") and value not in seen:
+                    seen.add(value)
+                    yield begin, value
+
+
 def javascript_generated_sources(value):
     """Discover generated code once, carrying only reached literal bindings.
 
@@ -482,61 +581,18 @@ def javascript_generated_sources(value):
     existing delimiter splitter joins known literal source fragments. Unknown
     computation keeps its selected operands as possible command input.
     """
+    root_capabilities = bool(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", javascript_projection(value)[1]))
+    deferred = []
     pending, seen, queued = [(value, {}, {}, False, ())], set(), {(value, (), (), ())}
     while pending:
         current, inherited, inherited_globals, generated, fallback = pending.pop()
         current_atoms, current_code, regions, _ = javascript_projection(current)
+        root_capabilities |= bool(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", current_code))
         declarations, bound = javascript_bindings(current_code)
         bindings = {name: text for name, text in inherited.items() if name not in bound}
 
         def literal(expression, active=()):
-            expression = expression.strip()
-            # Declaration aliases are a worklist walk, not Python recursion:
-            # a long but finite source alias chain must remain inspectable.
-            while expression in declarations:
-                if expression in active:
-                    return None
-                start, end = declarations[expression]
-                active = (*active, expression)
-                expression = current[start:end].strip()
-            if expression in active:
-                return None
-            if expression in bindings:
-                return bindings[expression]
-            try:
-                return javascript_string(expression)
-            except ValueError:
-                pass
-            stringify = re.fullmatch(r"JSON\.stringify\(\s*(\w+)\s*\)", expression)
-            if stringify:
-                operand = literal(stringify[1], active)
-                return json.dumps(operand, ensure_ascii=False) if operand is not None else None
-            if expression.startswith("`") and expression.endswith("`"):
-                substitutions = list(re.finditer(r"\$\{([^{}]*)\}", expression))
-                if substitutions:
-                    pieces, start = [], 1
-                    for match in substitutions:
-                        operand = literal(match[1], active)
-                        if operand is None:
-                            return None
-                        try:
-                            pieces.append(javascript_string("`" + expression[start:match.start()] + "`"))
-                        except ValueError:
-                            return None
-                        pieces.append(operand)
-                        start = match.end()
-                    try:
-                        pieces.append(javascript_string("`" + expression[start:-1] + "`"))
-                    except ValueError:
-                        return None
-                    return "".join(pieces)
-            _, projected, _, _ = javascript_projection(expression)
-            parts = node_expression_parts(projected, 0, len(projected), "+")
-            if len(parts) > 1:
-                values = [literal(expression[start:end], active) for start, end in parts]
-                if all(value is not None for value in values):
-                    return "".join(values)
-            return None
+            return javascript_literal(expression, current, declarations, bindings, active)
 
         for name in declarations:
             text = literal(name)
@@ -577,16 +633,22 @@ def javascript_generated_sources(value):
             for match in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", projected):
                 if match[1] in bindings:
                     replacements.append((match.start(1), match.end(1), match[1] + ":" + json.dumps(bindings[match[1]])))
+            for begin, finish in javascript_call_inputs(projected, regions):
+                for match in re.finditer(r"(?<![\w.$])([A-Za-z_$][\w$]*)(?![\w$]|\s*:)", projected[begin:finish]):
+                    start, end = begin + match.start(), begin + match.end()
+                    operand = literal(current[start:end])
+                    if operand is not None and operand.startswith("*** Begin Patch"):
+                        replacements.append((start, end, json.dumps(operand)))
+            replacements = list(dict.fromkeys(replacements))
             for start, end, replacement in sorted(replacements, reverse=True):
                 text = text[:start] + replacement + text[end:]
             yield text
             parsed_patches = {position for position, _ in composed_patch_fields(text)}
             unknown_patch = any(call.start() not in parsed_patches
                                 for call in javascript_call_starts(text, r"\btools\.apply_patch\s*\("))
-            if fallback and (unknown_patch or _unparsed_command_text(text, generated_sources=False)[1]):
-                for operand in fallback:
-                    yield ("tools.apply_patch(" + json.dumps(operand) + ")" if operand.startswith("*** Begin Patch")
-                           else "tools.exec_command({cmd:" + json.dumps(operand) + "})")
+            unknown_inputs = any(current[begin:finish].strip() and literal(current[begin:finish]) is None
+                                 for begin, finish in javascript_call_inputs(projected, regions))
+            deferred.append((text, projected, bound, unknown_patch, unknown_inputs, fallback))
         selected, visited, sources = [], set(), []
         for start, end in regions:
             call = re.search(r"\b(\w+)\s*\(\s*$", current_code[:start])
@@ -659,6 +721,12 @@ def javascript_generated_sources(value):
                 for parameter in parameter_parts:
                     for parameter_name in re.findall(r"\b[A-Za-z_$][\w$]*\b", parameter):
                         child_bindings.pop(parameter_name, None)
+                complete_actuals = all(literal(current[begin:finish]) is not None
+                                       for actuals in invocations for begin, finish in actuals)
+                plain_parameters = all(re.fullmatch(r"([A-Za-z_$][\w$]*)(?:\s*=\s*([\s\S]*))?", parameter)
+                                       for parameter in parameter_parts)
+                if not complete_invocations or not complete_actuals or not plain_parameters:
+                    child_fallback.extend((*fallback, *javascript_source_literals(current_atoms)))
                 for index, parameter in enumerate(parameter_parts):
                     named = re.fullmatch(r"([A-Za-z_$][\w$]*)(?:\s*=\s*([\s\S]*))?", parameter)
                     if named is None:
@@ -726,6 +794,19 @@ def javascript_generated_sources(value):
                 if (carrier, child_context, global_context) not in queued:
                     queued.add((carrier, child_context, global_context))
                     yield carrier
+
+    # Output purity belongs to the whole reachable cell. Evaluate it only after
+    # every parent and sibling source has contributed its possible capability.
+    for text, projected, bound, unknown_patch, unknown_inputs, fallback in deferred:
+        unknown_patch |= not javascript_output_only(projected, bound, root_capabilities) and unknown_inputs
+        unknown_command = _unparsed_command_text(text, generated_sources=False, capabilities=root_capabilities)[1]
+        for operand in fallback:
+            patch = operand.startswith("*** Begin Patch")
+            if (unknown_patch if patch else unknown_command):
+                # A possible patch call is partial provenance, never an exact
+                # native apply_patch invocation or completion receipt.
+                yield ("apply_patch(" + json.dumps(operand) + ")" if patch
+                       else "tools.exec_command({cmd:" + json.dumps(operand) + "})")
 
 
 def javascript_call_starts(native, pattern):
@@ -2441,10 +2522,7 @@ def _unparsed_command_text(value, *, generated_sources=True, capabilities=False)
     projected = [code, *(javascript_projection(text)[1] for text in generated)]
     capabilities |= any(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", text)
                         for text in projected)
-    calls = list(re.finditer(r"([A-Za-z_$][\w$]*)\s*\(", code))
-    output_only = (not capabilities and "text" not in bound
-                   and all(match[1] == "text" and not code[:match.start()].rstrip().endswith(".")
-                           for match in calls))
+    output_only = javascript_output_only(code, bound, capabilities)
     pending = [] if output_only else [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
     if not output_only:
         pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)]
@@ -6922,11 +7000,16 @@ def file_writes(name, value, *, replacements=None):
     if name in {"apply_patch", "functions.apply_patch"} and isinstance(value, str):
         patches.append(value)
     if name in {"exec", "functions.exec"} and isinstance(value, str):
-        for _, raw in composed_patch_fields(value):
-            try:
-                patches.append(composed_string(raw, value))
-            except (SyntaxError, ValueError):
-                pass
+        for current in (value, *javascript_generated_sources(value)):
+            for _, raw in composed_patch_fields(current):
+                try:
+                    patches.append(composed_string(raw, current))
+                except (SyntaxError, ValueError):
+                    pass
+            for _, patch in javascript_possible_patches(current):
+                for effect in native_file_effects("apply_patch", patch):
+                    for content in effect["contents"]:
+                        yield effect["path"], content
     for patch in patches:
         if replacements is not None:
             replacements.update(re.findall(r"(?m)^\*\*\* Add File: (.+)$", patch))
@@ -7007,6 +7090,9 @@ def native_file_effects(name, value):
         def direct_effects(current):
             patches = list(composed_patch_fields(current))
             calls = [(position, "apply_patch", raw, None) for position, raw in patches]
+            for _, patch in javascript_possible_patches(current):
+                for effect in native_file_effects("apply_patch", patch):
+                    yield dict(effect, replaces=False, partial=True)
             for match in composed_shell_fields(current):
                 opening = current.find("{", match.start())
                 literal = re.match(rf'''\{{(?:{JS_STRING}|[^{{}}"'`])*\}}''', current[opening:])

@@ -3377,6 +3377,18 @@ os.system(get())
                 'const c=' + json.dumps(shell) + '; const encode=x=>JSON.stringify(x); await eval("(async()=>{text(await tools.exec_command({cmd:" + encode(c) + "}));})()");',
                 'const p=' + json.dumps(patch) + '; await eval("(async()=>{text(await tools.apply_patch(p));})()");',
             )
+            patch_calls = (
+                'const{apply_patch}=tools;await apply_patch(p);',
+                'await tools?.apply_patch(p);', 'await tools.apply_patch?.(p);',
+                'await tools["apply_patch"](p);',
+                'await tools.apply_patch.call(tools,p);',
+                'const ap=tools.apply_patch;await ap(p);',
+                'await Reflect.apply(tools.apply_patch,tools,[p]);',
+            )
+            for call in patch_calls:
+                for source in (call, 'await eval(' + json.dumps('(async()=>{' + call + '})()') + ');',
+                               'await Function("p",' + json.dumps('return (async()=>{' + call + '})()') + ')(p);'):
+                    cells += ('const p=' + json.dumps(patch) + ';' + source,)
             for cell in cells:
                 for command, executes in (('python3 /repo/run.py', True), ('cat /repo/run.py', False)):
                     rows = history('codex', {}, {})
@@ -3405,6 +3417,15 @@ os.system(get())
                 'const f=Function(' + json.dumps('c=' + json.dumps(command)) + ', "return tools.exec_command({cmd:c})"); await f(); await f("echo safe");',
                 setup + 'const AsyncFunction=(async()=>{}).constructor; await new AsyncFunction("c", "return tools.exec_command({cmd:c})")(cmds[0]);',
             )
+            for factory in ('Function', '(async()=>{}).constructor', 'new AsyncFunction'):
+                prelude = 'const AsyncFunction=(async()=>{}).constructor;' if factory.startswith('new ') else ''
+                for parameters, operand in (('', 'arguments[0]'), ('"...a",', 'a[0]'), ('"{c}",', 'c')):
+                    body = json.dumps('return tools.exec_command({cmd:' + operand + '})')
+                    actual = '{c}' if parameters == '"{c}",' else 'c'
+                    for use in ('await Promise.all(cmds.map(f));', 'cmds.forEach(f);',
+                                'for(const c of cmds) await f(' + actual + ');'):
+                        values = '[{c:' + json.dumps(command) + '}]' if parameters == '"{c}",' and 'of cmds' not in use else '[' + json.dumps(command) + ']'
+                        cells += (prelude + 'const cmds=' + values + ';const f=' + factory + '(' + parameters + body + ');' + use,)
             for cell in cells:
                 rows = history('codex', {})
                 rows[1]['payload'].update(name='functions.exec', arguments=cell)
@@ -3601,6 +3622,13 @@ os.system(get())
             ('const c=' + json.dumps(writer) + '; await eval(' + json.dumps('text({"cmd":c})') + ');', False),
             ('const cmd=' + json.dumps(writer) + '; await eval("const object={cmd};text(object.cmd)");', False),
         ]
+        for command, owning in ((writer, True), ('echo safe', False)):
+            setup = 'const cmds=[' + json.dumps(command) + '];'
+            child = 'for(const c of cmds) await eval("text({cmd:c})");'
+            cells.extend(((setup + 'globalThis.text=tools.exec_command;' + child, owning),
+                          (setup + child, False),
+                          (setup + 'await eval("globalThis.text=tools.exec_command");' + child, owning),
+                          (setup + 'await eval(' + json.dumps('(async()=>{globalThis.text=tools.exec_command;' + child + '})()') + ');', owning)))
         for cell, owning in cells:
             rows = history('codex', {})
             rows[1]['payload'].update(name='functions.exec', arguments=cell)
@@ -3737,6 +3765,18 @@ os.system(get())
             with self.subTest(cell=cell):
                 self.assertFalse(any(effect['kind'] == 'write'
                                      for effect in receipts.native_file_effects('functions.exec', cell)))
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
+        patch = '*** Begin Patch\n*** Add File: /repo/run.py\n+import os\n+os.system(' + repr(writer) + ')\n*** End Patch'
+        for cell in ('const p=' + json.dumps(patch) + ';text(p);',
+                     'const unused=' + json.dumps(patch) + ';await tools.exec_command({cmd:"echo safe"});'):
+            rows = history('codex', {}, {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            rows[3]['payload']['arguments'] = json.dumps({'cmd': 'python3 /repo/run.py'})
+            rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+            with self.subTest(inert_patch=cell):
+                self.assertFalse(any(effect['kind'] == 'write' for effect in receipts.native_file_effects('functions.exec', cell)))
+                self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
 
     def test_composed_fixture_strings_and_comments_are_not_tool_invocations(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
