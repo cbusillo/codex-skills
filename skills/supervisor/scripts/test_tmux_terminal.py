@@ -8,6 +8,7 @@
 import argparse
 import asyncio
 from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -26,7 +27,7 @@ from types import SimpleNamespace
 
 import account_choice
 import iterm2
-import close_ttys
+import session_liveness
 import iterm_tab
 import tmux_terminal
 
@@ -296,8 +297,13 @@ class PaneParserTests(unittest.TestCase):
         self.addCleanup(capability.stop)
         self.marker = "a" * 32
         common = {"session_id": "$1", "pid": "123"}
+        self.cutoff = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        born = patch.object(session_liveness, "process_started_at", return_value=self.cutoff + timedelta(seconds=22))
+        born.start()
+        self.addCleanup(born.stop)
         self.dead = self.pane_line({**common, "window_id": "@1", "pane_id": "%1", "pane_title": "exited",
                                     "pane_tty": "/dev/ttys987", "pane_dead": "1", "pane_dead_status": "0",
+                                    "pane_dead_time": str(int(self.cutoff.timestamp())),
                                     "@supervisor_identity": self.marker})
         self.live_fields = {**common, "window_id": "@2", "pane_id": "%2", "pane_title": "live",
                             "pane_tty": "/dev/ttys986", "pane_pid": "456", "pane_dead": "0",
@@ -336,14 +342,14 @@ class PaneParserTests(unittest.TestCase):
             ledger.write_text(json.dumps([entry]))
             with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                     returncode=0, stdout=self.dead + self.live)) as calls, \
-                    patch.object(close_ttys, "inventory", return_value=[]):
+                    patch.object(session_liveness, "inventory", return_value=[]):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
             for processes in ([(789, "other-tty", "reused-pid")],
                               [(999, "ttys987", "tty-still-live")]):
                 with self.subTest(processes=processes), \
                         patch.object(self.terminal, "run", return_value=SimpleNamespace(
                             returncode=0, stdout=self.dead)), \
-                        patch.object(close_ttys, "inventory", return_value=processes):
+                        patch.object(session_liveness, "inventory", return_value=processes):
                     with self.assertRaises(ValueError):
                         self.terminal.close(self.identity, ledger)
 
@@ -369,7 +375,7 @@ class PaneParserTests(unittest.TestCase):
             ledger.write_text(json.dumps([entry]))
             with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                     returncode=0, stdout=self.dead + live)) as calls, \
-                    patch.object(close_ttys, "inventory", return_value=processes), \
+                    patch.object(session_liveness, "inventory", return_value=processes), \
                     patch.object(tmux_terminal, "process_parents", return_value={456: 123, 999: 456}):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
                 mutations = [c.args for c in calls.call_args_list if c.args[0] != "list-panes"]
@@ -391,11 +397,32 @@ class PaneParserTests(unittest.TestCase):
                 ledger.write_text(json.dumps([entry]))
                 with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                         returncode=0, stdout=self.dead + live)) as calls, \
-                        patch.object(close_ttys, "inventory", return_value=[(456, "ttys987", "new-worker"), *jobs]), \
+                        patch.object(session_liveness, "inventory", return_value=[(456, "ttys987", "new-worker"), *jobs]), \
                         patch.object(tmux_terminal, "process_parents", return_value=parents):
                     with self.assertRaises(ValueError):
                         self.terminal.close(self.identity, ledger)
                     self.assertFalse(any(c.args[0] != "list-panes" for c in calls.call_args_list))
+
+    def test_native_close_never_excuses_unknown_old_equal_or_future_birth(self):
+        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
+                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
+        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
+        for born in (self.cutoff - timedelta(seconds=1), self.cutoff,
+                     datetime.now(timezone.utc) + timedelta(days=1), ValueError("unknown birth")):
+            with self.subTest(born=born), tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                ledger.write_text(json.dumps([entry]))
+                with patch.object(self.terminal, "run", return_value=SimpleNamespace(returncode=0, stdout=self.dead + live)) as calls, \
+                        patch.object(session_liveness, "inventory", return_value=[(456, "ttys987", "new-worker")]), \
+                        patch.object(tmux_terminal, "process_parents", return_value={456: 123}), \
+                        patch.object(session_liveness, "process_started_at") as clock:
+                    if isinstance(born, Exception):
+                        clock.side_effect = born
+                    else:
+                        clock.return_value = born
+                    with self.assertRaises(ValueError):
+                        self.terminal.close(self.identity, ledger)
+                    self.assertFalse(any(call.args[0] != "list-panes" for call in calls.call_args_list))
 
     def test_tty_ancestry_failure_or_activity_between_checks_never_closes(self):
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
@@ -409,7 +436,7 @@ class PaneParserTests(unittest.TestCase):
                 ledger.write_text(json.dumps([entry]))
                 with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                         returncode=0, stdout=self.dead + live)) as calls, \
-                        patch.object(close_ttys, "inventory", side_effect=inventories), \
+                        patch.object(session_liveness, "inventory", side_effect=inventories), \
                         patch.object(tmux_terminal, "process_parents") as ancestry:
                     if isinstance(parents, Exception):
                         ancestry.side_effect = parents
@@ -587,7 +614,7 @@ for line in sys.stdin:
             details["panes"] = self.terminal.list()
             pids = {row["pid"] for row in details["panes"]}
             ttys = {row["tty"].removeprefix("/dev/") for row in details["panes"]}
-            details["processes"] = [row for row in close_ttys.inventory()
+            details["processes"] = [row for row in session_liveness.inventory()
                                     if row[0] in pids or row[1] in ttys]
             details["screens"] = {}
             for row in details["panes"]:
@@ -863,7 +890,7 @@ for line in sys.stdin:
     def test_exit_wait_requires_process_proof_after_tmux_reports_dead(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")
-        original = close_ttys.inventory
+        original = session_liveness.inventory
         reads = 0
 
         def reaping():
@@ -873,7 +900,7 @@ for line in sys.stdin:
                 return [(row["pid"], row["tty"].removeprefix("/dev/"), "fixture-agent")]
             return original()
 
-        with patch.object(close_ttys, "inventory", side_effect=reaping):
+        with patch.object(session_liveness, "inventory", side_effect=reaping):
             self.ended(row)
         self.assertGreater(reads, 1)
 
@@ -1004,7 +1031,7 @@ for line in sys.stdin:
         self.wait_screen(detail["launched"][0]["session_id"], "READY:")
         self.assertNotEqual(detail["launched"][0]["session_id"], detail["failed_launch"]["session_id"])
 
-    def test_cli_read_and_transcript_close_preview_without_iterm_connection(self):
+    def test_cli_read_and_native_close_without_iterm_connection(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")
         scripts = Path(__file__).parent
@@ -1021,20 +1048,18 @@ for line in sys.stdin:
         entry = {**self.entry(row), "session_id": native, "harness": "codex",
                  "transcript": str(transcript), "handoff_url": "https://github.com/example/repo/issues/1#issuecomment-2"}
         self.ledger.write_text(json.dumps([entry]))
-        argv = [sys.executable, str(scripts / "close_ttys.py"), "--backend", "tmux", "--tmux-socket", self.socket,
-                "--ledger", str(self.ledger), "--session-id", native, "--verified-handoff", "--verified-input"]
-        preview = self.run_child(argv)
-        self.assertTrue(json.loads(preview.stdout)["dry_run"])
+        argv = [sys.executable, str(scripts / "iterm_tab.py"), "--backend", "tmux", "--tmux-socket", self.socket,
+                "close", "--ledger", str(self.ledger), "--session-id", row["session_id"]]
         self.assertTrue(self.terminal.select(row["session_id"])["dead"])
         records[1]["payload"]["message"] = "still working"
         transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        refused = self.run_child([*argv, "--apply"], check=False)
+        refused = self.run_child(argv, check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertTrue(self.terminal.select(row["session_id"])["dead"])
         records[1]["payload"]["message"] = "Safe to exit: yes"
         transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        applied = self.run_child([*argv, "--apply"])
-        self.assertTrue(json.loads(applied.stdout)["closed"])
+        applied = self.run_child(argv)
+        self.assertTrue(json.loads(applied.stdout)["close_requested"])
 
 
 class DetachedTerminalTests(TmuxFixture):

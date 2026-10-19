@@ -65,7 +65,7 @@ def prepare(entry, message):
         return queue
     if entry.get("harness") != "claude" or entry.get("backend") != "tmux":
         raise ValueError("Claude review notification requires the ledger's supported tmux route")
-    from close_ttys import inventory
+    from session_liveness import inventory
     from tmux_terminal import Terminal, belongs_to, process_parents
 
     if not entry.get("tmux_socket"):

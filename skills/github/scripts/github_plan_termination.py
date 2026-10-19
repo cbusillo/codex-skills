@@ -21,8 +21,8 @@ def native_helpers():
     if directory not in sys.path:
         sys.path.append(directory)
     import session_record
-    import close_ttys
-    return session_record, close_ttys
+    import session_liveness
+    return session_record, session_liveness
 
 
 def inventory():
@@ -151,15 +151,12 @@ def verify(record, session):
     if type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty.strip():
         raise ValueError("Termination record requires the recorded source PID and TTY")
     tty = tty.removeprefix("/dev/")
-    rows = inventory()
-    for process, process_tty, command in rows:
-        if process == pid or process_tty == tty and not native_helpers()[1].idle_terminal_command(command):
-            raise ValueError("Source process or work on its TTY is still running")
-        argv = command.split()
-        resumed = [argv[i + 1].strip("\"'") for i, arg in enumerate(argv[:-1]) if arg in {"resume", "--resume", "-r"}]
-        resumed.extend(arg.split("=", 1)[1].strip("\"'") for arg in argv if arg.startswith("--resume="))
-        if session in resumed:
-            raise ValueError("Source native session has a running resumed process")
+    from github_plan_sessions import native_helpers as session_helpers
+    session_helpers()
+    import github_plan_closure
+    native_helpers()[1].verify_process_exit(
+        record, rows=inventory(), ended_at=stamp(record["ended_at"]),
+        independent_harness=lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
     roots = record.get("transcript_roots")
     if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and Path(root).is_dir() for root in roots):
         raise ValueError("Supply every known source-account transcript root on the source host")

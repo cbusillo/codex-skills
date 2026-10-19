@@ -25,6 +25,50 @@ import codex_session_proxy as proxy
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_late_action_ack_preserves_completed_turn_without_releasing_inflight_lease(self):
+        for method in ("thread/queue/add", "turn/start"):
+            with self.subTest(method=method), ReceiptFixture(str(uuid.uuid4())) as f:
+                closure.replace_rows([])
+                task, request, response, _ = await self.start_client(f)
+                received, acknowledge = threading.Event(), threading.Event()
+
+                async def delayed(_request):
+                    received.set()
+                    if not await asyncio.to_thread(acknowledge.wait, 5):
+                        raise TimeoutError("fixture acknowledgement not released")
+                    return {"thread": {"id": f.session, "path": str(f.transcript)}}
+
+                def lease_available():
+                    try:
+                        with closure.ownership(f.session):
+                            return True
+                    except closure.LeaseBusy:
+                        return False
+
+                f.rpc_results[method] = delayed
+                try:
+                    sending = asyncio.create_task(self.send(task, request, response, method, f.session))
+                    self.assertTrue(await asyncio.to_thread(received.wait, 3))
+                    self.assertFalse(await asyncio.to_thread(lease_available))
+                    before = closure.action_time(f.session)
+                    with f.transcript.open("a") as stream:
+                        for payload in ({"type": "task_started"},
+                                        {"type": "agent_message", "message": "Safe to exit: yes"},
+                                        {"type": "task_complete"}):
+                            stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(),
+                                                     "payload": payload}) + "\n")
+                    acknowledge.set()
+                    self.assertIn("result", await sending)
+                    self.assertEqual(closure.action_time(f.session), before)
+                    self.assertTrue(await asyncio.to_thread(lease_available))
+                finally:
+                    acknowledge.set()
+                    (f.root / "stop").touch()
+                    self.assertEqual(await asyncio.wait_for(task, 8), 0)
+                closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                self.assertTrue(closed["process_exit_verified"])
+                self.assertFalse(closure.action_pending(f.session))
+
     async def test_clock_request_then_client_shutdown_preserves_only_a_fresh_verdict(self):
         from websockets.asyncio.client import unix_connect
         for action in (None, "thread/queue/add", "thread/resume", "turn/start", "item/commandExecution/requestApproval"):

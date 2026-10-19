@@ -321,6 +321,16 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     f.release.validate_closure(closed, "supervisor")
 
+    def test_observation_uses_saved_native_exit_before_later_closure_record_time(self):
+        with ReceiptFixture() as f:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
+            rows = json.loads(f.log.read_text())
+            rows[0]["tty_exited_at"] = cutoff.isoformat()
+            f.log.write_text(json.dumps(rows))
+            f.process_rows = [(456, "fixture-tty", "new-unrelated-worker")]
+            with patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=22)):
+                self.assert_ended(f)
+
     def test_newer_generation_or_malformed_receipt_keeps_idle_live(self):
         with ReceiptFixture() as f:
             self.assert_ended(f)

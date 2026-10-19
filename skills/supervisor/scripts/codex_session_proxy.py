@@ -272,8 +272,6 @@ class Ingress:
                                     except (OSError, ValueError) as error:
                                         raw = json.dumps({"id": identity, "error": {"code": -32603,
                                             "message": "native thread start succeeded but its ownership lease was not created: " + str(error)}})
-                                for target in guarded | owned:
-                                    closure.set_action_pending(target, True)
                                 if session and "result" in message and self.child_metadata:
                                     thread = message["result"]["thread"]
                                     path = Path(thread.get("path") or "/").resolve()

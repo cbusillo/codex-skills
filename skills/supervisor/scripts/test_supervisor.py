@@ -23,7 +23,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
-import close_ttys
+import session_liveness
 import codex_idle_watch
 import finished_map
 import iterm_tab
@@ -225,6 +225,42 @@ class TranscriptTests(unittest.TestCase):
                 records + [{"type": "user", "message": "continue"}], "claude"
             )["safe_verdict"]
         )
+
+    def test_scheduled_jobs_follow_successful_results_and_one_shot_fire(self):
+        def call(name, identity, **values):
+            return {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": identity, "name": name, "input": values}]}}
+
+        def result(identity, value, *, failed=False):
+            return {"type": "user", "toolUseResult": value, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": identity, "is_error": failed, "content": "fixture"}]}}
+
+        def jobs(records):
+            return {task["task_id"] for task in session_record.summarize(records + [claude("Safe to exit: yes")], "claude")["background_tasks"]}
+
+        prefix = [{"type": "user", "toolUseResult": {"taskId": "watcher"}}]
+        for identity, recurring in (("once", False), ("repeat", True)):
+            prefix += [call("CronCreate", "create-" + identity, cron="* * * * *", prompt="fixture", recurring=recurring),
+                       result("create-" + identity, {"id": identity, "humanSchedule": "fixture", "recurring": recurring, "durable": False})]
+        self.assertEqual(jobs(prefix), {"watcher", "once", "repeat"})
+        fire = [{"type": "system", "subtype": "scheduled_task_fire", "taskId": "once"},
+                {"type": "user", "scheduledTaskId": "once", "scheduledFireId": "fire", "turnOrigin": "scheduled"},
+                {"type": "system", "subtype": "scheduled_task_fire", "taskId": "repeat"}]
+        self.assertEqual(jobs(prefix + fire[:1]), {"watcher", "repeat"})
+        self.assertEqual(jobs(prefix + fire[1:2]), {"watcher", "repeat"})
+        self.assertEqual(jobs(prefix + fire[2:]), {"watcher", "once", "repeat"})
+        self.assertEqual(jobs(prefix + fire), {"watcher", "repeat"})
+        self.assertEqual(jobs(prefix + fire + prefix[1:]), {"watcher", "repeat"})
+        deleting = prefix + [call("CronDelete", "delete", id="repeat")]
+        self.assertEqual(jobs(deleting + [result("delete", {"id": "repeat"}, failed=True)]), {"watcher", "once", "repeat"})
+        self.assertEqual(jobs(deleting + [result("delete", {"id": "different"})]), {"watcher", "once", "repeat"})
+        self.assertEqual(jobs(deleting + [result("delete", {"id": "repeat"})]), {"watcher", "once"})
+        listing = prefix + [call("CronList", "list")]
+        self.assertEqual(jobs(listing + [result("list", {"jobs": []})]), {"watcher"})
+        self.assertEqual(jobs(listing + [result("list", {"jobs": "unknown"})]), {"watcher", "once", "repeat"})
+        ambiguous = result("list", {"jobs": []})
+        ambiguous["message"]["content"].append({"type": "tool_result", "tool_use_id": "other", "content": "fixture"})
+        self.assertEqual(jobs(listing + [ambiguous]), {"watcher", "once", "repeat"})
 
     def test_negative_quoted_and_conditional_verdicts(self):
         for text in (
@@ -535,24 +571,6 @@ class LedgerTests(unittest.TestCase):
         for record in records:
             record["sessionId"] = self.entry["session_id"]
         self.write(records)
-        entry = session_record.load_ledger(self.ledger)[0]
-        terminal = SimpleNamespace(
-            session_id="term1",
-            async_get_variable=AsyncMock(return_value="ttys001"),
-            async_close=AsyncMock(),
-        )
-        app = SimpleNamespace(
-            terminal_windows=[
-                SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-            ]
-        )
-        with patch.object(
-            close_ttys,
-            "inventory",
-            return_value=[(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login")],
-        ):
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
-        terminal.async_close.assert_awaited_once_with(force=False)
         for kind in ("/compact", "/clear"):
             changed = records.copy()
             changed[-2] = {
@@ -811,44 +829,6 @@ class LedgerTests(unittest.TestCase):
         self.assertTrue(candidate["closeout_blockers"])
         self.assertTrue(candidate["next_action"])
 
-    def test_close_only_exited_exact_session_and_never_force(self):
-        entry = session_record.load_ledger(self.ledger)[0]
-        terminal = SimpleNamespace(
-            session_id="term1",
-            async_get_variable=AsyncMock(return_value="/dev/ttys001"),
-            async_close=AsyncMock(),
-        )
-        app = SimpleNamespace(
-            terminal_windows=[
-                SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-            ]
-        )
-        with patch.object(
-            close_ttys,
-            "inventory",
-            return_value=[(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login")],
-        ):
-            result = asyncio.run(close_ttys.close(app, entry, False, True, True))
-            self.assertTrue(result["dry_run"])
-            terminal.async_close.assert_not_awaited()
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
-            terminal.async_close.assert_awaited_once_with(force=False)
-        for rows in (
-            [(123, "ttys001", "claude")],
-            [(456, "ttys001", "/usr/bin/codex")],
-            [(123, "other", "unrelated")],
-            [(456, "ttys001", "/usr/bin/node")],
-        ):
-            with (
-                patch.object(close_ttys, "inventory", return_value=rows),
-                self.assertRaises(ValueError),
-            ):
-                asyncio.run(close_ttys.close(app, entry, True, True, True))
-        with self.assertRaises(ValueError):
-            asyncio.run(close_ttys.close(app, entry, True, False, True))
-        terminal.async_get_variable.return_value = "/dev/ttys999"
-        with self.assertRaises(ValueError):
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
 
     def test_memory_citation_fixture_through_status_candidates_and_close(self):
         fixture = Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
@@ -869,47 +849,8 @@ class LedgerTests(unittest.TestCase):
                 self.assertTrue(result["safe_verdict"])
                 self.assertIn("<oai-mem-citation>", result["last_text"])
                 self.assertTrue(finished_map.candidates(self.ledger)[0]["candidate"])
-                entry = session_record.load_ledger(self.ledger)[0]
-                terminal = SimpleNamespace(
-                    session_id="term1",
-                    async_get_variable=AsyncMock(return_value="ttys001"),
-                    async_close=AsyncMock(),
-                )
-                app = SimpleNamespace(terminal_windows=[
-                    SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-                ])
-                with patch.object(close_ttys, "inventory", return_value=[(20, "ttys001", "-zsh")]):
-                    self.assertTrue(asyncio.run(close_ttys.close(app, entry, False, True, True))["dry_run"])
-                    terminal.async_close.assert_not_awaited()
-                    asyncio.run(close_ttys.close(app, entry, True, True, True))
-                terminal.async_close.assert_awaited_once_with(force=False)
 
-    def test_activity_race_keeps_tab(self):
-        entry = session_record.load_ledger(self.ledger)[0]
-        terminal = SimpleNamespace(
-            session_id="term1",
-            async_get_variable=AsyncMock(return_value="ttys001"),
-            async_close=AsyncMock(),
-        )
-        app = SimpleNamespace(
-            terminal_windows=[
-                SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])
-            ]
-        )
-        with (
-            patch.object(
-                session_record,
-                "session_status",
-                side_effect=[{"safe_verdict": True}, {"safe_verdict": False}],
-            ) as reader,
-            patch.object(
-                close_ttys, "inventory", return_value=[(20, "ttys001", "/bin/zsh")]
-            ),
-            self.assertRaises(ValueError),
-        ):
-            asyncio.run(close_ttys.close(app, entry, True, True, True))
-        self.assertEqual(reader.call_count, 2)
-        terminal.async_close.assert_not_awaited()
+
 
 
 class QuestionTests(unittest.TestCase):
@@ -1415,7 +1356,7 @@ class TabCloseTests(unittest.TestCase):
         opt_in.start()
         self.addCleanup(opt_in.stop)
         self.ledger = Path(self.folder.name) / "ledger.json"
-        self.entry = {"supervisor_owned": True, "iterm_session_id": "owned",
+        self.entry = {"supervisor_owned": True, "iterm_session_id": "owned", "pid": 123,
                       "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}
         self.ledger.write_text(json.dumps([self.entry]))
         self.session = SimpleNamespace(session_id="owned", async_close=AsyncMock(),
@@ -1430,7 +1371,7 @@ class TabCloseTests(unittest.TestCase):
         self.rows = [(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fpl user")]
         self.addCleanup(patch.stopall)
         patch.dict("sys.modules", {"iterm2": self.api}).start()
-        self.inventory = patch.object(close_ttys, "inventory", return_value=self.rows).start()
+        self.inventory = patch.object(session_liveness, "inventory", return_value=self.rows).start()
 
     def close(self, identity="owned"):
         return asyncio.run(iterm_tab.close_session(self.app, identity, self.ledger))
@@ -1440,6 +1381,37 @@ class TabCloseTests(unittest.TestCase):
         self.session.async_close.assert_awaited_once_with(force=False)
         self.assertEqual(self.inventory.call_count, 2)
         self.assertEqual(self.api.async_get_last_prompt.await_count, 2)
+
+    def test_transcript_change_between_native_close_probes_keeps_tab(self):
+        self.ledger.write_text(json.dumps([{**self.entry, "transcript": "/fixture", "session_id": "source", "harness": "claude"}]))
+        with patch.object(session_record, "session_status", side_effect=[
+            {"safe_verdict": True}, {"safe_verdict": False}
+        ]), self.assertRaises(ValueError):
+            self.close()
+        self.session.async_close.assert_not_awaited()
+
+    def test_resume_identity_is_read_only_from_harness_operands(self):
+        entry = {**self.entry, "session_id": "source", "pid": 123}
+        for command in ("echo codex resume source", "python worker.py resume source", "codex -- resume source", "codex exec resume source"):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+        for command in ("codex resume source -- prompt", "bun /bin/claude.js --resume=source", "node /bin/claude --resume source",
+                        'codex -c notify=["terminal-notifier", "-message", "hello"] resume source'):
+            with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+
+    def test_missing_source_pid_is_uncertainty_for_every_ordinary_probe(self):
+        for value in (None, False, 0, -1, "123"):
+            with self.subTest(pid=value), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit({**self.entry, "pid": value}, rows=self.rows)
+
+    def test_declared_verdict_only_qualifies_after_independent_exit_and_never_ignores_tasks(self):
+        status = {"safe_verdict": False, "declared_safe_verdict": True, "background_tasks": []}
+        with self.assertRaises(ValueError):
+            session_liveness.require_safe_status(status)
+        session_liveness.require_safe_status(status, exited=True)
+        with self.assertRaises(ValueError):
+            session_liveness.require_safe_status({**status, "background_tasks": [{"task_id": "wake"}]}, exited=True)
 
     def test_refuses_missing_duplicate_director_or_moved_identity(self):
         for entries in ([], [self.entry, self.entry],
@@ -2935,39 +2907,19 @@ class TerminalTests(unittest.TestCase):
         ):
             asyncio.run(iterm_tab.operate(app, args))
 
-    def test_running_shell_script_is_not_an_idle_shell(self):
+    def test_process_verification_preserves_scripts_missing_tty_and_malformed_inventory(self):
         entry = {"pid": 123, "tty": "ttys001"}
-        for command in (
-            "bash build.sh",
-            "zsh -c 'while :; do :; done'",
-            "/bin/sh /tmp/task.sh",
-        ):
-            with self.subTest(command=command):
-                self.assertFalse(
-                    close_ttys.process_exited(entry, [(20, "ttys001", command)])
-                )
-        self.assertTrue(
-            close_ttys.process_exited(
-                entry,
-                [(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fp user")],
-            )
-        )
-
-    def test_missing_tty_rows_are_not_exit_proof(self):
+        for command in ("bash build.sh", "zsh -c 'while :; do :; done'", "/bin/sh /tmp/task.sh"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(entry, rows=[(20, "ttys001", command)])
+        session_liveness.verify_process_exit(entry, rows=[(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fp user")])
         with self.assertRaises(ValueError):
-            close_ttys.process_exited(
-                {"pid": 123, "tty": "ttys001"}, [(20, "ttys999", "/bin/zsh")]
-            )
-
-    def test_process_inventory_refuses_unparseable_or_live_identity(self):
-        self.assertEqual(
-            close_ttys.process_rows("123 ttys001 /bin/claude\n"),
-            [(123, "ttys001", "/bin/claude")],
-        )
+            session_liveness.verify_process_exit(entry, rows=[(20, "ttys999", "-zsh")], require_tty=True)
+        self.assertEqual(session_liveness.process_rows("123 ttys001 /bin/claude\n"), [(123, "ttys001", "/bin/claude")])
         with self.assertRaises(ValueError):
-            close_ttys.process_rows("unexpected")
+            session_liveness.process_rows("unexpected")
         with self.assertRaises(ValueError):
-            close_ttys.process_exited({}, [])
+            session_liveness.verify_process_exit({}, rows=[])
 
 
 if __name__ == "__main__":

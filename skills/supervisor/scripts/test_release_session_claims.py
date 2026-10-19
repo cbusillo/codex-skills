@@ -312,6 +312,50 @@ class ReleaseTests(unittest.TestCase):
                 helper.record_closure(log, self.entry, "supervisor")
         self.assertFalse(log.exists())
 
+    def test_first_recovery_finish_uses_native_dead_pane_cutoff_then_retains_it(self):
+        import tmux_terminal
+        ended = helper.release.stamp(self.entry["ended_at"])
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "window_id": "$1", "tab_id": "@1", "tty_exited_at": "2099-01-01T00:00:00Z",
+                 "launch_pid": 123, "launch_generation": "new-generation",
+                 "launch_started_at": (ended - timedelta(minutes=1)).isoformat(), "codex_home": str(self.root)}
+        pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                "dead": True, "exited_at": ended.isoformat()}
+        for recovered in (False, True):
+            log = self.root / f"recovery-{recovered}.json"
+            if recovered:
+                metadata = {key: entry[key] for key in (
+                    "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")}
+                log.write_text(json.dumps([{**self.entry, "pid": 122, "tty": "old-tty",
+                                            "resumed_at": (ended - timedelta(minutes=1)).isoformat(),
+                                            "resumed_generation": metadata}]))
+            with self.subTest(recovery=recovered), \
+                    patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
+                    patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex --remote unix:///new-client")]), \
+                    patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                    patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client"):
+                closed = helper.record_closure(log, entry, "supervisor")
+                self.assertEqual(closed["tty_exited_at"], ended.isoformat())
+                self.assertGreater(helper.release.stamp(closed["ended_at"]), ended + timedelta(seconds=22))
+                with patch.object(tmux_terminal.Terminal, "list", side_effect=AssertionError("dead pane already removed")):
+                    retried = helper.record_closure(log, entry, "supervisor")
+                self.assertEqual(retried["ended_at"], closed["ended_at"])
+                self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
+
+    def test_scheduled_or_background_tasks_block_ordinary_finish(self):
+        entry = {**self.entry, "harness": "claude"}
+        records = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "create", "name": "CronCreate", "input": {}}]}},
+            {"type": "user", "toolUseResult": {"id": "wake", "recurring": True, "durable": False},
+             "message": {"content": [{"type": "tool_result", "tool_use_id": "create", "content": "fixture"}]}},
+            {"type": "assistant", "timestamp": "2026-01-01T00:01:00Z", "message": {
+                "stop_reason": "end_turn", "content": [{"type": "text", "text": "Safe to exit: yes"}]}},
+        ]
+        self.transcript.write_text("".join(json.dumps({**r, "sessionId": SOURCE["session"]}) + "\n" for r in records))
+        with self.assertRaisesRegex(ValueError, "scheduled jobs remain"):
+            helper.validate_closure(entry, "supervisor")
+
     def test_finish_self_release_with_session_field_and_progress_note(self):
         released = self.own_release(body="Released claim 1\n\nSession: source-session\nEngineering handoff")
         progress = comment(3, "Session: source-session\nProgress: affected tests passed")

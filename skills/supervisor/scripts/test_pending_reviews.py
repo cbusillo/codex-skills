@@ -1492,7 +1492,7 @@ class NotificationTests(unittest.TestCase):
                     "input_line": {"style": "empty", "text": "", "line_index": 1}}
         self.read = self.enterContext(patch("tmux_terminal.Terminal.read", side_effect=lambda _: copy.deepcopy(self.row)))
         self.send = self.enterContext(patch("tmux_terminal.Terminal.send", new_callable=AsyncMock))
-        self.enterContext(patch("close_ttys.inventory", return_value=[(789, "ttys123", "claude")]))
+        self.enterContext(patch("session_liveness.inventory", return_value=[(789, "ttys123", "claude")]))
         self.enterContext(patch("tmux_terminal.process_parents", return_value={789: 456, 456: 1}))
 
     def test_codex_notification_uses_supported_queue_with_exact_home_and_native_identity(self):

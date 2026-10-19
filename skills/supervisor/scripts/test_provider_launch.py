@@ -25,7 +25,7 @@ import account_choice
 import agent_tools
 import iterm_tab
 import tmux_terminal
-import close_ttys
+import session_liveness
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 
 
@@ -270,7 +270,7 @@ class ProviderLaunchTests(unittest.TestCase):
         import github_plan_closure
         source = {"session_id": "terminal-generation", "tty": "/dev/fixture-tty"}
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
-        with patch.object(close_ttys, "inventory", return_value=[(456, "fixture-tty", "codex --remote unix:///observed"),
+        with patch.object(session_liveness, "inventory", return_value=[(456, "fixture-tty", "codex --remote unix:///observed"),
                                                               (457, "fixture-tty", "python3 /fixture/codex-session.py launch --codex-home /fixture")]), \
                 patch.object(github_plan_closure, "process_started_at") as started:
             from datetime import datetime, timezone
@@ -288,13 +288,13 @@ class ProviderLaunchTests(unittest.TestCase):
     def test_claude_resume_and_pasted_reference_keep_their_own_meaning(self):
         target = SimpleNamespace(session_id="fixture-target", async_get_variable=AsyncMock(return_value="/dev/fixture"),
                                  async_send_text=AsyncMock())
-        with patch.object(close_ttys, "inventory", return_value=[(456, "fixture", "claude --model opus")]):
+        with patch.object(session_liveness, "inventory", return_value=[(456, "fixture", "claude --model opus")]):
             asyncio.run(iterm_tab.send(target, "/resume source", submit=False))
         self.assertEqual(target.async_send_text.call_args.args[0], "/resume source")
         pasted = "The command is:\n/resume source"
         asyncio.run(iterm_tab.send(target, pasted, submit=False))
         self.assertIn(pasted, target.async_send_text.call_args.args[0])
-        with patch.object(close_ttys, "inventory", return_value=[(456, "fixture", "codex --remote unix:///fixture")]):
+        with patch.object(session_liveness, "inventory", return_value=[(456, "fixture", "codex --remote unix:///fixture")]):
             with self.assertRaises(ValueError):
                 asyncio.run(iterm_tab.send(target, "/resume source", submit=False))
 
@@ -304,7 +304,7 @@ class ProviderLaunchTests(unittest.TestCase):
         born = datetime(2026, 10, 1, tzinfo=timezone.utc)
         source = {"session_id": "terminal-generation", "tty": "/dev/fixture"}
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
-        with patch.object(close_ttys, "inventory", return_value=[
+        with patch.object(session_liveness, "inventory", return_value=[
                 (456, "fixture", "python3 /fixture/codex-session.py launch --codex-home /fixture/account"),
                 (457, "fixture", "python3 /fixture/codex-session.py native --codex-home /fixture/account")]), \
                 patch.object(closure, "process_started_at", return_value=born), \

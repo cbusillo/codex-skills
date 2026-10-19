@@ -1311,17 +1311,16 @@ input if needed, then read back that the entire agent input is empty. Send
 `/quit` for Codex or `/exit` for Claude with `send --verified-target`. Wait at
 most 60 seconds, reading `read` for `dead: true` and checking that the matched
 agent PID and processes belonging to that pane have exited. If its TTY was
-reused, use the close preview's ownership proof below. Preserve a running or
+reused, use the native close command's ownership proof below. Preserve a running or
 uncertain pane. Record/release native session claims under the existing
 finished-session procedure before removing the terminal.
 
 ```sh
-uv run skills/supervisor/scripts/close_ttys.py --backend tmux --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux close --session-id <tmux-session-id> --ledger <private-ledger.json>
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux list
 ```
 
-The preview verifies the native transcript and handoff. Terminal closure
+Finish verifies the native transcript and handoff. Terminal closure
 rechecks the owned launch nonce, container, window, server and TTY, rejects
 splits or linked windows, and proves that both the recorded PID and the pane
 process are absent. It checks twice, then asks tmux to remove only that dead
@@ -2211,20 +2210,15 @@ Then perform the guarded tab-close
 step below.
 
 ```sh
-uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
 uv run skills/supervisor/scripts/iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>
 ```
 
-The dry-run helper's two flags attest the Supervisor checked the issue handoff and empty input
-(or recorded the Director's text). Default is a dry run. This helper never
-answers prompts or sends exit commands: it checks transcript, ownership, exact
-iTerm id and TTY, then proves the recorded PID is absent and only `login` and idle login/interactive shell processes
-remain on that TTY. Other jobs, including prompt helpers and shell scripts, preserve the tab.
-Process arguments are inspected privately and never emitted. Its existing
-`--apply` adapter remains available and rechecks transcript activity and processes.
-The procedure above uses that dry run for the transcript/handoff gate, then
-`iterm_tab.py close` for current process and native input proof; neither command
-alone replaces the full shutdown procedure. The close command performs one
+The native close command rechecks the exact owned terminal, source PID and TTY,
+transcript when recorded, and actual empty shell input. Finish already verifies
+its native verdict and issue handoff. Only `login` and idle login/interactive
+shell processes can remain on an iTerm TTY; prompt helpers and shell scripts
+preserve the tab. Process arguments are inspected privately and never emitted.
+The close command performs one
 non-force close request and has no dry-run mode. An uncertain inventory or remaining/reused PID preserves
 the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
 an uncertain close. Other terminal applications use the same skill procedure

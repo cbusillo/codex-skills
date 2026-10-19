@@ -456,7 +456,8 @@ def transcripts(session: str, primary: str) -> dict:
             raise ValueError("native transcript identity mismatch")
         status = native_helpers()[1].summarize(records, "codex")
         after = path.stat()
-        if transcript_identity(before) != transcript_identity(after) or not status["safe_verdict"]:
+        if (transcript_identity(before) != transcript_identity(after)
+                or not status.get("declared_safe_verdict", status["safe_verdict"]) or status.get("background_tasks")):
             raise ValueError("native transcript is changing or lacks a final safe verdict")
         timestamps = [r["timestamp"] for r in records if r.get("timestamp")]
         if not timestamps:
@@ -530,10 +531,10 @@ def verified_record(session: str, home: Path | None = None) -> dict | None:
 
 
 def process_started_at(pid: int) -> datetime:
-    value = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], check=True,
-                           capture_output=True, text=True, timeout=2,
-                           env={**os.environ, "TZ": "UTC", "LC_ALL": "C"}).stdout.strip()
-    return datetime.strptime(value, "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+    from github_plan_sessions import native_helpers
+    native_helpers()
+    import session_liveness
+    return session_liveness.process_started_at(pid)
 
 
 def launch_metadata(pid: int, generation: str, home: str) -> dict:
