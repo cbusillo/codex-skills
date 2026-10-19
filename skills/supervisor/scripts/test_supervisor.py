@@ -1407,6 +1407,27 @@ class TabCloseTests(unittest.TestCase):
         self.assertEqual(self.inventory.call_count, 2)
         self.assertEqual(self.api.async_get_last_prompt.await_count, 2)
 
+    def test_pidless_idle_iterm_close_retains_prompt_and_launch_pid_guards(self):
+        entry = {key: value for key, value in self.entry.items() if key != "pid"}
+        self.ledger.write_text(json.dumps([entry]))
+        self.assertTrue(self.close()["close_requested"])
+        self.session.async_close.assert_awaited_once_with(force=False)
+        for change, rows, command in (
+            ({"pid": False}, self.rows, ""), ({"pid": 0}, self.rows, ""),
+            ({"pid": "123"}, self.rows, ""), ({"pid": {}}, self.rows, ""),
+            ({"launch_pid": 456}, [*self.rows, (456, "other", "codex")], ""),
+            ({}, [*self.rows, (456, self.entry["tty"], "codex")], ""),
+            ({}, [], ""), ({}, self.rows, "draft"),
+        ):
+            with self.subTest(change=change, rows=rows, command=command):
+                self.session.async_close.reset_mock()
+                self.ledger.write_text(json.dumps([{**entry, **change}]))
+                self.inventory.return_value = rows
+                self.prompt.command = command
+                with self.assertRaises(ValueError):
+                    self.close()
+                self.session.async_close.assert_not_awaited()
+
     def test_interrupted_terminal_cleanup_retains_physical_close_contract(self):
         transcript = self.ledger.parent / "interrupted.jsonl"
         transcript.write_text(json.dumps({"sessionId": "source", "type": "user", "message": {"content": "interrupted"}}) + "\n")
@@ -1442,6 +1463,33 @@ class TabCloseTests(unittest.TestCase):
                 with self.subTest(alias=alias, tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
                     session_liveness.verify_process_exit(entry, rows=[(456, tty, "codex resume " + alias)],
                         ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+
+    def test_codex_resume_options_keep_source_ids_separate_from_option_values(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        other = "01a14296-2820-7da0-979b-51f158dfeb7b"
+        entry = {**self.entry, "session_id": source, "harness": "codex"}
+        for command in (
+            f"codex exec resume --json {source}", f"codex e resume -m model {source}",
+            f"codex resume --all {source}", f"node /bin/codex.js resume --model {other} {source}",
+            f"codex exec resume --model={other} {source}",
+            f'codex resume -c notify=["hello", "world"] {source}',
+        ):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+        for command in (
+            f"codex resume -m {source} {other}", f"codex resume --model={source} {other}",
+            f"codex resume -i {source} --last", f"codex resume --json {other} -- {source}",
+            f"codex exec -- resume --json {source}",
+        ):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for command in (f"codex resume -m {other} --last", f"codex resume --unknown-value {other} --last"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], command)],
+                    ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+        session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], f"codex resume -m {source} {other}")],
+            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
 
     def test_repository_codex_scripts_are_unrelated_replacement_work(self):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
@@ -1493,8 +1541,8 @@ class TabCloseTests(unittest.TestCase):
         for command, harness in (("codex resume --last", "codex"), ("claude --continue", "claude")):
             with self.subTest(command=command):
                 session_liveness.verify_process_exit({**entry, "harness": harness}, rows=[(456, "other", command)])
-        self.assertEqual(session_liveness.invocation(["claude", "--continue"]), ([], "resume"))
-        self.assertEqual(session_liveness.invocation(["claude", "-c"]), ([], "resume"))
+        self.assertEqual(session_liveness.invocation(["claude", "--continue"]), ([], "resume", None))
+        self.assertEqual(session_liveness.invocation(["claude", "-c"]), ([], "resume", None))
 
     def test_resume_identity_is_read_only_from_harness_operands(self):
         entry = {**self.entry, "session_id": "source", "pid": 123}

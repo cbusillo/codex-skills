@@ -508,6 +508,20 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["sessionId"] for row in SESSIONS.process_sessions(command, {"holder"})], ["holder"])
         self.assertFalse(SESSIONS.process_absence_known(command))
 
+    def test_resume_options_preserve_exact_source_process_observation(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        other = "01a14296-2820-7da0-979b-51f158dfeb7b"
+        for command in (f"codex exec resume --json {source}", f"codex e resume -m model {source}",
+                        f"codex resume --all {source}", f"codex resume --model {other} {source}",
+                        f"codex resume --model={other} {source}"):
+            with self.subTest(command=command):
+                self.assertEqual([row["sessionId"] for row in SESSIONS.process_sessions(command, {source})], [source])
+                self.assertFalse(SESSIONS.process_absence_known(command))
+        for command in (f"codex resume --model {source} {other}", f"codex resume --model={source} {other}",
+                        f"codex resume -i {source} --last", f"codex resume --all {other} -- {source}"):
+            with self.subTest(command=command):
+                self.assertEqual(SESSIONS.process_sessions(command, {source}), [])
+
     def test_resumed_cli_session_is_live_even_without_a_daemon(self):
         for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder", "codex exec resume holder", "codex e resume holder",
                         'codex -c notify=["terminal-notifier", "-message", "hello"] resume holder'):

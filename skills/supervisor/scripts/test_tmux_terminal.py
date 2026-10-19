@@ -365,6 +365,13 @@ class PaneParserTests(unittest.TestCase):
                         patch.object(session_liveness, "inventory", return_value=processes):
                     with self.assertRaises(ValueError):
                         self.terminal.close(self.identity, ledger)
+            for value in (None, False, 0, "789"):
+                with self.subTest(pid=value), patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=self.dead)) as calls:
+                    ledger.write_text(json.dumps([{**entry, "pid": value}]))
+                    with self.assertRaises(ValueError):
+                        self.terminal.close(self.identity, ledger)
+                    self.assertTrue(all(call.args[0] == "list-panes" for call in calls.call_args_list))
 
     def test_redraw_refusal_reports_typed_text_without_sending_return(self):
         row = {"pane_id": "%2", "dead": False, "title": "before"}

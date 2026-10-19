@@ -89,24 +89,62 @@ def harness_arguments(command):
 
 
 def invocation(argv):
+    """Return resume candidates, command kind, and the one unambiguous operand."""
     # Do not reconstruct positional options from ps: one TOML/config value
     # can contain spaces. Scan the native prefix conservatively, rather than
     # losing a real resume behind a fragment of that value. The explicit --
     # prompt separator was already removed by harness_arguments.
     if not argv:
-        return [], None
+        return [], None, None
     family = harness_family(argv[0])
     codex = family == "codex"
     if family is None:
-        return [], None  # Wrappers require their own guarded launch receipt.
+        return [], None, None  # Wrappers require their own guarded launch receipt.
     markers = [i for i, arg in enumerate(argv)
                if arg in {"--resume", "-r"} or codex and arg == "resume"]
-    resumed = [argv[i + 1] for i in markers if i + 1 < len(argv) and not argv[i + 1].startswith("-")]
+    resumed, chosen = [], []
+    # Current native resume help names these value-taking options. Unknown
+    # options and split TOML/image values may supply veto candidates, never an
+    # exact unrelated-session exemption. Do not reconstruct lost argv quoting.
+    values = {"-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env",
+              "-i", "--image", "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox",
+              "-C", "--cd", "--add-dir", "-a", "--ask-for-approval", "--thread-source",
+              "--cyber-access-program", "--output-schema", "-o", "--output-last-message"}
+    for marker in markers:
+        operands = []
+        ambiguous = False
+        if codex and argv[marker] == "resume":
+            ambiguous = any(arg in {"-c", "--config", "-i", "--image"}
+                            or arg.startswith(("--config=", "--image=", "-c", "-i")) for arg in argv[1:marker])
+            index = marker + 1
+            while index < len(argv):
+                arg = argv[index]
+                option, equals, _value = arg.partition("=")
+                if option in values:
+                    ambiguous |= option in {"-c", "--config", "-i", "--image"} or not equals and index + 1 == len(argv)
+                    index += 1 if equals else 2
+                    continue
+                if arg.startswith("-"):
+                    # Attached short-option values are still option data.
+                    attached = len(arg) > 2 and arg[:2] in values
+                    ambiguous |= arg not in {"--all", "--json", "--last"} and not attached
+                    ambiguous |= attached and arg[:2] in {"-c", "-i"}
+                else:
+                    operands.append(arg)
+                index += 1
+        elif marker + 1 < len(argv) and not argv[marker + 1].startswith("-"):
+            operands = [argv[marker + 1]]
+        candidates = operands[:1] + [value for value in operands[1:] if native_uuid(value) is not None]
+        resumed.extend(candidates)
+        if not ambiguous and len(candidates) == 1:
+            chosen.extend(candidates)
     options = [arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume=")]
     resumed.extend(value for value in options if value and not value.startswith("-"))
+    chosen.extend(value for value in options if value and not value.startswith("-"))
     if markers or options or family == "claude" and any(arg in {"-c", "--continue"} for arg in argv[1:]):
-        return resumed, "resume"
-    return [], "exec" if codex and len(argv) > 1 and argv[1] in {"exec", "e"} else None
+        exact = chosen[0] if len(markers) + len(options) == 1 and len(chosen) == len(resumed) == 1 else None
+        return resumed, "resume", exact
+    return [], "exec" if codex and len(argv) > 1 and argv[1] in {"exec", "e"} else None, None
 
 
 def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
@@ -123,9 +161,9 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
             raise ValueError("ledger requires verified pid and tty")
     else:
         tty = tty.removeprefix("/dev/")
-    if not entry.get("_inventory") and (type(entry.get("pid")) is not int or entry["pid"] <= 0):
+    if scope == "session" and not entry.get("_inventory") and (type(entry.get("pid")) is not int or entry["pid"] <= 0):
         raise ValueError("ledger requires verified pid and tty")
-    pids = {entry.get("pid"), entry.get("launch_pid"), entry.get("_terminal_pid")}
+    pids = (entry.get("pid"), entry.get("launch_pid"), entry.get("_terminal_pid"))
     if any(value is not None and (type(value) is not int or value <= 0) for value in pids):
         raise ValueError("ledger requires verified pid and tty")
     same_tty = [row for row in rows if row[1] == tty]
@@ -136,7 +174,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         if pid in pids:
             raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity")
         argv = harness_arguments(command)
-        resumed, command_kind = invocation(argv)
+        resumed, command_kind, exact_resume = invocation(argv)
         identities = [native_uuid(value) or value for value in resumed]
         if scope == "session" and source in identities:
             raise ValueError("source native session is visible in a resumed harness process")
@@ -157,7 +195,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
             harness_family(argv[0]) in ({entry["harness"]} if entry.get("harness") else {"codex", "claude"})
             or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}
         ):
-            explicit_other = len(resumed) == 1 and native_uuid(resumed[0]) is not None
+            explicit_other = native_uuid(exact_resume) is not None
             noninteractive = command_kind == "exec"
             guarded = independent_harness is not None and independent_harness(pid, argv)
             if not (explicit_other or noninteractive or guarded):

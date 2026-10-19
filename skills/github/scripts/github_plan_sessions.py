@@ -240,7 +240,7 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
         argv = shared.harness_arguments(command)
         if not argv or shared.harness_family(argv[0]) != "codex":
             continue
-        resumed, _kind = shared.invocation(argv)
+        resumed, _kind, _exact = shared.invocation(argv)
         identities = {shared.native_uuid(value) or value for value in resumed}
         for session in sorted(sessions):
             if (shared.native_uuid(session) or session) not in identities:
