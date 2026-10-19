@@ -12,8 +12,8 @@ import sys
 from typing import Any, Callable
 
 
-def reconcile(*, repo: str, number: int, request: Callable[..., tuple[str, Any]],
-              actor: str, gh_cmd: str, expected_actor: str | None, operation: str,
+def reconcile(*, repo: str, number: int, request: Callable[..., tuple[str | None, Any]],
+              actor: str | None, gh_cmd: str, expected_actor: str | None, operation: str,
               issue_core: Any) -> dict[str, Any]:
     name = "_github_plan_confirmed_close"
     spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("gh-plan.py"))
@@ -29,9 +29,9 @@ def reconcile(*, repo: str, number: int, request: Callable[..., tuple[str, Any]]
         def bound_request(method, path, body=None, **kwargs):
             try:
                 return request(method, path, body, **kwargs)
-            except plan.github_issue_core.IssueError as error:
-                raise plan.PlanError(str(error), failure=error.failure,
-                                     api_result=error.api_result, payload=error.payload) from error
+            except plan.github_issue_core.IssueError as provider_error:
+                raise plan.PlanError(str(provider_error), failure=provider_error.failure,
+                                     api_result=provider_error.api_result, payload=provider_error.payload) from provider_error
         plan.api_json = bound_request
         plan.comment_route = lambda: (actor, gh_cmd, expected_actor)
         plan.CURRENT_OPERATION = operation
@@ -45,7 +45,7 @@ def reconcile(*, repo: str, number: int, request: Callable[..., tuple[str, Any]]
             failure = getattr(error, "failure", None)
             return {"ok": False, "coverage": "partial", "review_required": True, "issues": [],
                     "error": {"message": str(error), **getattr(error, "payload", {}),
-                              **({"failure": failure.as_dict()} if failure else {})}}
+                              **({"failure": failure.as_dict()} if failure is not None else {})}}
     finally:
         if previous is None:
             sys.modules.pop(name, None)

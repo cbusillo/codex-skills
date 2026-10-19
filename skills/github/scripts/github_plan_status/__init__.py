@@ -26,7 +26,7 @@ def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str,
             for item in relationships["blocked_by"]):
         raise ValueError("Native issue state is incomplete; planning status needs review")
     blockers = [item for item in relationships["blocked_by"] if item["state"].casefold() == "open"]
-    waits = wait["waits"]
+    pending_waits = wait["waits"]
     names = {str(item.get("name", "") if isinstance(item, dict) else item).casefold()
              for item in issue.get("labels", [])}
     held = [key for key in ("stale", "done") if label_names.get(key, "").casefold() in names]
@@ -37,18 +37,18 @@ def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str,
     wait_review = wait["state"] == "review"
     scope_status = (held[0] if held else "unstatused") if scope_hold else None
     if state == "closed":
-        status, labels = "done", ["done", *(["waiting"] if waits or (
+        status, labels = "done", ["done", *(["waiting"] if pending_waits or (
             wait_review and label_names["waiting"].casefold() in names) else [])]
     elif wait_review:
         status, labels = "review", ["blocked"] if blockers else []
     elif scope_hold:
-        status, labels = "hold", held + (["blocked"] if blockers else []) + (["waiting"] if waits else [])
+        status, labels = "hold", held + (["blocked"] if blockers else []) + (["waiting"] if pending_waits else [])
     else:
-        status = "blocked" if blockers else "waiting" if waits else "active"
+        status = "blocked" if blockers else "waiting" if pending_waits else "active"
         labels = [status]
-        if blockers and waits:
+        if blockers and pending_waits:
             labels.append("waiting")
-    return {"status": status, "blocked_by": blockers, "waits": waits, "labels": labels,
+    return {"status": status, "blocked_by": blockers, "waits": pending_waits, "labels": labels,
             "structured_wait": wait, "scope_hold": scope_hold, "scope_status": scope_status,
             "wait_review_required": wait_review,
             "preserve_recorded_waiting": state == "closed" and wait_review,
@@ -78,9 +78,9 @@ def render_status(text: str, derived: dict[str, Any]) -> str:
     blockers = ", ".join(f"{item['repo']}#{item['number']}" for item in derived["blocked_by"])
     if not blockers:
         blockers = "Unknown; native relationships need review." if derived.get("relationships_complete") is False else "None."
-    waits = "; ".join(item["waiting_for"] for item in derived["waits"]) or (
+    waiting = "; ".join(item["waiting_for"] for item in derived["waits"]) or (
         "Review the structured wait record." if derived.get("wait_review_required", derived["status"] == "review") else "None.")
-    return f"State: {derived['status']}.\nBlocked by: {blockers}\nWaiting for: {waits}\n" + prose
+    return f"State: {derived['status']}.\nBlocked by: {blockers}\nWaiting for: {waiting}\n" + prose
 
 
 def label_changes(recorded: list[str], names: Mapping[str, str], derived: dict[str, Any]) -> dict[str, list[str]]:
@@ -100,6 +100,13 @@ def label_changes(recorded: list[str], names: Mapping[str, str], derived: dict[s
 
 def project_labels(recorded: list[str], names: Mapping[str, str], derived: dict[str, Any]) -> list[str]:
     return label_changes(recorded, names, derived)["result"]
+
+
+def same_wait_projection(issue: dict[str, Any], first: dict[str, Any], second: dict[str, Any]) -> bool:
+    # Unknown history authorizes only closed lifecycle cleanup preserving waiting.
+    # Request IDs and retry diagnostics can change without changing that narrow
+    # projection. A newly readable clear/actual wait still requires a fresh run.
+    return first == second or (issue.get("state") == "closed" and first["state"] == second["state"] == "review")
 
 
 def normalize_author(source: dict[str, Any]) -> dict[str, Any]:

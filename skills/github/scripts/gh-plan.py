@@ -3464,7 +3464,7 @@ def cmd_create(args: argparse.Namespace) -> None:
             )
         else:
             completed_steps.append("sync_project")
-    result = {
+    result: dict[str, Any] = {
         "ok": True,
         "actor": actor,
         "expected_actor": issue.get("expected_actor", expected_actor),
@@ -5058,7 +5058,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             seeds[(raw["repo"].casefold(), raw["number"])] = raw
             node = read_node(raw["repo"], raw["number"])
             evaluated_discoveries.append(raw)
-            item = {**node["item"], "source": "repository_discovery"}
+            item: dict[str, Any] = {**node["item"], "source": "repository_discovery"}
             original_exclusion = item.get("exclusion")
             ordinary_discussion_complete = bool((item.get("discussion") or {}).get("complete"))
             held = github_direction_next.repository_hold(selection_context, item["repo"])
@@ -5881,7 +5881,7 @@ def cmd_close(args: argparse.Namespace) -> None:
         close_wait = current_wait(issue, wait_comments, issue_repo)
     except (PlanError, ValueError) as error:
         try:
-            close_wait = github_plan_landing.unread_wait(argparse.Namespace(**globals()), error)
+            close_wait = github_plan_landing.unread_wait(error)
         except PlanError as denied_error:
             record_source_error(denied_error, "wait_read_incomplete", writes_started=False)
             close_wait = {"version": 1, "state": "review", "evidence": str(denied_error), "waits": []}

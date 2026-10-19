@@ -138,11 +138,11 @@ def neighborhood(plan: Any, landing_repo: str, sources: list[tuple[str, int]]) -
     return related
 
 
-def unread_wait(plan: Any, error: Exception) -> dict[str, Any]:
+def unread_wait(error: Exception) -> dict[str, Any]:
     """Keep classified read evidence; a denial never authorizes another write."""
     failure = getattr(error, "failure", None)
     disposition = github_plan_status.failure_disposition(
-        failure.cause if failure else None, failure.write_outcome if failure else None,
+        failure.cause if failure is not None else None, failure.write_outcome if failure is not None else None,
         writes_started=False)
     if disposition["repository_denied"] or disposition["stop_writes"]:
         raise error
@@ -155,26 +155,19 @@ def unread_wait(plan: Any, error: Exception) -> dict[str, Any]:
 def snapshot(plan: Any, repo: str, number: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     _, issue = plan.get_issue(str(number), repo)
     config = plan.load_config(repo)
-    if not planning_issue(plan, issue, config):
+    if not planning_issue(issue, config):
         return issue, config, {"version": 1, "state": "review", "evidence": "Not a planning issue", "waits": []}
     try:
         _, comments = plan.collect_paged_rest_items(
             f"/repos/{repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="landing_comments")
         wait = plan.current_wait(issue, comments, repo)
     except (ValueError, plan.PlanError) as error:
-        wait = unread_wait(plan, error)
+        wait = unread_wait(error)
     return issue, config, wait
 
 
-def planning_issue(plan: Any, issue: dict[str, Any], config: dict[str, Any]) -> bool:
+def planning_issue(issue: dict[str, Any], config: dict[str, Any]) -> bool:
     return github_plan_status.is_planning_issue(issue, config["labels"])
-
-
-def same_wait_projection(issue: dict[str, Any], first: dict[str, Any], second: dict[str, Any]) -> bool:
-    # Unknown history authorizes only closed lifecycle cleanup preserving waiting.
-    # Request IDs and retry diagnostics can change without changing that narrow
-    # projection. A newly readable clear/actual wait still requires a fresh run.
-    return first == second or (issue.get("state") == "closed" and first["state"] == second["state"] == "review")
 
 
 def comment_attention(repo: str, number: int) -> bool:
@@ -195,7 +188,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
         entry.update(status="review_planning_config", next_action="Run from a matching target checkout so its planning configuration can be verified")
         return
     issue, config, wait = snapshot(plan, repo, number)
-    if not planning_issue(plan, issue, config):
+    if not planning_issue(issue, config):
         entry["status"] = "not_planning_issue"
         return
     if issue.get("state") not in {"open", "closed"}:
@@ -229,7 +222,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     # Re-run the observation immediately before a label write; never edit wait records or prose.
     fresh, fresh_config, fresh_wait = snapshot(plan, repo, number)
     _, fresh_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    if (fresh != issue or not same_wait_projection(issue, fresh_wait, wait)
+    if (fresh != issue or not github_plan_status.same_wait_projection(issue, fresh_wait, wait)
             or fresh_relationships != relationships or fresh_config != config):
         raise ValueError("Related planning state changed before reconciliation")
     _, gh_cmd, expected = plan.comment_route()
@@ -245,7 +238,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     expected_names = set(changes["result"])
     if (set(plan.normalize_labels(verified.get("labels"))) != expected_names
             or verified.get("state") != issue["state"] or verified.get("body") != issue.get("body")
-            or not same_wait_projection(issue, verified_wait, wait) or verified_relationships != relationships):
+            or not github_plan_status.same_wait_projection(issue, verified_wait, wait) or verified_relationships != relationships):
         raise ValueError("Related planning readback did not match")
     entry.update(github_plan_status.projection_outcome(derived, "reconciled"))
 
@@ -258,7 +251,7 @@ def reconciliation_error(entry: dict[str, Any], error: Exception) -> tuple[bool,
     if failure is not None:
         entry["error"]["failure"] = failure.as_dict()
     disposition = github_plan_status.failure_disposition(
-        failure.cause if failure else None, failure.write_outcome if failure else None,
+        failure.cause if failure is not None else None, failure.write_outcome if failure is not None else None,
         writes_started=bool(entry.get("writes_started")), validation_error=isinstance(error, ValueError))
     entry["status"] = disposition["status"]
     if disposition["repository_denied"]:
@@ -338,7 +331,7 @@ def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: in
     sources = list(dict.fromkeys([*roots, *timeline]))
     related = neighborhood(plan, repo, roots)
     tasks = []
-    roles = [(key, True) for key in sources if key in roots or key not in related]
+    roles: list[tuple[tuple[str, int], bool]] = [(key, True) for key in sources if key in roots or key not in related]
     roles.extend((key, False) for key in related)
     for (issue_repo, issue_number), is_source in roles:
         entry = {"repo": issue_repo, "number": issue_number,
@@ -359,7 +352,7 @@ def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: in
 def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any], *,
                     apply: bool, entry: dict[str, Any]) -> None:
     issue, config, wait = snapshot(plan, repo, issue_number)
-    if not planning_issue(plan, issue, config):
+    if not planning_issue(issue, config):
         entry["status"] = "not_planning_issue"
         return
     if not plan.issue_body_is_fully_managed(issue):

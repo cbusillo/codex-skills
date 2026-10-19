@@ -18,6 +18,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -26,7 +27,7 @@ import github_plan_wait
 
 SPEC = importlib.util.spec_from_file_location("landing_plan_under_test", Path(__file__).with_name("gh-plan.py"))
 assert SPEC is not None and SPEC.loader is not None
-PLAN = importlib.util.module_from_spec(SPEC)
+PLAN: Any = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = PLAN
 SPEC.loader.exec_module(PLAN)
 REPO = "fixture/catalog"
@@ -53,7 +54,7 @@ def graph(*numbers: int, merged: bool = True, after: str | None = None) -> dict:
 class LandingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = copy.deepcopy(PLAN.DEFAULT_CONFIG)
-        self.issue = {"repo": REPO, "number": 7, "state": "closed", "state_reason": "completed",
+        self.issue: dict[str, Any] = {"repo": REPO, "number": 7, "state": "closed", "state_reason": "completed",
                       "labels": [{"name": self.config["labels"][key]} for key in
                                  ("plan", "active", "waiting", "blocked", "stale")],
                       "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(
@@ -676,7 +677,7 @@ class LandingTests(unittest.TestCase):
         self.labels.assert_not_called()
         for key in ("audit", "own_project"):
             issue = {**self.issue, "labels": [{"name": self.config["labels"][key]}]}
-            self.assertFalse(landing.planning_issue(PLAN, issue, self.config))
+            self.assertFalse(landing.planning_issue(issue, self.config))
 
     def test_incomplete_discovery_and_relationships_never_write(self) -> None:
         PLAN.collect_paged_rest_items.side_effect = PLAN.PlanError("Timeline unavailable")

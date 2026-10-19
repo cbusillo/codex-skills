@@ -1349,6 +1349,13 @@ cmp "$tmpdir/expected-pr-comment-body" "$env_log"
 assert_helper_envelope "$stdout_log" github.comment.pr 'https://github.com/owner/repo/issues/42#issuecomment-7'
 jq -e '.comment_action == "updated" and .comment.id == 7' "$stdout_log" >/dev/null
 
+# Close projection verifies the mocked repository's local configuration.
+# An empty real Git checkout supplies that identity without provider access.
+close_checkout="$tmpdir/close-checkout"
+git init --quiet --template= "$close_checkout"
+git -C "$close_checkout" remote add origin https://github.com/owner/repo.git
+pushd "$close_checkout" >/dev/null
+
 cat >"$tmpdir/record-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1646,6 +1653,7 @@ if [[ -s "$log" ]]; then
 	echo "error: conflicting close modes must fail before calling GitHub" >&2
 	exit 1
 fi
+popd >/dev/null
 
 cat >"$tmpdir/gh-noisy-json" <<'EOF'
 #!/usr/bin/env bash

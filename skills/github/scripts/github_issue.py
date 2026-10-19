@@ -1651,7 +1651,8 @@ def close_projection_diagnostics(payload: dict[str, Any]) -> None:
     payload["diagnostics"] = {"close": close, "projection": phases[1:]}
     payload["attempts"] = sum(phase.get("attempts") or 0 for phase in phases)
     payload["elapsed_wait"] = round(sum(phase.get("elapsed_wait") or 0 for phase in phases), 3)
-    deadlines = [phase["effective_deadline"] for phase in phases if phase.get("effective_deadline")]
+    deadlines = [deadline for phase in phases
+                 if isinstance(deadline := phase.get("effective_deadline"), (int, float)) and deadline]
     if deadlines:
         payload["effective_deadline"] = min(deadlines)
     if len(phases) > 1:

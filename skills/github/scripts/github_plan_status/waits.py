@@ -14,7 +14,7 @@ PREFIX = "<!-- github-plan:wait "
 def trusted_authors(owner: str, *, configured_bots: Iterable[str] = (),
                     automation: str | None = None, expected_actor: str | None = None) -> set[str]:
     """Compose existing author authority; adapters discover identities, never this package."""
-    return {name.casefold() for name in (*configured_bots, owner, automation, expected_actor) if name}
+    return {name.casefold() for name in (*configured_bots, owner, automation, expected_actor) if name is not None and name}
 
 
 def author_is_trusted(source: dict[str, Any], owner: str, *,

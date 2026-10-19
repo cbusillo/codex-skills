@@ -258,7 +258,7 @@ def next_static_exclusion(
 ) -> dict[str, Any] | None:
     state = str(issue.get("state") or "").casefold()
     status = next_plan_status(issue, config)
-    base = {
+    base: dict[str, Any] = {
         **compact_list_issue(str(issue.get("repo") or ""), issue),
         "plan_status": status,
         "focus": focus,
@@ -329,7 +329,7 @@ def evaluate_next_plan(
         return "excluded", {**base, "exclusion": "waiting", "evidence": []}
     if status == "hold":
         return "excluded", {**base, "exclusion": "scope_review_required", "evidence": [],
-                            "scope_status": derived["scope_status"]}
+                            "scope_status": base["derived"]["scope_status"]}
     if status == "review":
         return "excluded", {**base, "exclusion": "wait_review_required", "evidence": [], "wait_review_required": True}
     open_sub_issues = summary["open_sub_issues"]

@@ -9,6 +9,7 @@ from contextlib import redirect_stdout
 import io
 import json
 import unittest
+from typing import Any
 from unittest.mock import Mock, patch
 
 import goal_board
@@ -21,12 +22,12 @@ HEAD = "a" * 40
 OLD = "b" * 40
 
 
-def comment(body, author=BOT, at="2026-10-16T10:00:00Z", ident=1):
+def comment(body, author=BOT, at="2026-10-16T10:00:00Z", ident=1) -> dict[str, Any]:
     return {"url": f"https://example.test/c{ident}", "createdAt": at, "updatedAt": at,
             "databaseId": ident, "body": body, "author": author}
 
 
-def pr(number, state="OPEN", comments=()):
+def pr(number, state="OPEN", comments=()) -> dict[str, Any]:
     return {"number": number, "url": f"https://github.com/owner/app/pull/{number}", "state": state,
             "isDraft": False, "mergeable": "MERGEABLE", "headRefOid": HEAD,
             "comments": {"totalCount": len(comments), "nodes": list(comments)}}
@@ -36,7 +37,7 @@ def status(action, state="Working"):
     return f"## Current Status\n\nState: {state}\nNext action: {action}\nBlocked by: None\n"
 
 
-def child(number, prs=(), comments=(), total_prs=None, state="OPEN", label="plan:active", body=None):
+def child(number, prs=(), comments=(), total_prs=None, state="OPEN", label="plan:active", body=None) -> dict[str, Any]:
     return {"number": number, "title": f"Child {number}", "url": f"https://github.com/owner/app/issues/{number}",
             "state": state, "repository": {"nameWithOwner": "owner/app"},
             "body": (status(f"Child {number} step.") if body is None else body) + "\n" +
@@ -50,7 +51,7 @@ def child(number, prs=(), comments=(), total_prs=None, state="OPEN", label="plan
                                                "nodes": list(prs)}}
 
 
-def track(number, children=(), comments=(), total_children=None):
+def track(number, children=(), comments=(), total_children=None) -> dict[str, Any]:
     return {"number": number, "title": f"Track: {number}", "url": f"https://github.com/owner/direction/issues/{number}",
             "state": "OPEN", "milestone": {"title": f"Milestone {number}"},
             "body": status(f"Track {number} step."), "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": None,
@@ -62,12 +63,12 @@ def track(number, children=(), comments=(), total_children=None):
                           "nodes": list(children)}}
 
 
-def listing(nodes, total=None, next_cursor=None):
+def listing(nodes, total=None, next_cursor=None) -> dict[str, Any]:
     return {"data": {"repository": {"issues": {"totalCount": len(nodes) if total is None else total,
         "nodes": nodes, "pageInfo": {"hasNextPage": next_cursor is not None, "endCursor": next_cursor}}}}}
 
 
-def details(**tracks):
+def details(**tracks) -> dict[str, Any]:
     return {"data": {"repository": tracks}}
 
 

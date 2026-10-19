@@ -1401,7 +1401,7 @@ def test_close_rejects_comment_with_comment_file() -> None:
 
 
 @contextlib.contextmanager
-def generic_close_fixture(*, reject_labels: bool = False):
+def generic_close_fixture(*, reject_labels: bool | str = False):
     """Use the original API mock across the CLI and fresh planning adapter."""
     names = github_plan_status.DEFAULT_STATUS_LABELS
     clear = github_plan_status.wait_records.reviewed(evidence="Dependent discussion fully reviewed")

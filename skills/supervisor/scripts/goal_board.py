@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import sys
 import time
+from typing import Any
 
 CATALOG = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CATALOG))
@@ -157,7 +158,7 @@ def next_action(node, trusted, unread):
     """
     comments = node["comments"]
     body_at = node.get("lastEditedAt") or node["createdAt"]
-    discussion = {"body": node.get("body") or "", "comments": [
+    discussion: dict[str, Any] = {"body": node.get("body") or "", "comments": [
         {"author": login(comment.get("author")), "body": comment.get("body"), "created_at": comment["createdAt"]}
         for comment in comments["nodes"]]}
     in_window = any(comment["author"] in trusted
