@@ -168,6 +168,59 @@ SWITCH_OPTIONS = {"--all", "--json", "--last", "--include-non-interactive", "--s
                   "--ephemeral", "--ignore-user-config", "--ignore-rules", "--help", "-h", "--version", "-V"}
 
 
+def claude_invocation(argv):
+    """Known native option arities establish authority; uncertain tokens only veto."""
+    required = {"--model", "--permission-mode", "--effort", "--agent", "--system-prompt",
+                "--system-prompt-file", "--append-system-prompt", "--append-system-prompt-file",
+                "--settings", "--setting-sources", "--output-format", "--input-format", "--debug-file"}
+    switches = {"--verbose", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
+                "-p", "--print", "-c", "--continue"}
+    candidates, kind, _ = uncertain_invocation(argv)
+    words = list(argv[1:])
+    parsed, index, uncertain, continued = [], 0, False, False
+    while index < len(words):
+        arg = words[index]
+        if arg == "--":
+            break
+        option, equals, value = arg.partition("=")
+        if option in required:
+            if not equals:
+                # Native Commander consumes even a flag-shaped required value.
+                index += 1
+                uncertain |= index == len(words)
+        elif len(arg) > 2 and arg[:2] in {"-r", "-d"} and not arg.startswith("--"):
+            if arg[:2] == "-r":
+                parsed.append(arg[2:])  # Native short attachment preserves a leading '='.
+                kind, uncertain = "resume", True  # Attached resume remains veto only.
+        elif option in {"--resume", "-r", "--debug", "-d"}:
+            if not equals:
+                value = words[index + 1] if index + 1 < len(words) else ""
+                if value and (not value.startswith("-") or value == "-"):
+                    index += 1
+                else:
+                    value = ""
+            if option in {"--resume", "-r"}:
+                kind = "resume"
+                if value:
+                    parsed.append(value)
+                else:
+                    uncertain = True  # A picker does not identify another session.
+        elif arg in switches:
+            continued |= arg in {"-c", "--continue"}
+        elif len(arg) > 2 and arg[:2] in {"-p", "-c"} and not arg.startswith("--"):
+            # Native boolean short options requeue the rest of their cluster.
+            continued |= arg[:2] == "-c"
+            words[index] = "-" + arg[2:]
+            continue
+        else:
+            # Unknown arities and root command/prompt operands cannot grant an
+            # exemption from a later flag that may belong to a subcommand.
+            uncertain = True
+        index += 1
+    exact = parsed[0] if len(parsed) == 1 and not uncertain and not continued else None
+    return list(dict.fromkeys([*candidates, *parsed])), "resume" if continued else kind, exact
+
+
 def uncertain_invocation(argv):
     """Lost boundaries may veto a source, never prove another source or fresh exec."""
     family = harness_family(argv[0]) if argv else None
@@ -175,11 +228,15 @@ def uncertain_invocation(argv):
         return [], None, None
     # A fresh prompt after an explicit separator cannot introduce a command.
     prefix = argv[:argv.index("--")] if "--" in argv else argv
-    direct_resume = family == "codex" and (prefix[1:2] == ["resume"] or prefix[1:3] in (["exec", "resume"], ["e", "resume"]))
-    words = argv if direct_resume else prefix
+    resume_before_separator = family == "codex" and "resume" in prefix[1:]
+    words = argv if resume_before_separator else prefix
     markers = [i for i, arg in enumerate(words) if arg in {"--resume", "-r"} or family == "codex" and arg == "resume"]
     candidates = [value for i in markers for value in words[i + 1:] if value and not value.startswith("-")]
     candidates.extend(arg.split("=", 1)[1] for arg in words if arg.startswith("--resume=") and arg.split("=", 1)[1])
+    if family == "claude":
+        candidates.extend(arg[2:] for arg in words if arg.startswith("-r") and len(arg) > 2)
+        candidates.extend(match.group(1) for arg in words
+                          if (match := re.fullmatch(r"-[pc]+r(.+)", arg)))
     resume = bool(markers or candidates or family == "claude" and any(arg in {"-c", "--continue"} for arg in words[1:]))
     return list(dict.fromkeys(candidates)), "resume" if resume else None, None
 
@@ -187,6 +244,9 @@ def uncertain_invocation(argv):
 def invocation(argv, *, bounded=True):
     """Return source candidates, command kind, and an exact native resume operand."""
     if not bounded:
+        if argv and harness_family(argv[0]) == "claude":
+            candidates, kind, _ = claude_invocation(argv)
+            return candidates, kind, None
         return uncertain_invocation(argv)
     if not argv:
         return [], None, None
@@ -194,13 +254,7 @@ def invocation(argv, *, bounded=True):
     if family is None:
         return [], None, None
     if family == "claude":
-        words = argv[:argv.index("--")] if "--" in argv else argv
-        candidates = [words[i + 1] for i, arg in enumerate(words[:-1])
-                      if arg in {"--resume", "-r"} and not words[i + 1].startswith("-")]
-        candidates.extend(arg.split("=", 1)[1] for arg in words if arg.startswith("--resume=") and arg.split("=", 1)[1])
-        continued = any(arg in {"-c", "--continue"} for arg in words[1:])
-        resumed = continued or bool(candidates) or any(arg in {"--resume", "-r"} for arg in words[1:])
-        return candidates, "resume" if resumed else None, candidates[0] if len(candidates) == 1 and not continued else None
+        return claude_invocation(argv)
 
     last = False
     uncertain = False

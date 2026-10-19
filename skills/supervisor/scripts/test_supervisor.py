@@ -1377,9 +1377,9 @@ class ProcessArgumentsTests(unittest.TestCase):
     source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
     other = "01970242-7941-7f0c-b461-16aa5723fb51"
 
-    def probe(self, argv, *, tty="source-tty", scope="session", guarded=False):
+    def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
-        entry = {"session_id": self.source, "harness": "codex", "pid": 123, "tty": "source-tty"}
+        entry = {"session_id": self.source, "harness": harness, "pid": 123, "tty": "source-tty"}
         with patch.object(session_liveness, "native_arguments", return_value=argv, create=True) as read:
             result = session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
                 ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
@@ -1420,6 +1420,100 @@ class ProcessArgumentsTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "unidentified harness"):
                     session_liveness.verify_process_exit(entry, **kwargs)
                 session_liveness.verify_process_exit(entry, independent_harness=lambda *_args: True, **kwargs)
+
+    def test_uncertain_resume_options_keep_source_operands_after_separator(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "codex", "pid": 123, "tty": "source-tty"}
+        cases = ((["codex", "-m", "M", "resume", "--", self.source], False),
+                 (["codex", "exec", "--json", "resume", "--", self.source], False),
+                 (["codex", "--unlisted-option", "resume", "--", self.source], True))
+        for argv, available in cases:
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(argv=argv, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                for tty in (entry["tty"], "other"):
+                    with self.subTest(tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                            independent_harness=lambda *_args: True)
+                peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
+                self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
+        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+            self.assertEqual(sessions.process_sessions("456 codex -- please resume " + self.source, {self.source}), [])
+
+    def test_claude_attached_resume_supplies_only_source_veto_candidates(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"}
+        for available in (False, True):
+            argv = ["claude", "-r" + self.source]
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                for tty in (entry["tty"], "other"):
+                    with self.subTest(tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                            independent_harness=lambda *_args: True)
+        # The same token can be another option's value. Its addition must not
+        # create unrelated-session authority merely because argv is available.
+        for argv in (["claude", "-r" + self.other], ["claude", "--append-system-prompt", "-r" + self.other]):
+            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv), \
+                    self.assertRaisesRegex(ValueError, "unidentified harness"):
+                session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], " ".join(argv))],
+                    ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+
+    def test_claude_exact_resume_respects_required_values_and_command_position(self):
+        unsafe = (["--append-system-prompt", "--resume", self.other],
+                  ["--append-system-prompt", "-r", self.other],
+                  ["--append-system-prompt", "--resume=" + self.other],
+                  ["--append-system-prompt", "-r" + self.other],
+                  ["-r=" + self.other], ["-pr=" + self.other],
+                  ["--unknown-option", "--resume", self.other],
+                  ["agents", "--resume", self.other],
+                  ["--", "--resume", self.other])
+        for args in unsafe:
+            with self.subTest(args=args), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.probe(["claude", *args], harness="claude")
+        supported = (["--resume", self.other], ["-r", self.other], ["--resume=" + self.other],
+                     ["--model", "synthetic-model", "--resume", self.other],
+                     ["--verbose", "--debug=synthetic-filter", "-r", self.other],
+                     ["--append-system-prompt", "--resume", "--resume", self.other],
+                     ["--append-system-prompt", "-r" + self.source, "--resume", self.other])
+        for args in supported[:-1]:
+            with self.subTest(args=args):
+                self.probe(["claude", *args], harness="claude")
+        # The conservative candidate veto may still see a source in a prompt.
+        # Exact identity parsing itself must consume that option's value.
+        self.assertEqual(session_liveness.invocation(["claude", *supported[-1]])[2], self.other)
+
+    def test_claude_required_separator_value_does_not_hide_real_source_resume(self):
+        argv = ["claude", "--append-system-prompt", "--", "--resume", self.source]
+        with self.assertRaisesRegex(ValueError, "resumed harness"):
+            self.probe(argv, tty="other", guarded=True, harness="claude")
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"}
+        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+            with self.assertRaisesRegex(ValueError, "resumed harness"):
+                session_liveness.verify_process_exit(entry, rows=[(456, "other", " ".join(argv))],
+                    ended_at=cutoff, independent_harness=lambda *_args: True)
+            self.assertIsNone(session_liveness.invocation(["claude", "--resume", self.other], bounded=False)[2])
+
+    def test_claude_boolean_cluster_preserves_resume_veto_but_debug_owns_its_value(self):
+        for available in (False, True):
+            argv = ["claude", "-pr" + self.source]
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+                entry = {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"}
+                for tty in (entry["tty"], "other"):
+                    with self.subTest(tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                            independent_harness=lambda *_args: True)
+        self.assertEqual(session_liveness.invocation(["claude", "-dr" + self.source])[0], [])
+        with self.assertRaisesRegex(ValueError, "unidentified harness"):
+            self.probe(["claude", "-pr" + self.other], harness="claude")
 
     def test_physical_scope_never_reads_argv_identity(self):
         _result, read = self.probe(["codex", "resume", self.source], scope="terminal")
