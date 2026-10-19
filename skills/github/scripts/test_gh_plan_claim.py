@@ -1066,6 +1066,111 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
 
+    def no_pr_resume_fixture(self):
+        self.ordinary_handoff_fixture()
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        self.pulls, self.closed_pulls = [], {}
+        self.inventory.update(local_branches=[source["branch"]], remote_branches=[source["branch"]],
+                              worktrees=[{"branch": source["branch"], "path": "/retained"}])
+        self.comments[-1]["body"] = (
+            f"Released claim {self.args.resume_from}\n\n"
+            f"Preserved pushed WIP on `{source['branch']}`. No PR opened.")
+        self.comments[0]["created_at"] = source["claimed_at"]
+        self.comments[-1]["created_at"] = "2026-10-02T01:00:00Z"
+        return source
+
+    def test_no_pr_handoff_refusal_supplies_existing_resume_route(self):
+        source = self.no_pr_resume_fixture()
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assert_no_writes()
+        route = caught.exception.payload["successor_route"]
+        resumed = PLAN.build_parser().parse_args([
+            "claim", self.args.issue, "--worker", self.args.worker, "--session", self.args.session,
+            "--next-action", self.args.next_action,
+            "--resume-from", str(route["resume_from"]), "--branch", route["branch"]])
+        self.assertEqual(resumed.resume_from, self.args.resume_from)
+        self.assertEqual(resumed.branch, source["branch"])
+        self.assertIsNone(resumed.handoff_comment)
+        self.assertIsNone(resumed.refresh_pr)
+        self.args = resumed
+        self.run_claim()
+        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+
+    def test_no_pr_hint_never_routes_around_a_retained_pr(self):
+        for kind in ("source_open", "foreign_author", "unlinked", "foreign_repo", "named_other_branch", "closed_unmerged"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                pull = {"number": 99, "state": "open", "user": {"login": TEST_BOT},
+                        "body": "Refs #42", "title": "Retained work",
+                        "head": {"ref": source["branch"], "repo": {"full_name": self.args.repo}},
+                        "base": {"repo": {"full_name": self.args.repo}}}
+                if kind != "source_open": self.comments[-1]["body"] += " Retain PR #99."
+                if kind == "foreign_author": pull["user"]["login"] = "stranger"
+                if kind == "unlinked": pull["body"] = "Unrelated"
+                if kind == "foreign_repo": pull["head"]["repo"]["full_name"] = "stranger/repo"
+                if kind == "named_other_branch":
+                    pull["head"]["ref"] = "work/other"
+                    pull["body"] = "Refs #41"
+                if kind == "closed_unmerged":
+                    pull["state"] = "closed"
+                    self.closed_pulls[pull["number"]] = pull
+                else: self.pulls = [pull]
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                self.assertNotIn("successor_route", caught.exception.payload)
+                self.assert_no_writes()
+
+    def test_no_pr_handoff_edit_after_publication_offers_only_claim_recovery(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                def edit_handoff():
+                    next(c for c in self.comments if c["id"] == self.args.handoff_comment)["body"] = (
+                        f"Released claim {self.args.resume_from}\n\nPreserved pushed WIP. No PR opened.")
+                setattr(self, phase, edit_handoff)
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                payload = caught.exception.payload
+                self.assertIn("post", self.events)
+                if phase == "after_status": self.assertIn("status", self.events)
+                self.assertNotIn("successor_route", payload)
+                self.assertEqual(payload["claim_recovery"]["release_own_claim"]["comment_id"],
+                                 payload["claim_comment"]["comment"]["id"])
+
+    def test_no_pr_hint_cannot_redirect_a_native_child(self):
+        self.parent_handoff_fixture()
+        self.target_comments["/repos/owner/repo/issues/41/comments"][-1]["body"] = "Released claim 1\n\nPushed WIP, no PR."
+        self.pulls, self.closed_pulls = [], {}
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assertNotIn("successor_route", caught.exception.payload)
+        self.assert_no_writes()
+
+    def test_no_pr_resume_rechecks_rivals_holds_and_other_artifacts(self):
+        for phase, change in product(("preflight", "after_post", "after_status"),
+                                     ("source", "peer", "claim", "branch", "blocker", "wait")):
+            with self.subTest(phase=phase, change=change):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                self.args.handoff_comment = None
+                self.args.branch = source["branch"]
+                def invalidate():
+                    if change == "source": self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/elsewhere"}]
+                    if change == "peer": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/subdir"}]
+                    if change == "claim": self.compete({**OTHER, "session": "rival"})
+                    if change == "branch": self.inventory["remote_branches"].append("work/issue-42-extra")
+                    if change == "blocker": self.blockers = [{"state": "open"}]
+                    if change == "wait": self.record_wait()
+                if phase == "preflight": invalidate()
+                else: setattr(self, phase, invalidate)
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                if phase == "preflight": self.assert_no_writes()
+                else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
     def parent_handoff_fixture(self):
         self.ordinary_handoff_fixture()
         self.parent = {"number": 41, "state": "open", "html_url": "https://github.com/owner/repo/issues/41"}

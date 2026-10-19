@@ -1255,6 +1255,27 @@ cannot select a source record.
 This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
+For pushed WIP **without a PR**, use that existing same-record resume-only
+route. Native-parent and cross-repository handoffs still require retained-PR
+proof; they cannot adopt no-PR WIP through that route.
+Verify the source session has finished, its exact authored release, that the
+handoff retains no PR at all, and the preserved branch's live remote head and
+local state before claiming.
+Keep unpublished changes intact. Pass the source claim's exact branch as
+`--branch` and its released claim ID as `--resume-from`; omit both
+`--handoff-comment` and `--refresh-pr`. After confirmed success, continue the
+preserved linked worktree under the host's worktree policy. Do not create a
+fresh task branch or fabricate a PR to meet the retained-PR contract.
+This uses the existing source-recovery exception, not a second adoption path.
+Ownership, live peers, issue waits, native blockers and other retained artifacts
+keep their checks; a refusal stops the action for reconciliation.
+During initial preflight only, the no-PR refusal includes `successor_route`
+with the source's `resume_from` and exact `branch` for this same-record case
+with no source-branch or named retained PR. This is guidance, not an automatic
+retry or proof that every PR mention was recognized. Verify the full handoff;
+unparsed or cross-repository PR references are not proof of absence. After
+publication starts, a refusal keeps only the existing claim-recovery action.
+
 For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
 

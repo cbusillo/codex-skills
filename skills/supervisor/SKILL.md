@@ -902,6 +902,10 @@ issue while pending. There is no local rule list.
   spent by the train and its drivers' polling; current measured capacity is
   tracked in
   [codex-skills#1191](https://github.com/cbusillo/codex-skills/issues/1191).
+- Before a planned host restart, have active sessions checkpoint their work
+  and recovery state without releasing their claims, then resume those same
+  sessions afterward. Use successor recovery only when ownership actually
+  changes; a restart alone does not end it.
 - After a host restart, the launcher starts each selected account's Codex
   app-server daemon and names the failure if startup fails. Re-run train
   candidate jobs that a runner shutdown killed (not a code failure), restart the driver, and
