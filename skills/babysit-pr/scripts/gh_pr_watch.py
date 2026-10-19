@@ -10,6 +10,7 @@
 import argparse
 import base64
 import fcntl
+import hashlib
 from contextlib import contextmanager
 import json
 import os
@@ -40,10 +41,6 @@ OWNER_REVIEW_HELPER = os.environ.get("GH_PR_WATCH_OWNER_REVIEW_HELPER") or str(D
 IDENTITY_SCRIPT_DIR = SCRIPT_DIR.parent.parent / "github" / "scripts"
 if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
-# Appended so the Supervisor's helpers never shadow this skill's own imports.
-SUPERVISOR_SCRIPT_DIR = SCRIPT_DIR.parent.parent / "supervisor" / "scripts"
-if str(SUPERVISOR_SCRIPT_DIR) not in sys.path:
-    sys.path.append(str(SUPERVISOR_SCRIPT_DIR))
 import github_api
 import github_identity
 import github_read
@@ -1037,6 +1034,7 @@ def normalize_issue_comments(items):
                 "github_app": item.get("performed_via_github_app"),
                 "author_association": str(item.get("author_association") or ""),
                 "created_at": str(item.get("created_at") or ""),
+                "updated_at": str(item.get("updated_at") or ""),
                 "body": str(item.get("body") or ""),
                 "path": None,
                 "line": None,
@@ -1123,19 +1121,18 @@ def is_external_human_review_author(item, authenticated_login):
 def supervisor_review_report(item, pr):
     """Recognize a Supervisor review of record posted through the automation App.
 
-    Requests, Ready handoffs and the author's weighed disposition stay quiet;
-    only the report itself (receipt or manual heading) is review feedback.
+    Requests, Ready handoffs, status chatter and the author's weighed
+    disposition stay quiet, even with a pasted receipt: only a comment that
+    leads with the report heading is review feedback. The receipt, when
+    present, only binds the request and head.
     """
     if item.get("kind") != "issue_comment" or str(item.get("author") or "").casefold() not in configured_bot_logins():
         return None
-    from pending_reviews import raw_receipt, reported_review
-    from ready_handoff import review_receipt_head
+    from ready_handoff import raw_receipt, reported_review, review_receipt_head
     body = str(item.get("body") or "")
-    if review_receipt_head(body) is not None:
+    if review_receipt_head(body) is not None or not reported_review(body):
         return None
     receipt = raw_receipt(body)
-    if receipt is None and not reported_review(body):
-        return None
     head = receipt["head"] if receipt else None
     return {
         "request": receipt["request"] if receipt else None,
@@ -1289,6 +1286,10 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
     seen_issue = {str(x) for x in state.get("seen_issue_comment_ids") or []}
     seen_review_comment = {str(x) for x in state.get("seen_review_comment_ids") or []}
     seen_review = {str(x) for x in state.get("seen_review_ids") or []}
+    # The Supervisor corrects a report by editing the same comment, so a
+    # report is seen per content version, not per ID. A state file from an
+    # earlier watcher has no fingerprints; its reports surface once more.
+    seen_supervisor_reports = dict(state.get("seen_supervisor_reports") or {})
 
     # On a brand-new state file, surface existing review activity instead of
     # silently treating it as seen. This avoids missing already-pending review
@@ -1337,6 +1338,14 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
             continue
 
         kind = item["kind"]
+        if item.get("source") == "supervisor_review":
+            fingerprint = hashlib.sha256(item["body"].encode()).hexdigest()[:16]
+            if seen_supervisor_reports.get(item_id) == fingerprint:
+                continue
+            new_items.append(item)
+            seen_supervisor_reports[item_id] = fingerprint
+            seen_issue.add(item_id)
+            continue
         if kind == "review_comment" and item.get("thread", {}).get("is_resolved") is True:
             seen_review_comment.add(item_id)
             continue
@@ -1377,6 +1386,7 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
     state["seen_issue_comment_ids"] = sorted(seen_issue)
     state["seen_review_comment_ids"] = sorted(seen_review_comment)
     state["seen_review_ids"] = sorted(seen_review)
+    state["seen_supervisor_reports"] = seen_supervisor_reports
     # Seen means emitted, not acknowledged by an agent. Retain full decisions on
     # every snapshot so a resumed session can recover the prose and its revision.
     state["owner_review_items"] = owner_review_items

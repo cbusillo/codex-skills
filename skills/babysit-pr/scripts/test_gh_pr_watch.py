@@ -944,6 +944,10 @@ REVIEWED_HEAD = "c" * 40
 
 
 def supervisor_receipt_line(head=REVIEWED_HEAD, request_id=4100):
+    # The receipt builder is the Supervisor's; the watcher itself never imports it.
+    supervisor_scripts = str(Path(gh_pr_watch.__file__).resolve().parents[2] / "supervisor" / "scripts")
+    if supervisor_scripts not in sys.path:
+        sys.path.append(supervisor_scripts)
     import pending_reviews
 
     receipt = json.dumps({
@@ -954,12 +958,14 @@ def supervisor_receipt_line(head=REVIEWED_HEAD, request_id=4100):
     return f"<!-- supervisor-review {receipt} -->"
 
 
-def supervisor_report_body(head=REVIEWED_HEAD):
+def supervisor_report_body(head=REVIEWED_HEAD, findings="Findings for the author to weigh."):
+    """The layout pending_reviews --apply posts, with gh-pr's transport marker."""
     import github_api
-    import pending_reviews
+    import ready_handoff
 
-    report = (f"{pending_reviews.REPORT_HEADING}\n\nHead: {head}\n\nFindings for the author to weigh.\n\n"
-              f"{supervisor_receipt_line(head)}\n")
+    report = (f"{ready_handoff.SUPERVISOR_REPORT_HEADING}\n\nHead: {head}\nProvider: openai\nModel: fixture-model\n"
+              "Model source: fixture\nAuthoring session to notify: fixture-session\n\n"
+              f"The author weighs these findings before ready.\n\n{findings}\n\n{supervisor_receipt_line(head)}\n")
     return github_api.body_with_operation_marker(report, "0123abcd")
 
 
@@ -1024,9 +1030,9 @@ def test_supervisor_review_report_for_older_head_is_surfaced_as_stale(monkeypatc
 
 
 def test_manual_supervisor_review_report_is_surfaced_without_receipt_head(monkeypatch):
-    import pending_reviews
+    import ready_handoff
 
-    body = f"{pending_reviews.REPORT_HEADING}\n\nPosted by hand after a helper failure."
+    body = f"{ready_handoff.SUPERVISOR_REPORT_HEADING}\n\nPosted by hand after a helper failure."
     mock_supervisor_comments(monkeypatch, [issue_comment(42, body)])
 
     items = supervisor_watch({})
@@ -1046,18 +1052,49 @@ def quiet_supervisor_body(kind):
         "disposition with pasted receipt": ready_handoff.review_result_body(
             f"Accepted the findings.\n\n{supervisor_receipt_line()}", REVIEWED_HEAD),
         "status chatter": "Completed through PR #123.",
+        "status chatter with pasted receipt": f"Completed through PR #123.\n\n{supervisor_receipt_line()}",
+        "ready handoff with pasted receipt": f"{ready_handoff.handoff_body(REVIEWED_HEAD)}\n\n{supervisor_receipt_line()}",
+        "review request with pasted receipt": f"{request}\n\n{supervisor_receipt_line()}",
         "quoted malformed receipt": "Looking at the earlier marker:\n> <!-- supervisor-review not-json -->",
     }[kind]
 
 
 @pytest.mark.parametrize("kind", [
     "review request", "ready handoff", "weighed disposition", "disposition with pasted receipt",
-    "status chatter", "quoted malformed receipt",
+    "status chatter", "quoted malformed receipt", "status chatter with pasted receipt",
+    "ready handoff with pasted receipt", "review request with pasted receipt",
 ])
 def test_other_supervisor_automation_comments_stay_quiet(monkeypatch, kind):
     mock_supervisor_comments(monkeypatch, [issue_comment(43, quiet_supervisor_body(kind))])
 
     assert supervisor_watch({}) == []
+
+
+def test_corrected_supervisor_review_report_resurfaces_once(monkeypatch):
+    comments = [issue_comment(41, supervisor_report_body())]
+    mock_supervisor_comments(monkeypatch, comments)
+    state = {}
+
+    assert [item["id"] for item in supervisor_watch(state)] == ["41"]
+    assert supervisor_watch(state) == []
+
+    corrected = supervisor_report_body(findings="Corrected: the second finding does not apply.")
+    comments[0] = {**comments[0], "body": corrected, "updated_at": "2026-10-19T13:00:00Z"}
+    items = supervisor_watch(state)
+
+    assert [(item["id"], item["body"]) for item in items] == [("41", corrected)]
+    assert items[0]["updated_at"] == "2026-10-19T13:00:00Z"
+    assert supervisor_watch(state) == []
+
+
+def test_report_seen_by_id_only_surfaces_once_after_upgrade(monkeypatch):
+    # A watcher before content tracking stored only the ID; whether the
+    # report was corrected since is unknown, so it surfaces once more.
+    mock_supervisor_comments(monkeypatch, [issue_comment(41, supervisor_report_body())])
+    state = {"seen_issue_comment_ids": ["41"]}
+
+    assert [item["id"] for item in supervisor_watch(state)] == ["41"]
+    assert supervisor_watch(state) == []
 
 
 def test_supervisor_review_report_from_unconfigured_bot_stays_quiet(monkeypatch):
