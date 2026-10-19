@@ -674,49 +674,63 @@ def read_staging_queue(io, target, state, emit):
         return None
 
 
-def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=(), **detail):
-    """Observe receipts without changing admission or stopping other repositories."""
-    try:
-        pulls = io.pages(f"/repos/{target['repo']}/pulls", state="open") if pulls is None else pulls
-        dispositions = {row['number']: row for row in queue}
-        for pr in pulls:
-            if pr.get('state') != 'open' or pr['base']['ref'] != target['base']:
+def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None, **detail):
+    """Account for unenqueued receipts, without making admission decisions."""
+    failures = (GitHubReadError, GitHubReadShapeError, OSError, ValueError,
+                KeyError, TypeError, AttributeError, subprocess.TimeoutExpired)
+
+    def unavailable(error, **identity):
+        emit("skip_inventory_unavailable", {
+            "repository": target["repo"], "reason": reason,
+            "detail": exception_message(error), **identity,
+        })
+
+    if pulls is None:
+        try:
+            pulls = io.pages(f"/repos/{target['repo']}/pulls", state="open")
+        except failures as error:
+            unavailable(error)
+            return
+    dispositions = {row["number"]: row for row in queue or ()}
+    for pr in pulls:
+        try:
+            if pr.get("state") != "open" or pr["base"]["ref"] != target["base"]:
                 continue
-            row = dispositions.get(pr['number'])
-            reasons = row.get('ineligible_reasons', []) if row else []
-            trusted = set(args.handoff_login)
-            if DEPENDENCY_REVIEW not in reasons:
-                trusted.add(pr['user']['login'].casefold())
+            if target["label"] in {label["name"] for label in pr["labels"]}:
+                continue
+            row = dispositions.get(pr["number"])
+            if row and row.get("head_sha") != pr["head"]["sha"]:
+                row = None
+            reasons = row.get("ineligible_reasons", []) if row else []
+            if row and not reasons:
+                continue
+            author = pr["user"]["login"].casefold()
+            handoff = set(args.handoff_login)
+            trusted = handoff - {author} if DEPENDENCY_REVIEW in reasons else handoff | {author}
             comments = io.pages(f"/repos/{target['repo']}/issues/{pr['number']}/comments")
             if latest_ready(pr, comments, trusted):
-                disposition = reason
-                if reason == 'controller_ineligible':
-                    disposition = ('not_in_controller_queue' if row is None else
-                                   'already_queued' if not reasons else reason)
-                emit('skipped', {
-                    'repository': target['repo'], 'pr': pr['number'],
-                    'head': pr['head']['sha'], 'reason': disposition,
-                    'ineligible_reasons': reasons, **detail,
+                emit("skipped", {
+                    "repository": target["repo"], "pr": pr["number"],
+                    "head": pr["head"]["sha"],
+                    "reason": "not_in_controller_queue" if reason == "controller_ineligible" and row is None else reason,
+                    "controller_admission": "ineligible" if row else "unknown",
+                    "ineligible_reasons": reasons, **detail,
                 })
-    except (GitHubReadError, GitHubReadShapeError, OSError, ValueError,
-            KeyError, TypeError, subprocess.TimeoutExpired) as error:
-        emit('skip_inventory_unavailable', {
-            'repository': target['repo'], 'reason': reason,
-            'detail': exception_message(error),
-        })
+        except failures as error:
+            unavailable(error, pr=pr.get("number"))
 
 
 @contextmanager
 def deferred_skip_reports(io, target, args, emit):
-    """Run extra diagnostic reads after releasing the enqueue/hold-update lock."""
+    """Observe outside the lock only after a normal pass, never while stopping."""
     pending = []
+
     def report(reason, **kwargs):
         pending.append((reason, kwargs))
-    try:
-        yield report
-    finally:
-        for reason, kwargs in pending:
-            report_ready_skips(io, target, args, emit, reason, **kwargs)
+
+    yield report
+    for reason, kwargs in pending:
+        report_ready_skips(io, target, args, emit, reason, **kwargs)
 
 
 def run_pass(io, args, emit, *, state=None):
@@ -860,7 +874,7 @@ def run_pass(io, args, emit, *, state=None):
                             {
                                 "repository": repo,
                                 "pr": pr["number"],
-                        "head": pr["head"]["sha"],
+                                "head": pr["head"]["sha"],
                                 "reason": "file_inventory_changed_or_incomplete",
                             },
                         )
@@ -872,7 +886,7 @@ def run_pass(io, args, emit, *, state=None):
                             {
                                 "repository": repo,
                                 "pr": pr["number"],
-                        "head": pr["head"]["sha"],
+                                "head": pr["head"]["sha"],
                                 "reason": "review_of_record_not_recorded",
                                 "detail": review_gap,
                             },
@@ -894,7 +908,7 @@ def run_pass(io, args, emit, *, state=None):
                         {
                             "repository": repo,
                             "pr": pr["number"],
-                        "head": pr["head"]["sha"],
+                            "head": pr["head"]["sha"],
                             "reason": "current_head_readiness_not_proven",
                         },
                     )

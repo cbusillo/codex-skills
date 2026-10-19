@@ -321,22 +321,52 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.writes, [1])
         self.assertTrue(any(event == 'skip_inventory_unavailable' for event, _ in self.events))
 
-    def test_skip_inventory_distinguishes_existing_and_missing_queue_members(self):
-        fake = Fake(count=3)
-        ready = fake.train(TARGET)
-        ready['result']['dry_run_result']['queue'] = ready['result']['dry_run_result']['queue'][:2]
-        ready['result']['dry_run_result']['queue'][0]['ineligible_reasons'] = []
-        ready['result']['dry_run_result']['queue'][1]['ineligible_reasons'] = [watch.DEPENDENCY_REVIEW]
+    def test_skip_inventory_classifies_queue_members_for_every_outer_reason(self):
+        for reason in ('repository_held', 'controller_busy', 'queue_read_unavailable',
+                       'existing_queue', 'controller_ineligible'):
+            with self.subTest(reason=reason):
+                fake = Fake(count=4)
+                fake.pulls[4]['labels'] = [{'name': TARGET['label']}]
+                queue = fake.train(TARGET)['result']['dry_run_result']['queue'][:2]
+                queue[0]['ineligible_reasons'] = []
+                queue[1]['ineligible_reasons'] = [watch.DEPENDENCY_REVIEW]
+                self.events = []
+                self.args.handoff_login = ['engineer']
+                watch.report_ready_skips(
+                    fake, TARGET, self.args,
+                    lambda event, payload: self.events.append((event, payload)),
+                    reason, pulls=list(fake.pulls.values()), queue=queue,
+                )
+                named = {p['pr']: p for event, p in self.events if event == 'skipped'}
+                self.assertEqual(set(named), {3})
+                self.assertEqual(named[3]['controller_admission'], 'unknown')
+
+    def test_deferred_inventory_never_delays_or_replaces_a_stop(self):
+        for error in (watch.WatchError('enqueue write uncertain'), PermissionError(),
+                      TimeoutError(), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(watch, 'report_ready_skips') as report:
+                    with self.assertRaises(type(error)) as raised:
+                        with watch.deferred_skip_reports(Fake(), TARGET, self.args, Mock()) as schedule:
+                            schedule('controller_busy')
+                            raise error
+                    self.assertIs(raised.exception, error)
+                    report.assert_not_called()
+
+    def test_bad_pr_inventory_does_not_hide_later_ready_handoffs(self):
+        fake = Fake(count=2)
+        pages = fake.pages
+        def read(path, **params):
+            if path.endswith('/1/comments'):
+                raise github_read.GitHubReadShapeError('unavailable')
+            return pages(path, **params)
+        fake.pages = read
         watch.report_ready_skips(
-            fake, TARGET, self.args, lambda event, payload: self.events.append((event, payload)),
-            'controller_ineligible', pulls=list(fake.pulls.values()),
-            queue=ready['result']['dry_run_result']['queue'],
+            fake, TARGET, self.args,
+            lambda event, payload: self.events.append((event, payload)), 'controller_busy',
         )
-        named = {p['pr']: p for event, p in self.events if event == 'skipped'}
-        self.assertNotEqual(named[1]['reason'], named[3]['reason'])
-        self.assertFalse(named[1]['ineligible_reasons'])
-        # A dependency author's own handoff cannot supply the distinct agent review.
-        self.assertNotIn(2, named)
+        self.assertEqual([p['pr'] for event, p in self.events if event == 'skipped'], [2])
+        self.assertTrue(any(event == 'skip_inventory_unavailable' for event, _ in self.events))
 
     def test_staging_qualifies_next_batch_without_changing_published_candidate(self):
         fake = self.staging_fake()
