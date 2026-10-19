@@ -632,6 +632,8 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -
 
 def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], repo: str, number: int) -> list[dict[str, Any]]:
     holders = []
+    diagnostic = next(({"error": c["error"]} for c in conflicts if c.get("error")), {})
+    repair = "Correct the reported native source metadata, then recheck this claim; preserve its artifacts"
     released_ids = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
     for source in comments:
         for record in records(source.get("body") or ""):
@@ -639,11 +641,13 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
                    or c.get("session") == record["session"] or (
                        c.get("branch") == record["branch"] and source.get("id") not in released_ids) for c in conflicts):
                 holders.append({**record, "claim_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{source.get('id')}",
-                                "next_action": "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts"})
+                                "next_action": repair if diagnostic else "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts",
+                                **diagnostic})
     if not holders:
         holders = [{"worker": "unknown", "session": c.get("session", "unknown"),
                     "branch": c.get("branch", "unknown"), "work_record": f"https://github.com/{repo}/issues/{number}",
-                    "next_action": "Identify the artifact's owning native session on the work record and coordinate a handoff; preserve it"}
+                    "next_action": repair if diagnostic else "Identify the artifact's owning native session on the work record and coordinate a handoff; preserve it",
+                    **diagnostic}
                    for c in conflicts]
     return holders
 
@@ -938,7 +942,8 @@ def artifact_evidence(
             conflicts.append({"source": session.get("source", "claude_session"), "session": session.get("sessionId"),
                               "branch": next((t["branch"] for t in inventory["worktrees"]
                                               if pathlib.Path(cwd).is_relative_to(pathlib.Path(t["path"]).resolve())), None),
-                              "state": session.get("state") or session.get("status")})
+                              "state": session.get("state") or session.get("status"),
+                              **({"error": session["error"]} if "error" in session else {})})
     for pull in pulls:
         if pull["number"] == subject_pr:
             continue

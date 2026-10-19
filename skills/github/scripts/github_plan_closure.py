@@ -747,28 +747,31 @@ def source_records(sessions: set[str]) -> dict:
     """Read selected saved identities; only proved absence means first closure."""
     if not sessions:
         return {}
-    for attempt in range(2):
-        try:
-            before = log_identity(closed_log().lstat())
-        except FileNotFoundError:
-            if attempt == 0:
-                return {}
-            raise
-        rows = log_rows()
-        if before != log_identity(closed_log().lstat()):
-            # Another source can atomically replace the shared log while
-            # this source is leased. Read the new generation once.
-            continue
-        from github_plan_sessions import native_helpers
-        normalize = native_helpers()[1].normalize_ledger_entry
-        selected = {}
-        for session in sessions:
-            matches = selected_source_rows(rows, session)
-            if matches:
-                selected[session] = normalize(closed_log(), matches[0])
-        LOG_CACHE.set((before, rows))
-        return selected
-    raise ValueError("closed-session log changed during source verification")
+    try:
+        for attempt in range(2):
+            try:
+                before = log_identity(closed_log().lstat())
+            except FileNotFoundError:
+                if attempt == 0:
+                    return {}
+                raise
+            rows = log_rows()
+            if before != log_identity(closed_log().lstat()):
+                # Another source can atomically replace the shared log while
+                # this source is leased. Read the new generation once.
+                continue
+            from github_plan_sessions import native_helpers
+            normalize = native_helpers()[1].normalize_ledger_entry
+            selected = {}
+            for session in sessions:
+                matches = selected_source_rows(rows, session)
+                if matches:
+                    selected[session] = normalize(closed_log(), matches[0])
+            LOG_CACHE.set((before, rows))
+            return selected
+        raise ValueError("closed-session log changed during source verification")
+    except RuntimeError as error:
+        raise ValueError(f"invalid closed-session source metadata: {error}") from error
 
 
 def log_identity(info: os.stat_result) -> tuple:

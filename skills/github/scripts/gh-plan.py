@@ -2535,7 +2535,8 @@ def _claim_once(args: argparse.Namespace) -> None:
         source_sessions = {record["session"] for c in current_comments
                            for record in github_plan_claim.records(c.get("body") or "")}
         conflicts.extend({"source": peer.get("source", "native_session"), "session": peer["sessionId"],
-                          "certainty": "visible_in_native_inventory"}
+                          "certainty": "visible_in_native_inventory",
+                          **({"error": peer["error"]} if "error" in peer else {})}
                          for peer in inventory["sessions"]
                          if peer.get("sessionId") in source_sessions and peer.get("sessionId") != claim["session"])
         if inventory.get("session_coverage", {}).get("codex_claims", {}).get("observed_source_incomplete"):
@@ -2614,7 +2615,8 @@ def _claim_once(args: argparse.Namespace) -> None:
         branches = {record["branch"] for record in peer_records}
         paths = [pathlib.Path(tree["path"]).resolve() for tree in peer_inventory["worktrees"]
                  if tree["branch"] in branches]
-        competing.extend({"source": "native_child_session", "session": peer["sessionId"]}
+        competing.extend({"source": "native_child_session", "session": peer["sessionId"],
+                          **({"error": peer["error"]} if "error" in peer else {})}
                          for peer in peer_inventory["sessions"]
                          if peer.get("sessionId") in sessions or any(
                              pathlib.Path(peer.get("cwd") or "/").resolve().is_relative_to(path) for path in paths))
@@ -2955,7 +2957,8 @@ def _claim_once(args: argparse.Namespace) -> None:
             if uncertain:
                 refuse(uncertain, owner_comments=source_comments, owner_number=source_number)
         live_sources = [{"source": "source_session", "session": peer["sessionId"],
-                         "certainty": "visible_in_native_inventory"}
+                         "certainty": "visible_in_native_inventory",
+                         **({"error": peer["error"]} if "error" in peer else {})}
                         for peer in target_inventory["sessions"]
                         if peer.get("sessionId") in session_owners.keys() | {source_session}
                         and peer.get("sessionId") != claim["session"]]

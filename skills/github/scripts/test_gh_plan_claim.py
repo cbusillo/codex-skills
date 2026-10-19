@@ -1141,6 +1141,23 @@ class ClaimTests(unittest.TestCase):
             self.assertFalse(closure.action_pending(fixture.session))
             self.assertEqual(closure.source_records({fixture.session})[fixture.session], before)
 
+    def test_unknown_source_claim_refusal_preserves_the_actual_repair_diagnostic(self):
+        from test_github_plan_sessions import ReceiptFixture
+        import github_plan_closure as closure
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as fixture:
+            self.released_native_fixture(fixture)
+            fixture.log.write_text("{")
+            with self.assertRaises(ValueError) as failed_source:
+                closure.source_records({fixture.session})
+            source_error = str(failed_source.exception)
+            with self.assertRaises(PLAN.PlanError) as refusal:
+                self.run_claim()
+            self.assertTrue(any(item.get("error") == source_error
+                                for item in refusal.exception.payload["competing_evidence"]))
+            self.assertTrue(any(item.get("error") == source_error
+                                for item in refusal.exception.payload["coordination"]))
+            self.assertFalse(set(self.events).intersection({"post", "status", "labels"}))
+
     def test_canonical_recovery_distinguishes_unassociated_daemon_from_required_homes(self):
         from datetime import datetime, timezone
         from test_github_plan_sessions import ReceiptFixture

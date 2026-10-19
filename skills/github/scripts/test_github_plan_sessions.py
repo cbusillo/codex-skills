@@ -424,6 +424,10 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
             CLOSURE.replace_rows([{"session_id": f.session, "harness": "codex"}])
         elif kind == "normalization-error":
             CLOSURE.replace_rows([{"session_id": f.session, "harness": "codex", "transcript": "\0"}])
+        elif kind == "unknown-user":
+            f.stack.enter_context(patch("pwd.getpwnam", side_effect=KeyError("fixture account absent")))
+            CLOSURE.replace_rows([{"session_id": f.session, "harness": "codex",
+                                   "transcript": "~q526-missing-user-2285/rollout.jsonl"}])
         elif kind == "ambiguous-unrelated":
             CLOSURE.replace_rows([{"record_kind": "not-a-registration"}])
         elif kind == "absent":
@@ -442,7 +446,7 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
     def test_unknown_shared_source_cannot_resolve_or_record_a_pending_finish(self):
         import github_plan_native as native
         for kind in ("malformed-json", "unsafe-mode", "duplicates", "missing-transcript",
-                     "normalization-error", "ambiguous-unrelated"):
+                     "normalization-error", "unknown-user", "ambiguous-unrelated"):
             for mode in ("apply", "preview", "resolve"):
                 with self.subTest(kind=kind, mode=mode), ReceiptFixture() as f:
                     self.pending(f)
@@ -487,7 +491,7 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
         import github_plan_native as native
         for initial in ("selected", "empty"):
             for kind in ("malformed-json", "unsafe-mode", "duplicates", "missing-transcript",
-                         "normalization-error", "ambiguous-unrelated", "disappeared"):
+                         "normalization-error", "unknown-user", "ambiguous-unrelated", "disappeared"):
                 with self.subTest(initial=initial, kind=kind), ReceiptFixture() as f, ExitStack() as stack:
                     self.pending(f)
                     if initial == "empty":
@@ -512,7 +516,7 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
     def test_observation_keeps_unknown_cleared_resumed_source_live_without_retaining_lease(self):
         import github_plan_native as native
         for moved, queued in ((False, False), (True, True)):
-            for kind in (None, "unsafe-mode", "malformed-json", "duplicates"):
+            for kind in (None, "unsafe-mode", "malformed-json", "duplicates", "unknown-user"):
                 with self.subTest(moved=moved, queued=queued, kind=kind), ReceiptFixture() as f:
                     home = f.root / "retained-account" if moved else f.home
                     transcript = f.add_home(home) if moved else f.transcript
@@ -534,6 +538,9 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                             "input": [{"type": "text", "text": "queued after prior resolution"}]}]
                     if kind is not None:
                         self.source_artifact(f, kind)
+                        with self.assertRaises(ValueError) as failed_source:
+                            CLOSURE.source_records({f.session})
+                        source_error = str(failed_source.exception)
                     source = self.source_bytes(f)
                     lease = CLOSURE.lease_path(f.session).read_bytes()
                     f.home_requests.clear()
@@ -544,15 +551,17 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                         except CLOSURE.LeaseBusy:
                             return False
                     with CLOSURE.admission(), ThreadPoolExecutor(max_workers=1) as pool:
+                        outer_observation = CLOSURE._OBSERVATION.get()
                         peers, states, coverage = f.observe()
+                        self.assertIs(CLOSURE._OBSERVATION.get(), outer_observation)
                         available_after_observe = pool.submit(available).result(2)
                         self.assertEqual(coverage["process_coverage"], "complete")
                         self.assertIn((str(f.home), "thread/queue/list"), f.home_requests)
                         if kind is not None:
                             self.assertEqual(states[f.session]["state"], "live")
-                            self.assertEqual(states[f.session]["source"], "native_recovery")
+                            self.assertEqual(states[f.session]["error"], source_error)
                             self.assertTrue(any(peer.get("sessionId") == f.session
-                                                and peer.get("source") == "native_recovery" for peer in peers))
+                                                and peer.get("error") == source_error for peer in peers))
                         else:
                             self.assertEqual(states[f.session]["state"], "live" if queued else "ended")
                             self.assertIn((str(home), "thread/queue/list"), f.home_requests)
