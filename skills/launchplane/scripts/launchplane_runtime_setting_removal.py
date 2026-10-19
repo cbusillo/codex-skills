@@ -104,7 +104,8 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     if not all(_printable_key(key) for key in keys):
         raise ValueError("invalid_runtime_setting_removal_keys")
     reason = args.reason
-    if not reason.strip() or len(reason) > MAX_REASON:
+    # Readback must repeat the saved reason exactly, so accept what the service accepts.
+    if not reason or len(reason) > MAX_REASON:
         raise ValueError("invalid_runtime_setting_removal_reason")
     body: dict[str, object] = {
         "mode": mode, "product": product, "scope": scope, "context": context,
@@ -133,10 +134,10 @@ def _surviving_keys(h: Any, value: object, drops: Any) -> list[str]:
     if not isinstance(value, list):
         raise h.LaunchplaneSafetyError("invalid_response")
 
-    def validate(name: object) -> str:
-        if not isinstance(name, str) or KEY_RE.fullmatch(name) is None:
+    def validate(candidate: object) -> str:
+        if not isinstance(candidate, str) or KEY_RE.fullmatch(candidate) is None:
             raise h.LaunchplaneSafetyError("invalid_response")
-        return name
+        return candidate
 
     kept: list[str] = []
     for name in value:

@@ -21,7 +21,7 @@ SERVICE = "https://plane.example.invalid"
 PLAN = "a" * 64
 REVIEW = "runtime-removal-" + PLAN
 REASON = "PRIVATE_SENTINEL retire unused settings"
-SCOPE_ARGS = ["--product", "example", "--scope", "context", "--context", "example-testing"]
+SCOPE_ARGS = ("--product", "example", "--scope", "context", "--context", "example-testing")
 
 
 def argv(command=DRY_RUN, *, scope=SCOPE_ARGS, keys=("OLD_FLAG", "LEGACY_URL"), reason=REASON,
@@ -125,7 +125,7 @@ def test_readback_requires_review_binding_arguments(missing):
     (DRY_RUN, {"keys": ("has space",)}),
     (DRY_RUN, {"keys": tuple(f"KEY_{index}" for index in range(removal.MAX_KEYS + 1))}),
     (DRY_RUN, {"reason": "x" * (removal.MAX_REASON + 1)}),
-    (DRY_RUN, {"reason": " "}),
+    (DRY_RUN, {"reason": ""}),
     (READBACK, {"review": "runtime-removal-" + "A" * 64}),
     (READBACK, {"review": PLAN}),
     (READBACK, {"plan": "a" * 63}),
@@ -134,6 +134,12 @@ def test_invalid_arguments_are_refused_before_post(command, kwargs):
     code, output, calls = invoke(argv(command, **kwargs))
     assert code == 2 and output["status"] == "invalid" and calls == []
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+def test_reason_is_sent_exactly_as_the_service_accepts_it():
+    # Readback replays the saved reason, so even a whitespace-only one goes through unchanged.
+    code, _, calls = invoke(argv(reason=" "))
+    assert code == 0 and calls[0].kwargs["body"]["reason"] == " "
 
 
 def test_global_scope_and_max_keys_are_accepted():
