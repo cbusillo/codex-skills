@@ -576,20 +576,12 @@ for products a Client runs business on.
   and the [ready handoff notes contract](../github/references/cli-reference.md#ready-handoffs).
   A no-test reason or explicit engineering marker with release test steps routes
   to ordinary checked `ready`; unmarked steps or anything the Client must approve
-  before merge routes to `--waiting-for-client`. Bring Chris only real judgment calls; never ask him to repeat
+  before merge routes to `--waiting-for-client`. Lead briefs link that contract.
+  Bring Chris only real judgment calls; never ask him to repeat
   an engineering classification the notes already settle. Every release still
   needs the Client's acceptance.
 - On a Client's repositories, Discussions are drafts and issues are requests
   (Q122): read Discussions, act only on issues.
-
-Include this in each Client-product lead brief:
-
-> Classify each PR from its `## Client test notes` using the
-> [ready handoff notes contract](../github/references/cli-reference.md#ready-handoffs).
-> A no-test reason or engineering marker with release test steps uses ordinary
-> checked `ready`. Unmarked steps or anything the Client must approve before
-> merge uses `--waiting-for-client`. Bring Chris only real judgment calls.
-> Every release still needs the Client's acceptance.
 
 ## Milestone State
 

@@ -611,7 +611,7 @@ needs real steps and applies only at the start of its notes section or batch
 member, outside comments and code examples. Every release still needs the
 Client's acceptance; engineering classification grants no release authority.
 
-`github/scripts/github_client_test_notes.py` owns the marker and parser, exported
+`github/scripts/github_plan_status/client_test_notes.py` owns the marker and body-level parser, exported
 by the existing `codex-skills-plan-status` package alongside planning status.
 `ready_handoff.py` re-exports the contract for producer and watcher callers.
 Launchplane's `control_plane/client_test_notes.py` must import this contract from

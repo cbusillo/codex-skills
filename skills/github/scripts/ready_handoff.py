@@ -22,9 +22,9 @@ HEAD = re.compile(
 )
 # Support both standalone helpers and the Supervisor's package-style imports.
 if __package__:
-    from . import github_client_test_notes as notes_contract
+    from .github_plan_status import client_test_notes as notes_contract
 else:
-    import github_client_test_notes as notes_contract
+    from github_plan_status import client_test_notes as notes_contract
 
 ENGINEERING_RELEASE_TESTS = notes_contract.ENGINEERING_RELEASE_TESTS
 NOTHING_TO_TEST = notes_contract.NOTHING_TO_TEST
@@ -33,6 +33,7 @@ INLINE_TEST_NOTES = notes_contract.INLINE_TEST_NOTES
 _markdown_lines = notes_contract._markdown_lines
 _strip_note_decoration = notes_contract._strip_note_decoration
 client_test_notes = notes_contract.client_test_notes
+body_client_test_notes = notes_contract.body_client_test_notes
 owner_test_notes = notes_contract.owner_test_notes
 test_notes_sections = notes_contract.test_notes_sections
 MISSING_CLIENT_TEST_NOTES_MESSAGE = (
@@ -69,7 +70,6 @@ SUPERVISOR_RUNS_REVIEW = re.compile(
 )
 
 
-
 def handoff_line(line):
     """Normalize Ready and renewed waits with the same presentation rules."""
     line = line.strip().removesuffix(".")
@@ -101,7 +101,6 @@ def client_release_repository(repository):
     )
 
     return read_client_release_repository(repository)
-
 
 
 def has_inline_client_test_notes(body: str) -> bool:
@@ -139,19 +138,11 @@ def client_test_notes_error(pr, *, repository="") -> str:
     body = pr.get("body") or ""
     sections = test_notes_sections(body)
     if sections:
-        intent = client_test_notes(
-            owner_test_notes(body), review_override=has_review_label
-        )
+        intent = body_client_test_notes(body, review_override=has_review_label)
         if intent.error:
             if intent.error == "Client test notes are missing.":
                 return MISSING_CLIENT_TEST_NOTES_MESSAGE
             return intent.error
-        for section in (item for item in sections if item):
-            member = client_test_notes(section, review_override=has_review_label)
-            if member.error:
-                if member.error == "Client test notes are missing.":
-                    return MISSING_CLIENT_TEST_NOTES_MESSAGE
-                return member.error
         return ""
     if has_inline_client_test_notes(body):
         return MISSING_CLIENT_TEST_NOTES_MESSAGE
@@ -178,16 +169,12 @@ def requires_client_acceptance(pr, check_runs, *, repository=""):
     sections = test_notes_sections(body)
     if not sections:
         return False
-    non_empty = [section for section in sections if section]
-    if not non_empty:
+    intent = body_client_test_notes(body)
+    if intent.error:
         return True
-    for section in non_empty:
-        intent = client_test_notes(section)
-        if intent.error:
-            return True
-        if intent.review_required:
-            return not (repository and director_standing_acceptance(repository))
-    return False
+    return intent.review_required and not (
+        repository and director_standing_acceptance(repository)
+    )
 
 
 def timestamp(value):

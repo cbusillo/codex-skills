@@ -10,6 +10,7 @@ Client's acceptance through its existing gated path.
 
 import re
 from dataclasses import dataclass
+from collections.abc import Iterator
 
 NOTHING_TO_TEST = "Nothing for the Client to test"
 LEGACY_NOTHING_TO_TEST = "Nothing for the owner to test"
@@ -30,8 +31,7 @@ class ClientTestNotes:
     explicit_override: bool = False
 
 
-
-def _markdown_lines(body: str):
+def _markdown_lines(body: str) -> Iterator[tuple[str, re.Match[str] | None, str]]:
     fence = ""
     for line in body.splitlines():
         fence_match = FENCE.match(line)
@@ -110,7 +110,9 @@ def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTes
     if first == ENGINEERING_RELEASE_TESTS:
         remaining = client_test_notes(steps, review_override=True)
         if remaining.error:
-            return ClientTestNotes(True, remaining.error, review_override)
+            return ClientTestNotes(
+                True, "The engineering marker requires real release test steps.", review_override
+            )
         return ClientTestNotes(review_override, explicit_override=review_override)
     marker = next(
         (
@@ -150,3 +152,15 @@ def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTes
         )
     return ClientTestNotes(True, explicit_override=review_override)
 
+
+def body_client_test_notes(body: str, *, review_override: bool = False) -> ClientTestNotes:
+    """Every notes section and batch member keeps its own acceptance requirement."""
+    members = tuple(
+        client_test_notes(section, review_override=review_override)
+        for section in test_notes_sections(body) if section
+    ) or (client_test_notes("", review_override=review_override),)
+    return ClientTestNotes(
+        any(member.review_required for member in members),
+        next((member.error for member in members if member.error), ""),
+        review_override,
+    )
