@@ -34,6 +34,52 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_source_classification_is_shared_only_within_one_native_snapshot(self):
+        from collections import Counter
+        from test_claim_receipts import history, SESSION as native_session
+        contents = ['COMMAND="uv run /catalog/gh-plan.py --repo test/a claim 12"\nmarker=' + str(i) + '\n'
+                    for i in range(300)]
+        original = helper.claim_receipts.python_ownership
+        for harness in ('codex', 'claude'):
+            rows = history(harness, *({} for _ in contents))
+            for index, content in enumerate(contents):
+                call = rows[1 + index * 2]
+                if harness == 'codex':
+                    call['payload'].update(name='apply_patch', arguments='*** Begin Patch\n*** Add File: /repo/source-' + str(index) + '.py\n'
+                                           + ''.join('+' + line + '\n' for line in content.splitlines()) + '*** End Patch')
+                else:
+                    call['message']['content'][0].update(name='Write', input={'file_path': '/repo/source-' + str(index) + '.py', 'content': content})
+            child = json.loads(json.dumps(rows))
+            if harness == 'codex':
+                child[0]['payload']['id'] = 'child'
+            else:
+                for record in child:
+                    record['sessionId'] = 'child'
+            nodes = [{'session_id': native_session, 'harness': harness, 'records': rows},
+                     {'session_id': 'child', 'harness': harness, 'records': child,
+                      'transcript': '/fixture/child.jsonl', 'digest': helper.claim_history.fingerprint(child)}]
+            entry = {'session_id': native_session, 'harness': harness, '_claim_histories': nodes}
+            self.comments = []
+            seen = Counter()
+            def classify(content, *, partial=False):
+                seen[content, partial] += 1
+                return original(content, partial=partial)
+            with self.subTest(harness=harness), patch.object(helper.sessions, 'discover', return_value=([], [REPO])), \
+                    patch.object(helper.claim_receipts, 'python_ownership', side_effect=classify):
+                first = helper.check(self.reader, [], entry, ACTOR)
+                self.assertTrue(first['claims_clear'], first)
+                counts = {key: count for key, count in seen.items() if key[0] in contents}
+                self.assertEqual({key[0] for key in counts}, set(contents))
+                self.assertTrue(all(count == 1 for count in counts.values()), Counter(counts.values()))
+                second = helper.check(self.reader, [], entry, ACTOR)
+                self.assertEqual(first['claims_clear'], second['claims_clear'])
+                self.assertEqual({key: seen[key] for key in counts}, {key: count * 2 for key, count in counts.items()})
+        fragment, full = helper.claim_receipts.python_source_checks()
+        source = 'import os\ndef run(): os.system("uv run /catalog/gh-plan.py --repo test/a claim 12")\n'
+        self.assertFalse(full(source))
+        self.assertTrue(fragment(source))
+        self.assertFalse(full(source))
+
     def test_native_family_reuses_receipt_parsing_without_reusing_a_later_snapshot(self):
         from test_claim_receipts import history, claim as native_claim, SESSION as native_session
         from test_claim_history import records
@@ -102,10 +148,10 @@ class ClaimCloseoutTests(unittest.TestCase):
                          "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child),
                          "preceding_histories": [{"harness": harness, "records": parent}]}]
                     parsed_shared = []
-                    def parsing(records, family_harness):
+                    def parsing(records, family_harness, **kwargs):
                         if tuple(map(id, records)) == signature:
                             parsed_shared.append(records)
-                        return original(records, family_harness)
+                        return original(records, family_harness, **kwargs)
                     with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])), \
                             patch.object(helper.claim_receipts, "outputs", side_effect=parsing):
                         report = helper.check(self.reader, [], {**entry, "_claim_histories": family}, ACTOR)
@@ -901,9 +947,9 @@ class ClaimCloseoutTests(unittest.TestCase):
             for harness in ("codex", "claude"):
                 now = [1000.0]
                 original_candidates = helper.claim_receipts.ownership_file_candidates
-                def slow_analysis(histories):
+                def slow_analysis(histories, **kwargs):
                     now[0] += 3600
-                    return original_candidates(histories)
+                    return original_candidates(histories, **kwargs)
                 def first_read(path, **kwargs):
                     self.assertGreater(self.reader.deadline_at, now[0])
                     return self.paged(path, **kwargs)

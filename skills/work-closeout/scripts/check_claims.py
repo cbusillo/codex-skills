@@ -178,8 +178,9 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
     # into an all-clear. Use the existing paged, non-search inventory.
     histories = entry.get("_claim_histories") or [{"session_id": entry["session_id"], "harness": entry["harness"],
                                                 "records": entry.get("_transcript_records", [])}]
-    file_candidates = claim_receipts.ownership_file_candidates(histories)
-    states = [claim_receipts.ownership_state(node["records"], node["harness"], file_candidates=file_candidates) for node in histories]
+    python_checks = claim_receipts.python_source_checks()
+    file_candidates = claim_receipts.ownership_file_candidates(histories, python_checks=python_checks)
+    states = [claim_receipts.ownership_state(node["records"], node["harness"], file_candidates=file_candidates, python_checks=python_checks) for node in histories]
     if any(state["pending"] for state in states):
         raise ValueError("ownership command has no terminal native result; wait for it to finish, then launch a new check")
     parsed_prefixes = {}
@@ -188,7 +189,7 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
         # with the result so object identities cannot be recycled in this cache.
         key = (harness, tuple(map(id, records)))
         if key not in parsed_prefixes:
-            parsed_prefixes[key] = (tuple(records), list(claim_receipts.outputs(records, harness)))
+            parsed_prefixes[key] = (tuple(records), list(claim_receipts.outputs(records, harness, python_checks=python_checks)))
         return parsed_prefixes[key][1]
     native_sessions = {node["session_id"] for node in histories}
     expected, errors = [], []

@@ -1090,9 +1090,9 @@ class ReceiptTests(unittest.TestCase):
         programs = (
             ('single', "rows=[]\nfor cmd in [WRITER,'echo safe']:\n print(cmd)\n rows.append(cmd)\nfor cmd in rows: os.system(cmd)", True),
             ('multiple', "rows=[]\nfor cmd in [WRITER,'echo safe']:\n print(cmd,'value',sep=':',end='end',flush=True,file=None)\n rows.append(cmd)\nfor cmd in rows: os.system(cmd)", True),
-            ('invalidsep', "cmd=WRITER\ntry:\n for item in [1]:\n  print(item,sep=[])\n  cmd='echo safe'\nexcept TypeError: pass\nos.system(cmd)", True),
-            ('invalidend', "cmd=WRITER\ntry:\n for item in [1]:\n  print(item,end=[])\n  cmd='echo safe'\nexcept TypeError: pass\nos.system(cmd)", True),
-            ('invalidfile', "cmd=WRITER\ntry:\n for item in [1]:\n  print(item,file='bad')\n  cmd='echo safe'\nexcept AttributeError: pass\nos.system(cmd)", True),
+            ('invalidsep', 'class Value:\n def __str__(self):\n  os.system(WRITER)\n  return "safe"\ntry: print(Value(),sep=[])\nexcept (TypeError,AttributeError): pass', False),
+            ('invalidend', 'class Value:\n def __str__(self):\n  os.system(WRITER)\n  return "safe"\ntry: print(Value(),end=[])\nexcept (TypeError,AttributeError): pass', False),
+            ('invalidfile', 'class Value:\n def __str__(self):\n  os.system(WRITER)\n  return "safe"\ntry: print(Value(),file=\'bad\')\nexcept (TypeError,AttributeError): pass', False),
             ('shadow', "def print(*args): os.system(WRITER)\nfor item in [1]: print('echo safe')", True),
             ('patch', "def record(*args): os.system(WRITER)\nwith patch('builtins.print',record):\n for item in [1]: print('echo safe')", True),
             ('alias', "from builtins import print as display\nfor item in [1]: display('echo safe')", False),
@@ -1105,13 +1105,121 @@ class ReceiptTests(unittest.TestCase):
             ('flushlen', "class Flag:\n def __len__(self):\n  os.system(WRITER)\n  return 0\nprint('safe',flush=Flag())", True),
             ('invalidflush', "class Flag:\n def __bool__(self): return 'invalid'\nclass Destination:\n def write(self,chunk): os.system(WRITER)\ntry: print('safe',file=Destination(),flush=Flag())\nexcept TypeError: pass", False),
             ('invalidfile_str', "class Value:\n def __str__(self):\n  os.system(WRITER)\n  return 'safe'\ntry: print(Value(),file='bad')\nexcept AttributeError: pass", False),
-            ('closed_stdout', "import sys,io\ncmd=WRITER\ntry:\n sys.stdout=io.StringIO()\n sys.stdout.close()\n for item in [1]:\n  print('safe')\n  cmd='echo safe'\nexcept ValueError: pass\nos.system(cmd)", True),
+            ('closed_stdout', 'class Value:\n def __str__(self):\n  os.system(WRITER)\n  return "safe"\nimport sys,io\nsys.stdout=io.StringIO()\nsys.stdout.close()\ntry: print(Value())\nexcept ValueError: pass', True),
         )
         for name, body, expected in programs:
             with self.subTest(consumer=name):
                 self.assert_python_patch_ownership(setup + body, expected)
                 if expected:
                     self.assert_python_patch_ownership((setup + body).replace(writer, 'echo safe'), False)
+
+    def test_generic_python_text_keeps_ownership_scaffolding(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os,sys,shlex\nWRITER=' + repr(writer) + '\n'
+        programs = (
+            ('quoted_argv', 'argv=shlex.split(WRITER)\nos.system(" ".join(shlex.quote(word) for word in argv))'),
+            ('quote', 'cmd=WRITER+sys.argv[1]\nos.system("bash -lc "+shlex.quote(cmd))'),
+            ('ssh', 'cmd=WRITER+sys.argv[1]\nos.system("ssh host "+shlex.quote(cmd))'),
+            ('redirect', 'cmd=WRITER+sys.argv[1]\nos.system(f"{cmd} 2>&1")'),
+            ('exec_repr', 'cmd=WRITER+sys.argv[1]\nexec(f"import os\\nos.system({cmd!r})",{})'),
+            ('str', 'cmd=WRITER+sys.argv[1]\nos.system(str(cmd))'),
+            ('repr', 'cmd=WRITER+sys.argv[1]\nexec("import os\\nos.system("+repr(cmd)+")",{})'),
+            ('overflow_table', 'commands=[WRITER.encode().decode()]\nfor cmd in commands: os.system("bash -lc "+shlex.quote(cmd))'),
+            ('file', 'class Destination:\n def write(self,chunk): os.system(chunk)\ncmd=WRITER+sys.argv[1]\nprint(cmd,file=Destination())'),
+        )
+        for name, body in programs:
+            with self.subTest(conversion=name):
+                self.assert_python_patch_ownership(setup + body, True)
+                self.assert_python_patch_ownership((setup + body).replace(writer, 'echo safe'), False)
+
+    def test_python_text_conversions_follow_actual_callbacks(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os\nWRITER=' + repr(writer) + '\n'
+        programs = (
+            ('print([Value()])', '__repr__'),
+            ('print((Value(),))', '__repr__'),
+            ('print({"key":Value()})', '__repr__'),
+            ('print([{"key":(Value(),)}])', '__repr__'),
+            ('str(Value())', '__str__'),
+            ('repr(Value())', '__repr__'),
+            ('ascii(Value())', '__repr__'),
+            ("f'{Value()}'", '__str__'),
+            ("f'{Value()!s}'", '__str__'),
+            ("f'{Value()!r}'", '__repr__'),
+            ("f'{Value()!a}'", '__repr__'),
+            ("f'{Value():x}'", '__format__'),
+            ('format(Value())', '__str__'),
+            ('format(Value(),"x")', '__format__'),
+            ("'{}'.format(Value())", '__str__'),
+            ("'{:x}'.format(Value())", '__format__'),
+            ("'%s' % Value()", '__str__'),
+            ("'%r' % Value()", '__repr__'),
+            ("'%s:%s' % (Value(),Value())", '__str__'),
+            ("'%(v)s' % {'v':Value()}", '__str__'),
+        )
+        for expression, method in programs:
+            parameters = 'self,spec' if method == '__format__' else 'self'
+            program = (setup + 'class Value:\n def ' + method + '(' + parameters
+                       + '):\n  os.system(WRITER)\n  return "safe"\n' + expression)
+            with self.subTest(expression=expression):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        for expression in ('repr(Value())', 'ascii(Value())', "f'{Value()!r}'", "'x{!r}'.format(Value())", 'shlex.quote(Value())'):
+            program = (setup + 'import shlex\nclass Value:\n def __str__(self):\n  os.system(WRITER)\n  return "safe"\n def __repr__(self): return "safe"\ntry: '
+                       + expression + '\nexcept TypeError: pass')
+            with self.subTest(skipped_str=expression):
+                self.assert_python_patch_ownership(program, False)
+        program = (setup + 'class Value:\n def __str__(self): return 123\nclass Destination:\n def write(self,chunk): os.system(WRITER)\ntry: print(Value(),file=Destination())\nexcept TypeError: pass')
+        self.assert_python_patch_ownership(program, False)
+
+    def test_python_text_conversion_results_are_evaluated_once(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        for expression, method in (('str(Value())', '__str__'), ("f'{Value()}'", '__str__'),
+                                   ("'%s' % Value()", '__str__'), ("'{}'.format(Value())", '__str__'),
+                                   ('repr(Value())', '__repr__')):
+            for owning in (True, False):
+                commands = [writer, 'echo safe'] if owning else ['echo safe', writer]
+                program = ('import os\nseen=' + repr(commands) + '\nclass Value:\n def ' + method
+                           + '(self): return seen.pop(0)\nos.system(' + expression + ')')
+                with self.subTest(expression=expression, owning=owning):
+                    self.assert_python_patch_ownership(program, owning)
+        for expression in ('list(map(str,[Value()]))', 'from builtins import str as display\ndisplay(Value())'):
+            program = ('import os\nWRITER=' + repr(writer) + '\nclass Value:\n def __str__(self):\n  os.system(WRITER)\n  return "safe"\n' + expression)
+            with self.subTest(indirect=expression):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+
+    def test_python_text_conversions_use_class_special_methods(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os\nWRITER=' + repr(writer) + '\n'
+        for expression, method in (('str(value)', '__str__'), ('repr(value)', '__repr__'),
+                                   ('ascii(value)', '__repr__'), ("f'{value:x}'", '__format__'),
+                                   ('print([value])', '__repr__')):
+            for owning in (True, False):
+                parameters = 'self,spec' if method == '__format__' else 'self'
+                body = 'os.system(WRITER)\n  return "safe"' if owning else 'return "safe"'
+                replacement = 'lambda *args: "safe"' if owning else 'lambda *args: os.system(WRITER) or "safe"'
+                program = (setup + 'class Value:\n def ' + method + '(' + parameters + '):\n  '
+                           + body + '\nvalue=Value()\nvalue.' + method + '=' + replacement + '\n' + expression)
+                with self.subTest(expression=expression, owning=owning):
+                    self.assert_python_patch_ownership(program, owning)
+
+        for owning in (True, False):
+            body = 'os.system(WRITER)\n  return False' if owning else 'return False'
+            replacement = 'lambda: False' if owning else 'lambda: os.system(WRITER) or False'
+            program = (setup + 'class Flag:\n def __bool__(self):\n  ' + body
+                       + '\nflag=Flag()\nflag.__bool__=' + replacement + '\nprint("safe",flush=flag)')
+            with self.subTest(flush_class_method=owning):
+                self.assert_python_patch_ownership(program, owning)
+
+        for kind in ('Mock', 'MagicMock'):
+            for method, expression in (('__str__', 'print(value)'), ('__repr__', 'repr(value)'),
+                                       ('__format__', 'format(value,"x")')):
+                program = (setup + 'from unittest.mock import Mock,MagicMock\ndef callback(*args):\n os.system(WRITER)\n return "safe"\nvalue='
+                           + kind + '()\nvalue.' + method + '=Mock(side_effect=callback)\n' + expression)
+                with self.subTest(mock_class=kind, method=method):
+                    self.assert_python_patch_ownership(program, True)
+                    self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
 
     def test_unknown_python_text_stays_uncertain_through_data_consumers(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
@@ -1233,6 +1341,63 @@ class ReceiptTests(unittest.TestCase):
         finally:
             sys.set_int_max_str_digits(previous_limit)
 
+    def test_python_shared_sequence_branches_bound_comparison_work(self):
+        writer = ['uv', 'run', '/catalog/gh-plan.py', '--repo', 'o/r', 'claim', '12']
+        for operation in ('cmd.append(flag)', 'cmd.extend([flag])', 'cmd += [flag]'):
+            counts = []
+            for size in (8, 16):
+                program = ('import subprocess,sys\ncmd=' + repr(writer) + '\n'
+                           + ''.join('if sys.argv[1:]: ' + operation.replace('flag', repr('--flag' + str(index))) + '\n' for index in range(size))
+                           + 'subprocess.run(cmd)')
+                calls = [0]
+                def profile(frame, event, _argument):
+                    if event == 'call' and frame.f_code.co_filename == receipts.__file__:
+                        calls[0] += 1
+                        if counts and calls[0] > counts[0] * 3:
+                            raise AssertionError('optional argument growth exceeds comparison-work bound')
+                previous = sys.getprofile()
+                try:
+                    sys.setprofile(profile)
+                    self.assertTrue(receipts.python_ownership(program))
+                finally:
+                    sys.setprofile(previous)
+                counts.append(calls[0])
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(repr(writer), repr(['echo', 'safe'])), False)
+            with self.subTest(operation=operation):
+                self.assertGreater(counts[0], 0)
+                self.assertLessEqual(counts[1], counts[0] * 3)
+
+    def test_python_sequence_depth_does_not_limit_receipt_coverage(self):
+        writer = ['uv', 'run', '/catalog/gh-plan.py', '--repo', 'o/r', 'claim', '12']
+        conditional = 'if sys.argv[1:]: choice="--draft"\nelse: choice="--verbose"\n'
+        literal = '[' + ','.join([*map(repr, writer), 'choice', *['"extra"'] * (2000 - len(writer) - 1)]) + ']'
+        prefix = 'import subprocess,sys,os\ndef run(argv): subprocess.run(argv)\n'
+        builder = 'cmd=' + repr(writer) + '\n' + 'cmd.append("extra")\n' * 1200
+        programs = (
+            ('literal', conditional + 'run(' + literal + ')'),
+            ('appends', builder + 'run(cmd)'),
+            ('members', builder + 'for word in cmd:\n os.system(word if word.endswith("claim 12") else "echo safe")'),
+            ('exact_data', builder + "exec('import subprocess\\nsubprocess.run('+repr(cmd)+')')"),
+            ('render', builder + 'os.system(" ".join(cmd))'),
+        )
+        for name, body in programs:
+            # The members row needs a complete command rather than argv words.
+            if name == 'members':
+                command = ' '.join(writer)
+                body = ('cmd=[' + repr(command) + ']\n' + 'cmd.append("echo safe")\n' * 1200
+                        + 'for word in cmd: os.system(word)')
+            with self.subTest(carrier=name):
+                program = prefix + body
+                self.assertTrue(receipts.python_ownership(program))
+                if name == 'literal':
+                    safe = program.replace(','.join(map(repr, writer)), ','.join(map(repr, ['echo', 'safe'])))
+                elif name == 'members':
+                    safe = program.replace(repr(command), repr('echo safe'))
+                else:
+                    safe = program.replace(repr(writer), repr(['echo', 'safe']))
+                self.assertFalse(receipts.python_ownership(safe))
+
     def test_python_generators_preserve_full_and_partial_consumption(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
         setup = 'import os, sys\nWRITER=' + repr(writer) + '\n'
@@ -1250,6 +1415,11 @@ class ReceiptTests(unittest.TestCase):
         ]
         for consumer in ('"".join(g)', 'list(g)', 'tuple(g)', 'sorted(g)'):
             forms.append((consumer, builder + 'first=' + consumer + '\nos.system("".join(g))', False))
+            for binding in ('g=a if sys.argv[1:] else b',
+                            'if sys.argv[1:]: g=a\nelse: g=b'):
+                forms.append(('possible_alias_' + consumer + binding,
+                              'a=(x for x in [WRITER])\nb=(x for x in ["echo safe"])\n'
+                              + binding + '\nfirst=' + consumer + '\nos.system("".join(a))', True))
         for name, body, expected in forms:
             with self.subTest(control=name):
                 self.assert_python_patch_ownership(setup + body, expected)
@@ -2272,9 +2442,103 @@ class ReceiptTests(unittest.TestCase):
                 with self.subTest(harness=harness, body=body):
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
 
+    def test_composed_fixture_strings_and_comments_are_not_tool_invocations(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
+        fake = 'text(await tools.exec_command({cmd:`' + writer + '`}));'
+        read = 'text(await tools.exec_command({cmd:"echo safe"}));'
+        patch_text = ('*** Begin Patch\n*** Add File: /repo/fixture.py\n'
+                      '+def fixture():\n+    cell = ' + repr(fake) + '\n*** End Patch')
+        cells = (
+            'const fixture=' + json.dumps(fake) + '; ' + read,
+            'text(await tools.apply_patch(' + json.dumps(patch_text) + ')); ' + read,
+            '// ' + fake + '\n' + read,
+            '/* ' + fake + ' */ ' + read,
+            'const fixture=`text(await tools.exec_command({cmd:"' + writer + '"}));`; ' + read,
+            'const fixture=String.raw`text(await tools.exec_command({cmd:"' + writer + '"}));`; ' + read,
+        )
+        for cell in cells:
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            with self.subTest(cell=cell):
+                self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), ['echo safe'])
+                self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
+        for cell in (
+            '`${await tools.exec_command({cmd:' + json.dumps(writer) + '})}`',
+            'const fixture=' + json.dumps(fake) + '; text(await tools.exec_command({cmd:' + json.dumps(writer) + '}));',
+            'const fixture=' + json.dumps(fake) + '; text(await tools.exec_command({cmd:' + json.dumps(writer + ' &') + '}));',
+            '// inert\u2028text(await tools.exec_command({cmd:' + json.dumps(writer) + '}));',
+        ):
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            with self.subTest(owning_cell=cell):
+                self.assertTrue(receipts.ownership_state(rows, 'codex')['pending'])
+                self.assertTrue(list(receipts.shell_texts('functions.exec', cell)))
+
+    def test_static_composed_templates_bind_only_fresh_native_results(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
+        forms = ('`' + writer + '`', 'String.raw`' + writer + '`',
+                 '`' + writer.replace('gh-plan.py', 'gh-plan\\x2epy') + '`',
+                 '`' + writer.replace('gh-plan.py', 'gh-plan\\u002epy') + '`')
+        for literal in forms:
+            for suffix, pending in (('', False), (' &', True)):
+                command = literal[:-1] + suffix + literal[-1:]
+                cell = 'text(await tools.exec_command({cmd:' + command + '}));'
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(literal=literal, suffix=suffix):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], pending)
+            for cell in (
+                'await tools.exec_command({cmd:' + literal + '});',
+                'text((await tools.exec_command({cmd:' + literal + '})).output);',
+                'text(await tools.exec_command({cmd:' + literal + '}));'
+                + 'await tools.exec_command({cmd:' + literal + '});',
+            ):
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                self.assertTrue(receipts.ownership_state(rows, 'codex')['pending'], cell)
+        rows = history('codex', {})
+        rows[1]['payload'].update(name='functions.exec', arguments=
+            'String.raw=()=>"uv run /catalog/gh-plan.py claim 5"; '
+            'text(await tools.exec_command({cmd:String.raw`echo safe`}));')
+        rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+        self.assertTrue(receipts.ownership_state(rows, 'codex')['pending'])
+        for literal in ('`uv run /catalog/gh-plan.py claim ${number}`',
+                        'String.raw`uv run /catalog/gh-plan.py claim ${number}`',
+                        '`uv run /catalog/gh-plan.py claim 1\\xQZ`'):
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=
+                'text(await tools.exec_command({cmd:' + literal + '}));')
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            self.assertTrue(receipts.ownership_state(rows, 'codex')['pending'], literal)
+
+    def test_composed_strings_preserve_javascript_bytes_and_file_effects(self):
+        for literal, expected in (
+            ('`one\\ntwo`', 'one\ntwo'), ('String.raw`one\\ntwo`', 'one\\ntwo'),
+            ('`echo \\`quiet\\``', 'echo `quiet`'),
+            ('String.raw`echo \\`quiet\\``', 'echo \\`quiet\\`'),
+            ('`echo \\${literal}`', 'echo ${literal}'),
+            ('String.raw`echo \\${literal}`', 'echo \\${literal}'),
+            ('`\\u{1F600} \\uD83D\\uDE00`', '\U0001f600 \U0001f600'),
+            ('`a\r\nb\rc`', 'a\nb\nc'),
+            ('`a\\\nb`', 'ab'), ('String.raw`a\\\nb`', 'a\\\nb'),
+        ):
+            cell = 'text(await tools.exec_command({cmd:' + literal + '}));'
+            with self.subTest(literal=literal):
+                self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), [expected])
+                self.assertEqual(receipts.composed_calls(cell)[0][1]['cmd'], expected)
+        command = "cat > fixture.py <<'PY'\nwriter = 'uv run gh-plan.py claim 1'\nPY"
+        direct = list(receipts.native_file_effects('exec_command', {'cmd': command}))
+        for literal in ('`' + command + '`', 'String.raw`' + command + '`'):
+            cell = 'text(await tools.exec_command({cmd:' + literal + ',workdir:"/repo"}));'
+            self.assertEqual(list(receipts.native_file_effects('functions.exec', cell)),
+                             [dict(effect, cwd='/repo') for effect in direct])
+
     def test_unparsed_composed_ownership_cannot_become_no_ownership(self):
-        for cell in ('text(await tools.exec_command({cmd:`uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json`}));',
-                     'const cmd = "gh pr create --repo client/repo > pr.json"; text(await tools.exec_command({cmd:cmd}));',
+        for cell in ('const cmd = "gh pr create --repo client/repo > pr.json"; text(await tools.exec_command({cmd:cmd}));',
                      'const cmd = "uv run /catalog/gh-pr.py create > pr.json"; text(await tools.exec_command({cmd}));'):
             rows = history("codex", claim(), proof())
             rows[1]["payload"].update(name="functions.exec", arguments=cell)
