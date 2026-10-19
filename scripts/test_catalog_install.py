@@ -1544,6 +1544,7 @@ class UpdateTests(unittest.TestCase):
             both = runtime.update(self.checkout)
             self.assertIn("instruction_refresh", both)
             self.assertIn("alert_refresh", both)
+            self.assertIn("instruction refresh", runtime.status_line(self.checkout))
             # The skipped alert retirement adds its own recovery to the notice.
             receipt = self.checkout / ".local" / "catalog-update.json"
             recorded = json.loads(receipt.read_text())

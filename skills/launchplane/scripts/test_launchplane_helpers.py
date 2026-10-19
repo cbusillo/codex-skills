@@ -1597,6 +1597,7 @@ def test_controller_rejected_response_names_unknown_key(section: str) -> None:
     assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
     assert payload["summary"]["unrecognized_key"] == "historical_stack_child_label_status"
     assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert payload["summary"]["recommendation"]
     assert "private-fixture-value" not in json.dumps(payload)
     assert "another-private-value" not in json.dumps(payload)
 
@@ -1618,6 +1619,7 @@ def test_controller_rejected_response_names_bad_value() -> None:
     assert payload["summary"]["projection_error_code"] == "invalid_response"
     assert payload["warnings"][0]["code"] == "invalid_response"
     assert "unrecognized_key" not in payload["summary"]
+    assert payload["summary"]["recommendation"]
 
 
 def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
@@ -1675,6 +1677,7 @@ def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text(mut
         assert status == 1
         if mutate and (http_status >= 500 or http_status == 408):
             assert payload["status"] == "outcome_unknown"
+            assert payload["summary"]["recommendation"]
         assert payload["summary"]["http_status"] == http_status
         assert payload["summary"]["trace_id"] == response["trace_id"]
         assert payload["summary"]["error_code"] == error_code
@@ -10450,6 +10453,7 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
     assert len(posts) == (0 if phase == "preflight" else 1)
     assert len(gets) == (2 if phase == "readback" else 1)
     if phase != "preflight":
+        assert payload["summary"]["recommendation"]
         assert posts[0]["idempotency_key"] == "apply-1"
     if phase == "readback":
         assert payload["summary"]["trace_id"] == applied["trace_id"]
@@ -10508,6 +10512,8 @@ def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mod
         assert payload["summary"]["http_status"] == fault.http_status
         assert payload["summary"]["trace_id"] == fault["trace_id"]
     assert payload["status"] == expected
+    if expected in {"outcome_unknown", "accepted_unverified"}:
+        assert payload["summary"]["recommendation"]
     assert "private-provider" not in json.dumps(payload)
 
 
@@ -10728,6 +10734,8 @@ def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, 
     mutating = mode == "apply" and phase == "post"
     if mutating:
         assert payload["status"] == ("accepted_unverified" if failure in {"projection", "decoding"} else "denied" if failure == "denial" else "outcome_unknown")
+        if failure in {"gateway", "http_timeout"}:
+            assert payload["summary"]["recommendation"]
         assert code == (0 if failure in {"projection", "decoding"} else 1)
     else:
         assert code == 1
