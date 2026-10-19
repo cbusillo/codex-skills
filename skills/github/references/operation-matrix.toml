@@ -25,7 +25,7 @@ entrypoint = "github/scripts/gh-attachment.py"
 intent = "Save a private comment attachment into private task evidence without exposing credentials or content."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Automation GET repository/comment, Q467 approval and later decision comments; verified personal GET /user and https://github.com/user-attachments/files/{id}/{name}; credential-free HTTPS asset redirects"
+endpoint_or_command = "Automation GET repository/comment, Q467 approval and later decision comments; verified personal GET /user and https://github.com/user-attachments/files/{id}/{name} or https://github.com/user-attachments/assets/{uuid}; credential-free HTTPS asset redirects"
 quota_bucket = "mixed"
 actor_policy = "split_identity_required"
 mutation_class = "read"
@@ -34,7 +34,7 @@ retry_eligibility = "manual"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No GraphQL. Metadata uses the shared reader; a bounded non-retrying binary GET transport never forwards personal credentials to asset hosts."
 source_refs = ["github/scripts/gh-attachment.py:main", "github/scripts/gh-attachment.py:download"]
-test_refs = ["github/scripts/test_github_attachment.py:AttachmentTests"]
+test_refs = ["github/scripts/test_github_attachment.py:AttachmentTests", "github/scripts/test_github_attachment.py:EmbeddedImageTests"]
 
 [[operations]]
 id = "github.app.setup"
@@ -610,7 +610,7 @@ id = "github.director_mentions.search"
 request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
-permission_note = "Read-only search under the Director's own active gh login, which can see private repositories the automation App is not installed in. Runs only with the Director's standing approval (Q455 on cbusillo/codex-skills#2073): an unquoted, unqualified first-line answer by the Director or a recorded Director decision, not withdrawn by a later answer; callers verify it under the automation identity and otherwise report a coverage gap. No writes, no App token, no grants."
+permission_note = "Read-only search under the Director's own active gh login, which can see private repositories the automation App is not installed in. Runs only with the Director's standing approval of the matching mention-search question: an unquoted, unqualified first-line answer by the Director or a recorded Director decision, not withdrawn by a later answer; callers verify it under the automation identity and otherwise report a coverage gap. No writes, no App token, no grants."
 entrypoint = "github/scripts/director_mentions.py"
 intent = "Find threads outside a watched scope that mention the Director, for the Supervisor's foreign watch and the external-comment radar."
 current_transport = "gh_cli_wrapper"
@@ -1001,7 +1001,7 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL; the existing Issues write grant and safe issue/comment probes cover pending POST and exact confirmation PATCH with no profile expansion or identity change. Readback refusal leaves no release authority; unknown writes retain exact record and reconciliation evidence without replay. Matching confirmed receipts are reused, and unchanged closure evidence cannot revive pending attempts. Other claims, waits and retained artifacts remain independent."
-source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:prepare_release", "github/scripts/github_plan_release.py:pending_body", "github/scripts/github_plan_release.py:pending_receipt_for", "github/scripts/github_plan_release.py:check_retained_pr", "github/scripts/github_plan_release.py:effective_comments", "github/scripts/github_comment.py:_comment_impl"]
+source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:parse_release", "github/scripts/github_plan_release.py:validate_source_release", "github/scripts/github_plan_release.py:validate_retained_release", "github/scripts/github_plan_release.py:render_release", "github/scripts/github_plan_release.py:pending_body", "github/scripts/github_plan_release.py:pending_receipt_for", "github/scripts/github_plan_release.py:check_retained_pr", "github/scripts/github_plan_release.py:effective_comments", "github/scripts/github_comment.py:_comment_impl"]
 test_refs = ["github/scripts/test_gh_plan_release.py:test_dependabot_rebase_after_end_does_not_block_release_of_separate_source_branch", "github/scripts/test_gh_plan_release.py:test_pr_release_still_refuses_new_activity_on_claimed_source_branch", "github/scripts/test_gh_plan_release.py:test_pr_claim_release_preserves_separate_repair_pr_linked_by_canonical_pr_url", "github/scripts/test_gh_plan_release.py:test_pr_closed_session_attestation_releases_and_allows_successor", "github/scripts/test_gh_plan_release.py:test_pr_attestation_new_activity_live_peer_or_changed_evidence_refuses", "github/scripts/test_gh_plan_release.py"]
 
 [[operations]]

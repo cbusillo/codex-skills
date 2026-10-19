@@ -79,6 +79,15 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(path, f"repos/{REPO}/issues/comments")
         self.assertLess(foreign_watch.timestamp(params["since"]), foreign_watch.timestamp(SINCE))
 
+    def test_notice_carries_a_bounded_excerpt_of_the_comment(self):
+        reader = Mock()
+        correction = "If I made a mistake on the csv sheet,\n\ncan I send the corrected one?"
+        reader.paged_json.return_value = [comment(body=correction), comment(body="word " * 200)]
+        short, long = self.scan(reader)[0]
+        self.assertEqual(short["excerpt"], "If I made a mistake on the csv sheet, can I send the corrected one?")
+        self.assertTrue(long["excerpt"].startswith("word word"))
+        self.assertLessEqual(len(long["excerpt"]), foreign_watch.EXCERPT_CHARS)
+
     def test_failure_preserves_only_failed_repository_watermark(self):
         reader = Mock()
         reader.paged_json.side_effect = [foreign_watch.GitHubReadShapeError("partial"), []]
@@ -219,9 +228,13 @@ class MentionTests(unittest.TestCase):
         reader = Mock()
         reader.get_json.return_value = {
             "id": 99, "user": {"login": "director"}, "created_at": SINCE,
-            "body": f"{foreign_watch.director_mentions.APPROVAL_QUESTION} yes",
+            "body": "Q100 yes",
             "issue_url": "https://api.github.com/repos/director/meta/issues/7"}
-        reader.paged_json.return_value = []
+        reader.paged_json.return_value = [{
+            "id": 98, "user": {"login": "agent[bot]"}, "created_at": "2026-10-08T00:00:00Z",
+            "body": "Owner question: **Q100** — may the watcher search GitHub for mentions "
+                    "of you under your own login, unattended?",
+            "issue_url": "https://api.github.com/repos/director/meta/issues/7"}]
         args = argparse.Namespace(director_login="director", mention_approval=approval)
         get = get or director_get([mention("client/private", 4), mention(REPO, 1)])
         with patch.object(foreign_watch.director_mentions, "director_get", get):

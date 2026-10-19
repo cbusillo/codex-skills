@@ -7,6 +7,22 @@ export CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 tmpdir="$(mktemp -d)"
+# Sourced by the close fakes: answers the close comment check's reads (native
+# relationships, the closing issue, and the comment radar's thread reads).
+cat >"$tmpdir/gate-reads.sh" <<'EOF'
+case "$*" in
+	*'/dependencies/'* | *'/sub_issues'*) printf '[]\n'; exit 0 ;;
+	'api user') printf '{"login":"fixture-automation"}\n'; exit 0 ;;
+	*'--slurp'*) printf '[[]]\n'; exit 0 ;;
+esac
+if [[ "$*" =~ (^api\ repos|--method\ GET.*\ /repos)/owner/repo/issues/([0-9]+)$ ]]; then
+	number="${BASH_REMATCH[2]}"
+	printf '{"id":90%s,"number":%s,"title":"Issue title","body":"","state":"open","state_reason":null,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"fixture-automation","type":"Bot"},"labels":[],"assignees":[],"milestone":null}\n' \
+		"$number" "$number" "$number"
+	exit 0
+fi
+EOF
+export GH_ISSUE_GATE_READS="$tmpdir/gate-reads.sh"
 export GITHUB_REPO_SNAPSHOT_POLICY_HELPER="$tmpdir/missing-policy.py"
 cleanup() {
 	rm -rf "$tmpdir"
@@ -1364,6 +1380,7 @@ if [[ "$*" == *'--input -'* ]]; then
 	payload="$(cat)"
 fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
+. "$GH_ISSUE_GATE_READS"
 case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
@@ -1429,12 +1446,49 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_
 	>"$stdout_log" 2>"$stderr_log" </dev/null
 
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/90' "$log"
-if grep -q '/comments' "$log"; then
+if grep -q -- '--method POST.*/comments' "$log"; then
 	echo "error: close without a comment must not call the comment REST endpoint" >&2
 	exit 1
 fi
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/90'
 jq -e '.completed_steps == ["close_issue"]' "$stdout_log" >/dev/null
+
+# A Client's comment with no reply since it was posted blocks closure end to
+# end: the real comment radar reads it through the same fake gh route.
+cat >"$tmpdir/unanswered-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+case "$*" in
+	*'/issues/95/comments'*'--slurp'*)
+		printf '[[{"id":951,"node_id":"IC_951","body":"Can I send a corrected sheet?","user":{"login":"client-staff","type":"User"},"created_at":"2026-10-17T17:33:49Z","updated_at":"2026-10-17T17:33:49Z","html_url":"https://github.com/owner/repo/issues/95#issuecomment-951","issue_url":"https://api.github.com/repos/owner/repo/issues/95"}]]\n'
+		exit 0
+		;;
+	'api graphql'*)
+		printf '{"data":{"node":{"lastEditedAt":null,"editor":null,"reactions":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}\n'
+		exit 0
+		;;
+	*'/user'*) printf '{"login":"fixture-automation"}\n'; exit 0 ;;
+esac
+. "$GH_ISSUE_GATE_READS"
+printf 'unexpected gh args: %s\n' "$*" >&2
+exit 1
+EOF
+chmod +x "$tmpdir/unanswered-gh"
+
+: >"$log"
+if GH_ISSUE_GH="$tmpdir/unanswered-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 95 --repo owner/repo --reason completed \
+	>"$stdout_log" 2>"$stderr_log" </dev/null; then
+	echo "error: gh-issue close must refuse over an unanswered outside comment" >&2
+	exit 1
+fi
+assert_failure_envelope "$stdout_log" github.issue.close unanswered_comments close_attention_preflight not_started
+grep -q 'issuecomment-951' "$stdout_log"
+if grep -q -- '--method PATCH\|--method POST' "$log"; then
+	echo "error: a refused close must not write" >&2
+	exit 1
+fi
 
 : >"$log"
 : >"$env_log"
@@ -1496,6 +1550,7 @@ set -euo pipefail
 payload=''
 if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
+. "$GH_ISSUE_GATE_READS"
 case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/12/comments?'*) printf '[]\n' ;;
@@ -1557,6 +1612,7 @@ set -euo pipefail
 payload=''
 if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
+. "$GH_ISSUE_GATE_READS"
 case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/14/comments?'*) printf '[]\n' ;;

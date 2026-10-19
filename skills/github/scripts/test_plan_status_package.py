@@ -42,7 +42,10 @@ class InstalledContractTests(unittest.TestCase):
 from importlib.resources import files
 from github_plan_status import DEFAULT_STATUS_LABELS, derive, label_changes, waits
 from github_plan_status.body import wrap_contributor_plan
+from github_plan_status.workflow_runs import current_workflow_runs, workflow_execution_identity
 from github_plan_status.client_test_notes import ENGINEERING_RELEASE_TESTS, body_client_test_notes, client_test_notes
+assert current_workflow_runs([], 'head')['current'] == []
+assert workflow_execution_identity({}) is None
 notes = ENGINEERING_RELEASE_TESTS + '\\nCheck the imported parts at release.'
 assert not client_test_notes(notes).review_required
 assert client_test_notes(notes, review_override=True).review_required

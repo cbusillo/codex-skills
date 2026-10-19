@@ -42,6 +42,7 @@ from github_plan_body import (
     PLAN_MANAGED_NOTICE as PLAN_MANAGED_NOTICE,
 )
 import github_repository_scope as repository_scope
+import github_close_attention
 import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
@@ -2132,27 +2133,16 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
         f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
         query={}, bucket="rest_core", step_prefix="claim_comments",
     )
-    comments = github_plan_release.effective_comments(comments)
-    for release_comment, receipt in github_plan_release.receipts(comments):
-        valid, evidence = False, None
+    def release_evidence(evidence_repo, _number, evidence_id):
         try:
-            evidence_match = github_plan_release.COMMENT_URL.fullmatch(receipt["evidence_url"])
-            if evidence_match:
-                evidence_repo, evidence_number, evidence_id = evidence_match.groups()
-                _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="claim_release_evidence")
-                if evidence.get("issue_url") == f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
-                    github_plan_release.validate_evidence(receipt, evidence, (release_comment.get("user") or {}).get("login", ""))
-                    valid = True
-        except PlanError as exc:
-            if plan_error_status(exc) not in {403, 404}:
+            _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}",
+                                   bucket="rest_core", failed_step="claim_release_evidence")
+            return evidence
+        except PlanError as error:
+            if plan_error_status(error) not in {403, 404}:
                 raise
-        except (KeyError, TypeError, ValueError):
-            pass
-        if not valid:
-            comments = [github_plan_release.without_release(c) if c.get("id") == release_comment.get("id") else c for c in comments]
-        else:
-            # Evidence may live on another issue; keep the validated copy with its release.
-            comments = [{**c, "_release_evidence": evidence} if c.get("id") == release_comment.get("id") else c for c in comments]
+            return None
+    comments = github_plan_release.verified_comments(comments, release_evidence)
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
     status = sections.get("Current Status", "")
     if "pull_request" in issue:
@@ -2233,18 +2223,19 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             if related_comment is None or related_id == args.claim_comment:
                 raise PlanError("Related ownership comment is missing or repeats the structured source")
             related_comments.append(related_comment)
-        source_branch = github_plan_release.source_record(source, **legacy_options)["branch"]
-        github_plan_release.termination.verify_attestation(
-            getattr(args, "termination_record", None), evidence.get("body") or "",
-            github_plan_release.source_record(source, **legacy_options)["session"])
-        # Check source identity, closure and native peers before a retained-PR
-        # refusal can be classified as independent issue work.
         if expected_actor is None:
             raise PlanError("Release requires the configured source automation identity")
+        facts = github_plan_release.parse_release(source, evidence, actor=expected_actor,
+            role=args.role, releaser_session=args.session, **legacy_options)
+        source_branch = facts.record["branch"]
+        github_plan_release.termination.verify_attestation(
+            getattr(args, "termination_record", None), evidence.get("body") or "",
+            facts.record["session"])
+        # Check source identity, closure and native peers before a retained-PR
+        # refusal can be classified as independent issue work.
+        checked_paths = github_plan_release.validate_source_release(facts, source_comments, source_inventory,
+            retained_prs=args.retained_pr, related=related_comments)
         issue_refusal = None
-        github_plan_release.prepare_release(source, evidence, source_comments, source_inventory,
-            actor=expected_actor, role=args.role, releaser_session=args.session,
-            evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related_comments, **legacy_options)
         branch_query = ({"state": "all", "head": f"{source_issue['repo'].split('/')[0]}:{source_branch}"}
                         if legacy_options["legacy"] else {"state": "open"})
         _, open_pulls = collect_paged_rest_items(f"/repos/{source_issue['repo']}/pulls", query=branch_query,
@@ -2263,7 +2254,6 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         if subject_pr or legacy_options["legacy"]:
             # The claim's branch identifies source-session activity. A separate
             # Dependabot work-record branch may advance after that session ends.
-            ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
             source_ref = None
             try:
                 _, source_ref = api_json("GET",
@@ -2277,7 +2267,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 _, source_commit = api_json("GET",
                     f"/repos/{source_issue['repo']}/commits/{source_ref['object']['sha']}",
                     bucket="rest_core", failed_step="release_claim_branch_commit")
-                if github_plan_release.stamp(source_commit["commit"]["committer"]["date"]) >= github_plan_release.stamp(ended[0]):
+                if github_plan_release.stamp(source_commit["commit"]["committer"]["date"]) >= facts.cutoff:
                     raise PlanError("Claimed source branch has commit activity after the cited session-ended evidence")
         checked_prs = list(dict.fromkeys([*args.retained_pr, *branch_prs, *([subject_url] if subject_pr else [])]))
         retained_branches = set()
@@ -2287,24 +2277,19 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 raise PlanError("Retained PR must be an exact same-repository PR URL")
             _, pull = api_json("GET", f"/repos/{source_issue['repo']}/pulls/{match.group(2)}", bucket="rest_core", failed_step="release_retained_pr")
             retained_branches.add(pull["head"]["ref"])
-            ended = re.findall(r"(?m)^Ended at: (\S+)$", evidence.get("body") or "")
-            if len(ended) != 1:
-                raise PlanError("Closed-session attestation must record Ended at")
             _, head_commit = api_json("GET", f"/repos/{source_issue['repo']}/commits/{pull['head']['sha']}", bucket="rest_core", failed_step="release_retained_head")
             try:
                 github_plan_release.check_retained_pr(pull, head_commit, repo=source_issue["repo"],
-                    number=source_issue["number"], actor=expected_actor, ended=ended[0],
+                    number=source_issue["number"], actor=expected_actor, ended=facts.cutoff.isoformat(),
                     subject_pr=source_issue["number"] if subject_pr else None, source_branch=source_branch,
                     allow_closed_unmerged=legacy_options["legacy"])
             except github_plan_release.IssueReleaseRefusal as retained_error:
                 issue_refusal = retained_error
-        release_actor = expected_actor
-        if release_actor is None:
-            raise PlanError("Release requires the configured source automation identity")
-        release_body = github_plan_release.prepare_release(source, evidence, source_comments, source_inventory,
-            actor=release_actor, role=args.role, releaser_session=args.session,
-            evidence_url=args.evidence_comment, retained_prs=args.retained_pr, related=related_comments,
-            checked_prs=checked_prs, retained_branches=retained_branches, **legacy_options)
+        github_plan_release.validate_retained_release(facts, source_inventory,
+            retained_branches=retained_branches, checked_paths=checked_paths)
+        release_body = github_plan_release.render_release(facts,
+            evidence_url=args.evidence_comment, retained_prs=args.retained_pr,
+            related=related_comments, checked_prs=checked_prs)
         if issue_refusal is not None:
             raise issue_refusal
         return source_issue, source_comments, source_inventory, release_body, related_comments
@@ -2779,6 +2764,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         permitted = github_plan_claim.retained_handoff(
             source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
             issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
+            allow_resume_only=source_number == number and not completed,
         )
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
@@ -3172,7 +3158,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                    "previous_current_status": previous_status, "claim_recovery": claim_recovery(),
                    "claim_comment": claim_comment, "session_coverage": inventory.get("session_coverage", {})}
         if isinstance(exc, github_plan_claim.ClaimProofError):
-            raise ClassifiedPlanError(exc.code, str(exc), payload=payload) from exc
+            raise ClassifiedPlanError(exc.code, str(exc), payload={**exc.payload, **payload}) from exc
         raise PlanError(str(exc), payload=payload) from exc
     except PlanError as exc:
         exc.payload.update({"completed_steps": completed, "claim": claim, "claim_comment": claim_comment,
@@ -5620,6 +5606,28 @@ def close_error_with_recovery(
     )
 
 
+def close_attention_preflight(
+    issue_repo: str, number: int, issue: dict[str, Any], decision_url: str | None, gh_cmd: str,
+) -> dict[str, Any]:
+    try:
+        return github_close_attention.check(issue_repo, number, issue=issue, decision_url=decision_url,
+                                            gh_cmd=gh_cmd)
+    except github_close_attention.CloseAttentionError as exc:
+        raise PlanError(
+            str(exc),
+            failure=github_api_core.FailureDetail(
+                cause=exc.cause,
+                message="closure needs every outside comment answered, or the Director's decision",
+                retryable=False,
+                fallback_eligible=False,
+                disposition="stop",
+                write_outcome="not_started",
+                failed_step="close_attention_preflight",
+            ),
+            payload={"close_attention": exc.payload},
+        ) from exc
+
+
 def cmd_close(args: argparse.Namespace) -> None:
     trigger = None
     if getattr(args, "reopen_trigger", None) is not None:
@@ -5656,6 +5664,8 @@ def cmd_close(args: argparse.Namespace) -> None:
     close_comment = read_body(args) if args.body is not None or args.body_file else ""
     plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
+    close_attention = close_attention_preflight(issue_repo, number, issue, getattr(args, "unanswered_decision", None),
+                                                gh_cmd)
     actor = issue_actor
     completed_steps: list[str] = []
     comment_result: dict[str, Any] = {}
@@ -6010,6 +6020,7 @@ def cmd_close(args: argparse.Namespace) -> None:
         "comment": public_comment or None,
         "project": project_result,
         "relationship_preflight": relationship_preflight,
+        "close_attention": close_attention,
         "planning_config": planning_config,
         "completed_steps": completed_steps,
     })
@@ -6597,6 +6608,8 @@ def build_parser() -> argparse.ArgumentParser:
     trigger_options.add_argument("--clear-reopen-trigger", metavar="EVIDENCE", help="Retire a handled reopen trigger and its discovery label")
     p.add_argument("--planning-checkout", help="Target repository checkout for planning metadata outside automatic discovery")
     p.add_argument("--reason", help="Closure reason (default completed; trigger-only updates preserve an already-closed reason)")
+    p.add_argument("--unanswered-decision", metavar="COMMENT_URL",
+                   help="The Director's comment on this issue, or a Director decision record they approved, to close over unanswered outside comments")
     p.add_argument("--comment", dest="body")
     p.add_argument("--comment-file", dest="body_file")
     p.add_argument("--owner")

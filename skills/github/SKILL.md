@@ -1061,6 +1061,9 @@ the landing route:
   `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
   An attention result or degraded coverage needs a response or explicit
   handoff first; a bot response never proves Director acknowledgement.
+  `gh-plan.py close` and `gh-issue close` refuse over an unanswered outside
+  comment on the issue or a thread it links; see
+  [Planning: Management](references/cli-reference.md#planning-management).
 
 For an authorized direct GitHub merge, when the user does not name a method,
 say you are using a normal merge commit and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--method squash`

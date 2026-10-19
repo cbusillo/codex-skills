@@ -45,6 +45,9 @@ def load_plan_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # These fakes model closure, not the comment radar; test_github_close_attention.py,
+    # test_gh_plan_close_config.py and validate-gh-issue.sh cover the close comment check.
+    module.close_attention_preflight = lambda *_args, **_kwargs: {"result": "passed"}
     module._fixture_original_comment_collector = module.collect_paged_rest_items
     return module
 
