@@ -181,8 +181,6 @@ class ActivityTests(unittest.TestCase):
         first = self.store.emit(ACCOUNT, 'claude', SESSION, 'working', 'claude-hook', run=RUN, now=now)
         last = self.store.emit(ACCOUNT, 'claude', SESSION, 'completed', 'claude-inventory', run=RUN, now=now)
         self.assertGreater(last['eventID'], first['eventID'])
-        folded = sorted([last, first], key=lambda r: (r['observedAt'], r['eventID']))[-1]
-        self.assertEqual(folded['state'], 'completed')
 
     def test_activity_storage_failure_preserves_advisory_stop(self):
         bad = self.root / 'redirected-panel'

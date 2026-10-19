@@ -15431,10 +15431,8 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
                 self.assertEqual(unresolved["reason"], "ownership_route_unavailable")
                 self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
                 self.assertTrue(self.selected_path.exists())
-                if name == "opening":
-                    self.assertIn("already_opening", unresolved["next_action"])
-                if name == "ambiguous_open_request":
-                    self.assertIn("did not acknowledge", unresolved["next_action"])
+                if name in {"opening", "ambiguous_open_request"}:
+                    self.assertEqual(unresolved["open_probe"], {"status": status, "reason": reason})
                 if name == "plugin_without_probe":
                     # An older plugin would treat the probe as a real open request.
                     http_get.assert_not_called()

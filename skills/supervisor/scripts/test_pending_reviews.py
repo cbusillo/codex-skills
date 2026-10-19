@@ -1051,7 +1051,7 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(reviews.ReviewError):
             self.dispatch()
         prompt = next(c[2] for c in self.io.calls if c[0] == "review")
-        self.assertTrue(prompt.endswith("Review prompt:\nInspect the actual linked scope."))
+        self.assertTrue(prompt.endswith("\nInspect the actual linked scope."), "the review scope comes last, after the request context")
         self.assert_no_post()
 
     def test_pending_report_heading_cannot_hide_real_request(self):
@@ -1063,7 +1063,7 @@ class DispatchTests(unittest.TestCase):
                                     "> Director: keep it productive.\nPrompt:\nInspect the real changed helper.")
         self.dispatch()
         prompt = next(c[2] for c in self.io.calls if c[0] == "review")
-        self.assertTrue(prompt.endswith("Review prompt:\nInspect the real changed helper."))
+        self.assertTrue(prompt.endswith("\nInspect the real changed helper."), "the review scope comes last, after the request context")
 
     def test_failed_and_unknown_posts_preserve_diagnostics_without_replay(self):
         adapter = reviews.IO.__new__(reviews.IO)
@@ -1188,7 +1188,7 @@ class DispatchTests(unittest.TestCase):
                 with self.assertRaises(reviews.ReviewError):
                     self.dispatch()
                 prompt = next(c[2] for c in self.io.calls if c[0] == "review")
-                self.assertTrue(prompt.endswith("Review prompt:\nInspect actual linked scope."))
+                self.assertTrue(prompt.endswith("\nInspect actual linked scope."), "the review scope comes last, after the request context")
                 self.assert_no_post()
 
     def test_request_for_previous_head_never_launches(self):

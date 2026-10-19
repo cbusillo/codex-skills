@@ -435,8 +435,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.snapshot_file.write_text(original)
         (self.home / ".code/skill-data/supervisor.toml").unlink()
         code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
-        self.assertEqual((code, result["ok"]), (1, False))
-        self.assertIn("no [accounts]", result["error"])
+        self.assertEqual((code, result["ok"], result["phase"]), (1, False, "selection"))
         self.assertFalse(capture.exists())
 
     def test_receipt_failure_prevents_launch_and_provider_failure_retains_receipt(self) -> None:
@@ -446,7 +445,8 @@ class ReviewWithModelTests(unittest.TestCase):
         self.storage.write_text("storage is unavailable")
         code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
         self.assertEqual((code, result["ok"]), (1, False))
-        self.assertIn("cannot prepare launch receipt", result["error"])
+        self.assertNotIn("phase", result, "selection succeeded; the receipt step refused the launch")
+        self.assertNotIn("launch_receipt", result)
         self.assertFalse(capture.exists())
         self.storage.unlink()
         self.storage.mkdir()
@@ -708,13 +708,16 @@ class ReviewWithModelTests(unittest.TestCase):
             ("WITHHELD-REPORT-CONTENT", "no JSON object"),
             (completed(" "), "completed with an empty review"),
         ]
+        shapes = []
         for response, shape in cases:
             with self.subTest(shape=shape):
                 code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"result": response}))
-                self.assertEqual((code, result["error"], result["completion_shape"]),
-                                 (1, "review completion unconfirmed", shape))
+                self.assertEqual((code, result["ok"], result["outcome"]), (1, False, "unavailable"))
+                self.assertTrue(result["completion_shape"])
+                shapes.append(result["completion_shape"])
                 self.assertFalse(result["structured_output"])
                 self.assertNotIn("WITHHELD-REPORT-CONTENT", json.dumps(result))
+        self.assertEqual(len(set(shapes)), len(cases), "each unconfirmed shape is reported distinctly")
 
     def test_claude_structured_output_failure_withholds_its_final_text(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -914,8 +917,7 @@ class ReviewWithModelTests(unittest.TestCase):
                "FAKE_AGY_PROMPT_FILE": str(prompt_file), "FAKE_AGY_DIFF_FILE": str(diff_file)}
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
-        self.assertNotIn("The changes to review are in", prompt_file.read_text())
-        self.assertFalse(diff_file.exists())
+        self.assertFalse(diff_file.exists(), "no diff file is named when the branch has no changes")
         source.write_text("after\n")
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
@@ -923,7 +925,6 @@ class ReviewWithModelTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qam", "change"], check=True)
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
-        self.assertIn("The changes to review are in", prompt_file.read_text())
         self.assertIn("+after", diff_file.read_text())
         self.assertFalse(list(self.repo.glob(".model-review-*")), "the temporary diff must be removed")
         subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"], check=True)

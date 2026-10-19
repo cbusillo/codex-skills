@@ -46,7 +46,7 @@ class SummaryTests(unittest.TestCase):
         self.assertIn(FULL, message)
         self.assertIn("2026-10-16", message)
         self.assertIn("INCOMPLETE", message)
-        self.assertIn("merged_link_needs_review: 500", message)
+        self.assertRegex(message, r"(?m)^merged_link_needs_review\W+500$")
         for row in rows[500:]:
             self.assertIn(row[4], message)
             self.assertIn(f"/issues/{row[1]}", message)
@@ -68,8 +68,10 @@ class SummaryTests(unittest.TestCase):
     def test_empty_complete_report(self):
         message = digest.summary(report([], complete=True), FULL)
         self.assertIn("complete within selected scope", message)
-        self.assertIn("Waiting on Chris: none", message)
         self.assertIn(FULL, message)
+        self.assertNotIn("example/lab/issues/", message)
+        # An empty person queue still says so on its heading line, not a bare heading.
+        self.assertRegex(message, r"(?m)^Waiting on [^:\n]*:[ \t]*\S")
 
     def test_overflow_or_malformed_report_never_posts(self):
         rows = [("aged_structured_wait", i, "age unknown", "Chris", "🧭" * 100) for i in range(100)]

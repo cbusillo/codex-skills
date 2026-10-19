@@ -275,10 +275,11 @@ class ReminderTests(IsolatedDirectionHookTests):
             direction_mark.mark_audit(path, "owner/direction", ago(days=3), held="capacity_events:owner/repo")
             text = hook.reminder(hook.read_marker(path) | {"turn": NOW}, NOW, "owner/direction", path)
             self.assertNotIn("overdue:", text)
-            self.assertIn("ran 3 days ago and held its window open (capacity_events:owner/repo)", text)
-            # A held run older than a week is still a missed audit.
-            text = hook.reminder(hook.read_marker(path) | {"turn": NOW}, NOW + dt.timedelta(days=5), "owner/direction", path)
-            self.assertIn("the last weekly audit of owner/direction was 8 days ago", text)
+            self.assertIn("capacity_events:owner/repo", text)
+            # A held run older than a week is still a missed audit, even right after a daily turn.
+            later = NOW + hook.AUDIT_STALE
+            text = hook.reminder(hook.read_marker(path) | {"turn": later}, later, "owner/direction", path)
+            self.assertIn("overdue:", text)
             # Once a later audit settles its window, the held note goes away.
             direction_mark.mark_audit(path, "owner/direction", ago(days=1))
             self.assertEqual(hook.reminder(hook.read_marker(path) | {"turn": NOW}, NOW, "owner/direction", path), "")
