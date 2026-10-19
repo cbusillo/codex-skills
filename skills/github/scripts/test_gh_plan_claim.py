@@ -3675,6 +3675,41 @@ class ClaimTests(unittest.TestCase):
                     self.assertTrue(pool.submit(available).result(2))
                 self.assertFalse(f.mutations)
 
+    def test_released_claude_closed_row_allows_reused_tty_but_preserves_live_peer_veto(self):
+        import uuid
+        from datetime import datetime, timedelta, timezone
+        from test_github_plan_sessions import ReceiptFixture
+        observe = CLAIM.observe_sessions
+        closure = PLAN.github_plan_closure
+        for live in (False, True):
+            with self.subTest(live=live), ReceiptFixture(str(uuid.uuid4())) as f:
+                self.setUp()
+                f.transcript.write_text(json.dumps({"sessionId": f.session, "type": "assistant",
+                    "timestamp": "2026-10-01T02:00:00Z", "message": {"stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "Safe to exit: yes"}]}}) + "\n")
+                closure.replace_rows([])
+                closed = f.release.record_closure(f.log, {**f.entry, "harness": "claude"}, "supervisor")
+                born = datetime.fromisoformat(closed["ended_at"]) + timedelta(microseconds=1)
+                f.process_rows = [(456, f.entry["tty"], "claude")]
+                f.commands = "456 claude"
+                f.rpc_results["thread/loaded/list"] = {"data": [], "nextCursor": None}
+                f.rpc_results["thread/read"] = ValueError("fixture has no Codex thread for this Claude ID")
+                source = {**OTHER, "session": f.session}
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(source), "user": {"login": TEST_BOT}, "created_at": source["claimed_at"]},
+                    {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T03:00:00Z"}]
+                self.observe_inventory = observe
+                if live: self.inventory["sessions"] = [{"sessionId": f.session, "source": "claude_session"}]
+                with patch.object(closure, "process_started_at", return_value=min(born, datetime.now(timezone.utc))):
+                    if live:
+                        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                        self.assert_no_writes()
+                    else:
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                        with closure.resume_guard(f.session): pass
+                self.assertFalse(f.mutations)
+
     def test_admission_freezes_leased_ownership_observed_only_on_family_peer(self):
         import uuid
         from test_github_plan_sessions import ReceiptFixture

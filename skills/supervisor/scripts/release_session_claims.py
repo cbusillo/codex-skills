@@ -181,6 +181,19 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
         return _record_closure(path, entry, supervisor_session, persist=persist, native=native)
 
 
+def _closure_identity(entry):
+    identity = {key: entry.get(key) for key in (
+        "pid", "tty", "harness", "supervisor_owned", "handoff_url", "transcript", "codex_home",
+        "launch_pid", "launch_generation", "launch_started_at",
+        "tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id")}
+    for key in ("transcript", "codex_home"):
+        if identity[key]:
+            identity[key] = str(Path(identity[key]).expanduser().resolve())
+    if isinstance(identity["tty"], str):
+        identity["tty"] = identity["tty"].removeprefix("/dev/")
+    return identity
+
+
 def _record_closure(path, entry, supervisor_session, *, persist=True, native=None):
     """Observe exit now; never replace an older actual closure time on retry."""
     with closure.store_lock(path, create=persist):
@@ -205,6 +218,8 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
                     release.stamp(status["status"]["turn_completed_at"]) > release.stamp(existing[0]["ended_at"])
                     for status in native["snapshot"]["transcripts"].values())
         if later:
+            if _closure_identity(entry) != _closure_identity(existing[0]):
+                raise ValueError("finish needs the new launch metadata from codex-session.py status")
             entry = {**existing[0], **entry}
             for key in ("ended_at", "verdict_at", "resumed_at", "closure_evidence"):
                 entry.pop(key, None)
@@ -221,9 +236,9 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
         records = [r for r in records if r["session_id"] != entry["session_id"]]
         existing = []
     if existing:
-        if any(existing[0].get(k) != entry.get(k) for k in (
-            "pid", "tty", "harness", "handoff_url", "supervisor_owned"
-        )) or Path(existing[0]["transcript"]).resolve() != Path(entry["transcript"]).resolve():
+        saved_identity, current_identity = _closure_identity(existing[0]), _closure_identity(entry)
+        if any(saved_identity[key] != current_identity[key] for key in (
+                "pid", "tty", "harness", "handoff_url", "supervisor_owned", "transcript")):
             raise ValueError("closure log identity changed; preserve the original record")
         closed = {**existing[0], **{k: v for k, v in entry.items() if k.startswith("_")}}
         validate_closure(closed, supervisor_session, native=native, process=process)
@@ -234,7 +249,8 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
             if recovered and persist:
                 # Preserve the actual original end time. An optional admission
                 # fingerprint can be recomputed later; never restore the stale one.
-                closure.replace_rows([closed if row.get("session_id") == entry["session_id"] else row for row in current])
+                durable = {key: value for key, value in closed.items() if not key.startswith("_")}
+                closure.replace_rows([durable if row.get("session_id") == entry["session_id"] else row for row in current])
         return closed
     # Keep the generation's verified process cutoff even when a later turn
     # replaces its closure time. Native proof may have outlived the dead pane.

@@ -197,8 +197,12 @@ class NativeQueueTests(unittest.TestCase):
                                         {"type": "agent_message", "message": "Safe to exit: yes"},
                                         {"type": "task_complete", "turn_id": "later-safe-turn"}):
                             stream.write(json.dumps({"type": "event_msg", "timestamp": later, "payload": payload}) + "\n")
+                    alias = f.root / "alias-account"
+                    alias.symlink_to(f.home, target_is_directory=True)
+                    entry.update(codex_home=str(alias), transcript=str(alias / "sessions" / f.transcript.name),
+                                 tty="/dev/" + f.entry["tty"])
                 f.native_state = "notLoaded"
-                f.process_rows = [(456, entry["tty"], "unrelated-worker")]
+                f.process_rows = [(456, f.entry["tty"], "unrelated-worker")]
                 reads = []
                 def panes():
                     reads.append(True)
@@ -227,8 +231,11 @@ class NativeQueueTests(unittest.TestCase):
             pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
                     "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
                     "dead": True, "exited_at": cutoff.isoformat()}
-            with patch.object(tmux_terminal.Terminal, "list", return_value=[pane]):
+            with patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
+                    patch.object(CLOSURE, "evidence", side_effect=ValueError("fixture optional receipt unavailable")):
                 closed = f.release.record_closure(f.log, entry, "supervisor")
+            f.native_state = "notLoaded"
+            self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
             native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
             with patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
                 f.managed(native)
@@ -273,6 +280,79 @@ class NativeQueueTests(unittest.TestCase):
             with patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)), self.assertRaises(ValueError):
                 f.release.record_closure(f.log, entry, "supervisor")
             self.assertTrue(CLOSURE.action_pending(f.session))
+            self.assertFalse(f.mutations)
+
+    def test_later_safe_turn_cannot_publish_changed_caller_identity_with_old_cutoff(self):
+        import uuid
+        for field in ("pid", "tty", "harness", "transcript", "codex_home", "launch_pid", "launch_generation", "launch_started_at", "supervisor_owned",
+                      "tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id"):
+            with self.subTest(field=field), ReceiptFixture(str(uuid.uuid4())) as f:
+                with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
+                later = datetime.now(timezone.utc).isoformat()
+                with f.transcript.open("a") as stream:
+                    for payload in ({"type": "task_started", "turn_id": "later-safe-turn"},
+                                    {"type": "agent_message", "message": "Safe to exit: yes"},
+                                    {"type": "task_complete", "turn_id": "later-safe-turn"}):
+                        stream.write(json.dumps({"type": "event_msg", "timestamp": later, "payload": payload}) + "\n")
+                entry = dict(f.entry)
+                if field in {"pid", "launch_pid"}: entry[field] = 456
+                elif field == "harness": entry[field] = "claude"
+                elif field == "supervisor_owned": entry[field] = False
+                elif field == "launch_started_at": entry[field] = later
+                elif field == "codex_home": entry[field] = str(f.root / "other-account")
+                elif field == "transcript":
+                    alias = f.transcript.with_name("other-copy.jsonl")
+                    alias.write_bytes(f.transcript.read_bytes())
+                    entry[field] = str(alias)
+                else: entry[field] = "other-generation-or-tty"
+                if field == "pid": f.process_rows = [(entry[field], "other-tty", "new-unchecked-worker")]
+                before = CLOSURE.source_records({f.session})[f.session]
+                with self.assertRaises(ValueError): f.release.record_closure(f.log, entry, "supervisor")
+                self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+                self.assertFalse(f.mutations)
+
+    def test_recovered_closure_keeps_runtime_flags_transient(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            original = CLOSURE.source_records({f.session})[f.session]
+            with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
+            runtime = {"_transcript_roots": [str(f.transcript.parent)], "_backfill": True}
+            closed = f.release.record_closure(f.log, {**f.entry, **runtime}, "supervisor")
+            self.assertEqual(closed["ended_at"], original["ended_at"])
+            self.assertFalse(CLOSURE.action_pending(f.session))
+            persisted = CLOSURE.source_records({f.session})[f.session]
+            self.assertTrue(set(runtime).isdisjoint(persisted))
+            f.process_rows = [(456, f.entry["tty"], "old-unrelated-command")]
+            with patch.object(CLOSURE, "process_started_at", return_value=datetime.fromisoformat(original["ended_at"]) - timedelta(seconds=1)), self.assertRaises(ValueError):
+                f.release.validate_closure(persisted, "supervisor")
+            self.assertFalse(f.mutations)
+
+    def test_pending_observation_carries_cutoff_into_native_proof_when_pane_disappears(self):
+        import uuid
+        from github_plan_sessions import native_helpers
+        native_helpers()
+        import tmux_terminal
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
+            entry = {**f.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                     "window_id": "$1", "tab_id": "@1"}
+            CLOSURE.replace_rows([])
+            with patch.object(tmux_terminal.Terminal, "list", return_value=[]):
+                f.release.record_closure(f.log, entry, "supervisor")
+            metadata = {key: entry[key] for key in ("codex_home", "launch_pid", "launch_generation", "launch_started_at")}
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), entry["tty"])
+            pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                    "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                    "dead": True, "exited_at": cutoff.isoformat()}
+            f.native_state = "notLoaded"
+            f.process_rows = [(456, entry["tty"], "unrelated-worker")]
+            panes = iter(([pane], []))
+            with patch.object(tmux_terminal.Terminal, "list", side_effect=lambda: next(panes, [])), \
+                    patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
+                _, states, _ = f.observe()
+            self.assertEqual(states.get(f.session, {}).get("state"), "ended")
+            self.assertFalse(CLOSURE.action_pending(f.session))
             self.assertFalse(f.mutations)
 
     def test_pending_canonical_events_committed_by_either_fence_are_rechecked(self):
@@ -629,14 +709,27 @@ class NativeQueueTests(unittest.TestCase):
         import uuid
         with ReceiptFixture(str(uuid.uuid4())) as f:
             other = f.root / "other-account"
+            copied = f.add_home(other)
             with CLOSURE.ownership(f.session):
                 CLOSURE.set_action_pending(f.session, True)
                 floor = CLOSURE.action_time(f.session)
-                CLOSURE.set_action_pending(f.session, True, method="turn/start", home=other)
-                scope = CLOSURE.action_homes(CLOSURE.lease_state(f.session))
-                self.assertEqual(scope["known"], [str(other)])
-                self.assertTrue(scope["unscoped"])
+                later = datetime.now(timezone.utc).isoformat()
+                with f.transcript.open("a") as stream:
+                    for payload in ({"type": "task_started", "turn_id": "fresh-source-turn"},
+                                    {"type": "agent_message", "message": "Safe to exit: yes"},
+                                    {"type": "task_complete", "turn_id": "fresh-source-turn"}):
+                        stream.write(json.dumps({"type": "event_msg", "timestamp": later, "payload": payload}) + "\n")
+                CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
                 self.assertEqual(CLOSURE.action_time(f.session), floor)
+                # The earlier unscoped action still needs a fresh safe turn in
+                # the other authenticated home, despite this new scoped action.
+                with self.assertRaises(ValueError): asyncio.run(NATIVE.prove_end(f.entry))
+                self.assertTrue(CLOSURE.action_pending(f.session))
+                copied.write_bytes(f.transcript.read_bytes())
+                proof = asyncio.run(NATIVE.prove_end(f.entry))
+                NATIVE.resolve_pending(f.session, proof)
+                self.assertFalse(CLOSURE.action_pending(f.session))
+            self.assertFalse(f.mutations)
 
     def test_large_escaped_queue_input_uses_request_sized_ack_and_returns_no_input(self):
         import uuid

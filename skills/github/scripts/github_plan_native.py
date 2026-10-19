@@ -427,11 +427,12 @@ def current_facts(value):
     return result
 
 
-async def prove_end(entry, request=None):
+async def prove_end(entry, request=None, *, process=None):
     """Return immutable read facts; the owner clears its barrier after awaiting."""
     session = entry["session_id"]
     action = closure.lease_state(session)
-    before = await asyncio.to_thread(source_snapshot, entry)
+    before = (await asyncio.to_thread(source_snapshot, entry) if process is None else
+              await asyncio.to_thread(source_snapshot, entry, process))
     async with AsyncExitStack() as connections:
         readers = {}
         for home in before["homes"]:

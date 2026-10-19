@@ -87,11 +87,11 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
             if state not in {"idle", "notLoaded"}:
                 live(session, thread)
                 return
-            await asyncio.to_thread(github_plan_native.verify_source_process, source)
+            process = await asyncio.to_thread(github_plan_native.verify_source_process, source)
             with github_plan_closure.pending_observation(session) as acquired:
                 if not acquired:
                     return
-                proof = await github_plan_native.prove_end(source, request)
+                proof = await github_plan_native.prove_end(source, request, process=process)
                 # This write stays in the async lease owner, after all worker reads.
                 github_plan_native.resolve_pending(session, proof)
                 peers[:] = [peer for peer in peers if peer["sessionId"] != session]

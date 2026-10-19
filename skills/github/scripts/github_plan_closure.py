@@ -219,7 +219,7 @@ def observation(sessions: set[str], *, retain: set[str] | None = None):
                 # its own actions and approvals still need that lease.
                 if action_pending(session) or candidates.get(session, {}).get("resumed_at"):
                     continue
-                if session in candidates:
+                if candidates.get(session, {}).get("harness") == "codex":
                     from github_plan_native import verify_source_process
                     verify_source_process(candidates[session])
                 with ExitStack() as attempt:

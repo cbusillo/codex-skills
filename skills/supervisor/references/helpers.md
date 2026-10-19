@@ -1965,6 +1965,11 @@ jobs or active loaded native goal. It reads the original/effective account,
 accounts touched by guarded actions and every authenticated relevant copy's
 account. Retained original accounts may supply recovery reads without becoming
 eligible for configured resume. Missing required current-work coverage refuses.
+If a pending source's required daemon is unavailable, verify that it is stopped,
+restore it on that exact home with `env CODEX_HOME="<source-home>" codex app-server daemon start`
+as described below, then retry observation or `finish`. Repeat for each required
+home that is stopped. A safe transcript cannot replace missing native coverage;
+do not clear the barrier or restart a running or draining daemon.
 Loaded idle proof binds actual native turns to completed source history. A
 known older database projection may lag the authenticated source completion;
 unanchored or conflicting actual turn order refuses. For an unloaded source,

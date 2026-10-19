@@ -576,7 +576,8 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     await proxy.run_client(f.home, ["codex"], session=f.session)
             registered.assert_called_once()
             self.assertFalse(any(r.get("record_kind") == "managed_proxy" for r in closure.log_rows()))
-            self.assertTrue(closure.lease_state(f.session)["successor_admitted"])
+            with self.assertRaises(ValueError):
+                with closure.resume_guard(f.session): pass
 
     async def test_slow_closure_verification_does_not_block_launch_or_first_turn(self):
         with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
@@ -955,7 +956,8 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 # Reading a closed source remains permitted, without an action.
                 result = await self.send(task, request, response, "thread/read", f.session)
                 self.assertIn("result", result)
-                self.assertTrue(closure.lease_state(f.session)["successor_admitted"])
+                with self.assertRaises(ValueError):
+                    with closure.resume_guard(f.session): pass
             finally:
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
