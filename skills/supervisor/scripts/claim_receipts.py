@@ -185,6 +185,79 @@ def shell_commands(name, value, *, depth=0):
             continue
 
 
+def xargs_command(argv):
+    """Read xargs' child after its options; operands are never executable words.
+
+    None preserves unresolved option arity. An empty child is default echo, an
+    informational invocation, or input redirected away from the native stdin.
+    """
+    words, cursor, input_file = list(argv[1:]), 0, None
+    long_values = {"--max-args", "--max-lines", "--max-procs", "--delimiter", "--max-chars", "--arg-file", "--process-slot-var"}
+    short_values = {"I", "n", "L", "P", "d", "E", "s", "a"}
+    while cursor < len(words):
+        word = words[cursor]
+        if word == "--":
+            cursor += 1
+            break
+        if word == "-" or not word.startswith("-"):
+            break
+        option, equal, inline = word.partition("=")
+        if option in {"--help", "--version"}:
+            return []
+        if word.startswith("--"):
+            cursor += 1
+            if option in long_values:
+                if not equal:
+                    if cursor == len(words):
+                        return []
+                    inline, cursor = words[cursor], cursor + 1
+                if option == "--arg-file":
+                    input_file = inline
+            elif option not in {"--replace", "--eof", "--null", "--no-run-if-empty", "--verbose", "--interactive", "--exit", "--open-tty", "--show-limits"}:
+                return None
+            continue
+        cursor += 1
+        for index, flag in enumerate(word[1:], 1):
+            if flag in short_values:
+                operand = word[index + 1:]
+                if not operand:
+                    if cursor == len(words):
+                        return []
+                    operand, cursor = words[cursor], cursor + 1
+                if flag == "a":
+                    input_file = operand
+                break
+            if flag in {"e", "i", "l"}:
+                break  # Historical optional short operands are attached only.
+            if flag not in {"0", "p", "r", "t", "x", "o"}:
+                return None
+    if input_file is not None and input_file not in {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"} and not input_file.startswith("$"):
+        return []
+    return words[cursor:]
+
+
+def argument_execution_language(argv):
+    """Classify actual executable argv, keeping interpreter code operands intact."""
+    child = unwrapped_command(argv, unwrap_code=False)
+    if not child:
+        return None
+    name = Path(child[0]).name
+    if child[0].startswith("$") or name in {"bash", "sh", "zsh", "dash", "ksh", "node", "source"} or child[0] == "." or re.fullmatch(r"python[0-9.]*", name):
+        return "argv"
+    if name == "xargs":
+        executable = xargs_command(child)
+        return "argv" if executable is None else argument_execution_language(executable)
+    helper, action = helper_action(child)
+    if helper in {"gh-plan.py", "gh-pr.py"}:
+        return "argv" if not action or action[:1] in (["claim"], ["create"]) or any(c in action[0] for c in "$`") else None
+    if helper == "gh":
+        return "argv" if not action or action[:2] == ["pr", "create"] or action == ["pr"] else None
+    if name in {"su", "runuser", "sudo", "doas", "ssh", "flock"}:
+        children = list(executor_commands(child))
+        return "argv" if any(argument_execution_language(shlex.split(command)) for command in children) else None
+    return "argv" if executable_wrapper(child) else None
+
+
 def stdin_language(argv):
     """Identify interpreters that read code from stdin, rather than a script argv."""
     argv = unwrapped_command(argv)
@@ -193,7 +266,9 @@ def stdin_language(argv):
     name, words = Path(argv[0]).name, argv[1:]
     if name == "uv":
         return "argv" if words[:1] == ["run"] or words and words[0].startswith("-") and "run" in words else None
-    if name in {"sudo", "doas", "flock", "ssh"}:
+    if name in {"sudo", "doas", "flock", "ssh", "su", "runuser"}:
+        if name in {"su", "runuser"} and any(word in {"-h", "--help", "-V", "--version"} for word in words):
+            return None
         children = list(executor_commands(argv))
         languages = {stdin_language(shlex.split(command)) for command in children}
         languages.discard(None)
@@ -205,12 +280,21 @@ def stdin_language(argv):
                 word in {"--shell", "--login"} or word.startswith("-") and not word.startswith("--")
                 and bool(set(word[1:]) & ({"s", "i"} if name == "sudo" else {"s"})) for word in words):
             return "shell"
+        if not children and name in {"su", "runuser"}:
+            # runuser -u requires a program. Its missing child is not an
+            # interactive shell, unlike su and runuser's su-compatible form.
+            direct_user = any(word in {"-u", "--user"} or word.startswith("--user=")
+                              or word.startswith("-") and not word.startswith("--") and "u" in word[1:]
+                              for word in words)
+            if any(word in {"-c", "--command", "--session-command"}
+                   or word.startswith(("--command=", "--session-command="))
+                   or word.startswith("-") and not word.startswith("--") and "c" in word[1:]
+                   for word in words):
+                return None
+            return "shell" if name == "su" or not direct_user else None
         return None
-    if name == "su":
-        # With no command operand su starts the selected user's shell. A -c
-        # shell executes its argument instead of treating stdin as code.
-        return None if any(word in {"-c", "--command", "-h", "--help", "-V", "--version"}
-                           or word.startswith("--command=") for word in words) else "shell"
+    if name == "xargs":
+        return argument_execution_language(argv)
     stdin_paths = {"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
     if name.startswith("$"):
         return "shell"
@@ -219,7 +303,7 @@ def stdin_language(argv):
     shell = name in {"bash", "sh", "zsh", "dash", "ksh"}
     python = re.fullmatch(r"python[0-9.]*", name) is not None
     if not (shell or python or name == "node"):
-        return "argv" if name == "xargs" else None
+        return None
     cursor, force_stdin = 0, False
     while cursor < len(words):
         word = words[cursor]
@@ -322,7 +406,24 @@ def node_control_statements(code):
         if code[cursor] == "{":
             children, cursor = sequence(cursor + 1, "}")
             return {"kind": "block", "start": start, "end": cursor, "body": children}
-        keyword = re.match(r"(if|while|for)\b", code[cursor:])
+        if re.match(r"try\b", code[cursor:]):
+            body = statement(cursor + 3)
+            if body is not None:
+                end, handler, final = body["end"], None, None
+                following = skip(end)
+                if re.match(r"catch\b", code[following:]):
+                    following = skip(following + 5)
+                    if following < len(code) and code[following] == "(":
+                        following = close(following) + 1
+                    handler = statement(following)
+                    end = handler["end"] if handler else end
+                following = skip(end)
+                if re.match(r"finally\b", code[following:]):
+                    final = statement(following + 7)
+                    end = final["end"] if final else end
+                return {"kind": "try", "start": start, "end": end, "body": [body],
+                        "catch": [handler] if handler else [], "finally": [final] if final else []}
+        keyword = re.match(r"(if|while|for|switch)\b", code[cursor:])
         if keyword:
             condition = cursor + keyword.end()
             while condition < len(code) and code[condition].isspace():
@@ -331,6 +432,27 @@ def node_control_statements(code):
                 finish = close(condition)
                 body = statement(finish + 1)
                 if body is not None:
+                    if keyword[1] == "switch":
+                        labels, stack, at = [], [], body["start"] + 1
+                        while at < body["end"] - 1:
+                            label = re.match(r"(case|default)\b", code[at:]) if not stack else None
+                            if label:
+                                colon = node_expression_parts(code, at + label.end(), body["end"] - 1, ":")[0][1]
+                                labels.append((at, colon + 1, label[1]))
+                                at = colon + 1
+                                continue
+                            if code[at] in "([{":
+                                stack.append(code[at])
+                            elif code[at] in ")]}":
+                                if stack:
+                                    stack.pop()
+                            at += 1
+                        cases = []
+                        for index, (label_start, begin, kind) in enumerate(labels):
+                            end = labels[index + 1][0] if index + 1 < len(labels) else body["end"] - 1
+                            cases.append({"start": label_start, "end": end, "body": sequence(begin, until=end)[0]})
+                        return {"kind": "switch", "start": start, "end": body["end"], "cases": cases,
+                                "default": any(kind == "default" for _, _, kind in labels)}
                     end, other = body["end"], None
                     following = skip(end)
                     if keyword[1] == "if" and re.match(r"else\b", code[following:]):
@@ -347,9 +469,9 @@ def node_control_statements(code):
             end += 1
         return {"kind": "statement", "start": start, "end": end}
 
-    def sequence(cursor, closing=None):
+    def sequence(cursor, closing=None, until=None):
         nodes = []
-        while (cursor := skip(cursor)) < len(code):
+        while (cursor := skip(cursor)) < (len(code) if until is None else until):
             if closing and code[cursor] == closing:
                 return nodes, cursor + 1
             node = statement(cursor)
@@ -429,11 +551,33 @@ def node_ownership(content):
     @lru_cache(maxsize=None)
     def bindings(name, before):
         assignments = [item for item in declarations.get(name, []) if not inactive_body(item[0], before)]
-        def walk(nodes, state):
+        def may_throw(node):
+            text = code[node["start"]:node["end"]].strip().rstrip(";").strip()
+            if text in {"", "break", "continue"}:
+                return False
+            writes = [(variable, item) for variable, items in declarations.items() for item in items
+                      if node["start"] <= item[0] < node["end"]]
+            if len(writes) == 1:
+                variable, (position, begin, finish, operator) = writes[0]
+                prefix = code[node["start"]:position].strip()
+                suffix = code[finish:node["end"]].strip().strip(";").strip()
+                immutable = any(re.search(r"\bconst\s*$", code[:item[0]]) for item in declarations.get(variable, []) if item[0] < position)
+                if operator == "=" and prefix in {"", "let", "var", "const"} and not suffix and not (immutable and not prefix):
+                    literal = content[begin:finish].strip()
+                    try:
+                        ast.literal_eval(literal)
+                    except (ValueError, SyntaxError):
+                        return literal not in {"true", "false", "null"}
+                    return False
+            return True
+
+        def walk(nodes, state, throws=None):
             for node in nodes:
                 if node["start"] >= before:
                     break
                 if node["kind"] == "statement":
+                    if throws is not None and may_throw(node):
+                        throws.append(set(state))
                     for assignment in assignments:
                         position = assignment[0]
                         if node["start"] <= position < min(node["end"], before):
@@ -441,23 +585,60 @@ def node_ownership(content):
                             conditional = conditional or any(begin <= position < finish and not begin <= before < finish
                                                              for _, _, begin, finish in deferred)
                             state = state | {assignment} if conditional else {assignment}
+                    if re.match(r"\s*throw\b", code[node["start"]:node["end"]]):
+                        return set()
                 elif node["kind"] == "block":
-                    state = walk(node["body"], state)
+                    state = walk(node["body"], state, throws)
+                elif node["kind"] == "switch":
+                    cases = node["cases"]
+                    active = next((index for index, case in enumerate(cases) if case["start"] <= before < case["end"]), None)
+                    merged = set(state) if active is None and not node["default"] else set()
+                    for entry in range(len(cases) if active is None else active + 1):
+                        current = set(state)
+                        for index in range(entry, len(cases)):
+                            stopped = False
+                            for child in cases[index]["body"]:
+                                if child["start"] >= before:
+                                    break
+                                current = walk([child], current, throws)
+                                if child["kind"] == "statement" and re.match(r"\s*break\b", code[child["start"]:child["end"]]):
+                                    stopped = True
+                                    break
+                            if stopped or active is not None and index == active:
+                                if stopped and active is not None and index < active:
+                                    current = set()
+                                break
+                        merged.update(current)
+                    state = merged
+                elif node["kind"] == "try":
+                    exceptional = []
+                    normal = walk(node["body"], set(state), exceptional)
+                    if node["catch"] and before >= node["catch"][0]["start"]:
+                        caught = set().union(*exceptional) if exceptional else set()
+                        caught = walk(node["catch"], caught, throws) if exceptional else set()
+                        normal = caught if before < node["catch"][0]["end"] else normal | caught
+                    elif node["finally"] and node["finally"][0]["start"] <= before < node["finally"][0]["end"]:
+                        normal |= set().union(*exceptional) if exceptional else set()
+                    elif throws is not None:
+                        throws.extend(exceptional)
+                    state = walk(node["finally"], normal, throws)
                 else:
                     body, other = node["body"], node["other"]
                     if before <= body[0]["start"]:
                         break
                     if before < body[0]["end"]:
-                        return walk(body, state)
+                        return walk(body, state, throws)
                     if other and other[0]["start"] <= before < other[0]["end"]:
-                        return walk(other, state)
+                        return walk(other, state, throws)
                     condition = code[slice(*node["condition"])].strip()
                     if condition == "false":
-                        state = walk(other, state)
+                        state = walk(other, state, throws)
                     elif condition == "true" and node["kind"] == "if":
-                        state = walk(body, state)
+                        state = walk(body, state, throws)
                     else:
-                        state = walk(body, state) | walk(other, state)
+                        if throws is not None:
+                            throws.append(set(state))
+                        state = walk(body, state, throws) | walk(other, state, throws)
             return state
         return frozenset(walk(statements, set()))
 
@@ -687,7 +868,7 @@ def stream_argv(argv):
 
 
 def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None, inline_inputs=None,
-                      stream_sources=None, output_sources=None):
+                      stream_sources=None, output_sources=None, execution_events=None):
     """Parse command descriptors once and carry each stdin source through groups.
 
     A balanced group is one outer pipeline node. Its children share the same
@@ -725,9 +906,20 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         nodes = []
         for segment, separator in segments:
             argv, heredocs, children, cursor, last_word = [], [], None, 0, None
+            substitutions = {}
             descriptors = {0: "pipe-in", 1: "pipe-out", 2: None}
             while cursor < len(segment):
                 index, token = segment[cursor], tokens[segment[cursor]]
+                if (token in {"<", ">"} and cursor + 1 < len(segment)
+                        and tokens[segment[cursor + 1]] == "(" and segment[cursor + 1] in bounds
+                        and spans[index][1] == spans[segment[cursor + 1]][0]):
+                    opening = segment[cursor + 1]
+                    close = bounds[opening]
+                    placeholder = f"PROCESS_SUBSTITUTION_{index}"
+                    substitutions[placeholder] = (token, parse(opening + 1, close))
+                    argv.append(placeholder)
+                    cursor = segment.index(close) + 1
+                    continue
                 if token in {"(", "{"} and index in bounds and bounds[index] in segment:
                     close = bounds[index]
                     children = parse(index + 1, close)
@@ -741,6 +933,14 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         fd = int(tokens[previous])
                         argv.pop()
                     operand = tokens[segment[cursor + 1]] if cursor + 1 < len(segment) else ""
+                    if (cursor + 2 < len(segment) and operand in {"<", ">"}
+                            and tokens[segment[cursor + 2]] == "(" and segment[cursor + 2] in bounds
+                            and spans[segment[cursor + 1]][1] == spans[segment[cursor + 2]][0]):
+                        opening = segment[cursor + 2]
+                        close = bounds[opening]
+                        descriptors[fd] = ("process-input" if fd == 0 else "process-output", parse(opening + 1, close))
+                        cursor = segment.index(close) + 1
+                        continue
                     if token in {"<<", "<<<"}:
                         heredocs.append(index)
                         languages[index] = None
@@ -771,15 +971,28 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 language = compound_stdin_language(tokens, source, segment[0], spans, heredocs) or language
             nodes.append({"argv": argv, "children": children, "language": language, "index": segment[0],
                           "descriptors": descriptors, "heredocs": heredocs,
+                          "substitutions": substitutions,
                           "separator": separator, "source": " ".join(tokens[index] for index in segment)})
         return nodes
 
-    def assign_language(sources, language):
+    def file_sources(identifier):
+        stream = stream_sources.get(identifier, {})
+        if stream.get("kind") == "file":
+            yield stream["path"]
+        elif stream.get("kind") in {"choice", "concat"}:
+            for part in stream["parts"]:
+                yield from file_sources(part)
+
+    def assign_language(sources, language, position=None):
         if language:
             for identifier in sources:
                 if identifier != "external":
                     previous = languages.get(identifier)
                     languages[identifier] = language if previous in {None, language} else "argv"
+            if execution_events is not None:
+                paths = [path for identifier in sources for path in file_sources(identifier)]
+                if paths:
+                    execution_events.append({"kind": "read", "position": position, "paths": paths})
 
     def record_file(node, target, sources, forwards, replaces=True):
         if file_commands is not None:
@@ -787,6 +1000,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             for identifier in identifiers or [None]:
                 file_commands.append({"target": target, "body": identifier,
                                       "argv": node["argv"], "source": node["source"],
+                                      "position": node["index"],
                                       "forwards": forwards, "replaces": replaces})
 
     def append_streams(before, after):
@@ -816,12 +1030,22 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 identifier = ("file", input_source[1])
                 stream_sources[identifier] = {"kind": "file", "path": input_source[1]}
                 inputs.add(identifier)
+            if isinstance(input_source, tuple) and input_source[0] == "process-input":
+                inputs = flow(input_source[1], inherited)
             if node["children"] is not None:
                 produced = flow(node["children"], inputs)
                 forwards = bool(produced)
             else:
-                assign_language(inputs, node["language"])
+                assign_language(inputs, node["language"], node["index"])
                 child = stream_argv(node["argv"])
+                if execution_events is not None:
+                    execution_events.append({"kind": "read", "position": node["index"], "paths": execution_targets(node["argv"])})
+                substitution_outputs = {}
+                for placeholder, (direction, commands) in node["substitutions"].items():
+                    if direction == "<":
+                        substitution_outputs[placeholder] = flow(commands, inherited)
+                        language = stdin_language(["/dev/stdin" if word == placeholder else word for word in node["argv"]])
+                        assign_language(substitution_outputs[placeholder], language, node["index"])
                 forwards = forwards_stdin(child)
                 produced = set(inputs) if forwards else set()
                 variants = literal_producer_variants(child)
@@ -830,6 +1054,10 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     for variant, content in enumerate(variants):
                         identifier = ("literal", source, node["index"], variant)
                         stream_sources[identifier] = {"kind": "literal", "content": content}
+                        if len(variants) > 1:
+                            explicit_shell = any(Path(word).name in {"bash", "sh", "zsh", "dash", "ksh"} for word in node["argv"])
+                            stream_sources[identifier].update(echo_mode=variant,
+                                echo_scope="independent" if explicit_shell or mode_changes else "native")
                         produced.add(identifier)
                     forwards = True
                 if child and Path(child[0]).name == "cat" and not any(word in {"--help", "--version"} for word in child[1:]):
@@ -844,6 +1072,8 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     for path in operands:
                         if path == "-":
                             produced = append_streams(produced, inputs)
+                        elif path in substitution_outputs:
+                            produced = append_streams(produced, substitution_outputs[path])
                         else:
                             identifier = ("file", path)
                             stream_sources[identifier] = {"kind": "file", "path": path}
@@ -860,16 +1090,21 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         substitution_sources = set()
                         heredoc_languages(list(lexer), lexer.instream.getvalue(), stream_sources=stream_sources,
                                           output_sources=substitution_sources)
-                        assign_language(substitution_sources, "shell")
+                        assign_language(substitution_sources, "shell", node["index"])
                 if child and Path(child[0]).name == "tee" and forwards:
                     options = True
                     for word in child[1:]:
                         if options and word == "--":
                             options = False
                         elif not options or not word.startswith("-") or word == "-":
-                            record_file(node, word, inputs, True, not any(flag in {"-a", "--append"} for flag in child[1:]))
-            if isinstance(descriptors[1], tuple):
+                            if word in node["substitutions"] and node["substitutions"][word][0] == ">":
+                                flow(node["substitutions"][word][1], inputs)
+                            else:
+                                record_file(node, word, inputs, True, not any(flag in {"-a", "--append"} for flag in child[1:]))
+            if isinstance(descriptors[1], tuple) and descriptors[1][0] == "file":
                 record_file(node, descriptors[1][1], produced, forwards, descriptors[1][2])
+            elif isinstance(descriptors[1], tuple) and descriptors[1][0] == "process-output":
+                flow(descriptors[1][1], produced)
             outgoing = produced if descriptors[1] == "pipe-out" else set()
             previous = node["separator"]
             if previous in {"|", "|&"}:
@@ -879,6 +1114,19 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         return output
 
     nodes = parse(0, len(tokens))
+    def changes_mode(nodes):
+        for node in nodes:
+            child = stream_argv(node["argv"])
+            if child and Path(child[0]).name in {"setopt", "unsetopt", "shopt", "set", "source", "."}:
+                return True
+            nested = ([node["children"]] if node["children"] is not None else [])
+            nested.extend(commands for _, commands in node["substitutions"].values())
+            nested.extend(value[1] for value in node["descriptors"].values()
+                          if isinstance(value, tuple) and value[0] in {"process-input", "process-output"})
+            if any(changes_mode(commands) for commands in nested):
+                return True
+        return False
+    mode_changes = changes_mode(nodes)
     produced = flow(nodes, {"external"})
     if output_sources is not None:
         output_sources.update(identifier for identifier in produced if identifier != "external")
@@ -1036,7 +1284,7 @@ def stdin_ownership(content, language):
     return language is not None and bool(OWNERSHIP_TEXT.search(content))
 
 
-def shell_code(text, *, writes=None, reads=None, replacements=None):
+def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None):
     """Extract bodies first, then resolve streams across the complete command."""
     # Quoted cat substitutions are a common CLI body argument. Their literal
     # contents must never participate in either shell lexing or '&' detection.
@@ -1083,8 +1331,9 @@ def shell_code(text, *, writes=None, reads=None, replacements=None):
     lexer.whitespace_split = True
     tokens = list(lexer)
     file_commands, inline_inputs, stream_sources = [], {}, {}
+    execution_events = [] if effects is not None else None
     languages = heredoc_languages(tokens, lexer.instream.getvalue(), file_commands=file_commands,
-                                  inline_inputs=inline_inputs, stream_sources=stream_sources)
+                                  inline_inputs=inline_inputs, stream_sources=stream_sources, execution_events=execution_events)
     contents, owns = {}, False
     identifiers = [index for index, token in enumerate(tokens) if token == "<<"]
     if len(identifiers) != len(bodies):
@@ -1133,15 +1382,20 @@ def shell_code(text, *, writes=None, reads=None, replacements=None):
         return UnresolvedStream(possible)
 
     resolved, expansion_limit = {}, object()
-    def content_of(identifier):
-        if identifier in resolved:
-            return resolved[identifier]
+    def content_of(identifier, echo_mode):
+        key = (identifier, echo_mode)
+        if key in resolved:
+            return resolved[key]
         stream = stream_sources.get(identifier, {})
         raw = contents.get(identifier, stream.get("content"))
         if raw is not None:
             result = (raw,)
         elif stream.get("kind") in {"concat", "choice"}:
-            children = [content_of(part) for part in stream["parts"]]
+            parts = stream["parts"]
+            if stream["kind"] == "choice":
+                parts = [part for part in parts if stream_sources.get(part, {}).get("echo_scope") != "native"
+                         or stream_sources[part]["echo_mode"] == echo_mode]
+            children = [content_of(part, echo_mode) for part in parts]
             if any(child is None for child in children):
                 result = None
             elif any(child is expansion_limit for child in children):
@@ -1161,8 +1415,16 @@ def shell_code(text, *, writes=None, reads=None, replacements=None):
                 result = tuple(variants) if len(variants) <= 64 else expansion_limit
         else:
             result = None
-        resolved[identifier] = result
+        resolved[key] = result
         return result
+
+    def variants_of(identifier):
+        choices = [content_of(identifier, echo_mode) for echo_mode in (0, 1)]
+        if any(choice is expansion_limit for choice in choices):
+            return unresolved(identifier)
+        if any(choice is None for choice in choices):
+            return None
+        return tuple(dict.fromkeys(value for choice in choices for value in choice))
 
     def file_parts(identifier):
         stream = stream_sources.get(identifier, {})
@@ -1175,12 +1437,10 @@ def shell_code(text, *, writes=None, reads=None, replacements=None):
     for identifier in languages:
         if reads is not None and languages.get(identifier):
             reads.update(file_parts(identifier))
-    if writes is not None:
+    if writes is not None or effects is not None:
         for command in file_commands:
             input_source = command["body"]
-            variants = content_of(input_source) if input_source is not None else None
-            if variants is expansion_limit:
-                variants = unresolved(input_source)
+            variants = variants_of(input_source) if input_source is not None else None
             if variants is not None and command.get("forwards", forwards_stdin(command["argv"])):
                 variants = (variants,) if isinstance(variants, UnresolvedStream) else variants
             else:
@@ -1188,14 +1448,28 @@ def shell_code(text, *, writes=None, reads=None, replacements=None):
                 # shell command that quoted those operands as data. A replaced
                 # or unused stdin cannot lend a heredoc body to that output.
                 variants = (literal_producer_output(command["argv"], command["source"]),)
-            writes.extend((command["target"], content) for content in variants)
+            if writes is not None:
+                writes.extend((command["target"], content) for content in variants)
+            if effects is not None:
+                execution_events.append({"kind": "write", "position": command["position"],
+                                         "path": command["target"], "contents": variants,
+                                         "replaces": command["replaces"]})
             if replacements is not None and command["replaces"]:
                 replacements.add(command["target"])
+    if effects is not None:
+        grouped = {}
+        for event in execution_events:
+            if event["kind"] == "write":
+                key = (event["position"], event["path"])
+                if key in grouped:
+                    grouped[key]["contents"] += tuple(event["contents"])
+                else:
+                    grouped[key] = dict(event, contents=tuple(event["contents"]))
+        effects.extend(sorted([*grouped.values(), *(event for event in execution_events if event["kind"] == "read")],
+                              key=lambda event: (event["position"], event["kind"] != "write")))
     for identifier, language in languages.items():
         if language:
-            variants = content_of(identifier)
-            if variants is expansion_limit:
-                variants = unresolved(identifier)
+            variants = variants_of(identifier)
             if variants is not None:
                 variants = (variants,) if isinstance(variants, UnresolvedStream) else variants
                 owns |= any(stdin_ownership(content, language) for content in variants)
@@ -1325,7 +1599,9 @@ def opaque_ownership(name, value):
                 code = child[child.index("-c") + 1:] if "-c" in child else []
                 if any(python_ownership(body) for body in code):
                     return True
-            if child and Path(child[0]).name in {"eval", "xargs", "node"} and OWNERSHIP_TEXT.search(" ".join(child[1:])):
+            if child and Path(child[0]).name == "xargs" and argument_execution_language(child) and OWNERSHIP_TEXT.search(" ".join(child[1:])):
+                return True
+            if child and Path(child[0]).name in {"eval", "node"} and OWNERSHIP_TEXT.search(" ".join(child[1:])):
                 return True
     if name in {"exec", "functions.exec"} and isinstance(value, str):
         unparsed = unparsed_command_text(SHELL_FIELD.sub("", value))
@@ -1482,7 +1758,7 @@ def shell_expansions(text, *, heredoc=False):
         cursor += 1
 
 
-def unwrapped_command(argv):
+def unwrapped_command(argv, *, unwrap_code=True):
     """Transparent process wrappers change execution, never operand meaning."""
     argv = list(argv)
     while argv:
@@ -1519,7 +1795,7 @@ def unwrapped_command(argv):
             # uv's '-' is Python stdin even behind env/assignment wrappers.
             # Preserve that execution mode while normalizing the launcher.
             argv = ["python", *child] if child[:1] == ["-"] else child
-        elif (((body := shell_c_body(argv)) is not None and (child := foreground_shell_argv(body)))
+        elif unwrap_code and (((body := shell_c_body(argv)) is not None and (child := foreground_shell_argv(body)))
               or (re.fullmatch(r"python[0-9.]*", name) and len(argv) == 3 and argv[1] == "-c"
                   and (child := foreground_python_argv(argv[2])))):
             argv = child
@@ -1684,6 +1960,11 @@ def python_ownership(content):
     def literal(node, seen=frozenset()):
         if isinstance(node, ast.Name) and node.id in definitions and node.id not in seen:
             return literal(definitions[node.id], seen | {node.id})
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = literal(node.left, seen), literal(node.right, seen)
+            if isinstance(left, (str, list, tuple)) and type(left) is type(right):
+                return left + right
+            return None
         if (isinstance(node, ast.Call) and ast.unparse(node.func) == "shlex.split"
                 and len(node.args) == 1 and not node.keywords):
             text = literal(node.args[0], seen)
@@ -1884,6 +2165,37 @@ def native_path(path, cwd):
     return posixpath.normpath(posixpath.join(cwd, path)) if cwd else None
 
 
+def native_file_effects(name, value):
+    """Keep each native call's writes and code reads in parsed command order."""
+    texts = list(shell_texts(name, value))
+    if texts:
+        for text in texts:
+            effects = []
+            try:
+                shell_code(text, effects=effects)
+            except ValueError:
+                pass  # Typed ownership retains the effects collected first.
+            yield from effects
+        return
+    replacements, grouped = set(), {}
+    for path, content in file_writes(name, value, replacements=replacements):
+        grouped.setdefault(path, []).append(content)
+    for path, contents in grouped.items():
+        yield {"kind": "write", "path": path, "contents": tuple(contents), "replaces": path in replacements}
+
+
+def apply_file_effect(effect, cwd, candidates):
+    if effect["kind"] != "write":
+        return
+    path = native_path(effect["path"], cwd) if effect["path"] else None
+    if path:
+        owning = any(executable_file_content(effect["path"], content) for content in effect["contents"])
+        if owning:
+            candidates.add(path)
+        elif effect["replaces"]:
+            candidates.discard(path)
+
+
 def ownership_file_candidates(histories):
     """Retain path origins so a history cannot borrow its own future writes.
 
@@ -1893,11 +2205,12 @@ def ownership_file_candidates(histories):
     candidates = {}
     for node in histories:
         origin = id(node["records"][0]) if node["records"] else None
+        latest = set()
         for _, name, value, cwd in native_calls(node["records"], node["harness"]):
-            for path, content in file_writes(name, value):
-                path = native_path(path, cwd) if path else None
-                if path and executable_file_content(path, content):
-                    candidates.setdefault(path, set()).add(origin)
+            for effect in native_file_effects(name, value):
+                apply_file_effect(effect, cwd, latest)
+        for path in latest:
+            candidates.setdefault(path, set()).add(origin)
     return candidates
 
 
@@ -1923,32 +2236,11 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
                   if isinstance(file_candidates, dict) else set(file_candidates))
     invocations = set()
     for identifier, name, value, cwd in native_calls(records, harness):
-        replacements, writes = set(), {}
-        for path, content in file_writes(name, value, replacements=replacements):
-            resolved = native_path(path, cwd) if path else None
-            if resolved:
-                writes[resolved] = writes.get(resolved, False) or executable_file_content(path, content)
-        for path in replacements:
-            resolved = native_path(path, cwd) if path else None
-            if resolved and not writes.get(resolved, True):
-                candidates.discard(resolved)
-        candidates.update(path for path, owning in writes.items() if owning)
-        if not candidates:
-            continue
-        commands = list(shell_commands(name, value))
-        targets = [target for argv in commands for target in execution_targets(argv)]
-        for text in shell_texts(name, value):
-            connected = set()
-            try:
-                shell_code(text, reads=connected)
-            except ValueError:
-                pass
-            targets.extend(connected)
-        if (any(argv and Path(argv[0]).name in {"bash", "sh", "zsh"} for argv in commands)
-                and any(Path(argv[0]).name == "cat" for argv in commands)):
-            targets += [argv[i + 1] for argv in commands for i, word in enumerate(argv[:-1]) if word == "<"]
-        if {native_path(word, cwd) for word in targets} & candidates:
-            invocations.add(identifier)
+        for effect in native_file_effects(name, value):
+            if effect["kind"] == "write":
+                apply_file_effect(effect, cwd, candidates)
+            elif {native_path(path, cwd) for path in effect["paths"]} & candidates:
+                invocations.add(identifier)
     return invocations
 
 
@@ -2780,8 +3072,9 @@ def _acceptance(records, harness, session, histories):
     child_activity, pending = False, False
     file_candidates = ownership_file_candidates(histories)
     for node in histories:
+        node_parsed = parsed if node["records"] is records and node["harness"] == harness else list(outputs(node["records"], node["harness"]))
         for native in sessions:
-            found, missing = sources(node["records"], node["harness"], native)
+            found, missing = sources(node["records"], node["harness"], native, parsed=node_parsed)
             expected.extend(found)
             errors.extend(missing)
             if node is histories[0]:

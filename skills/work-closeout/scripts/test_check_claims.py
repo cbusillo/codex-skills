@@ -34,6 +34,45 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_native_family_reuses_receipt_parsing_without_reusing_a_later_snapshot(self):
+        from test_claim_receipts import history, claim as native_claim, SESSION as native_session
+        from test_claim_history import records
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                rows = history(harness, native_claim(REPO))
+                nodes = [{"session_id": native_session, "harness": harness, "records": rows}]
+                nodes.extend({"session_id": f"child-{i}", "harness": harness,
+                              "records": records(harness, f"child-{i}")}
+                             for i in range(4))
+                for node in nodes:
+                    node["transcript"] = f"/fixture/{node['session_id']}.jsonl"
+                    node["digest"] = helper.claim_history.fingerprint(node["records"])
+                entry = {"session_id": native_session, "harness": harness, "_claim_histories": nodes}
+                self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
+                original = helper.claim_receipts.outputs
+                with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                    with patch.object(helper.claim_receipts, "outputs", wraps=original) as parse:
+                        held = helper.check(self.reader, [], entry, ACTOR)
+                    self.assertFalse(held["claims_clear"], held)
+                    # Parsing work scales with histories, not histories times identities.
+                    check_parse_count = parse.call_count
+                    self.comments.append(comment(11, "Released claim 10", at="2026-01-01T00:02:00Z"))
+                    released = helper.check(self.reader, [], entry, ACTOR)
+                    self.assertTrue(released["claims_clear"], released)
+                    with patch.object(helper.claim_receipts, "outputs", wraps=original) as parse:
+                        verdict = helper.claim_receipts.acceptance(rows, harness, native_session, histories=nodes)
+                    self.assertFalse(verdict["clear"], verdict)
+                    self.assertLessEqual(check_parse_count, len(nodes))
+                    self.assertLessEqual(parse.call_count, len(nodes))
+                    later = history(harness, native_claim(REPO, number=2))[1]
+                    if harness == "codex":
+                        later["payload"]["call_id"] = "later-claim"
+                    else:
+                        later["message"]["content"][0]["id"] = "later-claim"
+                    rows.append(later)
+                    with self.assertRaisesRegex(ValueError, "no terminal native result"):
+                        helper.check(self.reader, [], entry, ACTOR)
+
     def test_creation_after_completed_child_claim_uses_only_returned_prefix(self):
         from test_claim_history import completed_child_records, records
         from test_claim_receipts import claim as native_claim

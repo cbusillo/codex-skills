@@ -184,8 +184,9 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
     native_sessions = {node["session_id"] for node in histories}
     expected, errors = [], []
     for node in histories:
+        parsed = list(claim_receipts.outputs(node["records"], node["harness"]))
         for native in native_sessions:
-            found, missing = claim_receipts.sources(node["records"], node["harness"], native)
+            found, missing = claim_receipts.sources(node["records"], node["harness"], native, parsed=parsed)
             expected.extend(found)
             errors.extend(missing)
     native_repos = {r["repository"] for r in expected}
@@ -198,19 +199,20 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             prefixes = [*node.get("preceding_histories", []),
                         {"harness": node["harness"], "records": records[:target["index"]]},
                         *claim_history.completed_prefixes(node, records[:target["index"]], histories)]
-            target["preceding_sources"] = {
-                (source["repository"].casefold(), source["record"], source["claim_comment"])
-                for prefix in prefixes
-                for native in native_sessions
-                for source in claim_receipts.sources(prefix["records"], prefix["harness"], native)[0]}
+            target["preceding_sources"] = set()
+            for prefix in prefixes:
+                parsed = list(claim_receipts.outputs(prefix["records"], prefix["harness"]))
+                for native in native_sessions:
+                    target["preceding_sources"].update(
+                        (source["repository"].casefold(), source["record"], source["claim_comment"])
+                        for source in claim_receipts.sources(prefix["records"], prefix["harness"], native, parsed=parsed)[0])
             creations.append(target)
     native_issues = {(r["repository"], r["record"]) for r in expected}
-    for node in histories:
-        # Canonical source receipts and actual claim targets own scope; raw
-        # output may also contain saved receipts from unrelated commands.
-        native_repos.update(claim_receipts.target_repositories(node["records"], node["harness"], allowed_sessions=native_sessions))
-    native_repos.update(entry.get("_extra_repositories", []))
     targets = [t for node in histories for t in claim_receipts.claim_targets(node["records"], node["harness"], allowed_sessions=native_sessions)]
+    # Canonical source receipts and actual claim targets own scope; raw
+    # output may also contain saved receipts from unrelated commands.
+    native_repos.update(t["repository"] for t in targets if t["repository"])
+    native_repos.update(entry.get("_extra_repositories", []))
     unresolved = [t for t in targets if t["repository"] is None]
     if unresolved and not entry.get("_extra_repositories"):
         raise ValueError("claim invocation lacks canonical command scope; --repository may add inventory but cannot prove its destination; use conditional/no")
