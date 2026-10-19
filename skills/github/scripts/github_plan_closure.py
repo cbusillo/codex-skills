@@ -252,8 +252,8 @@ def register_launch(argv: list[str], home: str, *, proxy: dict | None = None) ->
         replace_rows(rows)
 
 
-def managed_launch(pid: int, argv: list[str], sockets: set[str]) -> bool:
-    """Only an exact client whose actions pass a currently live guarded ingress."""
+def guarded_launch_endpoint(pid: int, argv: list[str]) -> str | None:
+    """Return the bound home endpoint after proving a live guarded client."""
     try:
         identity = log_identity(closed_log().lstat())
         cache = LOG_CACHE.get()
@@ -271,28 +271,33 @@ def managed_launch(pid: int, argv: list[str], sockets: set[str]) -> bool:
                 process_started_at(parent).isoformat() == matches[0]["launch_started_at"]
                 and process_started_at(parent) <= process_started_at(pid) <= datetime.now(timezone.utc)
             ):
-                return False
+                return None
         if len(matches) != 1:
-            return False
+            return None
         row = matches[0]
         if argv_signature(argv) != row["argv_digest"]:
-            return False
-        endpoint = str(daemon_endpoint(Path(row["codex_home"])))
-        if endpoint not in sockets:
-            return False
+            return None
         if row["launch_pid"] == pid and process_started_at(pid).isoformat() != row["launch_started_at"]:
-            return False
+            return None
         proxy = row if row["record_kind"] == "managed_proxy" else row.get("proxy")
         if not isinstance(proxy, dict) or proxy not in rows:
-            return False
+            return None
         if row["record_kind"] == "managed_launch" and remote_endpoints(argv) != ["unix://" + proxy["endpoint"]]:
-            return False
+            return None
         info = Path(proxy["endpoint"]).lstat()
-        return (stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
+        if (stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
                 and proxy["codex_home"] == row["codex_home"]
-                and process_started_at(proxy["launch_pid"]).isoformat() == proxy["launch_started_at"])
+                and process_started_at(proxy["launch_pid"]).isoformat() == proxy["launch_started_at"]):
+            return str(daemon_endpoint(Path(row["codex_home"])))
+        return None
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-        return False
+        return None
+
+
+def managed_launch(pid: int, argv: list[str], sockets: set[str]) -> bool:
+    """Require guarded identity and independently observed daemon coverage."""
+    endpoint = guarded_launch_endpoint(pid, argv)
+    return endpoint is not None and endpoint in sockets
 
 
 @contextmanager

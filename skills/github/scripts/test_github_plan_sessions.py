@@ -224,6 +224,10 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             born = datetime(2026, 10, 1, tzinfo=timezone.utc)
             with patch.object(CLOSURE, "process_started_at", return_value=born):
                 f.managed(native)
+                endpoint = str(CLOSURE.daemon_endpoint(f.home))
+                self.assertEqual(CLOSURE.guarded_launch_endpoint(456, native), endpoint)
+                self.assertFalse(CLOSURE.managed_launch(456, native, set()))
+                self.assertTrue(CLOSURE.managed_launch(456, native, {endpoint}))
                 f.commands = "456 " + " ".join(native)
                 self.assert_ended(f)
                 f.commands = "456 python3 /fixture/codex " + " ".join(native[1:])
@@ -286,6 +290,36 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 self.assert_ended(f)
             with patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) + timedelta(days=1)):
                 self.assert_live(f)
+
+            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
+            with patch.object(CLOSURE, "process_started_at", return_value=ended + timedelta(seconds=1)):
+                f.managed(native)
+                f.commands = "456 " + " ".join(native)
+                f.process_rows = [(456, "fixture-tty", " ".join(native))]
+                self.assert_ended(f)
+                closed = f.release.record_closure(f.log, f.entry, "supervisor")
+                self.assertTrue(f.release.validate_closure({
+                    **closed, "handoff_url": "https://github.com/test/repo/issues/1#issuecomment-2"
+                }, "supervisor")["safe_verdict"])
+                with self.assertRaises(ValueError):
+                    f.release.validate_closure({**closed, "ended_at": datetime.now(timezone.utc).isoformat()}, "supervisor")
+                # A changed argv cannot borrow the guarded client's identity.
+                f.process_rows = [(456, "fixture-tty", "codex --remote unix:///unverified")]
+                self.assert_live(f)
+                f.process_rows = [(456, "fixture-tty", " ".join(native))]
+                # A pending action defeats the stale closure even before any
+                # transcript or shared receipt update becomes visible.
+                with CLOSURE.ownership(f.session):
+                    CLOSURE.set_action_pending(f.session, True)
+                    with self.assertRaises(ValueError):
+                        f.release.validate_closure(closed, "supervisor")
+                    CLOSURE.set_action_pending(f.session, False)
+                self.assertTrue(f.release.validate_closure(closed, "supervisor")["safe_verdict"])
+                # An actual guarded resume invalidates that same saved entry.
+                with CLOSURE.resume_guard(f.session):
+                    pass
+                with self.assertRaises(ValueError):
+                    f.release.validate_closure(closed, "supervisor")
 
     def test_newer_generation_or_malformed_receipt_keeps_idle_live(self):
         with ReceiptFixture() as f:
