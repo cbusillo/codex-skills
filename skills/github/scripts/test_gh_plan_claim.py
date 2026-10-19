@@ -169,11 +169,16 @@ class ClaimTests(unittest.TestCase):
         return {"ok": True}
 
     def run_claim(self, *, route=None, command=None):
+        # Wait-review ownership fixtures isolate record publication/readback;
+        # persisted label projection has stateful mutation tests of its own.
+        projection = ({"refresh_planning_targets": lambda *_a, **_k: {
+            "ok": True, "coverage": "complete", "issues": []}} if command is PLAN.cmd_wait else {})
         with patch.multiple(PLAN, default_repo=lambda repo: repo or "owner/repo", get_issue=self.get_issue,
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
                             comment_route=route or (lambda: ("bot", "bot-gh", TEST_BOT)),
-                            load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
+                            load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)),
+                            emit=self.emitted, api_json=self.read_api, **projection), \
                 patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
                 patch.object(CLAIM, "observe_sessions", side_effect=self.observe_inventory), \
                 patch.object(github_identity, "configured_bot_logins", return_value=[]), \
@@ -4106,7 +4111,7 @@ class ClaimTests(unittest.TestCase):
     def test_global_invalid_wait_selection_still_requires_actual_claim_resolution(self):
         import test_gh_plan_next as selection
         root = selection.track("someone/direction", 1, "First")
-        leaf = selection.global_issue("owner/repo", 42, labels=["plan", "plan:waiting"],
+        leaf = selection.global_issue("owner/repo", 42, wait_reviewed=False, labels=["plan", "plan:waiting"],
             body=PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n## Current Status\nState: Waiting.\nWaiting for: starts after First\nBlocked by: None.")
         edges = {("someone/direction", 1): selection.relationships(sub_issues=[leaf])}
         with selection.global_fixture([root], [leaf], edges) as (module, result, _reads):

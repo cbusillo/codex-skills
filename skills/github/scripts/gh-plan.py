@@ -3213,7 +3213,7 @@ def automatic_planning_writes_allowed() -> bool:
 
 
 def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True,
-                             include_dependents: bool = False, required: bool = False) -> dict[str, Any]:
+                             include_dependents: bool = False, required: bool = True) -> dict[str, Any]:
     """A confirmed fact write and its label projection have separate receipts."""
     tasks = [{"repo": repo, "number": number, "role": "related", "required": required}
              for repo, number in dict.fromkeys(targets)]
@@ -5847,6 +5847,23 @@ def cmd_close(args: argparse.Namespace) -> None:
         wrapped = close_error_with_recovery(error, issue_repo=issue_repo, number=number, close_reason=close_reason,
             relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
             metadata_state=metadata_state, planning_config=planning_config)
+        if close_comment:
+            resume = ["gh-plan.py", "--repo", issue_repo, "close", str(number),
+                      "--reason", close_reason, "--comment", close_comment]
+            for flag, value in (("--project", args.project), ("--owner", args.owner),
+                                ("--planning-checkout", planning_checkout)):
+                if value:
+                    resume.extend([flag, str(value)])
+            comment_outcome = "not_attempted"
+            if metadata_state == "comment_incomplete":
+                comment_outcome = (error.failure.write_outcome if error.failure else None) or "unknown"
+            wrapped.payload["recovery"]["pending_comment"] = {
+                "resume_argv": resume,
+                "write_outcome": comment_outcome,
+                "next_action": "An existing authorized owning session reads current state and discussion before resuming these arguments; "
+                               "the confirmed close and exact-body comment are read-reconciled and deduplicated first. "
+                               "Observe an unknown comment outcome before resuming. Metadata-only projection does not post this note. "
+                               "Do not replay a denied write in this session or switch identity."}
         if source_error is None:
             source_error = wrapped
         source_projection["writes_started"] = writes_started

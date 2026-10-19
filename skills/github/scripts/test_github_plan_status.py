@@ -123,6 +123,28 @@ class DerivedStatusTests(unittest.TestCase):
         self.assertFalse(outcome["verified"])
         self.assertEqual(outcome["projection_status"], "reconciled")
 
+    def test_explicit_projection_success_is_distinct_from_full_completion_and_optional_review(self) -> None:
+        cases = [
+            ("review_posting_authority", True, None, False, False),
+            ("review_posting_authority", False, None, False, True),
+            ("review_wait_record", True, "preserved", False, False),
+            ("review_wait_record", True, "reconciled", False, True),
+            ("review_wait_record", True, "reconciled", True, False),
+        ]
+        for status, required, projection, completion, ok in cases:
+            with self.subTest(status=status, required=required, projection=projection, completion=completion):
+                row = github_plan_status.classify_outcome(status, required=required,
+                    projection_status=projection, completion_required=completion)
+                self.assertEqual(row["ok"], ok)
+                self.assertFalse(row["verified"])
+                receipt = github_plan_status.receipt_summary([row])
+                self.assertEqual(receipt["ok"], ok)
+                self.assertEqual(receipt["coverage"], "partial")
+        # A previously optimistic verification field cannot erase an explicit
+        # failed required outcome when receipts are combined.
+        denied = github_plan_status.classify_outcome("review_posting_authority", required=True)
+        self.assertFalse(github_plan_status.receipt_summary([{**denied, "verified": True}])["ok"])
+
     def test_closed_issue_keeps_its_actual_person_wait_view(self) -> None:
         self.issue["state"] = "closed"
         held = github_plan_wait.reviewed(evidence="Closed source still awaits Client acceptance",

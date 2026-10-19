@@ -124,7 +124,8 @@ def is_planning_issue(issue: dict[str, Any], names: Mapping[str, str]) -> bool:
 
 def receipt_summary(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     verified = {"reconciled", "unchanged", "would_reconcile", "not_planning_issue"}
-    return {"ok": all(item.get("informational") or item.get("verified") or item["status"] in verified for item in outcomes),
+    return {"ok": all(item["ok"] if "ok" in item else (
+                item.get("informational") or item.get("verified") or item["status"] in verified) for item in outcomes),
             "coverage": "complete" if all(item.get("verified") or item["status"] in verified for item in outcomes) else "partial",
             "review_required": any(item["status"].startswith(("review_", "not_attempted", "reconciliation_")) for item in outcomes)}
 
@@ -139,10 +140,13 @@ def projection_outcome(derived: dict[str, Any], label_status: str) -> dict[str, 
     return {"status": label_status, "verified": True, "projection_status": label_status}
 
 
-def classify_outcome(status: str, *, verified: bool = False, required: bool = False) -> dict[str, Any]:
+def classify_outcome(status: str, *, verified: bool = False, required: bool = False,
+                     projection_status: str | None = None, completion_required: bool = False) -> dict[str, Any]:
     verified = verified or status in {"reconciled", "unchanged", "would_reconcile", "not_planning_issue"}
-    return {"status": status, "verified": verified,
-            "informational": not required and status.startswith(("review_", "not_attempted"))}
+    informational = not required and status.startswith(("review_", "not_attempted"))
+    projection_complete = projection_status in {"reconciled", "unchanged", "would_reconcile"}
+    return {"status": status, "verified": verified, "informational": informational,
+            "ok": informational or verified or (projection_complete and not completion_required)}
 
 
 def failure_disposition(cause: str | None, write_outcome: str | None, *,

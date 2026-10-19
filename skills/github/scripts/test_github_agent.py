@@ -187,7 +187,7 @@ class AgentTests(unittest.TestCase):
     def test_family_discovery_omissions_preserve_milestone_and_parent_waits(self):
         for family, other in (("codex", "claude"), ("claude", "codex")):
             parent = next_tests.global_issue("someone/product", 10,
-                labels=["plan:waiting"], body="## Current Status\nWaiting for: Owner testing")
+                labels=["plan:waiting"], body="## Current Status\nWaiting for: Owner testing", waiting_for="Owner testing")
             leaves = [next_tests.global_issue("someone/product", n, labels=[f"agent:{other}"])
                       for n in (2, 3)]
             leaves[1]["milestone"] = next_tests.milestone_data(1, "First", created_at="2026-01-01T00:00:00Z")

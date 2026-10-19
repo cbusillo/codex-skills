@@ -1445,7 +1445,9 @@ def generic_close_fixture(*, reject_labels: bool = False):
             comment_writes.append(number)
             return success(copy.deepcopy(item), status=201)
         if number in (42, 43) and parts[1] == "labels":
-            if callback.reject_labels and number == 43:
+            if callback.reject_labels == "source" and number == 42:
+                return failure(403, {"message": "Explicit source labels denied"}, is_write=True)
+            if callback.reject_labels is True and number == 43:
                 return failure(422, {"message": "Fixture label operation rejected"}, is_write=True)
             labels = {item["name"] for item in issue["labels"]}
             if method == "DELETE":
@@ -1559,6 +1561,25 @@ def test_generic_closed_source_transient_comment_read_repairs_lifecycle_and_keep
         assert comments[43] == []
 
 
+def test_generic_explicit_source_projection_denial_is_a_failed_required_outcome() -> None:
+    with generic_close_fixture() as (callback, records, comments, states, posts):
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        records[42].update(labels=[{"name": names[key]} for key in ("plan", "active")],
+            user={"login": "owner"}, body=github_plan_status.wait_records.marker(
+                github_plan_status.wait_records.reviewed(evidence="Source completion reviewed")))
+        callback.reject_labels = "source"
+        def run(calls):
+            code, payload = _run_cli(["close", "owner/repo#42"], io.StringIO(""), timeout=10, planning=True)
+            assert code != 0 and not payload["ok"], payload
+            source = next(row for row in payload["projection"]["issues"] if row["number"] == 42)
+            assert source["required"] and not source["ok"], source
+            assert source["status"] == "review_posting_authority", source
+            assert payload["state"] == "closed" and payload["recovery"]["issue_closed"] is True, payload
+        with_call_stub(callback, run)
+        assert states == [(42, "closed")] and posts == [], (states, posts)
+        assert {item["name"] for item in records[43]["labels"]} == {names[key] for key in ("plan", "blocked")}
+
+
 def test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees() -> None:
     with generic_close_fixture() as (callback, records, comments, states, posts):
         before = copy.deepcopy(records[43])
@@ -1615,6 +1636,7 @@ TESTS = [
     test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_edits,
     test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_recovery,
     test_generic_closed_source_transient_comment_read_repairs_lifecycle_and_keeps_wait_review,
+    test_generic_explicit_source_projection_denial_is_a_failed_required_outcome,
     test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees,
 ]
 

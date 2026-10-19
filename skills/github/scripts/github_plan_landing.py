@@ -307,6 +307,7 @@ def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: b
                 "review_open_finish_line", "review_cross_repository", "review_reporter_acceptance", "review_reference_only"}
         entry.update(github_plan_status.classify_outcome(
             entry["status"], verified=bool(entry.get("verified")),
+            projection_status=entry.get("projection_status"), completion_required=entry["role"] == "source",
             required=bool(entry.get("required")) or (entry["role"] == "source" and not optional_source)))
         if entry["status"].startswith(("review_", "reconciliation_", "not_attempted")):
             entry["recovery"] = {

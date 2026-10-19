@@ -758,6 +758,9 @@ def test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenan
 
 def test_native_link_and_unlink_allow_unmarked_human_authored_bodies() -> None:
     plan = load_plan_module()
+    # This fixture isolates native relationship transport and body ownership;
+    # stateful mutation fixtures exercise actual status projection separately.
+    plan.refresh_planning_targets = lambda *_args, **_kwargs: {"ok": True, "coverage": "complete", "issues": []}
     target = plan_issue(body="Target", title="Target", login="owner", association="OWNER")
     target["number"] = 2
     target["id"] = 1002

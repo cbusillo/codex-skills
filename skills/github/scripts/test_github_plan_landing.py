@@ -1103,10 +1103,13 @@ class MutationProjectionTests(unittest.TestCase):
         self.add_issue(7, label_keys=("plan", "active", "waiting"))
         self.records[7]["state"] = "closed"
         error = self.read_error("network_provider_failure")
-        with patch.object(PLAN, "collect_paged_rest_items", side_effect=error), self.assertRaises(PLAN.PlanError) as caught:
-            self.command("reconcile-status", "7", "--apply")
+        with patch.object(PLAN, "collect_paged_rest_items", side_effect=error):
+            result = self.command("reconcile-status", "7", "--apply")
         self.assert_labels(7, "plan", "done", "waiting")
-        row = caught.exception.payload["issues"][0]
+        self.assertEqual(result["coverage"], "partial")
+        row = result["issues"][0]
+        self.assertTrue(row["ok"])
+        self.assertFalse(row["verified"])
         self.assertEqual(row["projection_status"], "reconciled")
         self.assertEqual(json.loads(row["wait"]["evidence"])["failure"], error.failure.as_dict())
         self.assertEqual(self.discussion[7], [])
@@ -1156,6 +1159,83 @@ class MutationProjectionTests(unittest.TestCase):
                 self.assertEqual(rows[8]["status"], "not_attempted")
                 if outcome == "unknown":
                     self.assertEqual(rows[9]["status"], "not_attempted")
+
+    def test_explicit_fact_projection_denials_fail_without_losing_the_committed_fact(self):
+        commands = (
+            ("wait", "7", "--clear", "--evidence", "Client accepted"),
+            ("create", "New request", "--waiting-for", "Client", "--ends-when", "Client accepts",
+             "--wait-evidence", "Client requested acceptance"),
+            ("link", "7", "blocked-by", "8"),
+            ("unlink", "7", "blocked-by", "8"),
+        )
+        failure = PLAN.github_api_core.FailureDetail(cause="permission_denied", message="Explicit target labels denied",
+            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
+        for argv in commands:
+            with self.subTest(command=argv[0]):
+                if argv[0] == "wait":
+                    self.add_issue(7, label_keys=("plan", "waiting"), wait=github_plan_wait.reviewed(
+                        evidence="Client requested acceptance", waiting_for="Client", ends_when="Client accepts"))
+                else:
+                    self.add_issue(7, label_keys=("plan", "blocked") if argv[0] == "unlink" else ("plan", "active"))
+                self.add_issue(8)
+                if argv[0] == "unlink":
+                    self.blockers[7].add(8)
+                with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
+                        failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
+                    self.command(*argv)
+                result = caught.exception.payload
+                row = result["projection"]["issues"][0]
+                self.assertFalse(result["projection"]["ok"])
+                self.assertFalse(row["ok"])
+                self.assertTrue(row["required"])
+                self.assertEqual(row["error"]["failure"], failure.as_dict())
+                if argv[0] == "wait":
+                    self.assertEqual(PLAN.current_wait(self.records[7], self.discussion[7], REPO)["state"], "clear")
+                elif argv[0] == "create":
+                    self.assertEqual(PLAN.current_wait(self.records[9], self.discussion[9], REPO)["state"], "waiting")
+                else:
+                    self.assertEqual(self.blockers[7], {8} if argv[0] == "link" else set())
+
+    def test_pending_close_comment_resume_preserves_exact_note_without_closing_twice(self):
+        note = "Completion evidence: literal \\u0027 and ${VALUE}.\nRetain café capture.\n"
+        closed = []
+        def state(number, **kwargs):
+            closed.append((number, kwargs["state"]))
+            return self.set_state(number, **kwargs)
+        failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Label write rejected before note",
+            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
+        with patch.object(PLAN.github_issue_core, "set_issue_state", side_effect=state):
+            with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
+                    failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
+                self.command("close", "7", "--reason", "completed", "--owner", "fixture-owner", "--comment", note)
+            pending = caught.exception.payload["recovery"]["pending_comment"]
+            self.assertEqual(pending["write_outcome"], "not_attempted")
+            self.assertEqual(self.discussion[7], [])
+            resume = PLAN.build_parser().parse_args(pending["resume_argv"][1:])
+            self.assertEqual(resume.body, note)
+            self.assertEqual(resume.owner, "fixture-owner")
+            self.assertEqual(resume.reason, "completed")
+            with contextlib.redirect_stdout(io.StringIO()):
+                resume.func(resume)
+        self.assertEqual(closed, [(7, "closed")])
+        self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
+        self.assert_labels(7, "plan", "done")
+
+    def test_unknown_close_comment_outcome_retains_uncertainty_and_pending_note(self):
+        note = "Retain this exact completion note.\nSecond paragraph."
+        failure = PLAN.github_api_core.FailureDetail(cause="network_provider_failure", message="Comment outcome unknown",
+            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="unknown")
+        error = PLAN.github_comment_core.CommentError(failure.message, failure=failure,
+            payload={"reconciliation": {"strategy": "read_comments_for_exact_body", "result": "unavailable"}})
+        with patch.object(PLAN.github_comment_core, "comment", side_effect=error), self.assertRaises(PLAN.PlanError) as caught:
+            self.command("close", "7", "--comment", note)
+        self.assertEqual(self.records[7]["state"], "closed")
+        self.assertEqual(caught.exception.failure.write_outcome, "unknown")
+        pending = caught.exception.payload["recovery"]["pending_comment"]
+        self.assertEqual(pending["write_outcome"], "unknown")
+        resume = PLAN.build_parser().parse_args(pending["resume_argv"][1:])
+        self.assertEqual(resume.body, note)
+        self.assertEqual(caught.exception.payload["reconciliation"], error.payload["reconciliation"])
 
 
 if __name__ == "__main__":

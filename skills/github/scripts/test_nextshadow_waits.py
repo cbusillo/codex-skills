@@ -27,7 +27,7 @@ def cases() -> list[dict]:
 
 
 def source(case: dict) -> tuple[dict, list[dict]]:
-    raw = cli.global_issue('cbusillo/launchplane', case['number'], body=(
+    raw = cli.global_issue('cbusillo/launchplane', case['number'], wait_reviewed=False, body=(
         f"## Current Status\nState: {case['state']}\nNext action: {case['action']}\n"
         f"Waiting for: {case['waiting_for']}\n"))
     raw['user'] = {'login': 'cbusillo'}
@@ -49,7 +49,7 @@ def source(case: dict) -> tuple[dict, list[dict]]:
 def run_global(raw: dict, comments: list[dict], *, comment_limit: int = 100) -> dict:
     root = cli.track('cbusillo/direction', 1, 'First')
     edges = {(root['repo'], root['number']): cli.relationships(sub_issues=[raw])}
-    with cli.global_fixture([root], [raw], edges, repo=root['repo'], comments={(raw['repo'], raw['number']): comments}, reviewed_waits=False) as (module, result, _reads):
+    with cli.global_fixture([root], [raw], edges, repo=root['repo'], comments={(raw['repo'], raw['number']): comments}) as (module, result, _reads):
         original = module.collect_paged_rest_items
         def read(path: str, **kwargs):
             if path.endswith('/pulls') or path.endswith('/branches'):

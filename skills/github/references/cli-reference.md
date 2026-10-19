@@ -1545,6 +1545,10 @@ competitor's record.
   after resolving its reported review or failure. Confirmed wait, create and
   native relationship writes refresh the affected issue's labels immediately;
   their fact-write evidence remains separate from the projection receipt.
+  Explicit targets are required work: a denied or failed projection returns
+  unsuccessful while preserving the committed fact and its recovery. Successful
+  closed lifecycle labels can return success with partial wait coverage; that
+  does not certify full completion metadata or acceptance.
   `--include-dependents` also refreshes direct native parents and blocking
   dependents, with automatic neighbors limited to the source account. An
   explicit target remains subject to its existing posting authority; a local
@@ -1562,6 +1566,9 @@ competitor's record.
   Actionable create-time labels are immediately projected: for example,
   `--plan-status blocked --wait-clear` becomes active until a native blocker is
   linked. Deliberate stale/done/unstatused scope holds retain their review state.
+  Without reviewed wait evidence, creation can succeed while its open-issue
+  projection remains unsuccessful. Preserve the created issue; review it with
+  `wait`, then use its `reconcile-status` recovery instead of repeating creation.
 - `update-section <issue> <section>`: Patch a single markdown section on an
   issue. A target returned as a pull request is refused before body preparation
   or any write, with `validation_error` and `write_outcome=not_started`.
@@ -1623,6 +1630,10 @@ competitor's record.
   metadata failure defers its remaining comment; a known authority denial skips
   further writes in that repository while independent repositories continue.
   Unknown write outcomes stop all later writes and list unattempted targets.
+  A requested note without confirmed publication is retained in
+  `recovery.pending_comment`, including its write outcome and structured resume
+  arguments. Only an existing authorized owning session resumes after reading
+  current state and discussion; metadata-only repair cannot discharge the note.
   Metadata recovery uses the
   reported `reconcile-status` targets without replaying closure or comments.
 - Every successful `close`, including an idempotent repair of a confirmed close,
