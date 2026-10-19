@@ -48,7 +48,7 @@ resources:
     description: Record verified closure, discover remaining claims across Director repositories and release them through the planning helper; includes closed-log backfill.
   - path: scripts/codex-session.py
     kind: script
-    description: Register a fresh managed native launch, resume or queue an exact thread under the closure/admission ownership lease, or read its new launch metadata.
+    description: Register a fresh managed native launch, resume or queue an exact thread under the closure/admission ownership lease, read its new launch metadata, or preview and cancel one guarded NotLoaded queue entry.
   - path: scripts/codex_session_proxy.py
     kind: script
     description: Private per-client native RPC ingress that holds source ownership for attachments and actions; imported by codex-session.py.
@@ -81,6 +81,16 @@ commands:
     resource_path: scripts/status.py
     example_argv: ["uv", "run", "scripts/status.py", "--ledger", "<ledger.json>"]
     purpose: Report ledger session context and transcript activity.
+  - name: supervisor-codex-queue-cancel-preview
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "queue-cancel", "--session-id", "<native-id>", "--codex-home", "<target-home>", "--ledger", "<original-ledger.json>"]
+    purpose: Observe opaque queued-entry identities without creating ownership or changing source state.
+  - name: supervisor-codex-queue-cancel-apply
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "queue-cancel", "--session-id", "<native-id>", "--codex-home", "<target-home>", "--ledger", "<original-ledger.json>", "--queued-submission-id", "<selected-id>", "--entry-sha256", "<observed-full-entry-sha256>", "--apply"]
+    purpose: Delete one selected entry only from a verified NotLoaded target, preserving other queues and barriers.
   - name: supervisor-codex-idle-watch
     source: skill
     resource_path: scripts/codex_idle_watch.py
@@ -304,6 +314,12 @@ through compaction" and Keep instructions naming the brief, issue and current
 step; do not hand them off at a context percentage. Codex as
 the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
 records that run.
+
+For stale queued input on a stopped source, read the [recovery procedure](references/helpers.md#release-a-verified-finished-session)
+and use `codex-session.py queue-cancel` preview before an explicit ID/digest apply.
+Cancellation requires a NotLoaded target and the original owned ledger or freshly
+verified termination record. It preserves pending actions and successor freezes;
+it does not establish completion or release claims.
 
 For new Supervisor launches, use `iterm_tab.py --backend tmux` with the
 dedicated `tmux -L supervisor` server so controls work while the display sleeps
