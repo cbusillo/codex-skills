@@ -7805,19 +7805,6 @@ def native_timestamp(value):
         return None
 
 
-def file_write_completions(records, harness, identifiers):
-    """Use the existing native binding for a replacement's completion bound."""
-    selected = {(name, id(value)) for record in records
-                for identifier, name, value in calls_and_results(record, harness)[0] if identifier in identifiers}
-    complete = {}
-    for index, source, value in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
-        if value.get("_result") and not value.get("_pending"):
-            at = native_timestamp(records[index].get("timestamp"))
-            if at is not None:
-                complete[source] = at
-    return complete
-
-
 def python_source_checks():
     """Memoize immutable source classification for one collected native snapshot."""
     classifier, fragments = python_ownership, python_fragment_ownership
@@ -7842,10 +7829,28 @@ def native_write_outcomes(records, harness, identifiers):
     for index, identifier, result in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
         if result.get("_result") and not result.get("_pending"):
             ends[identifier] = index
-        if result.get("_tool_error") or type(result.get("exit_code")) is int and result["exit_code"] != 0:
+        if result.get("_tool_error"):
+            failed.add(identifier)
+        elif harness == "codex" and native_names.get(identifier) in {"apply_patch", "functions.apply_patch"}:
+            continue  # Only the native outer status below can certify a patch.
+        elif type(result.get("exit_code")) is int and result["exit_code"] != 0:
             failed.add(identifier)
         elif not result.get("operation") and type(result.get("exit_code")) is int and result["exit_code"] == 0:
             successful.add(identifier)
+    if harness == "codex":
+        for identifier, index in ends.items():
+            if native_names.get(identifier) not in {"apply_patch", "functions.apply_patch"}:
+                continue
+            payload = records[index].get("payload") or {}
+            if payload.get("call_id") != identifier:
+                continue
+            native = payload.get("output")
+            match = re.match(r"\AExit code: (-?\d+)\nWall time: [^\n]+\nOutput:\n", native) if isinstance(native, str) else None
+            status = int(match[1]) if match else None
+            if status == 0:
+                successful.add(identifier)
+            elif status is not None:
+                failed.add(identifier)
     if harness == "claude":
         for identifier, index in ends.items():
             if native_names.get(identifier) not in {"Write", "Edit", "apply_patch", "functions.apply_patch"}:
@@ -7899,43 +7904,35 @@ def ownership_file_candidates(histories, *, python_checks=None):
             for effect in native_file_effects(name, value):
                 if effect["kind"] == "write":
                     writes.append((identifier, name, cwd, native_timestamp(stamp), effect))
-        native_updates = any(name in {"apply_patch", "functions.apply_patch", "Edit"} and "updates" in effect
-                             for _, name, _, _, effect in writes)
-        selected = {identifier for identifier, _, _, _, _ in writes} if native_updates else set()
-        ends, successful = native_write_outcomes(node["records"], node["harness"], selected) if native_updates else ({}, set())
-        by_call, sources, local_candidates, earlier = {}, {}, set(), {}
+        selected = {identifier for identifier, _, _, _, _ in writes}
+        ends, successful = native_write_outcomes(node["records"], node["harness"], selected) if selected else ({}, set())
+        by_call, sources, local_candidates = {}, {}, set()
         for identifier, name, cwd, timestamp, effect in writes:
             path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
             if path:
-                entry = by_call.setdefault((identifier, path), {"at": timestamp, "owns": False, "final": None, "context": [], "snapshot": None})
-                if native_updates and any(previous not in successful or ends.get(previous, float("inf")) >= launches.get(identifier, -1)
-                       for previous in earlier.get(path, ()) if previous != identifier) and path in sources:
-                    sources[path] = dict(sources[path], erasure_exact=False)
-                earlier.setdefault(path, set()).add(identifier)
+                entry = by_call.setdefault((identifier, path), {"at": timestamp, "owns": False, "final": None, "context": []})
                 owning = apply_file_effect(effect, cwd, local_candidates, sources, python_checks=python_checks)
-                entry["context"].append(dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd)))
+                entry["context"].append(dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd),
+                                             _native_update=name if name in {"apply_patch", "functions.apply_patch", "Edit"} and "updates" in effect else None))
                 entry["owns"] |= owning
                 if owning or effect["replaces"]:
                     entry["final"] = owning
-                finished = identifier in ends and identifier in successful and native_timestamp(node["records"][ends[identifier]].get("timestamp")) is not None
-                entry["snapshot"] = (completed_python_update(name, path, entry["context"], sources.get(path, {}), python_checks=python_checks)
-                                     if finished else None)
-                if entry["snapshot"] is not None:
-                    entry["final"] = False
-        replacements = {identifier for (identifier, _), entry in by_call.items() if entry["at"] is not None}
-        completions = file_write_completions(node["records"], node["harness"], replacements) if replacements else {}
+        completions = {identifier: native_timestamp(node["records"][index].get("timestamp"))
+                       for identifier, index in ends.items()}
         for (identifier, path), entry in by_call.items():
-            completion = completions.get(identifier, float("inf")) if entry["at"] is not None else None
+            completion = completions.get(identifier) if entry["at"] is not None else None
+            if completion is None and entry["at"] is not None:
+                completion = float("inf")
             context = tuple(entry["context"])
-            completed_context = entry["snapshot"] or (context if entry["final"] is True or any(effect["replaces"] for effect in context) else ())
+            completed_context = tuple(dict(effect, _native_success=identifier in successful) for effect in context)
             if entry["owns"] or entry["context"]:
                 candidates.setdefault(path, []).append((origin, entry["at"], entry["owns"], False, completion, identifier, context,
                                                        entry["at"], launches.get(identifier), False))
-                if entry["final"] is True and completed_context and completion is not None and completion != float("inf"):
-                    candidates[path].append((origin, completion, True, any(effect["replaces"] for effect in completed_context),
+                if completed_context and completion is not None and completion != float("inf"):
+                    candidates[path].append((origin, completion, entry["final"] is True, any(effect["replaces"] for effect in completed_context),
                                              completion, identifier, completed_context,
                                              entry["at"], launches.get(identifier), True))
-            if entry["final"] is False:
+            if entry["final"] is False and (completion is None or completion == float("inf")):
                 candidates.setdefault(path, []).append((origin, completion, False, True, completion, identifier, completed_context,
                                                        entry["at"], launches.get(identifier), True))
     return candidates
@@ -7976,7 +7973,7 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
 
     own_intervals, completed = {}, []
     candidates, peer_writes, intervals, sources, contributions = set(), [], [], {}, {}
-    generation, active_projection, prior_writers = 0, None, {}
+    generation, active_projection, settled = 0, None, {}
     if isinstance(file_candidates, dict):
         for path, events in file_candidates.items():
             for event in events:
@@ -7985,7 +7982,7 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                 started, index, completed_write = event[7:] if len(event) > 7 else (timestamp, None, replaces)
                 if source != origin and timestamp != float("inf"):
                     peer_writes.append((timestamp, path, owning, replaces, source, context,
-                                        (source, identifier, started, index), completed_write))
+                                        (source, identifier, started, index, completion), completed_write))
                     if not completed_write and timestamp is not None and owning:
                         intervals.append((path, timestamp, completion, context))
     else:
@@ -7999,14 +7996,16 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
             groups.append((at, []))
         groups[-1][1].append(event)
 
-    def newer_than(left, right):
+    def newer_than(left, right, *, overlap=False):
         if left[:2] == right[:2]:
             return False
         if left[0] == right[0] and left[3] is not None and right[3] is not None:
-            return left[3] > right[3]
-        # Different histories with an absent or tied timestamp do not prove
-        # that a replacement launched after the other contribution.
-        return left[2] is None or right[2] is None or left[2] >= right[2]
+            return left[3] > right[3] or overlap and len(left) > 5 and left[5] >= right[3]
+        # A peer that was in flight when replacement launched may have
+        # written after it, even if its terminal result arrived first.
+        completed_at = left[4] if len(left) > 4 else None
+        return (left[2] is None or right[2] is None or left[2] >= right[2]
+                or overlap and (completed_at is None or completed_at >= right[2]))
 
     def remember(path, writer, context, *, append=False):
         entries = contributions.setdefault(path, {})
@@ -8015,6 +8014,9 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
 
     def apply_context(context, target_candidates, target_sources, *, possible=False):
         for effect in context:
+            if possible and effect.get("_native_update"):
+                apply_file_effect(effect, None, target_candidates, dict(target_sources), python_checks=python_checks)
+                continue
             if possible and effect["replaces"]:
                 effect = dict(effect, replaces=False, partial=False)
             elif possible and "updates" in effect:
@@ -8029,18 +8031,37 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
         for path, owning, replaces, source, context, writer, finished in events:
             newer = [entry for entry in contributions.get(path, {}).values()
                      if finished and replaces and newer_than(entry[0], writer)]
+            snapshot = None
+            native_update = next((effect.get("_native_update") for effect in context if effect.get("_native_update")), None)
+            if finished and native_update:
+                safe_base = all(settled.get(key, False) for key in contributions.get(path, {}) if key != writer[:2])
+                projected = dict(target_sources)
+                projected_candidates = set(target_candidates)
+                apply_context(context, projected_candidates, projected)
+                snapshot = (completed_python_update(native_update, path, context, projected.get(path, {}), python_checks=python_checks)
+                            if safe_base and all(effect.get("_native_success") is True for effect in context) else None)
+                if snapshot is not None:
+                    context, replaces = snapshot, True
+                else:
+                    # Failed/unknown writes remain possible; their text cannot
+                    # certify the base for another native erasure.
+                    context = tuple(dict(effect, partial=True) if effect.get("_native_success") is not True else effect for effect in context)
+                newer = [entry for entry in contributions.get(path, {}).values() if replaces and newer_than(entry[0], writer, overlap=True)]
             if context:
                 # A partial write's bytes were already applied at launch.
                 # Replay them only when an intervening replacement removed
                 # its contribution while the native writer was still alive.
-                if not (finished and not replaces and writer[:2] in contributions.get(path, {})):
+                if not (finished and not replaces and not native_update and writer[:2] in contributions.get(path, {})):
                     apply_context(context, target_candidates, target_sources, possible=not finished)
                 owning = path in target_candidates
             if finished:
+                settled[writer[:2]] = snapshot is not None or all(effect.get("_native_success") is True for effect in context)
+                if not settled[writer[:2]] and path in target_sources:
+                    target_sources[path] = dict(target_sources[path], erasure_exact=False)
                 remember(path, writer, context)
                 if replaces:
                     contributions[path] = {key: entry for key, entry in contributions[path].items()
-                                           if key == writer[:2] or newer_than(entry[0], writer)}
+                                           if key == writer[:2] or newer_than(entry[0], writer, overlap=bool(native_update))}
                 # Replay only later writes' own effects. Their cumulative
                 # pre-replacement state can contain bytes this writer erased.
                 for _, later in newer:
@@ -8107,12 +8128,14 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
         local_candidates, local_sources, replacements, written_by_path = set(candidates), dict(sources), {}, {}
         for effect in effects:
             if effect["kind"] == "write":
+                if name in {"apply_patch", "functions.apply_patch", "Edit"} and "updates" in effect:
+                    effect = dict(effect, _native_update=name)
                 generation += 1
                 path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
                 owning = apply_file_effect(effect, cwd, local_candidates, local_sources, python_checks=python_checks)
                 possible = (dict(effect, replaces=False, partial=False) if effect["replaces"] else
                             dict(effect, partial=True) if "updates" in effect else effect)
-                apply_file_effect(possible, cwd, candidates, sources, python_checks=python_checks)
+                apply_file_effect(possible, cwd, candidates, dict(sources) if effect.get("_native_update") else sources, python_checks=python_checks)
                 if path:
                     if effect["replaces"]:
                         replacements[path] = []
@@ -8156,19 +8179,11 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                 continue
             end = completion_ends().get(identifier)
             if end is not None:
-                previous = prior_writers.get(path, set())
-                eligible = (read_at is not None and identifier in successful and (previous or any(effect["replaces"] for effect in written))
-                            and all(source in successful and completion_ends().get(source, float("inf")) < read_at
-                                    for source in previous))
-                snapshot = (completed_python_update(name, path, written, local_sources.get(path, {}), python_checks=python_checks)
-                            if eligible else None)
-                if snapshot is not None:
-                    context = snapshot
+                context = tuple(dict(effect, _native_success=identifier in successful) for effect in context)
                 at = native_timestamp(records[end].get("timestamp"))
-                event = (path, path in local_candidates, path in replacements or snapshot is not None, origin, tuple(context),
-                         (origin, identifier, timestamp, read_at), True)
+                event = (path, path in local_candidates, path in replacements, origin, tuple(context),
+                         (origin, identifier, timestamp, read_at, at, end), True)
                 completed.append((end, at, event))
-            prior_writers.setdefault(path, set()).add(identifier)
     return invocations
 
 

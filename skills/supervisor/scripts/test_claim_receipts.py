@@ -2508,18 +2508,54 @@ os.system(get())
                 rows[1 + 2 * index]['payload'].update(name=name, arguments=value if isinstance(value, str) else json.dumps(value))
             else:
                 rows[1 + 2 * index]['message']['content'][0].update(name=name, input=value)
-            rows[2 + 2 * index] = output({'exit_code': 0, 'output': ''}, harness, 'tool-' + str(index))
+            rows[2 + 2 * index] = (native_result('tool-' + str(index)) if harness == 'codex' and name in {'apply_patch', 'functions.apply_patch'}
+                                    else output({'exit_code': 0, 'output': ''}, harness, 'tool-' + str(index)))
+        native_fixture = Path(receipts.__file__).parents[2] / 'rollout-friction/scripts/fixtures/codex-rollout.jsonl'
+        fixture_rows = [json.loads(line) for line in native_fixture.read_text().splitlines()]
+        # This tracked shell result records the transport status protocol, not
+        # an apply_patch success message or a helper's printed business JSON.
+        fixture_success = next(row for row in fixture_rows if (row.get('payload') or {}).get('type') == 'function_call_output'
+                               and row['payload']['output'].startswith('Exit code: 0\n'))
+        def native_result(identifier):
+            row = json.loads(json.dumps(fixture_success))
+            row['payload']['call_id'] = identifier
+            return row
         for harness in ('codex', 'claude'):
             write = ('apply_patch', initial) if harness == 'codex' else ('Write', {'file_path': '/repo/run.py', 'content': program})
             edit = ('apply_patch', removal) if harness == 'codex' else ('Edit', {'file_path': '/repo/run.py', 'old_string': old, 'new_string': 'print("safe")'})
             read = ('exec_command', {'cmd': 'python3 /repo/run.py'}) if harness == 'codex' else ('Bash', {'command': 'python3 /repo/run.py'})
             variants = ('complete', 'pending', 'running', 'unbound', 'unknown_base', 'unmatched',
                         'later_writer', 'earlier_execution', 'old_writer_pending', 'late_result', 'cached', 'detached', 'failed', 'unknown')
+            if harness == 'codex':
+                variants += ('native_text_failed', 'native_unknown',
+                             'native_nested', 'native_unbound', 'native_cached', 'native_business', 'native_nested_status', 'native_text_quoted_failure', 'codemode_literal')
             for variant in variants:
                 rows = history(harness, *({} for _ in range(4 if variant == 'later_writer' else 3)))
                 invoke(rows, harness, 0, *write)
                 invoke(rows, harness, 1, *edit)
                 invoke(rows, harness, 2, *read)
+                if variant.startswith('native_'):
+                    rows[2] = native_result('tool-0')
+                    rows[4] = native_result('tool-1')
+                    if variant == 'native_text_quoted_failure':
+                        rows[4]['payload']['output'] += json.dumps({'exit_code': 1})
+                    elif variant == 'native_text_failed':
+                        rows[4]['payload']['output'] = rows[4]['payload']['output'].replace('Exit code: 0', 'Exit code: 1')
+                    elif variant == 'native_unknown':
+                        rows[4]['payload']['output'] = rows[4]['payload']['output'].replace('Exit code: 0', 'Exit code: unknown')
+                    elif variant == 'native_nested':
+                        rows[4]['payload']['output'] = json.dumps({'output': rows[4]['payload']['output']})
+                    elif variant == 'native_unbound':
+                        rows[4]['payload']['call_id'] = 'unrelated'
+                    elif variant == 'native_cached':
+                        rows[3]['payload'].update(name='exec_command', arguments=json.dumps({'cmd': 'cat saved-native-output.txt'}))
+                    elif variant == 'native_nested_status':
+                        rows[4]['payload']['output'] = {'output': json.dumps({'exit_code': 0, 'output': ''})}
+                    elif variant == 'native_business':
+                        rows[4]['payload']['output'] = {'operation': 'cached.report', 'metadata': {'exit_code': 0}}
+                if variant == 'codemode_literal':
+                    invoke(rows, harness, 1, 'functions.exec', 'text(await tools.apply_patch(' + json.dumps(removal) + '));')
+                    rows[4]['payload']['output'] = [{'type': 'input_text', 'text': '{}'}]
                 if variant == 'pending':
                     rows.pop(4)
                 elif variant == 'running':
@@ -2555,7 +2591,7 @@ os.system(get())
                     unknown = ('functions.exec', 'const h=' + json.dumps(removal) + ';tools.apply_patch(h);') if harness == 'codex' else ('Bash', {'command': "apply_patch <<'PATCH' &\n" + removal + '\nPATCH'})
                     invoke(rows, harness, 1, *unknown)
                 with self.subTest(harness=harness, native_removal=variant):
-                    self.assertEqual(receipts.ownership_state(rows, harness)['pending'], variant != 'complete')
+                    self.assertEqual(receipts.ownership_state(rows, harness)['pending'], variant not in {'complete', 'native_text_quoted_failure'})
 
             if harness == 'codex':
                 # A copy carries its source's uncertainty; ordinary dormant
@@ -2571,6 +2607,19 @@ os.system(get())
                 invoke(rows, harness, 4, *read)
                 with self.subTest(harness=harness, native_removal_copied_uncertain_base=True):
                     self.assertTrue(receipts.ownership_state(rows, harness)['pending'])
+
+            # A visible bound shell rewrite is the supported replacement
+            # route when code-mode patch discovery cannot prove execution.
+            rows = history(harness, {}, {}, {})
+            invoke(rows, harness, 0, *write)
+            replacement = "cat > /repo/run.py <<'PY'\nprint('safe')\nPY"
+            invoke(rows, harness, 1, 'exec_command' if harness == 'codex' else 'Bash',
+                   {'cmd' if harness == 'codex' else 'command': replacement})
+            if harness == 'codex':
+                rows[4] = native_result('tool-1')
+            invoke(rows, harness, 2, *read)
+            with self.subTest(harness=harness, native_removal_shell_replacement=True):
+                self.assertFalse(receipts.ownership_state(rows, harness)['pending'])
 
             # Cross-history erasure additionally needs a native completion
             # timestamp; missing/untimed results cannot invent a settled edit.
@@ -2590,7 +2639,13 @@ os.system(get())
                     self.assertTrue(receipts.ownership_state(reader, harness, file_candidates=candidates)['pending'])
 
             # A terminal edit cannot erase a later peer's owning contribution.
-            for peer_at, pending in ((None, False), (3, True), (4, True)):
+            peer_cases = ((None, False, '', 'complete'), (3, True, program, 'complete'), (4, True, program, 'complete'),
+                          (1.5, True, program + 'os.system(' + repr(writer.replace('claim 5', 'claim 6')) + ')\n', 'complete'),
+                          (1.5, False, program, 'complete'),
+                          (1.5, True, program, 'pending'), (1.5, True, program, 'overlap'), (1.5, True, program, 'tied_end'), (1.5, True, program, 'unknown'),
+                          (1.5, True, program, 'untimed'), (2, True, program, 'complete'),
+                          (4.5, True, program, 'complete'), (0.5, False, program, 'complete'))
+            for peer_at, pending, peer_program, peer_mode in peer_cases:
                 owner = history(harness, {}, {})
                 reader = history(harness, {})
                 invoke(owner, harness, 0, *write)
@@ -2601,14 +2656,40 @@ os.system(get())
                 peers = [owner]
                 if peer_at is not None:
                     peer = history(harness, {})
-                    invoke(peer, harness, 0, *write)
+                    peer_write = ('Write', {'file_path': '/repo/run.py', 'content': peer_program})
+                    if harness == 'codex':
+                        peer_write = ('apply_patch', '*** Begin Patch\n*** Add File: /repo/run.py\n+' + '\n+'.join(peer_program.splitlines()) + '\n*** End Patch')
+                    invoke(peer, harness, 0, *peer_write)
                     peer[1]['timestamp'] = peer[2]['timestamp'] = '2026-01-01T00:00:0' + str(peer_at) + 'Z'
+                    if peer_mode in {'overlap', 'tied_end'}:
+                        peer[2]['timestamp'] = '2026-01-01T00:00:0' + ('3' if peer_mode == 'overlap' else '4') + 'Z'
+                    if peer_mode == 'pending':
+                        peer.pop(2)
+                    elif peer_mode == 'unknown':
+                        peer[2] = output({'exit_code': 'unknown', 'output': ''}, harness, 'tool-0')
+                        peer[2]['timestamp'] = '2026-01-01T00:00:01.5Z'
+                        if harness == 'claude':
+                            peer[2]['message']['content'][0]['is_error'] = 'unknown'
+                    elif peer_mode == 'untimed':
+                        peer[1].pop('timestamp', None)
+                        peer[2].pop('timestamp', None)
                     peers.append(peer)
                 for order in (peers, list(reversed(peers))):
                     nodes = [{'harness': harness, 'records': rows} for rows in (*order, reader)]
                     candidates = receipts.ownership_file_candidates(nodes)
-                    with self.subTest(harness=harness, native_removal_peer=peer_at, reverse=order != peers):
+                    with self.subTest(harness=harness, native_removal_peer=peer_at, peer_program=peer_program, peer_mode=peer_mode, reverse=order != peers):
                         self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)['pending'], pending)
+                        owner_reader = json.loads(json.dumps(owner))
+                        own_read = json.loads(json.dumps(reader[1:3]))
+                        if harness == 'codex':
+                            own_read[0]['payload']['call_id'] = own_read[1]['payload']['call_id'] = 'owner-read'
+                        else:
+                            own_read[0]['message']['content'][0]['id'] = 'owner-read'
+                            own_read[1]['message']['content'][0]['tool_use_id'] = 'owner-read'
+                        owner_reader[-(2 if harness == 'codex' else 1):-(2 if harness == 'codex' else 1)] = own_read
+                        own_nodes = [{'harness': harness, 'records': rows} for rows in (owner_reader, *[rows for rows in order if rows is not owner])]
+                        own_candidates = receipts.ownership_file_candidates(own_nodes)
+                        self.assertEqual(receipts.ownership_state(owner_reader, harness, file_candidates=own_candidates)['pending'], pending)
 
     def test_wrapped_and_computed_reads_of_claim_text_are_not_writers(self):
         commands = ("python3 - <<'PY'\nline='gh-plan.py claim'\nif 'gh-plan.py' in line and 'claim' in line: print(line)\nPY",
