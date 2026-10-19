@@ -407,7 +407,14 @@ Director or configured automation, whose own heading asks to search mentions
 under the Director's login. An approval of a different permission does not
 count. No later answer to that question may withdraw it. Q455 on
 [codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073) is one
-Director's example, not a required ID. Each search
+Director's example, not a required ID. The first physical heading line
+must directly ask permission, for example `Owner question: Q100 — may the
+watcher search GitHub for mentions under your own login, unattended?` or
+`Owner question: Q100 — can our agents run read-only mention searches under
+your login?`. Body prose cannot supply permission. Same-ID reminders must
+all ask for that permission, and the question must not have been edited after
+approval. Unsupported wording or a later question edit reports a gap: use a
+supported heading and link a fresh unqualified Director approval to resume. Each search
 overlaps the previous one by 15 minutes to catch late search indexing; the
 state file's `mention_seen` keeps already-reported thread versions from
 repeating. Until approval is configured,

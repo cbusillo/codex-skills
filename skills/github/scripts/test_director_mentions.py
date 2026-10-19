@@ -13,7 +13,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
@@ -48,7 +48,7 @@ class FakeGet:
 Q = "Q455"  # Historical approval syntax remains supported alongside other counters.
 
 
-def record(body, login="cbusillo", comment_id=99, created="2026-10-17T12:00:00Z"):
+def record(body, login="cbusillo", comment_id=99, created="2026-10-17T12:00:00Z") -> dict[str, Any]:
     return {"id": comment_id, "user": {"login": login}, "body": body, "created_at": created,
             "issue_url": "https://api.github.com/repos/cbusillo/codex-skills/issues/2073"}
 
@@ -102,7 +102,7 @@ class DirectorReadRouteTests(unittest.TestCase):
 
 
 def approval_gap(url: str | None = APPROVAL_URL, read: Callable[[str, int], Any] | None = None,
-                 later: list[dict[str, Any]] = ()) -> str | None:
+                 later: Sequence[dict[str, Any]] = ()) -> str | None:
     return director_mentions.approval_gap(url, "cbusillo", {"cbusillo", "shiny-code-app[bot]"},
                                           read or approval(), lambda issue_url, since: [permission_question(), *later])
 
@@ -135,6 +135,15 @@ class ApprovalTests(unittest.TestCase):
                           "mentions under your own login?"},
                          {**valid, "body": "Owner question: **Q100** — allow attachment downloads "
                           "(this does not search mentions under your own login)?"},
+                         {**valid, "body": "## Owner question: Q100 — may I download attachments?\n"
+                          "The watcher can search mentions under your own login."},
+                         {**valid, "body": "**Owner question: Q100 — may I download attachments?**\n"
+                          "The watcher can search mentions under your own login."},
+                         {**valid, "body": "Owner question: Q100 — may I retire the watcher's "
+                          "mention searches under your own login?"},
+                         {**valid, "body": "Owner question: Q100 — may I disable search for "
+                          "mentions under your own login?"},
+                         {**valid, "updated_at": "2026-10-18T00:00:00Z"},
                          {**valid, "body": "> " + valid["body"]},
                          {**valid, "user": {"login": "stranger"}},
                          {**valid, "issue_url": "https://api.github.com/repos/other/repo/issues/1"},
@@ -147,9 +156,35 @@ class ApprovalTests(unittest.TestCase):
                 self.assertTrue(gap)
                 self.assertEqual((mentions, error, get.calls), ([], None, []))
 
+    def test_scope_safe_reminders_case_variants_and_direct_permission_clauses(self):
+        question = permission_question("Q100")
+        reminder = {**question, "id": 97}
+        for heading in (
+            "Owner question: Q100 — may the Supervisor's watcher and the comment radar search "
+            "GitHub for mentions of you under your own login, unattended, on every pass?",
+            "Owner question: Q100 — may I search for mentions under my login, not only the App's?",
+            "Director question: Q100 — can our agents run read-only mention searches under your login?",
+        ):
+            with self.subTest(heading=heading):
+                gap = director_mentions.approval_gap(
+                    APPROVAL_URL.replace("cbusillo", "CBusillo"), "cbusillo", {"shiny-code-app[bot]"},
+                    approval("Q100 yes"), lambda *_: [{**question, "body": heading}, reminder])
+                self.assertIsNone(gap)
+        unrelated = {**reminder, "body": "Owner question: Q100 — may I download attachments?"}
+        self.assertTrue(director_mentions.approval_gap(
+            APPROVAL_URL, "cbusillo", {"shiny-code-app[bot]"}, approval("Q100 yes"),
+            lambda *_: [question, unrelated]))
+
+    def test_explicit_question_reader_keeps_its_questioned_yes_behavior(self):
+        later = [record("Q467 yes? I thought this was already standing", comment_id=100,
+                        created="2026-10-18T00:00:00Z")]
+        self.assertIsNone(director_mentions.approval_gap(
+            APPROVAL_URL, "cbusillo", set(), approval("Q467 yes"), lambda *_: later, question="Q467"))
+
     def test_nonlegacy_withdrawal_is_scoped_to_the_approved_question(self):
         question = permission_question("Q100")
-        for body, expected in (("Q100 no", False), ("Q101 no", True), ("Q100 yes, but only once", False)):
+        for body, expected in (("Q100 no", False), ("Q101 no", True), ("Q100 yes, but only once", False),
+                               ("Q100 yes?", False)):
             with self.subTest(body=body):
                 gap = director_mentions.approval_gap(
                     APPROVAL_URL, "cbusillo", {"shiny-code-app[bot]"}, approval("Q100 yes"),
@@ -175,6 +210,7 @@ class ApprovalTests(unittest.TestCase):
                           (APPROVAL_URL, approval(login="client")),
                           (APPROVAL_URL, approval(f"{Q} no")),
                           (APPROVAL_URL, approval(f"{Q} yes?")),
+                          (APPROVAL_URL, approval(f"{Q} yes, if I am watching")),
                           (APPROVAL_URL, approval(f"> {Q} yes\n\nNo, I do not approve this.")),
                           (APPROVAL_URL, approval(f"{Q} yes, but not unattended")),
                           (APPROVAL_URL, approval(f"Thinking about it. {Q} yes?")),

@@ -2201,7 +2201,7 @@ uv run scripts/gh-attachment.py \
 On Chris-Studio, use the host's `/Volumes/Developer-Artifacts/task-evidence/`
 root. `COMMENT_ID` is the numeric ID in `#issuecomment-...`. The helper checks
 the recorded approval and the complete subsequent discussion through automation
-for standing downloads, using the same approval reader as Q455 mention searches.
+for standing downloads, using the same approval reader as mention searches.
 Unreadable, ambiguous or withdrawn approval stops before personal authentication.
 The Director can withdraw it with `Q467 no` as the first nonempty line of a
 comment on #2021 (a trusted `Director decision: Q467 no` also withdraws it).

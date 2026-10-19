@@ -21,19 +21,30 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from datetime import datetime
 from typing import Any, Callable
 from urllib.parse import urlencode
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.direction.scripts import question_id
+
+
 QUESTION_ID = re.compile(r"Q\d+\b", re.IGNORECASE)
-QUESTION_HEADING = re.compile(r"(?:#{1,6}\s*)?(?:Owner|Director) question\s*:\s*(Q\d+)\b(.*)", re.IGNORECASE)
 # An answer is the comment's first line, unquoted: "Q<number> yes" from the Director,
 # or "Director decision: Q<number> yes" recorded by trusted automation. Any other
 # answer to the question, or a hedged one, withholds approval.
 DECISION_PREFIX = re.compile(r"Director decision\s*:\s*", re.IGNORECASE)
 AFFIRMATIVE = {"yes", "approved", "approve"}
 HEDGE = re.compile(r"\b(?:not|no|don't|do not|but|unless|declin\w*|reject\w*|revok\w*|withdraw\w*)\b", re.IGNORECASE)
-STOP_SEARCH = re.compile(r"\b(?:stop\w*|disabl\w*|paus\w*|avoid\w*|ceas\w*|prevent\w*|block\w*|forbid\w*)\b", re.IGNORECASE)
+CONDITION = re.compile(r"\b(?:if|provided|assuming|condition\w*)\b", re.IGNORECASE)
+# A direct permission clause, not a bag of search-related words. Unsupported
+# phrasing reports a coverage gap; it cannot silently become standing permission.
+PERMISSION_SUBJECT = r"(?:(?:(?:the|my|your|our)\s+)?(?:(?:supervisor['’]s|comment|mention|GitHub)\s+)?(?:supervisor|watcher|watch|radar|agents?|tools?)|I|we|you|they)"
+MENTION_PERMISSION = re.compile(
+    rf"^(?:may|can|should|could|will)\s+{PERMISSION_SUBJECT}(?:\s+and\s+{PERMISSION_SUBJECT})*\s+"
+    r"(?:search(?:\s+GitHub)?\s+(?:for\s+)?mentions?\b|"
+    r"run\s+(?:(?:unattended|read-only|GitHub)\s+)*mention\s+searches\b)", re.IGNORECASE)
 COMMENT_URL = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/\d+#issuecomment-(\d+)"
 )
@@ -84,7 +95,7 @@ def thread_comments_path(issue_api_url: str) -> str:
 
 
 def answer(comment: Any, director_login: str, recorders: set[str], *,
-           question: str, recorded_affirmative: str | None = None) -> bool | None:
+           question: str, recorded_affirmative: str | None = None, unquestioned: bool = False) -> bool | None:
     """True or False for a Director answer, else None.
 
     Other narrow readers may name their own question and the exact affirmative
@@ -107,7 +118,8 @@ def answer(comment: Any, director_login: str, recorders: set[str], *,
     match = re.match(rf"{re.escape(question)}\b\W*(\w+)(.*)", text, re.IGNORECASE)
     if not match:
         return None
-    return match.group(1).casefold() in AFFIRMATIVE and "?" not in match.group(2) and not HEDGE.search(match.group(2))
+    return (match.group(1).casefold() in AFFIRMATIVE and not HEDGE.search(match.group(2))
+            and (not unquestioned or ("?" not in match.group(2) and not CONDITION.search(match.group(2)))))
 
 
 def approval_gap(
@@ -128,6 +140,7 @@ def approval_gap(
         return "the standing approval must be a GitHub issue comment link"
     try:
         comment = read_comment(match.group(1), int(match.group(2)))
+        mention_permission = question is None
         if question is None:
             # Read the whole thread, including the question before the approval.
             # Explicit-question consumers (such as attachments) keep their own gate.
@@ -137,13 +150,13 @@ def approval_gap(
                 return "the linked approval has no matching mention-search permission question"
         else:
             thread = read_later(comment["issue_url"], comment["created_at"])
-        if answer(comment, director_login, recorders, question=question,
-                  recorded_affirmative=recorded_affirmative) is not True:
+        if not answer(comment, director_login, recorders, question=question,
+                      recorded_affirmative=recorded_affirmative, unquestioned=mention_permission):
             return f"the linked comment is not an unqualified {question} approval from the Director"
     except Exception as error:  # Any read failure leaves approval unverified.
         return f"the standing approval could not be verified: {error}"
     answers = [answer(item, director_login, recorders, question=question,
-                      recorded_affirmative=recorded_affirmative) for item in sorted(
+                      recorded_affirmative=recorded_affirmative, unquestioned=mention_permission) for item in sorted(
         (item for item in thread if isinstance(item, dict) and item.get("id") != comment.get("id")
          and str(item.get("updated_at") or item.get("created_at") or "") >= comment["created_at"]),
         key=lambda item: str(item.get("created_at") or ""))]
@@ -160,7 +173,7 @@ def mention_question(comment: Any, thread: list[Any], approval_url: str,
         return None
     expected_thread = approval_url.split("#", 1)[0].replace("https://github.com/", "https://api.github.com/repos/")
     expected_thread = expected_thread.replace("/pull/", "/issues/")
-    if comment.get("id") != int(linked.group(2)) or comment.get("issue_url") != expected_thread:
+    if comment.get("id") != int(linked.group(2)) or str(comment.get("issue_url") or "").casefold() != expected_thread.casefold():
         return None
     first_line = next((line.strip() for line in str(comment.get("body") or "").splitlines() if line.strip()), "")
     text = DECISION_PREFIX.sub("", first_line.strip("*_` "), count=1).strip("*_` ")
@@ -175,23 +188,19 @@ def mention_question(comment: Any, thread: list[Any], approval_url: str,
             continue
         if ((item.get("user") or {}).get("login") or "").casefold() not in trusted:
             continue
-        if item.get("issue_url", expected_thread) != expected_thread or not (
+        if str(item.get("issue_url", expected_thread)).casefold() != expected_thread.casefold() or not (
                 str(item.get("created_at") or "") < comment["created_at"]):
             continue
-        # Only the question's own heading supplies scope; body prose and quoted
-        # questions cannot authorize this separate personal-login reader.
-        heading = re.split(r"\r?\n[ \t]*\r?\n", item["body"], maxsplit=1)[0].replace("*", "").replace("`", "")
-        match = QUESTION_HEADING.fullmatch(" ".join(heading.splitlines()).strip())
-        if match and match.group(1).upper() == question:
-            candidates.append(match.group(2))
-    if len(candidates) != 1:
-        return None
-    scope = candidates[0]
-    if HEDGE.search(scope) or STOP_SEARCH.search(scope):
-        return None
-    if not (re.search(r"\bsearch\w*\b", scope, re.IGNORECASE)
-            and re.search(r"\bmentions?\b", scope, re.IGNORECASE)
-            and re.search(r"\b(?:own|your|my|Director.s)\s+(?:gh\s+|GitHub\s+)?login\b", scope, re.IGNORECASE)):
+        # The posting flow's heading is the first physical line, never body prose.
+        heading = next((line.strip() for line in item["body"].splitlines() if line.strip()), "")
+        heading = re.sub(r"^#{1,6}\s+", "", heading).replace("*", "").replace("`", "")
+        if question_id.heading_id(heading) == question:
+            scope = heading.split(question, 1)[1].lstrip(" .:;—–-")
+            unchanged = str(item.get("updated_at") or item.get("created_at") or "") <= comment["created_at"]
+            candidates.append(bool(unchanged and MENTION_PERMISSION.match(scope)
+                                   and re.search(r"\b(?:own|your|my|Director.s)\s+(?:gh\s+|GitHub\s+)?login\b",
+                                                 scope, re.IGNORECASE)))
+    if not candidates or not all(candidates):
         return None
     return question
 
