@@ -2061,9 +2061,11 @@ never substitute notice arrival or log-write time for the verdict.
 Repeat finish previews use the existing log's original closure time. The first
 closure requires an empty or idle TTY before recording its own observation
 time; it never trusts an end time supplied by the ledger. A newer unidentified
-native client still refuses on retry. Use the existing guarded Codex launcher
-so its PID, birth, argv and private ingress establish that its actions cannot
-silently resume the source. If a
+client of the source's harness still refuses on retry. With a matching current
+shared closure, use the existing guarded Codex launcher so its PID, birth, argv
+and private ingress establish that its actions cannot silently resume the source.
+An alternate `--closed-log` alone does not provide that shared source proof.
+If a
 session truly resumes and closes again, verify its new PID/TTY, transcript and
 handoff, then use a fresh `--closed-log` file for that newly observed closure;
 preserve the prior log unchanged. A corrected handoff can likewise use a fresh

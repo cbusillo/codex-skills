@@ -79,7 +79,8 @@ def verify_process_exit(entry, *, ended_at=None):
             raise ValueError("source native session is visible in a resumed harness process")
         executable = next((index for index, arg in enumerate(argv[:2])
                            if Path(arg).name in {"codex", "claude", "claude.js"}), None)
-        if process_tty == tty and executable is not None and not (
+        source_executables = {"codex": {"codex"}, "claude": {"claude", "claude.js"}}[entry["harness"]]
+        if process_tty == tty and executable is not None and Path(argv[executable]).name in source_executables and not (
             len(resumed_ids) == 1 and resumed_ids[0] and not resumed_ids[0].startswith("-")
         ):
             # A guarded client cannot silently attach to the source: every
@@ -91,9 +92,6 @@ def verify_process_exit(entry, *, ended_at=None):
             if not unrelated and Path(argv[executable]).name == "codex" and closure.remote_endpoints(argv[executable:]):
                 try:
                     records = closure.log_rows()
-                    sockets = {str(closure.daemon_endpoint(Path(row["codex_home"])))
-                               for row in records
-                               if row.get("record_kind") in {"managed_launch", "managed_proxy"}}
                     source = next((row for row in records if row.get("session_id") == entry["session_id"]), {})
                     # Discovery may enrich the handoff URL after closure. It
                     # does not change the native generation's exit evidence.
@@ -101,7 +99,7 @@ def verify_process_exit(entry, *, ended_at=None):
                     unrelated = (identity == {k: v for k, v in source.items() if k != "handoff_url"}
                                  and closure.receipt_current(source)
                                  and not closure.action_pending(entry["session_id"])
-                                 and closure.managed_launch(process_pid, argv[executable:], sockets))
+                                 and closure.guarded_launch_endpoint(process_pid, argv[executable:]) is not None)
                 except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                     pass
             if not unrelated:

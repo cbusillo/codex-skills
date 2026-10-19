@@ -224,6 +224,10 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             born = datetime(2026, 10, 1, tzinfo=timezone.utc)
             with patch.object(CLOSURE, "process_started_at", return_value=born):
                 f.managed(native)
+                endpoint = str(CLOSURE.daemon_endpoint(f.home))
+                self.assertEqual(CLOSURE.guarded_launch_endpoint(456, native), endpoint)
+                self.assertFalse(CLOSURE.managed_launch(456, native, set()))
+                self.assertTrue(CLOSURE.managed_launch(456, native, {endpoint}))
                 f.commands = "456 " + " ".join(native)
                 self.assert_ended(f)
                 f.commands = "456 python3 /fixture/codex " + " ".join(native[1:])

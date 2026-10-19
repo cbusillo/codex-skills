@@ -242,7 +242,7 @@ class ReleaseTests(unittest.TestCase):
     def test_finish_retry_uses_original_closure_to_distinguish_tty_reuse(self):
         ended = helper.release.stamp(self.entry["ended_at"])
         for apply in (False, True):
-            for command in ("python gh_pr_watch.py", "codex exec fresh-job", "codex resume different-session",
+            for command in ("python gh_pr_watch.py", "codex exec fresh-job", "codex resume different-session", "claude -c",
                             "python codex-session.py launch -- codex --remote unix:///new-client"):
                 for born, expected in ((ended - timedelta(seconds=1), 1), (ended, 1),
                                        (ended + timedelta(seconds=22), 0),
@@ -262,13 +262,30 @@ class ReleaseTests(unittest.TestCase):
                                   (self.entry["launch_pid"], "other-tty", "shell"),
                                   *((456, self.entry["tty"], command) for command in (
                                       "codex resume source-session", "codex resume --last", "codex resume",
-                                      "codex", "claude -c", "node /bin/claude.js"))):
+                                      "codex"))):
             for born in (ended - timedelta(seconds=1), ended + timedelta(seconds=22)):
                 with self.subTest(pid=pid, command=command, born=born), \
                         patch.object(helper, "inventory", return_value=[(pid, tty, command)]), \
                         patch.object(helper.closure, "process_started_at", return_value=born):
                     result, report = self.finish_thread([])
                     self.assertEqual(result, 1, report)
+
+    def test_process_exit_only_suspects_reattachment_by_the_sources_harness(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        commands = {"codex": ("codex", "codex resume --last"),
+                    "claude": ("claude -c", "node /bin/claude.js")}
+        for source in commands:
+            for occupant, variants in commands.items():
+                for command in variants:
+                    for born in (ended - timedelta(seconds=1), ended, ended + timedelta(seconds=22)):
+                        with self.subTest(source=source, command=command, born=born), \
+                                patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], command)]), \
+                                patch.object(helper.closure, "process_started_at", return_value=born):
+                            if source == occupant or born <= ended:
+                                with self.assertRaises(ValueError):
+                                    helper.verify_process_exit({**self.entry, "harness": source}, ended_at=ended)
+                            else:
+                                helper.verify_process_exit({**self.entry, "harness": source}, ended_at=ended)
 
     def test_finish_retry_preserves_claims_when_tty_start_is_unavailable(self):
         with patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex")]), \
@@ -278,7 +295,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_new_closure_does_not_trust_ledger_end_to_excuse_existing_work(self):
         ended = helper.release.stamp(self.entry["ended_at"])
-        with patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex")]), \
+        with patch.object(helper, "inventory", side_effect=[[(456, self.entry["tty"], "python gh_pr_watch.py")], []]), \
                 patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)):
             with self.assertRaises(ValueError):
                 helper.record_closure(self.root / "new-closure.json", self.entry, "supervisor")
@@ -966,10 +983,10 @@ else:
             self.assertTrue(helper.validate_closure(old, "supervisor")["safe_verdict"])
             with self.assertRaises(ValueError):
                 helper.validate_closure(self.entry, "supervisor")
-        for command in ("codex resume --last", "claude -c", "node /bin/claude.js"):
+        for command, harness in (("codex resume --last", "codex"), ("claude -c", "claude"), ("node /bin/claude.js", "claude")):
             with patch.object(helper, "inventory", return_value=[(456, "ttys123", command)]):
                 with self.assertRaisesRegex(ValueError, "unidentified harness"):
-                    helper.validate_closure(old, "supervisor")
+                    helper.verify_process_exit({**old, "harness": harness}, ended_at=helper.release.stamp(old["ended_at"]))
         with patch.object(helper, "inventory", return_value=[(123, "other", "codex")]):
             with self.assertRaises(ValueError):
                 helper.validate_closure(old, "supervisor")
