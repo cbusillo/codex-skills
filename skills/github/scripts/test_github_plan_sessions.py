@@ -306,6 +306,20 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 # A changed argv cannot borrow the guarded client's identity.
                 f.process_rows = [(456, "fixture-tty", "codex --remote unix:///unverified")]
                 self.assert_live(f)
+                f.process_rows = [(456, "fixture-tty", " ".join(native))]
+                # A pending action defeats the stale closure even before any
+                # transcript or shared receipt update becomes visible.
+                with CLOSURE.ownership(f.session):
+                    CLOSURE.set_action_pending(f.session, True)
+                    with self.assertRaises(ValueError):
+                        f.release.validate_closure(closed, "supervisor")
+                    CLOSURE.set_action_pending(f.session, False)
+                self.assertTrue(f.release.validate_closure(closed, "supervisor")["safe_verdict"])
+                # An actual guarded resume invalidates that same saved entry.
+                with CLOSURE.resume_guard(f.session):
+                    pass
+                with self.assertRaises(ValueError):
+                    f.release.validate_closure(closed, "supervisor")
 
     def test_newer_generation_or_malformed_receipt_keeps_idle_live(self):
         with ReceiptFixture() as f:

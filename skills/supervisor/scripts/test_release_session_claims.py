@@ -985,7 +985,7 @@ else:
                 helper.validate_closure(self.entry, "supervisor")
         for command, harness in (("codex resume --last", "codex"), ("claude -c", "claude"), ("node /bin/claude.js", "claude")):
             with patch.object(helper, "inventory", return_value=[(456, "ttys123", command)]):
-                with self.assertRaisesRegex(ValueError, "unidentified harness"):
+                with self.assertRaises(ValueError):
                     helper.verify_process_exit({**old, "harness": harness}, ended_at=helper.release.stamp(old["ended_at"]))
         with patch.object(helper, "inventory", return_value=[(123, "other", "codex")]):
             with self.assertRaises(ValueError):

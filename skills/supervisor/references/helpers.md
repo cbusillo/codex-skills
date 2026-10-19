@@ -2065,8 +2065,9 @@ client of the source's harness still refuses on retry. With a matching current
 shared closure, use the existing guarded Codex launcher so its PID, birth, argv
 and private ingress establish that its actions cannot silently resume the source.
 An alternate `--closed-log` alone does not provide that shared source proof.
-If a
-session truly resumes and closes again, verify its new PID/TTY, transcript and
+Otherwise exit the unrelated client or start it in another tab, then retry;
+this also applies to Claude clients.
+If a session truly resumes and closes again, verify its new PID/TTY, transcript and
 handoff, then use a fresh `--closed-log` file for that newly observed closure;
 preserve the prior log unchanged. A corrected handoff can likewise use a fresh
 verified log rather than silently rewriting earlier evidence.
