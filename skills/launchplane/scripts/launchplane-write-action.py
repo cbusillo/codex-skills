@@ -26,6 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_inventory import project_inventory  # noqa: E402
+from launchplane_reply_schema import ReplySchemaError  # noqa: E402
+from launchplane_reply_schema import check_controller_reply  # noqa: E402
+from launchplane_reply_schema import declared_record_keys  # noqa: E402
 from launchplane_safety import (  # noqa: E402
     LaunchplaneSafetyError,
     assert_public_safe_shape,
@@ -177,105 +180,6 @@ REPOSITORY_INVENTORY_APPLY_RESULT_FIELDS = {
     "inventory_digest",
     "supersedes_record_id",
     "applied_at",
-}
-MERGE_TRAIN_RESULT_FIELDS = {
-    "active_action",
-    "active_phase",
-    "active_pull_request_number",
-    "active_record_id",
-    "base_branch",
-    "batch_id",
-    "blocking_reason",
-    "block_result",
-    "branch_update_result",
-    "candidate",
-    "candidate_record_id",
-    "candidate_ref",
-    "candidate_ref_cleanup_github_status_code",
-    "candidate_ref_cleanup_message",
-    "candidate_ref_cleanup_status",
-    "candidate_sha",
-    "candidate_status",
-    "cleanup_status",
-    "code",
-    "collapse_id",
-    "completed_disposition_count",
-    "completed_entry_count",
-    "completed_mutation_count",
-    "conflict_probe",
-    "controller_action",
-    "controller_reconciliation_status",
-    "details",
-    "dry_run_result",
-    "entries",
-    "error",
-    "github_status_code",
-    "heartbeat_at",
-    "landing_plan",
-    "landing_plan_record_id",
-    "landing_progress",
-    "landing_sha",
-    "last_action",
-    "last_controller_result",
-    "last_phase",
-    "last_pull_request_number",
-    "last_record_id",
-    "lease_acquired_at",
-    "lease_expires_at",
-    "lease_owner",
-    "merge_readiness",
-    "merge_train_batch_candidate_record_id",
-    "merge_train_batch_landing_plan_record_id",
-    "merge_train_stack_collapse_plan_record_id",
-    "message",
-    "mode",
-    "mutate",
-    "pull_requests",
-    "reason_code",
-    "reconciliation_detail",
-    "reconciliation_status",
-    "release_error_type",
-    "replacement_candidate_record_id",
-    "repository",
-    "retired_merge_train_batch_candidate_record_id",
-    "root_merge_commit",
-    "root_merge_commit_sha",
-    "source_of_truth_url",
-    "stack_collapse_plan",
-    "stack_collapse_plan_record_id",
-    "stack_discovery",
-    "status",
-    "step_payload",
-    "structural_provenance",
-    "superseded_candidate_record_id",
-    "superseded_merge_train_batch_candidate_record_id",
-    "trace_id",
-    "updated_at",
-    "workflow_run_url",
-}
-MERGE_TRAIN_BLOCKING_REASON_FIELDS = {"code", "message"}
-MERGE_TRAIN_CONFLICT_PROBE_FIELDS = {"status", "pull_request_numbers", "held_out"}
-MERGE_TRAIN_HELD_OUT_FIELDS = {
-    "pull_request_number", "head_sha", "reason", "conflicts_with",
-}
-MERGE_TRAIN_READINESS_FIELDS = {
-    "state",
-    "reason_codes",
-    "owner_states",
-    "technical_checks_state",
-    "engineering_review_state",
-    "policy_state",
-    "candidate_state",
-    "fence_state",
-}
-MERGE_TRAIN_STRUCTURAL_FIELDS = {
-    "status",
-    "reason_codes",
-    "effective_base_sha",
-    "effective_base_tree_sha",
-    "candidate_sha256",
-    "landing_plan_sha256",
-    "provenance_sha256",
 }
 PRODUCT_CONFIG_INTENT_FIELDS = {
     "schema_version",
@@ -803,24 +707,6 @@ def _optional_public_identifier(value: object) -> str | None:
     return public_identifier(value)
 
 
-class _UnknownResponseField(LaunchplaneSafetyError):
-    """Keep a bounded field name without retaining its rejected value."""
-
-    def __init__(self, key: object) -> None:
-        super().__init__("unsafe_response_shape")
-        self.unrecognized_key = ""
-        if (
-            isinstance(key, str)
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", key)
-            and not is_denied_key(key)
-        ):
-            try:
-                assert_public_safe_shape(key)
-                self.unrecognized_key = key
-            except LaunchplaneSafetyError:
-                pass
-
-
 def _project_records(records: object, allowed_keys: set[str]) -> dict[str, object]:
     if records is None:
         return {}
@@ -829,7 +715,7 @@ def _project_records(records: object, allowed_keys: set[str]) -> dict[str, objec
     for key, value in source.items():
         key = str(key)
         if key not in allowed_keys or is_denied_key(key):
-            raise _UnknownResponseField(key)
+            raise LaunchplaneSafetyError("unsafe_response_shape")
         projected[key] = public_identifier(value)
     return projected
 
@@ -1461,8 +1347,6 @@ def _project_merge_train_dry_run(value: object) -> dict[str, object]:
 
 def _project_merge_train_blocking_reason(value: object) -> dict[str, object]:
     source = _require_dict(value)
-    if any(str(key) not in MERGE_TRAIN_BLOCKING_REASON_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     code = source.get("code")
     if not isinstance(code, str):
         raise LaunchplaneSafetyError("invalid_response")
@@ -1476,8 +1360,6 @@ def _project_merge_train_conflict_probe(value: object) -> dict[str, object] | No
     if value is None:
         return None
     source = _require_dict(value)
-    if any(str(key) not in MERGE_TRAIN_CONFLICT_PROBE_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     numbers = source.get("pull_request_numbers")
     if not isinstance(numbers, list) or not isinstance(source.get("status"), str):
         raise LaunchplaneSafetyError("invalid_response")
@@ -1490,7 +1372,7 @@ def _project_merge_train_conflict_probe(value: object) -> dict[str, object] | No
             raise LaunchplaneSafetyError("invalid_response")
         held_out: list[dict[str, object]] = []
         for value in source["held_out"]:
-            entry = _require_exact_fields(value, MERGE_TRAIN_HELD_OUT_FIELDS)
+            entry = _require_dict(value)
             conflicts_with = entry.get("conflicts_with")
             if not isinstance(conflicts_with, list) or not isinstance(entry.get("reason"), str):
                 raise LaunchplaneSafetyError("invalid_response")
@@ -1508,8 +1390,6 @@ def _project_merge_train_readiness(value: object) -> dict[str, object] | None:
     if value is None:
         return None
     source = _require_dict(value)
-    if any(str(key) not in MERGE_TRAIN_READINESS_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     projected: dict[str, object] = {}
     for key in (
         "state",
@@ -1529,14 +1409,20 @@ def _project_merge_train_readiness(value: object) -> dict[str, object] | None:
     return projected
 
 
+_STRUCTURAL_PROVENANCE_FIELDS = (
+    "status", "reason_codes", "effective_base_sha", "effective_base_tree_sha",
+    "candidate_sha256", "landing_plan_sha256", "provenance_sha256",
+)
+
+
 def _project_merge_train_structural_provenance(value: object) -> dict[str, object] | None:
     if value is None:
         return None
     source = _require_dict(value)
-    if any(str(key) not in MERGE_TRAIN_STRUCTURAL_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     projected: dict[str, object] = {}
     for key, item in source.items():
+        if key not in _STRUCTURAL_PROVENANCE_FIELDS:
+            continue
         if key == "reason_codes":
             projected[key] = _public_code_list(item)
         elif not isinstance(item, str):
@@ -1550,9 +1436,6 @@ def _project_merge_train_structural_provenance(value: object) -> dict[str, objec
 
 def _project_merge_train_block_result(value: object) -> dict[str, object]:
     source = _require_dict(value)
-    allowed = {"status", "repository", "base_branch", "pull_request_number", "blocked_label", "train_should_continue", "detail"}
-    if any(str(key) not in allowed for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     if (not isinstance(source.get("train_should_continue"), bool)
         or not isinstance(source.get("pull_request_number"), int)
         or isinstance(source.get("pull_request_number"), bool)):
@@ -1571,47 +1454,45 @@ def _project_merge_train_block_result(value: object) -> dict[str, object]:
 
 
 def _project_controller_last_result(value: object) -> dict[str, object]:
+    """Project the pass evidence the pinned schema declares; omitted fields stay omitted."""
     source = _require_dict(value)
-    identifiers = {
-        "repository", "base_branch", "policy_key", "policy_sha256", "pass_started_at",
-        "observed_at", "trace_id", "action", "reason_code", "record_id",
-        "source_failed_record_id", "candidate_sha", "observed_candidate_sha", "base_sha",
-        "check_retry_of", "infrastructure_retry_of", "batch_body_retry_of", "semantic_progress_at",
-    }
-    optional_identifiers = {"candidate_batch_id", "recovery_kind"}
-    fields = identifiers | {"candidate_checks_status", "base_checks_status", "reconciliation_required", "next_actor", "next_observation"}
-    if set(source) - (fields | optional_identifiers) or fields - set(source):
-        raise LaunchplaneSafetyError("invalid_response")
     assert_public_safe_shape(source)
     projected: dict[str, object] = {}
-    for key in identifiers | (optional_identifiers & source.keys()):
-        item = source[key]
-        if not isinstance(item, str) or len(item) > 256:
-            raise LaunchplaneSafetyError("invalid_response")
-        projected[key] = public_identifier(item) if item else ""
+    for key in (
+        "repository", "base_branch", "policy_key", "policy_sha256", "pass_started_at",
+        "observed_at", "trace_id", "action", "reason_code", "record_id",
+        "source_failed_record_id", "candidate_batch_id", "recovery_kind", "candidate_sha",
+        "observed_candidate_sha", "base_sha", "check_retry_of", "infrastructure_retry_of",
+        "batch_body_retry_of", "semantic_progress_at",
+    ):
+        if key in source:
+            item = source[key]
+            if not isinstance(item, str) or len(item) > 256:
+                raise LaunchplaneSafetyError("invalid_response")
+            projected[key] = public_identifier(item) if item else ""
     for key in ("candidate_checks_status", "base_checks_status"):
-        item = source[key]
-        if item not in ("not_observed", "unknown", "pending", "pass", "fail"):
+        if key in source:
+            if source[key] not in ("not_observed", "unknown", "pending", "pass", "fail"):
+                raise LaunchplaneSafetyError("invalid_response")
+            projected[key] = source[key]
+    if "next_actor" in source:
+        if source["next_actor"] not in ("controller", "provider", "repository_agent"):
             raise LaunchplaneSafetyError("invalid_response")
-        projected[key] = item
-    if source["next_actor"] not in ("controller", "provider", "repository_agent"):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected["next_actor"] = source["next_actor"]
-    if not isinstance(source["reconciliation_required"], bool):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected["reconciliation_required"] = source["reconciliation_required"]
-    observation = source["next_observation"]
-    if not isinstance(observation, str) or len(observation) > 256:
-        raise LaunchplaneSafetyError("invalid_response")
-    projected["next_observation"] = public_summary_string(observation)
+        projected["next_actor"] = source["next_actor"]
+    if "reconciliation_required" in source:
+        if not isinstance(source["reconciliation_required"], bool):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["reconciliation_required"] = source["reconciliation_required"]
+    if "next_observation" in source:
+        observation = source["next_observation"]
+        if not isinstance(observation, str) or len(observation) > 256:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["next_observation"] = public_summary_string(observation)
     return projected
 
 
 def _project_merge_train_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
-    for key in source:
-        if str(key) not in MERGE_TRAIN_RESULT_FIELDS:
-            raise _UnknownResponseField(key)
     assert_public_safe_shape(source)
     projected: dict[str, object] = {}
     if "last_controller_result" in source:
@@ -4093,19 +3974,14 @@ def _project_success_output(
                 expected_config_result[f"{kind}_{disposition}_count"] = len(items)
         return records, expected_config_result
     if operation == "merge-train-controller-run-once":
-        records = _project_records(
-            provider_payload.get("records"),
-            {
-                "merge_train_batch_candidate_record_id",
-                "merge_train_batch_landing_plan_record_id",
-                "merge_train_stack_collapse_plan_record_id",
-                "superseded_merge_train_batch_candidate_record_id",
-                "merge_train_landing_plan_record_id",
-                "merge_train_stack_collapse_record_id",
-                "merge_train_feedback_record_id",
-                "retired_merge_train_batch_candidate_record_id",
-            },
-        )
+        # The reply was checked against the pinned schema; project only the
+        # record keys it declares.
+        declared = declared_record_keys()
+        records = {
+            key: public_identifier(value)
+            for key, value in _require_dict(provider_payload.get("records")).items()
+            if key in declared
+        }
         return records, _project_merge_train_result(provider_payload.get("result"))
     if operation == "product-config-preflight":
         records = _project_records(
@@ -4311,6 +4187,15 @@ def http_error_recommendation(status: str) -> str:
 def summarize_success(
     *, operation: str, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
+    unrecognized: list[str] = []
+    if operation == "merge-train-controller-run-once":
+        try:
+            unrecognized = check_controller_reply(provider_payload)
+        except ReplySchemaError as exc:
+            raise LaunchplaneSafetyError(exc.code) from exc
+        # Record ids newer than the pin are never copied, but must still be
+        # safe to have read; the result projection scans the whole result.
+        assert_public_safe_shape(provider_payload.get("records"))
     try:
         records, result = _project_success_output(operation, provider_payload, request=request)
     except TypeError as exc:
@@ -4327,6 +4212,14 @@ def summarize_success(
     }
     if operation == "merge-train-controller-run-once":
         summary.update(_controller_error_diagnostics(provider_payload))
+        if unrecognized:
+            # Newer than this skill's pinned schema: dropped from the result, not a failure.
+            summary["unrecognized_fields"] = ",".join(unrecognized)
+            cast(list[object], payload["warnings"]).append(warning(
+                "controller_reply_newer_than_pinned_schema",
+                "Launchplane sent reply fields this skill's pinned schema does not declare; "
+                "they were left out. Refresh the pin with sync-merge-train-reply-schema.py.",
+            ))
         controller_action = result.get("controller_action")
         if isinstance(controller_action, str):
             summary["controller_action"] = controller_action
@@ -7133,8 +7026,6 @@ def execute_post(
                 ):
                     # Launchplane completed this request; only its reply is unreadable here.
                     summary["launchplane_status"] = "accepted"
-                if isinstance(exc, _UnknownResponseField) and exc.unrecognized_key:
-                    summary["unrecognized_key"] = exc.unrecognized_key
                 summary["recommendation"] = (
                     "The controller response could not be verified. Read the PR and controller "
                     "state before any retry; a mutating pass may have completed."

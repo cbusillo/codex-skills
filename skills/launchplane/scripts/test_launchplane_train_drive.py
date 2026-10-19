@@ -696,7 +696,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
     def test_service_membership_survives_missing_queue_and_different_merge_commits(self) -> None:
         for component in ("candidate", "landing_plan"):
             with self.subTest(component=component):
-                projected = _project_controller({"status": "accepted", "result": {
+                projected = _project_controller({"status": "accepted", "trace_id": "t", "records": {}, "result": {
                     "controller_action": "land_batch",
                     component: {"entries": [{"pull_request_number": 7}, {"pull_request_number": 8}]}}})
                 train = FakeTrain([projected],
@@ -1249,8 +1249,8 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
 
     def test_accepted_but_unreadable_reply_releases_the_saved_request_and_stops(self) -> None:
         unreadable = {"status": "invalid", "result": {}, "records": {}, "summary": {
-            "launchplane_status": "accepted", "projection_error_code": "unsafe_response_shape",
-            "unrecognized_key": "later_unknown_field", "trace_id": "launchplane_req_accepted",
+            "launchplane_status": "accepted", "projection_error_code": "invalid_response",
+            "trace_id": "launchplane_req_accepted",
             "error_code": "merge_train_candidate_failure_isolated"}}
         unverified = {**unreadable, "summary": {k: v for k, v in unreadable["summary"].items()
                                                 if k != "launchplane_status"}}
@@ -1268,7 +1268,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertFalse(journal.exists())
         self.assertTrue(train_drive._uncertain(recovered))
         self.assertEqual(recovered["recovery"]["saved_request"], "released")
-        self.assertEqual(recovered["recovery"]["unrecognized_key"], "later_unknown_field")
+        self.assertEqual(recovered["recovery"]["projection_error_code"], "invalid_response")
         # A fresh pass with an accepted, unreadable reply never leaves a request behind.
         with patch("subprocess.run", return_value=reply(unreadable)):
             response = train_drive.live_io(1, tracked_pr=7).controller(REPO, "main", "fresh-key")

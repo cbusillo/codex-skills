@@ -937,9 +937,9 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
                     "idempotency_key_sha256": recovery["idempotency_key_sha256"],
                     "saved_request": "released",
                     "recommendation": "The pass happened; read the PR and controller state for its effect. "
-                                      "Teach the helper this reply shape before relying on it; the next driver run starts a fresh pass.",
+                                      "Compare the pinned reply schema with Launchplane's before relying on it; the next driver run starts a fresh pass.",
                 }
-                for field_name in ("error_code", "trace_id", "projection_error_code", "unrecognized_key"):
+                for field_name in ("error_code", "trace_id", "projection_error_code"):
                     value = summary.get(field_name)
                     if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", value):
                         released[field_name] = value

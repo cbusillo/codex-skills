@@ -1337,7 +1337,11 @@ def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> N
     result = {
         "controller_action": "block", "mode": "blocked",
         "blocking_reason": {"code": "merge_readiness_not_ready", "message": "Required checks failed."},
-        "merge_readiness": {"state": "blocked_checks", "reason_codes": ["checks_failed"]},
+        "merge_readiness": {
+            "state": "blocked_checks", "reason_codes": ["checks_failed"], "owner_states": ["ready"],
+            "technical_checks_state": "failed", "engineering_review_state": "ready",
+            "policy_state": "ready", "candidate_state": "ready", "fence_state": "ready",
+        },
         "merge_train_batch_landing_plan_record_id": "landing-plan-example",
         "landing_plan": {"record_id": "landing-plan-example"},
     }
@@ -1390,7 +1394,6 @@ def test_controller_block_projection_rejects_unsafe_or_invalid_fields() -> None:
     for block in (
         {"status": "blocked", "pull_request_number": 42, "train_should_continue": "true"},
         {"status": "blocked", "pull_request_number": True, "train_should_continue": True},
-        {"status": "blocked", "pull_request_number": 42, "train_should_continue": True, "extra": "x"},
     ):
         response = _queue_refusal_response()
         response["result"]["block_result"] = block
@@ -1471,14 +1474,14 @@ def test_controller_land_batch_reports_landing_progress() -> None:
 
 def test_controller_unreadable_reply_says_whether_launchplane_accepted_it() -> None:
     body = _candidate_failure_isolated_response()
-    body["result"]["later_unknown_field"] = "private-fixture-value"
+    body["result"]["block_result"]["train_should_continue"] = "private-fixture-value"
     for http_status, service_status, accepted in (
         (202, "accepted", True), (200, "accepted", True), (202, "pending", False), (None, "accepted", False),
     ):
         response = write_action._ServiceResponse({**body, "status": service_status}, http_status)
         status, payload = _run_controller_response(response, mutate=True)
         assert status == 1 and payload["status"] == "invalid"
-        assert payload["summary"]["unrecognized_key"] == "later_unknown_field"
+        assert payload["summary"]["projection_error_code"] == "invalid_response"
         assert (payload["summary"].get("launchplane_status") == "accepted") is accepted
         assert "private-fixture-value" not in json.dumps(payload)
 
@@ -1555,7 +1558,7 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
         "pull_request_number": 43, "head_sha": "b" * 40,
         "reason": "entry_conflict", "conflicts_with": [42],
     }]}
-    invalid = [False, [], "ran", {}, {**probe, "extra": "private-probe-value"}]
+    invalid = [False, [], "ran", {}]
     for key, value in (
         ("status", []), ("status", "Bearer private-probe-value"),
         ("pull_request_numbers", {}), ("pull_request_numbers", [True]),
@@ -1567,8 +1570,7 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
         ("head_sha", None), ("head_sha", "ghp_privateprobevalue"),
         ("reason", []), ("reason", "Bearer private-probe-value"),
         ("conflicts_with", "42"), ("conflicts_with", [False]),
-        ("conflicts_with", [0]), ("extra", "private-probe-value"),
-        ("token", "private-probe-value"),
+        ("conflicts_with", [0]), ("token", "private-probe-value"),
     ):
         invalid.append({**probe, "held_out": [{**probe["held_out"][0], key: value}]})
     for malformed in invalid:
@@ -1577,38 +1579,37 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
         assert payload["status"] == "invalid"
         assert payload["result"] == {}
         assert "private-probe-value" not in json.dumps(payload)
-    response = _conflict_probe_response(probe)
-    response["result"]["unexpected"] = "private-probe-value"
-    assert _run_controller_response(response)[0] == 1
 
 
-@pytest.mark.parametrize("section", ["result", "records"])
-def test_controller_rejected_response_names_unknown_key(section: str) -> None:
-    response: dict[str, Any] = {
-        "status": "accepted", "trace_id": "launchplane_req_diagnostic", "records": {},
-        "result": {"controller_action": "land_batch"},
-    }
-    response[section]["historical_stack_child_label_status"] = "private-fixture-value"
-    response[section]["later_unknown_field"] = "another-private-value"
+def test_controller_reply_fields_newer_than_the_pin_are_dropped_and_named() -> None:
+    response = _candidate_failure_isolated_response()
+    response["result"]["later_result_field"] = "private-fixture-value"
+    response["records"]["later_record_id"] = "private-record-value"
+    response["result"]["block_result"]["later_block_field"] = "private-block-value"
     status, payload = _run_controller_response(response, mutate=True)
-    assert status == 1 and payload["status"] == "invalid"
-    assert payload["result"] == {} and payload["records"] == {}
-    assert payload["warnings"][0]["code"] == "unsafe_response_shape"
-    assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
-    assert payload["summary"]["unrecognized_key"] == "historical_stack_child_label_status"
-    assert payload["summary"]["trace_id"] == response["trace_id"]
-    assert payload["summary"]["recommendation"]
-    assert "private-fixture-value" not in json.dumps(payload)
-    assert "another-private-value" not in json.dumps(payload)
+    assert status == 0 and payload["status"] == "accepted"
+    assert payload["result"]["block_result"]["pull_request_number"] == 42
+    assert payload["summary"]["controller_action"] == "block"
+    assert payload["summary"]["unrecognized_fields"].split(",") == [
+        "records.later_record_id", "result.block_result.later_block_field", "result.later_result_field",
+    ]
+    assert payload["warnings"][0]["code"] == "controller_reply_newer_than_pinned_schema"
+    for value in ("private-fixture-value", "private-record-value", "private-block-value"):
+        assert value not in json.dumps(payload)
+    response["records"]["later_record_id"] = "Bearer private-record-value"
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and payload["summary"]["projection_error_code"] == "unsafe_response_shape"
+    assert "private-record-value" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("key", ["https://private.example/path", "Bearer private-fixture-value", "ghp_privatefixture", "client_secret", "x" * 81])
 def test_controller_rejected_response_omits_unsafe_unknown_key(key: str) -> None:
-    response = {"status": "accepted", "records": {}, "result": {key: "private-fixture-value"}}
+    response = {"status": "accepted", "trace_id": "launchplane_req_diagnostic", "records": {},
+                "result": {key: "private-fixture-value"}}
     status, payload = _run_controller_response(response, mutate=True)
     assert status == 1 and payload["status"] == "invalid"
     assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
-    assert "unrecognized_key" not in payload["summary"]
+    assert "unrecognized_fields" not in payload["summary"]
     assert key not in json.dumps(payload)
 
 
@@ -1618,7 +1619,7 @@ def test_controller_rejected_response_names_bad_value() -> None:
     assert status == 1 and payload["status"] == "invalid"
     assert payload["summary"]["projection_error_code"] == "invalid_response"
     assert payload["warnings"][0]["code"] == "invalid_response"
-    assert "unrecognized_key" not in payload["summary"]
+    assert "unrecognized_fields" not in payload["summary"]
     assert payload["summary"]["recommendation"]
 
 
@@ -1934,57 +1935,6 @@ def test_current_launchplane_service_response_shapes() -> None:
     assert early_refusal["summary"]["trace_id"] == "launchplane_req_lineage_changed"
     assert early_refusal["result"]["blocking_reason"]["code"] == "landing_lineage_changed"
     assert early_refusal["result"]["structural_provenance"] is None
-
-    for field, value in (
-        (
-            "blocking_reason",
-            {
-                "code": "merge_readiness_not_ready",
-                "message": "Merge readiness is not ready.",
-                "detail": "unexpected",
-            },
-        ),
-        (
-            "merge_readiness",
-            {
-                "state": "blocked_engineering_review",
-                "reason_codes": ["engineering_review_pending"],
-                "owner_states": ["ready"],
-                "unexpected": "value",
-            },
-        ),
-        ("structural_provenance", {"status": "unknown", "unexpected": "value"}),
-    ):
-        result = {
-            "repository": "example/repo",
-            "base_branch": "main",
-            "controller_action": "block",
-            "blocking_reason": {
-                "code": "merge_readiness_not_ready",
-                "message": "Merge readiness is not ready.",
-            },
-            "merge_readiness": None,
-            field: value,
-        }
-        try:
-            write_action.summarize_success(
-                operation="merge-train-controller-run-once",
-                request={
-                    "repository": "example/repo",
-                    "base_branch": "main",
-                    "mutate": True,
-                },
-                provider_payload={
-                    "status": "accepted",
-                    "trace_id": "launchplane_req_blocked_merge",
-                    "records": {},
-                    "result": result,
-                },
-            )
-        except safety.LaunchplaneSafetyError as exc:
-            assert exc.code == "unsafe_response_shape"
-        else:
-            raise AssertionError(f"expected unexpected {field} field to fail closed")
 
     for field, value in (
         ("state", {}),
