@@ -287,6 +287,19 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             with patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) + timedelta(days=1)):
                 self.assert_live(f)
 
+            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
+            with patch.object(CLOSURE, "process_started_at", return_value=ended + timedelta(seconds=1)):
+                f.managed(native)
+                f.commands = "456 " + " ".join(native)
+                f.process_rows = [(456, "fixture-tty", " ".join(native))]
+                self.assert_ended(f)
+                closed = f.release.record_closure(f.log, f.entry, "supervisor")
+                with self.assertRaises(ValueError):
+                    f.release.validate_closure({**closed, "ended_at": datetime.now(timezone.utc).isoformat()}, "supervisor")
+                # A changed argv cannot borrow the guarded client's identity.
+                f.process_rows = [(456, "fixture-tty", "codex --remote unix:///unverified")]
+                self.assert_live(f)
+
     def test_newer_generation_or_malformed_receipt_keeps_idle_live(self):
         with ReceiptFixture() as f:
             self.assert_ended(f)

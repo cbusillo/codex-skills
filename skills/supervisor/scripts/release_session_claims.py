@@ -33,6 +33,7 @@ import github_identity
 import github_plan_claim as claim
 import github_plan_release as release
 import github_plan_closure as closure
+from github_plan_sessions import process_absence_known
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_comment import OPERATION_MARKER_LINE_RE, CommentError, comment
 
@@ -67,7 +68,7 @@ def verify_process_exit(entry, *, ended_at=None):
             born = closure.process_started_at(process_pid) if ended_at is not None else None
             if ended_at is None or not ended_at < born <= datetime.now(timezone.utc):
                 raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity before the documented manual release-claim route")
-    for _, process_tty, command in rows:
+    for process_pid, process_tty, command in rows:
         # ps does not preserve shell quoting. Inspect only native resume
         # operands; arbitrary quoted prompt text is neither syntax nor identity.
         argv = command.split()
@@ -76,11 +77,30 @@ def verify_process_exit(entry, *, ended_at=None):
         resumed_ids.extend(arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume="))
         if entry["session_id"] in resumed_ids:
             raise ValueError("source native session is visible in a resumed harness process")
-        harness = any(Path(arg).name in {"codex", "claude", "claude.js"} for arg in argv)
-        if entry.get("_backfill") and process_tty == tty and harness and not (
+        executable = next((index for index, arg in enumerate(argv[:2])
+                           if Path(arg).name in {"codex", "claude", "claude.js"}), None)
+        if process_tty == tty and executable is not None and not (
             len(resumed_ids) == 1 and resumed_ids[0] and not resumed_ids[0].startswith("-")
         ):
-            raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity before the documented manual release-claim route")
+            # A guarded client cannot silently attach to the source: every
+            # action takes its ownership lease and invalidates the closure.
+            # Reuse that existing exact PID/birth/argv/ingress proof, rather
+            # than treating an ID-less client as unrelated by age alone.
+            unrelated = (Path(argv[executable]).name == "codex"
+                         and process_absence_known(" ".join(argv[executable:])))
+            if not unrelated and Path(argv[executable]).name == "codex" and closure.remote_endpoints(argv[executable:]):
+                try:
+                    sockets = {str(closure.daemon_endpoint(Path(row["codex_home"])))
+                               for row in closure.log_rows()
+                               if row.get("record_kind") in {"managed_launch", "managed_proxy"}}
+                    source = {k: v for k, v in entry.items() if not k.startswith("_")}
+                    unrelated = (closure.receipt_current(source)
+                                 and not closure.action_pending(entry["session_id"])
+                                 and closure.managed_launch(process_pid, argv[executable:], sockets))
+                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                    pass
+            if not unrelated:
+                raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity before the documented manual release-claim route")
 
 
 def verify_closed(entry, supervisor_session, *, ended_at):
@@ -184,9 +204,8 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
             if [r for r in current if r.get("session_id") == entry["session_id"]] != original:
                 raise ValueError("source closure changed during verification; preserve the current generation")
         return closed
-    ended = datetime.now(timezone.utc)
-    status = verify_closed(entry, supervisor_session, ended_at=ended)
-    closed = {**entry, "ended_at": ended.isoformat(),
+    status = verify_closed(entry, supervisor_session, ended_at=None)
+    closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
               "verdict_at": status["timestamp"], "process_exit_verified": True}
     if entry.get("harness") == "codex" and entry.get("codex_home"):
         try:

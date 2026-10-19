@@ -1842,8 +1842,6 @@ second native idle read, fresh process checks and complete native coverage.
 Any active thread, source PID (including reuse), old worker on the source TTY,
 resume process, unknown client, changed generation or unavailable evidence keeps
 it live. A proven new TTY occupant born after closure is not the old worker.
-Finish retries use the saved closure time for this check. A first closure uses
-its own observation time, never an unverified end time supplied by the ledger.
 Unidentified interactive clients, pickers, stdio servers and unobserved daemons
 still refuse. Fresh noninteractive execs cannot attach to the predecessor.
 The supported daemon-routed fresh and resume launchers run each TUI through a
@@ -2060,7 +2058,12 @@ Use `ended_at - verdict_at` for the one-day shutdown-latency measurement.
 Retries preserve both original times. Legacy records without `verdict_at`
 remain valid and need their original native transcript to reconstruct it;
 never substitute notice arrival or log-write time for the verdict.
-Repeat finish previews use the existing log's original closure time. If a
+Repeat finish previews use the existing log's original closure time. The first
+closure requires an empty or idle TTY before recording its own observation
+time; it never trusts an end time supplied by the ledger. A newer unidentified
+native client still refuses on retry. Use the existing guarded Codex launcher
+so its PID, birth, argv and private ingress establish that its actions cannot
+silently resume the source. If a
 session truly resumes and closes again, verify its new PID/TTY, transcript and
 handoff, then use a fresh `--closed-log` file for that newly observed closure;
 preserve the prior log unchanged. A corrected handoff can likewise use a fresh
