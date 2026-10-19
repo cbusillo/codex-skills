@@ -2466,7 +2466,7 @@ inference. Missing local evidence leaves provider completion unconfirmed.
 An edit to a served request sets `request_edited_after_review`; the completion
 link is preserved and inference never reruns. Weigh the original scope and
 record whether a separate request is needed for changed scope. The dispatcher
-uses `completion_comment` together with `completion_updated_at` to notify each
+uses the repository, PR, `completion_id` and `completion_updated_at` to notify each
 report version once on `--apply`, including recovered posts. It reads the posted
 comment back to bind its version before notifying.
 A corrected edit to the same comment can need a fresh
@@ -2478,6 +2478,13 @@ separately as `notification_status: sent`, `pending` or `blocked`, with
 that history without sending or writing. Older receipts without identity metadata attempt
 the same trusted branch-claim binding. Malformed claims or failed GitHub reads
 become `notification_error`, preserving the already-posted completion link.
+Delivery history belongs to that posted version. A retained sent or spent outcome
+is read before resolving a live recipient, including after ledger retirement or
+claim handoff. Historical author/provider metadata remains available from the
+receipt and retained journals; it is never replaced by a successor. A delivered
+notice neither confirms provider completion nor weighs findings. Foreign-run
+completions with no local delivery history retain the ownership exclusion.
+
 Only a unique, Supervisor-owned author entry in this repository's ledger may
 receive a notification. Native transcript identity must agree with that entry.
 Codex delivery uses `codex-session.py queue` with the ledger's absolute
@@ -2492,10 +2499,12 @@ entry reports the unsupported route; there is no automatic terminal migration.
 Ledger-relative transcript paths resolve beside the ledger, as for other helpers.
 
 The dispatcher reserves each delivery durably before calling the send helper.
-Checks that stop before delivery record `not_sent`; later apply passes recheck
-the ledger, native identity and empty prompt before trying again. Discovery
-never retries. A permission refusal, a queue call, a possibly sent terminal
-message or an interrupted attempt stays spent. Failures expose `notification_error`,
+Checks that stop before delivery record `not_sent` and report notification status
+`pending` with their diagnostic. Later apply passes recheck the ledger, native
+identity and empty prompt before trying again. This expected wait does not itself
+add attention; independent review warnings remain visible. Discovery never retries.
+A permission refusal, a queue call, a possibly sent terminal message or an
+interrupted attempt stays spent. Those failures expose `notification_error`,
 set `needs_attention` and make the sweep nonzero, preserving the review link.
 Read the exact session and reconcile a spent attempt before any manual
 notification; never delete its journal to retry or use another route after a

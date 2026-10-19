@@ -264,31 +264,70 @@ def completion_record(comments, request, head, logins) -> dict[str, Any] | None:
 
 def completion_report(record, io, repo, pr, entries, logins, request, evidence):
     receipt = record.get("receipt", {})
-    session, author = receipt.get("author_session"), receipt.get("author_provider")
+    comment = record["comment"]
+    updated = comment.get("updated_at") or comment["created_at"]
+    notification = notification_path(evidence, repo, pr["number"], comment["id"], updated)
+    journal = evidence / f"{journal_key(repo, pr['number'], request, pr['head']['sha'])}.json"
+    try:
+        delivery = notification_state(notification)
+    except (ValueError, OSError):
+        delivery = {}  # dispatch reports the retained unreadable state without sending.
+    try:
+        retained = json.loads(journal.read_text())
+        if not isinstance(retained, dict) or retained.get("head") != pr["head"]["sha"] or retained.get("request") != request["id"]:
+            retained = {}
+    except (ValueError, OSError):
+        retained = {}
+    # Posted identity is historical evidence. Retirement must neither erase it
+    # nor replace it with a successor. Legacy reports may recover it locally.
+    declared = receipt.get("author_session")
+    session = declared if isinstance(declared, str) and declared else None
+    author = None
+    for source in (receipt, delivery, retained):
+        saved, provider = source.get("author_session"), source.get("author_provider")
+        if (isinstance(saved, str) and saved and isinstance(provider, str)
+                and provider in {"openai", "anthropic"} and (session is None or saved == session)):
+            session, author = saved, provider
+            break
     error = None
-    known_session = any(e["session_id"] == session and e.get("repository", "").casefold() == repo.casefold()
-                        and e.get("supervisor_owned") is True for e in entries)
-    if author not in {"openai", "anthropic"} or not known_session:
+    if session is None or author is None:
         try:
-            session, author = bind_session(io, repo, {pr["head"]["ref"]}, entries, logins, request, pr)
+            bound_session, bound_author = bind_session(io, repo, {pr["head"]["ref"]}, entries, logins, request, pr)
+            if session is not None and bound_session != session:
+                raise ReviewError("posted review author cannot be replaced by a successor")
+            session, author = bound_session, bound_author
         except (ValueError, GitHubReadError, GitHubReadShapeError) as reason:
-            session, author, error = None, None, str(reason)
+            error = str(reason)
     confirmed = local_completion(evidence, repo, pr["number"], request, pr["head"]["sha"], session, author)
     edited = record.get("request_edited_after_review", False)
     acknowledged = record.get("acknowledged", False)
-    comment = record["comment"]
     status = {"supervisor": "already_completed", "reported": "already_weighed" if acknowledged else "reported_review",
               "weighed_without_review": "weighed_without_review", "acknowledged": "request_acknowledged"}
-    journal = evidence / f"{journal_key(repo, pr['number'], request, pr['head']['sha'])}.json"
     return {**journal_report(journal), "status": status[record["kind"]],
             "completion_kind": record["kind"], "requested_provider_confirmed": confirmed,
             "request_edited_after_review": edited,
-            "needs_attention": record["kind"] == "weighed_without_review" or (not acknowledged and (not confirmed or edited or error is not None or record.get("report_changed_after_disposition", False))),
+            "needs_attention": record["kind"] == "weighed_without_review" or (not acknowledged and (not confirmed or edited or record.get("report_changed_after_disposition", False))),
             "head": pr["head"]["sha"], "request": request["id"],
             "author_session": session, "author_provider": author, "notification_error": error,
             "notification_needed": record["kind"] in {"supervisor", "reported"} and not acknowledged,
+            "completion_id": comment["id"],
             "completion_comment": comment.get("html_url") or comment.get("url") or comment["id"],
-            "completion_updated_at": comment.get("updated_at") or comment["created_at"]}
+            "completion_updated_at": updated}
+
+
+def notification_path(evidence, repo, number, comment_id, updated):
+    version = [repo.casefold(), number, comment_id, updated]
+    key = hashlib.sha256(json.dumps(version).encode()).hexdigest()
+    return evidence / f"notification-{key}.json"
+
+
+def notification_state(path):
+    if not path.exists():
+        return {}
+    state = json.loads(path.read_text())
+    if not isinstance(state, dict):
+        raise ReviewError("notification journal is not an object; retain it and reconcile delivery")
+    return state
 
 
 def receipt_for(request, head):
@@ -641,6 +680,24 @@ def dispatch_review(io, repo, number, entries, checkout, logins, evidence, apply
     head, branch = pr["head"]["sha"], pr["head"]["ref"]
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise ReviewError("invalid PR head")
+    completed = completion_record(comments, request, head, logins)
+    old = stale_completion(comments, request, head, logins) if completed is None else None
+    reviewed_head, completed = old if old else (head, completed)
+
+    def completed_result():
+        historical_pr = {**pr, "head": {**pr["head"], "sha": reviewed_head}}
+        result = completion_report(completed, io, repo, historical_pr, entries, logins, request, evidence)
+        if reviewed_head != head:
+            return {**result, "status": "completed_stale", "completion_status": result["status"],
+                    "reviewed_head": reviewed_head, "current_head": head}
+        return result
+
+    if completed:
+        comment = completed["comment"]
+        if notification_path(evidence, repo, number, comment["id"], comment.get("updated_at") or comment["created_at"]).exists():
+            # This run's delivery history remains observable after retirement.
+            # Foreign completions without local history retain the ownership gate.
+            return completed_result()
     try:
         bind_session(io, repo, {branch}, entries, logins, request, pr)
     except OtherRun as error:
@@ -657,16 +714,8 @@ def dispatch_review(io, repo, number, entries, checkout, logins, evidence, apply
         # Completion can still be reported without a live claim lookup. Pending
         # requests must establish ownership after selecting the exact worktree.
         pass
-    existing = completion_record(comments, request, head, logins)
-    if existing:
-        return completion_report(existing, io, repo, pr, entries, logins, request, evidence)
-    old = stale_completion(comments, request, head, logins)
-    if old:
-        reviewed_head, record = old
-        historical_pr = {**pr, "head": {**pr["head"], "sha": reviewed_head}}
-        result = completion_report(record, io, repo, historical_pr, entries, logins, request, evidence)
-        return {**result, "status": "completed_stale", "completion_status": result["status"],
-                "reviewed_head": reviewed_head, "current_head": head}
+    if completed:
+        return completed_result()
     if checkout is None:
         raise ReviewError("repository checkout missing; pass --checkout OWNER/REPO=/absolute/path")
     bind_head(request, head)
@@ -769,6 +818,13 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
     if not report.get("notification_needed"):
         return report
     try:
+        path = notification_path(evidence, repo, number, report.get("completion_id"), report.get("completion_updated_at"))
+        report["notification_journal"] = str(path)
+        prior = notification_state(path)
+        if prior.get("phase") == "sent":
+            return {**report, "notification_status": "sent", "notification_error": None}
+        if prior and prior.get("phase") != "not_sent":
+            raise ReviewError(prior.get("error") or "notification outcome unknown; reconcile the retained attempt, never replay")
         if report.get("notification_error"):
             raise ReviewError(report["notification_error"])
         matches = [e for e in entries if e.get("session_id") == report.get("author_session")]
@@ -777,33 +833,19 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
                 or matches[0].get("harness") not in {"codex", "claude"}):
             raise ReviewError("notification author is not unique and verified in this repository's ledger")
         entry = matches[0]
-        version = [report.get("completion_comment"), report.get("completion_updated_at"), entry["session_id"]]
-        if not all(version[:2]):
+        if not report.get("completion_id") or not report.get("completion_updated_at"):
             raise ReviewError("notification needs the posted comment identity and update timestamp")
-        key = hashlib.sha256(json.dumps(version, sort_keys=True).encode()).hexdigest()
-        path = evidence / f"notification-{key}.json"
-        report["notification_journal"] = str(path)
-        retry = False
-        if path.exists():
-            prior = json.loads(path.read_text())
-            if not isinstance(prior, dict):
-                raise ReviewError("notification journal is not an object; retain it and reconcile delivery")
-            if prior.get("phase") == "sent":
-                return {**report, "notification_status": "sent"}
-            if prior.get("phase") != "not_sent":
-                raise ReviewError(prior.get("error") or "notification outcome unknown; reconcile the retained attempt, never replay")
-            retry = True
         if not apply:
             return {**report, "notification_status": "pending",
-                    "notification_error": prior.get("error") if retry else None,
-                    "needs_attention": report.get("needs_attention", False) or retry}
+                    "notification_error": prior.get("error")}
         private_evidence_dir(evidence)
         message = (f"Supervisor review posted for {repo}#{number}. "
                    f"Head: {report.get('reviewed_head') or report['head']}. "
                    f"Read {report['completion_comment']}, weigh the findings, and continue your brief. "
                    "This notification is not a weighed review or a ready handoff.")
-        state = {"phase": "attempted", "version": version}
-        atomic_text(path, json.dumps(state), exclusive=not retry)
+        state = {"phase": "attempted", "author_session": entry["session_id"],
+                 "author_provider": report["author_provider"]}
+        atomic_text(path, json.dumps(state), exclusive=not prior)
         try:
             io.notify(entry, message)
         except NotSent as error:
@@ -814,6 +856,8 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
             raise
         atomic_text(path, json.dumps({**state, "phase": "sent"}))
         return {**report, "notification_status": "sent"}
+    except NotSent as error:
+        return {**report, "notification_status": "pending", "notification_error": str(error)}
     except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
         return {**report, "notification_status": "blocked", "notification_error": str(error), "needs_attention": True}
 

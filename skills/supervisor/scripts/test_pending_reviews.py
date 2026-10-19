@@ -173,6 +173,10 @@ class DispatchTests(unittest.TestCase):
                     self.assertEqual(recovered["notification_status"], "blocked")
                     self.assertTrue(recovered["completion_comment"])
                     self.assertEqual(send.call_count, 1)
+                    if isinstance(failure, PermissionError):
+                        Path(recovered["notification_journal"]).write_text("[]")
+                        self.assertEqual(self.dispatch()["notification_status"], "blocked")
+                        self.assertEqual(send.call_count, 1)
 
     def test_preflight_not_sent_is_rechecked_until_delivery_and_then_deduplicated(self):
         for harness in ("codex", "claude"):
@@ -182,28 +186,56 @@ class DispatchTests(unittest.TestCase):
                 self.evidence = Path(self.temp.name) / harness
                 with patch.object(self.io, "notify", side_effect=notifications.NotSent("busy")) as send:
                     result = self.dispatch()
-                    self.assertTrue(result["needs_attention"])
+                    self.assertEqual(result["notification_status"], "pending")
+                    self.assertFalse(result["needs_attention"])
                     self.assertEqual(json.loads(Path(result["notification_journal"]).read_text())["phase"], "not_sent")
                     pending = self.dispatch(apply=False)
                     self.assertEqual(pending["notification_error"], result["notification_error"])
+                    self.assertFalse(pending["needs_attention"])
+                    self.io.request["updated_at"] = "2026-10-17T21:00:00Z"
+                    self.assertTrue(self.dispatch(apply=False)["needs_attention"])
+                    self.io.request["updated_at"] = STAMP
                     self.assertEqual(send.call_count, 1)
                 self.assertEqual(self.dispatch()["notification_status"], "sent")
                 self.assertEqual(self.dispatch()["notification_status"], "sent")
                 self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
                 self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
 
-    def test_delivered_notification_survives_ledger_metadata_and_coordinate_edits(self):
-        self.dispatch()
-        self.entries = [{**entry(), "pid": 7, "handoff_url": "https://github.com/example/tool/issues/3#issuecomment-1"}]
-        result = self.dispatch()
-        self.assertEqual(result["notification_status"], "sent")
-        self.assertFalse(result["needs_attention"])
-        self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+    def test_delivered_report_versions_survive_retirement_without_erasing_provenance_or_retargeting(self):
+        for mode in ("generated", "manual", "legacy"):
+            for moved in (False, True):
+                with self.subTest(mode=mode, moved=moved):
+                    self.io = FakeIO()
+                    self.io.pr["body"] = "Closes #3"
+                    self.entries = [entry()]
+                    self.evidence = Path(self.temp.name) / f"{mode}-{moved}"
+                    if mode != "generated":
+                        body = f"{reviews.REPORT_HEADING}\nHead: {SHA}\nRetained review."
+                        if mode == "legacy":
+                            body += "\n<!-- supervisor-review " + json.dumps(reviews.receipt_for(self.io.request, SHA)) + " -->"
+                        self.io.comments.append(comment(11, body))
+                    first = self.dispatch()
+                    self.assertEqual(first["notification_status"], "sent")
+                    if moved:
+                        self.io.pr["head"]["sha"] = "b" * 40
+                    for entries in ([], [entry(), entry()], [{**entry(), "supervisor_owned": False}],
+                                    [{**entry(), "repository": "another/repo"}],
+                                    [{**entry(), "session_id": "successor-native"}],
+                                    [{**entry(), "pid": 7, "handoff_url": "https://github.com/example/tool/issues/3#issuecomment-1"}]):
+                        self.entries = entries
+                        result = self.dispatch()
+                        self.assertEqual(result["notification_status"], "sent")
+                        self.assertEqual(result["author_session"], first["author_session"])
+                        self.assertEqual(result["author_provider"], first["author_provider"])
+                        self.assertEqual(result["requested_provider_confirmed"], first["requested_provider_confirmed"])
+                        self.assertEqual(result["needs_attention"], first["needs_attention"])
+                    self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
 
     def test_completed_review_never_notifies_missing_or_ambiguous_ledger_author(self):
-        self.dispatch()
+        with patch.object(self.io, "notify", side_effect=notifications.NotSent("busy")):
+            self.dispatch()
         for entries in ([], [entry(), entry()], [{**entry(), "supervisor_owned": False}],
-                        [{**entry(), "repository": "another/repo"}]):
+                        [{**entry(), "repository": "another/repo"}], [{**entry(), "session_id": "successor-native"}]):
             with self.subTest(entries=entries):
                 self.entries = entries
                 with patch.object(self.io, "notify") as send:
@@ -518,6 +550,8 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(self.dispatch()["author_session"], SESSION)
         self.io.request["body"] = ask()["body"]
         with patch.object(reviews, "registered_worktrees", return_value=[(Path(self.temp.name), successor, "b" * 40)], create=True):
+            self.assertEqual(self.dispatch(apply=False)["notification_status"], "sent")
+            self.evidence = Path(self.temp.name) / "foreign-without-local-history"
             self.assertEqual(self.dispatch(apply=False)["status"], "not_owned")
 
     def test_edited_report_requires_disposition_after_its_latest_edit(self):
