@@ -25,15 +25,15 @@ from datetime import datetime
 from typing import Any, Callable
 from urllib.parse import urlencode
 
-APPROVAL_QUESTION = "Q455"
 QUESTION_ID = re.compile(r"Q\d+\b", re.IGNORECASE)
 QUESTION_HEADING = re.compile(r"(?:#{1,6}\s*)?(?:Owner|Director) question\s*:\s*(Q\d+)\b(.*)", re.IGNORECASE)
-# An answer is the comment's first line, unquoted: "Q455 yes" from the Director,
-# or "Director decision: Q455 yes" recorded by trusted automation. Any other
+# An answer is the comment's first line, unquoted: "Q<number> yes" from the Director,
+# or "Director decision: Q<number> yes" recorded by trusted automation. Any other
 # answer to the question, or a hedged one, withholds approval.
 DECISION_PREFIX = re.compile(r"Director decision\s*:\s*", re.IGNORECASE)
 AFFIRMATIVE = {"yes", "approved", "approve"}
 HEDGE = re.compile(r"\b(?:not|no|don't|do not|but|unless|declin\w*|reject\w*|revok\w*|withdraw\w*)\b", re.IGNORECASE)
+STOP_SEARCH = re.compile(r"\b(?:stop\w*|disabl\w*|paus\w*|avoid\w*|ceas\w*|prevent\w*|block\w*|forbid\w*)\b", re.IGNORECASE)
 COMMENT_URL = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/\d+#issuecomment-(\d+)"
 )
@@ -84,11 +84,11 @@ def thread_comments_path(issue_api_url: str) -> str:
 
 
 def answer(comment: Any, director_login: str, recorders: set[str], *,
-           question: str = APPROVAL_QUESTION, recorded_affirmative: str | None = None) -> bool | None:
+           question: str, recorded_affirmative: str | None = None) -> bool | None:
     """True or False for a Director answer, else None.
 
     Other narrow readers may name their own question and the exact affirmative
-    first line of an existing trusted recorded decision. Q455 defaults stay unchanged.
+    first line of an existing trusted recorded decision.
     """
     if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
         return None
@@ -146,7 +146,7 @@ def approval_gap(
                       recorded_affirmative=recorded_affirmative) for item in sorted(
         (item for item in thread if isinstance(item, dict) and item.get("id") != comment.get("id")
          and str(item.get("updated_at") or item.get("created_at") or "") >= comment["created_at"]),
-        key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))]
+        key=lambda item: str(item.get("created_at") or ""))]
     if [value for value in answers if value is not None][-1:] == [False]:
         return f"a later answer withdrew the {question} approval"
     return None
@@ -180,13 +180,15 @@ def mention_question(comment: Any, thread: list[Any], approval_url: str,
             continue
         # Only the question's own heading supplies scope; body prose and quoted
         # questions cannot authorize this separate personal-login reader.
-        heading = item["body"].split("\n\n", 1)[0].replace("*", "").replace("`", "")
+        heading = re.split(r"\r?\n[ \t]*\r?\n", item["body"], maxsplit=1)[0].replace("*", "").replace("`", "")
         match = QUESTION_HEADING.fullmatch(" ".join(heading.splitlines()).strip())
         if match and match.group(1).upper() == question:
             candidates.append(match.group(2))
     if len(candidates) != 1:
         return None
     scope = candidates[0]
+    if HEDGE.search(scope) or STOP_SEARCH.search(scope):
+        return None
     if not (re.search(r"\bsearch\w*\b", scope, re.IGNORECASE)
             and re.search(r"\bmentions?\b", scope, re.IGNORECASE)
             and re.search(r"\b(?:own|your|my|Director.s)\s+(?:gh\s+|GitHub\s+)?login\b", scope, re.IGNORECASE)):

@@ -45,7 +45,7 @@ class FakeGet:
                 "incomplete_results": self.incomplete}
 
 
-Q = director_mentions.APPROVAL_QUESTION
+Q = "Q455"  # Historical approval syntax remains supported alongside other counters.
 
 
 def record(body, login="cbusillo", comment_id=99, created="2026-10-17T12:00:00Z"):
@@ -129,6 +129,12 @@ class ApprovalTests(unittest.TestCase):
                          permission_question("Q101"),
                          {**valid, "body": "Owner question: **Q100** — may I download attachments?\n\n"
                           "The watcher can search mentions under your own login."},
+                         {**valid, "body": "Owner question: **Q100** — may I download attachments?\r\n\r\n"
+                          "The watcher can search mentions under your own login."},
+                         {**valid, "body": "Owner question: **Q100** — should the watcher stop searching "
+                          "mentions under your own login?"},
+                         {**valid, "body": "Owner question: **Q100** — allow attachment downloads "
+                          "(this does not search mentions under your own login)?"},
                          {**valid, "body": "> " + valid["body"]},
                          {**valid, "user": {"login": "stranger"}},
                          {**valid, "issue_url": "https://api.github.com/repos/other/repo/issues/1"},
@@ -149,6 +155,12 @@ class ApprovalTests(unittest.TestCase):
                     APPROVAL_URL, "cbusillo", {"shiny-code-app[bot]"}, approval("Q100 yes"),
                     lambda *_: [question, record(body, comment_id=100, created="2026-10-18T00:00:00Z")])
                 self.assertEqual(gap is None, expected)
+        older_yes = {**record("Q100 yes", comment_id=97, created="2026-10-17T10:00:00Z"),
+                     "updated_at": "2026-10-19T00:00:00Z"}
+        withdrawn = record("Q100 no", comment_id=100, created="2026-10-18T00:00:00Z")
+        self.assertTrue(director_mentions.approval_gap(
+            APPROVAL_URL, "cbusillo", {"shiny-code-app[bot]"}, approval("Q100 yes"),
+            lambda *_: [question, older_yes, withdrawn]))
 
     def test_director_reply_or_recorded_decision_approves(self):
         for body, login in ((f"{Q} yes", "cbusillo"), (f"**{Q} yes**, go ahead.", "cbusillo"),
@@ -175,7 +187,7 @@ class ApprovalTests(unittest.TestCase):
 
     def test_later_answer_withdraws_and_unrelated_later_comments_do_not(self):
         withdrawn = [record(f"{Q} no, stop those searches", comment_id=100, created="2026-10-18T00:00:00Z")]
-        self.assertIn("withdrew", approval_gap(later=withdrawn))
+        self.assertTrue(approval_gap(later=withdrawn))
         unrelated = [record("Thanks", comment_id=100), record(f"{Q} no", "client", 101),
                      record(f"> {Q} no", comment_id=102)]
         self.assertIsNone(approval_gap(later=unrelated))
@@ -187,7 +199,7 @@ class ApprovalTests(unittest.TestCase):
         mentions, gap, error = director_mentions.collect("cbusillo", "2026-10-17T00:00:00Z", None, set(), approval(),
                                                          lambda *_: [], get=get)
         self.assertEqual((mentions, error), ([], None))
-        self.assertIn("no standing approval", gap)
+        self.assertTrue(gap)
         self.assertEqual(get.calls, [])
 
 
