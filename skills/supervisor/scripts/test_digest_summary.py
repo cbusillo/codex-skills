@@ -70,6 +70,8 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("complete within selected scope", message)
         self.assertIn(FULL, message)
         self.assertNotIn("example/lab/issues/", message)
+        # An empty person queue still says so on its heading line, not a bare heading.
+        self.assertRegex(message, r"(?m)^Waiting on [^:\n]*:[ \t]*\S")
 
     def test_overflow_or_malformed_report_never_posts(self):
         rows = [("aged_structured_wait", i, "age unknown", "Chris", "🧭" * 100) for i in range(100)]

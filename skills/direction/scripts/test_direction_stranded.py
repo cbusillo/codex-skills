@@ -136,8 +136,12 @@ class StrandedTests(unittest.TestCase):
         rows = {r["repo"]: r for r in report["findings"] if r["kind"] == "finished_worktree"}
         self.assertEqual({repo: [e["task"] for e in r["evidence"]] for repo, r in rows.items()},
                          {"o/a": ["landed", "edited"], "o/b": ["undated"]})
-        self.assertEqual(sum(e["dirty"] for e in rows["o/a"]["evidence"]), 1)
-        self.assertIn("o/a", sweep.markdown(report))
+        dirty = sum(e["dirty"] for e in rows["o/a"]["evidence"])
+        self.assertEqual(dirty, 1)
+        # The shown counts agree with the evidence; the sentence around them is free.
+        self.assertRegex(rows["o/a"]["detail"], rf"\b{dirty}\b")
+        self.assertRegex(rows["o/a"]["title"], rf"\b{len(rows['o/a']['evidence'])}\b")
+        self.assertIn(rows["o/a"]["title"], sweep.markdown(report))
 
     def test_coverage_failure_is_in_markdown_even_with_zero_findings(self):
         self.records = []
