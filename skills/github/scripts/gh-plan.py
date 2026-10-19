@@ -1408,6 +1408,37 @@ def compact_relationship_issue(issue: dict[str, Any], relationship: str) -> dict
     }
 
 
+def read_handoff_history_child(event: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a REST timeline's omitted child through that exact event node."""
+    child = event.get("sub_issue")
+    if isinstance(child, dict):
+        return child
+    node_id = event.get("node_id")
+    if child is not None or not isinstance(node_id, str) or not node_id.strip():
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
+    _, response = api_json(
+        "POST", "/graphql", is_write=False, bucket="graphql", failed_step="claim_handoff_child_history_node",
+        payload={"query": "query($id:ID!){node(id:$id){id __typename ... on SubIssueAddedEvent{subIssue{id number state title url repository{nameWithOwner}}}}}",
+                 "variables": {"id": node_id}})
+    data = response.get("data") if isinstance(response, dict) else None
+    node = data.get("node") if isinstance(data, dict) else None
+    if (not isinstance(node, dict) or response.get("errors") or node.get("id") != node_id
+            or node.get("__typename") != "SubIssueAddedEvent"):
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history event could not be resolved")
+    child = node.get("subIssue")
+    repository = child.get("repository") if isinstance(child, dict) else None
+    repo = repository.get("nameWithOwner") if isinstance(repository, dict) else None
+    if (not isinstance(child, dict) or not isinstance(child.get("id"), str) or not child["id"].strip()
+            or not isinstance(repo, str) or not re.fullmatch(r"[^/\s]+/[^/\s]+", repo)):
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
+    related = {"node_id": child["id"], "number": child.get("number"), "state": child.get("state"),
+               "title": child.get("title"), "html_url": child.get("url"), "repository": {"full_name": repo}}
+    compact_relationship_issue(related, "handoff history child")
+    if related["html_url"] != f"https://github.com/{repo}/issues/{related['number']}":
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history returned an inconsistent issue identity")
+    return related
+
+
 def read_issue_relationships(
     issue_repo: str,
     number: int,
@@ -2580,9 +2611,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         for event in history:
             if event.get("event") != "sub_issue_added":
                 continue
-            if not isinstance(event.get("sub_issue"), dict):
-                raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
-            children.append(event["sub_issue"])
+            children.append(read_handoff_history_child(event))
         source_ids = ({str(source_claim_id)} if source_claim_id is not None else set()) | {
             str(comment["id"]) for comment in source_comments or []
             if type(comment.get("id")) is int and comment["id"] > 0

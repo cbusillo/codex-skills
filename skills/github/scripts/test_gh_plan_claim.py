@@ -91,6 +91,8 @@ class ClaimTests(unittest.TestCase):
         self.parent = None
         self.children = {}
         self.timelines = {}
+        self.history_nodes = {}
+        self.history_reads = []
         self.api_failure = None
         self.configs = {}
         self.planning_inventory = None
@@ -115,7 +117,13 @@ class ClaimTests(unittest.TestCase):
         issue["repo"], issue["number"] = PLAN.issue_ref(ref, repo)
         return "bot", issue
 
-    def read_api(self, _method, path, **_):
+    def read_api(self, _method, path, payload=None, **options):
+        if path == "/graphql":
+            self.history_reads.append((_method, copy.deepcopy(payload), options))
+            response = self.history_nodes[payload["variables"]["id"]]
+            if isinstance(response, Exception):
+                raise response
+            return "bot", copy.deepcopy(response)
         if path.endswith("/parent"):
             if self.api_failure:
                 raise PLAN.PlanError("Unavailable", api_result=self.api_failure)
@@ -1089,6 +1097,91 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertEqual(len(self.comments), 1)  # Same-session recovery reuses its claim.
+
+    def omitted_history_child(self, child):
+        node_id = "fixture-sub-issue-added-event"
+        event = {"event": "sub_issue_added", "node_id": node_id, "sub_issue": None}
+        self.history_nodes[node_id] = {"data": {"node": {
+            "id": node_id, "__typename": "SubIssueAddedEvent", "subIssue": {
+                "id": f"fixture-issue-{child['number']}", "number": child["number"],
+                "state": child["state"].upper(), "title": child["title"],
+                "url": f"https://github.com/owner/repo/issues/{child['number']}",
+                "repository": {"nameWithOwner": "owner/repo"}}}}}
+        self.timelines["/repos/owner/repo/issues/41/timeline"] = [event]
+        return event, self.history_nodes[node_id]
+
+    def test_native_child_resolves_omitted_rest_history_through_exact_event(self):
+        for missing_key in (False, True):
+            with self.subTest(missing_key=missing_key):
+                self.setUp()
+                self.parent_handoff_fixture()
+                parent_before = copy.deepcopy((self.targets, self.target_comments))
+                event, _ = self.omitted_history_child(self.issue)
+                if missing_key:
+                    event.pop("sub_issue")
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertEqual(parent_before, (self.targets, self.target_comments))
+                self.assertGreater(len(self.history_reads), 1)  # Recheck history on claim readback.
+                for method, payload, options in self.history_reads:
+                    self.assertEqual(method, "POST")
+                    self.assertEqual(payload["variables"]["id"], event["node_id"])
+                    self.assertIs(options["is_write"], False)
+                    self.assertEqual(options["bucket"], "graphql")
+
+    def test_hydrated_history_keeps_detached_live_child_ownership(self):
+        for phase in ("preflight", "after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.parent_handoff_fixture()
+                successor = {**OTHER, "session": "detached-child-session", "branch": "work/detached-source",
+                             "resume_from": str(self.args.resume_from),
+                             "retained_handoff": f"{self.parent['html_url']}#issuecomment-{self.args.handoff_comment}"}
+                sibling = {**copy.deepcopy(self.issue), "number": 43,
+                           "body": "## Current Status\n\n" + CLAIM.marker(successor)}
+                self.targets["43"] = sibling
+                self.target_comments["/repos/owner/repo/issues/43/comments"] = [
+                    {"id": 88, "body": CLAIM.marker(successor), "user": {"login": TEST_BOT},
+                     "created_at": successor["claimed_at"]}]
+                def detached():
+                    self.omitted_history_child(sibling)
+                if phase == "preflight":
+                    detached()
+                else:
+                    setattr(self, phase, detached)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertEqual(caught.exception.payload["competing_evidence"][0]["record"], successor)
+                self.assertTrue(self.history_reads)
+                if phase == "preflight":
+                    self.assert_no_writes()
+                else:
+                    self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_unresolved_history_event_refuses_without_claim_writes(self):
+        for failure in ("unreadable", "errors", "wrong_id", "wrong_type", "missing_child",
+                        "missing_issue_id", "repository", "number", "state", "url"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.parent_handoff_fixture()
+                event, response = self.omitted_history_child(self.issue)
+                node = response["data"]["node"]
+                if failure == "unreadable":
+                    self.history_nodes[event["node_id"]] = PLAN.PlanError("History unavailable", api_result={"status": 403})
+                elif failure == "errors":
+                    response["errors"] = [{"message": "History unavailable"}]
+                elif failure == "wrong_id":
+                    node["id"] = "another-event"
+                elif failure == "wrong_type":
+                    node["__typename"] = "IssueComment"
+                elif failure == "missing_child":
+                    node["subIssue"] = None
+                else:
+                    node["subIssue"][{"missing_issue_id": "id", "repository": "repository"}.get(failure, failure)] = None
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
 
     def nested_handoff_fixture(self):
         self.parent_handoff_fixture()
