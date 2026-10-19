@@ -125,6 +125,7 @@
     "CodeQL",
     "Launchplane Contract Freshness",
     "Launchplane Train Validation",
+    "Merge-Train Reply Schema",
     "Update PEP 723 Dependencies"
   ],
   "relatedRepos": [],

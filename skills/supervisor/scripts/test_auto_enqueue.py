@@ -116,6 +116,7 @@ def candidate_response(
         request={"repository": REPO},
         provider_payload={
             "status": "accepted",
+            "trace_id": "launchplane_req_candidate",
             "records": records
             if records is not None
             else {"merge_train_batch_candidate_record_id": "active"},

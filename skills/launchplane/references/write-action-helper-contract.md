@@ -1847,13 +1847,26 @@ operations, drop or list unknown fields instead. A Launchplane PR that adds a
 field to a strictly projected response lands the matching helper allowlist
 change first and says so in its PR body.
 
+The merge-train controller reply has no helper allowlist. Launchplane publishes
+its contract as `contracts/merge-train-controller-reply.schema.json` and tests
+every reply against it; this skill pins a byte-for-byte copy at
+`references/merge-train-controller-reply.schema.json`. The helper enforces the
+pin's types, required fields and bounds. A field the pin does not declare is
+newer than the pin: it is left out of the result, named in
+`summary.unrecognized_fields` (plain identifiers only, at most ten) with a
+`controller_reply_newer_than_pinned_schema` warning, and does not fail the
+read. A field name that is not a plain public-safe identifier, or any unsafe
+value, still fails closed. Refresh the pin with
+`uv run scripts/sync-merge-train-reply-schema.py sync` from this skill
+directory, naming the Launchplane commit in the commit message; the
+`Merge-Train Reply Schema` workflow fails on pull requests, on `main` and daily
+when the pin differs from Launchplane's `main`.
+
 Unexpected successful provider shapes fail closed as `invalid_response` rather
 than being recursively sanitized. For an accepted controller reply that cannot
 be projected, `summary.projection_error_code` and the warning code retain the
 local `LaunchplaneSafetyError` code (such as `unsafe_response_shape` or
-`invalid_response`). `summary.unrecognized_key` names the first unknown result
-or record key only when it is a public-safe plain identifier of at most 80
-characters. No rejected value is emitted. Independently validated service error
+`invalid_response`). No rejected value is emitted. Independently validated service error
 codes and trace IDs remain available; read the PR and controller state before
 retrying a mutating pass, which may already have completed.
 Summary fields, including `trace_id`, must be
