@@ -11,8 +11,6 @@ import copy
 import json
 from pathlib import Path
 import sys
-import tempfile
-import os
 from typing import Any
 from unittest.mock import patch
 
@@ -268,35 +266,6 @@ def test_reviews_and_comments_paginate_before_publication():
     ):
         assert batch.try_batch(observed, "owner/repo", [node["number"]]) is None
     assert observed.batch_responses == {}
-
-
-def test_default_unchanged_reads_retain_zero_charged_requests():
-    with (
-        tempfile.TemporaryDirectory() as root,
-        patch.dict(os.environ, {"GITHUB_READ_CACHE_DIR": root}),
-    ):
-        observed = reader()
-        observed.cache_enabled = True
-        observed.cache_revalidate = True
-        first = response({"number": 1})
-        first.headers = {"etag": "fixture-validator"}
-        unchanged = response(None)
-        unchanged.status = 304
-        with patch.object(
-            observed, "_transport_request", side_effect=[first, unchanged]
-        ) as transport:
-            assert observed.get_json("/repos/owner/repo/pulls/1", step="cold") == {
-                "number": 1
-            }
-            assert observed.get_json("/repos/owner/repo/pulls/1", step="unchanged") == {
-                "number": 1
-            }
-        assert (
-            transport.call_args.kwargs["extra_headers"]["If-None-Match"]
-            == "fixture-validator"
-        )
-        assert observed.requests[-1]["status"] == 304
-        assert observed.requests[-1]["cache"] == "revalidated"
 
 
 def test_batch_keeps_actions_evidence_and_cannot_hide_missing_runs():

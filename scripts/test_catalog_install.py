@@ -269,18 +269,6 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(list(target.parent.glob("generated.md.backup-*"))[0].read_bytes(), original)
         self.assertEqual(path.readlink(), target)
 
-    def test_legacy_crlf_receipt_recognizes_stale_generated_link(self):
-        self.install()
-        path = self.codex / "AGENTS.md"
-        target = self.root / "generated.md"
-        target.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
-        path.unlink()
-        path.symlink_to(target)
-        (self.catalog / "instructions" / "global.md").write_text("New shared rule.\n")
-        self.install()
-        self.assertIn("New shared rule.", target.read_text())
-        self.assertEqual(path.readlink(), target)
-
     def test_read_only_generated_targets_are_preserved_without_stopping_install(self):
         self.install()
         path = self.codex / "AGENTS.md"

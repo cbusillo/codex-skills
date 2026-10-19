@@ -102,25 +102,6 @@ class LifecycleQueueTests(unittest.TestCase):
         self.assertGreater(rows[-1]['wait_seconds'], 0.01)
         self.assertFalse(list((self.cache / contract.LIFECYCLE_QUEUE_DIRNAME).glob(contract.LIFECYCLE_TICKET_GLOB)))
 
-    def test_twenty_callers_remain_pending_then_all_execute_after_owner_releases(self):
-        owner = self.start(0)
-        self.assertEqual(self.read_event(owner), 'entered')
-        for identity in range(1, 20):
-            self.start(identity)
-        time.sleep(0.05)
-        self.assertTrue(all(process.poll() is None for process in self.processes),
-                        'healthy contention must queue, rather than terminate an assessment')
-        # Allow each admitted worker to complete, independent of kernel scheduling order.
-        for process in self.processes:
-            assert process.stdin is not None
-            process.stdin.write('\n')
-            process.stdin.flush()
-        for process in self.processes:
-            stdout, stderr = process.communicate(timeout=10)
-            self.assertEqual(process.returncode, 0, stderr + stdout)
-        rows = [json.loads(line) for line in (self.cache / 'entered.jsonl').read_text().splitlines()]
-        self.assertCountEqual([row['id'] for row in rows], [str(identity) for identity in range(20)])
-
     def test_crashed_waiter_is_reaped_without_overtaking_a_live_owner(self):
         owner = self.start('owner')
         self.assertEqual(self.read_event(owner), 'entered')

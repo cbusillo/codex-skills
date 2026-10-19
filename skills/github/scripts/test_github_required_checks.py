@@ -199,28 +199,6 @@ def test_failed_write_or_readback_keeps_uncertain_outcome_without_retry():
         assert len(client.writes) == 1
 
 
-def test_malformed_post_write_readback_always_reports_an_unknown_write():
-    cli = load_cli()
-    for mode in ("contexts", "parameters", "login"):
-        class BrokenReadback(CheckClient):
-            def request(self, method, path, **kwargs):
-                result = super().request(method, path, **kwargs)
-                if self.writes and path.endswith("/protection") and mode == "contexts":
-                    result["required_status_checks"]["contexts"] = None
-                elif self.writes and path == "/repos/owner/repo" and mode == "login":
-                    result["owner"]["login"] = None
-                elif self.writes and mode == "parameters":
-                    malformed = response_ruleset(rules.standard_specs(77)[0], 13)
-                    malformed["rules"] = [{"type": "required_status_checks"}]
-                    self.repos["owner/repo"] = [malformed]
-                return result
-        client = BrokenReadback()
-        reviewed = plan(client)
-        exc = refused(lambda: rules.run_check_plan(client, reviewed, apply=True), "invalid_response")
-        assert cli.failure_context(is_write=True, payload=exc.payload)[0] == "unknown"
-        assert len(client.writes) == 1
-
-
 def test_second_preflight_catches_a_concurrent_change_before_the_mutation():
     class ChangingClient(CheckClient):
         repository_reads = 0

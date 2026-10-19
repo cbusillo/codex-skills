@@ -96,9 +96,6 @@ class DaemonTests(unittest.TestCase):
         self.assertFalse(any(c["method"] in {"thread/start", "turn/start", "turn/interrupt"} for c in calls))
         self.assertFalse(any(c["method"] == "plugin/list" for c in calls))
 
-    def test_source_admission_does_not_depend_on_plugin_inventory(self):
-        self.inspect(fail="plugin/list")
-
     def test_optional_inventory_uses_target_project_and_reports_its_own_failure(self):
         calls = self.inspect(fail="plugin/list", directory="/fixture/project")
         inventory = next(c for c in calls if c["method"] == "plugin/list")

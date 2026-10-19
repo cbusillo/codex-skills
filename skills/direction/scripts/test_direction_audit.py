@@ -1252,22 +1252,13 @@ def activity_windows(module: Any, *, incomplete: bool) -> list[dict[str, Any]]:
             for start, end in ((NOW - second, NOW), (NOW, NOW + 2 * second))]
 
 
-def test_capacity_milestone_closures_count_once_across_adjacent_windows() -> None:
+def test_capacity_closures_and_reopens_count_once_across_adjacent_windows() -> None:
     module = load()
     for incomplete in (False, True):
         first, second = activity_windows(module, incomplete=incomplete)
-        assert [item["number"] for item in first["milestones_closed"]] == [1]
-        assert [item["number"] for item in second["milestones_closed"]] == [2, 3]
-        for result in (first, second):
-            assert result["own_share_status"] == ("unknown" if incomplete else "complete")
-
-
-def test_capacity_issue_reopens_count_once_across_adjacent_windows() -> None:
-    module = load()
-    for incomplete in (False, True):
-        first, second = activity_windows(module, incomplete=incomplete)
-        assert [item["number"] for item in first["issues_reopened"]] == [1]
-        assert [item["number"] for item in second["issues_reopened"]] == [2, 3]
+        for field in ("milestones_closed", "issues_reopened"):
+            assert [item["number"] for item in first[field]] == [1]
+            assert [item["number"] for item in second[field]] == [2, 3]
         for result in (first, second):
             assert result["own_share_status"] == ("unknown" if incomplete else "complete")
 

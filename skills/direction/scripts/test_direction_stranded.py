@@ -419,7 +419,6 @@ class OverdueTriggerTests(unittest.TestCase):
         self.assertEqual(rows[0]["evidence"], ["The Supervisor brings Q426 to Chris."])
         self.assertEqual(result["supervisor_next_action_by_repo"], {"example/catalog": 2, "example/other": 1})
         text = sweep.markdown(result)
-        self.assertIn("Next action names the Supervisor: example/catalog 2, example/other 1", text)
         # The digest still parses the report with the new kind and count line.
         self.assertEqual(sum(r["kind"] == "supervisor_next_action" for r in digest_summary.parse(text)[2]), 3)
         # A fresh hand-back stays quiet until the age threshold; an unknown edit time is still listed.

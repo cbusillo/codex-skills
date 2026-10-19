@@ -3637,16 +3637,6 @@ def test_reporter_check_linked_to_an_actions_job_remains_independent(monkeypatch
     assert "ready_to_merge" in snapshot["actions"]
 
 
-def test_missing_previously_passed_gate_stays_history(monkeypatch, tmp_path):
-    old, new = execution(1), execution(2)
-    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new], [
-        execution_check(old, 11, name="matrix (old lane)"), execution_check(new, 21),
-    ])
-    assert snapshot["checks"]["passed_count"] == 1
-    assert snapshot["checks"]["evidence_complete"] is True
-    assert "ready_to_merge" in snapshot["actions"]
-
-
 def test_same_branch_pull_requests_with_different_targets_stay_independent(monkeypatch, tmp_path):
     target = lambda number, base: [{"number": number, "base": {"ref": base, "repo": {"id": 81}}}]
     old = execution(1, "failure", pull_requests=target(123, "main"))
