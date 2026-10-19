@@ -134,14 +134,26 @@ class ReleaseTests(ReleaseHarness):
         self.assertTrue(CLAIM.discussion_evidence("", invalidated, fixtures.OWNER)[0])
 
     def test_malformed_ended_at_precedes_pr_reads_for_subject_and_legacy_paths(self):
-        self.f.issue["pull_request"] = {}
-        for body in ("Closed session session-b\nSafe to exit: yes",
-                     "Closed session session-b\nEnded at: invalid\nSafe to exit: yes",
-                     "Closed session session-b\nEnded at: 2026-10-01T00:00:00Z\nEnded at: 2026-10-01T00:00:00Z\nSafe to exit: yes"):
-            with self.subTest(body=body):
-                self.evidence["body"] = body
-                with self.assertRaises(PLAN.PlanError): self.run_release()
-                self.f.assert_no_writes()
+        for legacy in (False, True):
+            for ended in ("", "Ended at: invalid\n",
+                          "Ended at: 2026-10-01T00:00:00Z\nEnded at: 2026-10-01T00:00:00Z\n"):
+                with self.subTest(legacy=legacy, ended=ended):
+                    self.setUp()
+                    if legacy:
+                        self.f.comments[0]["body"] = "Claimed by old-worker"
+                        self.args.legacy, self.args.legacy_branch, self.args.legacy_reason = True, "old-branch", "no native ID"
+                        self.evidence["body"] = ("Closed legacy claim 1\n" + ended + "Safe to exit: yes\n"
+                            "Worker: old-worker\nSource branch: old-branch\nNative session unavailable: no native ID")
+                    else:
+                        self.f.issue["pull_request"] = {}
+                        self.evidence["body"] = "Closed session session-b\n" + ended + "Safe to exit: yes"
+                    def evidence_only(method, path, **kwargs):
+                        if not path.endswith(f"/issues/comments/{self.evidence['id']}"):
+                            self.fail("malformed closure must refuse before reading retained PRs or source commits")
+                        return ReleaseHarness.api(self, method, path, **kwargs)
+                    with patch.object(self, "api", side_effect=evidence_only), self.assertRaises(PLAN.PlanError):
+                        self.run_release()
+                    self.f.assert_no_writes()
 
     def pr_setup(self):
         self.f.pr_fixture("dependabot[bot]")

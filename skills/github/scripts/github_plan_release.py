@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import dataclass
 from collections.abc import Callable
 import json
 import pathlib
@@ -95,6 +96,10 @@ def evidence_header(source_id: int, record: dict[str, str]) -> str:
 def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutoff: datetime,
                    record: dict[str, str] | None = None) -> None:
     record = record_from_receipt(source, record) if record is not None else source_record(source)
+    _check_activity(comments, source, cutoff, record)
+
+
+def _check_activity(comments, source, cutoff, record):
     source_at = stamp(source.get("updated_at") or source.get("created_at"))
     if max(source_at, stamp(record["claimed_at"])) >= cutoff:
         raise ValueError("Source claim changed after the cited session-ended evidence")
@@ -144,16 +149,24 @@ def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_
         raise IssueReleaseRefusal("Retained PR must independently link the canonical issue and belong to the source automation identity")
 
 
-def prepare_release(
-    source: dict[str, Any], evidence: dict[str, Any], comments: list[dict[str, Any]],
-    inventory: dict[str, Any], *, actor: str, role: str, releaser_session: str,
-    evidence_url: str, retained_prs: list[str], related: list[dict[str, Any]],
-    checked_prs: list[str] | None = None, retained_branches: set[str] | None = None,
-    legacy: bool = False, legacy_branch: str | None = None, legacy_reason: str | None = None,
-) -> str:
+@dataclass(frozen=True)
+class ReleaseFacts:
+    """Source and closure facts parsed once within one fresh mutation phase."""
+    source: dict[str, Any]
+    evidence: dict[str, Any]
+    record: dict[str, str]
+    cutoff: datetime
+    terminated: dict[str, Any] | None
+    actor: str
+    role: str
+    releaser_session: str
+
+
+def parse_release(source: dict[str, Any], evidence: dict[str, Any], *, actor: str,
+                  role: str, releaser_session: str, legacy: bool = False,
+                  legacy_branch: str | None = None, legacy_reason: str | None = None) -> ReleaseFacts:
+    """Validate exact source identity and closure before reading retained work."""
     record = source_record(source, legacy=legacy, legacy_branch=legacy_branch, legacy_reason=legacy_reason)
-    if legacy and (related or retained_prs):
-        raise ValueError("Legacy releases do not support related releases or structured retained-PR handoffs")
     if not actor or (source.get("user") or {}).get("login") != actor:
         raise ValueError("Release must use the source claim's configured automation identity")
     if role not in {"supervisor", "direction"} or not releaser_session or releaser_session == record["session"]:
@@ -177,7 +190,18 @@ def prepare_release(
         raise ValueError("Termination checks must precede the attestation and match its Ended at time")
     if cutoff > stamp(evidence.get("created_at")):
         raise ValueError("Session-ended timestamp is newer than its attestation")
-    check_activity(comments, source, cutoff, record)
+    return ReleaseFacts(source, evidence, record, cutoff, terminated, actor, role, releaser_session)
+
+
+def validate_release(facts: ReleaseFacts, comments: list[dict[str, Any]], inventory: dict[str, Any], *,
+                     retained_prs: list[str], related: list[dict[str, Any]],
+                     retained_branches: set[str] | None = None) -> None:
+    """Check source activity, all retained artifacts and live peers for this phase."""
+    record, cutoff, terminated = facts.record, facts.cutoff, facts.terminated
+    if "legacy_reason" in record and (related or retained_prs):
+        raise ValueError("Legacy releases do not support related releases or structured retained-PR handoffs")
+    legacy = "legacy_reason" in record
+    _check_activity(comments, facts.source, cutoff, record)
     if any(s.get("sessionId") == record["session"] or
            (legacy and any(s.get(k) == record["worker"] for k in ("sessionId", "name", "worker")))
            for s in inventory["sessions"]):
@@ -200,13 +224,21 @@ def prepare_release(
     if peers:
         raise ValueError("A live peer is using the source claim's retained worktree")
     for comment in related:
-        if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
+        if ((comment.get("user") or {}).get("login") != facts.actor or claim.records(comment.get("body") or "")
                 or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
             raise ValueError("Related release must name an unstructured ownership follow-up of this exact source worker")
         if not related_sessions_match(comment.get("body") or "", record["session"]):
             raise ValueError("Related ownership follow-up names a different native session; obtain that session's own closure evidence")
         if stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
             raise ValueError("Related ownership follow-up is newer than the session-ended evidence")
+
+
+def render_release(facts: ReleaseFacts, *, evidence_url: str, retained_prs: list[str],
+                   related: list[dict[str, Any]], checked_prs: list[str] | None = None) -> str:
+    """Render only already validated facts; this performs no reads or validation."""
+    source, evidence, record = facts.source, facts.evidence, facts.record
+    cutoff, terminated, role = facts.cutoff, facts.terminated, facts.role
+    releaser_session = facts.releaser_session
     receipt = {"source_id": source["id"], "source": record, "source_updated_at": source.get("updated_at") or source["created_at"],
                "evidence_url": evidence_url, "evidence_at": cutoff.isoformat(),
                "evidence_updated_at": evidence.get("updated_at") or evidence["created_at"], "role": role,
@@ -223,6 +255,22 @@ def prepare_release(
                + ("\n".join(f"- {a.get('worktree') or 'no local worktree'} (branch {a['branch']})" for a in terminated["retained_artifacts"]) or "None; no source branch or worktree was created.")
                + "\n" if terminated is not None else "")
             + "\n<!-- " + RELEASE_MARKER + json.dumps(receipt, sort_keys=True).replace(">", "\\u003e") + " -->")
+
+
+def prepare_release(
+    source: dict[str, Any], evidence: dict[str, Any], comments: list[dict[str, Any]],
+    inventory: dict[str, Any], *, actor: str, role: str, releaser_session: str,
+    evidence_url: str, retained_prs: list[str], related: list[dict[str, Any]],
+    checked_prs: list[str] | None = None, retained_branches: set[str] | None = None,
+    legacy: bool = False, legacy_branch: str | None = None, legacy_reason: str | None = None,
+) -> str:
+    """Compatibility composition for callers that already have all phase inputs."""
+    facts = parse_release(source, evidence, actor=actor, role=role, releaser_session=releaser_session,
+        legacy=legacy, legacy_branch=legacy_branch, legacy_reason=legacy_reason)
+    validate_release(facts, comments, inventory, retained_prs=retained_prs, related=related,
+                     retained_branches=retained_branches)
+    return render_release(facts, evidence_url=evidence_url, retained_prs=retained_prs,
+                          related=related, checked_prs=checked_prs)
 
 
 def pending_body(body: str) -> str:
@@ -364,7 +412,7 @@ def effective_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     or (source.get("user") or {}).get("login") != (comment.get("user") or {}).get("login")
                     or claim.released_claim_id(comment.get("body") or "") != source["id"]):
                 raise ValueError("Source no longer matches receipt")
-            check_activity(comments, source, stamp(receipt["evidence_at"]), receipt["source"])
+            _check_activity(comments, source, stamp(receipt["evidence_at"]), receipt["source"])
         except (KeyError, TypeError, ValueError):
             comment = without_release(comment)
         result.append(comment)

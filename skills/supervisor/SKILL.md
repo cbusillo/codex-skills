@@ -45,7 +45,7 @@ resources:
     description: Find transcript close-out candidates for Supervisor verification.
   - path: scripts/release_session_claims.py
     kind: script
-    description: Record verified closure, discover remaining claims across Director repositories and release them through the planning helper; includes closed-log backfill.
+    description: Record verified closure and report canonical claim releases across Director repositories; includes explicit closed-log release backfill.
   - path: scripts/codex-session.py
     kind: script
     description: Register a fresh managed native launch, resume or queue an exact thread under the closure/admission ownership lease, read its new launch metadata, or preview and cancel one guarded NotLoaded queue entry.
@@ -124,8 +124,8 @@ commands:
   - name: supervisor-release-session-claims
     source: skill
     resource_path: scripts/release_session_claims.py
-    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
-    purpose: Preview remaining claims after transcript, issue handoff and actual process exit verification.
+    example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended"]
+    purpose: Report consumed releases and unresolved claim IDs after transcript and actual process exit verification.
   - name: supervisor-codex-session-queue
     source: skill
     resource_path: scripts/codex-session.py
@@ -797,9 +797,11 @@ others. A missed target remains visible in the next check and handoff.
    [finished-session shutdown stages](references/helpers.md#finished-session-shutdown-stages)
    describes, before closing the tab. It records the observed exit in the
    shared host-local closed-session log, discovers the session's claims across accessible
-   repositories under `--owner` and the configured automation identity, posts the
-   closed-session attestation, and previews then
-   applies `gh-plan.py release-claim --role supervisor`, naming retained PRs.
+   repositories under `--owner` and the configured automation identity, and
+   reports their existing exact worker or validated Supervisor releases.
+   It reports unresolved claim IDs without posting another release. Use the
+   existing evidence-backed `gh-plan.py release-claim` route to reconcile those
+   claims, preserving retained PRs, then rerun finish.
    Load `github` and `github-plan` before that step. Keep incomplete discovery,
    unreleasable claims and uncertain writes in the ledger for reconciliation;
    never report claims released without confirmed readback. A running session,

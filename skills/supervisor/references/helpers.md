@@ -1824,10 +1824,11 @@ it does not transfer another claim or authorize editing a sibling branch.
 
 ### Release a verified finished session
 
-Before closing the verified-finished tab, discover and release its remaining
-claims. Read [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
+Before closing the verified-finished tab, discover its claims and verify their
+existing releases. Reconcile unresolved claims through the evidence-backed
+`gh-plan.py release-claim` route before retrying finish. Read [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
 and its Abandoned automation claims section first. The current Supervisor must
-verify the transcript handoff and actual process exit, including hosts/peers
+verify the completed transcript and actual process exit, including hosts/peers
 the helpers cannot inventory. The helper rechecks the exact native transcript,
 unqualified safe verdict and native activity before every release; normal
 finish and full closure ledgers also recheck their recorded PID/TTY. It also
@@ -1847,7 +1848,7 @@ It does not
 send exit commands or change issue status, waits, blockers, branches or worktrees.
 
 ```sh
-uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
+uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended
 ```
 
 The default closed-session log is
@@ -1865,6 +1866,11 @@ native transcript copy. The account set is canonical and independent of the
 caller's account home. Optional receipt enrichment failures do not stop ordinary
 closure or claim release. The mandatory source-action barrier described below
 still applies, and legacy logs are never upgraded by assumption.
+
+Finish validates its selected closure record and preserves other sessions' rows
+unchanged. An incomplete row with a clearly different session ID does not block
+that selection. Ambiguous identities, duplicate selected records and malformed
+selected records still require reconciliation before closure is recorded.
 
 An idle-loaded thread needs either that matching receipt or full current
 native recovery proof with validated source ownership, unchanged authenticated
@@ -2161,38 +2167,51 @@ by themselves. Retry the shared end check with the original validated source
 identity. If a real guarded resume occurred, `codex-session.py status` supplies
 its actual new launch metadata for the recovery ledger. A failed prelaunch is
 not a new generation. Optional idle-proof fingerprints belong to admission;
-an older boot/account fingerprint does not prevent ordinary verified release
+an older boot/account fingerprint does not prevent ordinary verified closure
 with the original actual closure time.
 
-Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
-For `finish`, discovery also checks original claim comments after their release.
-An exact `Released claim <id>` directive binds the handoff through that source's
-native session, with both comments authored by the automation actor and dated
-before the recorded closure. When every claim has that evidence, the report says
-`already released by the session` and names the release handoffs without writing
-another release. A verified session that never claimed reports `nothing to release`.
-A body marker matching the released source counts as ended ownership; this
-recognition leaves Current Status text unchanged. Supervisor/direction release
-receipts retain their existing evidence and handoff checks.
+Default is a read-only preview. `finish` consumes canonical claim releases;
+backfill previews claim IDs, retained PRs and attestation bodies.
+For `finish`, discovery checks original claim comments after their release.
+An exact `Released claim <id>` directive binds the release through that source's
+native session, with both comments authored by the automation actor. A worker's
+release must precede its recorded closure. A Supervisor/direction release may
+be posted later: its canonical source, receipt and cited closure evidence are
+validated together, with the original source's end time. Each canonical
+comment/evidence snapshot is reused only within that read phase.
+When every source has that evidence, the report says `already released` and
+names the release handoffs without writing another release. A verified session
+that never claimed reports `nothing to release`. A body marker matching the
+released source counts as ended ownership; Current Status text stays unchanged.
 With `--repo`, these statuses add `in explicit scope` and the session report's
 `coverage` matches the command's scope; claims elsewhere are not accounted for.
-Unresolved ownership retains the existing handoff and release checks; neither
-case relaxes transcript, process-exit or unqualified safe-verdict verification.
-PR-only claims appear in `pr_claim_handoffs`, with exact claim IDs, the verified
-closure's `attestation_body`, the checkout, and dry-run/apply argv. They stay owned until that
-route succeeds; an empty automatic `claims` list does not mean all ownership
-was released. Post the supplied attestation on the PR through `gh-comment`,
-put its returned URL in the command's evidence slot, then run the supported
-`release-claim` dry run and apply from that repository's checkout. The same
-source-branch activity, author, closure and peer checks apply. An outstanding PR handoff keeps `needs_reconciliation` true and the command
-nonzero. Resolve these handoffs before calling ownership cleanup complete.
+Held, foreign, malformed and status-only ownership, unresolved follow-ups and
+failed canonical reads appear in `issue_refusals`, with exact source IDs when
+available. They keep `needs_reconciliation` true and the command nonzero.
+`finish` never reconstructs handoffs from shell commands or falls through to
+new release writes after a read failure. Reconcile the named records using
+[Planning: Claim](../../github/references/cli-reference.md#planning-claim)'s
+existing exact-ID worker or evidence-backed Supervisor release route, then
+rerun finish. Transcript, process-exit and unqualified safe-verdict verification
+still apply to every finish result, including already-released and no-claim
+sessions.
 
-It does not assert release preflight success: that check needs a posted
-attestation, and apply previews the maintained release helper before releasing.
-Repeat with `--apply` after inspecting it. Apply records the newly observed exit
-time in a private JSON log, posts/readbacks the required `Closed session` /
-`Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
-the maintained `release-claim` preview and apply. The original observed exit
+Explicit backfill retains the maintained release path. PR-only backfill claims
+appear in `pr_claim_handoffs`, with exact claim IDs, the verified closure's
+`attestation_body`, checkout and dry-run/apply argv. They stay owned until that
+route succeeds. Post the supplied attestation on the PR through `gh-comment`,
+put its returned URL in the evidence slot, then run the supported `release-claim`
+dry run and apply from that repository's checkout. Source-branch activity,
+author, closure and peer checks still apply. Outstanding PR handoffs keep
+`needs_reconciliation` true and the command nonzero.
+
+A backfill preview does not assert write preflight success: that check needs a
+posted attestation. Repeat with `--apply` after inspecting it. Apply records the
+verified exit in a private JSON log, posts/readbacks the required `Closed session`
+/ `Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
+the maintained `release-claim` preview and apply. `finish --apply` records closure
+and reports existing releases; it posts no attestation or release.
+The original observed exit
 time survives retries. The log has the ledger's array schema plus `ended_at`
 (timezone-qualified ISO timestamp), the verified completed response's
 `verdict_at`, and `process_exit_verified: true`; retain
@@ -2257,28 +2276,9 @@ identity and the current safe verdict, and rechecks resume arguments and all
 transcript activity against the original end time. Normal finish still requires
 the matched PID/TTY and Supervisor-owned ledger entry.
 
-Missing handoffs are discovered from the native final response or recorded
-comment-write receipts, then verified against live comment author and dates.
-A comment URL printed by a recognized comment-write call, however its output
-was summarized or chained, is bound only when the comment's body is exactly what
-that call sent and names no other session. What a call sent is a heredoc consumed
-by that comment command's stdin, or the text the session last wrote to its
-`--body-file` (a Write or Edit tool, or a `cat` heredoc redirect). Input to an
-unrelated command in the same shell call does not qualify. Body files are tracked
-by their full lexical path, using the transcript's recorded working directory
-for relative paths; matching basenames is insufficient. Straightforward literal
-shell assignments such as `body=/tmp/handoff.md; gh-comment issue 1 --body-file
-"$body"` are supported within the same call. Unknown variables, shell cwd changes,
-and relative paths without a recorded working directory do not establish a file
-identity. These cases can still use the helper's JSON receipt or the exact-session
-fallback below. When the transcript records the call's start and
-result, the comment must also have been created between them. Other text the
-session typed, such as a search pattern, is not authorship, and neither is a
-shared-bot comment that a chained read prints. The helper's JSON receipt binds
-on its own.
-A fallback source-issue or summary comment must name the exact native ID;
-shared-bot recency alone never qualifies. The summary thread defaults to
-`OWNER/codex-skills#884`; override it with `--handoff-thread OWNER/REPO#NUMBER`.
+Backfill uses the ledger's explicit exact `handoff_url`, verified against the
+canonical comment author and issue. There is no transcript command interpreter,
+summary-thread fallback or handoff cache.
 An interrupted session with no public closeout can use the inventory's original
 structured ownership comment as recovery context only when its exact native ID,
 author and original timestamp still match. The attestation labels it as an
@@ -2306,7 +2306,7 @@ Malformed ledger schema or duplicate native IDs refuse the whole log; correct
 its format against original evidence before retrying.
 
 ```sh
-uv run skills/supervisor/scripts/release_session_claims.py backfill --closed-log <private-closed.json> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended --verified-handoff
+uv run skills/supervisor/scripts/release_session_claims.py backfill --closed-log <private-closed.json> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended
 ```
 
 The discovery read deadline defaults to ten minutes; `--deadline-seconds` sets a bounded
