@@ -410,6 +410,19 @@ class ProducerBoundaryTests(unittest.TestCase):
         self.assertEqual([p.exists() for p in removable], [False, False])
         self.assertTrue(all(p.exists() for p in kept))
 
+    def test_clock_moved_back_does_not_prune_again_but_a_far_future_stamp_is_due(self):
+        self.hook('UserPromptSubmit')
+        stamp = self.state / PRUNE_STAMP
+        near_future = stamp.stat().st_mtime + 600
+        os.utime(stamp, (near_future, near_future))
+        removable, _kept = self.plant()
+        self.hook('Stop')
+        self.assertTrue(all(p.exists() for p in removable), "a stamp just ahead of the clock is still recent")
+        far_future = stamp.stat().st_mtime + 7200
+        os.utime(stamp, (far_future, far_future))
+        self.hook('UserPromptSubmit')
+        self.assertEqual([p.exists() for p in removable], [False, False])
+
 
 class ObserverTests(unittest.IsolatedAsyncioTestCase):
     async def test_overflow_is_a_recoverable_source_gap(self):

@@ -14,6 +14,7 @@ import re
 import stat
 import tempfile
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 PRODUCER = "codex-skills"
@@ -108,7 +109,7 @@ def read_json(path: Path) -> dict:
         os.close(fd)
 
 
-def private_root(env: dict) -> Path:
+def private_root(env: Mapping[str, str]) -> Path:
     return Path(env.get("CODE_HOME") or Path.home() / ".code").expanduser()
 
 
@@ -195,7 +196,9 @@ class ActivityStore:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return False
-            if existed and 0 <= now.timestamp() - os.fstat(fd).st_mtime < PRUNE_SECONDS:
+            # A stamp up to a window ahead (a clock moved back) still counts as
+            # recent; one further out cannot hold pruning off indefinitely.
+            if existed and abs(now.timestamp() - os.fstat(fd).st_mtime) < PRUNE_SECONDS:
                 return False
             os.fchmod(fd, 0o600)
             os.utime(fd, (now.timestamp(), now.timestamp()))

@@ -136,8 +136,9 @@ Not covered:
   overrides can run there.
 - Codex hooks. They are not an activity source. The daemon holds Codex run
   identity and outcomes, so hooks never create duplicate Codex runs.
-- Claude sessions without the plugin hooks. The inventory poll can only renew
-  their leases. It cannot start a run for them.
+- Claude sessions without the plugin hooks get only what the inventory poll
+  sees: a busy session starts a run and renews its lease, but prompts,
+  attention and subagents are not reported.
 
 Hooks loaded before an observer starts produce no events until their account
 binding exists. Existing runs can be observed without a start hook, but their
