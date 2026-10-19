@@ -67,6 +67,9 @@ class ArchiveTests(unittest.TestCase):
             def request(self, method, path, **kwargs):
                 rows = search_items(parse_qs(urlsplit(path).query)["q"][0])
                 return SimpleNamespace(body={"items": rows, "total_count": len(rows), "incomplete_results": False})
+
+            def paged_json(self, path, **kwargs):
+                return []
         result = director_waits.collect(Reader(), "owner", ["Director"], NOW)
         self.assertEqual([row["repo"] for row in result["waits"]], ["owner/current"])
         self.assertTrue(result["complete"])
@@ -110,6 +113,9 @@ class ArchiveTests(unittest.TestCase):
             def request(self, method, path, **kwargs):
                 rows = search_items(parse_qs(urlsplit(path).query)["q"][0])
                 return SimpleNamespace(body={"items": rows, "total_count": len(rows), "incomplete_results": False})
+
+            def paged_json(self, path, **kwargs):
+                return []
         report = director_waits.collect(Reader(), "owner", ["Director"], NOW, include_archived=True)
         self.assertEqual(len(report["waits"]), len(REPOS))
         self.assertTrue(report["complete"])

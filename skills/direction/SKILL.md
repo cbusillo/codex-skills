@@ -199,9 +199,14 @@ by default. Add `--include-archived` to `gh-plan.py search`, `director_waits.py`
 or `direction_audit.py` for historical results. An explicitly named archived
 repository still reports frozen history in the stale-wait audit.
 
-It uses two Director-wide GitHub issue searches for open issue bodies containing
-`Waiting for` or `Parked until`, then applies the shared human-attention classifier locally with
-the optional people index for the Director's names. This reads wait records
+It uses Director-wide GitHub issue searches for open issue bodies containing
+`Waiting for` or `Parked until`, and for comments holding a structured wait
+record. It reads each match's full discussion and resolves the current wait
+with the shared wait resolver. A trusted structured record wins over prose.
+Without one, the prose wait stays listed with `wait_review_required`. An unread
+discussion or unreadable record makes coverage incomplete. It then applies the
+shared human-attention classifier locally with the optional people index for
+the Director's names. This reads wait records
 across repositories; it does not audit their direction files or milestones.
 Report every wait and its `wait_age_days` (unknown without an explicit start).
 `possibly_stale` flags missing/unparseable verification or verification before

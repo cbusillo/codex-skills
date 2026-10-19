@@ -37,6 +37,7 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
 import director_mentions
 import github_identity
 import github_direction_next
+import github_plan_wait
 import github_repository_scope as repository_scope
 
 
@@ -1077,13 +1078,19 @@ def current_director_wait(
 
 
 def director_wait_reason(
-    repo: str, issue: dict[str, Any], terms: list[str], logins: set[str] | frozenset[str] = frozenset()
+    repo: str, issue: dict[str, Any], terms: list[str], logins: set[str] | frozenset[str] = frozenset(),
+    wait: dict[str, Any] | None = None,
 ) -> tuple[str, str] | None:
-    """Return the recorded wait on the Director now and its kind, preferring a decision."""
+    """Return the recorded wait on the Director now and its kind, preferring a decision.
+
+    ``wait`` is the shared resolver's trusted clear or waiting record. Without
+    one, the Current Status prose is read and marked for review.
+    """
     body = str(issue.get("body") or "")
     sections = github_direction_next.section_map(body)
     status = next((text for title, text in sections.items() if title.casefold() == "current status"), body)
-    record = {"repo": repo, "number": issue.get("number"), "url": str(issue.get("html_url") or "")}
+    record: dict[str, Any] = {"repo": repo, "number": issue.get("number"), "url": str(issue.get("html_url") or ""),
+                              **({"structured_wait": wait} if wait else {"wait_review_required": True})}
     found: tuple[str, str] | None = None
     for wait in github_direction_next.waiting_records(record, status):
         kind = None if wait["non_external"] else current_director_wait(wait["waiting_for"], terms, logins)
@@ -1115,32 +1122,92 @@ def question_gap(comments: list[Comment], director_logins: set[str], decision_au
     return None
 
 
+def structured_wait_issues(
+    repositories: list[str], include_archived: bool = False,
+) -> tuple[dict[str, dict[int, dict[str, Any]]], list[dict[str, str]]]:
+    """Find open issues whose comments carry a structured wait, whatever their labels.
+
+    One search per repository owner, kept to the scanned repositories. Search
+    limits or failures are reported as partial coverage of the waits lane.
+    """
+    scanned = {repo.casefold(): repo for repo in repositories if "/" in repo}
+    found: dict[str, dict[int, dict[str, Any]]] = {}
+    errors: list[dict[str, str]] = []
+    for owner in sorted({repo.split("/", 1)[0] for repo in scanned.values()}, key=str.casefold):
+        query = repository_scope.search_query(
+            f'user:{owner} is:issue is:open in:comments "waiting_for"', include_archived=include_archived
+        )
+        fetched = 0
+        try:
+            for page in range(1, 11):
+                payload = run_json([GH, "api", "search/issues?" + urlencode({"q": query, "per_page": 100, "page": page})])
+                if (
+                    not isinstance(payload, dict) or not isinstance(payload.get("items"), list)
+                    or not isinstance(payload.get("total_count"), int)
+                ):
+                    raise rollup.RollupError("Invalid structured wait search response.")
+                entries = payload["items"]
+                fetched += len(entries)
+                for item in entries:
+                    repo = scanned.get(str(rollup.repo_from_search_url(item.get("repository_url")) or "").casefold())
+                    if repo and isinstance(item.get("number"), int) and "pull_request" not in item:
+                        found.setdefault(repo, {})[item["number"]] = item
+                if payload.get("incomplete_results") or (fetched < payload["total_count"] and (len(entries) < 100 or page == 10)):
+                    errors.append({"repo": owner, "lane": "director_waits_search",
+                                   "error": "Structured wait search coverage is incomplete (GitHub search limit or partial results)."})
+                if len(entries) < 100 or fetched >= payload["total_count"]:
+                    break
+        except rollup.RollupError as exc:
+            errors.append({"repo": owner, "lane": "director_waits_search", "error": rollup.trim(str(exc))})
+    return found, errors
+
+
 def unasked_director_waits(
     repo: str,
     terms: list[str],
     director_logins: set[str],
     decision_authors: set[str],
+    structured: dict[int, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Waits on the Director with no open question, resolved from each complete discussion.
+
+    Candidates are open plan:waiting issues plus ``structured``: open issues
+    found with a structured wait in their comments, whatever their labels.
+    """
     query = urlencode({"state": "open", "labels": WAITING_LABEL, "per_page": 100})
     try:
         issues = api_list(f"repos/{repo}/issues?{query}")
     except rollup.RollupError as exc:
         return [], [{"repo": repo, "lane": "director_waits", "error": rollup.trim(str(exc))}]
+    candidates = {issue["number"]: issue for issue in issues if isinstance(issue.get("number"), int)}
+    candidates.update({number: item for number, item in (structured or {}).items() if number not in candidates})
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
-    for issue in issues:
-        if "pull_request" in issue or not isinstance(issue.get("number"), int):
+    for number, issue in sorted(candidates.items()):
+        if "pull_request" in issue:
             continue
-        wait = director_wait_reason(repo, issue, terms, director_logins)
-        if wait is None:
+        # A structured record in a comment is found by search; one in the body is
+        # visible here. Prose alone still needs the discussion for a later clear.
+        if (number not in (structured or {}) and github_plan_wait.PREFIX not in str(issue.get("body") or "")
+                and director_wait_reason(repo, issue, terms, director_logins) is None):
             continue
-        waiting_for, wait_kind = wait
-        number = issue["number"]
         try:
             items = api_list(f"repos/{repo}/issues/{number}/comments?per_page=100")
         except rollup.RollupError as exc:
             errors.append({"repo": repo, "lane": f"director_waits/{number}", "error": rollup.trim(str(exc))})
             continue
+        try:
+            record = github_plan_wait.current(issue, items, github_plan_wait.authors(repo))
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            # An unreadable record cannot release the prose hold; it needs review.
+            errors.append({"repo": repo, "lane": f"director_waits/{number}",
+                           "error": rollup.trim(f"Structured wait record needs review: {exc}")})
+            record = None
+        wait_record = record if record and record["state"] != "review" else None
+        wait = director_wait_reason(repo, issue, terms, director_logins, wait_record)
+        if wait is None:
+            continue
+        waiting_for, wait_kind = wait
         comments = [comment for item in items if (comment := normalize_issue_comment(repo, item)) is not None]
         gap = question_gap(comments, director_logins, decision_authors)
         if gap is None:
@@ -1155,6 +1222,8 @@ def unasked_director_waits(
                 "wait_kind": wait_kind,
                 "question_gap": gap,
                 "updated_at": str(issue.get("updated_at") or ""),
+                "wait_source": "structured_wait" if wait_record else "legacy_wait_review",
+                "wait_review_required": wait_record is None,
             }
         )
     return rows, errors
@@ -1316,8 +1385,14 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                 ): repo
                 for repo in repositories
             }
+            structured_waits, structured_errors = structured_wait_issues(
+                repositories, settings.get("include_archived", False)
+            )
+            coverage_errors.extend(structured_errors)
             wait_futures = [
-                executor.submit(unasked_director_waits, repo, wait_terms, self_logins, bot_logins)
+                executor.submit(
+                    unasked_director_waits, repo, wait_terms, self_logins, bot_logins, structured_waits.get(repo, {})
+                )
                 for repo in repositories
             ]
             for future in as_completed(futures):
@@ -1507,7 +1582,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "Repository scans cover issues and PRs opened in the window, issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover the opening post and non-empty PR review bodies.",
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
             "Only configured automation is excluded; people-index automation accounts (contacts.github.bot_usernames) are labeled with who they act for, and unlisted logins ending in bot or automation are marked possible_automation.",
-            "Waits on the Director are open plan:waiting issues whose current Waiting for step names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
+            "Waits on the Director are open plan:waiting issues, and open issues whose comments GitHub search finds with a structured wait, whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "Any owner reaction after the current comment version proves personal acknowledgement; owner replies require an exact permalink or an inline-review thread with one eligible external comment.",
             "A targeted automation reply may also use an unambiguous single-author mention. Trusted Director question: or Director decision: records prove awareness of linked comments, or, when they say 'above' without a comment link, external comments preceding them since the previous such record in the thread; awareness alone is not a public response.",
             "Closed threads are handled when a comment has a targeted public response or closure followed its latest version by the scan end; this does not imply personal acknowledgement. Open threads retain separate awareness and response rules.",
