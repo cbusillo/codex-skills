@@ -26,7 +26,8 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 
 APPROVAL_QUESTION = "Q455"
-APPROVAL_ISSUE = "https://github.com/cbusillo/codex-skills/issues/2073"
+QUESTION_ID = re.compile(r"Q\d+\b", re.IGNORECASE)
+QUESTION_HEADING = re.compile(r"(?:#{1,6}\s*)?(?:Owner|Director) question\s*:\s*(Q\d+)\b(.*)", re.IGNORECASE)
 # An answer is the comment's first line, unquoted: "Q455 yes" from the Director,
 # or "Director decision: Q455 yes" recorded by trusted automation. Any other
 # answer to the question, or a hedged one, withholds approval.
@@ -112,33 +113,85 @@ def answer(comment: Any, director_login: str, recorders: set[str], *,
 def approval_gap(
     approval_url: str | None, director_login: str, recorders: set[str],
     read_comment: Callable[[str, int], Any], read_later: Callable[[str, str], list[Any]],
-    *, question: str = APPROVAL_QUESTION, recorded_affirmative: str | None = None,
+    *, question: str | None = None, recorded_affirmative: str | None = None,
 ) -> str | None:
     """Why unattended Director-login searches are not approved, or None.
 
     `read_later(issue_api_url, since)` lists that thread's comments updated
-    since the approval, so a later answer from the Director withdraws it.
+    since a timestamp. Mention permission needs the whole thread to bind the
+    question; explicit-question readers retain their existing narrower read.
     """
     if not approval_url:
-        return f"no standing approval recorded ({APPROVAL_QUESTION} on {APPROVAL_ISSUE})"
+        return "no standing approval recorded for mention searches"
     match = COMMENT_URL.fullmatch(approval_url.strip())
     if not match:
         return "the standing approval must be a GitHub issue comment link"
     try:
         comment = read_comment(match.group(1), int(match.group(2)))
+        if question is None:
+            # Read the whole thread, including the question before the approval.
+            # Explicit-question consumers (such as attachments) keep their own gate.
+            thread = read_later(comment["issue_url"], "1970-01-01T00:00:00Z")
+            question = mention_question(comment, thread, approval_url.strip(), director_login, recorders)
+            if question is None:
+                return "the linked approval has no matching mention-search permission question"
+        else:
+            thread = read_later(comment["issue_url"], comment["created_at"])
         if answer(comment, director_login, recorders, question=question,
                   recorded_affirmative=recorded_affirmative) is not True:
             return f"the linked comment is not an unqualified {question} approval from the Director"
-        later = read_later(comment["issue_url"], comment["created_at"])
     except Exception as error:  # Any read failure leaves approval unverified.
         return f"the standing approval could not be verified: {error}"
     answers = [answer(item, director_login, recorders, question=question,
                       recorded_affirmative=recorded_affirmative) for item in sorted(
-        (item for item in later if isinstance(item, dict) and item.get("id") != comment.get("id")),
-        key=lambda item: str(item.get("created_at") or ""))]
+        (item for item in thread if isinstance(item, dict) and item.get("id") != comment.get("id")
+         and str(item.get("updated_at") or item.get("created_at") or "") >= comment["created_at"]),
+        key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))]
     if [value for value in answers if value is not None][-1:] == [False]:
         return f"a later answer withdrew the {question} approval"
     return None
+
+
+def mention_question(comment: Any, thread: list[Any], approval_url: str,
+                     director_login: str, recorders: set[str]) -> str | None:
+    """Bind an approval to its trusted, preceding permission heading in this thread."""
+    linked = COMMENT_URL.fullmatch(approval_url)
+    if not isinstance(comment, dict) or not linked:
+        return None
+    expected_thread = approval_url.split("#", 1)[0].replace("https://github.com/", "https://api.github.com/repos/")
+    expected_thread = expected_thread.replace("/pull/", "/issues/")
+    if comment.get("id") != int(linked.group(2)) or comment.get("issue_url") != expected_thread:
+        return None
+    first_line = next((line.strip() for line in str(comment.get("body") or "").splitlines() if line.strip()), "")
+    text = DECISION_PREFIX.sub("", first_line.strip("*_` "), count=1).strip("*_` ")
+    approved_id = QUESTION_ID.match(text)
+    if not approved_id:
+        return None
+    question = approved_id.group().upper()
+    trusted = {login.casefold() for login in {*recorders, director_login}}
+    candidates = []
+    for item in thread:
+        if not isinstance(item, dict) or not isinstance(item.get("body"), str):
+            continue
+        if ((item.get("user") or {}).get("login") or "").casefold() not in trusted:
+            continue
+        if item.get("issue_url", expected_thread) != expected_thread or not (
+                str(item.get("created_at") or "") < comment["created_at"]):
+            continue
+        # Only the question's own heading supplies scope; body prose and quoted
+        # questions cannot authorize this separate personal-login reader.
+        heading = item["body"].split("\n\n", 1)[0].replace("*", "").replace("`", "")
+        match = QUESTION_HEADING.fullmatch(" ".join(heading.splitlines()).strip())
+        if match and match.group(1).upper() == question:
+            candidates.append(match.group(2))
+    if len(candidates) != 1:
+        return None
+    scope = candidates[0]
+    if not (re.search(r"\bsearch\w*\b", scope, re.IGNORECASE)
+            and re.search(r"\bmentions?\b", scope, re.IGNORECASE)
+            and re.search(r"\b(?:own|your|my|Director.s)\s+(?:gh\s+|GitHub\s+)?login\b", scope, re.IGNORECASE)):
+        return None
+    return question
 
 
 def timestamp(value: str) -> datetime:

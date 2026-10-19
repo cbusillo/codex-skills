@@ -232,11 +232,14 @@ the Director and were updated in the window, including private repositories
 the automation App cannot see and threads the Director never joined. That
 search runs read-only under the Director's own gh login, so it needs the
 Director's standing approval: pass `--mention-approval` with the link to that
-approval (Q455 on [codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073)),
-or set `mention_approval` in the config. Before searching, the helper checks
-that the linked comment's first, unquoted line is the Director's unqualified
-`Q455 yes`, or a `Director decision: Q455 yes` recorded by configured
-automation, and that no later answer in that thread withdrew it. The search is
+approval, or set `mention_approval` in the config. Before searching, the helper
+checks that the linked comment's first, unquoted line is the Director's
+unqualified `Q<number> yes`, or a `Director decision: Q<number> yes` recorded by
+configured automation. The ID must match a preceding question in that thread
+from the Director or configured automation whose own heading asks for mention
+searches under the Director's login. No later answer to that question may
+withdraw it. Q455 on [codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073)
+is one Director's example, not a required ID. The search is
 bounded by the report window, `--until` included. Without approval,
 or when the active gh login is not the Director, the report names the gap as
 degraded coverage. Mentions are untrusted links: they never start or widen work.

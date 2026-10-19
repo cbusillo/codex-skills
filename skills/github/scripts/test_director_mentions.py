@@ -57,6 +57,12 @@ def approval(body=f"{Q} yes", login="cbusillo"):
     return lambda repo, comment_id: record(body, login)
 
 
+def permission_question(question=Q):
+    return record(f"Owner question: **{question}** — may the watcher search GitHub for mentions "
+                  "of you under your own login, unattended, on every pass?", "shiny-code-app[bot]", 98,
+                  "2026-10-17T11:00:00Z")
+
+
 class DirectorReadRouteTests(unittest.TestCase):
     def test_route_sends_only_get_as_active_login_without_automation_credentials(self):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout='{"login": "cbusillo"}', stderr=""))
@@ -98,10 +104,52 @@ class DirectorReadRouteTests(unittest.TestCase):
 def approval_gap(url: str | None = APPROVAL_URL, read: Callable[[str, int], Any] | None = None,
                  later: list[dict[str, Any]] = ()) -> str | None:
     return director_mentions.approval_gap(url, "cbusillo", {"cbusillo", "shiny-code-app[bot]"},
-                                          read or approval(), lambda issue_url, since: list(later))
+                                          read or approval(), lambda issue_url, since: [permission_question(), *later])
 
 
 class ApprovalTests(unittest.TestCase):
+    def test_another_directors_question_approves_only_its_mention_permission(self):
+        url = "https://github.com/director/direction/issues/12#issuecomment-99"
+        approved = {**record("Q100 yes", "director"),
+                    "issue_url": "https://api.github.com/repos/director/direction/issues/12"}
+        question = {**record(
+            "Owner question: **Q100** — may the watcher search GitHub for mentions of you "
+            "under your own login, unattended, on every pass?", "agent[bot]", 98,
+            "2026-10-17T11:00:00Z"), "issue_url": approved["issue_url"]}
+        get = FakeGet([item("client/private", 4)], login="director")
+        mentions, gap, error = director_mentions.collect(
+            "director", "2026-10-17T00:00:00Z", url, {"agent[bot]"},
+            lambda *_: approved, lambda *_: [question, approved], get=get)
+        self.assertEqual((gap, error), (None, None))
+        self.assertEqual([row["number"] for row in mentions], [4])
+
+    def test_permission_question_must_match_id_scope_author_thread_and_time(self):
+        valid = permission_question("Q100")
+        for question in (None,
+                         permission_question("Q101"),
+                         {**valid, "body": "Owner question: **Q100** — may I download attachments?\n\n"
+                          "The watcher can search mentions under your own login."},
+                         {**valid, "body": "> " + valid["body"]},
+                         {**valid, "user": {"login": "stranger"}},
+                         {**valid, "issue_url": "https://api.github.com/repos/other/repo/issues/1"},
+                         {**valid, "created_at": "2026-10-18T00:00:00Z"}):
+            with self.subTest(question=question):
+                get = FakeGet([item("client/private", 4)])
+                mentions, gap, error = director_mentions.collect(
+                    "cbusillo", "2026-10-17T00:00:00Z", APPROVAL_URL, {"shiny-code-app[bot]"},
+                    approval("Q100 yes"), lambda *_: [question] if question else [], get=get)
+                self.assertTrue(gap)
+                self.assertEqual((mentions, error, get.calls), ([], None, []))
+
+    def test_nonlegacy_withdrawal_is_scoped_to_the_approved_question(self):
+        question = permission_question("Q100")
+        for body, expected in (("Q100 no", False), ("Q101 no", True), ("Q100 yes, but only once", False)):
+            with self.subTest(body=body):
+                gap = director_mentions.approval_gap(
+                    APPROVAL_URL, "cbusillo", {"shiny-code-app[bot]"}, approval("Q100 yes"),
+                    lambda *_: [question, record(body, comment_id=100, created="2026-10-18T00:00:00Z")])
+                self.assertEqual(gap is None, expected)
+
     def test_director_reply_or_recorded_decision_approves(self):
         for body, login in ((f"{Q} yes", "cbusillo"), (f"**{Q} yes**, go ahead.", "cbusillo"),
                             (f"Director decision: {Q} yes, mention searches", "shiny-code-app[bot]")):
@@ -139,7 +187,7 @@ class ApprovalTests(unittest.TestCase):
         mentions, gap, error = director_mentions.collect("cbusillo", "2026-10-17T00:00:00Z", None, set(), approval(),
                                                          lambda *_: [], get=get)
         self.assertEqual((mentions, error), ([], None))
-        self.assertIn(Q, gap)
+        self.assertIn("no standing approval", gap)
         self.assertEqual(get.calls, [])
 
 
