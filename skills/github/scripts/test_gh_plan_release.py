@@ -112,6 +112,37 @@ class ReleaseHarness(unittest.TestCase):
 
 
 class ReleaseTests(ReleaseHarness):
+    def test_canonical_evidence_is_attached_once_per_phase_and_invalidated_freshly(self):
+        self.args.dry_run = True
+        self.run_release()
+        body = self.f.emitted.call_args.args[0]["release_body"]
+        first = self.comment(10, body, "2026-10-02T02:00:00Z")
+        second = self.comment(11, body, "2026-10-02T03:00:00Z")
+        comments = [*self.f.comments, first, second]
+        evidence = copy.deepcopy(self.evidence)
+        available = [evidence]
+        def read(_repo, _number, _identifier):
+            if not available:
+                raise RuntimeError("one canonical evidence read is available in this phase")
+            return available.pop()
+        verified = release.verified_comments(comments, read)
+        self.assertEqual([c["_release_evidence"]["id"] for c in verified if release.receipt_for(c)],
+                         [evidence["id"], evidence["id"]])
+        evidence["updated_at"] = "2026-10-03T00:00:00Z"
+        invalidated = release.verified_comments(comments, lambda *_args: evidence)
+        self.assertFalse(any(release.receipt_for(c) for c in invalidated))
+        self.assertTrue(CLAIM.discussion_evidence("", invalidated, fixtures.OWNER)[0])
+
+    def test_malformed_ended_at_precedes_pr_reads_for_subject_and_legacy_paths(self):
+        self.f.issue["pull_request"] = {}
+        for body in ("Closed session session-b\nSafe to exit: yes",
+                     "Closed session session-b\nEnded at: invalid\nSafe to exit: yes",
+                     "Closed session session-b\nEnded at: 2026-10-01T00:00:00Z\nEnded at: 2026-10-01T00:00:00Z\nSafe to exit: yes"):
+            with self.subTest(body=body):
+                self.evidence["body"] = body
+                with self.assertRaises(PLAN.PlanError): self.run_release()
+                self.f.assert_no_writes()
+
     def pr_setup(self):
         self.f.pr_fixture("dependabot[bot]")
         self.f.pulls[0]["head"]["sha"] = "a" * 40

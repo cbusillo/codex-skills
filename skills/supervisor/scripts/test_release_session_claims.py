@@ -444,31 +444,44 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(result, 1)
                 self.assertTrue(report["needs_reconciliation"])
 
-    def test_finish_supervisor_receipt_is_not_a_session_authored_handoff(self):
+    def test_finish_consumes_validated_supervisor_release_after_source_end(self):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
+                    "issue_url": "https://api.github.com/repos/test/control/issues/9",
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
         body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
-            actor=ACTOR, role="supervisor", releaser_session="supervisor", evidence_url=self.entry["handoff_url"], retained_prs=[], related=[])
+            actor=ACTOR, role="supervisor", releaser_session="supervisor",
+            evidence_url="https://github.com/test/control/issues/9#issuecomment-99", retained_prs=[], related=[])
         receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
-        self.entry["ended_at"] = "2026-01-01T00:06:00Z"
         result, report = self.finish_thread([self.source, receipt], evidence=evidence)
-        self.assertEqual(result, 1)
-        self.assertTrue(report["needs_reconciliation"])
+        self.assertEqual(result, 0)
+        self.assertFalse(report["needs_reconciliation"])
+        self.assertEqual(report["reports"][0]["released_claims"][0]["claim_comment"], self.source["id"])
 
     def test_finish_history_failure_preserves_per_issue_release_and_refusal(self):
-        handoff = dict(self.reader.get_json.return_value)
         def read(path, **_kw):
             if path.endswith("/issues/2"):
                 raise helper.GitHubReadError("temporarily unavailable", result=SimpleNamespace(status=503), diagnostics={})
-            return handoff
+            return {"body": ""}
         self.reader.get_json.side_effect = read
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.reader.paged_json.return_value = [self.source, self.own_release()]
         entry = {**self.entry, "_finish": True, "_finish_scope": "explicit scope"}
         with patch.object(helper, "preview_guards", return_value={"status": "passed_read_only"}), \
                 patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
             report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 2), ("test/a", 1)], self.root, False)
         self.assertEqual([r["issue"] for r in report["issue_refusals"]], [2])
-        self.assertEqual([r["claim_comment"] for r in report["claims"]], [self.source["id"]])
+        self.assertFalse(report["claims"])
+        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
+        write.assert_not_called()
+        run.assert_not_called()
+
+    def test_finish_held_source_reports_exact_id_without_planning_a_release(self):
+        self.reader.get_json.return_value = {"body": ""}
+        self.reader.paged_json.return_value = [self.source]
+        entry = {**self.entry, "_finish": True, "_finish_scope": "explicit scope"}
+        with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+            report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertFalse(report["claims"])
+        self.assertEqual(report["issue_refusals"][0]["claim_comment"], self.source["id"])
         write.assert_not_called()
         run.assert_not_called()
 
@@ -1003,6 +1016,31 @@ else:
             self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
         with patch.object(helper, "inventory", return_value=[(456, "other-tty", "codex --remote unix:///other")]):
             self.assertIsNotNone(helper.closure.verified_record(SOURCE["session"], self.root))
+
+    def test_shared_receipt_ignores_unrelated_log_rewrites_but_pins_selected_source(self):
+        log = self.shared_closure()
+        original = json.loads(log.read_text())[0]
+        real_evidence = helper.closure.evidence
+        for changed in ("append", "rewrite", "source", "duplicate", "permissions", "pending", "transcript"):
+            with self.subTest(changed=changed):
+                log.chmod(0o600)
+                log.write_text(json.dumps([original]))
+                if changed == "transcript": self.transcript.write_text(self.transcript.read_text() + "\n")
+                def raced(entry):
+                    proof = real_evidence(entry)
+                    rows = [dict(original)]
+                    if changed == "append": rows.append({"session_id": "unrelated"})
+                    if changed == "source": rows[0]["launch_generation"] = "changed"
+                    if changed == "duplicate": rows.append(dict(original))
+                    temporary = log.with_suffix(".new")
+                    temporary.write_text(json.dumps(rows))
+                    temporary.chmod(0o644 if changed == "permissions" else 0o600)
+                    temporary.replace(log)
+                    return proof
+                with patch.object(helper.closure, "evidence", side_effect=raced), \
+                        patch.object(helper.closure, "action_pending", side_effect=lambda _sid: changed == "pending"):
+                    result = helper.closure.verified_record(SOURCE["session"], self.root)
+                self.assertEqual(result is not None, changed in {"append", "rewrite"})
 
     def test_shared_receipt_refuses_resumed_and_rewritten_transcripts(self):
         self.shared_closure()

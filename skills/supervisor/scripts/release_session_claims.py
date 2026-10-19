@@ -343,23 +343,22 @@ def discover(reader, owner, entries, repos=None):
     return sorted(issues), repos
 
 
-def active_claims(reader, repo, number, session, actor):
-    comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_claim_discussion")
-    # Use the same evidence validity and ownership classifier as claim, rather
-    # than deciding that any release-shaped text erases ownership.
-    for c, receipt in release.receipts(comments):
-        match = HANDOFF.fullmatch(receipt["evidence_url"])
+def verified_comments(reader, comments):
+    def evidence(repo, number, identifier):
         try:
-            if not match:
-                raise ValueError("invalid evidence URL")
-            evidence = reader.get_json(f"/repos/{match[1]}/issues/comments/{match[3]}", step="release_evidence")
-            if evidence.get("issue_url") != f"https://api.github.com/repos/{match[1]}/issues/{match[2]}":
-                raise ValueError("evidence belongs to another issue")
-            release.validate_evidence(receipt, evidence, (c.get("user") or {}).get("login", ""))
-        except (ValueError, GitHubReadError) as error:
-            if isinstance(error, GitHubReadError) and getattr(error.result, "status", None) not in {403, 404}:
+            return reader.get_json(f"/repos/{repo}/issues/comments/{identifier}", step="release_evidence")
+        except GitHubReadError as error:
+            if getattr(error.result, "status", None) not in {403, 404}:
                 raise
-            comments = [release.without_release(r) if r["id"] == c["id"] else r for r in comments]
+            return None
+    return release.verified_comments(comments, evidence)
+
+
+def active_claims(reader, repo, number, session, actor, *, comments=None, verified=False):
+    if comments is None:
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_claim_discussion")
+    if not verified:
+        comments = verified_comments(reader, comments)
     conflicts, _ = claim.discussion_evidence("", comments, {
         "session": "", "worker": "", "branch": "", "claimed_at": ""
     })

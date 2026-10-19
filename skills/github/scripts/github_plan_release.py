@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from collections.abc import Callable
 import json
 import pathlib
 import re
@@ -304,6 +305,45 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
             or len(ended) != 1 or stamp(ended[0]) != stamp(receipt["evidence_at"])
             or stamp(evidence.get("updated_at") or evidence.get("created_at")) != stamp(receipt["evidence_updated_at"])):
         raise ValueError("Closed-session evidence changed or no longer attests this release")
+
+
+def verified_comments(comments: list[dict[str, Any]],
+                      read_evidence: Callable[[str, int, int], dict[str, Any] | None]) -> list[dict[str, Any]]:
+    """Validate one canonical discussion phase; a missing evidence read returns None.
+
+    Readers translate only 403/404 to None. Transport, page and shape failures
+    propagate. This cache lives only for this phase, including invalid evidence.
+    """
+    if not isinstance(comments, list) or any(not isinstance(c, dict) for c in comments):
+        raise ValueError("canonical discussion must contain comment objects")
+    comments = effective_comments([{k: v for k, v in c.items() if k != "_release_evidence"} for c in comments])
+    cache = {}
+    for release_comment, receipt in receipts(comments):
+        match = COMMENT_URL.fullmatch(receipt["evidence_url"])
+        evidence, valid = None, False
+        if match:
+            repo, number, identifier = match.groups()
+            if receipt["evidence_url"] not in cache:
+                cache[receipt["evidence_url"]] = read_evidence(repo, int(number), int(identifier))
+            evidence = cache[receipt["evidence_url"]]
+            if evidence is not None:
+                if (not isinstance(evidence, dict) or type(evidence.get("id")) is not int
+                        or not isinstance(evidence.get("body"), str)
+                        or not isinstance(evidence.get("user"), dict)
+                        or not isinstance(evidence.get("created_at"), str)
+                        or not isinstance(evidence.get("issue_url"), str)):
+                    raise ValueError("canonical release evidence has an invalid comment shape")
+                try:
+                    if (evidence["id"] != int(identifier)
+                            or evidence["issue_url"] != f"https://api.github.com/repos/{repo}/issues/{number}"):
+                        raise ValueError("release evidence belongs to another canonical comment")
+                    validate_evidence(receipt, evidence, (release_comment.get("user") or {}).get("login", ""))
+                    valid = True
+                except (KeyError, TypeError, ValueError):
+                    pass
+        comments = [({**c, "_release_evidence": evidence} if valid else without_release(c))
+                    if c.get("id") == release_comment.get("id") else c for c in comments]
+    return comments
 
 
 def effective_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:

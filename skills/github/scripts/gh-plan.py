@@ -2132,27 +2132,16 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
         f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
         query={}, bucket="rest_core", step_prefix="claim_comments",
     )
-    comments = github_plan_release.effective_comments(comments)
-    for release_comment, receipt in github_plan_release.receipts(comments):
-        valid, evidence = False, None
+    def release_evidence(evidence_repo, _number, evidence_id):
         try:
-            evidence_match = github_plan_release.COMMENT_URL.fullmatch(receipt["evidence_url"])
-            if evidence_match:
-                evidence_repo, evidence_number, evidence_id = evidence_match.groups()
-                _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="claim_release_evidence")
-                if evidence.get("issue_url") == f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
-                    github_plan_release.validate_evidence(receipt, evidence, (release_comment.get("user") or {}).get("login", ""))
-                    valid = True
-        except PlanError as exc:
-            if plan_error_status(exc) not in {403, 404}:
+            _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}",
+                                   bucket="rest_core", failed_step="claim_release_evidence")
+            return evidence
+        except PlanError as error:
+            if plan_error_status(error) not in {403, 404}:
                 raise
-        except (KeyError, TypeError, ValueError):
-            pass
-        if not valid:
-            comments = [github_plan_release.without_release(c) if c.get("id") == release_comment.get("id") else c for c in comments]
-        else:
-            # Evidence may live on another issue; keep the validated copy with its release.
-            comments = [{**c, "_release_evidence": evidence} if c.get("id") == release_comment.get("id") else c for c in comments]
+            return None
+    comments = github_plan_release.verified_comments(comments, release_evidence)
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
     status = sections.get("Current Status", "")
     if "pull_request" in issue:
