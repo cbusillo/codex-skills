@@ -1380,7 +1380,10 @@ class ReceiptTests(unittest.TestCase):
         ]
         for header in ("sudo -s", "sudo -i", "sudo --shell", "doas -s", "sudo su - deploy", "su - deploy",
                        "sudo su - deploy -c bash", "su deploy -c 'sh -s'", "runuser -u deploy -- bash",
-                       "runuser deploy", "runuser deploy -c bash"):
+                       "runuser deploy", "runuser deploy -c bash",
+                       "sudo su - deploy -c 'cd /srv/app && bash -s'",
+                       "runuser deploy -c 'cd /srv/app && sh -s'",
+                       "bash -c 'cd /x && bash'", "bash -c '{ cd /x; bash -s; }'"):
             commands.append((header + " <<'EOF'\n" + writer + "\nEOF", True))
         commands.extend((
             ("cat <<'EOF' | runuser -u deploy -- sh\n" + writer + "\nEOF", True),
@@ -1390,6 +1393,9 @@ class ReceiptTests(unittest.TestCase):
             ("runuser --help <<'EOF'\n" + writer + "\nEOF", False),
             ("su --help <<'EOF'\n" + writer + "\nEOF", False),
             ("su deploy -c <<'EOF'\n" + writer + "\nEOF", False),
+            ("su deploy -c 'cd /x && printf done' <<'EOF'\n" + writer + "\nEOF", False),
+            ("bash -c 'cd /x && cat' <<'EOF'\n" + writer + "\nEOF", False),
+            ("bash -c 'cd /x && bash < other.sh' <<'EOF'\n" + writer + "\nEOF", False),
             ("su deploy -c 'python3 -' <<'EOF'\n" + python_writer + "\nEOF", True),
             ("runuser -u deploy -- node <<'EOF'\n" + node_writer + "\nEOF", True),
         ))
@@ -2355,6 +2361,24 @@ class ReceiptTests(unittest.TestCase):
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
 
+        patch_body = '*** Begin Patch\n*** Add File: /repo/run.sh\n+' + writer + '\n*** End Patch'
+        for same_call in (True, False):
+            with self.subTest(mixed_patch_exec=same_call):
+                rows = history("codex", *({} for _ in range(1 if same_call else 2)))
+                command = "bash run.sh" if same_call else "echo done"
+                rows[1]["payload"].update(name="exec", arguments=
+                    "await tools.apply_patch(" + json.dumps(patch_body) + "); "
+                    + "text(await tools.exec_command(" + json.dumps({"cmd": command}) + "))")
+                if not same_call:
+                    rows[3]["payload"]["arguments"] = json.dumps({"cmd": "bash run.sh"})
+                self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+        rows = history("codex", {})
+        rows[1]["payload"].update(name="exec", arguments=
+            'text(await tools.exec_command({"cmd":"bash run.sh"})); '
+            + "await tools.apply_patch(" + json.dumps(patch_body) + ")")
+        self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
+
+
     def test_ordered_file_provenance_does_not_borrow_overwritten_or_future_content(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
         for harness in ("codex", "claude"):
@@ -2412,6 +2436,12 @@ class ReceiptTests(unittest.TestCase):
     def test_process_substitution_streams_reach_only_actual_code_readers(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
         commands = (
+            ("jq . <(" + writer + ")", True),
+            ("while read -r l; do echo \"$l\"; done < <(" + writer + ")", True),
+            ("printf done > >(" + writer + ")", True),
+            ("echo " + shlex.quote("<(" + writer + ")"), False),
+            ('echo "<(' + writer + ')"', False),
+            ("cat <<EOF\n<(" + writer + ")\nEOF", False),
             ("bash <(echo " + shlex.quote(writer) + ")", True),
             ("source <(cat <<'EOF'\n" + writer + "\nEOF\n)", True),
             ("echo " + shlex.quote(writer) + " > >(bash)", True),
@@ -2431,7 +2461,17 @@ class ReceiptTests(unittest.TestCase):
         bodies = ["#!/bin/sh", *["# ordinary\\ncomment $1" for _ in range(7)]]
         producer = "{ " + "; ".join("echo " + shlex.quote(body) for body in bodies) + "; }"
         for harness in ("codex", "claude"):
-            for command in (producer + " | bash", producer + " > gen.sh\nbash gen.sh"):
+            for suffix in (" | bash", " > gen.sh\nbash gen.sh"):
+                for prefix in ("", "set -euo pipefail; ", "set -o nounset; ", "shopt -s nullglob; ", "setopt pipefail; ",
+                               "shopt -s xpg_echo; ", "setopt bsd_echo; ", "unsetopt bsd_echo; ", "set -o posix; ", "emulate sh; "):
+                    command = prefix + producer + suffix
+                    with self.subTest(harness=harness, command=command):
+                        rows = history(harness, {})
+                        if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                        self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
+            for query in ("shopt -q xpg_echo", "set -- -o posix", "emulate -l sh"):
+                command = "{ " + "; ".join("echo " + shlex.quote(body) + "; " + query for body in bodies) + "; } | bash"
                 with self.subTest(harness=harness, command=command):
                     rows = history(harness, {})
                     if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
@@ -2441,12 +2481,16 @@ class ReceiptTests(unittest.TestCase):
     def test_explicit_child_shells_keep_independent_echo_modes(self):
         first = "echo " + shlex.quote(r"\x27")
         second = "echo " + shlex.quote(r"u\x76 run /catalog/gh-plan.py --repo client/repo claim 12")
-        command = "{ bash -c " + shlex.quote(first) + "; zsh -c " + shlex.quote(second) + "; } | bash"
         for harness in ("codex", "claude"):
-            rows = history(harness, {})
-            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
-            else: rows[1]["message"]["content"][0]["input"] = {"command": command}
-            self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+            for command in ("{ bash -c " + shlex.quote(first) + "; zsh -c " + shlex.quote(second) + "; } | bash",
+                            *("{ " + first + "; " + option + "; " + second + "; } | bash" for option in (
+                                "shopt -s xpg_echo", "setopt bsd_echo", "unsetopt bsd_echo", "setopt no_bsd_echo",
+                                "set -o posix", "set +o posix", "set -eo posix", "set -o bsd_echo", "emulate sh"))):
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {})
+                    if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
 
     def test_other_history_candidates_use_its_latest_definitive_write(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
@@ -2462,6 +2506,47 @@ class ReceiptTests(unittest.TestCase):
             histories = [{"harness": harness, "records": rows} for rows in (author, reader)]
             candidates = receipts.ownership_file_candidates(histories)
             self.assertFalse(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"])
+            for write_at, read_at, replace_at, pending in ((1, 2, 3, True), (1, 3, 2, False), (2, 1, 3, False),
+                                                        (1, 2, 2, True), (2, 2, 3, True)):
+                with self.subTest(harness=harness, times=(write_at, read_at, replace_at)):
+                    for row, at in ((author[1], write_at), (author[2], write_at),
+                                    (reader[1], read_at), (reader[2], read_at),
+                                    (author[3], replace_at), (author[4], replace_at)):
+                        row["timestamp"] = f"2026-01-01T00:00:0{at}Z"
+                    candidates = receipts.ownership_file_candidates(histories)
+                    self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"], pending)
+            for row, at in ((author[1], 1), (author[2], 1), (author[3], 2), (author[4], 4),
+                            (reader[1], 3), (reader[2], 3)):
+                row["timestamp"] = f"2026-01-01T00:00:0{at}Z"
+            candidates = receipts.ownership_file_candidates(histories)
+            self.assertTrue(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"])
+            # A different peer's equal-time writer must survive a simultaneous
+            # harmless completion regardless of the histories' listing order.
+            peer = history(harness, {})
+            if harness == "codex":
+                peer[1]["payload"]["arguments"] = json.dumps({"cmd": "cat > run.sh <<'EOF'\n" + writer + "\nEOF"})
+            else:
+                peer[1]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run.sh", "content": writer})
+            peer[1]["timestamp"] = peer[2]["timestamp"] = "2026-01-01T00:00:04Z"
+            for read_at in (4, 5):
+                reader[1]["timestamp"] = f"2026-01-01T00:00:0{read_at}Z"
+                for peers in ((author, peer), (peer, author)):
+                    tied = [{"harness": harness, "records": rows} for rows in (*peers, reader)]
+                    candidates = receipts.ownership_file_candidates(tied)
+                    self.assertTrue(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"])
+            reader[1]["timestamp"] = "2026-01-01T00:00:03Z"
+            if harness == "codex":
+                reader[1]["payload"].update(name="functions.exec", arguments=
+                    'text(await tools.exec_command({cmd:"echo done"}));'
+                    'text(await tools.exec_command({cmd:"bash run.sh"}));')
+                reader[2]["payload"]["output"] = [
+                    {"type": "text", "text": json.dumps({"exit_code": 0, "output": "done"})},
+                    {"type": "text", "text": json.dumps({"exit_code": 0, "output": ""})}]
+                # The replacement completes after the serial cell launched.
+                # Split rows must retain the actual native launch timestamp.
+                reader[2]["timestamp"] = "2026-01-01T00:00:05Z"
+                candidates = receipts.ownership_file_candidates(histories)
+                self.assertTrue(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"])
 
     def test_within_call_file_execution_obeys_write_order_and_replacement(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
@@ -2469,7 +2554,27 @@ class ReceiptTests(unittest.TestCase):
             ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh\nbash run.sh", False),
             ("bash run.sh\ncat > run.sh <<'EOF'\n" + writer + "\nEOF", False),
             ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\nbash run.sh\necho 'echo done' > run.sh", True),
+            ("for i in 1 2; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", True),
+            ("while test -f again; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", True),
+            ("f() { bash run.sh; }; cat > run.sh <<'EOF'\n" + writer + "\nEOF\nf", True),
+            ("f() { bash run.sh; }; cat > run.sh <<'EOF'\n" + writer + "\nEOF", False),
+            ("for i in 1 2; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh; done", False),
+            ("for i in 1; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", False),
+            ("for i in 1 2; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\nbreak; done", False),
+            ("while false; do cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone; bash run.sh", False),
+            ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\nf() { bash run.sh; }", False),
+            ("f() { bash run.sh; }; cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh; f", False),
         )
+        for branch, pending in (("false && echo 'echo done' > run.sh", True),
+                                ("true || echo 'echo done' > run.sh", True),
+                                ("test -f dry && echo 'echo done' > run.sh", True),
+                                ("true && echo 'echo done' > run.sh", False),
+                                ("false || echo 'echo done' > run.sh", False),
+                                ("if false; then echo 'echo done' > run.sh; fi", True),
+                                ("if test -f dry; then echo 'echo done' > run.sh; fi", True),
+                                ("if true; then echo 'echo done' > run.sh; fi", False),
+                                ("if false; then echo skipped; else echo 'echo done' > run.sh; fi", False)):
+            scripts += (("echo " + shlex.quote(writer) + " > run.sh; " + branch + "; bash run.sh", pending),)
         for harness in ("codex", "claude"):
             for command, pending in scripts:
                 with self.subTest(harness=harness, command=command):
@@ -2480,10 +2585,25 @@ class ReceiptTests(unittest.TestCase):
 
 
     def test_python_process_launches_resolve_only_literal_concatenation(self):
+        writer = "uv run /catalog/gh-plan.py --repo client/repo claim 12"
         programs = (
             ("import os; os.system('uv run /catalog/' + 'gh-' + 'plan.py --repo client/repo ' + 'claim 12')", True),
             ("import subprocess; subprocess.run(['uv','run'] + ['/catalog/gh-plan.py','--repo','client/repo','claim','12'])", True),
+            ("import subprocess; n=12; subprocess.run(['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim',str(n)])", True),
+            ('import os; n=12; os.system(f"uv run /catalog/gh-plan.py --repo client/repo claim {n}")', True),
+            ("import subprocess; n=12; subprocess.run(args=['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim',str(n)])", True),
+            ("import os, subprocess; action=os.environ['ACTION']; subprocess.run(['uv','run','/catalog/gh-plan.py','--repo','client/repo',action,'12'])", True),
+            ("import os, subprocess; helper=os.environ['HELPER']; subprocess.run([helper,'--repo','client/repo','claim','12'])", True),
+            ('import subprocess; n=12; subprocess.run(["bash","-c",f"uv run /catalog/gh-plan.py --repo client/repo claim {n}"])', True),
+            ("import os\ncmd=" + repr(writer) + "\nif os.environ.get('DRY'):\n    cmd='echo skip'\nos.system(cmd)", True),
+            ("import os\ncmd=" + repr(writer) + "\nif os.environ.get('DRY'):\n    cmd='echo skip'\nelse:\n    cmd='echo done'\nos.system(cmd)", False),
+            ("import os; cmd=" + repr(writer) + "; saved=cmd; cmd='echo done'; os.system(saved)", True),
+            ("import os; cmd=" + repr(writer) + "; cmd='echo done'; os.system(cmd)", False),
+            ("import os; cmd='echo done'; os.system(cmd); cmd=" + repr(writer), False),
             ("fixture='uv run /catalog/' + 'gh-plan.py --repo client/repo claim 12'; print(fixture)", False),
+            ("import subprocess; fixture=" + repr(writer) + "; subprocess.run(unknown); print(fixture)", False),
+            ("import subprocess; n=12; subprocess.run(['echo'," + repr(writer) + ",str(n)])", False),
+            ("import subprocess; n=12; subprocess.run(['rg'," + repr(writer) + ",str(n)])", False),
         )
         for harness in ("codex", "claude"):
             for program, pending in programs:
@@ -2493,6 +2613,7 @@ class ReceiptTests(unittest.TestCase):
                     if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
                     else: rows[1]["message"]["content"][0]["input"] = {"command": command}
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+                    self.assertEqual(receipts.executable_file_content("run.py", program), pending)
 
 
 if __name__ == "__main__":

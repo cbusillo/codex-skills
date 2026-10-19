@@ -173,18 +173,27 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, crea
     return result
 
 
-def check(reader, owner, entry, actor, *, reader_for_repo=None):
+def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=None):
     # No caller-supplied narrowed issue/repo list may turn partial discovery
     # into an all-clear. Use the existing paged, non-search inventory.
     histories = entry.get("_claim_histories") or [{"session_id": entry["session_id"], "harness": entry["harness"],
                                                 "records": entry.get("_transcript_records", [])}]
     file_candidates = claim_receipts.ownership_file_candidates(histories)
-    if any(claim_receipts.ownership_state(node["records"], node["harness"], file_candidates=file_candidates)["pending"] for node in histories):
+    states = [claim_receipts.ownership_state(node["records"], node["harness"], file_candidates=file_candidates) for node in histories]
+    if any(state["pending"] for state in states):
         raise ValueError("ownership command has no terminal native result; wait for it to finish, then launch a new check")
+    parsed_prefixes = {}
+    def parsed_outputs(records, harness):
+        # This check holds immutable native prefixes. Keep their records alive
+        # with the result so object identities cannot be recycled in this cache.
+        key = (harness, tuple(map(id, records)))
+        if key not in parsed_prefixes:
+            parsed_prefixes[key] = (tuple(records), list(claim_receipts.outputs(records, harness)))
+        return parsed_prefixes[key][1]
     native_sessions = {node["session_id"] for node in histories}
     expected, errors = [], []
     for node in histories:
-        parsed = list(claim_receipts.outputs(node["records"], node["harness"]))
+        parsed = parsed_outputs(node["records"], node["harness"])
         for native in native_sessions:
             found, missing = claim_receipts.sources(node["records"], node["harness"], native, parsed=parsed)
             expected.extend(found)
@@ -201,7 +210,7 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
                         *claim_history.completed_prefixes(node, records[:target["index"]], histories)]
             target["preceding_sources"] = set()
             for prefix in prefixes:
-                parsed = list(claim_receipts.outputs(prefix["records"], prefix["harness"]))
+                parsed = parsed_outputs(prefix["records"], prefix["harness"])
                 for native in native_sessions:
                     target["preceding_sources"].update(
                         (source["repository"].casefold(), source["record"], source["claim_comment"])
@@ -227,13 +236,16 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             expanded.update((context, number) for context in entry.get("_extra_repositories", []))
     confirmed_issues = set(native_issues)
     native_issues.update(expanded)
+    activity = any(state["indices"] for state in states)
+    created = set().union(*(claim_receipts.created_prs(node["records"], node["harness"]) for node in histories))
+    if read_timeout is not None:
+        reader.deadline_at = time.time() + read_timeout
     installed = reader.paged_json("/installation/repositories", collection_key="repositories", step_prefix="closeout_default_repositories")
     default_repos = {r["full_name"] for r in installed}
     if not default_repos:
         raise ValueError("default installation repository inventory is empty")
     owners = {owner} if isinstance(owner, str) else set(owner)
     owners.update(r.split("/")[0] for r in default_repos | native_repos)
-    activity = any(list(claim_receipts.ownership_activity(node["records"], node["harness"])) for node in histories)
     if (errors or not expected and activity) and not native_repos:
         raise ValueError("claim receipt lacks repository context; add its exact --repository before reconciliation")
     # Renewal/uncertain-write receipts can refer to a source older than this
@@ -254,7 +266,6 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             issues.update(found)
             repos.add(repo)
     released, blocked, pulls_cache, data_cache = [], [], {}, {}
-    created = set().union(*(claim_receipts.created_prs(node["records"], node["harness"]) for node in histories))
     for repo, number in sorted(issues):
         try:
             selected = readers[repo]
@@ -342,8 +353,8 @@ def main(argv=None):
         actor = github_identity.automation_login()
         if not actor:
             raise ValueError("configured automation identity is unavailable")
-        reader = GitHubReader(expected_actor=actor, gh_prefix_args=["--require-automation-auth"], deadline_at=time.time() + 600, cache_revalidate=True)
-        report = check(reader, args.owner, entry, actor)
+        reader = GitHubReader(expected_actor=actor, gh_prefix_args=["--require-automation-auth"], cache_revalidate=True)
+        report = check(reader, args.owner, entry, actor, read_timeout=600)
         report["checked_at"] = time.time()
         print(json.dumps(report, sort_keys=True))
         return 0 if report["claims_clear"] else 1

@@ -19,6 +19,7 @@ import importlib.util
 import sys
 from functools import lru_cache
 from contextlib import redirect_stdout
+from datetime import datetime
 import posixpath
 from pathlib import Path
 
@@ -270,7 +271,7 @@ def stdin_language(argv):
         if name in {"su", "runuser"} and any(word in {"-h", "--help", "-V", "--version"} for word in words):
             return None
         children = list(executor_commands(argv))
-        languages = {stdin_language(shlex.split(command)) for command in children}
+        languages = {shell_stdin_language(command) for command in children}
         languages.discard(None)
         if languages:
             return next(iter(languages)) if len(languages) == 1 else "argv"
@@ -317,7 +318,8 @@ def stdin_language(argv):
         option = word.partition("=")[0]
         if shell:
             if not word.startswith("--") and "c" in word[1:]:
-                return None
+                body = shell_c_body(argv)
+                return shell_stdin_language(body) if body is not None else None
             force_stdin |= not word.startswith("--") and "s" in word[1:]
             takes_value = (option in {"--rcfile", "--init-file", "--emulate"}
                            or not word.startswith("--") and word.endswith(("o", "O")))
@@ -344,6 +346,8 @@ def forwards_stdin(argv):
     name = Path(argv[0]).name
     if name in {"printf", "echo", "true", "false", ":", "cd", "gh", "gh-plan.py", "gh-pr.py"}:
         return False
+    if name in {"set", "setopt", "unsetopt", "shopt", "emulate"} and argv[1:]:
+        return False  # Shell option changes do not copy stdin to stdout.
     if name == "tee" and any(word in {"--help", "--version"} for word in argv[1:]):
         return False
     if name == "cat":
@@ -830,18 +834,22 @@ def compound_stdin_language(tokens, source, at, spans, heredocs):
     if begin + 1 >= end or spans[begin + 1][0] is None or spans[end][0] is None:
         return None
     inner = source[spans[begin + 1][0]:spans[end][0]]
-    lexer = shell_lexer(inner, posix=False)
+    return shell_stdin_language(inner, case=tokens[begin] == "case")
+
+
+def shell_stdin_language(source, *, case=False):
+    """Classify commands connected to a shell body's inherited stdin."""
+    lexer = shell_lexer(source, posix=False)
     lexer.whitespace_split = True
-    commands = []
-    heredoc_languages(list(lexer), lexer.instream.getvalue(), command_kinds=commands)
-    kinds = {kind for kind, _ in commands if kind}
+    commands, kinds = [], set()
+    heredoc_languages(list(lexer), lexer.instream.getvalue(), command_kinds=commands, stdin_kinds=kinds)
     words = [unwrapped_command(argv) for _, argv in commands]
     # A read/eval loop executes the stream line by line, even though eval
     # itself does not read stdin. Ordinary data commands in groups stay data.
     if any(argv[:1] == ["read"] for argv in words) and any(
             argv[:1] == ["eval"] or shell_c_body(argv) and "$" in shell_c_body(argv) for argv in words):
         kinds.add("shell")
-    if tokens[begin] == "case":
+    if case:
         for argv in words:
             if ")" in argv:
                 kind = stdin_language(argv[argv.index(")") + 1:])
@@ -868,7 +876,7 @@ def stream_argv(argv):
 
 
 def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None, inline_inputs=None,
-                      stream_sources=None, output_sources=None, execution_events=None):
+                      stream_sources=None, output_sources=None, execution_events=None, stdin_kinds=None):
     """Parse command descriptors once and carry each stdin source through groups.
 
     A balanced group is one outer pipeline node. Its children share the same
@@ -985,6 +993,8 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
 
     def assign_language(sources, language, position=None):
         if language:
+            if stdin_kinds is not None and "external" in sources:
+                stdin_kinds.add(language)
             for identifier in sources:
                 if identifier != "external":
                     previous = languages.get(identifier)
@@ -1057,7 +1067,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         if len(variants) > 1:
                             explicit_shell = any(Path(word).name in {"bash", "sh", "zsh", "dash", "ksh"} for word in node["argv"])
                             stream_sources[identifier].update(echo_mode=variant,
-                                echo_scope="independent" if explicit_shell or mode_changes else "native")
+                                echo_scope=("child", source, node["index"]) if explicit_shell else node["echo_scope"])
                         produced.add(identifier)
                     forwards = True
                 if child and Path(child[0]).name == "cat" and not any(word in {"--help", "--version"} for word in child[1:]):
@@ -1114,19 +1124,34 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         return output
 
     nodes = parse(0, len(tokens))
-    def changes_mode(nodes):
+    def echo_scopes(nodes, scope):
+        """Share one unknown echo mode until an actual mutation or child shell."""
         for node in nodes:
+            node["echo_scope"] = scope
             child = stream_argv(node["argv"])
-            if child and Path(child[0]).name in {"setopt", "unsetopt", "shopt", "set", "source", "."}:
-                return True
-            nested = ([node["children"]] if node["children"] is not None else [])
-            nested.extend(commands for _, commands in node["substitutions"].values())
-            nested.extend(value[1] for value in node["descriptors"].values()
-                          if isinstance(value, tuple) and value[0] in {"process-input", "process-output"})
-            if any(changes_mode(commands) for commands in nested):
-                return True
-        return False
-    mode_changes = changes_mode(nodes)
+            if child:
+                name, options = Path(child[0]).name, child[1:]
+                setting_options = options[:options.index("--")] if "--" in options else options
+                if (name in {"source", "."}
+                        or name == "emulate" and any(option in {"sh", "zsh", "ksh", "csh"} for option in options)
+                        and not any(re.fullmatch(r"-[A-Za-z]*l[A-Za-z]*", option) for option in setting_options)
+                        or name in {"setopt", "unsetopt"} and any(option.lower().replace("_", "") in {"bsdecho", "nobsdecho"} for option in options)
+                        or name == "shopt" and "xpg_echo" in options
+                        and any(re.fullmatch(r"-[A-Za-z]*[su][A-Za-z]*", option) for option in setting_options)
+                        or name == "set" and any(re.fullmatch(r"[-+][A-Za-z]*o", option) and following.lower().replace("_", "") in {"posix", "bsdecho", "nobsdecho"}
+                                                 for option, following in zip(setting_options, setting_options[1:]))):
+                    scope = ("mode", source, node["index"])
+            if node["children"] is not None:
+                following = echo_scopes(node["children"], scope)
+                if tokens[node["index"]] != "(":
+                    scope = following
+            for placeholder, (_, commands) in node["substitutions"].items():
+                echo_scopes(commands, ("process", source, node["index"], placeholder))
+            for descriptor, value in node["descriptors"].items():
+                if isinstance(value, tuple) and value[0] in {"process-input", "process-output"}:
+                    echo_scopes(value[1], ("descriptor", source, node["index"], descriptor))
+        return scope
+    echo_scopes(nodes, ("native", source))
     produced = flow(nodes, {"external"})
     if output_sources is not None:
         output_sources.update(identifier for identifier in produced if identifier != "external")
@@ -1382,20 +1407,17 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
         return UnresolvedStream(possible)
 
     resolved, expansion_limit = {}, object()
-    def content_of(identifier, echo_mode):
-        key = (identifier, echo_mode)
-        if key in resolved:
-            return resolved[key]
+    def content_of(identifier):
+        if identifier in resolved:
+            return resolved[identifier]
         stream = stream_sources.get(identifier, {})
         raw = contents.get(identifier, stream.get("content"))
         if raw is not None:
-            result = (raw,)
+            bindings = frozenset({(stream["echo_scope"], stream["echo_mode"])}) if "echo_scope" in stream else frozenset()
+            result = ((raw, bindings),)
         elif stream.get("kind") in {"concat", "choice"}:
             parts = stream["parts"]
-            if stream["kind"] == "choice":
-                parts = [part for part in parts if stream_sources.get(part, {}).get("echo_scope") != "native"
-                         or stream_sources[part]["echo_mode"] == echo_mode]
-            children = [content_of(part, echo_mode) for part in parts]
+            children = [content_of(part) for part in parts]
             if any(child is None for child in children):
                 result = None
             elif any(child is expansion_limit for child in children):
@@ -1405,9 +1427,12 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
                 if stream["kind"] == "choice":
                     variants.update(value for child in children for value in child)
                 else:
-                    for left in children[0]:
-                        for right in children[1]:
-                            variants.add(left + right)
+                    for left, left_bindings in children[0]:
+                        for right, right_bindings in children[1]:
+                            if any(scope == other_scope and mode != other_mode
+                                   for scope, mode in left_bindings for other_scope, other_mode in right_bindings):
+                                continue
+                            variants.add((left + right, left_bindings | right_bindings))
                             if len(variants) > 64:
                                 break
                         if len(variants) > 64:
@@ -1415,16 +1440,16 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
                 result = tuple(variants) if len(variants) <= 64 else expansion_limit
         else:
             result = None
-        resolved[key] = result
+        resolved[identifier] = result
         return result
 
     def variants_of(identifier):
-        choices = [content_of(identifier, echo_mode) for echo_mode in (0, 1)]
-        if any(choice is expansion_limit for choice in choices):
+        choices = content_of(identifier)
+        if choices is expansion_limit:
             return unresolved(identifier)
-        if any(choice is None for choice in choices):
+        if choices is None:
             return None
-        return tuple(dict.fromkeys(value for choice in choices for value in choice))
+        return tuple(dict.fromkeys(value for value, _ in choices))
 
     def file_parts(identifier):
         stream = stream_sources.get(identifier, {})
@@ -1465,8 +1490,9 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
                     grouped[key]["contents"] += tuple(event["contents"])
                 else:
                     grouped[key] = dict(event, contents=tuple(event["contents"]))
-        effects.extend(sorted([*grouped.values(), *(event for event in execution_events if event["kind"] == "read")],
-                              key=lambda event: (event["position"], event["kind"] != "write")))
+        ordered = sorted([*grouped.values(), *(event for event in execution_events if event["kind"] == "read")],
+                         key=lambda event: (event["position"], event["kind"] != "write"))
+        effects.extend(shell_effect_order(tokens, ordered))
     for identifier, language in languages.items():
         if language:
             variants = variants_of(identifier)
@@ -1487,6 +1513,126 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
     for start, end in reversed(masked):
         code = code[:start] + "'inert-stdin-body'" + code[end:]
     return code
+
+
+def shell_effect_order(tokens, events):
+    """Replay repeated bodies and defer function effects until a real call.
+
+    Two iterations suffice for literal file writes: the second read observes
+    the first iteration's final replacement, rather than any intermediate write.
+    Straight-line effects keep their original command order.
+    """
+    bounds, definitions, by_position = compound_bounds(tokens), {}, {}
+    guards = [True] * len(tokens)
+
+    def status(words):
+        words = [word for word in words if word not in {";", "\n"}]
+        return True if words in (["true"], [":"]) else False if words == ["false"] else None
+
+    def guard(begin, end, condition):
+        for at in range(begin, end):
+            if condition is False or guards[at] is False:
+                guards[at] = False
+            elif condition is None or guards[at] is None:
+                guards[at] = None
+
+    # A skipped or conditional replacement cannot erase an earlier writer.
+    # Literal true/false commands still permit their definite supported path.
+    begin, executes, previous = 0, True, None
+    for end in range(len(tokens) + 1):
+        separator = tokens[end] if end < len(tokens) else ";"
+        if separator not in {";", "\n", "&&", "||", "&", "|", "|&"}:
+            continue
+        guard(begin, end, executes)
+        result = status(tokens[begin:end])
+        if executes is True:
+            previous = result
+        elif executes is None and previous != result:
+            previous = None
+        if separator in {"&&", "||"}:
+            executes = previous if separator == "&&" or previous is None else not previous
+        else:
+            executes, previous = True, None
+        begin = end + 1
+    for start, stop in bounds.items():
+        if tokens[start] != "if":
+            continue
+        branch, other, cursor = None, None, start + 1
+        while cursor < stop:
+            if tokens[cursor] == "then" and branch is None:
+                branch = cursor
+            elif tokens[cursor] in {"else", "elif"}:
+                other = cursor
+                break
+            cursor = bounds.get(cursor, cursor) + 1
+        if branch is not None:
+            condition = status(tokens[start + 1:branch])
+            guard(branch, other if other is not None else stop, condition)
+            if other is not None:
+                inverse = not condition if condition is not None and tokens[other] == "else" else None
+                guard(other, stop, inverse)
+    for index, token in enumerate(tokens):
+        if token != "{" or index not in bounds:
+            continue
+        if index >= 3 and tokens[index - 2:index] == ["(", ")"] and re.fullmatch(r"[A-Za-z_]\w*", tokens[index - 3]):
+            definitions[index - 3] = (tokens[index - 3], index + 1, bounds[index])
+        elif index >= 2 and tokens[index - 2] == "function" and re.fullmatch(r"[A-Za-z_]\w*", tokens[index - 1]):
+            definitions[index - 2] = (tokens[index - 1], index + 1, bounds[index])
+    for event in events:
+        condition = guards[event["position"]]
+        if condition is not False:
+            if condition is None and event["kind"] == "write":
+                event = dict(event, replaces=False)
+            by_position.setdefault(event["position"], []).append(event)
+    functions = {}
+
+    def walk(begin, end, active=(), in_loop=False):
+        index = begin
+        while index < end:
+            if index in definitions:
+                name, start, stop = definitions[index]
+                functions[name] = (start, stop)
+                index = stop + 1
+                continue
+            token = tokens[index]
+            if token in {"for", "select", "while", "until"} and index in bounds:
+                stop = bounds[index]
+                header_end = next((at for at in range(index + 1, stop) if tokens[at] in {";", "\n"}), stop)
+                header = tokens[index + 1:header_end]
+                iterations = 2
+                if token == "for" and len(header) >= 2 and header[1] == "in":
+                    items = header[2:]
+                    if not any(re.search(r"[$`*?{]", word) for word in items):
+                        iterations = min(2, len(items))
+                if token == "while" and header == ["false"] or token == "until" and header == ["true"]:
+                    iterations = 0
+                for _ in range(iterations):
+                    transfer = None
+                    for event in walk(index + 1, stop, active, in_loop=True):
+                        if event["kind"] in {"break", "continue"}:
+                            transfer = event["kind"]
+                            break
+                        yield event
+                    if transfer == "break":
+                        break
+                index = stop + 1
+                continue
+            current = by_position.get(index, ())
+            if (in_loop and token in {"break", "continue"}
+                    and any(event["kind"] == "read" and event["paths"] == [token] for event in current)
+                    and not any(tokens[start] in {"if", "case"} and start < index < stop
+                                for start, stop in bounds.items())):
+                yield {"kind": token}
+                return
+            called = next((path for event in current if event["kind"] == "read"
+                           for path in event["paths"] if path in functions), None)
+            if called is not None:
+                if active.count(called) < 2:
+                    yield from walk(*functions[called], (*active, called))
+            else:
+                yield from current
+            index += 1
+    return list(walk(0, len(tokens)))
 
 
 def unparsed_command_text(value):
@@ -1717,7 +1863,8 @@ def shell_expansions(text, *, heredoc=False):
             escaped = False
         elif char == "\\" and quote != "'":
             escaped = True
-        elif text[cursor:cursor + 2] == "$(" and quote != "'":
+        elif (text[cursor:cursor + 2] == "$(" and quote != "'"
+              or not heredoc and quote is None and text[cursor:cursor + 2] in {"<(", ">("}):
             start, end, depth = cursor + 2, cursor + 2, 1
             inner_quote, inner_escape = None, False
             while end < len(text) and depth:
@@ -1950,46 +2097,125 @@ def foreground_python_argv(content):
 
 
 def python_ownership(content):
-    """Python fixture strings are data; process-launch arguments are executable."""
+    """Follow actual Python launch operands through their reaching bindings."""
     try:
         tree = ast.parse(textwrap.dedent(content))
     except SyntaxError:
         return False
-    definitions = {node.targets[0].id: node.value for node in ast.walk(tree)
-                   if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)}
-    def literal(node, seen=frozenset()):
-        if isinstance(node, ast.Name) and node.id in definitions and node.id not in seen:
-            return literal(definitions[node.id], seen | {node.id})
+    launches = {"os.system", "os.popen", "subprocess.run", "subprocess.Popen", "subprocess.call",
+                "subprocess.check_call", "subprocess.check_output", "exec", "eval"}
+    found = False
+
+    def value(node, bindings):
+        if isinstance(node, ast.Name):
+            return bindings.get(node.id, (None, ()))
+        if isinstance(node, ast.Constant):
+            return node.value, (node.value,) if isinstance(node.value, str) else ()
+        if isinstance(node, (ast.List, ast.Tuple)):
+            children = [value(element, bindings) for element in node.elts]
+            # Unknown arguments do not hide a known executable/action, nor make
+            # an echo/rg argv execute the ownership-shaped data it contains.
+            return ([item if isinstance(item, str) else "$computed_operand" for item, _ in children],
+                    tuple(piece for _, evidence in children for piece in evidence))
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left, right = literal(node.left, seen), literal(node.right, seen)
-            if isinstance(left, (str, list, tuple)) and type(left) is type(right):
-                return left + right
-            return None
+            left, left_pieces = value(node.left, bindings)
+            right, right_pieces = value(node.right, bindings)
+            literal = left + right if isinstance(left, (str, list, tuple)) and type(left) is type(right) else None
+            return literal, left_pieces + right_pieces
         if (isinstance(node, ast.Call) and ast.unparse(node.func) == "shlex.split"
                 and len(node.args) == 1 and not node.keywords):
-            text = literal(node.args[0], seen)
+            text, pieces = value(node.args[0], bindings)
             if isinstance(text, str):
                 try:
-                    return shlex.split(text)
+                    return shlex.split(text), pieces
                 except ValueError:
-                    return None
-        try:
-            return ast.literal_eval(node)
-        except (ValueError, TypeError):
-            return None
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
-            continue
-        function = ast.unparse(node.func)
-        if function not in {"os.system", "os.popen", "subprocess.run", "subprocess.Popen", "subprocess.call", "subprocess.check_call", "subprocess.check_output", "exec", "eval"}:
-            continue
-        command = literal(node.args[0])
-        if isinstance(command, (list, tuple)):
-            if ownership_command(unwrapped_command(command)):
-                return True
-        elif isinstance(command, str) and executable_content(command):
-            return True
-    return False
+                    pass
+            return None, pieces
+        return None, tuple(piece for child in ast.iter_child_nodes(node)
+                           for piece in value(child, bindings)[1])
+
+    def scan(node, bindings):
+        nonlocal found
+        function = ast.unparse(node.func) if isinstance(node, ast.Call) else None
+        operand = node.args[0] if isinstance(node, ast.Call) and node.args else None
+        if isinstance(node, ast.Call) and function in launches and operand is None:
+            parameter = "args" if function.startswith("subprocess.") else "cmd" if function == "os.popen" else "command"
+            operand = next((keyword.value for keyword in node.keywords if keyword.arg == parameter), None)
+        if function in launches and operand is not None:
+            command, pieces = value(operand, bindings)
+            if isinstance(command, (list, tuple)):
+                argv = unwrapped_command(command)
+                found |= ownership_command(argv)
+                found |= any(executable_content(body) for body in executor_commands(argv))
+                if "$computed_operand" in command:
+                    found |= opaque_ownership("exec_command", {"cmd": shlex.join(command)})
+                    if argv and (argv[0].startswith("$") or executable_wrapper(argv)):
+                        found |= bool(OWNERSHIP_TEXT.search(" ".join(pieces))
+                                      or OWNERSHIP_TEXT.search("".join(pieces)))
+            elif isinstance(command, str):
+                found |= executable_content(command)
+            else:
+                found |= bool(OWNERSHIP_TEXT.search(" ".join(pieces))
+                              or OWNERSHIP_TEXT.search("".join(pieces)))
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, ast.stmt):
+                scan(child, bindings)
+
+    def merge(*states):
+        merged = {}
+        for name in set().union(*(state.keys() for state in states)):
+            alternatives = [state.get(name, (None, ())) for state in states]
+            literal = alternatives[0][0]
+            if any(other[0] != literal for other in alternatives[1:]):
+                literal = None
+            merged[name] = literal, tuple(dict.fromkeys(piece for _, pieces in alternatives for piece in pieces))
+        return merged
+
+    def walk(statements, bindings):
+        for statement in statements:
+            scan(statement, bindings)
+            if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                assigned = value(statement.value, bindings) if statement.value is not None else (None, ())
+                targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        if isinstance(statement, ast.AugAssign):
+                            prior, pieces = bindings.get(target.id, (None, ()))
+                            literal, additional = assigned
+                            literal = prior + literal if isinstance(statement.op, ast.Add) and isinstance(prior, (str, list, tuple)) and type(prior) is type(literal) else None
+                            assigned = literal, pieces + additional
+                        bindings[target.id] = assigned
+            elif isinstance(statement, ast.If):
+                branches = (statement.body, statement.orelse)
+                if isinstance(statement.test, ast.Constant):
+                    branches = (branches[0] if statement.test.value else branches[1],)
+                bindings = merge(*(walk(branch, dict(bindings)) for branch in branches))
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                repeated = merge(bindings, walk(statement.body, dict(bindings)))
+                # A subsequent iteration can execute with a binding written at
+                # the end of the previous one.
+                repeated = merge(repeated, walk(statement.body, dict(repeated)))
+                bindings = walk(statement.orelse, repeated)
+            elif isinstance(statement, (ast.Try, ast.TryStar)):
+                normal = walk(statement.body, dict(bindings))
+                exceptional = merge(bindings, normal)
+                alternatives = [walk(statement.orelse, normal)]
+                alternatives.extend(walk(handler.body, dict(exceptional)) for handler in statement.handlers)
+                bindings = walk(statement.finalbody, merge(*alternatives))
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                bindings = walk(statement.body, bindings)
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                local = dict(bindings)
+                if not isinstance(statement, ast.ClassDef):
+                    for argument in (*statement.args.posonlyargs, *statement.args.args, *statement.args.kwonlyargs):
+                        local.pop(argument.arg, None)
+                walk(statement.body, local)
+            elif isinstance(statement, ast.Match):
+                bindings = merge(bindings, *(walk(case.body, dict(bindings)) for case in statement.cases))
+        return bindings
+
+    walk(tree.body, {})
+    return found
 
 
 def python_fragment_ownership(content):
@@ -2142,7 +2368,7 @@ def file_writes(name, value, *, replacements=None):
         yield from writes
 
 
-def native_calls(records, harness):
+def native_calls(records, harness, *, with_timestamp=False):
     cwd = None
     for record in records:
         payload = record.get("payload") or {}
@@ -2153,10 +2379,12 @@ def native_calls(records, harness):
             serial = composed_calls(value) if name in {"exec", "functions.exec"} else []
             if serial:
                 for method, args, _ in serial:
-                    yield identifier, method, args, args.get("workdir") or args.get("cwd") or cwd
+                    call = (identifier, method, args, args.get("workdir") or args.get("cwd") or cwd)
+                    yield (*call, record.get("timestamp")) if with_timestamp else call
                 continue
             args = arguments(value)
-            yield identifier, name, value, (args.get("workdir") or args.get("cwd") or args.get("working_directory") or cwd) if isinstance(args, dict) else cwd
+            call = (identifier, name, value, (args.get("workdir") or args.get("cwd") or args.get("working_directory") or cwd) if isinstance(args, dict) else cwd)
+            yield (*call, record.get("timestamp")) if with_timestamp else call
 
 
 def native_path(path, cwd):
@@ -2166,7 +2394,20 @@ def native_path(path, cwd):
 
 
 def native_file_effects(name, value):
-    """Keep each native call's writes and code reads in parsed command order."""
+    """Keep native patch and shell effects in their visible call order."""
+    native = arguments(value)
+    if name in {"exec", "functions.exec"} and isinstance(native, str):
+        patches = list(re.finditer(r'''tools\.apply_patch\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''', native))
+        if patches:
+            calls = [(match.start(), "apply_patch", match[1]) for match in patches]
+            calls.extend((match.start(), "exec_command", match[1]) for match in SHELL_FIELD.finditer(native))
+            for _, method, raw in sorted(calls):
+                try:
+                    content = ast.literal_eval(raw)
+                except (SyntaxError, ValueError):
+                    continue
+                yield from native_file_effects(method, {"cmd": content} if method == "exec_command" else content)
+            return
     texts = list(shell_texts(name, value))
     if texts:
         for text in texts:
@@ -2196,21 +2437,58 @@ def apply_file_effect(effect, cwd, candidates):
             candidates.discard(path)
 
 
-def ownership_file_candidates(histories):
-    """Retain path origins so a history cannot borrow its own future writes.
+def native_timestamp(value):
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        return None
 
-    First-record object identity is local to this invocation. Normalization
-    retains that record; an unknown copied history remains a separate origin.
+
+def file_write_completions(records, harness, identifiers):
+    """Use the existing native binding for a replacement's completion bound."""
+    selected = {(name, id(value)) for record in records
+                for identifier, name, value in calls_and_results(record, harness)[0] if identifier in identifiers}
+    complete = {}
+    for index, source, value in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
+        if value.get("_result") and not value.get("_pending"):
+            at = native_timestamp(records[index].get("timestamp"))
+            if at is not None:
+                complete[source] = at
+    return complete
+
+
+def ownership_file_candidates(histories):
+    """Preserve each peer write's native interval, not its eventual contents.
+
+    First-record identity excludes a history's own future writes. A writer is
+    possible from launch; only a completed replacement can erase that evidence.
     """
     candidates = {}
     for node in histories:
         origin = id(node["records"][0]) if node["records"] else None
-        latest = set()
-        for _, name, value, cwd in native_calls(node["records"], node["harness"]):
+        writes = []
+        for identifier, name, value, cwd, stamp in native_calls(node["records"], node["harness"], with_timestamp=True):
             for effect in native_file_effects(name, value):
-                apply_file_effect(effect, cwd, latest)
-        for path in latest:
-            candidates.setdefault(path, set()).add(origin)
+                if effect["kind"] == "write":
+                    writes.append((identifier, cwd, native_timestamp(stamp), effect))
+        by_call = {}
+        for identifier, cwd, timestamp, effect in writes:
+            path = native_path(effect["path"], cwd) if effect["path"] else None
+            if path:
+                entry = by_call.setdefault((identifier, path), {"at": timestamp, "owns": False, "final": None})
+                owning = any(executable_file_content(effect["path"], content) for content in effect["contents"])
+                entry["owns"] |= owning
+                if owning or effect["replaces"]:
+                    entry["final"] = owning
+        replacements = {identifier for (identifier, _), entry in by_call.items()
+                        if entry["final"] is False and entry["at"] is not None}
+        completions = file_write_completions(node["records"], node["harness"], replacements) if replacements else {}
+        for (identifier, path), entry in by_call.items():
+            if entry["owns"]:
+                candidates.setdefault(path, []).append((origin, entry["at"], True, False))
+            if entry["final"] is False:
+                at = completions.get(identifier, float("inf")) if entry["at"] is not None else None
+                candidates.setdefault(path, []).append((origin, at, False, True))
     return candidates
 
 
@@ -2230,12 +2508,48 @@ def execution_targets(argv):
 
 
 def file_ownership_executions(records, harness, *, file_candidates=()):
-    """Link script candidates to later executions across native tool calls."""
+    """Link actual script reads to the contents preceding them in native time."""
     origin = id(records[0]) if records else None
-    candidates = ({path for path, origins in file_candidates.items() if origins - {origin}}
-                  if isinstance(file_candidates, dict) else set(file_candidates))
+    candidates, peer_writes = set(), []
+    if isinstance(file_candidates, dict):
+        for path, events in file_candidates.items():
+            for source, timestamp, owning, replaces in events:
+                if source != origin and timestamp != float("inf"):
+                    peer_writes.append((timestamp, path, owning, replaces, source))
+    else:
+        candidates.update(file_candidates)
+    # Untimestamped historical fixtures retain their native sequence. Real
+    # timestamps order all peers; an unknown reader sees their latest state.
+    peer_writes.sort(key=lambda event: float("-inf") if event[0] is None else event[0])
+    groups = []
+    for at, *event in peer_writes:
+        if not groups or groups[-1][0] != at:
+            groups.append((at, []))
+        groups[-1][1].append(event)
+    next_peer = 0
     invocations = set()
-    for identifier, name, value, cwd in native_calls(records, harness):
+    for identifier, name, value, cwd, stamp in native_calls(records, harness, with_timestamp=True):
+        timestamp = native_timestamp(stamp)
+        while next_peer < len(groups):
+            at, events = groups[next_peer]
+            if at is not None and timestamp is not None and at > timestamp:
+                break
+            if at is not None and at == timestamp:
+                # Native timestamp resolution cannot order a simultaneous peer
+                # completion. Keep every possible writer, and reconsider the
+                # whole group at the next strictly later call.
+                candidates.update(path for path, owning, _, _ in events if owning)
+                break
+            final = {}
+            for path, owning, replaces, source in events:
+                if owning or replaces:
+                    final.setdefault(path, {})[source] = owning
+            for path, origins in final.items():
+                if any(origins.values()):
+                    candidates.add(path)
+                else:
+                    candidates.discard(path)
+            next_peer += 1
         for effect in native_file_effects(name, value):
             if effect["kind"] == "write":
                 apply_file_effect(effect, cwd, candidates)
@@ -2424,12 +2738,14 @@ def serial_ownership_records(records):
     Checker receipts still use their separate isolated-invocation contract.
     """
     expanded, positions, launches, cells, polls, printed = [], [], {}, {}, {}, {}
+    contexts = {}
     for index, record in enumerate(records):
         calls, results = calls_and_results(record, "codex")
         for identifier, name, value in calls:
             serial = composed_calls(value) if name in {"exec", "functions.exec"} else []
             if len(serial) > 1:
                 launches[identifier] = serial
+                contexts[identifier] = {key: record[key] for key in ("timestamp", "cwd") if key in record}
             args = arguments(value)
             if name in {"wait", "functions.wait"} and isinstance(args, dict):
                 source = cells.get(str(args.get("cell_id")))
@@ -2452,11 +2768,12 @@ def serial_ownership_records(records):
                 split = []
                 for part, ((method, args, _), wrapper) in enumerate(zip(launches[source], wrappers)):
                     part_id = f"{source}:serial:{part}"
-                    split.append({"payload": {"type": "function_call", "name": method, "call_id": part_id, "arguments": json.dumps(args)}})
+                    split.append({**contexts[source], "payload": {"type": "function_call", "name": method, "call_id": part_id, "arguments": json.dumps(args)}})
                     # A stdout-only writer/poll has no native terminal wrapper.
                     # Retain its launch so it cannot become a false all-clear.
                     if wrapper is not None:
-                        split.append({"payload": {"type": "function_call_output", "call_id": part_id, "output": json.dumps(wrapper)}})
+                        split.append({**({"timestamp": record["timestamp"]} if "timestamp" in record else {}),
+                                      "payload": {"type": "function_call_output", "call_id": part_id, "output": json.dumps(wrapper)}})
         if split is not None:
             expanded.extend(split)
             positions.extend([index] * len(split))
@@ -3069,7 +3386,7 @@ def _acceptance(records, harness, session, histories):
     sessions = {h["session_id"] for h in histories}
     expected, errors = [], []
     root_expected = []
-    child_activity, pending = False, False
+    child_activity, pending, root_state = False, False, None
     file_candidates = ownership_file_candidates(histories)
     for node in histories:
         node_parsed = parsed if node["records"] is records and node["harness"] == harness else list(outputs(node["records"], node["harness"]))
@@ -3080,12 +3397,14 @@ def _acceptance(records, harness, session, histories):
             if node is histories[0]:
                 root_expected.extend(found)
         state = ownership_state(node["records"], node["harness"], file_candidates=file_candidates)
+        if node["records"] is records and node["harness"] == harness:
+            root_state = state
         pending = pending or state["pending"]
         if node is not histories[0] and state["indices"]:
             child_activity = True
     if pending:
         return {"clear": False, "reason": "ownership_activity_incomplete"}
-    activity = ownership_state(records, harness)["indices"]
+    activity = (root_state if root_state is not None else ownership_state(records, harness))["indices"]
     if not expected and not errors and not activity and not child_activity:
         return {"clear": True, "reason": "no_claim_receipts"}
     keys = {(r["repository"], r["record"], r["claim_comment"]) for r in expected}

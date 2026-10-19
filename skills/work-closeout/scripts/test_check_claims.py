@@ -51,27 +51,67 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
                 original = helper.claim_receipts.outputs
                 with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                    with patch.object(helper.claim_receipts, "outputs", wraps=original) as single_parse:
+                        helper.check(self.reader, [], {**entry, "_claim_histories": nodes[:1]}, ACTOR)
+                    single_check_count = sum(call.args[0] is rows for call in single_parse.call_args_list)
+                    with patch.object(helper.claim_receipts, "outputs", wraps=original) as single_parse:
+                        helper.claim_receipts.acceptance(rows, harness, native_session, histories=nodes[:1])
+                    single_acceptance_count = sum(call.args[0] is rows for call in single_parse.call_args_list)
                     with patch.object(helper.claim_receipts, "outputs", wraps=original) as parse:
                         held = helper.check(self.reader, [], entry, ACTOR)
                     self.assertFalse(held["claims_clear"], held)
                     # Parsing work scales with histories, not histories times identities.
-                    check_parse_count = parse.call_count
+                    check_parse_count = sum(call.args[0] is rows for call in parse.call_args_list)
                     self.comments.append(comment(11, "Released claim 10", at="2026-01-01T00:02:00Z"))
                     released = helper.check(self.reader, [], entry, ACTOR)
                     self.assertTrue(released["claims_clear"], released)
                     with patch.object(helper.claim_receipts, "outputs", wraps=original) as parse:
                         verdict = helper.claim_receipts.acceptance(rows, harness, native_session, histories=nodes)
                     self.assertFalse(verdict["clear"], verdict)
-                    self.assertLessEqual(check_parse_count, len(nodes))
-                    self.assertLessEqual(parse.call_count, len(nodes))
+                    self.assertEqual(check_parse_count, single_check_count)
+                    self.assertEqual(sum(call.args[0] is rows for call in parse.call_args_list), single_acceptance_count)
                     later = history(harness, native_claim(REPO, number=2))[1]
                     if harness == "codex":
                         later["payload"]["call_id"] = "later-claim"
                     else:
                         later["message"]["content"][0]["id"] = "later-claim"
                     rows.append(later)
-                    with self.assertRaisesRegex(ValueError, "no terminal native result"):
+                    self.reader.paged_json.reset_mock()
+                    with self.assertRaises(ValueError):
                         helper.check(self.reader, [], entry, ACTOR)
+                    self.reader.paged_json.assert_not_called()
+                shared_counts = []
+                self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                                 comment(11, "Released claim 10", at="2026-01-01T00:02:00Z")]
+                parent = history(harness, native_claim(REPO))
+                signature = tuple(map(id, parent))
+                for count in (1, 2):
+                    child = history(harness, *[{} for _ in range(count)])
+                    child_session = "child" if harness == "codex" else native_session
+                    if harness == "codex":
+                        child[0]["payload"]["id"] = child_session
+                    for index in range(1, 2 * count, 2):
+                        command = "gh pr create --repo test/a --head earlier-worker"
+                        if harness == "codex":
+                            child[index]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        else:
+                            child[index]["message"]["content"][0]["input"] = {"command": command}
+                    family = [
+                        {"session_id": native_session, "harness": harness, "records": parent},
+                        {"session_id": child_session, "harness": harness, "records": child,
+                         "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child),
+                         "preceding_histories": [{"harness": harness, "records": parent}]}]
+                    parsed_shared = []
+                    def parsing(records, family_harness):
+                        if tuple(map(id, records)) == signature:
+                            parsed_shared.append(records)
+                        return original(records, family_harness)
+                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])), \
+                            patch.object(helper.claim_receipts, "outputs", side_effect=parsing):
+                        report = helper.check(self.reader, [], {**entry, "_claim_histories": family}, ACTOR)
+                    self.assertTrue(report["claims_clear"], report)
+                    shared_counts.append(len(parsed_shared))
+                self.assertEqual(*shared_counts)
 
     def test_creation_after_completed_child_claim_uses_only_returned_prefix(self):
         from test_claim_history import completed_child_records, records
@@ -859,6 +899,15 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_cli_can_finish_on_both_native_transcript_formats(self):
         with tempfile.TemporaryDirectory() as tmp:
             for harness in ("codex", "claude"):
+                now = [1000.0]
+                original_candidates = helper.claim_receipts.ownership_file_candidates
+                def slow_analysis(histories):
+                    now[0] += 3600
+                    return original_candidates(histories)
+                def first_read(path, **kwargs):
+                    self.assertGreater(self.reader.deadline_at, now[0])
+                    return self.paged(path, **kwargs)
+                self.reader.paged_json.side_effect = first_read
                 transcript = Path(tmp) / "native.jsonl"
                 identity = {"type": "session_meta", "payload": {"id": SESSION}} if harness == "codex" else {"type": "user", "sessionId": SESSION}
                 transcript.write_text(json.dumps({**identity, "timestamp": SOURCE["claimed_at"]}) + "\n")
@@ -867,7 +916,10 @@ class ClaimCloseoutTests(unittest.TestCase):
                         patch.object(helper.github_agent, "native_sessions", return_value={"native": SESSION}), \
                         patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
                         patch.object(helper, "GitHubReader", autospec=True, return_value=self.reader), \
+                        patch.object(helper.time, "time", side_effect=lambda: now[0]), \
+                        patch.object(helper.claim_receipts, "ownership_file_candidates", side_effect=slow_analysis), \
                         patch.object(helper.sessions, "discover", return_value=([], [REPO])), contextlib.redirect_stdout(output):
+                    self.reader.deadline_at = now[0] + 1
                     code = helper.main(["--owner", "test", "--harness", harness, "--session", SESSION, "--transcript", str(transcript)])
                 self.assertEqual(code, 0, output.getvalue())
                 self.assertTrue(json.loads(output.getvalue())["claims_clear"])
