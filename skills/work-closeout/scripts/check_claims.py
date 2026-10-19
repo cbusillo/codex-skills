@@ -195,10 +195,13 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
         if node["harness"] == "codex":
             records, _ = claim_receipts.serial_ownership_records(records)
         for target in claim_receipts.created_pr_targets(records, node["harness"]):
+            prefixes = [*node.get("preceding_histories", []),
+                        {"harness": node["harness"], "records": records[:target["index"]]}]
             target["preceding_sources"] = {
                 (source["repository"].casefold(), source["record"], source["claim_comment"])
+                for prefix in prefixes
                 for native in native_sessions
-                for source in claim_receipts.sources(records[:target["index"]], node["harness"], native)[0]}
+                for source in claim_receipts.sources(prefix["records"], prefix["harness"], native)[0]}
             creations.append(target)
     native_issues = {(r["repository"], r["record"]) for r in expected}
     for node in histories:

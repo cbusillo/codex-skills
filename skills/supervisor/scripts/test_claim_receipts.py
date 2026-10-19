@@ -447,11 +447,14 @@ class ReceiptTests(unittest.TestCase):
                             "bash -euo pipefail -c 'uv run " + helper + "; echo ok'",
                             "bash --login -c 'uv run " + helper + "'",
                             "sh -ec 'uv run " + helper + "'",
+                            "bash -O extglob -c 'uv run " + helper + "'",
+                            "bash +O extglob -lc 'uv run " + helper + "'",
                             "uv run --color never " + helper,
                             "uv run --index https://index.example/simple " + helper,
                             "uv run -P package " + helper,
                             "uv run --exclude-newer 2026-01-01 " + helper,
-                            "uv run --native-tls " + helper,
+                            *("uv run " + option + (" managed " if takes_value else " ") + helper
+                              for option, takes_value in receipts.HIDDEN_UV_RUN_OPTIONS.items()),
                             "bash -lc 'cd /repo && uv run " + helper + "'",
                             "bash -c 'uv run " + helper + " > claim.json'",
                             "for n in 1 2; do uv run " + helper + "; done",
@@ -460,7 +463,7 @@ class ReceiptTests(unittest.TestCase):
                             *("uv run " + option + " " + helper for option in (
                                 "--cache-dir /cache", "--index-url https://index.example/simple",
                                 "--default-index https://index.example/simple", "--config-file uv.toml",
-                                "--no-group test", "--only-group test", "--python-preference managed",
+                                "--no-group test", "--only-group test",
                                 "--refresh-package package"))):
                 with self.subTest(harness=harness, command=command):
                     rows = history(harness, claim(), {**proof(("example/a", 1, 10)), "harness": harness})
@@ -808,7 +811,10 @@ class ReceiptTests(unittest.TestCase):
 
     def test_ownership_help_is_read_only_on_both_harnesses(self):
         for harness in ("codex", "claude"):
-            for command in ('uv run gh-plan.py claim --help', 'uv run gh-pr.py create --help', 'gh pr create --help'):
+            for command in ('uv run gh-plan.py claim --help', 'uv run gh-plan.py claim 7 --help',
+                            'uv run gh-plan.py claim --worker w --help', 'uv run gh-plan.py claim --worker --help',
+                            'uv run gh-plan.py claim 7 --next-action "uv run gh-plan.py claim 1" --help',
+                            'uv run gh-pr.py create --help', 'gh pr create --help'):
                 rows = history(harness, {})
                 if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
                 else: rows[1]["message"]["content"][0]["input"] = {"command": command}
@@ -819,6 +825,64 @@ class ReceiptTests(unittest.TestCase):
             if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
             else: rows[1]["message"]["content"][0]["input"] = {"command": command}
             self.assertTrue(receipts.ownership_state(rows, harness)["indices"])
+
+    def test_unrecognized_executors_cannot_hide_quoted_ownership_commands(self):
+        helper = "uv run /catalog/gh-plan.py --repo example/a claim 1"
+        for harness in ("codex", "claude"):
+            for command in ("sudo -u me bash -c " + shlex.quote(helper),
+                            "flock /tmp/claim-lock -c " + shlex.quote(helper),
+                            "zsh --emulate sh -c " + shlex.quote(helper)):
+                rows = history(harness, {}, {**proof(), "harness": harness})
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                with self.subTest(harness=harness, command=command):
+                    self.assertTrue(receipts.ownership_state(rows, harness)["indices"])
+                    self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+                    self.assertFalse(receipts.acceptance(rows, harness, SESSION)["clear"])
+            for command in ("printf '%s' " + shlex.quote(helper), "rg " + shlex.quote(helper) + " source.py",
+                            "git grep " + shlex.quote(helper),
+                            "uv run gh-plan.py search " + shlex.quote(helper),
+                            "zsh --emulate sh -c " + shlex.quote("printf '%s' " + shlex.quote(helper)),
+                            "python3 -c " + shlex.quote("fixture=" + repr(helper) + "; print(fixture)")):
+                rows = history(harness, {})
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                with self.subTest(harness=harness, read=command):
+                    self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+
+    def test_literal_helpers_with_variable_actions_cannot_become_known_reads(self):
+        for harness in ("codex", "claude"):
+            for helper, action, receipt, tail in (
+                ("gh-plan.py", "claim", claim(),
+                 "1 --worker fixture --session " + SESSION + " --branch work/fixture --next-action inspect"),
+                ("gh-pr.py", "create", {"operation": "github.pr.create", "ok": True},
+                 "--head work/fixture --title fixture --body-file /fixture/body.md"),
+            ):
+                for variable in ("$ACTION", "${ACTION}"):
+                    command = ("ACTION=" + action + "; uv run " + helper + ' --repo example/a "'
+                               + variable + '" ' + tail)
+                    rows = history(harness, receipt, {**proof(), "harness": harness})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    rows[2] = output({"exit_code": 0, "output": json.dumps(receipt)}, harness, "tool-0")
+                    with self.subTest(harness=harness, helper=helper, variable=variable):
+                        self.assertTrue(receipts.ownership_state(rows, harness)["indices"])
+                        self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+                        self.assertFalse(receipts.acceptance(rows, harness, SESSION)["clear"])
+                rows = history(harness, {})
+                command = "uv run " + helper + " --repo example/a invalid-literal-command"
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
 
     def test_ownership_completion_does_not_require_wrappers_for_unrelated_reads(self):
         rows = history("codex", claim())

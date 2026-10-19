@@ -34,6 +34,30 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_child_creation_uses_only_verified_earlier_parent_claim_prefixes(self):
+        from test_claim_receipts import history, claim as native_claim, SESSION as native_session
+        for harness in ("codex", "claude"):
+            for head in ("", " --repo test/a --head earlier-worker"):
+                for verified_prefix in (False, True):
+                    for created_at in ("2025-12-31T23:59:00Z", "2026-01-01T00:01:00Z"):
+                        with self.subTest(harness=harness, head=head, prefix=verified_prefix, created_at=created_at):
+                            entry = self.creation_history(harness, "git push && gh pr create --fill" + head)
+                            parent = history(harness, native_claim(REPO))
+                            child = [*entry["_transcript_records"][:1], *entry["_transcript_records"][3:]]
+                            child_id = "child" if harness == "codex" else native_session
+                            if harness == "codex":
+                                child[0]["payload"]["id"] = child_id
+                            nodes = [{"session_id": native_session, "harness": harness, "records": parent},
+                                     {"session_id": child_id, "harness": harness, "records": child,
+                                      "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child),
+                                      "preceding_histories": [{"harness": harness, "records": parent[:-2] if harness == "codex" else parent[:-1]}]
+                                                               if verified_prefix else []}]
+                            entry["_claim_histories"] = nodes
+                            self.pulls = [pull(3, branch="earlier-worker", created_at=created_at)]
+                            with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                                report = helper.check(self.reader, [], entry, ACTOR)
+                            self.assertEqual(report["claims_clear"], verified_prefix and created_at == "2025-12-31T23:59:00Z", report)
+
     def creation_history(self, harness, command, *, claim_first=True, timestamp="2026-01-01T02:00:00Z"):
         from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
         rows = history(harness, native_claim(REPO), {})

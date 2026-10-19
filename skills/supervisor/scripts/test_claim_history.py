@@ -72,6 +72,152 @@ class NativeHistoryTests(unittest.TestCase):
     def test_codex_delegation_without_github_work_keeps_the_local_exit_path(self):
         self.assertTrue(self.status()["safe_verdict"])
 
+    def preceding_claims(self, node, sessions=('root',)):
+        return {(source['repository'], source['record'], source['claim_comment'])
+                for segment in node.get('preceding_histories', [])
+                for session in sessions
+                for source in claim_history.claim_receipts.sources(segment['records'], segment['harness'], session)[0]}
+
+    def test_plain_spawn_precedence_ends_at_the_bound_launch_not_its_result(self):
+        early, late = claim(), claim('example/b', 2, 20)
+        for value in (early, late):
+            value['claim']['session'] = 'root'
+        root = records('codex', 'root', early, late, delegate=True)
+        launch, result = root[1:3]
+        root[1:] = [*root[3:5], launch, *root[5:7], result, *root[7:]]
+        self.write(self.root, root)
+        child = next(node for node in self.nodes() if node['session_id'] == 'child')
+        self.assertEqual(self.preceding_claims(child), {('example/a', 1, 10)})
+
+    def test_fork_precedence_uses_verified_inherited_snapshot_only(self):
+        early, late = claim(), claim('example/b', 2, 20)
+        for value in (early, late):
+            value['claim']['session'] = 'root'
+        snapshot = records('codex', 'root', early)
+        self.write(self.root, records('codex', 'root', early, late))
+        self.write(self.child, self.fork_rows(snapshot))
+        child = next(node for node in self.nodes() if node['session_id'] == 'child')
+        self.assertEqual(self.preceding_claims(child), {('example/a', 1, 10)})
+
+    def test_unbound_or_foreign_spawn_result_does_not_supply_claim_precedence(self):
+        value = claim()
+        value['claim']['session'] = 'root'
+        original = records('codex', 'root', value, delegate=True)
+        launch, result = original[1:3]
+        original[1:] = [*original[3:5], launch, result, *original[5:]]
+        for mutation in ('missing', 'foreign-child', 'foreign-call', 'read-call'):
+            with self.subTest(mutation=mutation):
+                root = copy.deepcopy(original)
+                if mutation == 'missing':
+                    root.pop(4)
+                elif mutation == 'foreign-child':
+                    root[4]['payload']['output'] = '{"agent_id":"other-child"}'
+                elif mutation == 'foreign-call':
+                    root[4]['payload']['call_id'] = 'unrelated-call'
+                else:
+                    root[3]['payload']['name'] = 'exec_command'
+                self.write(self.root, root)
+                child = next(node for node in self.nodes() if node['session_id'] == 'child')
+                self.assertFalse(self.preceding_claims(child))
+
+    def test_claude_spawn_precedence_binds_native_agent_id_to_its_tool_result(self):
+        root = self.home / 'claude' / 'root.jsonl'
+        child = root.parent / 'root' / 'subagents' / 'agent-explore.jsonl'
+        value = claim()
+        value['claim']['session'] = 'root'
+        parent = records('claude', 'root', value, delegate=True)
+        launch, result = parent[1:3]
+        result['toolUseResult'] = {'agentId': 'explore'}
+        parent[1:] = [*parent[3:5], launch, result, *parent[5:]]
+        self.write(root, parent)
+        self.write(child, records('claude', 'root'))
+        nodes = claim_history.collect(root, 'claude', 'root', parent, lambda p, *_: session_record.read_jsonl(p))
+        self.assertEqual(self.preceding_claims(nodes[1]), {('example/a', 1, 10)})
+        parent[4]['toolUseResult']['agentId'] = 'other-agent'
+        nodes = claim_history.collect(root, 'claude', 'root', parent, lambda p, *_: session_record.read_jsonl(p))
+        self.assertFalse(self.preceding_claims(nodes[1]))
+        parent[4]['toolUseResult']['agentId'] = 'explore'
+        parent[4]['message']['content'][0]['tool_use_id'] = 'unrelated-call'
+        nodes = claim_history.collect(root, 'claude', 'root', parent, lambda p, *_: session_record.read_jsonl(p))
+        self.assertFalse(self.preceding_claims(nodes[1]))
+
+    def test_claude_resume_does_not_prove_a_claim_precedes_child_creation(self):
+        root = self.home / 'claude' / 'root.jsonl'
+        child = root.parent / 'root' / 'subagents' / 'agent-explore.jsonl'
+        value = claim()
+        value['claim']['session'] = 'root'
+        parent = records('claude', 'root', value, delegate=True)
+        launch, result = parent[1:3]
+        launch['message']['content'][0]['input']['resume'] = 'explore'
+        result['toolUseResult'] = {'agentId': 'explore'}
+        parent[1:] = [*parent[3:5], launch, result, *parent[5:]]
+        self.write(root, parent)
+        self.write(child, records('claude', 'root'))
+        nodes = claim_history.collect(root, 'claude', 'root', parent, lambda p, *_: session_record.read_jsonl(p))
+        self.assertFalse(self.preceding_claims(nodes[1]))
+
+    def test_native_task_name_spawn_binding_requires_matching_index_and_child_metadata(self):
+        value = claim()
+        value['claim']['session'] = 'root'
+        parent = records('codex', 'root', value, delegate=True)
+        launch, result = parent[1:3]
+        result['payload']['output'] = '{"task_name":"/root/explore"}'
+        parent[1:] = [*parent[3:5], launch, result, *parent[5:]]
+        child = records('codex', 'child', parent='root')
+        child[0]['payload']['agent_path'] = '/root/explore'
+        child[0]['payload']['source']['subagent']['thread_spawn']['agent_path'] = '/root/explore'
+        self.write(self.root, parent)
+        self.write(self.child, child)
+        with sqlite3.connect(self.database) as db:
+            source = {'subagent': {'thread_spawn': {'parent_thread_id': 'root', 'agent_path': '/root/explore'}}}
+            db.execute("UPDATE threads SET source=? WHERE id='child'", (json.dumps(source),))
+        self.assertEqual(self.preceding_claims(self.nodes()[1]), {('example/a', 1, 10)})
+        child[0]['payload']['agent_path'] = '/root/unrelated'
+        self.write(self.child, child)
+        self.assertFalse(self.preceding_claims(self.nodes()[1]))
+        child[0]['payload']['agent_path'] = '/root/explore'
+        self.write(self.child, child)
+        parent[4]['payload']['output'] = '{"task_name":"/root/explore","agent_id":"other-child"}'
+        self.write(self.root, parent)
+        self.assertFalse(self.preceding_claims(self.nodes()[1]))
+
+    def test_transitive_precedence_keeps_parent_and_child_call_namespaces_separate(self):
+        root_claim, child_claim = claim(), claim('example/b', 2, 20)
+        root_claim['claim']['session'] = 'root'
+        child_claim['claim']['session'] = 'child'
+        root = records('codex', 'root', root_claim, delegate=True)
+        child = records('codex', 'child', child_claim, parent='root', delegate=True)
+        for rows, descendant in ((root, 'child'), (child, 'grand')):
+            launch, result = rows[1:3]
+            result['payload']['output'] = json.dumps({'agent_id': descendant})
+            rows[1:] = [*rows[3:5], launch, result, *rows[5:]]
+        grand = self.home / 'sessions' / 'grand.jsonl'
+        self.write(self.root, root)
+        self.write(self.child, child)
+        self.write(grand, records('codex', 'grand', parent='child'))
+        with sqlite3.connect(self.database) as db:
+            self.edge(db, 'child', 'grand', grand)
+        node = next(node for node in self.nodes() if node['session_id'] == 'grand')
+        self.assertEqual(self.preceding_claims(node, sessions=('root', 'child')),
+                         {('example/a', 1, 10), ('example/b', 2, 20)})
+
+    def test_nested_fork_precedence_omits_ambiguous_copied_call_namespaces(self):
+        root_claim, child_claim = claim(), claim('example/b', 2, 20)
+        root_claim['claim']['session'] = 'root'
+        child_claim['claim']['session'] = 'child'
+        root = records('codex', 'root', root_claim)
+        child = self.fork_rows(root, child_claim)
+        grand = self.home / 'sessions' / 'grand.jsonl'
+        self.write(self.root, root)
+        self.write(self.child, child)
+        self.write(grand, self.fork_rows(child, parent='child', child='grand'))
+        with sqlite3.connect(self.database) as db:
+            self.edge(db, 'child', 'grand', grand)
+        node = next(node for node in self.nodes() if node['session_id'] == 'grand')
+        # The root proof has its own validated segment. The parent claim is
+        # present only in a nested snapshot sharing tool IDs with that root.
+        self.assertEqual(self.preceding_claims(node, sessions=('root', 'child')), {('example/a', 1, 10)})
+
     def test_indexed_children_are_read_without_a_recognized_top_level_spawn(self):
         value = claim()
         value["claim"]["session"] = "child"

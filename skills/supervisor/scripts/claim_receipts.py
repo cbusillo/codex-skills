@@ -24,6 +24,7 @@ from pathlib import Path
 
 CHECK_OPERATION = "work-closeout.claims"
 CLAIM_OPERATION = "github.plan.claim"
+HIDDEN_UV_RUN_OPTIONS = {"--python-preference": True, "--native-tls": False}
 COMMENT = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 SHELL_FIELD = re.compile(r'''\btools\.exec_command\s*\(\s*\{(?:(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|[^{}"'`])*?(?:\b(?:cmd|command)|"(?:cmd|command)"|'(?:cmd|command)')\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')(?=\s*[,}])''')
 OWNERSHIP_TEXT = re.compile(r"gh-plan\.py[\s\S]*\bclaim\b|gh-pr\.py[\s\S]*\bcreate\b|\bgh\s+pr\s+create\b")
@@ -321,7 +322,10 @@ def opaque_ownership(name, value):
         for argv in shell_commands("exec_command", {"cmd": text}):
             child = unwrapped_command(argv)
             executable = helper_argv(argv)
-            _, action = helper_action(argv)
+            helper_name, action = helper_action(argv)
+            if (helper_name in {"gh-plan.py", "gh-pr.py"} and action
+                    and any(symbol in action[0] for symbol in "$`")):
+                return True
             if (executable and executable[0].startswith("$")
                     and (action[:1] in (["claim"], ["create"]) or action[:2] == ["pr", "create"])):
                 return True
@@ -329,9 +333,16 @@ def opaque_ownership(name, value):
                 inspected = child
                 while inspected and inspected[0] in {"do", "then", "else"}:
                     inspected = unwrapped_command(inspected[1:])
-                if inspected and Path(inspected[0]).name not in {"echo", "printf", "cat", "rg", "grep", "sed", "head", "tail", "ls"}:
+                inspected_name = Path(inspected[0]).name if inspected else ""
+                known_read = (inspected_name in {"echo", "printf", "cat", "rg", "grep", "sed", "head", "tail", "ls"}
+                              or inspected_name == "git" and inspected[1:2] in (
+                                  ["show"], ["log"], ["grep"], ["diff"], ["status"], ["rev-parse"], ["ls-files"])
+                              or script(argv) in {"gh-plan.py", "gh-pr.py"})
+                if inspected and not known_read:
                     if any(ownership_command(argv[i:]) for i, word in enumerate(argv)
                            if Path(word).name in {"gh-plan.py", "gh-pr.py", "gh"}):
+                        return True
+                    if any(executable_content(word) for word in argv[1:]):
                         return True
             if child and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}:
                 body = shell_c_body(child)
@@ -462,8 +473,8 @@ def uv_run_options():
         return None
     # uv still accepts these deprecated aliases but omits them from help.
     # Preserve their verified arity without freezing the visible option set.
-    options.setdefault("--python-preference", True)
-    options.setdefault("--native-tls", False)
+    for option, takes_value in HIDDEN_UV_RUN_OPTIONS.items():
+        options.setdefault(option, takes_value)
     return options
 
 
@@ -515,7 +526,7 @@ def shell_c_body(argv):
         if not option.startswith("--") and "c" in option[1:]:
             return argv[cursor + 1] if cursor + 1 < len(argv) else None
         cursor += 1
-        if option in {"--rcfile", "--init-file"} or not option.startswith("--") and option.endswith("o"):
+        if option in {"--rcfile", "--init-file"} or not option.startswith("--") and option.endswith(("o", "O")):
             cursor += 1
     return None
 
@@ -1142,10 +1153,32 @@ def ownership_command(argv):
     # Only the observed bare action help form is exempt. Elsewhere a flag-like
     # word may be an option value rather than a help request.
     help_only = action[-2:] in ([verb, "--help"], [verb, "-h"]) and action.count(verb) == 1
+    if owning and name == "gh-plan.py":
+        help_only = help_only or claim_read_only_help(argv)
     if owning and name in {"gh", "gh-pr.py"} and any(word in {"--help", "-h"} for word in action):
         parsed = creation_arguments(argv)
         help_only = help_only or parsed is not None and getattr(parsed, "help_only", False)
     return owning and not help_only
+
+
+def claim_read_only_help(argv):
+    """Only the real parser can decide whether a help-shaped argument executes."""
+    parser = helper_parser("gh-plan.py")
+    claim_parser = next(item for item in parser._actions
+                        if isinstance(item, argparse._SubParsersAction)).choices["claim"]
+    words = helper_argv(argv)[1:]
+    if not any(parsed and isinstance(parsed[0], argparse._HelpAction)
+               for word in words for parsed in (parser_option(parser, word), parser_option(claim_parser, word))):
+        return False
+    with redirect_stdout(io.StringIO()):
+        try:
+            parser.parse_known_args(words)
+        except SystemExit as error:
+            return error.code == 0
+        except Exception as error:
+            parsing_error = getattr(sys.modules.get("github_api"), "ArgumentParsingError", ())
+            return isinstance(error, parsing_error)
+    return False
 
 
 def target_repositories(records, harness, *, allowed_sessions=None):

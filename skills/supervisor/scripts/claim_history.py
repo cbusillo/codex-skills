@@ -174,6 +174,42 @@ def root_records(path, harness, session, records):
     return child_records(records, harness, session)
 
 
+def spawn_prefix(records, harness, child, *, agent_path=None):
+    """Prove parent order at a child launch, never from wall-clock stamps."""
+    calls, matches = {}, []
+    names = {"Agent", "Task"} if harness == "claude" else {"spawn_agent", "collaboration.spawn_agent"}
+    for index, record in enumerate(records):
+        invocations, results = claim_receipts.calls_and_results(record, harness)
+        for identifier, name, value in invocations:
+            arguments = claim_receipts.arguments(value)
+            resuming = harness == "claude" and isinstance(arguments, dict) and arguments.get("resume") is not None
+            if name in names and not resuming:
+                calls[identifier] = index
+        if harness == "claude":
+            started = record.get("toolUseResult")
+            blocks = (record.get("message") or {}).get("content") or []
+            if (isinstance(started, dict) and started.get("agentId") == child and len(results) == 1
+                    and results[0] in calls
+                    and not any(block.get("is_error") for block in blocks if isinstance(block, dict)
+                                and block.get("type") == "tool_result")):
+                matches.append(calls[results[0]])
+            continue
+        payload = record.get("payload") or {}
+        if len(results) != 1 or results[0] not in calls:
+            continue
+        value = payload.get("output")
+        try:
+            value = json.loads(value) if isinstance(value, str) else value
+        except ValueError:
+            continue
+        if (isinstance(value, dict) and not value.get("error")
+                and (value.get("agent_id") == child or agent_path and value.get("task_name") == agent_path)
+                and ("agent_id" not in value or value["agent_id"] == child)
+                and (not agent_path or "task_name" not in value or value["task_name"] == agent_path)):
+            matches.append(calls[results[0]])
+    return records[:min(matches)] if matches else []
+
+
 def collect(path, harness, session, records, read, *, homes=None):
     """Return root and quiet child snapshots; missing child evidence refuses.
 
@@ -225,7 +261,8 @@ def collect(path, harness, session, records, read, *, homes=None):
                         ancestry[child_id] = ancestors
                         child = Path(rollout).expanduser().resolve()
                         if (child_id, child) not in seen_paths:
-                            paths.append((child_id, child, {"parent": parent, "ancestors": ancestors}))
+                            paths.append((child_id, child, {"parent": parent, "ancestors": ancestors,
+                                "agent_path": native_source.get("subagent", {}).get("thread_spawn", {}).get("agent_path")}))
                             seen_paths.add((child_id, child))
                         pending.append(child_id)
                 if not found_parent and (parent != session or delegated(records, harness)):
@@ -247,6 +284,26 @@ def collect(path, harness, session, records, read, *, homes=None):
         activity = session_record.summarize(logical_records, harness, inspect_claims=False)
         if not activity["at_turn_end"] or activity["background_tasks"]:
             raise ValueError(f"native child {child_id} still has unfinished work")
+        parent_node = (next(node for node in nodes if node["session_id"] == parent) if parent is not None else nodes[0])
+        preceding = list(parent_node.get("preceding_histories", []))
+        if harness == "codex" and inline_history(raw_records):
+            boundary = raw_records[0]["payload"]["subagent_history_start_ordinal"]
+            inherited = raw_records[1:boundary]
+            # A copied fork-of-fork can combine native process/call IDs from
+            # multiple histories. Keep its independently proven ancestor and
+            # launch segments, rather than infer order from that mixed copy.
+            if len({r["payload"]["id"] for r in inherited if r.get("type") == "session_meta"}) == 1:
+                preceding.append({"harness": harness, "records": inherited})
+        agent_path = context.get("agent_path") if context is not None else None
+        if agent_path:
+            meta = raw_records[0]["payload"]
+            native_path = meta.get("source", {}).get("subagent", {}).get("thread_spawn", {}).get("agent_path")
+            if meta.get("agent_path") != agent_path or native_path != agent_path:
+                agent_path = None  # No task-name binding from an unverified child path.
+        child_key = child.stem.removeprefix("agent-") if harness == "claude" else child_id
+        prefix = spawn_prefix(parent_node["records"], harness, child_key, agent_path=agent_path)
+        if prefix:
+            preceding.append({"harness": harness, "records": prefix})
         nodes.append({"session_id": child_id, "harness": harness, "transcript": str(child),
-                      "records": logical_records, "digest": fingerprint(raw_records)})
+                      "records": logical_records, "digest": fingerprint(raw_records), "preceding_histories": preceding})
     return nodes
