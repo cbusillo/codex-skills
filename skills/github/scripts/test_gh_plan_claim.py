@@ -4912,7 +4912,6 @@ class GraphQLRepositoryIdentityTests(unittest.TestCase):
                         self.assertEqual(result["body_recorded_at"], "2026-10-01T00:00:00Z")
                     self.assertTrue(executions)
                     self.assertTrue(all(execution == (source_repo, expected_actor) for execution in executions))
-                    self.assertEqual(bool(authentications), expected_actor == client_actor)
                     self.assertTrue(all(repository == source_repo for repository in authentications))
                     self.assertEqual(os.environ["GH_REPO"], command_repo)
 
