@@ -939,6 +939,133 @@ def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
     )
 
 
+SUPERVISOR_APP = "fixture-app[bot]"
+REVIEWED_HEAD = "c" * 40
+
+
+def supervisor_receipt_line(head=REVIEWED_HEAD, request_id=4100):
+    import pending_reviews
+
+    receipt = json.dumps({
+        **pending_reviews.receipt_for({"id": request_id}, head),
+        "author_provider": "codex", "author_session": "fixture-session",
+        "request_updated_at": "2026-10-19T12:00:00Z",
+    }, sort_keys=True)
+    return f"<!-- supervisor-review {receipt} -->"
+
+
+def supervisor_report_body(head=REVIEWED_HEAD):
+    import github_api
+    import pending_reviews
+
+    report = (f"{pending_reviews.REPORT_HEADING}\n\nHead: {head}\n\nFindings for the author to weigh.\n\n"
+              f"{supervisor_receipt_line(head)}\n")
+    return github_api.body_with_operation_marker(report, "0123abcd")
+
+
+def issue_comment(comment_id, body, login=SUPERVISOR_APP):
+    return {
+        "id": comment_id,
+        "user": {"login": login, "id": 77},
+        "author_association": "NONE",
+        "created_at": "2026-10-19T12:00:00Z",
+        "body": body,
+        "html_url": f"https://github.com/openai/codex/pull/123#issuecomment-{comment_id}",
+    }
+
+
+def mock_supervisor_comments(monkeypatch, comments):
+    monkeypatch.setattr(gh_pr_watch, "configured_bot_logins", lambda: frozenset({SUPERVISOR_APP}))
+    monkeypatch.setattr(
+        gh_pr_watch, "gh_api_list_paginated",
+        lambda endpoint, **_: comments if "/issues/" in endpoint else [],
+    )
+
+
+def supervisor_watch(state, head=REVIEWED_HEAD):
+    return gh_pr_watch.fetch_new_review_items(
+        {**sample_pr(), "head_sha": head}, state, fresh_state=not state, authenticated_login=SUPERVISOR_APP,
+    )
+
+
+def test_supervisor_review_report_by_automation_is_surfaced_once(monkeypatch):
+    mock_supervisor_comments(monkeypatch, [issue_comment(41, supervisor_report_body())])
+    state = {}
+
+    items = supervisor_watch(state)
+
+    assert len(items) == 1
+    assert items[0]["source"] == "supervisor_review"
+    assert items[0]["url"].endswith("#issuecomment-41") and items[0]["body"]
+    assert items[0]["supervisor_review"]["head"] == REVIEWED_HEAD
+    assert items[0]["supervisor_review"]["matches_current_head"] is True
+    assert "41" in state["seen_issue_comment_ids"]
+    assert supervisor_watch(state) == []
+
+
+def test_supervisor_review_report_is_surfaced_on_resumed_state(monkeypatch):
+    mock_supervisor_comments(monkeypatch, [issue_comment(41, supervisor_report_body())])
+    state = {"seen_issue_comment_ids": ["7", "8"]}
+
+    items = supervisor_watch(state)
+
+    assert [item["id"] for item in items] == ["41"]
+    assert items[0]["source"] == "supervisor_review"
+
+
+def test_supervisor_review_report_for_older_head_is_surfaced_as_stale(monkeypatch):
+    mock_supervisor_comments(monkeypatch, [issue_comment(41, supervisor_report_body(head="d" * 40))])
+
+    items = supervisor_watch({})
+
+    assert len(items) == 1
+    assert items[0]["supervisor_review"]["head"] == "d" * 40
+    assert items[0]["supervisor_review"]["matches_current_head"] is False
+
+
+def test_manual_supervisor_review_report_is_surfaced_without_receipt_head(monkeypatch):
+    import pending_reviews
+
+    body = f"{pending_reviews.REPORT_HEADING}\n\nPosted by hand after a helper failure."
+    mock_supervisor_comments(monkeypatch, [issue_comment(42, body)])
+
+    items = supervisor_watch({})
+
+    assert [item["supervisor_review"]["head"] for item in items] == [None]
+
+
+def quiet_supervisor_body(kind):
+    import ready_handoff
+
+    request = "Ready for review, so Supervisor runs the review."
+    assert ready_handoff.supervisor_review_request(request)
+    return {
+        "review request": request,
+        "ready handoff": ready_handoff.handoff_body(REVIEWED_HEAD),
+        "weighed disposition": ready_handoff.review_result_body("Accepted the findings.", REVIEWED_HEAD),
+        "disposition with pasted receipt": ready_handoff.review_result_body(
+            f"Accepted the findings.\n\n{supervisor_receipt_line()}", REVIEWED_HEAD),
+        "status chatter": "Completed through PR #123.",
+        "quoted malformed receipt": "Looking at the earlier marker:\n> <!-- supervisor-review not-json -->",
+    }[kind]
+
+
+@pytest.mark.parametrize("kind", [
+    "review request", "ready handoff", "weighed disposition", "disposition with pasted receipt",
+    "status chatter", "quoted malformed receipt",
+])
+def test_other_supervisor_automation_comments_stay_quiet(monkeypatch, kind):
+    mock_supervisor_comments(monkeypatch, [issue_comment(43, quiet_supervisor_body(kind))])
+
+    assert supervisor_watch({}) == []
+
+
+def test_supervisor_review_report_from_unconfigured_bot_stays_quiet(monkeypatch):
+    mock_supervisor_comments(monkeypatch, [issue_comment(44, supervisor_report_body(), login="other[bot]")])
+
+    assert supervisor_watch({}) == []
+
+
 def owner_feedback_comment(**overrides) -> dict[str, Any]:
     decision = {
         "schema_version": 1,

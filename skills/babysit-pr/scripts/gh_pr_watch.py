@@ -40,6 +40,10 @@ OWNER_REVIEW_HELPER = os.environ.get("GH_PR_WATCH_OWNER_REVIEW_HELPER") or str(D
 IDENTITY_SCRIPT_DIR = SCRIPT_DIR.parent.parent / "github" / "scripts"
 if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
+# Appended so the Supervisor's helpers never shadow this skill's own imports.
+SUPERVISOR_SCRIPT_DIR = SCRIPT_DIR.parent.parent / "supervisor" / "scripts"
+if str(SUPERVISOR_SCRIPT_DIR) not in sys.path:
+    sys.path.append(str(SUPERVISOR_SCRIPT_DIR))
 import github_api
 import github_identity
 import github_read
@@ -1116,6 +1120,30 @@ def is_external_human_review_author(item, authenticated_login):
     return not is_bot_login(author)
 
 
+def supervisor_review_report(item, pr):
+    """Recognize a Supervisor review of record posted through the automation App.
+
+    Requests, Ready handoffs and the author's weighed disposition stay quiet;
+    only the report itself (receipt or manual heading) is review feedback.
+    """
+    if item.get("kind") != "issue_comment" or str(item.get("author") or "").casefold() not in configured_bot_logins():
+        return None
+    from pending_reviews import raw_receipt, reported_review
+    from ready_handoff import review_receipt_head
+    body = str(item.get("body") or "")
+    if review_receipt_head(body) is not None:
+        return None
+    receipt = raw_receipt(body)
+    if receipt is None and not reported_review(body):
+        return None
+    head = receipt["head"] if receipt else None
+    return {
+        "request": receipt["request"] if receipt else None,
+        "head": head,
+        "matches_current_head": head is not None and head.casefold() == str(pr.get("head_sha") or "").casefold(),
+    }
+
+
 def launchplane_owner_review(item, pr):
     """Verify a projected decision against Launchplane's saved record and receipt.
 
@@ -1299,6 +1327,9 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
             item["verification_status"] = "verified"
             item["owner_review"] = owner_review
             owner_review_items.append(item)
+        elif (supervisor_review := supervisor_review_report(item, pr)) is not None:
+            item["source"] = "supervisor_review"
+            item["supervisor_review"] = supervisor_review
         elif is_bot_login(author):
             if not is_actionable_review_bot_login(author):
                 continue
