@@ -1393,6 +1393,90 @@ def test_controller_block_projection_rejects_unsafe_or_invalid_fields() -> None:
         assert payload["status"] == "invalid"
 
 
+def _candidate_failure_isolated_response() -> dict[str, Any]:
+    """Launchplane's culprit block after a batch candidate failed (merge_train_controller_run_once)."""
+    response = _queue_refusal_response()
+    result = response["result"]
+    culprit = {**result["dry_run_result"]["queue"][0], "eligible": True, "ineligible_reasons": [],
+               "actor_role": "repo_admin"}
+    detail = "Pull request #42 failed the merge-train candidate checks when tested without the other queued pull requests."
+    result.update({
+        "mode": "block", "controller_action": "block", "reason_code": "candidate_failure_isolated",
+        "merge_train_batch_candidate_record_id": "merge-train-batch-candidate-intent",
+        "retired_merge_train_batch_candidate_record_id": "merge-train-batch-candidate-failed",
+        "blocking_reason": {"code": "merge_train_candidate_failure_isolated", "message": detail},
+        "details": {
+            "failed_checks": [{"name": "test_shard (0)", "conclusion": "failure",
+                               "url": "https://github.com/example/repo/actions/runs/1/job/2"}],
+            "failed_tests": ["tests.test_widget.WidgetTests.test_renders"],
+            "recovery_source_record_id": "merge-train-batch-candidate-source",
+        },
+        "conflict_probe": {"status": "persisted", "pull_request_numbers": [], "held_out": [
+            {"pull_request_number": 43, "head_sha": "3" * 40, "reason": "failure_isolation", "conflicts_with": []},
+        ]},
+        "block_result": {"status": "blocked", "repository": "example/repo", "base_branch": "main",
+                         "pull_request_number": 42, "blocked_label": "merge-blocked",
+                         "train_should_continue": True, "detail": "Applied merge-blocked to pull request #42."},
+    })
+    result["dry_run_result"].update({"selected_pr": culprit, "intended_next_action": "block",
+                                     "next_action_detail": detail})
+    response["records"] = {
+        "merge_train_batch_candidate_record_id": "merge-train-batch-candidate-intent",
+        "retired_merge_train_batch_candidate_record_id": "merge-train-batch-candidate-failed",
+    }
+    return response
+
+
+def test_controller_candidate_failure_isolated_block_is_a_confirmed_result() -> None:
+    response = _candidate_failure_isolated_response()
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 0
+    assert payload["status"] == "accepted"
+    assert payload["records"] == response["records"]
+    result = payload["result"]
+    assert result["reason_code"] == "candidate_failure_isolated"
+    assert result["retired_merge_train_batch_candidate_record_id"] == response["records"][
+        "retired_merge_train_batch_candidate_record_id"]
+    assert result["block_result"] == response["result"]["block_result"]
+    assert payload["summary"]["error_code"] == "merge_train_candidate_failure_isolated"
+    assert "private" not in json.dumps(payload)
+    driver = load_module("launchplane-train-drive.py", "culprit_block_driver")
+    assert not driver._uncertain(payload)
+    # The held-out innocent PR keeps going; the culprit's own driver stops.
+    innocent = driver.DriveSettings(repository="example/repo", number=43)
+    assert driver._judge(innocent, None, driver.DriveState(), result, "block") is None
+    culprit = driver.DriveSettings(repository="example/repo", number=42)
+    assert driver._judge(culprit, None, driver.DriveState(), result, "block")[0] == "failed"
+
+
+def test_controller_land_batch_reports_landing_progress() -> None:
+    for progress in ("partial", "cleanup_pending"):
+        response = {"status": "accepted", "trace_id": "launchplane_req_land", "records": {}, "result": {
+            "controller_action": "land_batch", "mode": "land", "landing_progress": progress,
+            "merge_train_batch_landing_plan_record_id": "landing-plan-example",
+        }}
+        status, payload = _run_controller_response(response, mutate=True)
+        assert status == 0
+        assert payload["result"]["landing_progress"] == progress
+    response["result"]["landing_progress"] = "Bearer private-fixture-value"
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and "private-fixture-value" not in json.dumps(payload)
+
+
+def test_controller_unreadable_reply_says_whether_launchplane_accepted_it() -> None:
+    body = _candidate_failure_isolated_response()
+    body["result"]["later_unknown_field"] = "private-fixture-value"
+    for http_status, service_status, accepted in (
+        (202, "accepted", True), (200, "accepted", True), (202, "pending", False), (None, "accepted", False),
+    ):
+        response = write_action._ServiceResponse({**body, "status": service_status}, http_status)
+        status, payload = _run_controller_response(response, mutate=True)
+        assert status == 1 and payload["status"] == "invalid"
+        assert payload["summary"]["unrecognized_key"] == "later_unknown_field"
+        assert (payload["summary"].get("launchplane_status") == "accepted") is accepted
+        assert "private-fixture-value" not in json.dumps(payload)
+
+
 def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -> None:
     for error in (
         TimeoutError("timed out"),
