@@ -7755,6 +7755,23 @@ def test_application_target_without_storage_binds_plan_actions_and_payload() -> 
         )
         assert status == 0, receipt
         assert "state_volume_plan_id" not in posts[0]["body"]
+        # Edited evidence keeping the reviewed digest is refused before any POST.
+        edited_actions = copy.deepcopy(evidence)
+        edited_actions["result"]["plan_actions"]["project"] = "create"
+        changed_payload_path = _write_json(directory, "application-changed.json", {**inputs, "description": "other"})
+        edited_payload = copy.deepcopy(evidence)
+        with open(changed_payload_path, encoding="utf-8") as handle:
+            edited_payload["request"]["payload_digest"] = write_action.metadata_review_digest(json.load(handle))
+        for edited, path in ((edited_actions, payload_path), (edited_payload, changed_payload_path)):
+            edited_path = _write_json(directory, "review-edited.json", edited)
+            status, refused, posts, _reads = _run_main(
+                [
+                    "dokploy-target-create-application-apply", "--payload-file", path,
+                    *_reviewed_apply_argv(evidence["result"]["plan_sha256"], edited_path),
+                ],
+                post=_application_response("apply"),
+            )
+            assert (status, posts) == (2, []), refused
         changed_plan = _application_response("apply")
         changed_plan["result"]["setup"]["plan"]["project"]["action"] = "create"
         status, receipt, _posts, _reads = _run_main(argv, post=changed_plan, read=_application_inspect_response())

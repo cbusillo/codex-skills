@@ -8514,19 +8514,25 @@ def dokploy_application_body(
             or evidence["request"].get("state_volume") is not request["state_volume"]
         ):
             raise ValueError("reviewed_dry_run_not_apply_eligible")
+        # Recompute the digest from this payload and the saved plan before sending, so
+        # edited evidence cannot carry the reviewed digest onto a different plan.
+        state_volume = result.get("state_volume")
         if request["state_volume"]:
+            if not isinstance(state_volume, dict):
+                raise ValueError("reviewed_dry_run_not_apply_eligible")
+            digest_inputs: dict[str, object] = {"state_volume": {
+                "plan_id": state_volume.get("plan_id"),
+                "service_plan_sha256": state_volume.get("service_plan_sha256"),
+            }}
+        else:
+            digest_inputs = {"plan_actions": result.get("plan_actions")}
+        if expected_plan_digest != _application_plan_digest(
+            cast(str, request["payload_digest"]), cast(str, request["context"]), digest_inputs
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        if isinstance(state_volume, dict):
             # Apply reuses the service's saved storage plan; a new dry run would allocate
             # different names, so the reviewed one is the only one sent.
-            state_volume = result.get("state_volume")
-            if not isinstance(state_volume, dict) or expected_plan_digest != _application_plan_digest(
-                cast(str, request["payload_digest"]),
-                cast(str, request["context"]),
-                {"state_volume": {
-                    "plan_id": state_volume.get("plan_id"),
-                    "service_plan_sha256": state_volume.get("service_plan_sha256"),
-                }},
-            ):
-                raise ValueError("reviewed_dry_run_not_apply_eligible")
             body["state_volume_plan_id"] = state_volume["plan_id"]
             body["expected_plan_sha256"] = state_volume["service_plan_sha256"]
         body["confirmation"] = DOKPLOY_TARGET_SETUP_CONFIRMATION
