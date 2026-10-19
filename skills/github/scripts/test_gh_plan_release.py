@@ -631,8 +631,11 @@ class ReleaseTests(ReleaseHarness):
     def test_open_native_blocker_still_refuses(self):
         self.f.blockers = [{"number": 1165, "state": "open"}]
         self.run_release()
-        with self.assertRaisesRegex(PLAN.PlanError, "resolved native blockers"):
+        self.f.events.clear()
+        with self.assertRaises(PLAN.PlanError) as caught:
             self.successor()
+        self.assertEqual(caught.exception.code, "claim_native_blockers_unresolved")
+        self.f.assert_no_writes()
 
     def test_refusal_shapes_do_not_write(self):
         for mode in ("active_session", "live_retained_peer", "source_edit", "renewed_claim", "wrong_evidence_session", "missing_ended_at",
