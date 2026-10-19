@@ -718,6 +718,8 @@ def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None
                 })
         except failures as error:
             unavailable(error, pr=pr.get("number"))
+            if isinstance(error, GitHubReadError) and not transient_read_error(error):
+                return
 
 
 @contextmanager

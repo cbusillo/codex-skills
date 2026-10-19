@@ -368,6 +368,21 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual([p['pr'] for event, p in self.events if event == 'skipped'], [2])
         self.assertTrue(any(event == 'skip_inventory_unavailable' for event, _ in self.events))
 
+    def test_inventory_stops_after_a_repository_identity_failure(self):
+        fake = Fake(count=2)
+        pages = fake.pages
+        reads = []
+        def read(path, **params):
+            if path.endswith('/comments'):
+                reads.append(path)
+                raise github_read.GitHubReadError(
+                    'identity mismatch', result=Mock(failure=Mock(retryable=False)), diagnostics={},
+                )
+            return pages(path, **params)
+        fake.pages = read
+        watch.report_ready_skips(fake, TARGET, self.args, Mock(), 'controller_busy')
+        self.assertEqual(len(reads), 1)
+
     def test_staging_qualifies_next_batch_without_changing_published_candidate(self):
         fake = self.staging_fake()
         candidate = copy.deepcopy(fake.observation)
