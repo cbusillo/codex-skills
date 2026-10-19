@@ -87,6 +87,7 @@ READ_ONLY_OPERATIONS = {
     "workflow-rule-retirement-plan",
     "runtime-setting-removal-dry-run",
     "runtime-setting-removal-readback",
+    "disposable-lane-inspect",
 }
 MERGE_TRAIN_POLICY_IMPORT_ENVELOPE_FIELDS = {
     "schema_version",
@@ -10224,13 +10225,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument(
         "--timeout", type=float, default=argparse.SUPPRESS,
-        help="HTTP timeout seconds (operation path checks: 300; promotion status and Dokploy inventory: 30; controller: 180; other commands: 10).",
+        help="HTTP timeout seconds (operation path checks: 300; disposable lane collect: 240; promotion status, Dokploy inventory and other disposable lane commands: 30; controller: 180; other commands: 10).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
     add_testing_rebuild_parser(subparsers)
     from launchplane_testing_private_ingress import add_parser as add_private_ingress_parser
     add_private_ingress_parser(subparsers)
+    from launchplane_disposable_lane import add_parser as add_disposable_lane_parser
+    add_disposable_lane_parser(subparsers)
     from launchplane_workflow_rule_retirement import add_parser as add_workflow_rule_retirement_parser
     add_workflow_rule_retirement_parser(subparsers)
     from launchplane_runtime_setting_removal import add_parser as add_runtime_setting_removal_parser
@@ -10844,9 +10847,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remediation.add_argument("--idempotency-key", required=True)
     remediation.add_argument("--reviewed-dry-run", action="store_true")
     args = parser.parse_args(argv)
+    from launchplane_disposable_lane import TIMEOUTS as disposable_lane_timeouts
     args.timeout = getattr(
         args, "timeout",
-        OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
+        disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
+        else OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
         else 180.0 if args.command == "merge-train-controller-run-once"
         else 30.0 if args.command in {"product-promotion-status-read", "dokploy-inventory-read"} else 10.0,
     )
@@ -11092,6 +11097,9 @@ def main(argv: list[str]) -> int:
         from launchplane_testing_private_ingress import COMMANDS as private_ingress_commands, execute as execute_private_ingress
         if args.command in private_ingress_commands:
             return execute_private_ingress(sys.modules[__name__], args)
+        from launchplane_disposable_lane import COMMANDS as disposable_lane_commands, execute as execute_disposable_lane
+        if args.command in disposable_lane_commands:
+            return execute_disposable_lane(sys.modules[__name__], args)
         from launchplane_workflow_rule_retirement import (
             COMMANDS as workflow_rule_retirement_commands, execute as execute_workflow_rule_retirement,
         )
