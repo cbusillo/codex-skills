@@ -12,8 +12,10 @@ See the [private ingress caller contract](write-action-helper-contract.md#applic
 for its installed service API bindings.
 
 The `disposable-lane-*` commands are installed service API bindings for
-`record_disposable_lane_safety` in its inspect, collect, record and clear
-modes. Its `prepare-rebuild` mode stays with the producer's own client. See the
+`record_disposable_lane_safety` in its inspect, collect and record modes. Its
+`prepare-rebuild` mode stays with the producer's own client. Its `clear` mode
+has no binding until Launchplane itself checks a current observation binding
+and lane ownership before clearing. See the
 [disposable lane contract](write-action-helper-contract.md#disposable-lane-observations)
 for the reviewed inspect binding and readback limits.
 

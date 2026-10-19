@@ -416,24 +416,6 @@ commands:
         "--reviewed-inspect",
       ]
     purpose: Records short-lived safety facts for a reviewed lane binding; known facts only for an exact preview.
-  - name: launchplane-disposable-lane-clear
-    source: skill
-    resource_path: scripts/launchplane-write-action.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/launchplane-write-action.py",
-        "disposable-lane-clear",
-        "--payload-file",
-        "<private-file>",
-        "--expected-binding-sha256",
-        "<binding-sha256>",
-        "--inspect-evidence-file",
-        "<private-inspect-output>",
-        "--reviewed-inspect",
-      ]
-    purpose: Clears the stored safety observation for a reviewed testing or preview lane without provider changes.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1163,11 +1145,11 @@ verification.
   [private ingress caller contract](references/write-action-helper-contract.md#application-testing-private-ingress)
   before use, including private files, review, original-key recovery, redaction
   and readback limits.
-- `disposable-lane-inspect` / `-collect` / `-record` / `-clear` wrap the
-  producer's disposable lane observation operation. Read the
+- `disposable-lane-inspect` / `-collect` / `-record` wrap the producer's
+  disposable lane observation operation. Read the
   [disposable lane contract](references/write-action-helper-contract.md#disposable-lane-observations)
   before use, including the reviewed inspect binding, testing fact limits, no
-  retry, readback limits and when clearing is appropriate.
+  retry and readback limits. Clearing an observation is not offered yet.
 
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for

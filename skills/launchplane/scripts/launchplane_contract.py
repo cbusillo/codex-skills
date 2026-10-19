@@ -274,10 +274,11 @@ SERVICE_API_HELPER_COMMANDS = {
         f"testing-private-ingress-{mode}": ("prepare_testing_private_ingress", (mode,))
         for mode in ("dry-run", "apply", "readback")
     },
-    # prepare-rebuild stays producer-owned until a reviewed caller exists.
+    # prepare-rebuild stays producer-owned until a reviewed caller exists. clear
+    # waits until the service enforces the binding and lane ownership itself.
     **{
         f"disposable-lane-{mode}": ("record_disposable_lane_safety", (mode,))
-        for mode in ("inspect", "collect", "record", "clear")
+        for mode in ("inspect", "collect", "record")
     },
 }
 
