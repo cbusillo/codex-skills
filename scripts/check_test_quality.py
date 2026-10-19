@@ -134,12 +134,26 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[]), module_aliases, {}))
 
     def local_names(scope: ast.AST) -> set[str]:
-        bound = {arg.arg for node in ast.walk(scope) if isinstance(node, ast.arguments)
-                 for arg in (*node.posonlyargs, *node.args, *node.kwonlyargs)}
-        stored = {node.id for node in ast.walk(scope) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
-        nested = {node.name for node in ast.walk(scope)
-                  if node is not scope and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        return bound | stored | nested
+        # Names bound in this scope only; nested functions, classes and lambdas bind their own.
+        names: set[str] = set()
+        arguments = getattr(scope, "args", None)
+        if isinstance(arguments, ast.arguments):
+            names |= {arg.arg for arg in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                                          arguments.vararg, arguments.kwarg) if arg is not None}
+        pending = list(ast.iter_child_nodes(scope))
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+                continue
+            if isinstance(node, ast.Lambda):
+                continue
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                names |= {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+            pending.extend(ast.iter_child_nodes(node))
+        return names
 
     def executes(scope: ast.AST, methods: dict[str, ast.AST], seen: frozenset[int] = frozenset()) -> bool:
         # A step run by a same-file helper (self.helper(...) or helper(...)) is still executed.

@@ -171,8 +171,12 @@ def test_step():
         unrelated = lint + '    def test_tool(self):\n        subprocess.run(["bash", "--version"])\n'
         self.assertIn("workflow-no-execution", self.rules(unrelated, paths=paths))
         # A local name that shadows a running module helper is not that helper.
-        shadowed = module_helper.replace("def test_step():\n", "def test_step():\n    run_step = str.split\n")
-        self.assertIn("workflow-no-execution", self.rules(shadowed, paths=paths))
+        for binding in ("    run_step = str.split\n", "    from lint_helpers import run_step\n"):
+            shadowed = module_helper.replace("def test_step():\n", "def test_step():\n" + binding)
+            self.assertIn("workflow-no-execution", self.rules(shadowed, paths=paths))
+        # A nested function's own parameter does not shadow the helper in the enclosing test.
+        nested = module_helper.replace("def test_step():\n", "def test_step():\n    def unrelated(run_step):\n        pass\n")
+        self.assertEqual(self.rules(nested, paths=paths), set())
 
     def test_temp_config_even_with_same_tracked_filename_stays_quiet(self) -> None:
         source = '''
