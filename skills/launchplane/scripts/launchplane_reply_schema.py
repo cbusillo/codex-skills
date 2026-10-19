@@ -84,6 +84,10 @@ def _check_subschema(node: object, root: dict[str, Any], path: str) -> None:
         raise ReplySchemaError(f"unsupported_schema_keyword:{path}:{min(unknown)}")
     if "$ref" in node:
         _resolve(root, node["$ref"])
+        # The checker follows a reference instead of combining it with sibling
+        # constraints, so a constrained sibling is refused rather than ignored.
+        if set(node) & _ENFORCED_KEYWORDS - {"$ref"}:
+            raise ReplySchemaError(f"unsupported_schema_ref_sibling:{path}")
     for kind in node.get("type", []) if isinstance(node.get("type"), list) else [node.get("type")]:
         if kind is not None and kind not in _JSON_TYPES:
             raise ReplySchemaError(f"unsupported_schema_type:{path}")
@@ -115,39 +119,33 @@ def controller_reply_schema() -> dict[str, Any]:
         raise ReplySchemaError("controller_reply_schema_unavailable") from exc
 
 
-def declared_record_keys(schema: dict[str, Any] | None = None) -> frozenset[str]:
-    """The `records` keys the schema declares."""
+def check_controller_reply(
+    reply: object, schema: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], list[str]]:
+    """Validate a controller reply against the pin.
 
-    root = controller_reply_schema() if schema is None else schema
-    node = (root.get("properties") or {}).get("records")
-    if isinstance(node, dict) and "$ref" in node:
-        node = _resolve(root, node["$ref"])
-    if not isinstance(node, dict):
-        raise ReplySchemaError("controller_reply_schema_unavailable")
-    return frozenset(node.get("properties") or {})
-
-
-def check_controller_reply(reply: object, schema: dict[str, Any] | None = None) -> list[str]:
-    """Validate a controller reply; return the dotted names of fields the pin does not declare.
-
-    Raises `ReplySchemaError("invalid_response")` for a declared field with
-    the wrong type or bound, or a missing required field, and
-    `ReplySchemaError("unsafe_response_shape")` for an undeclared field whose
-    name is not a plain, public-safe identifier. Values are not scanned here;
-    the caller's public-safety checks own that.
+    Returns the reply with every field the pin does not declare removed, and
+    the dotted names of those fields. Raises `ReplySchemaError("invalid_response")`
+    for a declared field with the wrong type or bound, or a missing required
+    field, and `ReplySchemaError("unsafe_response_shape")` for an undeclared
+    field whose name is not a plain, public-safe identifier. Values are not
+    scanned here; the caller's public-safety checks own that.
     """
 
     root = controller_reply_schema() if schema is None else schema
     unrecognized: list[str] = []
-    _check_value(reply, root, root, "", unrecognized)
-    return sorted(unrecognized)[:MAX_UNRECOGNIZED_FIELDS]
+    checked = _check_value(reply, root, root, "", unrecognized)
+    if not isinstance(checked, dict):
+        raise ReplySchemaError("invalid_response")
+    return checked, sorted(unrecognized)[:MAX_UNRECOGNIZED_FIELDS]
 
 
 def _check_value(
     value: object, node: object, root: dict[str, Any], path: str, unrecognized: list[str]
-) -> None:
+) -> object:
+    """Return `value` with undeclared fields removed, or raise."""
     if node is True:
-        return
+        return value
     if not isinstance(node, dict):
         raise ReplySchemaError("invalid_response")
     if "$ref" in node:
@@ -156,7 +154,7 @@ def _check_value(
         for option in node["anyOf"]:
             found: list[str] = []
             try:
-                _check_value(value, option, root, path, found)
+                value = _check_value(value, option, root, path, found)
             except ReplySchemaError as exc:
                 if exc.code == "unsafe_response_shape":
                     raise
@@ -177,29 +175,34 @@ def _check_value(
     if "maxLength" in node and isinstance(value, str) and len(value) > node["maxLength"]:
         raise ReplySchemaError("invalid_response")
     if isinstance(value, list) and "items" in node:
-        for index, item in enumerate(value):
+        return [
             _check_value(item, node["items"], root, f"{path}[{index}]", unrecognized)
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, dict) and (
         "properties" in node or "required" in node or "additionalProperties" in node
     ):
-        _check_object(value, node, root, path, unrecognized)
+        return _check_object(value, node, root, path, unrecognized)
+    return value
 
 
 def _check_object(
     value: dict[Any, Any], node: dict[str, Any], root: dict[str, Any], path: str,
     unrecognized: list[str],
-) -> None:
+) -> dict[str, Any]:
     properties: dict[str, Any] = node.get("properties") or {}
     if any(name not in value for name in node.get("required") or []):
         raise ReplySchemaError("invalid_response")
     extra_schema = node.get("additionalProperties", True)
+    checked: dict[str, Any] = {}
     for key, item in value.items():
         name = f"{path}.{key}" if path else str(key)
         if key in properties:
-            _check_value(item, properties[key], root, name, unrecognized)
+            checked[key] = _check_value(item, properties[key], root, name, unrecognized)
         elif extra_schema is False:
             if not isinstance(key, str) or not _PLAIN_FIELD_NAME.fullmatch(key) or is_denied_key(key):
                 raise ReplySchemaError("unsafe_response_shape")
             unrecognized.append(name)
         else:
-            _check_value(item, extra_schema, root, name, unrecognized)
+            checked[key] = _check_value(item, extra_schema, root, name, unrecognized)
+    return checked

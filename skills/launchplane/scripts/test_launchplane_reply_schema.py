@@ -45,7 +45,8 @@ def test_pinned_schema_is_enforceable() -> None:
 
 
 def test_declared_types_bounds_and_requirements_are_enforced() -> None:
-    assert reply_schema.check_controller_reply({"status": "accepted", "count": None}, SCHEMA) == []
+    reply = {"status": "accepted", "count": None}
+    assert reply_schema.check_controller_reply(reply, SCHEMA) == (reply, [])
     for reply in (
         {"count": 1},
         {"status": "pending"},
@@ -57,9 +58,11 @@ def test_declared_types_bounds_and_requirements_are_enforced() -> None:
         assert raised.value.code == "invalid_response"
 
 
-def test_undeclared_fields_are_named_unless_unsafe() -> None:
+def test_undeclared_fields_are_removed_and_named_unless_unsafe() -> None:
     reply = {"status": "accepted", "later": 1, "item": {"name": "ok", "later_name": "x"}}
-    assert reply_schema.check_controller_reply(reply, SCHEMA) == ["item.later_name", "later"]
+    assert reply_schema.check_controller_reply(reply, SCHEMA) == (
+        {"status": "accepted", "item": {"name": "ok"}}, ["item.later_name", "later"],
+    )
     for unsafe in ({"status": "accepted", "client_secret": "x"},
                    {"status": "accepted", "https://private.example": "x"}):
         with pytest.raises(reply_schema.ReplySchemaError) as raised:
@@ -67,9 +70,13 @@ def test_undeclared_fields_are_named_unless_unsafe() -> None:
         assert raised.value.code == "unsafe_response_shape"
 
 
-def test_a_schema_keyword_the_checker_does_not_enforce_is_refused() -> None:
-    with pytest.raises(reply_schema.ReplySchemaError):
-        reply_schema.check_schema({**SCHEMA, "properties": {"status": {"type": "string", "pattern": "^a"}}})
+def test_a_schema_constraint_the_checker_would_not_enforce_is_refused() -> None:
+    for properties in (
+        {"status": {"type": "string", "pattern": "^a"}},
+        {"item": {"$ref": "#/$defs/Item", "required": ["name"]}},
+    ):
+        with pytest.raises(reply_schema.ReplySchemaError):
+            reply_schema.check_schema({**SCHEMA, "properties": properties})
 
 
 def test_check_reports_current_drift_and_unavailable(tmp_path: Path) -> None:

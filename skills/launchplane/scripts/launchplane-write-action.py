@@ -28,7 +28,6 @@ from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_inventory import project_inventory  # noqa: E402
 from launchplane_reply_schema import ReplySchemaError  # noqa: E402
 from launchplane_reply_schema import check_controller_reply  # noqa: E402
-from launchplane_reply_schema import declared_record_keys  # noqa: E402
 from launchplane_safety import (  # noqa: E402
     LaunchplaneSafetyError,
     assert_public_safe_shape,
@@ -1503,27 +1502,20 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         "mode",
         "controller_action",
         "reason_code",
-        "candidate_sha",
-        "landing_sha",
-        "root_merge_commit",
-        "root_merge_commit_sha",
         "candidate_ref_cleanup_status",
         "controller_reconciliation_status",
-        "status",
     ):
         if key in source:
             projected[key] = public_identifier(source[key])
     for key in (
         "active_action", "active_phase", "active_record_id",
-        "landing_plan_record_id", "merge_train_batch_landing_plan_record_id",
+        "merge_train_batch_landing_plan_record_id",
         "retired_merge_train_batch_candidate_record_id",
     ):
         if key in source:
             projected[key] = _optional_public_identifier(source[key])
     if "landing_progress" in source:
         projected["landing_progress"] = public_code(source["landing_progress"])
-    if "mutate" in source:
-        projected["mutate"] = _optional_bool(source["mutate"])
     if "candidate_ref_cleanup_github_status_code" in source:
         projected["candidate_ref_cleanup_github_status_code"] = _nonnegative_int(
             source["candidate_ref_cleanup_github_status_code"]
@@ -1546,9 +1538,6 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         projected["dry_run_result"] = _project_merge_train_dry_run(source["dry_run_result"])
     if "conflict_probe" in source:
         projected["conflict_probe"] = _project_merge_train_conflict_probe(source["conflict_probe"])
-    for key in ("workflow_run_url", "source_of_truth_url"):
-        if key in source:
-            projected[key] = public_url(source[key])
     for key in (
         "candidate",
         "landing_plan",
@@ -3974,13 +3963,11 @@ def _project_success_output(
                 expected_config_result[f"{kind}_{disposition}_count"] = len(items)
         return records, expected_config_result
     if operation == "merge-train-controller-run-once":
-        # The reply was checked against the pinned schema; project only the
-        # record keys it declares.
-        declared = declared_record_keys()
+        # summarize_success already removed every field the pinned schema
+        # does not declare.
         records = {
             key: public_identifier(value)
             for key, value in _require_dict(provider_payload.get("records")).items()
-            if key in declared
         }
         return records, _project_merge_train_result(provider_payload.get("result"))
     if operation == "product-config-preflight":
@@ -4190,12 +4177,14 @@ def summarize_success(
     unrecognized: list[str] = []
     if operation == "merge-train-controller-run-once":
         try:
-            unrecognized = check_controller_reply(provider_payload)
+            checked, unrecognized = check_controller_reply(provider_payload)
         except ReplySchemaError as exc:
             raise LaunchplaneSafetyError(exc.code) from exc
-        # Record ids newer than the pin are never copied, but must still be
-        # safe to have read; the result projection scans the whole result.
+        # Fields newer than the pin are never projected, but what Launchplane
+        # sent must still be safe to have read.
         assert_public_safe_shape(provider_payload.get("records"))
+        assert_public_safe_shape(provider_payload.get("result"))
+        provider_payload = checked
     try:
         records, result = _project_success_output(operation, provider_payload, request=request)
     except TypeError as exc:

@@ -1584,6 +1584,9 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
 def test_controller_reply_fields_newer_than_the_pin_are_dropped_and_named() -> None:
     response = _candidate_failure_isolated_response()
     response["result"]["later_result_field"] = "private-fixture-value"
+    # Fields an older helper projected but the contract does not declare are dropped too.
+    response["result"]["workflow_run_url"] = "https://private.example/path"
+    response["result"]["candidate_sha"] = "d" * 40
     response["records"]["later_record_id"] = "private-record-value"
     response["result"]["block_result"]["later_block_field"] = "private-block-value"
     status, payload = _run_controller_response(response, mutate=True)
@@ -1591,8 +1594,10 @@ def test_controller_reply_fields_newer_than_the_pin_are_dropped_and_named() -> N
     assert payload["result"]["block_result"]["pull_request_number"] == 42
     assert payload["summary"]["controller_action"] == "block"
     assert payload["summary"]["unrecognized_fields"].split(",") == [
-        "records.later_record_id", "result.block_result.later_block_field", "result.later_result_field",
+        "records.later_record_id", "result.block_result.later_block_field", "result.candidate_sha",
+        "result.later_result_field", "result.workflow_run_url",
     ]
+    assert "candidate_sha" not in payload["result"] and "private.example" not in json.dumps(payload)
     assert payload["warnings"][0]["code"] == "controller_reply_newer_than_pinned_schema"
     for value in ("private-fixture-value", "private-record-value", "private-block-value"):
         assert value not in json.dumps(payload)
