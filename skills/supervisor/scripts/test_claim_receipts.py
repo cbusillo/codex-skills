@@ -1066,6 +1066,30 @@ class ReceiptTests(unittest.TestCase):
             ("printf '%s\\n' '" + writer + "' > check.sh <<'A'\necho ok\nA", True),
             ("cat <<'A' | cat > check.sh\n" + writer + "\nA", True),
             ("cat <<'A' | cat > check.sh <<'B'\n" + writer + "\nA\necho ok\nB", False),
+            ("echo -e '#!/bin/sh\\n" + writer + "' > check.sh", True),
+            ("echo -n '" + writer + "' > check.sh", True),
+            ("echo -en '#!/bin/sh\\n" + writer + "' > check.sh", True),
+            ("echo -e '\\x75\\0166" + writer[2:] + "' > check.sh", True),
+            ("printf -- '%s\\n' '" + writer + "' > check.sh", True),
+            ("printf '%b' '#!/bin/sh\\n" + writer + "' > check.sh", True),
+            ("printf '\\165\\166" + writer[2:] + "\\n' > check.sh", True),
+            ("printf '\\x75\\x76" + writer[2:] + "\\n' > check.sh", True),
+            ("printf '%b' '\\0165\\0166" + writer[2:] + "\\n' > check.sh", True),
+            ("printf '%b' '\\165\\166" + writer[2:] + "\\n' > check.sh", True),
+            ("printf '%b\\n%s' 'echo ok\\n' '" + writer + "' > check.sh", True),
+            ("printf '%q ' " + writer + " > check.sh", True),
+            ("printf '%q ' '" + writer + "' > check.sh", False),
+            ("printf '%s %q\\n' echo '" + writer + "' > check.sh", False),
+            ("echo -e 'echo " + writer + "' > check.sh", False),
+            ("echo -n echo '" + writer + "' > check.sh", False),
+            ("echo -E echo '" + writer + "' > check.sh", False),
+            ("echo -- '" + writer + "' > check.sh", False),
+            ("echo -unknown '" + writer + "' > check.sh", False),
+            ("printf -- '%s%s\\n' 'echo ' '" + writer + "' > check.sh", False),
+            ("printf '%b%s\\n' 'echo ' '" + writer + "' > check.sh", False),
+            ("printf '%b%s' 'echo ok\\c' '" + writer + "' > check.sh", False),
+            ("echo -e 'echo ok\\c\\n" + writer + "' > check.sh", False),
+            ("printf '\\x25s' '" + writer + "' > check.sh", False),
         )
         for harness in ("codex", "claude"):
             for command, pending in commands:
@@ -1118,6 +1142,56 @@ class ReceiptTests(unittest.TestCase):
             else: rows[1]["message"]["content"][0]["input"] = {"command": command}
             rows[2] = output({}, harness, "tool-0")
             self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_node_launch_arguments_follow_call_sites_and_current_bindings(self):
+        writer = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
+        command, executable = json.dumps(writer), json.dumps('/catalog/gh-plan.py')
+        args = json.dumps(['--repo', 'example/a', 'claim', '1'])
+        uv_args = json.dumps(['run', '/catalog/gh-plan.py', '--repo', 'example/a', 'claim', '1'])
+        executing = (
+            "const {execSync}=require('child_process'); const cmd=" + command + "; execSync(`${cmd} --json`)",
+            "const {spawnSync}=require('child_process'); const helper=" + executable + "; spawnSync(helper," + args + ")",
+            "const {spawnSync}=require('child_process'); const args=" + uv_args + "; spawnSync('uv',args)",
+            "const {execSync}=require('child_process'); let cmd='echo done'; cmd=" + command + "; execSync(cmd)",
+            "const {execFileSync}=require('child_process'); const helper=" + executable + "; const args=" + args + "; execFileSync(helper,args)",
+            "const cp=require('node:child_process'); let args=[]; args=" + uv_args + "; cp.spawn('uv',args)",
+            "const {spawnSync:launch}=require('child_process'); const helper='uv'; const args=" + uv_args + "; launch(helper,args)",
+            "const {execSync}=require('child_process'); const prefix='uv run'; const helper=" + executable + "; const n=1; execSync(`${prefix} ${helper} --repo example/a claim ${n}`)",
+            "const {execSync}=require('child_process'); execSync(process.env.CMD || " + command + ")",
+            "const {execSync}=require('child_process'); let cmd='echo done'; cmd=process.env.CMD || " + command + "; execSync(cmd)",
+            "const {execSync}=require('child_process'); let cmd=''; cmd+=" + command + "; execSync(cmd)",
+            "const {execSync}=require('child_process'); const cmd=process.env.CMD || " + command + "; execSync(`${cmd} --json`)",
+            "const {spawnSync}=require('child_process'); const args=process.env.ARGS || " + uv_args + "; spawnSync('uv',args)",
+            "const {spawnSync}=require('child_process'); const args=process.env.ARGS || ['pr','create']; spawnSync('gh',args)",
+        )
+        data = (
+            "const {execSync}=require('child_process'); const fixture=" + command + "; const cmd='echo done'; execSync(`${cmd} --json`)",
+            "const {execSync}=require('child_process'); let cmd=" + command + "; cmd='echo done'; execSync(cmd)",
+            "const {execSync}=require('child_process'); const fixture=" + command + "; execSync(process.env.READ_COMMAND)",
+            "const {execSync}=require('child_process'); let cmd='echo '; cmd+=" + command + "; execSync(cmd)",
+            "const {spawnSync}=require('child_process'); const fixture=" + command + "; const helper='printf'; const args=['%s',fixture]; spawnSync(helper,args)",
+            "const {spawnSync}=require('child_process'); const args=process.env.ARGS || [" + command + "]; spawnSync('printf',args)",
+            "const {execFileSync}=require('child_process'); const fixture=" + command + "; execFileSync('cat',[fixture])",
+            "const {spawnSync}=require('child_process'); const fixture=" + command + "; spawnSync('gh',['issue','comment','1','--body',fixture])",
+            "const {execSync}=require('child_process'); const fixture=" + command + "; execSync(`printf '%s' '${fixture}'`)",
+            "const cp=require('child_process'); let args=" + uv_args + "; args=[]; cp.spawnSync('printf',args)",
+            "const fixture=" + command + "; console.log(`${fixture}`)",
+            "const {execSync}=require('child_process'); const fixture=" + command + "; const pattern=/claim/; pattern.exec(fixture)",
+        )
+        for harness in ('codex', 'claude'):
+            for expected, bodies in ((True, executing), (False, data)):
+                for body in bodies:
+                    with self.subTest(harness=harness, expected=expected, body=body):
+                        rows = history(harness, {})
+                        shell = "node <<'EOF'\n" + body + "\nEOF"
+                        if harness == 'codex':
+                            rows[1]['payload']['arguments'] = json.dumps({'cmd': shell})
+                        else:
+                            rows[1]['message']['content'][0]['input'] = {'command': shell}
+                        rows[2] = output({'exit_code': 0, 'output': ''}, harness, 'tool-0')
+                        self.assertEqual(bool(receipts.ownership_state(rows, harness)['indices']), expected)
+                        self.assertEqual(receipts.ownership_state(rows, harness)['pending'], expected)
+                        self.assertEqual(session_record.summarize(rows, harness)['safe_verdict'], not expected)
 
     def test_heredoc_ownership_follows_stdin_consumers_not_header_words(self):
         writer = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
@@ -1205,6 +1279,55 @@ class ReceiptTests(unittest.TestCase):
                     with self.subTest(harness=harness, command=command):
                         self.assertEqual(bool(receipts.ownership_state(rows, harness)["indices"]), expected)
                         self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
+
+    def test_stdin_forms_share_wrapper_normalization_and_consumer_classification(self):
+        writer = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
+        python_writer = 'import os; os.system(' + repr(writer) + ')'
+        node_writer = 'require("child_process").execSync(' + json.dumps(writer) + ')'
+        commands = [
+            ("python3 <<'EOF'\nimport subprocess; subprocess.run(['gh','pr','create'])\nEOF", True),
+            ("python3 <<< " + shlex.quote("import subprocess; subprocess.run(['gh','pr','create'])"), True),
+            ("python3 <<< " + shlex.quote("fixture=['gh','pr','create']; print(fixture)"), False),
+            ("UV_CACHE_DIR=/cache uv run - <<'EOF'\n" + python_writer + "\nEOF", True),
+            ("env UV_CACHE_DIR=/cache timeout 60 uv run - <<'EOF'\n" + python_writer + "\nEOF", True),
+            ("env UV_CACHE_DIR=/cache uv run - <<'EOF'\nfixture=" + repr(writer) + "; print(fixture)\nEOF", False),
+            ("uv run --unknown-reader python3 - <<'EOF'\n" + python_writer + "\nEOF", True),
+        ]
+        for header in ("sudo -s", "sudo -i", "sudo --shell", "doas -s", "sudo su - deploy", "su - deploy"):
+            commands.append((header + " <<'EOF'\n" + writer + "\nEOF", True))
+        for reader, body in (("bash", writer), ("python3", python_writer), ("node", node_writer), ("ssh host", writer)):
+            commands.append((reader + " <<< " + shlex.quote(body), True))
+        for reader, body in (("gh issue comment 1 --body-file -", writer), ("cat", writer),
+                             ("bash -c 'printf done'", writer), ("sudo -s cat", writer),
+                             ("python3", "fixture=" + repr(writer) + "; print(fixture)"),
+                             ("node", "const fixture=" + json.dumps(writer) + "; console.log(fixture)")):
+            commands.append((reader + " <<< " + shlex.quote(body), False))
+        for harness in ("codex", "claude"):
+            for command, expected in commands:
+                rows = history(harness, {})
+                if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                with self.subTest(harness=harness, command=command):
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
+
+    def test_here_string_file_provenance_requires_the_connected_input(self):
+        writer = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
+        commands = (
+            ("cat > check.sh <<< " + shlex.quote(writer), True),
+            ("cat <<< " + shlex.quote(writer) + " | tee check.sh >/dev/null", True),
+            ("cat > handoff.md <<< " + shlex.quote(writer) + "; echo done > check.sh", False),
+            ("cat <<< " + shlex.quote(writer) + " | cat >check.sh <<< 'echo done'", False),
+        )
+        for harness in ("codex", "claude"):
+            for command, expected in commands:
+                rows = history(harness, {}, {})
+                for index, text in ((1, command), (3, "bash check.sh")):
+                    if harness == "codex": rows[index]["payload"]["arguments"] = json.dumps({"cmd": text})
+                    else: rows[index]["message"]["content"][0]["input"] = {"command": text}
+                rows[2], rows[4] = output({}, harness, "tool-0"), output({}, harness, "tool-1")
+                with self.subTest(harness=harness, command=command):
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
 
     def test_multiple_heredocs_keep_their_own_command_and_final_stdin(self):
         writer = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
@@ -1953,6 +2076,78 @@ class ReceiptTests(unittest.TestCase):
                         namespace, _ = parser.parse_known_args(argv[3:])
                         self.assertEqual(receipts.target_records(rows, harness), {(namespace.repo, int(getattr(namespace, positional.dest)))})
                         self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
+
+
+    def test_grouped_stdin_streams_reach_only_connected_code_readers(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        headers = (
+            ("(cat) <<'EOF' | bash", True),
+            ("(cat)<<'EOF' | bash", True),
+            ("(cat <<'EOF') | bash", True),
+            ("{ cat <<'EOF'; } | bash", True),
+            ("cat <<'EOF' | (cd /repo && cat) | bash", True),
+            ("cat <<'EOF' | { cd /repo; cat; } | bash", True),
+            ("cat <<'EOF' | (cat | cat) | bash", True),
+            ("(gh issue comment 1 --body-file -) <<'EOF' | bash", False),
+            ("(gh issue comment 1 --body-file -)<<'EOF' | bash", False),
+            ("cat <<'EOF' | (cd /repo && gh issue comment 1 --body-file -) | bash", False),
+            ("cat <<'EOF' | (cd /repo && cat </dev/null) | bash", False),
+            ("cat <<'EOF' | (cd /repo && cat >handoff.md) | bash", False),
+        )
+        for harness in ("codex", "claude"):
+            for header, pending in headers:
+                with self.subTest(harness=harness, header=header):
+                    rows = history(harness, {})
+                    command = header + "\n" + writer + "\nEOF"
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+    def test_grouped_and_tee_outputs_preserve_their_own_script_provenance(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        producers = (
+            ("cat <<'EOF' | (cat > run.sh)\n" + writer + "\nEOF", True),
+            ("cat <<'EOF' | (cd /repo && cat) > run.sh\n" + writer + "\nEOF", True),
+            ("tee run.sh <<'EOF' >/dev/null\n" + writer + "\nEOF", True),
+            ("cat <<'EOF' | tee run.sh\n" + writer + "\nEOF", True),
+            ("cat <<'EOF' | (cd /repo && gh issue comment 1 --body-file -) > run.sh\n" + writer + "\nEOF", False),
+            ("cat > handoff.md <<'EOF'\n" + writer + "\nEOF\ncat harmless.txt | tee run.sh", False),
+            ("tee --help run.sh <<'EOF'\n" + writer + "\nEOF", False),
+        )
+        for harness in ("codex", "claude"):
+            for command, pending in producers:
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {}, {})
+                    for index, text in ((1, command), (3, "bash run.sh")):
+                        if harness == "codex":
+                            rows[index]["payload"]["arguments"] = json.dumps({"cmd": text})
+                        else:
+                            rows[index]["message"]["content"][0]["input"] = {"command": text}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+
+    def test_adjacent_shell_quote_fragments_remain_one_raw_word(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        python = 'import os; os.system(' + repr(writer) + ')'
+        commands = (
+            ("python3 <<< " + shlex.quote(python), True),
+            ("gh issue comment 1 --body-file - <<< " + shlex.quote(python), False),
+            ("bash <<< 'uv '" + '"run "' + "'/catalog/gh-plan.py --repo client/repo claim 12'", True),
+            ("gh issue comment 1 --body-file - <<< 'uv '" + '"run "' + "'/catalog/gh-plan.py --repo client/repo claim 12'", False),
+            ("cat > 'run'\".\"'sh' <<'EOF'\n" + writer + "\nEOF\nbash run.sh", True),
+            ("echo 'uv '" + '"run "' + "'/catalog/gh-plan.py --repo client/repo claim 12' > run.sh\nbash run.sh", True),
+        )
+        for harness in ("codex", "claude"):
+            for command, pending in commands:
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, {})
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
 
 if __name__ == "__main__":
